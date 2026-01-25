@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/jywlabs/goralph/internal/executor"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +46,20 @@ Usage:
 		}
 		file.Close()
 
-		fmt.Printf("PRD file validated: %s\n", prdFile)
+		// Execute tasks from PRD file
+		exec := executor.New(executor.Config{
+			PRDFile:  prdFile,
+			RepoPath: ".",
+			Logger:   os.Stdout,
+		})
+
+		result := exec.Run(context.Background())
+
+		if !result.Success {
+			return fmt.Errorf("execution failed: %w", result.Error)
+		}
+
+		fmt.Printf("Completed %d/%d tasks\n", result.CompletedTasks, result.TotalTasks)
 		return nil
 	},
 }
