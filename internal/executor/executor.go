@@ -9,6 +9,7 @@ import (
 	"github.com/jywlabs/goralph/internal/claude"
 	"github.com/jywlabs/goralph/internal/git"
 	"github.com/jywlabs/goralph/internal/marker"
+	"github.com/jywlabs/goralph/internal/output"
 	"github.com/jywlabs/goralph/internal/parser"
 	"github.com/jywlabs/goralph/internal/prompt"
 	"github.com/jywlabs/goralph/internal/retry"
@@ -38,8 +39,9 @@ type claudeEngine interface {
 
 // Executor orchestrates the sequential execution of PRD tasks.
 type Executor struct {
-	config Config
-	engine claudeEngine
+	config  Config
+	engine  claudeEngine
+	printer *output.Printer
 }
 
 // New creates a new Executor with the given configuration.
@@ -50,9 +52,14 @@ func New(cfg Config) *Executor {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = retry.DefaultMaxRetries
 	}
+	var w io.Writer = os.Stdout
+	if cfg.Logger != nil {
+		w = cfg.Logger
+	}
 	return &Executor{
-		config: cfg,
-		engine: claude.NewEngine(),
+		config:  cfg,
+		engine:  claude.NewEngine(),
+		printer: output.New(w),
 	}
 }
 
@@ -64,9 +71,14 @@ func NewWithEngine(cfg Config, engine claudeEngine) *Executor {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = retry.DefaultMaxRetries
 	}
+	var w io.Writer = os.Stdout
+	if cfg.Logger != nil {
+		w = cfg.Logger
+	}
 	return &Executor{
-		config: cfg,
-		engine: engine,
+		config:  cfg,
+		engine:  engine,
+		printer: output.New(w),
 	}
 }
 
@@ -88,6 +100,9 @@ func (e *Executor) Run(ctx context.Context) Result {
 		TotalTasks: len(tasks),
 	}
 
+	// Print task count on start
+	e.printer.TaskCount(len(tasks))
+
 	if len(tasks) == 0 {
 		result.Success = true
 		return result
@@ -95,28 +110,44 @@ func (e *Executor) Run(ctx context.Context) Result {
 
 	// Process each task sequentially
 	for i, task := range tasks {
-		e.log("Processing task %d/%d: %s\n", i+1, len(tasks), truncate(task.Description, 60))
+		// Print current task
+		e.printer.TaskStart(i+1, len(tasks), task.Description)
 
 		// Execute task with retry logic
 		execResult := e.executeTaskWithRetry(ctx, task)
 
 		if !execResult.Success {
+			// Print failure
+			errMsg := "unknown error"
+			if execResult.Error != nil {
+				errMsg = execResult.Error.Error()
+			}
+			e.printer.TaskFailure(errMsg)
 			result.Error = execResult.Error
+			// Print summary before returning
+			e.printer.Summary(result.CompletedTasks, result.TotalTasks)
 			return result
 		}
 
 		// Mark task as complete in PRD file
 		if err := marker.MarkComplete(e.config.PRDFile, task.LineNumber); err != nil {
+			e.printer.TaskFailure(fmt.Sprintf("failed to mark task complete: %v", err))
 			result.Error = fmt.Errorf("failed to mark task complete: %w", err)
+			e.printer.Summary(result.CompletedTasks, result.TotalTasks)
 			return result
 		}
 
 		// Auto-commit changes
 		commitResult, err := git.AutoCommit(e.config.RepoPath, task.Description)
 		if err != nil {
+			e.printer.TaskFailure(fmt.Sprintf("failed to commit: %v", err))
 			result.Error = fmt.Errorf("failed to commit: %w", err)
+			e.printer.Summary(result.CompletedTasks, result.TotalTasks)
 			return result
 		}
+
+		// Print success
+		e.printer.TaskSuccess()
 
 		if commitResult.Committed {
 			e.log("Committed: %s (%s)\n", commitResult.Message, commitResult.Hash[:7])
@@ -126,6 +157,8 @@ func (e *Executor) Run(ctx context.Context) Result {
 	}
 
 	result.Success = true
+	// Print final summary
+	e.printer.Summary(result.CompletedTasks, result.TotalTasks)
 	return result
 }
 
@@ -144,7 +177,9 @@ func (e *Executor) loadTasks() ([]parser.Task, error) {
 func (e *Executor) executeTaskWithRetry(ctx context.Context, task parser.Task) retry.Result {
 	cfg := retry.Config{
 		MaxRetries: e.config.MaxRetries,
-		Logger:     e.config.Logger,
+		OnRetry: func(delaySecs, attempt, max int) {
+			e.printer.Retry(delaySecs, attempt, max)
+		},
 	}
 
 	op := func() retry.Result {

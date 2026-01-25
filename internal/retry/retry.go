@@ -23,7 +23,8 @@ type Config struct {
 	MaxRetries       int
 	BaseDelay        time.Duration
 	MaxJitterPercent int
-	Logger           io.Writer // Where to write retry logs (nil for no logging)
+	Logger           io.Writer                           // Where to write retry logs (nil for no logging)
+	OnRetry          func(delaySeconds, attempt, max int) // Optional callback for retry notifications
 }
 
 // DefaultConfig returns a Config with default values.
@@ -88,10 +89,17 @@ func Execute(ctx context.Context, cfg Config, op Operation) Result {
 
 		// Calculate delay with exponential backoff and jitter
 		delay := CalculateDelay(cfg.BaseDelay, attempt, cfg.MaxJitterPercent)
+		delaySecs := int(delay.Seconds())
+		if delaySecs < 1 {
+			delaySecs = 1
+		}
 
-		if cfg.Logger != nil {
-			fmt.Fprintf(cfg.Logger, "Retrying in %v... (attempt %d/%d)\n",
-				delay.Round(time.Millisecond), attempt+1, cfg.MaxRetries)
+		// Use OnRetry callback if provided, otherwise use Logger
+		if cfg.OnRetry != nil {
+			cfg.OnRetry(delaySecs, attempt+1, cfg.MaxRetries)
+		} else if cfg.Logger != nil {
+			fmt.Fprintf(cfg.Logger, "Retrying in %ds... (attempt %d/%d)\n",
+				delaySecs, attempt+1, cfg.MaxRetries)
 		}
 
 		// Wait for delay or context cancellation

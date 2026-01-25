@@ -59,7 +59,6 @@ Usage:
 			return fmt.Errorf("execution failed: %w", result.Error)
 		}
 
-		fmt.Printf("Completed %d/%d tasks\n", result.CompletedTasks, result.TotalTasks)
 		return nil
 	},
 }
