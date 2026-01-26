@@ -39,7 +39,6 @@ type Display struct {
 
 	// Stats tracking
 	totalTokens    int
-	totalCost      float64
 	iterationCount int
 	maxIterations  int
 }
@@ -331,24 +330,9 @@ func formatTokens(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
-func shortPath(path string) string {
-	parts := strings.Split(path, "/")
-	if len(parts) <= 2 {
-		return path
-	}
-	return ".../" + strings.Join(parts[len(parts)-2:], "/")
-}
-
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
 	return s[:max-3] + "..."
-}
-
-func truncateBox(s string, max int) string {
-	if len(s) <= max {
-		return s + strings.Repeat(" ", max-len(s)) + "│"
-	}
-	return s[:max-3] + "...│"
 }
