@@ -88,10 +88,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	result := runner.Run(context.Background())
 
-	if !result.Success {
-		if result.Complete {
-			return nil // All tasks done
-		}
+	// Only return error if there was an actual failure
+	if result.Error != nil {
 		return fmt.Errorf("loop failed: %w", result.Error)
 	}
 

@@ -137,9 +137,10 @@ func (r *Runner) Run(ctx context.Context) Result {
 		}
 	}
 
+	// Max iterations reached - this is not an error, just a stopping point
 	r.display.ShowMaxIterations()
-	result.Success = false
-	result.Error = fmt.Errorf("max iterations reached")
+	result.Success = true
+	result.Complete = false
 	return result
 }
 

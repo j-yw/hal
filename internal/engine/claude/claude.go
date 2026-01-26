@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jywlabs/goralph/internal/engine"
@@ -69,16 +70,18 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 	// Detach from TTY to suppress interactive UI hints.
 	//
-	// When Claude Code CLI detects a TTY (terminal), it displays interactive
-	// hints like "ctrl+b to run in background". These hints are written directly
-	// to /dev/tty, bypassing stdout/stderr redirection.
+	// Claude Code CLI displays interactive hints like "ctrl+b to run in background"
+	// when it detects a TTY. These are written directly to /dev/tty.
 	//
-	// By setting Stdin to nil, the child process has no controlling terminal,
-	// causing Claude to skip TTY detection and suppress these hints.
+	// To suppress these hints, we:
+	// 1. Set Stdin to nil (no input)
+	// 2. Create a new session (Setsid) to detach from controlling terminal
 	//
-	// This ensures clean, parseable output without interactive UI elements
-	// that would confuse users (since goralph doesn't support backgrounding).
+	// This ensures clean, parseable output without interactive UI elements.
 	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true, // Create new session, detach from controlling TTY
+	}
 
 	// Set up output capture with streaming parser
 	var stdout, stderr bytes.Buffer
