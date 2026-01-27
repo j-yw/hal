@@ -52,6 +52,15 @@ type Engine interface {
 	// Execute runs the prompt and returns the result.
 	// The display is used to show progress during execution.
 	Execute(ctx context.Context, prompt string, display *Display) Result
+
+	// Prompt executes a single prompt and returns the text response.
+	// This is a simpler interface for non-streaming, single-shot prompts.
+	Prompt(ctx context.Context, prompt string) (string, error)
+
+	// StreamPrompt executes a prompt with streaming display feedback.
+	// Events (spinners, tool calls) are shown via the display while
+	// the text response is collected and returned.
+	StreamPrompt(ctx context.Context, prompt string, display *Display) (string, error)
 }
 
 // OutputParser parses engine-specific output into normalized Events.
