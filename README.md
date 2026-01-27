@@ -36,7 +36,7 @@ Requires Go 1.25+ and one of:
 goralph init
 
 # Generate PRD interactively
-goralph plan "add user authentication"
+goralph plan
 
 # Or write markdown PRD manually, then convert
 goralph convert tasks/prd-auth.md
@@ -48,24 +48,97 @@ goralph validate
 goralph run
 ```
 
-## Commands
+## Planning a Feature
+
+The `plan` command generates a PRD through a two-phase flow:
+1. AI analyzes your description and generates clarifying questions
+2. You answer the questions, then AI generates a complete PRD
+
+### Editor mode (recommended)
+
+Run `plan` with no arguments to open your `$EDITOR` with a template:
+
+```bash
+goralph plan
+```
+
+This opens a markdown file where you can write a detailed feature spec. Write as much or as little as you want, save, and quit. Comment lines (`<!-- ... -->`) are stripped automatically.
+
+The editor is resolved in order: `$EDITOR` > `$VISUAL` > `nano` > `vim` > `vi`.
+
+### Inline mode
+
+Pass the description directly as an argument:
+
+```bash
+goralph plan "add user authentication with OAuth"
+```
+
+Good for quick, well-defined features. For anything nuanced, prefer the editor.
+
+### Output formats
+
+By default, the PRD is written as markdown to `tasks/prd-<feature-name>.md`. You can review and edit it before converting.
+
+```bash
+# Default: markdown output, then convert separately
+goralph plan "notifications"
+goralph convert tasks/prd-notifications.md
+
+# Skip markdown step, output JSON directly for immediate use
+goralph plan "notifications" --json
+goralph run
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output directly to `.goralph/prd.json` instead of markdown |
+| `-e, --engine` | Engine to use: `claude` (default) or `amp` |
+
+## Converting a PRD
+
+Convert a markdown PRD to the structured JSON format GoRalph needs:
+
+```bash
+goralph convert tasks/prd-auth.md
+goralph convert tasks/prd-auth.md -o custom-output.json
+goralph convert tasks/prd-auth.md --validate    # also validate after conversion
+```
+
+If a `prd.json` already exists for a different feature, it gets archived to `.goralph/archive/` automatically.
+
+## Validating a PRD
+
+Check that stories are right-sized, properly ordered, and have verifiable criteria:
+
+```bash
+goralph validate                       # validates .goralph/prd.json
+goralph validate path/to/other.json    # validate a specific file
+```
+
+## Running the Loop
+
+Execute stories autonomously. Each iteration picks the highest-priority incomplete story, implements it, commits, and updates progress:
+
+```bash
+goralph run
+goralph run --max 5           # limit to 5 iterations
+goralph run -e amp            # use Amp engine
+```
+
+## All Commands
 
 | Command | Description |
 |---------|-------------|
 | `goralph init` | Initialize `.goralph/` directory with skills and templates |
-| `goralph plan <description>` | Generate PRD through interactive Q&A |
+| `goralph plan [description]` | Generate PRD (editor mode if no args) |
 | `goralph convert <markdown-prd>` | Convert markdown PRD to `.goralph/prd.json` |
 | `goralph validate [prd-path]` | Validate PRD against quality rules |
 | `goralph run` | Execute stories autonomously in a loop |
 | `goralph config` | Show current configuration |
 | `goralph version` | Show version info |
-
-### Common Flags
-
-- `-e, --engine` -- Engine to use: `claude` (default) or `amp`
-- `--max` -- Max iterations for `run` (default: 10)
-- `--json` -- Output PRD directly as JSON (for `plan`)
-- `--validate` -- Also validate after conversion (for `convert`)
 
 ## PRD Format
 
@@ -141,7 +214,3 @@ make vet         # Run go vet
 make fmt         # Format code
 make lint        # Run golangci-lint
 ```
-
-## License
-
-Copyright JYW Labs.
