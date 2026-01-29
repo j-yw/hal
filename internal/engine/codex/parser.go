@@ -10,6 +10,7 @@ import (
 // Parser parses Codex CLI JSONL output format.
 type Parser struct {
 	commandFailed bool
+	turnFailed    bool
 }
 
 // NewParser creates a new Codex output parser.
@@ -38,6 +39,10 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 		return p.parseItem(raw)
 	case "turn.completed":
 		return p.parseTurnCompleted(raw)
+	case "turn.failed":
+		return p.parseFailureEvent(raw, "turn failed")
+	case "error":
+		return p.parseFailureEvent(raw, "codex error")
 	default:
 		return nil
 	}
@@ -136,8 +141,9 @@ func (p *Parser) parseTurnCompleted(raw map[string]interface{}) *engine.Event {
 		}
 	}
 
-	success := !p.commandFailed
+	success := !(p.commandFailed || p.turnFailed)
 	p.commandFailed = false
+	p.turnFailed = false
 
 	return &engine.Event{
 		Type: engine.EventResult,
@@ -146,6 +152,26 @@ func (p *Parser) parseTurnCompleted(raw map[string]interface{}) *engine.Event {
 			Tokens:  tokens,
 		},
 	}
+}
+
+func (p *Parser) parseFailureEvent(raw map[string]interface{}, fallback string) *engine.Event {
+	p.turnFailed = true
+
+	message := extractErrorMessage(raw)
+	if message == "" {
+		message = fallback
+	}
+
+	return &engine.Event{
+		Type: engine.EventError,
+		Data: engine.EventData{
+			Message: message,
+		},
+	}
+}
+
+func (p *Parser) HasFailure() bool {
+	return p.commandFailed || p.turnFailed
 }
 
 // Helper functions
@@ -170,6 +196,31 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+func extractErrorMessage(raw map[string]interface{}) string {
+	if msg, ok := raw["message"].(string); ok && msg != "" {
+		return msg
+	}
+
+	errVal, ok := raw["error"]
+	if !ok || errVal == nil {
+		return ""
+	}
+
+	switch v := errVal.(type) {
+	case string:
+		return v
+	case map[string]interface{}:
+		if msg, ok := v["message"].(string); ok && msg != "" {
+			return msg
+		}
+		if msg, ok := v["type"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+
+	return ""
 }
 
 // extractCommand extracts the actual command from bash wrapper like:

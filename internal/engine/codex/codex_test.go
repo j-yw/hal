@@ -251,6 +251,44 @@ func TestParser_ParseLine_TurnCompleted_NoUsage(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_TurnFailed(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"turn.failed","error":{"message":"rate limit"}}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventError {
+		t.Errorf("expected Type=EventError, got %v", event.Type)
+	}
+	if event.Data.Message != "rate limit" {
+		t.Errorf("expected Message=\"rate limit\", got %q", event.Data.Message)
+	}
+	if !p.HasFailure() {
+		t.Error("expected parser failure to be set")
+	}
+}
+
+func TestParser_ParseLine_ErrorEvent(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"error","message":"auth failed"}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventError {
+		t.Errorf("expected Type=EventError, got %v", event.Type)
+	}
+	if event.Data.Message != "auth failed" {
+		t.Errorf("expected Message=\"auth failed\", got %q", event.Data.Message)
+	}
+	if !p.HasFailure() {
+		t.Error("expected parser failure to be set")
+	}
+}
+
 func TestParser_ParseLine_UnknownEventType(t *testing.T) {
 	p := NewParser()
 	line := `{"type":"unknown.event"}`
@@ -271,6 +309,15 @@ func TestParser_ParseLine_UnknownItemType(t *testing.T) {
 	}
 }
 
+func TestEngine_parseSuccess_FailureWithoutTurnCompleted(t *testing.T) {
+	e := New()
+	output := `{"type":"error","message":"auth failed"}`
+
+	if e.parseSuccess(output) {
+		t.Error("expected parseSuccess to return false for error-only output")
+	}
+}
+
 // Helper function tests
 
 func TestExtractCommand(t *testing.T) {
@@ -281,7 +328,7 @@ func TestExtractCommand(t *testing.T) {
 		{"/usr/bin/bash -lc 'echo hello'", "echo hello"},
 		{"/bin/bash -lc 'ls -la'", "ls -la"},
 		{"/usr/bin/bash -c 'git status'", "git status"},
-		{"echo hello", "echo hello"}, // No wrapper
+		{"echo hello", "echo hello"},                     // No wrapper
 		{"/usr/bin/bash -lc ''", "/usr/bin/bash -lc ''"}, // Empty command - no extraction possible (start > end)
 		{"/usr/bin/bash -lc 'single'", "single"},
 	}

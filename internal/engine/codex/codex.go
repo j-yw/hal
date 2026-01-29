@@ -132,12 +132,23 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 func (e *Engine) parseSuccess(output string) bool {
 	lines := strings.Split(output, "\n")
 	parser := NewParser()
+	sawResult := false
+	lastSuccess := true
 
 	for _, line := range lines {
 		event := parser.ParseLine([]byte(line))
 		if event != nil && event.Type == engine.EventResult {
-			return event.Data.Success
+			sawResult = true
+			lastSuccess = event.Data.Success
 		}
+	}
+
+	if sawResult {
+		return lastSuccess
+	}
+
+	if parser.HasFailure() {
+		return false
 	}
 
 	// If we can't parse, assume success if no error
