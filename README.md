@@ -1,6 +1,6 @@
 # GoRalph
 
-Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story one iteration at a time using AI coding agents (Claude Code).
+Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story one iteration at a time using AI coding agents (Claude Code or Codex).
 
 ## How It Works
 
@@ -25,7 +25,9 @@ make build
 make install
 ```
 
-Requires Go 1.25+ and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI.
+Requires Go 1.25+ and one of:
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (default engine)
+- [Codex](https://github.com/openai/codex) CLI (alternative engine)
 
 ## Quick Start
 
@@ -93,7 +95,7 @@ goralph run
 | Flag | Description |
 |------|-------------|
 | `-f, --format` | Output format: `markdown` (default) or `json` |
-| `-e, --engine` | Engine to use: `claude` (default) |
+| `-e, --engine` | Engine to use: `claude` (default) or `codex` |
 
 ## Converting a PRD
 
@@ -121,9 +123,10 @@ goralph validate path/to/other.json    # validate a specific file
 Execute stories autonomously. Each iteration picks the highest-priority incomplete story, implements it, commits, and updates progress:
 
 ```bash
-goralph run
-goralph run --limit 5             # limit to 5 iterations
-goralph run -l 1 -s US-001        # run single specific story
+goralph run                       # run with defaults (10 iterations)
+goralph run 5                     # run 5 iterations
+goralph run 1 -s US-001           # run single specific story
+goralph run -e codex              # use Codex engine
 goralph run --dry-run             # show what would execute without running
 ```
 
@@ -135,7 +138,7 @@ goralph run --dry-run             # show what would execute without running
 | `goralph plan [description]` | Generate PRD (editor mode if no args) |
 | `goralph convert <markdown-prd>` | Convert markdown PRD to `.goralph/prd.json` |
 | `goralph validate [prd-path]` | Validate PRD against quality rules |
-| `goralph run` | Execute stories autonomously in a loop |
+| `goralph run [iterations]` | Execute stories autonomously (default: 10 iterations) |
 | `goralph config` | Show current configuration |
 | `goralph version` | Show version info |
 
@@ -177,9 +180,15 @@ GoRalph works with structured PRDs in JSON:
 
 GoRalph supports AI engines through a pluggable interface:
 
-- **Claude** -- Uses Claude Code CLI with `stream-json` output for live progress display
+- **Claude** (default) -- Uses Claude Code CLI with `stream-json` output for live progress display
+- **Codex** -- Uses OpenAI Codex CLI with JSONL output for live progress display
 
-Engines are registered at import time and selected via the `-e` flag.
+Engines are registered at import time and selected via the `-e` flag:
+
+```bash
+goralph run -e claude    # default
+goralph run -e codex     # use Codex
+```
 
 ## Project Structure
 
@@ -196,6 +205,7 @@ cmd/                       # CLI commands
 internal/
   engine/                  # Engine interface + display
     claude/                # Claude Code engine
+    codex/                 # OpenAI Codex engine
   loop/                    # Autonomous execution loop
   prd/                     # PRD generation, conversion, validation
   skills/                  # Embedded skill content

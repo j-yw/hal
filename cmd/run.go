@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jywlabs/goralph/internal/loop"
@@ -12,6 +13,7 @@ import (
 
 	// Register available engines
 	_ "github.com/jywlabs/goralph/internal/engine/claude"
+	_ "github.com/jywlabs/goralph/internal/engine/codex"
 )
 
 // Run command flags
@@ -20,9 +22,8 @@ var (
 	engineFlag string
 
 	// Execution control
-	limitIterations int
-	maxRetries      int
-	retryDelay      time.Duration
+	maxRetries int
+	retryDelay time.Duration
 
 	// New flags
 	dryRunFlag bool
@@ -30,7 +31,7 @@ var (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run",
+	Use:   "run [iterations]",
 	Short: "Run the Ralph loop",
 	Long: `Run the Ralph loop to execute tasks from .goralph/prd.json.
 
@@ -43,21 +44,21 @@ The loop spawns fresh AI instances that:
 6. Repeat until all stories pass or max iterations reached
 
 Examples:
-  goralph run                          # Run with defaults
-  goralph run -e claude                # Use Claude Code
-  goralph run --limit 20               # Run up to 20 iterations
-  goralph run -l 1 -s US-001           # Run single specific story
+  goralph run                          # Run with defaults (10 iterations)
+  goralph run 5                        # Run 5 iterations
+  goralph run 1 -s US-001              # Run single specific story
+  goralph run -e codex                 # Use Codex engine
   goralph run --dry-run                # Show what would execute
 `,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runRun,
 }
 
 func init() {
 	// Engine selection
-	runCmd.Flags().StringVarP(&engineFlag, "engine", "e", "claude", "Engine to use (claude)")
+	runCmd.Flags().StringVarP(&engineFlag, "engine", "e", "claude", "Engine to use (claude, codex)")
 
 	// Execution control
-	runCmd.Flags().IntVarP(&limitIterations, "limit", "l", 10, "Limit iterations (0=unlimited)")
 	runCmd.Flags().IntVar(&maxRetries, "retries", 3, "Max retries per iteration on failure")
 	runCmd.Flags().DurationVar(&retryDelay, "retry-delay", 5*time.Second, "Base retry delay")
 
@@ -69,6 +70,19 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
+	// Parse iterations from positional arg (default: 10)
+	iterations := 10
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid iterations: %q (must be a number)", args[0])
+		}
+		if n < 0 {
+			return fmt.Errorf("iterations must be >= 0")
+		}
+		iterations = n
+	}
+
 	// Check .goralph directory exists
 	goralphDir := template.GoralphDir
 	if _, err := os.Stat(goralphDir); os.IsNotExist(err) {
@@ -84,7 +98,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
 		Dir:           goralphDir,
-		MaxIterations: limitIterations,
+		MaxIterations: iterations,
 		Engine:        engineFlag,
 		Logger:        os.Stdout,
 		RetryDelay:    retryDelay,
