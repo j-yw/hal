@@ -6,13 +6,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var verbose bool
-
 var rootCmd = &cobra.Command{
 	Use:   "goralph",
 	Short: "GoRalph - Autonomous task executor using AI coding agents",
 	Long: `GoRalph is a CLI tool that autonomously executes PRD-driven tasks
-using AI coding agents like Claude Code and Amp.
+using AI coding agents like Claude Code.
 
 Workflow:
   goralph init                    Initialize project with skills
@@ -31,12 +29,8 @@ Commands:
 
 Quick Start:
   1. goralph init
-  2. goralph plan "add user authentication" --json
+  2. goralph plan "add user authentication" --format json
   3. goralph run`,
-}
-
-func init() {
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 }
 
 // Execute runs the root command

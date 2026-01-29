@@ -46,7 +46,7 @@ type EventData struct {
 
 // Engine defines the interface for AI coding tool engines.
 type Engine interface {
-	// Name returns the engine identifier (e.g., "claude", "amp")
+	// Name returns the engine identifier (e.g., "claude")
 	Name() string
 
 	// Execute runs the prompt and returns the result.

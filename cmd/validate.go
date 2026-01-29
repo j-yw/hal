@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	// Register available engines
-	_ "github.com/jywlabs/goralph/internal/engine/amp"
 	_ "github.com/jywlabs/goralph/internal/engine/claude"
 )
 
@@ -33,12 +32,12 @@ Checks:
 Examples:
   goralph validate                    # Validate .goralph/prd.json
   goralph validate path/to/prd.json   # Validate specific file
-  goralph validate -e amp             # Use Amp engine`,
+  goralph validate -e claude          # Use Claude engine`,
 	RunE: runValidate,
 }
 
 func init() {
-	validateCmd.Flags().StringVarP(&validateEngineFlag, "engine", "e", "claude", "Engine to use (claude, amp)")
+	validateCmd.Flags().StringVarP(&validateEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
 	rootCmd.AddCommand(validateCmd)
 }
 

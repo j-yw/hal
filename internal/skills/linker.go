@@ -2,7 +2,7 @@ package skills
 
 // EngineLinker handles skill installation for a specific engine.
 type EngineLinker interface {
-	// Name returns the engine identifier (e.g., "claude", "amp").
+	// Name returns the engine identifier (e.g., "claude").
 	Name() string
 
 	// SkillsDir returns where the engine looks for skills.

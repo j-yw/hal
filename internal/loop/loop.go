@@ -24,10 +24,12 @@ type Result struct {
 type Config struct {
 	Dir           string        // Path to .goralph directory
 	MaxIterations int           // Maximum iterations (0 = unlimited)
-	Engine        string        // Engine name (claude, amp)
+	Engine        string        // Engine name (claude)
 	Logger        io.Writer     // Where to write logs
 	RetryDelay    time.Duration // Delay between retries on failure
 	MaxRetries    int           // Max retries per iteration on failure
+	DryRun        bool          // Show what would execute without running
+	StoryID       string        // Run specific story by ID (e.g., US-001)
 }
 
 // Runner orchestrates the Ralph loop.
@@ -90,6 +92,50 @@ func (r *Runner) Run(ctx context.Context) Result {
 		}
 	}
 
+	// Load PRD
+	prd, err := engine.LoadPRD(r.config.Dir)
+	if err != nil {
+		return Result{
+			Success: false,
+			Error:   fmt.Errorf("failed to load PRD: %w", err),
+		}
+	}
+
+	// Determine which story to run
+	var targetStory *engine.UserStory
+	if r.config.StoryID != "" {
+		// Find specific story by ID
+		targetStory = prd.FindStoryByID(r.config.StoryID)
+		if targetStory == nil {
+			return Result{
+				Success: false,
+				Error:   fmt.Errorf("story not found: %s", r.config.StoryID),
+			}
+		}
+	} else {
+		// Get next pending story
+		targetStory = prd.CurrentStory()
+	}
+
+	// Handle dry-run mode
+	if r.config.DryRun {
+		r.display.ShowInfo("Dry-run mode: showing what would execute\n\n")
+		if targetStory == nil {
+			r.display.ShowSuccess("All stories are complete!")
+			return Result{Success: true, Complete: true}
+		}
+		r.display.ShowInfo("Next story to execute:\n")
+		r.display.ShowInfo("  ID:    %s\n", targetStory.ID)
+		r.display.ShowInfo("  Title: %s\n", targetStory.Title)
+		r.display.ShowInfo("  Description: %s\n", targetStory.Description)
+		r.display.ShowInfo("\nAcceptance Criteria:\n")
+		for _, ac := range targetStory.AcceptanceCriteria {
+			r.display.ShowInfo("  - %s\n", ac)
+		}
+		r.display.ShowInfo("\nPrompt file: %s/prompt.md\n", r.config.Dir)
+		return Result{Success: true}
+	}
+
 	r.display.ShowLoopHeader(r.engine.Name(), r.config.MaxIterations)
 
 	result := Result{}
@@ -97,7 +143,13 @@ func (r *Runner) Run(ctx context.Context) Result {
 	for i := 1; i <= r.config.MaxIterations; i++ {
 		// Load PRD to get current story info
 		var storyInfo *engine.StoryInfo
-		if prd, err := engine.LoadPRD(r.config.Dir); err == nil {
+		if r.config.StoryID != "" {
+			// Running specific story
+			storyInfo = &engine.StoryInfo{
+				ID:    targetStory.ID,
+				Title: targetStory.Title,
+			}
+		} else if prd, err := engine.LoadPRD(r.config.Dir); err == nil {
 			if story := prd.CurrentStory(); story != nil {
 				storyInfo = &engine.StoryInfo{
 					ID:    story.ID,

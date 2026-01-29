@@ -69,3 +69,13 @@ func (p *PRD) Progress() (int, int) {
 	}
 	return completed, len(p.UserStories)
 }
+
+// FindStoryByID returns a story by its ID, or nil if not found.
+func (p *PRD) FindStoryByID(id string) *UserStory {
+	for i := range p.UserStories {
+		if p.UserStories[i].ID == id {
+			return &p.UserStories[i]
+		}
+	}
+	return nil
+}

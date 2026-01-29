@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	// Register available engines
-	_ "github.com/jywlabs/goralph/internal/engine/amp"
 	_ "github.com/jywlabs/goralph/internal/engine/claude"
 )
 
@@ -37,13 +36,13 @@ Examples:
   goralph convert tasks/prd-auth.md              # Output to .goralph/prd.json
   goralph convert docs/feature.md -o custom.json # Custom output path
   goralph convert tasks/prd.md --validate        # Also validate after conversion
-  goralph convert tasks/prd.md -e amp            # Use Amp engine`,
+  goralph convert tasks/prd.md -e claude         # Use Claude engine`,
 	Args: cobra.ExactArgs(1),
 	RunE: runConvert,
 }
 
 func init() {
-	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude, amp)")
+	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
 	convertCmd.Flags().StringVarP(&convertOutputFlag, "output", "o", "", "Output path (default: .goralph/prd.json)")
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
 	rootCmd.AddCommand(convertCmd)

@@ -17,7 +17,7 @@ import (
 // GenerateWithEngine runs the two-phase PRD generation using the prd skill.
 // Phase 1: Generate clarifying questions
 // Phase 2: Collect answers and generate PRD
-func GenerateWithEngine(ctx context.Context, eng engine.Engine, description string, outputJSON bool, display *engine.Display) (string, error) {
+func GenerateWithEngine(ctx context.Context, eng engine.Engine, description string, format string, display *engine.Display) (string, error) {
 	// Load prd skill content
 	prdSkill, err := skills.LoadSkill("prd")
 	if err != nil {
@@ -49,7 +49,7 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 
 	// Determine output path and write
 	var outputPath string
-	if outputJSON {
+	if format == "json" {
 		outputPath = filepath.Join(".goralph", "prd.json")
 		// Convert to JSON using ralph skill
 		ralphSkill, err := skills.LoadSkill("ralph")

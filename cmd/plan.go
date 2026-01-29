@@ -12,13 +12,12 @@ import (
 	"github.com/spf13/cobra"
 
 	// Register available engines
-	_ "github.com/jywlabs/goralph/internal/engine/amp"
 	_ "github.com/jywlabs/goralph/internal/engine/claude"
 )
 
 var (
 	planEngineFlag string
-	planJSONFlag   bool
+	planFormatFlag string
 )
 
 var planCmd = &cobra.Command{
@@ -33,20 +32,20 @@ The plan command uses a two-phase approach:
 If no description is provided, your $EDITOR will open for you to write the spec.
 
 By default, the PRD is written as markdown to .goralph/prd-[feature-name].md.
-Use --json to output directly to .goralph/prd.json for immediate use with 'goralph run'.
+Use --format json to output directly to .goralph/prd.json for immediate use with 'goralph run'.
 
 Examples:
   goralph plan                            # Opens editor for full spec
   goralph plan "user authentication"      # Interactive PRD generation
-  goralph plan "add dark mode" --json     # Output directly to prd.json
-  goralph plan "notifications" -e amp     # Use Amp engine`,
+  goralph plan "add dark mode" -f json    # Output directly to prd.json
+  goralph plan "notifications" -e claude  # Use Claude engine`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runPlan,
 }
 
 func init() {
-	planCmd.Flags().StringVarP(&planEngineFlag, "engine", "e", "claude", "Engine to use (claude, amp)")
-	planCmd.Flags().BoolVar(&planJSONFlag, "json", false, "Output directly to .goralph/prd.json")
+	planCmd.Flags().StringVarP(&planEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
+	planCmd.Flags().StringVarP(&planFormatFlag, "format", "f", "markdown", "Output format: markdown, json")
 	rootCmd.AddCommand(planCmd)
 }
 
@@ -81,14 +80,14 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	// Generate PRD
 	ctx := context.Background()
-	outputPath, err := prd.GenerateWithEngine(ctx, eng, description, planJSONFlag, display)
+	outputPath, err := prd.GenerateWithEngine(ctx, eng, description, planFormatFlag, display)
 	if err != nil {
 		return fmt.Errorf("PRD generation failed: %w", err)
 	}
 
 	fmt.Printf("\nPRD written to: %s\n", outputPath)
 
-	if planJSONFlag {
+	if planFormatFlag == "json" {
 		fmt.Println("\nNext steps:")
 		fmt.Println("  goralph run    # Execute the stories")
 	} else {

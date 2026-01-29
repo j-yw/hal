@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	// Register available engines
-	_ "github.com/jywlabs/goralph/internal/engine/amp"
 	_ "github.com/jywlabs/goralph/internal/engine/claude"
 )
 
@@ -21,9 +20,13 @@ var (
 	engineFlag string
 
 	// Execution control
-	maxIterations int
-	maxRetries    int
-	retryDelay    time.Duration
+	limitIterations int
+	maxRetries      int
+	retryDelay      time.Duration
+
+	// New flags
+	dryRunFlag bool
+	storyFlag  string
 )
 
 var runCmd = &cobra.Command{
@@ -42,20 +45,25 @@ The loop spawns fresh AI instances that:
 Examples:
   goralph run                          # Run with defaults
   goralph run -e claude                # Use Claude Code
-  goralph run -e amp                   # Use Amp
-  goralph run --max 20                 # Run up to 20 iterations
+  goralph run --limit 20               # Run up to 20 iterations
+  goralph run -l 1 -s US-001           # Run single specific story
+  goralph run --dry-run                # Show what would execute
 `,
 	RunE: runRun,
 }
 
 func init() {
 	// Engine selection
-	runCmd.Flags().StringVarP(&engineFlag, "engine", "e", "claude", "Engine to use (claude, amp)")
+	runCmd.Flags().StringVarP(&engineFlag, "engine", "e", "claude", "Engine to use (claude)")
 
 	// Execution control
-	runCmd.Flags().IntVar(&maxIterations, "max", 10, "Max iterations (0=unlimited)")
+	runCmd.Flags().IntVarP(&limitIterations, "limit", "l", 10, "Limit iterations (0=unlimited)")
 	runCmd.Flags().IntVar(&maxRetries, "retries", 3, "Max retries per iteration on failure")
 	runCmd.Flags().DurationVar(&retryDelay, "retry-delay", 5*time.Second, "Base retry delay")
+
+	// New flags
+	runCmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "Show what would execute without running")
+	runCmd.Flags().StringVarP(&storyFlag, "story", "s", "", "Run specific story by ID (e.g., US-001)")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -76,11 +84,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
 		Dir:           goralphDir,
-		MaxIterations: maxIterations,
+		MaxIterations: limitIterations,
 		Engine:        engineFlag,
 		Logger:        os.Stdout,
 		RetryDelay:    retryDelay,
 		MaxRetries:    maxRetries,
+		DryRun:        dryRunFlag,
+		StoryID:       storyFlag,
 	})
 	if err != nil {
 		return err
