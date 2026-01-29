@@ -28,6 +28,12 @@ var (
 	StyleBold    = lipgloss.NewStyle().Bold(true)
 )
 
+// Command header styles
+var (
+	// StyleCommandIcon is the ◆ symbol used in command headers
+	StyleCommandIcon = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true).SetString("◆")
+)
+
 // Box styles - now dynamic functions for responsive width
 
 // GetTerminalWidth returns the current terminal width, or a default fallback.
@@ -99,3 +105,17 @@ var SpinnerGradient = []lipgloss.Color{
 
 // SpinnerFrames are braille characters for smooth animation
 var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// QuestionBox returns a styled box for Q&A.
+func QuestionBox() lipgloss.Style {
+	width := GetTerminalWidth() - 2
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorInfo).
+		BorderTop(true).
+		BorderBottom(true).
+		BorderLeft(true).
+		BorderRight(true).
+		Padding(0, 1).
+		Width(width)
+}

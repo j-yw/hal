@@ -204,10 +204,11 @@ func (d *Display) ShowLoopHeader(engineName string, maxIterations int) {
 	d.maxIterations = maxIterations
 	d.loopStart = time.Now()
 
-	title := StyleBold.Render("🤖 Ralph Loop")
+	icon := StyleCommandIcon.Render()
+	title := StyleBold.Render("Ralph Loop")
 	details := StyleMuted.Render(fmt.Sprintf("%s  •  max %d iterations", engineName, maxIterations))
 
-	content := title + "\n" + details
+	content := fmt.Sprintf("%s %s\n%s", icon, title, details)
 	box := HeaderBox().Render(content)
 
 	fmt.Fprintln(d.out, box)
@@ -356,3 +357,167 @@ func truncate(s string, max int) string {
 	}
 	return s[:max-3] + "..."
 }
+
+// QuestionOption represents a selectable option for a question.
+type QuestionOption struct {
+	Letter      string
+	Label       string
+	Recommended bool
+}
+
+// ShowCommandHeader displays a boxed header for any command.
+// title: "Plan", "Convert", "Validate"
+// context: "user auth", "tasks/prd.md → prd.json"
+// engineName: "claude"
+func (d *Display) ShowCommandHeader(title, context, engineName string) {
+	d.loopStart = time.Now()
+	d.totalTokens = 0
+
+	icon := StyleCommandIcon.Render()
+	titleText := StyleBold.Render(title)
+	details := StyleMuted.Render(fmt.Sprintf("%s  •  %s engine", context, engineName))
+
+	content := fmt.Sprintf("%s %s\n%s", icon, titleText, details)
+	box := HeaderBox().Render(content)
+
+	fmt.Fprintln(d.out, box)
+	fmt.Fprintln(d.out)
+}
+
+// ShowPhase displays a phase indicator like [1/2] Phase: Questions
+func (d *Display) ShowPhase(current, total int, label string) {
+	d.StopSpinner()
+
+	phaseLabel := StyleBold.Render(fmt.Sprintf("[%d/%d]", current, total))
+	phaseText := StyleMuted.Render(fmt.Sprintf("Phase: %s", label))
+	fmt.Fprintf(d.out, "%s %s\n", phaseLabel, phaseText)
+}
+
+// ShowQuestion displays a styled question box with options.
+func (d *Display) ShowQuestion(number int, text string, options []QuestionOption) {
+	d.StopSpinner()
+
+	// Build question content with number prefix
+	var content strings.Builder
+	content.WriteString(StyleBold.Render(fmt.Sprintf("Q%d: ", number)))
+	content.WriteString(text)
+	content.WriteString("\n")
+
+	for _, opt := range options {
+		label := opt.Label
+		if opt.Recommended {
+			label += " (Recommended)"
+		}
+		content.WriteString(fmt.Sprintf("\n   %s. %s", opt.Letter, label))
+	}
+
+	box := QuestionBox().Render(content.String())
+
+	fmt.Fprintln(d.out)
+	fmt.Fprintln(d.out, box)
+}
+
+// ShowCommandSuccess displays a success result box.
+// title: "PRD created", "Conversion complete", "PRD is valid"
+// details: "Path: ... • Duration: 23s"
+func (d *Display) ShowCommandSuccess(title, details string) {
+	d.StopSpinner()
+	elapsed := time.Since(d.loopStart).Round(time.Second)
+
+	successBadge := StyleSuccess.Render("✓")
+	titleText := StyleSuccess.Bold(true).Render(fmt.Sprintf("%s %s", successBadge, title))
+
+	var contentLines []string
+	contentLines = append(contentLines, titleText)
+
+	if details != "" {
+		detailText := StyleMuted.Render(fmt.Sprintf("%s  •  Duration: %s", details, elapsed))
+		contentLines = append(contentLines, detailText)
+	} else {
+		detailText := StyleMuted.Render(fmt.Sprintf("Duration: %s", elapsed))
+		contentLines = append(contentLines, detailText)
+	}
+
+	if d.totalTokens > 0 {
+		tokenText := StyleMuted.Render(fmt.Sprintf("Tokens: %s", formatTokens(d.totalTokens)))
+		contentLines[len(contentLines)-1] += "  •  " + tokenText
+	}
+
+	content := strings.Join(contentLines, "\n")
+	box := SuccessBox().Render(content)
+
+	fmt.Fprintln(d.out)
+	fmt.Fprintln(d.out, box)
+}
+
+// ValidationIssue represents a validation error or warning for display.
+type ValidationIssue struct {
+	StoryID string
+	Field   string
+	Message string
+}
+
+// ShowCommandError displays an error result box with structured errors and warnings.
+func (d *Display) ShowCommandError(title string, errors, warnings []ValidationIssue) {
+	d.StopSpinner()
+
+	errorBadge := StyleError.Render("✗")
+	titleText := StyleError.Bold(true).Render(fmt.Sprintf("%s %s", errorBadge, title))
+
+	summary := StyleMuted.Render(fmt.Sprintf("%d errors  •  %d warnings", len(errors), len(warnings)))
+
+	var content strings.Builder
+	content.WriteString(titleText)
+	content.WriteString("\n")
+	content.WriteString(summary)
+
+	if len(errors) > 0 {
+		content.WriteString("\n\n")
+		content.WriteString(StyleError.Render("Errors:"))
+		for _, e := range errors {
+			if e.StoryID != "" {
+				content.WriteString(fmt.Sprintf("\n  %s  %-10s %s",
+					StyleMuted.Render(e.StoryID),
+					StyleMuted.Render(e.Field),
+					e.Message))
+			} else {
+				content.WriteString(fmt.Sprintf("\n  %s", e.Message))
+			}
+		}
+	}
+
+	if len(warnings) > 0 {
+		content.WriteString("\n\n")
+		content.WriteString(StyleWarning.Render("Warnings:"))
+		for _, w := range warnings {
+			if w.StoryID != "" {
+				content.WriteString(fmt.Sprintf("\n  %s  %-10s %s",
+					StyleMuted.Render(w.StoryID),
+					StyleMuted.Render(w.Field),
+					w.Message))
+			} else {
+				content.WriteString(fmt.Sprintf("\n  %s", w.Message))
+			}
+		}
+	}
+
+	box := ErrorBox().Render(content.String())
+
+	fmt.Fprintln(d.out)
+	fmt.Fprintln(d.out, box)
+}
+
+// ShowNextSteps displays next step hints.
+func (d *Display) ShowNextSteps(steps []string) {
+	if len(steps) == 0 {
+		return
+	}
+
+	fmt.Fprintln(d.out)
+	fmt.Fprintln(d.out, StyleMuted.Render("Next:"))
+	for _, step := range steps {
+		fmt.Fprintf(d.out, "  %s\n", step)
+	}
+}
+
+
