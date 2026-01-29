@@ -183,9 +183,41 @@ func (h *streamHandler) Flush() {
 }
 
 // Prompt executes a single prompt and returns the text response.
+// This is a simpler interface for PRD generation, validation, etc.
 func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
-	// TODO: Implement in US-005
-	return "", nil
+	timeout := e.Timeout
+	if timeout == 0 {
+		timeout = engine.DefaultTimeout
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Build command - simpler args without --json for plain text output
+	args := []string{
+		"exec",
+		"--dangerously-bypass-approvals-and-sandbox",
+		prompt,
+	}
+	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		}
+		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	return stdout.String(), nil
 }
 
 // StreamPrompt executes a prompt with streaming display feedback.
