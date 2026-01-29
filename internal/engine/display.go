@@ -1,53 +1,34 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
-
-// Spinner frames using braille characters
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// Progress bar characters
-const (
-	barFilled = "█"
-	barEmpty  = "░"
-	barWidth  = 20
-)
-
-// Flusher is an optional interface for writers that support flushing.
-type Flusher interface {
-	Sync() error
-}
 
 // Display handles terminal output with spinners and formatted status.
 type Display struct {
-	out       io.Writer
-	mu        sync.Mutex
-	spinMu    sync.Mutex // Separate mutex for spinner to avoid deadlock
-	spinning  bool
-	spinStop  chan struct{}
-	spinDone  chan struct{}
-	spinMsg   string
-	lastTool  string
-	startTime time.Time
-	loopStart time.Time
-	toolStart time.Time // Track when current tool started
+	out        io.Writer
+	mu         sync.Mutex
+	spinMu     sync.Mutex // Separate mutex for spinner to avoid deadlock
+	spinning   bool
+	spinCtx    context.Context
+	spinCancel context.CancelFunc
+	spinDone   chan struct{}
+	spinMsg    string
+	lastTool   string
+	startTime  time.Time
+	loopStart  time.Time
 
 	// Stats tracking
 	totalTokens    int
 	iterationCount int
 	maxIterations  int
-}
-
-// flush attempts to flush the output if it supports it.
-func (d *Display) flush() {
-	if f, ok := d.out.(Flusher); ok {
-		f.Sync()
-	}
 }
 
 // NewDisplay creates a new display writer.
@@ -60,7 +41,7 @@ func NewDisplay(out io.Writer) *Display {
 	}
 }
 
-// StartSpinner begins the loading spinner with a message.
+// StartSpinner begins a gradient color-cycling spinner.
 func (d *Display) StartSpinner(msg string) {
 	d.spinMu.Lock()
 	if d.spinning {
@@ -69,36 +50,46 @@ func (d *Display) StartSpinner(msg string) {
 	}
 	d.spinning = true
 	d.spinMsg = msg
-	d.spinStop = make(chan struct{})
+	d.spinCtx, d.spinCancel = context.WithCancel(context.Background())
 	d.spinDone = make(chan struct{})
 	d.spinMu.Unlock()
 
 	go func() {
 		defer close(d.spinDone)
+
 		frame := 0
+		colorIdx := 0
 		first := true
 		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
 			select {
-			case <-d.spinStop:
-				// Move up, clear line, stay there for next output
-				fmt.Fprintf(d.out, "\033[1A\r\033[K")
-				d.flush()
+			case <-d.spinCtx.Done():
+				// Clear the spinner line
+				fmt.Fprint(d.out, "\033[2K\r")
 				return
 			case <-ticker.C:
-				elapsed := formatElapsed(time.Since(d.toolStart))
+				// Get current gradient color
+				color := SpinnerGradient[colorIdx%len(SpinnerGradient)]
+				spinnerStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+				spinChar := spinnerStyle.Render(SpinnerFrames[frame%len(SpinnerFrames)])
+
+				// Render message with muted style
+				msgText := StyleMuted.Render(msg)
+
+				line := fmt.Sprintf("   %s %s", spinChar, msgText)
+
 				if first {
-					// First frame: print spinner + newline (cursor goes below)
-					fmt.Fprintf(d.out, "   %s %s (%s)\n", spinnerFrames[frame], d.spinMsg, elapsed)
+					fmt.Fprint(d.out, line)
 					first = false
 				} else {
-					// Subsequent frames: move up, clear line, reprint + newline
-					fmt.Fprintf(d.out, "\033[1A\r\033[K   %s %s (%s)\n", spinnerFrames[frame], d.spinMsg, elapsed)
+					// Move to start of line, clear, and reprint
+					fmt.Fprintf(d.out, "\r\033[2K%s", line)
 				}
-				d.flush()
-				frame = (frame + 1) % len(spinnerFrames)
+
+				frame++
+				colorIdx++
 			}
 		}
 	}()
@@ -112,7 +103,7 @@ func (d *Display) StopSpinner() {
 		return
 	}
 	d.spinning = false
-	close(d.spinStop)
+	d.spinCancel()
 	d.spinMu.Unlock()
 	<-d.spinDone
 }
@@ -133,9 +124,9 @@ func (d *Display) ShowEvent(e *Event) {
 	switch e.Type {
 	case EventInit:
 		if e.Data.Model != "" {
-			fmt.Fprintf(d.out, "   model: %s\n", e.Data.Model)
+			modelText := StyleMuted.Render(fmt.Sprintf("   model: %s", e.Data.Model))
+			fmt.Fprintln(d.out, modelText)
 		}
-		d.toolStart = time.Now()
 		startSpinnerMsg = "thinking..."
 
 	case EventTool:
@@ -146,32 +137,53 @@ func (d *Display) ShowEvent(e *Event) {
 			return
 		}
 		d.lastTool = toolKey
-		d.toolStart = time.Now()
 
 		detail := e.Detail
 		if detail != "" {
 			detail = " " + detail
 		}
-		fmt.Fprintf(d.out, "   ▶ %s%s\n", e.Tool, detail)
+
+		// Color-code based on tool type
+		arrow := StyleToolArrow.Render()
+		var toolLine string
+		switch e.Tool {
+		case "read", "Read":
+			toolLine = StyleToolRead.Render(e.Tool + detail)
+		case "write", "Write", "Edit":
+			toolLine = StyleToolWrite.Render(e.Tool + detail)
+		case "bash", "Bash":
+			toolLine = StyleToolBash.Render(e.Tool + detail)
+		default:
+			toolLine = StyleInfo.Render(e.Tool + detail)
+		}
+		fmt.Fprintf(d.out, "   %s %s\n", arrow, toolLine)
 
 		// Start spinner while tool executes
-		startSpinnerMsg = truncate(e.Tool+detail, 40)
+		startSpinnerMsg = truncate(e.Tool+detail, GetTerminalWidth()/2)
 
 	case EventResult:
-		status := "[ok]"
-		if !e.Data.Success {
-			status = "[!!]"
-		}
 		duration := int(e.Data.DurationMs / 1000)
-		fmt.Fprintf(d.out, "   %s %ds", status, duration)
+		var statusBadge string
+		if e.Data.Success {
+			statusBadge = StyleSuccess.Render("✓")
+		} else {
+			statusBadge = StyleError.Render("✗")
+		}
+
+		timeText := StyleMuted.Render(fmt.Sprintf("%ds", duration))
+		fmt.Fprintf(d.out, "   %s %s", statusBadge, timeText)
+
 		if e.Data.Tokens > 0 {
 			d.totalTokens += e.Data.Tokens
-			fmt.Fprintf(d.out, " | %s tokens", formatTokens(e.Data.Tokens))
+			tokenText := StyleMuted.Render(fmt.Sprintf(" │ %s tokens", formatTokens(e.Data.Tokens)))
+			fmt.Fprint(d.out, tokenText)
 		}
 		fmt.Fprintln(d.out)
 
 	case EventError:
-		fmt.Fprintf(d.out, "   [!!] %s\n", e.Data.Message)
+		errorBadge := StyleError.Render("✗")
+		errorMsg := StyleError.Render(e.Data.Message)
+		fmt.Fprintf(d.out, "   %s %s\n", errorBadge, errorMsg)
 
 	case EventText:
 		// Text events are usually the final response, we don't show them inline
@@ -192,11 +204,14 @@ func (d *Display) ShowLoopHeader(engineName string, maxIterations int) {
 	d.maxIterations = maxIterations
 	d.loopStart = time.Now()
 
-	fmt.Fprintf(d.out, "┌─────────────────────────────────────────────────────┐\n")
-	fmt.Fprint(d.out, boxLine("Ralph Loop"))
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Engine: %s", engineName)))
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Max iterations: %d", maxIterations)))
-	fmt.Fprintf(d.out, "└─────────────────────────────────────────────────────┘\n\n")
+	title := StyleBold.Render("🤖 Ralph Loop")
+	details := StyleMuted.Render(fmt.Sprintf("%s  •  max %d iterations", engineName, maxIterations))
+
+	content := title + "\n" + details
+	box := HeaderBox().Render(content)
+
+	fmt.Fprintln(d.out, box)
+	fmt.Fprintln(d.out)
 }
 
 // StoryInfo holds information about the current story being worked on.
@@ -212,29 +227,36 @@ func (d *Display) ShowIterationHeader(current, max int, story *StoryInfo) {
 	d.startTime = time.Now()
 	d.lastTool = "" // Reset for new iteration
 
+	barWidth := IterationBarWidth
+
 	// Calculate progress
 	progress := float64(current-1) / float64(max)
-	filled := int(progress * barWidth)
+	filled := int(progress * float64(barWidth))
 	if filled > barWidth {
 		filled = barWidth
 	}
 
-	bar := strings.Repeat(barFilled, filled) + strings.Repeat(barEmpty, barWidth-filled)
-	elapsed := time.Since(d.loopStart).Round(time.Second)
+	// Build styled progress bar
+	filledBar := StyleProgressFilled.Render(strings.Repeat("█", filled))
+	emptyBar := StyleProgressEmpty.Render(strings.Repeat("░", barWidth-filled))
+	bar := filledBar + emptyBar
 
-	fmt.Fprintf(d.out, "───────────────────────────────────────────────────────\n")
-	fmt.Fprintf(d.out, "  Iteration %d/%d  [%s]  %s elapsed\n", current, max, bar, elapsed)
+	iterLabel := StyleBold.Render(fmt.Sprintf("[%d/%d]", current, max))
+
+	storyText := ""
 	if story != nil {
-		storyLine := fmt.Sprintf("  >>> %s: %s", story.ID, story.Title)
-		fmt.Fprintf(d.out, "%s\n", truncate(storyLine, 55))
+		storyText = fmt.Sprintf("  %s: %s",
+			StyleInfo.Render(story.ID),
+			truncate(story.Title, GetTerminalWidth()/2))
 	}
-	fmt.Fprintf(d.out, "───────────────────────────────────────────────────────\n")
+
+	fmt.Fprintf(d.out, "%s %s%s\n", iterLabel, bar, storyText)
 }
 
 // ShowIterationComplete displays iteration completion status.
 func (d *Display) ShowIterationComplete(current int) {
 	d.StopSpinner()
-	fmt.Fprintf(d.out, "   --- iteration %d complete ---\n\n", current)
+	fmt.Fprintln(d.out) // Blank line separates iterations
 }
 
 // ShowSuccess displays a success message with final stats.
@@ -242,14 +264,20 @@ func (d *Display) ShowSuccess(msg string) {
 	d.StopSpinner()
 	elapsed := time.Since(d.loopStart).Round(time.Second)
 
+	successBadge := StyleSuccess.Render("✓")
+	title := StyleSuccess.Bold(true).Render(fmt.Sprintf("%s %s", successBadge, msg))
+
+	stats := []string{
+		StyleMuted.Render(fmt.Sprintf("Iterations: %d", d.iterationCount)),
+		StyleMuted.Render(fmt.Sprintf("Total time: %s", elapsed)),
+		StyleMuted.Render(fmt.Sprintf("Total tokens: %s", formatTokens(d.totalTokens))),
+	}
+
+	content := title + "\n" + strings.Join(stats, "  •  ")
+	box := SuccessBox().Render(content)
+
 	fmt.Fprintln(d.out)
-	fmt.Fprintf(d.out, "┌─────────────────────────────────────────────────────┐\n")
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("[ok] %s", msg)))
-	fmt.Fprintf(d.out, "├─────────────────────────────────────────────────────┤\n")
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Iterations: %d", d.iterationCount)))
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Total time: %s", elapsed)))
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Total tokens: %s", formatTokens(d.totalTokens))))
-	fmt.Fprintf(d.out, "└─────────────────────────────────────────────────────┘\n")
+	fmt.Fprintln(d.out, box)
 }
 
 // ShowError displays an error message.
@@ -257,13 +285,25 @@ func (d *Display) ShowError(msg string) {
 	d.StopSpinner()
 	elapsed := time.Since(d.loopStart).Round(time.Second)
 
+	errorBadge := StyleError.Render("✗")
+	title := StyleError.Bold(true).Render(fmt.Sprintf("%s Error", errorBadge))
+
+	errorMsg := msg
+	if len(errorMsg) > 50 {
+		errorMsg = errorMsg[:47] + "..."
+	}
+
+	lines := []string{
+		title,
+		errorMsg,
+		StyleMuted.Render(fmt.Sprintf("After %d iterations (%s)", d.iterationCount, elapsed)),
+	}
+
+	content := strings.Join(lines, "\n")
+	box := ErrorBox().Render(content)
+
 	fmt.Fprintln(d.out)
-	fmt.Fprintf(d.out, "┌─────────────────────────────────────────────────────┐\n")
-	fmt.Fprint(d.out, boxLine("[!!] Error"))
-	fmt.Fprintf(d.out, "├─────────────────────────────────────────────────────┤\n")
-	fmt.Fprint(d.out, boxLine(msg))
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("After %d iterations (%s)", d.iterationCount, elapsed)))
-	fmt.Fprintf(d.out, "└─────────────────────────────────────────────────────┘\n")
+	fmt.Fprintln(d.out, box)
 }
 
 // ShowMaxIterations displays max iterations reached message.
@@ -271,14 +311,20 @@ func (d *Display) ShowMaxIterations() {
 	d.StopSpinner()
 	elapsed := time.Since(d.loopStart).Round(time.Second)
 
+	warnBadge := StyleWarning.Render("⚠")
+	title := StyleWarning.Bold(true).Render(fmt.Sprintf("%s Max iterations reached", warnBadge))
+
+	stats := []string{
+		StyleMuted.Render(fmt.Sprintf("Completed: %d/%d iterations", d.iterationCount, d.maxIterations)),
+		StyleMuted.Render(fmt.Sprintf("Total time: %s", elapsed)),
+		StyleMuted.Render(fmt.Sprintf("Total tokens: %s", formatTokens(d.totalTokens))),
+	}
+
+	content := title + "\n" + strings.Join(stats, "  •  ")
+	box := WarningBox().Render(content)
+
 	fmt.Fprintln(d.out)
-	fmt.Fprintf(d.out, "┌─────────────────────────────────────────────────────┐\n")
-	fmt.Fprint(d.out, boxLine("[--] Max iterations reached"))
-	fmt.Fprintf(d.out, "├─────────────────────────────────────────────────────┤\n")
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Completed: %d/%d iterations", d.iterationCount, d.maxIterations)))
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Total time: %s", elapsed)))
-	fmt.Fprint(d.out, boxLine(fmt.Sprintf("Total tokens: %s", formatTokens(d.totalTokens))))
-	fmt.Fprintf(d.out, "└─────────────────────────────────────────────────────┘\n")
+	fmt.Fprintln(d.out, box)
 }
 
 // ShowInfo displays an info message.
@@ -288,37 +334,11 @@ func (d *Display) ShowInfo(format string, args ...interface{}) {
 
 // ShowRetry displays retry information.
 func (d *Display) ShowRetry(attempt, max int, delay time.Duration) {
-	fmt.Fprintf(d.out, "   ... retrying in %s (attempt %d/%d)\n", delay, attempt, max)
+	retryText := StyleWarning.Render(fmt.Sprintf("... retrying in %s (attempt %d/%d)", delay, attempt, max))
+	fmt.Fprintf(d.out, "   %s\n", retryText)
 }
 
 // Helper functions
-
-// Box drawing constants
-const boxWidth = 53 // Inner width between │ symbols
-
-// boxLine creates a properly padded box line: │  content  │
-func boxLine(content string) string {
-	// Pad or truncate to fit box width
-	if len(content) > boxWidth-2 {
-		content = content[:boxWidth-5] + "..."
-	}
-	padding := boxWidth - 2 - len(content)
-	if padding < 0 {
-		padding = 0
-	}
-	return fmt.Sprintf("│  %s%s│\n", content, strings.Repeat(" ", padding))
-}
-
-// formatElapsed formats duration with fixed width (always 6 chars like " 1.04s")
-func formatElapsed(d time.Duration) string {
-	secs := d.Seconds()
-	if secs < 10 {
-		return fmt.Sprintf("%5.2fs", secs) // " 1.04s"
-	} else if secs < 100 {
-		return fmt.Sprintf("%5.1fs", secs) // " 10.0s"
-	}
-	return fmt.Sprintf("%5.0fs", secs) // "  100s"
-}
 
 func formatTokens(n int) string {
 	if n >= 1000000 {
