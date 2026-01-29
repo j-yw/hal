@@ -16,6 +16,7 @@ func LoadSkill(name string) (string, error) {
 }
 
 // InstallSkills writes embedded skills to .goralph/skills/ directory.
+// Existing skill files are preserved to keep user customizations.
 func InstallSkills(projectDir string) error {
 	skillsDir := filepath.Join(projectDir, ".goralph", "skills")
 
@@ -31,6 +32,10 @@ func InstallSkills(projectDir string) error {
 		}
 
 		filePath := filepath.Join(dir, "SKILL.md")
+		if _, err := os.Stat(filePath); err == nil {
+			// File exists, preserve user customizations
+			continue
+		}
 		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to write skill %s: %w", name, err)
 		}

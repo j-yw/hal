@@ -41,28 +41,31 @@ func runInit(cmd *cobra.Command, args []string) error {
 	archiveDir := filepath.Join(configDir, "archive")
 	projectDir := "."
 
-	// Check if already initialized
-	if _, err := os.Stat(configDir); err == nil {
-		return fmt.Errorf(".goralph/ already exists")
-	}
-
-	// Create directories
+	// Create directories (MkdirAll is idempotent - won't fail if exists)
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
 
-	// Create default files from templates
+	// Create default files from templates only if they don't exist
+	var created, skipped []string
 	for filename, content := range template.DefaultFiles() {
 		filePath := filepath.Join(configDir, filename)
+		if _, err := os.Stat(filePath); err == nil {
+			skipped = append(skipped, filename)
+			continue
+		}
 		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", filename, err)
 		}
+		created = append(created, filename)
 	}
 
-	// Create .gitkeep in archive
+	// Create .gitkeep in archive only if it doesn't exist
 	gitkeepPath := filepath.Join(archiveDir, ".gitkeep")
-	if err := os.WriteFile(gitkeepPath, []byte(""), 0644); err != nil {
-		return fmt.Errorf("failed to write .gitkeep: %w", err)
+	if _, err := os.Stat(gitkeepPath); os.IsNotExist(err) {
+		if err := os.WriteFile(gitkeepPath, []byte(""), 0644); err != nil {
+			return fmt.Errorf("failed to write .gitkeep: %w", err)
+		}
 	}
 
 	// Install embedded skills to .goralph/skills/
@@ -75,17 +78,31 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Initialized .goralph/")
 	fmt.Println()
-	fmt.Println("Created:")
-	fmt.Println("  .goralph/prompt.md       - Agent instructions (customize for your project)")
-	fmt.Println("  .goralph/progress.txt    - Progress log for learnings")
-	fmt.Println("  .goralph/archive/        - Archived previous runs")
-	fmt.Println("  .goralph/skills/         - PRD and Ralph skills")
-	fmt.Println("  .claude/skills/          - Symlinks for Claude Code discovery")
-	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Println("  1. Run: goralph plan \"feature description\" to generate a PRD")
-	fmt.Println("  2. Or create .goralph/prd.json manually")
-	fmt.Println("  3. Run: goralph run")
+
+	if len(created) > 0 {
+		fmt.Println("Created:")
+		for _, f := range created {
+			fmt.Printf("  .goralph/%s\n", f)
+		}
+	}
+
+	if len(skipped) > 0 {
+		fmt.Println("Already existed (preserved):")
+		for _, f := range skipped {
+			fmt.Printf("  .goralph/%s\n", f)
+		}
+	}
+
+	if len(created) == 0 && len(skipped) > 0 {
+		fmt.Println()
+		fmt.Println("All files already exist. No changes made.")
+	} else {
+		fmt.Println()
+		fmt.Println("Next steps:")
+		fmt.Println("  1. Run: goralph plan \"feature description\" to generate a PRD")
+		fmt.Println("  2. Or create .goralph/prd.json manually")
+		fmt.Println("  3. Run: goralph run")
+	}
 
 	return nil
 }
