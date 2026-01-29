@@ -59,10 +59,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Validating %s using %s engine...\n\n", prdPath, eng.Name())
-
 	// Create display for streaming feedback
 	display := engine.NewDisplay(os.Stdout)
+
+	// Show command header
+	display.ShowCommandHeader("Validate", prdPath, eng.Name())
 
 	// Validate
 	ctx := context.Background()
@@ -71,10 +72,19 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Display result
-	fmt.Print(prd.FormatValidationResult(result))
-
-	if !result.Valid {
+	// Display result using styled display
+	if result.Valid {
+		display.ShowCommandSuccess("PRD is valid", "All checks passed")
+	} else {
+		errors := make([]engine.ValidationIssue, len(result.Errors))
+		for i, e := range result.Errors {
+			errors[i] = engine.ValidationIssue{StoryID: e.StoryID, Field: e.Field, Message: e.Message}
+		}
+		warnings := make([]engine.ValidationIssue, len(result.Warnings))
+		for i, w := range result.Warnings {
+			warnings[i] = engine.ValidationIssue{StoryID: w.StoryID, Field: w.Field, Message: w.Message}
+		}
+		display.ShowCommandError("Validation failed", errors, warnings)
 		os.Exit(1)
 	}
 

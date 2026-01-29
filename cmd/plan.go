@@ -72,11 +72,11 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Planning feature: %s\n", description)
-	fmt.Printf("Using %s engine\n\n", eng.Name())
-
 	// Create display for streaming feedback
 	display := engine.NewDisplay(os.Stdout)
+
+	// Show command header
+	display.ShowCommandHeader("Plan", description, eng.Name())
 
 	// Generate PRD
 	ctx := context.Background()
@@ -85,16 +85,17 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("PRD generation failed: %w", err)
 	}
 
-	fmt.Printf("\nPRD written to: %s\n", outputPath)
+	// Show success
+	display.ShowCommandSuccess("PRD created", fmt.Sprintf("Path: %s", outputPath))
 
+	// Show next steps
 	if planFormatFlag == "json" {
-		fmt.Println("\nNext steps:")
-		fmt.Println("  goralph run    # Execute the stories")
+		display.ShowNextSteps([]string{"goralph run    # Execute the stories"})
 	} else {
-		fmt.Println("\nNext steps:")
-		fmt.Println("  1. Review the PRD")
-		fmt.Println("  2. Run: goralph convert " + outputPath)
-		fmt.Println("  3. Run: goralph run")
+		display.ShowNextSteps([]string{
+			fmt.Sprintf("goralph convert %s", outputPath),
+			"goralph run",
+		})
 	}
 
 	return nil

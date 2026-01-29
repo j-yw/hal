@@ -22,9 +22,12 @@ var (
 )
 
 var convertCmd = &cobra.Command{
-	Use:   "convert <markdown-prd>",
+	Use:   "convert [markdown-prd]",
 	Short: "Convert markdown PRD to JSON",
 	Long: `Convert a markdown PRD file to prd.json format using the ralph skill.
+
+Without arguments, automatically finds prd-*.md files in .goralph/ directory.
+With a path argument, uses that file directly.
 
 The conversion uses an AI engine to parse the markdown and generate
 properly-sized user stories with verifiable acceptance criteria.
@@ -33,11 +36,12 @@ If an existing prd.json exists with a different feature, it will be
 archived to .goralph/archive/ before the new one is written.
 
 Examples:
-  goralph convert tasks/prd-auth.md              # Output to .goralph/prd.json
+  goralph convert                             # Auto-discover PRD in .goralph/
+  goralph convert tasks/prd-auth.md           # Explicit path
   goralph convert docs/feature.md -o custom.json # Custom output path
-  goralph convert tasks/prd.md --validate        # Also validate after conversion
-  goralph convert tasks/prd.md -e claude         # Use Claude engine`,
-	Args: cobra.ExactArgs(1),
+  goralph convert tasks/prd.md --validate     # Also validate after conversion
+  goralph convert tasks/prd.md -e claude      # Use Claude engine`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runConvert,
 }
 
@@ -49,12 +53,15 @@ func init() {
 }
 
 func runConvert(cmd *cobra.Command, args []string) error {
-	mdPath := args[0]
-
-	// Check markdown file exists
-	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
-		return fmt.Errorf("markdown PRD not found: %s", mdPath)
+	var mdPath string
+	if len(args) > 0 {
+		mdPath = args[0]
+		// Check markdown file exists when explicit path provided
+		if _, err := os.Stat(mdPath); os.IsNotExist(err) {
+			return fmt.Errorf("markdown PRD not found: %s", mdPath)
+		}
 	}
+	// mdPath = "" means auto-discover via skill
 
 	// Determine output path
 	outPath := convertOutputFlag
@@ -68,10 +75,15 @@ func runConvert(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Converting %s using %s engine...\n", mdPath, eng.Name())
-
 	// Create display for streaming feedback
 	display := engine.NewDisplay(os.Stdout)
+
+	// Show command header
+	if mdPath != "" {
+		display.ShowCommandHeader("Convert", fmt.Sprintf("%s → prd.json", mdPath), eng.Name())
+	} else {
+		display.ShowCommandHeader("Convert", "auto-discover → prd.json", eng.Name())
+	}
 
 	// Convert
 	ctx := context.Background()
@@ -79,18 +91,29 @@ func runConvert(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("conversion failed: %w", err)
 	}
 
-	fmt.Printf("Wrote %s\n", outPath)
+	// Show success
+	display.ShowCommandSuccess("Conversion complete", fmt.Sprintf("Output: %s", outPath))
 
 	// Optionally validate
 	if convertValidateFlag {
-		fmt.Println()
-		fmt.Println("Validating...")
+		display.ShowPhase(2, 2, "Validate")
 		result, err := prd.ValidateWithEngine(ctx, eng, outPath, display)
 		if err != nil {
 			return fmt.Errorf("validation failed: %w", err)
 		}
-		fmt.Print(prd.FormatValidationResult(result))
-		if !result.Valid {
+
+		if result.Valid {
+			display.ShowCommandSuccess("PRD is valid", "All checks passed")
+		} else {
+			errors := make([]engine.ValidationIssue, len(result.Errors))
+			for i, e := range result.Errors {
+				errors[i] = engine.ValidationIssue{StoryID: e.StoryID, Field: e.Field, Message: e.Message}
+			}
+			warnings := make([]engine.ValidationIssue, len(result.Warnings))
+			for i, w := range result.Warnings {
+				warnings[i] = engine.ValidationIssue{StoryID: w.StoryID, Field: w.Field, Message: w.Message}
+			}
+			display.ShowCommandError("Validation failed", errors, warnings)
 			os.Exit(1)
 		}
 	}

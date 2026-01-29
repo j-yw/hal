@@ -28,20 +28,24 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 	projectInfo := getProjectContext()
 
 	// Phase 1: Generate clarifying questions
-	fmt.Println("Analyzing feature and generating questions...")
+	if display != nil {
+		display.ShowPhase(1, 2, "Questions")
+	}
 	questions, err := generateQuestions(ctx, eng, prdSkill, description, projectInfo, display)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate questions: %w", err)
 	}
 
-	// Collect answers from user
-	answers, err := collectAnswers(questions)
+	// Collect answers from user (uses styled display)
+	answers, err := collectAnswersStyled(questions, display)
 	if err != nil {
 		return "", fmt.Errorf("failed to collect answers: %w", err)
 	}
 
 	// Phase 2: Generate PRD
-	fmt.Println("\nGenerating PRD...")
+	if display != nil {
+		display.ShowPhase(2, 2, "Generate")
+	}
 	prdContent, err := generatePRD(ctx, eng, prdSkill, description, answers, projectInfo, display)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate PRD: %w", err)
@@ -165,20 +169,34 @@ func parseQuestionsResponse(response string) ([]Question, error) {
 	return qr.Questions, nil
 }
 
-func collectAnswers(questions []Question) (map[int]string, error) {
+// collectAnswersStyled collects answers using styled display boxes.
+func collectAnswersStyled(questions []Question, display *engine.Display) (map[int]string, error) {
 	answers := make(map[int]string)
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println("\nPlease answer the following questions:")
-	fmt.Println("(Enter letter like 'A' or 'B', or type your own answer for 'Other')")
-	fmt.Println()
-
 	for _, q := range questions {
-		fmt.Printf("%d. %s\n", q.Number, q.Text)
-		for _, opt := range q.Options {
-			fmt.Printf("   %s. %s\n", opt.Letter, opt.Label)
+		// Convert options to display format
+		displayOpts := make([]engine.QuestionOption, len(q.Options))
+		for i, opt := range q.Options {
+			displayOpts[i] = engine.QuestionOption{
+				Letter:      opt.Letter,
+				Label:       opt.Label,
+				Recommended: strings.Contains(strings.ToLower(opt.Label), "recommend"),
+			}
 		}
-		fmt.Print("\nYour answer: ")
+
+		// Show styled question box
+		if display != nil {
+			display.ShowQuestion(q.Number, q.Text, displayOpts)
+		} else {
+			// Fallback to plain display
+			fmt.Printf("\n%d. %s\n", q.Number, q.Text)
+			for _, opt := range q.Options {
+				fmt.Printf("   %s. %s\n", opt.Letter, opt.Label)
+			}
+		}
+
+		fmt.Print("Your answer: ")
 
 		input, err := reader.ReadString('\n')
 		if err != nil {
@@ -212,6 +230,7 @@ func collectAnswers(questions []Question) (map[int]string, error) {
 
 	return answers, nil
 }
+
 
 func generatePRD(ctx context.Context, eng engine.Engine, skill, description string, answers map[int]string, projectInfo string, display *engine.Display) (string, error) {
 	// Format answers

@@ -14,27 +14,39 @@ import (
 )
 
 // ConvertWithEngine converts a markdown PRD to JSON using the ralph skill via an engine.
+// If mdPath is empty, the skill instructs Claude to auto-discover PRD files in .goralph/
 func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, display *engine.Display) error {
-	// Load markdown PRD content
-	mdContent, err := os.ReadFile(mdPath)
-	if err != nil {
-		return fmt.Errorf("failed to read markdown PRD: %w", err)
-	}
-
 	// Load ralph skill content
 	ralphSkill, err := skills.LoadSkill("ralph")
 	if err != nil {
 		return fmt.Errorf("failed to load ralph skill: %w", err)
 	}
 
-	// Archive existing PRD if different feature
-	if err := archiveExistingPRD(outPath, mdPath); err != nil {
-		// Log warning but continue
-		fmt.Fprintf(os.Stderr, "warning: failed to archive existing PRD: %v\n", err)
+	// Record output file modification time before conversion (if exists)
+	var preModTime time.Time
+	if stat, err := os.Stat(outPath); err == nil {
+		preModTime = stat.ModTime()
 	}
 
-	// Build conversion prompt
-	prompt := buildConversionPrompt(ralphSkill, string(mdContent))
+	var prompt string
+	if mdPath != "" {
+		// Explicit path provided - read and embed content
+		mdContent, err := os.ReadFile(mdPath)
+		if err != nil {
+			return fmt.Errorf("failed to read markdown PRD: %w", err)
+		}
+
+		// Archive existing PRD if different feature
+		if err := archiveExistingPRD(outPath, mdPath); err != nil {
+			// Log warning but continue
+			fmt.Fprintf(os.Stderr, "warning: failed to archive existing PRD: %v\n", err)
+		}
+
+		prompt = buildConversionPrompt(ralphSkill, string(mdContent))
+	} else {
+		// Auto-discover mode - skill tells Claude to find the file
+		prompt = buildDiscoveryPrompt(ralphSkill)
+	}
 
 	// Execute prompt
 	var response string
@@ -48,7 +60,36 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		return fmt.Errorf("engine prompt failed: %w", err2)
 	}
 
-	// Parse and validate JSON response
+	// Check if Claude wrote the output file directly using tools
+	// (file exists and was modified after we started)
+	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
+		// Claude wrote the file - validate it and return success
+		content, err := os.ReadFile(outPath)
+		if err != nil {
+			return fmt.Errorf("failed to read Claude-written prd.json: %w", err)
+		}
+
+		// Validate JSON structure
+		var prd engine.PRD
+		if err := json.Unmarshal(content, &prd); err != nil {
+			return fmt.Errorf("Claude wrote invalid JSON: %w", err)
+		}
+
+		// Re-marshal with proper formatting to ensure consistent output
+		formatted, err := json.MarshalIndent(prd, "", "  ")
+		if err != nil {
+			return err
+		}
+
+		// Write formatted version back
+		if err := os.WriteFile(outPath, formatted, 0644); err != nil {
+			return fmt.Errorf("failed to write formatted prd.json: %w", err)
+		}
+
+		return nil
+	}
+
+	// Fallback: Parse and validate JSON from text response
 	prdJSON, err := extractJSONFromResponse(response)
 	if err != nil {
 		return fmt.Errorf("failed to extract JSON from response: %w", err)
@@ -66,6 +107,50 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 	}
 
 	return nil
+}
+
+func buildDiscoveryPrompt(skill string) string {
+	return fmt.Sprintf(`You are a PRD converter. Follow the ralph skill instructions below.
+
+<skill>
+%s
+</skill>
+
+Find the PRD markdown file in .goralph/ (look for prd-*.md files) and convert it to prd.json following the skill rules.
+
+Rules for finding the PRD file:
+1. Look in .goralph/ directory for files matching prd-*.md
+2. If one file exists, use it
+3. If multiple files exist, use the most recently modified one
+4. If no files found, respond with an error message
+
+After finding the file, convert it following the skill rules:
+1. Each story must be completable in ONE iteration (split large stories)
+2. Stories ordered by dependency (schema → backend → UI)
+3. Every story has "Typecheck passes" as acceptance criteria
+4. UI stories have "Verify in browser using dev-browser skill"
+5. Acceptance criteria are verifiable (not vague)
+6. IDs are sequential (US-001, US-002, etc.)
+7. Priority based on dependency order
+8. All stories have passes: false and empty notes
+
+Return ONLY the JSON object (no markdown, no explanation). The format must be:
+{
+  "project": "ProjectName",
+  "branchName": "ralph/feature-name",
+  "description": "Feature description",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Story title",
+      "description": "As a user, I want X so that Y",
+      "acceptanceCriteria": ["Criterion 1", "Criterion 2", "Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}`, skill)
 }
 
 func buildConversionPrompt(skill, mdContent string) string {

@@ -15,6 +15,7 @@ type Issue struct {
 	Severity string `json:"severity"` // "error" or "warning"
 }
 
+
 // Question represents a clarifying question during PRD generation.
 type Question struct {
 	Number   int      `json:"number"`

@@ -11,7 +11,12 @@ Converts existing PRDs to the prd.json format that Ralph uses for autonomous exe
 
 ## The Job
 
-Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph directory.
+1. **Find the PRD file:** Look in `.goralph/` for `prd-*.md` files
+   - If one file exists, use it
+   - If multiple files exist, use the most recently modified one
+   - If no files found, inform the user to run `goralph plan` first
+
+2. Convert the PRD to `prd.json` in `.goralph/`
 
 ---
 
