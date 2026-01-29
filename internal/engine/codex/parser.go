@@ -8,7 +8,9 @@ import (
 )
 
 // Parser parses Codex CLI JSONL output format.
-type Parser struct{}
+type Parser struct {
+	commandFailed bool
+}
 
 // NewParser creates a new Codex output parser.
 func NewParser() *Parser {
@@ -86,6 +88,7 @@ func (p *Parser) parseCommandExecution(item map[string]interface{}, eventType st
 	// If item.completed with exit_code != 0, it's an error
 	if eventType == "item.completed" {
 		if exitCode, ok := item["exit_code"].(float64); ok && exitCode != 0 {
+			p.commandFailed = true
 			event.Type = engine.EventError
 			event.Data.Message = "command failed"
 		}
@@ -133,10 +136,13 @@ func (p *Parser) parseTurnCompleted(raw map[string]interface{}) *engine.Event {
 		}
 	}
 
+	success := !p.commandFailed
+	p.commandFailed = false
+
 	return &engine.Event{
 		Type: engine.EventResult,
 		Data: engine.EventData{
-			Success: true, // Codex doesn't have explicit success/failure in turn.completed
+			Success: success,
 			Tokens:  tokens,
 		},
 	}

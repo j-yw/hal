@@ -172,6 +172,23 @@ func (r *Runner) Run(ctx context.Context) Result {
 		}
 
 		if execResult.Complete {
+			// Verify that all stories actually have passes: true before accepting COMPLETE
+			// This guards against LLM reasoning errors where it says COMPLETE prematurely
+			if prd, err := engine.LoadPRD(r.config.Dir); err == nil {
+				if story := prd.CurrentStory(); story != nil {
+					// There are still pending stories - LLM said COMPLETE incorrectly
+					r.display.ShowInfo("   ⚠ Agent signaled COMPLETE but %s is still pending\n", story.ID)
+					r.display.ShowIterationComplete(i)
+					// Continue to next iteration
+					select {
+					case <-ctx.Done():
+						result.Error = ctx.Err()
+						return result
+					case <-time.After(2 * time.Second):
+					}
+					continue
+				}
+			}
 			r.display.ShowSuccess("All tasks complete!")
 			result.Complete = true
 			result.Success = true

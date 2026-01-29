@@ -214,6 +214,24 @@ func TestParser_ParseLine_TurnCompleted(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_TurnCompleted_FailurePropagates(t *testing.T) {
+	p := NewParser()
+	failLine := `{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1}}`
+	p.ParseLine([]byte(failLine))
+
+	line := `{"type":"turn.completed","usage":{"input_tokens":1}}`
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventResult {
+		t.Errorf("expected Type=EventResult, got %v", event.Type)
+	}
+	if event.Data.Success {
+		t.Error("expected Success=false after command failure, got true")
+	}
+}
+
 func TestParser_ParseLine_TurnCompleted_NoUsage(t *testing.T) {
 	p := NewParser()
 	line := `{"type":"turn.completed"}`
