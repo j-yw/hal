@@ -60,7 +60,7 @@ func (d *Display) StartSpinner(msg string) {
 		frame := 0
 		colorIdx := 0
 		first := true
-		ticker := time.NewTicker(80 * time.Millisecond)
+		ticker := time.NewTicker(66 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {

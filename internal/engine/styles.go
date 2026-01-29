@@ -86,25 +86,36 @@ const (
 	IterationBarWidth = 10 // Width of progress bar in iteration headers
 )
 
-// SpinnerGradient defines colors for the gradient spinner (cyan → purple → pink → cyan)
+// SpinnerGradient defines colors for the gradient spinner (neon cyberpunk vibes)
 var SpinnerGradient = []lipgloss.Color{
-	lipgloss.Color("#00D7FF"), // cyan
-	lipgloss.Color("#00AFFF"),
-	lipgloss.Color("#5F87FF"),
-	lipgloss.Color("#875FFF"), // purple
-	lipgloss.Color("#AF5FFF"),
-	lipgloss.Color("#D75FAF"),
-	lipgloss.Color("#FF5F87"), // pink
-	lipgloss.Color("#FF87AF"),
-	lipgloss.Color("#D75FAF"),
-	lipgloss.Color("#AF5FFF"),
-	lipgloss.Color("#875FFF"), // back to purple
-	lipgloss.Color("#5F87FF"),
-	lipgloss.Color("#00AFFF"),
+	lipgloss.Color("#00FFFF"), // electric cyan
+	lipgloss.Color("#00D4FF"),
+	lipgloss.Color("#00AAFF"),
+	lipgloss.Color("#0080FF"),
+	lipgloss.Color("#5555FF"), // electric blue
+	lipgloss.Color("#8000FF"),
+	lipgloss.Color("#AA00FF"), // violet
+	lipgloss.Color("#D400FF"),
+	lipgloss.Color("#FF00FF"), // magenta
+	lipgloss.Color("#FF00D4"),
+	lipgloss.Color("#FF00AA"), // hot pink
+	lipgloss.Color("#FF0080"),
+	lipgloss.Color("#FF0055"),
+	lipgloss.Color("#FF0080"),
+	lipgloss.Color("#FF00AA"), // back up
+	lipgloss.Color("#FF00D4"),
+	lipgloss.Color("#FF00FF"),
+	lipgloss.Color("#D400FF"),
+	lipgloss.Color("#AA00FF"),
+	lipgloss.Color("#8000FF"),
+	lipgloss.Color("#5555FF"),
+	lipgloss.Color("#0080FF"),
+	lipgloss.Color("#00AAFF"),
+	lipgloss.Color("#00D4FF"),
 }
 
-// SpinnerFrames are braille characters for smooth animation
-var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+// SpinnerFrames are snake characters for smooth rotating animation
+var SpinnerFrames = []string{"╰", "╯", "╮", "╭"}
 
 // QuestionBox returns a styled box for Q&A.
 func QuestionBox() lipgloss.Style {
