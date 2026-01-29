@@ -3,6 +3,7 @@ package codex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
@@ -221,7 +222,130 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 }
 
 // StreamPrompt executes a prompt with streaming display feedback.
+// It uses --json flag for JSONL output to show progress via the display
+// while collecting text content from assistant messages for return.
 func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
-	// TODO: Implement in US-006
-	return "", nil
+	timeout := e.Timeout
+	if timeout == 0 {
+		timeout = engine.DefaultTimeout
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Use BuildArgs which includes --json flag for streaming
+	args := e.BuildArgs(prompt)
+	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	var stdout, stderr bytes.Buffer
+	parser := NewParser()
+	collector := &textCollectingStreamHandler{
+		parser:  parser,
+		display: display,
+	}
+
+	cmd.Stdout = io.MultiWriter(collector, &stdout)
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	collector.Flush()
+
+	if display != nil {
+		display.StopSpinner()
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		}
+		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	return collector.Text(), nil
+}
+
+// textCollectingStreamHandler streams events to the display while
+// collecting text content from Codex agent_message events.
+type textCollectingStreamHandler struct {
+	parser  *Parser
+	display *engine.Display
+	buffer  []byte
+	text    strings.Builder
+}
+
+func (h *textCollectingStreamHandler) Write(p []byte) (n int, err error) {
+	h.buffer = append(h.buffer, p...)
+
+	for {
+		idx := bytes.IndexByte(h.buffer, '\n')
+		if idx == -1 {
+			break
+		}
+
+		line := h.buffer[:idx]
+		h.buffer = h.buffer[idx+1:]
+
+		h.processLine(line)
+	}
+
+	return len(p), nil
+}
+
+func (h *textCollectingStreamHandler) processLine(line []byte) {
+	// Show event on display
+	event := h.parser.ParseLine(line)
+	if h.display != nil {
+		h.display.ShowEvent(event)
+	}
+
+	// Also extract text content from agent messages
+	h.collectText(line)
+}
+
+func (h *textCollectingStreamHandler) collectText(line []byte) {
+	trimmed := trimSpace(line)
+	if len(trimmed) == 0 {
+		return
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return
+	}
+
+	eventType, _ := raw["type"].(string)
+	// Codex uses item.completed for completed agent messages
+	if eventType != "item.completed" {
+		return
+	}
+
+	item, ok := raw["item"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	itemType, _ := item["type"].(string)
+	if itemType != "agent_message" {
+		return
+	}
+
+	// Extract text from agent_message
+	if text, _ := item["text"].(string); text != "" {
+		h.text.WriteString(text)
+	}
+}
+
+func (h *textCollectingStreamHandler) Flush() {
+	if len(h.buffer) > 0 {
+		h.processLine(h.buffer)
+		h.buffer = nil
+	}
+}
+
+func (h *textCollectingStreamHandler) Text() string {
+	return h.text.String()
 }
