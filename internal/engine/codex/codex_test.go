@@ -309,12 +309,40 @@ func TestParser_ParseLine_UnknownItemType(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_UnknownItemType_FailedStatus(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"item.completed","item":{"type":"file_change","status":"failed","error":{"message":"patch failed"}}}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventError {
+		t.Errorf("expected Type=EventError, got %v", event.Type)
+	}
+	if event.Data.Message != "patch failed" {
+		t.Errorf("expected Message=\"patch failed\", got %q", event.Data.Message)
+	}
+	if !p.HasFailure() {
+		t.Error("expected parser failure to be set")
+	}
+}
+
 func TestEngine_parseSuccess_FailureWithoutTurnCompleted(t *testing.T) {
 	e := New()
 	output := `{"type":"error","message":"auth failed"}`
 
 	if e.parseSuccess(output) {
 		t.Error("expected parseSuccess to return false for error-only output")
+	}
+}
+
+func TestEngine_parseSuccess_ItemFailureWithoutTurnCompleted(t *testing.T) {
+	e := New()
+	output := `{"type":"item.completed","item":{"type":"file_change","status":"failed"}}`
+
+	if e.parseSuccess(output) {
+		t.Error("expected parseSuccess to return false for failed item output")
 	}
 }
 

@@ -64,15 +64,29 @@ func (p *Parser) parseItem(raw map[string]interface{}) *engine.Event {
 	}
 
 	itemType, _ := item["type"].(string)
+	eventType, _ := raw["type"].(string)
 
 	switch itemType {
 	case "command_execution":
-		return p.parseCommandExecution(item, raw["type"].(string))
+		return p.parseCommandExecution(item, eventType)
 	case "agent_message":
 		return p.parseAgentMessage(item)
 	case "reasoning":
 		return p.parseReasoning(item)
 	default:
+		if eventType == "item.completed" && itemStatusFailed(item) {
+			p.commandFailed = true
+			fallback := "item failed"
+			if itemType != "" {
+				fallback = itemType + " failed"
+			}
+			return &engine.Event{
+				Type: engine.EventError,
+				Data: engine.EventData{
+					Message: itemFailureMessage(item, fallback),
+				},
+			}
+		}
 		return nil
 	}
 }
@@ -96,6 +110,10 @@ func (p *Parser) parseCommandExecution(item map[string]interface{}, eventType st
 			p.commandFailed = true
 			event.Type = engine.EventError
 			event.Data.Message = "command failed"
+		} else if itemStatusFailed(item) {
+			p.commandFailed = true
+			event.Type = engine.EventError
+			event.Data.Message = itemFailureMessage(item, "command failed")
 		}
 	}
 
@@ -189,6 +207,19 @@ func trimSpace(b []byte) []byte {
 
 func isSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n'
+}
+
+func itemStatusFailed(item map[string]interface{}) bool {
+	status, _ := item["status"].(string)
+	return strings.EqualFold(status, "failed")
+}
+
+func itemFailureMessage(item map[string]interface{}, fallback string) string {
+	message := extractErrorMessage(item)
+	if message == "" {
+		message = fallback
+	}
+	return message
 }
 
 func truncate(s string, max int) string {
