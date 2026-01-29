@@ -1,6 +1,6 @@
 # GoRalph
 
-Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story one iteration at a time using AI coding agents (Claude Code, Amp).
+Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story one iteration at a time using AI coding agents (Claude Code).
 
 ## How It Works
 
@@ -25,9 +25,7 @@ make build
 make install
 ```
 
-Requires Go 1.25+ and one of:
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- [Amp](https://amp.dev/) CLI
+Requires Go 1.25+ and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI.
 
 ## Quick Start
 
@@ -78,15 +76,15 @@ Good for quick, well-defined features. For anything nuanced, prefer the editor.
 
 ### Output formats
 
-By default, the PRD is written as markdown to `tasks/prd-<feature-name>.md`. You can review and edit it before converting.
+By default, the PRD is written as markdown to `.goralph/prd-<feature-name>.md`. You can review and edit it before converting.
 
 ```bash
 # Default: markdown output, then convert separately
 goralph plan "notifications"
-goralph convert tasks/prd-notifications.md
+goralph convert .goralph/prd-notifications.md
 
 # Skip markdown step, output JSON directly for immediate use
-goralph plan "notifications" --json
+goralph plan "notifications" --format json
 goralph run
 ```
 
@@ -94,8 +92,8 @@ goralph run
 
 | Flag | Description |
 |------|-------------|
-| `--json` | Output directly to `.goralph/prd.json` instead of markdown |
-| `-e, --engine` | Engine to use: `claude` (default) or `amp` |
+| `-f, --format` | Output format: `markdown` (default) or `json` |
+| `-e, --engine` | Engine to use: `claude` (default) |
 
 ## Converting a PRD
 
@@ -124,8 +122,9 @@ Execute stories autonomously. Each iteration picks the highest-priority incomple
 
 ```bash
 goralph run
-goralph run --max 5           # limit to 5 iterations
-goralph run -e amp            # use Amp engine
+goralph run --limit 5             # limit to 5 iterations
+goralph run -l 1 -s US-001        # run single specific story
+goralph run --dry-run             # show what would execute without running
 ```
 
 ## All Commands
@@ -176,10 +175,9 @@ GoRalph works with structured PRDs in JSON:
 
 ## Engine Architecture
 
-GoRalph supports multiple AI engines through a pluggable interface:
+GoRalph supports AI engines through a pluggable interface:
 
 - **Claude** -- Uses Claude Code CLI with `stream-json` output for live progress display
-- **Amp** -- Uses Amp CLI (streaming format TBD)
 
 Engines are registered at import time and selected via the `-e` flag.
 
@@ -198,7 +196,6 @@ cmd/                       # CLI commands
 internal/
   engine/                  # Engine interface + display
     claude/                # Claude Code engine
-    amp/                   # Amp engine
   loop/                    # Autonomous execution loop
   prd/                     # PRD generation, conversion, validation
   skills/                  # Embedded skill content
