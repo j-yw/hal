@@ -32,7 +32,7 @@ The plan command uses a two-phase approach:
 
 If no description is provided, your $EDITOR will open for you to write the spec.
 
-By default, the PRD is written as markdown to tasks/prd-[feature-name].md.
+By default, the PRD is written as markdown to .goralph/prd-[feature-name].md.
 Use --json to output directly to .goralph/prd.json for immediate use with 'goralph run'.
 
 Examples:

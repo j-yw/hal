@@ -67,9 +67,9 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 			return "", err
 		}
 	} else {
-		// Write markdown to tasks/
+		// Write markdown to .goralph/
 		featureName := extractFeatureNameFromDescription(description)
-		outputPath = filepath.Join("tasks", fmt.Sprintf("prd-%s.md", featureName))
+		outputPath = filepath.Join(".goralph", fmt.Sprintf("prd-%s.md", featureName))
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 			return "", err
 		}
