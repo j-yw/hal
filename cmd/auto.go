@@ -11,6 +11,7 @@ import (
 
 	// Register available engines
 	_ "github.com/jywlabs/goralph/internal/engine/claude"
+	_ "github.com/jywlabs/goralph/internal/engine/codex"
 )
 
 var (
@@ -51,7 +52,7 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoResumeFlag, "resume", false, "Continue from last saved state")
 	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "Skip PR creation at end")
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
-	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
+	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex)")
 	rootCmd.AddCommand(autoCmd)
 }
 

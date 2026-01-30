@@ -15,6 +15,7 @@ import (
 
 	// Register available engines
 	_ "github.com/jywlabs/goralph/internal/engine/claude"
+	_ "github.com/jywlabs/goralph/internal/engine/codex"
 )
 
 var (
@@ -30,8 +31,8 @@ var explodeCmd = &cobra.Command{
 Each task is sized to be completable in a single agent iteration with
 boolean acceptance criteria suitable for autonomous verification.
 
-The output is written to .goralph/prd.json in the userStories format,
-compatible with the existing Ralph loop.
+The output is written to .goralph/auto-prd.json in the userStories format,
+and is used by the auto pipeline (not the manual run command).
 
 Examples:
   goralph explode .goralph/prd-feature.md                    # Explode a PRD
@@ -42,8 +43,8 @@ Examples:
 }
 
 func init() {
-	explodeCmd.Flags().StringVarP(&explodeBranchFlag, "branch", "b", "", "Branch name for output prd.json")
-	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
+	explodeCmd.Flags().StringVarP(&explodeBranchFlag, "branch", "b", "", "Branch name for output auto-prd.json")
+	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex)")
 	rootCmd.AddCommand(explodeCmd)
 }
 

@@ -28,7 +28,7 @@ The `auto` command runs the full pipeline unattended:
 5. **Loop** -- Execute the Ralph task loop until all tasks pass
 6. **PR** -- Push the branch and create a draft pull request
 
-Each iteration gets a fresh context window. The AI reads `prd.json` and `progress.txt`, implements the highest-priority incomplete story, commits, and updates progress.
+Each iteration gets a fresh context window. In the auto pipeline, the AI reads `auto-prd.json` and `auto-progress.txt`, implements the highest-priority incomplete story, commits, and updates progress.
 
 ## Install
 
@@ -174,8 +174,8 @@ goralph analyze                           # Analyze latest report
 goralph analyze report.md                 # Analyze specific file
 goralph analyze --output json             # Output as JSON
 
-# Break a PRD into granular tasks
-goralph explode .goralph/prd-feature.md                  # Explode a PRD
+# Break a PRD into granular tasks (auto pipeline)
+goralph explode .goralph/prd-feature.md                  # Explode a PRD (writes .goralph/auto-prd.json)
 goralph explode .goralph/prd-feature.md --branch feature # Set branch name
 
 # Review completed work
@@ -194,7 +194,7 @@ goralph review --skip-agents    # Skip AGENTS.md update
 | `goralph run [iterations]` | Execute stories autonomously (default: 10 iterations) |
 | `goralph auto` | Run full compound engineering pipeline |
 | `goralph analyze [report]` | Analyze reports to identify priority item |
-| `goralph explode <prd-path>` | Break PRD into 8-15 granular tasks |
+| `goralph explode <prd-path>` | Break PRD into 8-15 granular tasks for the auto pipeline |
 | `goralph review` | Review completed work and generate a report |
 | `goralph config` | Show current configuration |
 | `goralph version` | Show version info |
