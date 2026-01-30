@@ -1,0 +1,50 @@
+# goralph configuration file
+# This file controls the behavior of the goralph autonomous agent.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engine Settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Which AI engine to use for code generation.
+# Options: claude, codex
+# Default: claude
+engine: claude
+
+# Maximum number of iterations for the main loop.
+# The loop will stop after this many iterations even if tasks remain.
+# Default: 10
+maxIterations: 10
+
+# Delay between retries when an iteration fails (e.g., "30s", "1m").
+# Default: 30s
+retryDelay: 30s
+
+# Maximum number of retries for a failed iteration before giving up.
+# Default: 3
+maxRetries: 3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto Pipeline Settings (goralph auto)
+# ─────────────────────────────────────────────────────────────────────────────
+
+auto:
+  # Directory where analysis reports are stored.
+  # The auto command looks here for reports to analyze.
+  # Default: .goralph/reports
+  reportsDir: .goralph/reports
+
+  # Prefix for branches created by the auto pipeline.
+  # Branch names will be: {branchPrefix}{feature-slug}
+  # Default: compound/
+  branchPrefix: compound/
+
+  # Quality check commands to run after each iteration.
+  # These should exit with code 0 on success.
+  # Example: ["make test", "make lint", "make vet"]
+  # Default: []
+  qualityChecks: []
+
+  # Maximum iterations for the auto pipeline loop.
+  # This is separate from the main maxIterations setting.
+  # Default: 25
+  maxIterations: 25
