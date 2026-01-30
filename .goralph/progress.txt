@@ -308,3 +308,20 @@
   - Tests that create branches may leave them behind - use t.TempDir() for isolation
 ---
 
+## 2026-01-30 - T-020
+- Verified backward compatibility of all existing workflows
+- goralph init: creates prompt.md, progress.txt, config.yaml, skills/, reports/, archive/
+- goralph plan: --help works, interactive mode available (verified command exists)
+- goralph convert: --help works, userStories format supported
+- goralph run: --help works, PRD struct supports both userStories and tasks formats
+- PRD struct (internal/engine/prd.go) has CurrentStory(), Progress(), FindStoryByID() supporting both formats
+- All unit tests pass (13 PRD tests, 27 codex tests, 3 prd tests)
+- make test passes
+- make vet passes
+- Files changed: .goralph/prd.json (marked T-020 as passes: true)
+- **Learnings for future iterations:**
+  - Backward compatibility verification is largely about code review and test verification
+  - PRD struct with dual userStories/tasks support uses "first non-empty wins" pattern
+  - CLI commands can be verified via --help without running interactive mode
+---
+
