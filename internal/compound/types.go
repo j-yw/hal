@@ -15,12 +15,15 @@ type AnalysisResult struct {
 // PipelineState represents the current state of a compound pipeline run.
 // This state is persisted to allow resumption from interruptions.
 type PipelineState struct {
-	Step       string          `json:"step"`
-	BranchName string          `json:"branchName"`
-	ReportPath string          `json:"reportPath"`
-	PRDPath    string          `json:"prdPath"`
-	StartedAt  time.Time       `json:"startedAt"`
-	Analysis   *AnalysisResult `json:"analysis,omitempty"`
+	Step              string          `json:"step"`
+	BranchName        string          `json:"branchName"`
+	ReportPath        string          `json:"reportPath"`
+	PRDPath           string          `json:"prdPath"`
+	StartedAt         time.Time       `json:"startedAt"`
+	LoopIterations    int             `json:"loopIterations,omitempty"`
+	LoopComplete      bool            `json:"loopComplete,omitempty"`
+	LoopMaxIterations int             `json:"loopMaxIterations,omitempty"`
+	Analysis          *AnalysisResult `json:"analysis,omitempty"`
 }
 
 // Valid step values for PipelineState.Step
