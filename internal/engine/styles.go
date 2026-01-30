@@ -9,12 +9,12 @@ import (
 
 // Color palette
 var (
-	ColorSuccess = lipgloss.Color("#00D787")
-	ColorError   = lipgloss.Color("#FF5F87")
-	ColorWarning = lipgloss.Color("#FFAF00")
-	ColorInfo    = lipgloss.Color("#5FAFFF")
-	ColorMuted   = lipgloss.Color("#8C8C8C") // Brightened for readability
-	ColorAccent  = lipgloss.Color("#AF87FF")
+	ColorSuccess = lipgloss.Color("#00D787") // Green
+	ColorError   = lipgloss.Color("#FF5F87") // Pink
+	ColorWarning = lipgloss.Color("#FFAF00") // Yellow
+	ColorInfo    = lipgloss.Color("#5FAFFF") // Blue
+	ColorMuted   = lipgloss.Color("#888888") // Mid gray (readable)
+	ColorAccent  = lipgloss.Color("#AF87FF") // Purple
 )
 
 // Text styles
@@ -26,12 +26,13 @@ var (
 	StyleMuted   = lipgloss.NewStyle().Foreground(ColorMuted)
 	StyleAccent  = lipgloss.NewStyle().Foreground(ColorAccent)
 	StyleBold    = lipgloss.NewStyle().Bold(true)
+	StyleTitle   = lipgloss.NewStyle().Foreground(ColorInfo).Bold(true) // Blue headers
 )
 
 // Command header styles
 var (
-	// StyleCommandIcon is the ◆ symbol used in command headers
-	StyleCommandIcon = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true).SetString("◆")
+	// StyleCommandIcon is the ○ symbol used in command headers (HAL eye)
+	StyleCommandIcon = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true).SetString("○")
 )
 
 // Box styles - now dynamic functions for responsive width
@@ -49,7 +50,7 @@ func GetTerminalWidth() int {
 func BoxStyle(borderColor lipgloss.Color) lipgloss.Style {
 	width := GetTerminalWidth() - 2 // leave margin
 	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()). // Sharp geometric corners
 		BorderForeground(borderColor).
 		Padding(0, 1).
 		Width(width)
@@ -67,10 +68,10 @@ func ErrorBox() lipgloss.Style { return BoxStyle(ColorError) }
 // WarningBox returns a warning box style with responsive width.
 func WarningBox() lipgloss.Style { return BoxStyle(ColorWarning) }
 
-// Progress bar styles
+// Progress bar styles - HAL red for filled
 var (
-	StyleProgressFilled = lipgloss.NewStyle().Foreground(ColorInfo)
-	StyleProgressEmpty  = lipgloss.NewStyle().Foreground(ColorMuted)
+	StyleProgressFilled = lipgloss.NewStyle().Foreground(ColorAccent)  // HAL red
+	StyleProgressEmpty  = lipgloss.NewStyle().Foreground(ColorMuted)   // Dim gray
 )
 
 // Tool event styles
@@ -78,7 +79,7 @@ var (
 	StyleToolRead  = lipgloss.NewStyle().Foreground(ColorMuted)
 	StyleToolWrite = lipgloss.NewStyle().Foreground(ColorSuccess)
 	StyleToolBash  = lipgloss.NewStyle().Foreground(ColorWarning)
-	StyleToolArrow = lipgloss.NewStyle().Foreground(ColorAccent).SetString("▶")
+	StyleToolArrow = lipgloss.NewStyle().Foreground(ColorMuted).SetString(">") // Minimal arrow
 )
 
 // Layout constants
@@ -86,42 +87,59 @@ const (
 	IterationBarWidth = 10 // Width of progress bar in iteration headers
 )
 
-// SpinnerGradient defines colors for the gradient spinner (neon cyberpunk vibes)
+// SpinnerGradient defines colors for the gradient spinner (HAL 9000 smooth red pulse)
 var SpinnerGradient = []lipgloss.Color{
-	lipgloss.Color("#00FFFF"), // electric cyan
-	lipgloss.Color("#00D4FF"),
-	lipgloss.Color("#00AAFF"),
-	lipgloss.Color("#0080FF"),
-	lipgloss.Color("#5555FF"), // electric blue
-	lipgloss.Color("#8000FF"),
-	lipgloss.Color("#AA00FF"), // violet
-	lipgloss.Color("#D400FF"),
-	lipgloss.Color("#FF00FF"), // magenta
-	lipgloss.Color("#FF00D4"),
-	lipgloss.Color("#FF00AA"), // hot pink
-	lipgloss.Color("#FF0080"),
-	lipgloss.Color("#FF0055"),
-	lipgloss.Color("#FF0080"),
-	lipgloss.Color("#FF00AA"), // back up
-	lipgloss.Color("#FF00D4"),
-	lipgloss.Color("#FF00FF"),
-	lipgloss.Color("#D400FF"),
-	lipgloss.Color("#AA00FF"),
-	lipgloss.Color("#8000FF"),
-	lipgloss.Color("#5555FF"),
-	lipgloss.Color("#0080FF"),
-	lipgloss.Color("#00AAFF"),
-	lipgloss.Color("#00D4FF"),
+	"#300000", // very dark
+	"#400000",
+	"#500000",
+	"#600000",
+	"#700000",
+	"#800000",
+	"#900000",
+	"#A00000",
+	"#B00000",
+	"#C00000",
+	"#D00000",
+	"#E00000",
+	"#F00000",
+	"#FF0000", // bright red
+	"#FF1111",
+	"#FF2222",
+	"#FF3333",
+	"#FF4444",
+	"#FF5555",
+	"#FF6666", // peak
+	"#FF5555",
+	"#FF4444",
+	"#FF3333",
+	"#FF2222",
+	"#FF1111",
+	"#FF0000",
+	"#F00000",
+	"#E00000",
+	"#D00000",
+	"#C00000",
+	"#B00000",
+	"#A00000",
+	"#900000",
+	"#800000",
+	"#700000",
+	"#600000",
+	"#500000",
+	"#400000",
 }
 
-// SpinnerFrames are snake characters for smooth rotating animation
-var SpinnerFrames = []string{"╰", "╯", "╮", "╭"}
+// SpinnerBracketColor is the static dim red for HAL eye brackets
+var SpinnerBracketColor = lipgloss.Color("#882222")
+
+// SpinnerFrames are HAL eye dots only (brackets rendered separately)
+var SpinnerFrames = []string{"·", "•", "●", "•", "·"}
 
 // QuestionBox returns a styled box for Q&A.
 func QuestionBox() lipgloss.Style {
 	width := GetTerminalWidth() - 2
 	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()). // Sharp geometric corners
 		BorderForeground(ColorInfo).
 		BorderTop(true).
 		BorderBottom(true).

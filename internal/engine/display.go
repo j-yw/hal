@@ -4,12 +4,28 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// HAL personality words with trailing ... for measured speech
+var HalThinkingWords = []string{
+	"processing...", "observing...", "analyzing...", "computing...",
+	"considering...", "reasoning...", "calculating...", "monitoring...",
+	"evaluating...", "assessing...",
+}
+
+var HalWorkingWords = []string{
+	"executing...", "operating...", "performing...",
+}
+
+func randomHalWord(words []string) string {
+	return words[rand.Intn(len(words))]
+}
 
 // Display handles terminal output with spinners and formatted status.
 type Display struct {
@@ -60,8 +76,11 @@ func (d *Display) StartSpinner(msg string) {
 		frame := 0
 		colorIdx := 0
 		first := true
-		ticker := time.NewTicker(66 * time.Millisecond)
+		ticker := time.NewTicker(80 * time.Millisecond) // HAL smooth breathing
 		defer ticker.Stop()
+
+		// Static bracket style (dim red)
+		bracketStyle := lipgloss.NewStyle().Foreground(SpinnerBracketColor)
 
 		for {
 			select {
@@ -70,10 +89,15 @@ func (d *Display) StartSpinner(msg string) {
 				fmt.Fprint(d.out, "\033[2K\r")
 				return
 			case <-ticker.C:
-				// Get current gradient color
+				// Get current gradient color for the dot
 				color := SpinnerGradient[colorIdx%len(SpinnerGradient)]
-				spinnerStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
-				spinChar := spinnerStyle.Render(SpinnerFrames[frame%len(SpinnerFrames)])
+				dotStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+				
+				// Render brackets static, dot pulsing
+				bracket := bracketStyle.Render("[")
+				dot := dotStyle.Render(SpinnerFrames[frame%len(SpinnerFrames)])
+				closeBracket := bracketStyle.Render("]")
+				spinChar := bracket + dot + closeBracket
 
 				// Render message with muted style
 				msgText := StyleMuted.Render(msg)
@@ -127,7 +151,7 @@ func (d *Display) ShowEvent(e *Event) {
 			modelText := StyleMuted.Render(fmt.Sprintf("   model: %s", e.Data.Model))
 			fmt.Fprintln(d.out, modelText)
 		}
-		startSpinnerMsg = "thinking..."
+		startSpinnerMsg = randomHalWord(HalThinkingWords)
 
 	case EventTool:
 		// Avoid duplicate consecutive tool messages
@@ -165,9 +189,9 @@ func (d *Display) ShowEvent(e *Event) {
 		duration := int(e.Data.DurationMs / 1000)
 		var statusBadge string
 		if e.Data.Success {
-			statusBadge = StyleSuccess.Render("✓")
+			statusBadge = StyleSuccess.Render("[OK]")
 		} else {
-			statusBadge = StyleError.Render("✗")
+			statusBadge = StyleError.Render("[!!]")
 		}
 
 		timeText := StyleMuted.Render(fmt.Sprintf("%ds", duration))
@@ -181,14 +205,14 @@ func (d *Display) ShowEvent(e *Event) {
 		fmt.Fprintln(d.out)
 
 	case EventError:
-		errorBadge := StyleError.Render("✗")
+		errorBadge := StyleError.Render("[!!]")
 		errorMsg := StyleError.Render(e.Data.Message)
 		fmt.Fprintf(d.out, "   %s %s\n", errorBadge, errorMsg)
 
 	case EventText:
 		// Text events are usually the final response, we don't show them inline
 		// But start a spinner to show we're still working
-		startSpinnerMsg = "working..."
+		startSpinnerMsg = randomHalWord(HalWorkingWords)
 	}
 
 	d.mu.Unlock()
@@ -205,8 +229,8 @@ func (d *Display) ShowLoopHeader(engineName string, maxIterations int) {
 	d.loopStart = time.Now()
 
 	icon := StyleCommandIcon.Render()
-	title := StyleBold.Render("Ralph Loop")
-	details := StyleMuted.Render(fmt.Sprintf("%s  •  max %d iterations", engineName, maxIterations))
+	title := StyleTitle.Render("Ralph Loop")
+	details := StyleMuted.Render(fmt.Sprintf("%s │ max %d iterations", engineName, maxIterations))
 
 	content := fmt.Sprintf("%s %s\n%s", icon, title, details)
 	box := HeaderBox().Render(content)
@@ -265,7 +289,7 @@ func (d *Display) ShowSuccess(msg string) {
 	d.StopSpinner()
 	elapsed := time.Since(d.loopStart).Round(time.Second)
 
-	successBadge := StyleSuccess.Render("✓")
+	successBadge := StyleSuccess.Render("[OK]")
 	title := StyleSuccess.Bold(true).Render(fmt.Sprintf("%s %s", successBadge, msg))
 
 	stats := []string{
@@ -274,7 +298,7 @@ func (d *Display) ShowSuccess(msg string) {
 		StyleMuted.Render(fmt.Sprintf("Total tokens: %s", formatTokens(d.totalTokens))),
 	}
 
-	content := title + "\n" + strings.Join(stats, "  •  ")
+	content := title + "\n" + strings.Join(stats, " │ ")
 	box := SuccessBox().Render(content)
 
 	fmt.Fprintln(d.out)
@@ -286,7 +310,7 @@ func (d *Display) ShowError(msg string) {
 	d.StopSpinner()
 	elapsed := time.Since(d.loopStart).Round(time.Second)
 
-	errorBadge := StyleError.Render("✗")
+	errorBadge := StyleError.Render("[!!]")
 	title := StyleError.Bold(true).Render(fmt.Sprintf("%s Error", errorBadge))
 
 	errorMsg := msg
@@ -312,7 +336,7 @@ func (d *Display) ShowMaxIterations() {
 	d.StopSpinner()
 	elapsed := time.Since(d.loopStart).Round(time.Second)
 
-	warnBadge := StyleWarning.Render("⚠")
+	warnBadge := StyleWarning.Render("[!]")
 	title := StyleWarning.Bold(true).Render(fmt.Sprintf("%s Max iterations reached", warnBadge))
 
 	stats := []string{
@@ -321,7 +345,7 @@ func (d *Display) ShowMaxIterations() {
 		StyleMuted.Render(fmt.Sprintf("Total tokens: %s", formatTokens(d.totalTokens))),
 	}
 
-	content := title + "\n" + strings.Join(stats, "  •  ")
+	content := title + "\n" + strings.Join(stats, " │ ")
 	box := WarningBox().Render(content)
 
 	fmt.Fprintln(d.out)
@@ -374,8 +398,8 @@ func (d *Display) ShowCommandHeader(title, context, engineName string) {
 	d.totalTokens = 0
 
 	icon := StyleCommandIcon.Render()
-	titleText := StyleBold.Render(title)
-	details := StyleMuted.Render(fmt.Sprintf("%s  •  %s engine", context, engineName))
+	titleText := StyleTitle.Render(title)
+	details := StyleMuted.Render(fmt.Sprintf("%s │ %s engine", context, engineName))
 
 	content := fmt.Sprintf("%s %s\n%s", icon, titleText, details)
 	box := HeaderBox().Render(content)
@@ -424,14 +448,14 @@ func (d *Display) ShowCommandSuccess(title, details string) {
 	d.StopSpinner()
 	elapsed := time.Since(d.loopStart).Round(time.Second)
 
-	successBadge := StyleSuccess.Render("✓")
+	successBadge := StyleSuccess.Render("[OK]")
 	titleText := StyleSuccess.Bold(true).Render(fmt.Sprintf("%s %s", successBadge, title))
 
 	var contentLines []string
 	contentLines = append(contentLines, titleText)
 
 	if details != "" {
-		detailText := StyleMuted.Render(fmt.Sprintf("%s  •  Duration: %s", details, elapsed))
+		detailText := StyleMuted.Render(fmt.Sprintf("%s │ Duration: %s", details, elapsed))
 		contentLines = append(contentLines, detailText)
 	} else {
 		detailText := StyleMuted.Render(fmt.Sprintf("Duration: %s", elapsed))
@@ -440,7 +464,7 @@ func (d *Display) ShowCommandSuccess(title, details string) {
 
 	if d.totalTokens > 0 {
 		tokenText := StyleMuted.Render(fmt.Sprintf("Tokens: %s", formatTokens(d.totalTokens)))
-		contentLines[len(contentLines)-1] += "  •  " + tokenText
+		contentLines[len(contentLines)-1] += " │ " + tokenText
 	}
 
 	content := strings.Join(contentLines, "\n")
@@ -461,10 +485,10 @@ type ValidationIssue struct {
 func (d *Display) ShowCommandError(title string, errors, warnings []ValidationIssue) {
 	d.StopSpinner()
 
-	errorBadge := StyleError.Render("✗")
+	errorBadge := StyleError.Render("[!!]")
 	titleText := StyleError.Bold(true).Render(fmt.Sprintf("%s %s", errorBadge, title))
 
-	summary := StyleMuted.Render(fmt.Sprintf("%d errors  •  %d warnings", len(errors), len(warnings)))
+	summary := StyleMuted.Render(fmt.Sprintf("%d errors │ %d warnings", len(errors), len(warnings)))
 
 	var content strings.Builder
 	content.WriteString(titleText)
