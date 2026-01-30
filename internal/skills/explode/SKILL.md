@@ -17,7 +17,7 @@ Transform a Product Requirements Document into 8-15 granular, autonomously-execu
 4. Order tasks by dependency (investigation -> schema -> backend -> UI -> verification)
 5. Generate `.goralph/auto-prd.json` with the tasks array
 
-**Important:** Output JSON directly to `.goralph/prd.json`. Do NOT ask clarifying questions.
+**Important:** Output JSON directly to `.goralph/auto-prd.json`. Do NOT ask clarifying questions.
 
 ---
 
@@ -37,7 +37,7 @@ Read the PRD and extract:
 
 ## Output Format
 
-Generate a `prd.json` file with this structure:
+Generate an `auto-prd.json` file with this structure:
 
 ```json
 {
@@ -293,7 +293,7 @@ Notice: One PRD task became 4 granular tasks, each completable in one iteration.
 
 ## Checklist
 
-Before generating prd.json:
+Before generating auto-prd.json:
 
 - [ ] Read the entire PRD to understand full scope
 - [ ] Generated 8-15 tasks (not fewer, not more)
