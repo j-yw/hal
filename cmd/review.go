@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	// Register available engines
+	_ "github.com/jywlabs/goralph/internal/engine/claude"
 	_ "github.com/jywlabs/goralph/internal/engine/codex"
 )
 

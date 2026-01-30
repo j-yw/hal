@@ -185,6 +185,13 @@ func (p *Pipeline) runAnalyzeStep(ctx context.Context, state *PipelineState, opt
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would analyze report: %s\n", reportPath)
+		// Seed placeholder analysis so later dry-run steps can proceed.
+		placeholder := &AnalysisResult{
+			PriorityItem: "dry-run",
+			BranchName:   "dry-run",
+		}
+		state.Analysis = placeholder
+		state.BranchName = p.config.BranchPrefix + placeholder.BranchName
 		state.Step = StepBranch
 		return nil
 	}
