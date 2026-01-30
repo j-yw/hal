@@ -4,20 +4,20 @@ You are an autonomous coding agent working on a software project.
 
 ## Your Task
 
-1. Read the PRD at `.goralph/prd.json`
-2. Read `.goralph/progress.txt` (check Codebase Patterns section first)
+1. Read the PRD at `.goralph/{{PRD_FILE}}`
+2. Read `.goralph/{{PROGRESS_FILE}}` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the **highest priority** user story where `passes: false`
 5. Implement that single user story
 6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
 7. Update AGENTS.md files if you discover reusable patterns (see below)
 8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Update `.goralph/prd.json` to set `passes: true` for the completed story
-10. Append your progress to `.goralph/progress.txt`
+9. Update `.goralph/{{PRD_FILE}}` to set `passes: true` for the completed story
+10. Append your progress to `.goralph/{{PROGRESS_FILE}}`
 
 ## Progress Report Format
 
-APPEND to `.goralph/progress.txt` (never replace, always append):
+APPEND to `.goralph/{{PROGRESS_FILE}}` (never replace, always append):
 ```
 ## [Date/Time] - [Story ID]
 - What was implemented
@@ -33,7 +33,7 @@ The learnings section is critical - it helps future iterations avoid repeating m
 
 ## Consolidate Patterns
 
-If you discover a **reusable pattern** that future iterations should know, add it to the `## Codebase Patterns` section at the TOP of `.goralph/progress.txt` (create it if it doesn't exist). This section should consolidate the most important learnings:
+If you discover a **reusable pattern** that future iterations should know, add it to the `## Codebase Patterns` section at the TOP of `.goralph/{{PROGRESS_FILE}}` (create it if it doesn't exist). This section should consolidate the most important learnings:
 
 ```
 ## Codebase Patterns
@@ -66,7 +66,7 @@ Before committing, check if any edited files have learnings worth preserving in 
 **Do NOT add:**
 - Story-specific implementation details
 - Temporary debugging notes
-- Information already in progress.txt
+- Information already in {{PROGRESS_FILE}}
 
 Only update AGENTS.md if you have **genuinely reusable knowledge** that would help future work in that directory.
 
@@ -102,4 +102,4 @@ If there are still stories with `passes: false`, end your response normally (ano
 - Work on ONE story per iteration
 - Commit frequently
 - Keep CI green
-- Read the Codebase Patterns section in progress.txt before starting
+- Read the Codebase Patterns section in {{PROGRESS_FILE}} before starting

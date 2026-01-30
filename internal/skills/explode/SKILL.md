@@ -15,7 +15,7 @@ Transform a Product Requirements Document into 8-15 granular, autonomously-execu
 2. Analyze the scope and identify all work items
 3. Break down into 8-15 granular tasks
 4. Order tasks by dependency (investigation -> schema -> backend -> UI -> verification)
-5. Generate `.goralph/prd.json` with the tasks array
+5. Generate `.goralph/auto-prd.json` with the tasks array
 
 **Important:** Output JSON directly to `.goralph/prd.json`. Do NOT ask clarifying questions.
 
@@ -303,13 +303,17 @@ Before generating prd.json:
 - [ ] Every criterion is boolean (verifiable true/false)
 - [ ] Every task ends with "Typecheck passes"
 - [ ] Output is valid JSON
-- [ ] Saved to `.goralph/prd.json`
+- [ ] Saved to `.goralph/auto-prd.json`
 - [ ] Did NOT ask clarifying questions
 
 ---
 
 ## Output Location
 
-Write the JSON to: `.goralph/prd.json`
+Write the JSON to: `.goralph/auto-prd.json`
 
-This overwrites any existing prd.json. The previous PRD content is preserved in the `.goralph/prd-[feature].md` file.
+This is separate from the manual flow's `.goralph/prd.json`:
+- **Manual flow** (`plan`, `convert`, `validate`, `run`) → `.goralph/prd.json`
+- **Auto flow** (`auto`, `explode`) → `.goralph/auto-prd.json`
+
+The source PRD content is preserved in the `.goralph/prd-[feature].md` file.

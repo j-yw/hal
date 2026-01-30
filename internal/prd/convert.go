@@ -11,6 +11,7 @@ import (
 
 	"github.com/jywlabs/goralph/internal/engine"
 	"github.com/jywlabs/goralph/internal/skills"
+	"github.com/jywlabs/goralph/internal/template"
 )
 
 // ConvertWithEngine converts a markdown PRD to JSON using the ralph skill via an engine.
@@ -269,7 +270,7 @@ func archiveExistingPRD(prdPath, newMdPath string) error {
 	}
 
 	// Copy prd.json to archive
-	archivePRDPath := filepath.Join(archiveDir, "prd.json")
+	archivePRDPath := filepath.Join(archiveDir, template.PRDFile)
 	if err := os.WriteFile(archivePRDPath, existingContent, 0644); err != nil {
 		return err
 	}

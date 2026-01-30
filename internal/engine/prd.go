@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/jywlabs/goralph/internal/template"
 )
 
 // PRD represents the structure of a prd.json file.
@@ -26,9 +28,14 @@ type UserStory struct {
 	Notes              string   `json:"notes"`
 }
 
-// LoadPRD reads and parses a prd.json file.
+// LoadPRD reads and parses the default prd.json file (manual flow).
 func LoadPRD(dir string) (*PRD, error) {
-	path := filepath.Join(dir, "prd.json")
+	return LoadPRDFile(dir, template.PRDFile)
+}
+
+// LoadPRDFile reads and parses a PRD from a specific file.
+func LoadPRDFile(dir, filename string) (*PRD, error) {
+	path := filepath.Join(dir, filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

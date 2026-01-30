@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jywlabs/goralph/internal/template"
 )
 
 func TestPRD_CurrentStory_UserStoriesFormat(t *testing.T) {
@@ -202,7 +204,7 @@ func TestLoadPRD_UserStoriesFormat(t *testing.T) {
 			{"id": "US-001", "title": "Story 1", "priority": 1, "passes": false}
 		]
 	}`
-	if err := os.WriteFile(filepath.Join(dir, "prd.json"), []byte(prdData), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, template.PRDFile), []byte(prdData), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +231,7 @@ func TestLoadPRD_TasksFormat(t *testing.T) {
 			{"id": "T-001", "title": "Task 1", "priority": 1, "passes": false}
 		]
 	}`
-	if err := os.WriteFile(filepath.Join(dir, "prd.json"), []byte(prdData), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, template.PRDFile), []byte(prdData), 0644); err != nil {
 		t.Fatal(err)
 	}
 

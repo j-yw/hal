@@ -3,6 +3,8 @@ package prd
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/jywlabs/goralph/internal/template"
 )
 
 func TestExtractFeatureNameFromDescription(t *testing.T) {
@@ -30,9 +32,9 @@ func TestExtractFeatureNameFromDescription(t *testing.T) {
 func TestOutputPathIsGoralphFolder(t *testing.T) {
 	// Verify markdown output path uses .goralph folder
 	featureName := extractFeatureNameFromDescription("test feature")
-	outputPath := filepath.Join(".goralph", "prd-"+featureName+".md")
+	outputPath := filepath.Join(template.GoralphDir, "prd-"+featureName+".md")
 
-	expected := filepath.Join(".goralph", "prd-test-feature.md")
+	expected := filepath.Join(template.GoralphDir, "prd-test-feature.md")
 	if outputPath != expected {
 		t.Errorf("markdown output path = %q, want %q", outputPath, expected)
 	}
@@ -46,9 +48,9 @@ func TestOutputPathIsGoralphFolder(t *testing.T) {
 
 func TestJSONOutputPathIsGoralphFolder(t *testing.T) {
 	// Verify JSON output path uses .goralph folder
-	outputPath := filepath.Join(".goralph", "prd.json")
+	outputPath := filepath.Join(template.GoralphDir, template.PRDFile)
 
-	expected := ".goralph/prd.json"
+	expected := template.GoralphDir + "/" + template.PRDFile
 	if outputPath != expected {
 		t.Errorf("JSON output path = %q, want %q", outputPath, expected)
 	}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jywlabs/goralph/internal/engine"
@@ -23,6 +24,8 @@ type Result struct {
 // Config holds configuration for the loop.
 type Config struct {
 	Dir           string        // Path to .goralph directory
+	PRDFile       string        // PRD file name (default: template.PRDFile)
+	ProgressFile  string        // Progress file name (default: template.ProgressFile)
 	MaxIterations int           // Maximum iterations (0 = unlimited)
 	Engine        string        // Engine name (claude)
 	Logger        io.Writer     // Where to write logs
@@ -43,6 +46,12 @@ type Runner struct {
 func New(cfg Config) (*Runner, error) {
 	if cfg.Dir == "" {
 		cfg.Dir = template.GoralphDir
+	}
+	if cfg.PRDFile == "" {
+		cfg.PRDFile = template.PRDFile
+	}
+	if cfg.ProgressFile == "" {
+		cfg.ProgressFile = template.ProgressFile
 	}
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = 10
@@ -83,17 +92,17 @@ func (r *Runner) Run(ctx context.Context) Result {
 		}
 	}
 
-	// Verify prd.json exists
-	prdPath := filepath.Join(r.config.Dir, "prd.json")
+	// Verify PRD file exists
+	prdPath := filepath.Join(r.config.Dir, r.config.PRDFile)
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
 		return Result{
 			Success: false,
-			Error:   fmt.Errorf("prd.json not found at %s", prdPath),
+			Error:   fmt.Errorf("%s not found at %s", r.config.PRDFile, prdPath),
 		}
 	}
 
 	// Load PRD
-	prd, err := engine.LoadPRD(r.config.Dir)
+	prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile)
 	if err != nil {
 		return Result{
 			Success: false,
@@ -132,7 +141,7 @@ func (r *Runner) Run(ctx context.Context) Result {
 		for _, ac := range targetStory.AcceptanceCriteria {
 			r.display.ShowInfo("  - %s\n", ac)
 		}
-		r.display.ShowInfo("\nPrompt file: %s/prompt.md\n", r.config.Dir)
+		r.display.ShowInfo("\nPrompt file: %s/%s\n", r.config.Dir, template.PromptFile)
 		return Result{Success: true}
 	}
 
@@ -149,7 +158,7 @@ func (r *Runner) Run(ctx context.Context) Result {
 				ID:    targetStory.ID,
 				Title: targetStory.Title,
 			}
-		} else if prd, err := engine.LoadPRD(r.config.Dir); err == nil {
+		} else if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
 			if story := prd.CurrentStory(); story != nil {
 				storyInfo = &engine.StoryInfo{
 					ID:    story.ID,
@@ -174,7 +183,7 @@ func (r *Runner) Run(ctx context.Context) Result {
 		if execResult.Complete {
 			// Verify that all stories actually have passes: true before accepting COMPLETE
 			// This guards against LLM reasoning errors where it says COMPLETE prematurely
-			if prd, err := engine.LoadPRD(r.config.Dir); err == nil {
+			if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
 				if story := prd.CurrentStory(); story != nil {
 					// There are still pending stories - LLM said COMPLETE incorrectly
 					r.display.ShowInfo("   ⚠ Agent signaled COMPLETE but %s is still pending\n", story.ID)
@@ -213,14 +222,19 @@ func (r *Runner) Run(ctx context.Context) Result {
 	return result
 }
 
-// loadPrompt reads the prompt file.
+// loadPrompt reads the prompt file and replaces placeholders.
 func (r *Runner) loadPrompt() (string, error) {
-	promptPath := filepath.Join(r.config.Dir, "prompt.md")
+	promptPath := filepath.Join(r.config.Dir, template.PromptFile)
 	data, err := os.ReadFile(promptPath)
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+
+	// Replace placeholders with actual filenames
+	prompt := string(data)
+	prompt = strings.Replace(prompt, "{{PRD_FILE}}", r.config.PRDFile, -1)
+	prompt = strings.Replace(prompt, "{{PROGRESS_FILE}}", r.config.ProgressFile, -1)
+	return prompt, nil
 }
 
 // executeWithRetry runs a single iteration with retry on failure.

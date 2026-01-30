@@ -355,7 +355,7 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 		return fmt.Errorf("no PRD path in state")
 	}
 
-	outPath := filepath.Join(p.dir, template.GoralphDir, "prd.json")
+	outPath := filepath.Join(p.dir, template.GoralphDir, template.AutoPRDFile)
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would explode PRD to: %s\n", outPath)
@@ -416,7 +416,7 @@ Write the JSON directly to %s using the Write tool.`, explodeSkill, string(prdCo
 		// Engine wrote the file - validate and format it
 		content, err := os.ReadFile(outPath)
 		if err != nil {
-			return fmt.Errorf("failed to read engine-written prd.json: %w", err)
+			return fmt.Errorf("failed to read engine-written %s: %w", template.AutoPRDFile, err)
 		}
 
 		// Validate JSON structure
@@ -433,7 +433,7 @@ Write the JSON directly to %s using the Write tool.`, explodeSkill, string(prdCo
 
 		// Write formatted version back
 		if err := os.WriteFile(outPath, formatted, 0644); err != nil {
-			return fmt.Errorf("failed to write formatted prd.json: %w", err)
+			return fmt.Errorf("failed to write formatted %s: %w", template.AutoPRDFile, err)
 		}
 
 		taskCount := countExplodeTasks(&prd)
@@ -451,9 +451,9 @@ Write the JSON directly to %s using the Write tool.`, explodeSkill, string(prdCo
 			return fmt.Errorf("failed to create output directory: %w", err)
 		}
 
-		// Write prd.json
+		// Write auto-prd.json
 		if err := os.WriteFile(outPath, []byte(prdJSON), 0644); err != nil {
-			return fmt.Errorf("failed to write prd.json: %w", err)
+			return fmt.Errorf("failed to write %s: %w", template.AutoPRDFile, err)
 		}
 
 		// Parse to get task count
@@ -485,6 +485,8 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 	// Create loop runner with config from auto settings
 	loopConfig := loop.Config{
 		Dir:           filepath.Join(p.dir, template.GoralphDir),
+		PRDFile:       template.AutoPRDFile,
+		ProgressFile:  template.AutoProgressFile,
 		MaxIterations: p.config.MaxIterations,
 		Engine:        p.engine.Name(),
 		Logger:        p.display.Writer(),

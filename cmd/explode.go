@@ -91,7 +91,7 @@ func runExplode(cmd *cobra.Command, args []string) error {
 	prompt := buildExplodePrompt(explodeSkill, string(prdContent), branchName)
 
 	// Record output file modification time before (if exists)
-	outPath := filepath.Join(template.GoralphDir, "prd.json")
+	outPath := filepath.Join(template.GoralphDir, template.AutoPRDFile)
 	var preModTime time.Time
 	if stat, err := os.Stat(outPath); err == nil {
 		preModTime = stat.ModTime()
@@ -180,7 +180,7 @@ Break down this PRD into 8-15 granular tasks following the skill rules:
 5. Use T-XXX IDs (T-001, T-002, etc.)
 6. All tasks have passes: false and empty notes
 
-Write the JSON directly to .goralph/prd.json using the Write tool.`, skill, prdContent, branchName)
+Write the JSON directly to .goralph/auto-prd.json using the Write tool.`, skill, prdContent, branchName)
 }
 
 func extractBranchFromPRDPath(prdPath string) string {
