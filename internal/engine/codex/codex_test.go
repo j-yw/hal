@@ -32,14 +32,34 @@ func TestCLICommand(t *testing.T) {
 
 func TestBuildArgs(t *testing.T) {
 	e := New()
-	prompt := "test prompt"
-	args := e.BuildArgs(prompt)
+	args := e.BuildArgs()
 
 	expected := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--json",
-		"test prompt",
+		"-",
+	}
+
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+
+	for i, arg := range args {
+		if arg != expected[i] {
+			t.Errorf("arg[%d]: expected %q, got %q", i, expected[i], arg)
+		}
+	}
+}
+
+func TestBuildArgsNoJSON(t *testing.T) {
+	e := New()
+	args := e.BuildArgsNoJSON()
+
+	expected := []string{
+		"exec",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"-",
 	}
 
 	if len(args) != len(expected) {

@@ -43,12 +43,22 @@ func (e *Engine) CLICommand() string {
 }
 
 // BuildArgs returns the CLI arguments for execution.
-func (e *Engine) BuildArgs(prompt string) []string {
+// Prompt is passed via stdin using "-" placeholder.
+func (e *Engine) BuildArgs() []string {
 	return []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--json",
-		prompt,
+		"-", // Read prompt from stdin
+	}
+}
+
+// BuildArgsNoJSON returns CLI arguments without JSON flag.
+func (e *Engine) BuildArgsNoJSON() []string {
+	return []string{
+		"exec",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"-", // Read prompt from stdin
 	}
 }
 
@@ -65,15 +75,11 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 	startTime := time.Now()
 
 	// Build command
-	args := e.BuildArgs(prompt)
+	args := e.BuildArgs()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 
-	// Detach from TTY to suppress interactive UI hints.
-	// Codex CLI may display interactive hints when it detects a TTY.
-	// To suppress these hints, we:
-	// 1. Set Stdin to nil (no input)
-	// 2. Create a new session (Setsid) to detach from controlling terminal
-	cmd.Stdin = nil
+	// Pass prompt via stdin
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true, // Create new session, detach from controlling TTY
 	}
@@ -205,14 +211,10 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Build command - simpler args without --json for plain text output
-	args := []string{
-		"exec",
-		"--dangerously-bypass-approvals-and-sandbox",
-		prompt,
-	}
+	// Build command - use stdin for prompt
+	args := e.BuildArgsNoJSON()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true,
 	}
@@ -244,10 +246,10 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Use BuildArgs which includes --json flag for streaming
-	args := e.BuildArgs(prompt)
+	// Use BuildArgs which includes --json flag for streaming, prompt via stdin
+	args := e.BuildArgs()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true,
 	}
