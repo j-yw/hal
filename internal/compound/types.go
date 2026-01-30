@@ -33,3 +33,17 @@ const (
 	StepPR      = "pr"
 	StepDone    = "done"
 )
+
+// ReviewResult contains the output of a review operation.
+type ReviewResult struct {
+	ReportPath      string   `json:"reportPath"`
+	Summary         string   `json:"summary"`
+	PatternsAdded   []string `json:"patternsAdded"`
+	Recommendations []string `json:"recommendations"`
+}
+
+// ReviewOptions controls review behavior.
+type ReviewOptions struct {
+	DryRun     bool
+	SkipAgents bool
+}

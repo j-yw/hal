@@ -16,13 +16,17 @@ var autospecSkillContent string
 //go:embed explode/SKILL.md
 var explodeSkillContent string
 
+//go:embed review/SKILL.md
+var reviewSkillContent string
+
 // SkillContent holds embedded skill content by name.
 var SkillContent = map[string]string{
 	"prd":      prdSkillContent,
 	"ralph":    ralphSkillContent,
 	"autospec": autospecSkillContent,
 	"explode":  explodeSkillContent,
+	"review":   reviewSkillContent,
 }
 
 // SkillNames returns the list of available skill names.
-var SkillNames = []string{"prd", "ralph", "autospec", "explode"}
+var SkillNames = []string{"prd", "ralph", "autospec", "explode", "review"}
