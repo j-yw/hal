@@ -99,5 +99,104 @@
 - **Learnings for future iterations:**
   - When implementing skills (T-005, T-006), embed.go updates are best done in the same PR
   - Check if earlier stories already completed dependent work before implementing
+- Engine interface has Prompt() method for single-shot prompts (returns string, error)
+
+---
+
+## 2026-01-30 - T-008
+- Added Tasks field to PRD struct in internal/engine/prd.go with json:"tasks,omitempty" tag
+- Updated CurrentStory() to check UserStories first, then Tasks (backward compatible)
+- Updated Progress() to count both UserStories and Tasks
+- Updated FindStoryByID() to search both UserStories and Tasks
+- Created comprehensive test suite at internal/engine/prd_test.go (13 test cases)
+- All tests pass with both userStories and tasks formats
+- Files changed: internal/engine/prd.go, internal/engine/prd_test.go (new)
+- **Learnings for future iterations:**
+  - PRD struct now supports dual-format: userStories (backward compatible) and tasks (new format)
+  - When adding new fields that may be empty, use omitempty JSON tag
+  - UserStories takes precedence over Tasks in CurrentStory() for backward compatibility
+  - Always update related methods (FindStoryByID) when adding new data sources
+---
+
+## 2026-01-30 - T-009
+- Created report finder and analyzer at internal/compound/analyze.go
+- Implemented FindLatestReport(reportsDir string) - returns most recently modified file
+- Implemented FindRecentPRDs(dir string, days int) - finds prd-*.md files created in last N days
+- Implemented AnalyzeReport(ctx, eng, reportPath, recentPRDs) - uses engine.Prompt() to analyze reports
+- Analysis prompt instructs engine to return JSON with priorityItem, description, rationale, acceptanceCriteria, estimatedTasks, branchName
+- parseAnalysisResponse extracts JSON from response (handles markdown code fences)
+- Files changed: internal/compound/analyze.go (new)
+- **Learnings for future iterations:**
+  - Use engine.Prompt() for single-shot prompts that return text
+  - When parsing JSON from LLM output, search for { and } to handle code fences
+  - FindLatestReport skips hidden files and .gitkeep
+  - Recent PRDs help avoid duplicating work already in progress
+---
+
+## 2026-01-30 - T-010
+- Created analyze command at cmd/analyze.go
+- Accepts optional [report-path] positional argument to analyze specific file
+- --reports-dir flag overrides config.yaml reportsDir setting
+- --output flag supports "text" (default) and "json" formats
+- --engine flag allows selecting engine (defaults to claude)
+- Text output shows formatted box with priority item, description, rationale, acceptance criteria, estimated tasks, suggested branch
+- JSON output returns AnalysisResult struct directly
+- Handles no reports gracefully: exits with code 0 and shows informational message
+- Uses compound.LoadConfig, compound.FindLatestReport, compound.AnalyzeReport, compound.FindRecentPRDs
+- Files changed: cmd/analyze.go (new)
+- **Learnings for future iterations:**
+  - Cobra commands follow pattern: Use, Short, Long, Args, RunE
+  - Use engine.NewDisplay(os.Stdout) for display feedback
+  - LoadConfig returns defaults when config file is missing
+  - Return nil (not error) for informational exits like "no reports found"
+---
+
+## 2026-01-30 - T-011
+- Created git helper functions at internal/compound/git.go
+- Implemented CreateBranch(branchName string) - creates and checks out new branch from HEAD
+- Implemented CurrentBranch() - returns current branch name using git branch --show-current
+- Implemented PushBranch(branchName string) - pushes with -u flag to set upstream
+- Implemented CreatePR(title, body, base string) - uses gh pr create --draft
+- All functions return descriptive error messages with stderr output on failure
+- Files changed: internal/compound/git.go (new)
+- **Learnings for future iterations:**
+  - Use bytes.Buffer for capturing stdout/stderr from exec.Command
+  - Git commands use git CLI directly, PR creation uses gh CLI
+  - Always trim whitespace from command output (strings.TrimSpace)
+  - Handle empty output cases (e.g., detached HEAD state)
+---
+
+## 2026-01-30 - T-012
+- Created explode command at cmd/explode.go
+- Accepts [prd-path] positional argument (required)
+- --branch flag sets branch name in output prd.json
+- --engine flag allows selecting engine (defaults to claude)
+- Uses engine.StreamPrompt() with explode skill prompt for visual feedback
+- Outputs to .goralph/prd.json
+- Shows progress with display.ShowCommandHeader and ShowCommandSuccess
+- Handles both engine-written files and JSON from text response
+- Includes helper functions for JSON extraction from LLM output
+- Files changed: cmd/explode.go (new)
+- **Learnings for future iterations:**
+  - Follow convert.go pattern: check if engine wrote file directly, fallback to text parsing
+  - Use time.Time comparison to detect if engine wrote output file
+  - Extract branch name from prd-*.md filename pattern
+  - StreamPrompt provides visual feedback during long operations
+---
+
+## 2026-01-30 - T-013
+- Created pipeline state management at internal/compound/pipeline.go
+- Created Pipeline struct with config *AutoConfig, engine engine.Engine, display *engine.Display, dir string
+- Implemented NewPipeline() constructor function
+- Implemented loadState() *PipelineState that reads from .goralph/auto-state.json
+- Implemented saveState(state *PipelineState) error with atomic write (temp file + rename)
+- Implemented clearState() error that removes state file on completion
+- Added HasState() helper method to check if resumable state exists
+- Files changed: internal/compound/pipeline.go (new)
+- **Learnings for future iterations:**
+  - Use atomic write pattern (write to .tmp, then rename) for state files
+  - loadState returns nil instead of error when file doesn't exist - simplifies resume logic
+  - clearState handles non-existent file gracefully (returns nil)
+  - State file path is .goralph/auto-state.json
 ---
 
