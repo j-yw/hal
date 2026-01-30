@@ -51,10 +51,13 @@ func PushBranch(branchName string) error {
 
 // CreatePR creates a draft pull request using the GitHub CLI.
 // Returns the URL of the created PR.
-func CreatePR(title, body, base string) (string, error) {
+func CreatePR(title, body, base, head string) (string, error) {
 	args := []string{"pr", "create", "--draft", "--title", title, "--body", body}
 	if base != "" {
 		args = append(args, "--base", base)
+	}
+	if head != "" {
+		args = append(args, "--head", head)
 	}
 
 	cmd := exec.Command("gh", args...)

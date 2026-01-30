@@ -571,7 +571,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	// Create draft PR
 	p.display.ShowInfo("   Creating draft PR...\n")
-	prURL, err := CreatePR(prTitle, prBody, "")
+	prURL, err := CreatePR(prTitle, prBody, "", state.BranchName)
 	if err != nil {
 		return fmt.Errorf("failed to create PR: %w", err)
 	}
