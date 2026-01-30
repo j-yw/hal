@@ -146,6 +146,9 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			err = p.runLoopStep(ctx, state, opts)
 		case StepPR:
 			err = p.runPRStep(ctx, state, opts)
+		case StepDone:
+			// Pipeline completed successfully
+			return nil
 		default:
 			return fmt.Errorf("unknown pipeline step: %s", state.Step)
 		}
@@ -526,6 +529,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		if err := p.clearState(); err != nil {
 			return fmt.Errorf("failed to clear state: %w", err)
 		}
+		state.Step = StepDone
 		return nil
 	}
 
@@ -535,6 +539,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would push branch %s and create draft PR\n", state.BranchName)
+		state.Step = StepDone
 		return nil
 	}
 
@@ -567,6 +572,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		return fmt.Errorf("failed to clear state: %w", err)
 	}
 
+	state.Step = StepDone
 	return nil
 }
 

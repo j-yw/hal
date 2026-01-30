@@ -6,6 +6,9 @@
 - Package organization follows internal/{domain}/types.go pattern
 - Config loading uses gopkg.in/yaml.v3 with default fallback pattern
 - Use DefaultXXX() functions to provide sensible defaults when config is missing
+- Integration tests use `//go:build integration` tag and skip when CLI unavailable
+- Use mockEngine for unit testing engine.Engine interface without LLM calls
+- State machine loops must have terminal state to avoid infinite loops
 
 ---
 
@@ -286,5 +289,22 @@
   - Some acceptance criteria may already be satisfied by earlier implementations
   - Always verify AC fulfillment before implementing to avoid duplicate work
   - The pattern for graceful handling: print info message, return nil (not error)
+---
+
+## 2026-01-30 - T-019
+- Created internal/compound/pipeline_test.go with comprehensive integration tests
+- Test suite covers: state persistence, dry-run mode, missing reports handling, resume with no state
+- Also tests: atomic state writes, context cancellation, specific report paths
+- Fixed infinite loop bug in pipeline.go by adding StepDone constant and transitioning to it
+- Updated types.go to add StepDone = "done" constant
+- All tests tagged with `//go:build integration` and skip when Claude CLI unavailable
+- Tests use mockEngine to avoid actual LLM calls (deterministic, fast)
+- Files changed: internal/compound/pipeline_test.go (new), internal/compound/pipeline.go, internal/compound/types.go
+- **Learnings for future iterations:**
+  - Use mockEngine interface for unit testing without LLM calls
+  - Pipeline.Run() loops forever if final step doesn't set state.Step to a terminal value
+  - Always add loop termination condition when using `for {}` with state machines
+  - Integration tests in Go use build tags: `//go:build integration` and `// +build integration`
+  - Tests that create branches may leave them behind - use t.TempDir() for isolation
 ---
 

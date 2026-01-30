@@ -308,8 +308,8 @@
         "go test -tags=integration ./internal/compound/... passes"
       ],
       "priority": 19,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Also fixed infinite loop bug in pipeline by adding StepDone constant"
     },
     {
       "id": "T-020",

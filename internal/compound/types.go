@@ -31,4 +31,5 @@ const (
 	StepExplode = "explode"
 	StepLoop    = "loop"
 	StepPR      = "pr"
+	StepDone    = "done"
 )
