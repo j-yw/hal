@@ -288,12 +288,13 @@ func generateReviewReport(dir string, rc *reviewContext, pr *parsedReview) (stri
 		return "", fmt.Errorf("failed to create reports directory: %w", err)
 	}
 
-	date := time.Now().Format("2006-01-02")
-	reportPath := filepath.Join(reportsDir, fmt.Sprintf("review-%s.md", date))
+	now := time.Now()
+	timestamp := now.Format("2006-01-02-150405-000")
+	reportPath := filepath.Join(reportsDir, fmt.Sprintf("review-%s.md", timestamp))
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Review Report: %s\n\n", rc.BranchName))
-	sb.WriteString(fmt.Sprintf("Date: %s\n\n", time.Now().Format("2006-01-02 15:04")))
+	sb.WriteString(fmt.Sprintf("Date: %s\n\n", now.Format("2006-01-02 15:04")))
 
 	sb.WriteString("## Summary\n\n")
 	sb.WriteString(pr.Summary)
@@ -351,12 +352,13 @@ func saveRawReviewReport(dir string, rc *reviewContext, response string) (string
 		return "", fmt.Errorf("failed to create reports directory: %w", err)
 	}
 
-	date := time.Now().Format("2006-01-02")
-	reportPath := filepath.Join(reportsDir, fmt.Sprintf("review-%s.md", date))
+	now := time.Now()
+	timestamp := now.Format("2006-01-02-150405-000")
+	reportPath := filepath.Join(reportsDir, fmt.Sprintf("review-%s.md", timestamp))
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Review Report: %s\n\n", rc.BranchName))
-	sb.WriteString(fmt.Sprintf("Date: %s\n\n", time.Now().Format("2006-01-02 15:04")))
+	sb.WriteString(fmt.Sprintf("Date: %s\n\n", now.Format("2006-01-02 15:04")))
 	sb.WriteString("**Note:** AI response could not be parsed. Raw output below.\n\n")
 	sb.WriteString("## Raw Response\n\n```\n")
 	sb.WriteString(response)
