@@ -17,9 +17,11 @@ var initCmd = &cobra.Command{
 
 Creates:
   .goralph/
+    config.yaml    # Configuration settings
     prompt.md      # Agent instructions template
     progress.txt   # Progress log for learnings
     archive/       # Archived runs
+    reports/       # Analysis reports for auto mode
     skills/        # PRD and Ralph skills
       prd/         # PRD generation skill
       ralph/       # PRD-to-JSON conversion skill
@@ -39,11 +41,15 @@ func init() {
 func runInit(cmd *cobra.Command, args []string) error {
 	configDir := template.GoralphDir
 	archiveDir := filepath.Join(configDir, "archive")
+	reportsDir := filepath.Join(configDir, "reports")
 	projectDir := "."
 
 	// Create directories (MkdirAll is idempotent - won't fail if exists)
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directories: %w", err)
+	}
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create reports directory: %w", err)
 	}
 
 	// Create default files from templates only if they don't exist
@@ -65,6 +71,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if _, err := os.Stat(gitkeepPath); os.IsNotExist(err) {
 		if err := os.WriteFile(gitkeepPath, []byte(""), 0644); err != nil {
 			return fmt.Errorf("failed to write .gitkeep: %w", err)
+		}
+	}
+
+	// Create .gitkeep in reports only if it doesn't exist
+	reportsGitkeepPath := filepath.Join(reportsDir, ".gitkeep")
+	if _, err := os.Stat(reportsGitkeepPath); os.IsNotExist(err) {
+		if err := os.WriteFile(reportsGitkeepPath, []byte(""), 0644); err != nil {
+			return fmt.Errorf("failed to write reports .gitkeep: %w", err)
 		}
 	}
 
