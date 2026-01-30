@@ -520,4 +520,9 @@ func (d *Display) ShowNextSteps(steps []string) {
 	}
 }
 
+// Writer returns the underlying io.Writer for the display.
+func (d *Display) Writer() io.Writer {
+	return d.out
+}
+
 

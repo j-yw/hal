@@ -200,3 +200,59 @@
   - State file path is .goralph/auto-state.json
 ---
 
+## 2026-01-30 - T-014
+- Implemented pipeline Run method with analyze and branch steps in internal/compound/pipeline.go
+- Created RunOptions struct with Resume, DryRun, SkipPR, ReportPath fields
+- Run method implements step-by-step execution with context cancellation handling
+- Step analyze: finds latest report (or uses ReportPath), calls AnalyzeReport, saves result to state
+- Step branch: creates and checks out new branch using CreateBranch git helper
+- State is saved after each step completes, enabling resume capability
+- DryRun mode shows what would happen without executing (displays report path and branch name)
+- Future steps (prd, explode, loop, pr) return nil for T-015 and T-016 to implement
+- Files changed: internal/compound/pipeline.go
+- **Learnings for future iterations:**
+  - Use for/switch loop pattern for step-by-step execution with state transitions
+  - Context cancellation should save state before returning error
+  - Save state before AND after step errors to enable precise resumption
+  - display.ShowInfo for inline progress updates, display.StartSpinner for async operations
+---
+
+## 2026-01-30 - T-015
+- Implemented runPRDStep in internal/compound/pipeline.go for PRD generation
+- runPRDStep uses autospec skill with analysis context, outputs to .goralph/prd-[feature].md
+- Implemented runExplodeStep for task breakdown
+- runExplodeStep uses explode skill with PRD content, outputs to .goralph/prd.json
+- Both steps use engine.StreamPrompt() for visual feedback during LLM operations
+- State transitions correctly: prd -> explode -> loop
+- Added helper functions: buildAnalysisContext, extractMarkdownContent, extractJSONFromResponse, extractFromCodeBlock, countExplodeTasks
+- Handle both engine-written files (via Write tool) and text responses as fallback
+- Added imports for skills, template, and strings packages
+- Files changed: internal/compound/pipeline.go
+- **Learnings for future iterations:**
+  - Use skills.LoadSkill() to load embedded skill content
+  - Format analysis context for autospec skill using ANALYSIS CONTEXT block format
+  - extractMarkdownContent handles responses that may have meta-commentary before/after
+  - extractJSONFromResponse handles markdown code fences and extracts JSON
+  - Pattern: check file modification time before/after StreamPrompt to detect engine writes
+---
+
+## 2026-01-30 - T-016
+- Implemented runLoopStep and runPRStep in internal/compound/pipeline.go
+- runLoopStep: Creates loop.Runner with config from auto settings, runs task loop using runner.Run(ctx)
+- Loop uses maxIterations from auto config (p.config.MaxIterations)
+- Reports completion status (all tasks complete or stopped with remaining)
+- runPRStep: Pushes branch using PushBranch, creates draft PR using CreatePR
+- PR body includes summary from analysis (description, rationale, acceptance criteria)
+- State is cleared on successful completion via p.clearState()
+- Added buildPRBody helper to construct PR description from pipeline state
+- Added Writer() method to Display struct in internal/engine/display.go for loop.Config.Logger
+- Added loop package import to pipeline.go
+- Files changed: internal/compound/pipeline.go, internal/engine/display.go
+- **Learnings for future iterations:**
+  - Use loop.New(loop.Config{...}) to create a runner for the Ralph task loop
+  - loop.Runner.Run(ctx) returns a Result struct with Iterations, Complete, Success, Error fields
+  - Check result.Complete to determine if all tasks finished vs max iterations hit
+  - Display.Writer() provides the underlying io.Writer for reuse in sub-components
+  - buildPRBody uses strings.Builder pattern for efficient string construction
+---
+
