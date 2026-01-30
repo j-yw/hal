@@ -4,9 +4,8 @@
 - `cmd/`: Cobra CLI commands and flags.
 - `internal/`: core packages (`engine/`, `loop/`, `prd/`, `skills/`, `template/`).
 - `main.go`: CLI entrypoint wiring.
-- `tasks/`: example PRDs and feature specs.
-- `docs/` and `agent-os/`: product/roadmap documentation.
-- `.goralph/`: runtime config created by `goralph init` (`prd.json`, `progress.txt`, `prompt.md`, `skills/`).
+- `agent-os/`: product/roadmap documentation.
+- `.goralph/`: runtime config created by `goralph init` (`config.yaml`, `prd.json`, `progress.txt`, `prompt.md`, `skills/`, `archive/`, `reports/`).
 
 ## Build, Test, and Development Commands
 - `make build`: compile `goralph` with version metadata.

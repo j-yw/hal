@@ -36,11 +36,11 @@ If an existing prd.json exists with a different feature, it will be
 archived to .goralph/archive/ before the new one is written.
 
 Examples:
-  goralph convert                             # Auto-discover PRD in .goralph/
-  goralph convert tasks/prd-auth.md           # Explicit path
-  goralph convert docs/feature.md -o custom.json # Custom output path
-  goralph convert tasks/prd.md --validate     # Also validate after conversion
-  goralph convert tasks/prd.md -e claude      # Use Claude engine`,
+  goralph convert                                  # Auto-discover PRD in .goralph/
+  goralph convert .goralph/prd-auth.md            # Explicit path
+  goralph convert .goralph/prd.md -o custom.json  # Custom output path
+  goralph convert .goralph/prd.md --validate      # Also validate after conversion
+  goralph convert .goralph/prd.md -e claude       # Use Claude engine`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runConvert,
 }

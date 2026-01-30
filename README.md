@@ -55,7 +55,7 @@ goralph init
 goralph plan
 
 # Or write markdown PRD manually, then convert
-goralph convert tasks/prd-auth.md
+goralph convert .goralph/prd-auth.md
 
 # Validate the PRD
 goralph validate
@@ -122,9 +122,9 @@ goralph run
 Convert a markdown PRD to the structured JSON format GoRalph needs:
 
 ```bash
-goralph convert tasks/prd-auth.md
-goralph convert tasks/prd-auth.md -o custom-output.json
-goralph convert tasks/prd-auth.md --validate    # also validate after conversion
+goralph convert .goralph/prd-auth.md
+goralph convert .goralph/prd-auth.md -o custom-output.json
+goralph convert .goralph/prd-auth.md --validate    # also validate after conversion
 ```
 
 If a `prd.json` already exists for a different feature, it gets archived to `.goralph/archive/` automatically.

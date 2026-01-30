@@ -36,7 +36,7 @@ compatible with the existing Ralph loop.
 Examples:
   goralph explode .goralph/prd-feature.md                    # Explode a PRD
   goralph explode .goralph/prd-feature.md --branch feature   # Set branch name
-  goralph explode tasks/my-prd.md --engine claude            # Use specific engine`,
+  goralph explode .goralph/prd-feature.md --engine claude     # Use specific engine`,
 	Args: cobra.ExactArgs(1),
 	RunE: runExplode,
 }
