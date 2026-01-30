@@ -1,87 +1,103 @@
 # Ralph Progress Log
 
 ## Codebase Patterns
-
-- Engines are registered via init() using `engine.RegisterEngine(name, constructor)`
-- Engines must implement `engine.Engine` interface: Name(), Execute(), Prompt(), StreamPrompt()
-- Engine packages live in `internal/engine/<name>/` with main file `<name>.go`
-- CLI tools are imported via blank import (e.g., `_ "github.com/jywlabs/goralph/internal/engine/codex"`)
-- Use `syscall.SysProcAttr{Setsid: true}` to detach CLI processes from TTY
-
-- Codex JSONL events: thread.started, turn.started, item.started, item.completed, turn.completed
-- Item types: command_execution (for tools), agent_message (for text), reasoning (for thinking)
-- Commands are wrapped in bash: `/usr/bin/bash -lc 'actual command'` - extract with extractCommand()
+- Type packages use simple Go structs with JSON tags for serialization
+- Constants for enum-like values are defined as package-level `const` blocks
+- Package organization follows internal/{domain}/types.go pattern
+- Config loading uses gopkg.in/yaml.v3 with default fallback pattern
+- Use DefaultXXX() functions to provide sensible defaults when config is missing
 
 ---
 
-## 2026-01-29 - US-008
-- What was implemented: Integration tests with actual Codex CLI to verify end-to-end functionality
-- Files changed: internal/engine/codex/integration_test.go (new)
+## 2026-01-30 - T-001
+- Implemented compound types package at internal/compound/types.go
+- Created AnalysisResult struct with PriorityItem, Description, Rationale, AcceptanceCriteria, EstimatedTasks, BranchName
+- Created PipelineState struct with Step, BranchName, ReportPath, PRDPath, StartedAt, Analysis
+- Added Step constants: StepAnalyze, StepBranch, StepPRD, StepExplode, StepLoop, StepPR
+- Files changed: internal/compound/types.go (new)
 - **Learnings for future iterations:**
-  - Use build tags (`//go:build integration`) for tests that require external dependencies
-  - Run integration tests with: `go test -tags=integration ./internal/engine/codex/...`
-  - Codex CLI shows model as "codex" (not actual model version like "gpt-4o")
-  - Token counts are provided in turn.completed usage field (input_tokens, output_tokens, cached_input_tokens)
-  - Timeout errors include "timed out" in message, useful for retry logic detection
-  - StreamPrompt() correctly collects text from agent_message item.completed events
-  - <promise>COMPLETE</promise> detection works when included in agent_message text
+  - Follow existing type patterns from internal/engine/prd.go
+  - Use `omitempty` JSON tag for optional pointer fields
+  - Constants provide type safety for step values
 ---
 
-## 2026-01-29 - US-007
-- What was implemented: Added comprehensive unit tests for Codex engine
-- Files changed: internal/engine/codex/codex_test.go (new)
+## 2026-01-30 - T-002
+- Created compound config loader at internal/compound/config.go
+- Created AutoConfig struct with ReportsDir, BranchPrefix, QualityChecks, MaxIterations
+- Implemented LoadConfig(dir string) that reads from .goralph/config.yaml
+- Added DefaultAutoConfig() with sensible defaults: reportsDir: .goralph/reports, branchPrefix: compound/, maxIterations: 25
+- Added gopkg.in/yaml.v3 dependency
+- Files changed: internal/compound/config.go (new), go.mod, go.sum
 - **Learnings for future iterations:**
-  - Test engine registration with `engine.New("codex")` to verify init() worked
-  - Parser tests should cover all event types: thread.started, item.started/completed, turn.completed
-  - Test both success and error cases for command_execution (exit_code 0 vs non-zero)
-  - extractCommand() returns original string when the pattern doesn't match (e.g., empty command)
+  - Use yaml.v3 for YAML parsing in Go
+  - Merge pattern: load defaults first, then override with config values
+  - Config struct can contain nested sections (Config.Auto for auto-specific settings)
 ---
 
-## 2026-01-29 - US-006
-- What was implemented: Implemented StreamPrompt method for streaming display feedback while collecting text response
-- Files changed: internal/engine/codex/codex.go
+## 2026-01-30 - T-003
+- Created default config.yaml template at internal/template/config.yaml
+- Template includes all settings: engine, maxIterations, retryDelay, maxRetries
+- Template includes auto section: reportsDir, branchPrefix, qualityChecks, maxIterations
+- All settings have descriptive comments explaining their purpose and defaults
+- Embedded config.yaml in template.go using //go:embed
+- Added config.yaml to DefaultFiles() map so init command will install it
+- Files changed: internal/template/config.yaml (new), internal/template/template.go
 - **Learnings for future iterations:**
-  - StreamPrompt() uses --json flag (via BuildArgs) to get JSONL output for streaming display
-  - textCollectingStreamHandler parses events via parser AND collects text from agent_message items
-  - Text is extracted from item.completed events where item.type == "agent_message"
-  - Follow the claude engine's StreamPrompt() pattern closely - includes display.StopSpinner() at end
+  - Template files use //go:embed directive with matching variable names (DefaultConfig for config.yaml)
+  - DefaultFiles() map controls which files goralph init creates
+  - YAML comments with section separators improve readability of config files
 ---
 
-## 2026-01-29 - US-005
-- What was implemented: Implemented Prompt method for simple prompt/response without streaming JSON
-- Files changed: internal/engine/codex/codex.go
+## 2026-01-30 - T-004
+- Updated init command to create config.yaml and reports directory
+- goralph init now creates .goralph/config.yaml if it doesn't exist (already handled by DefaultFiles() from T-003)
+- goralph init now creates .goralph/reports/ directory with .gitkeep
+- Updated command Long description to document config.yaml and reports/ directory
+- Files changed: cmd/init.go
 - **Learnings for future iterations:**
-  - Prompt() method uses simpler args without --json flag: `exec --dangerously-bypass-approvals-and-sandbox <prompt>`
-  - Follow the claude engine's Prompt() pattern for consistency: timeout handling, context cancellation, stdout/stderr capture
-  - Plain text output is returned directly without any JSON parsing
+  - Init command uses os.MkdirAll for idempotent directory creation
+  - .gitkeep files ensure empty directories are tracked by git
+  - DefaultFiles() already handles file creation/preservation logic - just add to the map
 ---
 
-## 2026-01-29 - US-004
-- What was implemented: Implemented Execute method for Codex engine with streaming output parser
-- Files changed: internal/engine/codex/codex.go
+## 2026-01-30 - T-005
+- Created autospec skill for autonomous PRD generation at internal/skills/autospec/SKILL.md
+- Skill self-clarifies using analysis context (no user questions) for auto pipeline use
+- Uses T-XXX task IDs (not US-XXX) for compound engineering format
+- Includes boolean acceptance criteria patterns for autonomous verification
+- Updated embed.go to include autospec in SkillContent map and SkillNames slice
+- Files changed: internal/skills/autospec/SKILL.md (new), internal/skills/embed.go
 - **Learnings for future iterations:**
-  - Follow the claude engine pattern for Execute() implementation - same structure works well
-  - streamHandler type needs nil check for display.ShowEvent() in case display is nil
-  - parseSuccess() scans output for EventResult to determine success status
-  - Check for `<promise>COMPLETE</promise>` in output to set Result.Complete flag
+  - Skills use //go:embed with matching variable name convention (e.g., autospecSkillContent)
+  - SkillContent map and SkillNames slice must both be updated when adding new skills
+  - Skill frontmatter uses YAML format with name and description fields
+  - Autonomous skills should avoid interactive elements like AskUserQuestion
 ---
 
-## 2026-01-29 - US-003
-- What was implemented: Created Codex output parser that maps JSONL events to engine.Event types
-- Files changed: internal/engine/codex/parser.go (new)
+## 2026-01-30 - T-006
+- Created explode skill for task breakdown at internal/skills/explode/SKILL.md
+- Skill breaks down PRDs into 8-15 granular tasks for autonomous execution
+- Uses T-XXX task IDs and outputs to .goralph/prd.json in userStories format
+- Documents task sizing (one iteration rule), dependency ordering, and boolean acceptance criteria
+- Updated embed.go to include explode in SkillContent map and SkillNames slice
+- Files changed: internal/skills/explode/SKILL.md (new), internal/skills/embed.go
 - **Learnings for future iterations:**
-  - Codex wraps commands in bash like `/usr/bin/bash -lc 'command'` - need to extract actual command
-  - Codex event types: thread.started (init), item.completed (tool/text/reasoning), turn.completed (result with usage)
-  - Codex doesn't include explicit success/failure in turn.completed, assume success if no error
-  - turn.completed contains usage with input_tokens, output_tokens, cached_input_tokens
+  - Skill pattern consistent: YAML frontmatter + markdown body + examples
+  - Task count 8-15 is calibrated for context window limits
+  - Standard ordering: investigation -> schema -> backend -> UI -> verification
+  - Use userStories field (not tasks) for backward compatibility with existing Ralph loop
 ---
 
-## 2026-01-29 - US-001
-- What was implemented: Created Codex engine package structure with Engine struct, init() registration, and stub methods
-- Files changed: internal/engine/codex/codex.go (new)
+## 2026-01-30 - T-007
+- Verified T-007 acceptance criteria - all work already completed during T-005 and T-006
+- embed.go already has //go:embed for autospec/SKILL.md and explode/SKILL.md
+- SkillContent map already contains autospec and explode entries
+- SkillNames slice already contains "autospec" and "explode"
+- Typecheck passed (go vet ./...)
+- Tests passed (go test ./internal/skills/... - no test files, no failures)
+- Files changed: .goralph/prd.json (marked T-007 as passes: true)
 - **Learnings for future iterations:**
-  - Follow the claude engine pattern exactly for consistency
-  - BuildArgs() for Codex uses `exec --dangerously-bypass-approvals-and-sandbox --json <prompt>`
-  - Codex CLI command is simply "codex"
+  - When implementing skills (T-005, T-006), embed.go updates are best done in the same PR
+  - Check if earlier stories already completed dependent work before implementing
 ---
 
