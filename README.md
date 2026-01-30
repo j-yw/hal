@@ -4,6 +4,7 @@ Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story 
 
 ## How It Works
 
+### Manual Flow
 ```
 plan → convert → validate → run
 ```
@@ -12,6 +13,20 @@ plan → convert → validate → run
 2. **Convert** -- Transform markdown PRD into structured JSON with right-sized stories
 3. **Validate** -- Check stories against quality rules (size, ordering, criteria)
 4. **Run** -- Loop through stories autonomously: pick next story, implement, commit, repeat
+
+### Compound Engineering Flow (Automated)
+```
+analyze → branch → prd → explode → loop → pr
+```
+
+The `auto` command runs the full pipeline unattended:
+
+1. **Analyze** -- Find and analyze the latest report to identify priority item
+2. **Branch** -- Create and checkout a new branch for the work
+3. **PRD** -- Generate a PRD using the autospec skill (non-interactive)
+4. **Explode** -- Break down the PRD into 8-15 granular tasks
+5. **Loop** -- Execute the Ralph task loop until all tasks pass
+6. **PR** -- Push the branch and create a draft pull request
 
 Each iteration gets a fresh context window. The AI reads `prd.json` and `progress.txt`, implements the highest-priority incomplete story, commits, and updates progress.
 
@@ -35,6 +50,7 @@ Requires Go 1.25+ and one of:
 # Initialize project
 goralph init
 
+# === Manual workflow ===
 # Generate PRD interactively
 goralph plan
 
@@ -46,6 +62,10 @@ goralph validate
 
 # Run the loop
 goralph run
+
+# === Compound engineering (automated) ===
+# Drop a report in .goralph/reports/, then:
+goralph auto
 ```
 
 ## Planning a Feature
@@ -130,6 +150,39 @@ goralph run -e codex              # use Codex engine
 goralph run --dry-run             # show what would execute without running
 ```
 
+## Compound Engineering Pipeline
+
+The `auto` command provides full end-to-end automation. Place analysis reports in `.goralph/reports/`, and GoRalph will find the latest one, identify the priority item, generate a PRD, break it into tasks, implement them, and open a PR.
+
+```bash
+goralph auto                     # Run full pipeline with latest report
+goralph auto --report report.md  # Use specific report file
+goralph auto --dry-run           # Show what would happen without executing
+goralph auto --resume            # Continue from last saved state
+goralph auto --skip-pr           # Skip PR creation at the end
+```
+
+The pipeline saves state after each step to `.goralph/pipeline-state.json`, allowing you to resume from interruptions.
+
+### Individual Pipeline Commands
+
+Each step of the pipeline can be run independently:
+
+```bash
+# Analyze reports to find priority item
+goralph analyze                           # Analyze latest report
+goralph analyze report.md                 # Analyze specific file
+goralph analyze --output json             # Output as JSON
+
+# Break a PRD into granular tasks
+goralph explode .goralph/prd-feature.md                  # Explode a PRD
+goralph explode .goralph/prd-feature.md --branch feature # Set branch name
+
+# Review completed work
+goralph review                  # Review and generate report
+goralph review --skip-agents    # Skip AGENTS.md update
+```
+
 ## All Commands
 
 | Command | Description |
@@ -139,6 +192,10 @@ goralph run --dry-run             # show what would execute without running
 | `goralph convert <markdown-prd>` | Convert markdown PRD to `.goralph/prd.json` |
 | `goralph validate [prd-path]` | Validate PRD against quality rules |
 | `goralph run [iterations]` | Execute stories autonomously (default: 10 iterations) |
+| `goralph auto` | Run full compound engineering pipeline |
+| `goralph analyze [report]` | Analyze reports to identify priority item |
+| `goralph explode <prd-path>` | Break PRD into 8-15 granular tasks |
+| `goralph review` | Review completed work and generate a report |
 | `goralph config` | Show current configuration |
 | `goralph version` | Show version info |
 
@@ -194,15 +251,23 @@ goralph run -e codex     # use Codex
 
 ```
 .goralph/                  # Project config (created by init)
+  config.yaml              # Configuration settings
   prompt.md                # Agent instructions (customizable)
   progress.txt             # Progress log across iterations
   prd.json                 # Current PRD
+  archive/                 # Archived PRDs from previous features
+  reports/                 # Analysis reports for auto mode
   skills/                  # Installed skills
+    prd/                   # PRD generation skill
+    ralph/                 # PRD-to-JSON conversion skill
+    autospec/              # Non-interactive PRD generation
+    explode/               # Task breakdown skill
 ```
 
 ```
 cmd/                       # CLI commands
 internal/
+  compound/                # Compound engineering pipeline
   engine/                  # Engine interface + display
     claude/                # Claude Code engine
     codex/                 # OpenAI Codex engine

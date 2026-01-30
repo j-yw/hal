@@ -143,17 +143,38 @@ Not available from CLI output. Set to 0.
 |----------|-------|
 | Name | Codex |
 | CLI Command | `codex` |
-| Output Format | text |
+| Output Format | JSONL |
 
 ### Invocation
 
 ```bash
-codex "<prompt>"
+codex exec --dangerously-bypass-approvals-and-sandbox --json -
+```
+
+Prompt is passed via stdin (the `-` reads from stdin):
+```bash
+echo "<prompt>" | codex exec --dangerously-bypass-approvals-and-sandbox --json -
 ```
 
 ### Output Parsing
 
-Plain text output. Success determined by exit code.
+JSONL format emits newline-delimited JSON events:
+
+```json
+{"type":"message.start"}
+{"type":"message.delta","delta":{"text":"Working on..."}}
+{"type":"tool_use","tool":{"name":"read_file","input":{"path":"src/index.ts"}}}
+{"type":"message.done","usage":{"input_tokens":1234,"output_tokens":567}}
+```
+
+Parse the `message.done` event for token counts.
+Handle `turn.failed` and error events for failure detection.
+
+### Success Criteria
+
+- Exit code: 0
+- No error or failed events
+- Message done event present
 
 ---
 
