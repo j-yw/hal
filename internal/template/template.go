@@ -29,8 +29,9 @@ const (
 // DefaultFiles returns the default files to create in .goralph/
 func DefaultFiles() map[string]string {
 	return map[string]string{
-		PromptFile:   DefaultPrompt,
-		ProgressFile: DefaultProgress,
-		ConfigFile:   DefaultConfig,
+		PromptFile:       DefaultPrompt,
+		ProgressFile:     DefaultProgress,
+		AutoProgressFile: DefaultProgress,
+		ConfigFile:       DefaultConfig,
 	}
 }

@@ -491,6 +491,18 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return nil
 	}
 
+	progressPath := filepath.Join(p.dir, template.GoralphDir, template.AutoProgressFile)
+	if _, err := os.Stat(progressPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(progressPath), 0755); err != nil {
+			return fmt.Errorf("failed to create progress directory: %w", err)
+		}
+		if err := os.WriteFile(progressPath, []byte(template.DefaultProgress), 0644); err != nil {
+			return fmt.Errorf("failed to write %s: %w", template.AutoProgressFile, err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to stat %s: %w", template.AutoProgressFile, err)
+	}
+
 	// Create loop runner with config from auto settings
 	loopConfig := loop.Config{
 		Dir:           filepath.Join(p.dir, template.GoralphDir),

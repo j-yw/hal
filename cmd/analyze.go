@@ -102,7 +102,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Analyze", filepath.Base(reportPath), eng.Name())
+	if analyzeOutputFlag != "json" {
+		display.ShowCommandHeader("Analyze", filepath.Base(reportPath), eng.Name())
+	}
 
 	// Find recent PRDs to avoid duplicating work
 	goralphDir := template.GoralphDir
