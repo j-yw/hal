@@ -464,9 +464,11 @@ Write the JSON directly to %s using the Write tool.`, explodeSkill, string(prdCo
 		}
 
 		// Parse to get task count
+		taskCount := 0
 		var prd engine.PRD
-		json.Unmarshal([]byte(prdJSON), &prd)
-		taskCount := countExplodeTasks(&prd)
+		if err := json.Unmarshal([]byte(prdJSON), &prd); err == nil {
+			taskCount = countExplodeTasks(&prd)
+		}
 		p.display.ShowInfo("   Tasks generated: %d • Path: %s\n", taskCount, outPath)
 	}
 

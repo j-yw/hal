@@ -88,7 +88,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create symlinks for engine skill discovery
-	skills.LinkAllEngines(projectDir) // Errors are logged as warnings
+	if err := skills.LinkAllEngines(projectDir); err != nil {
+		_ = err // Errors are logged as warnings in LinkAllEngines.
+	}
 
 	fmt.Println("Initialized .goralph/")
 	fmt.Println()

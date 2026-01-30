@@ -279,7 +279,10 @@ func archiveExistingPRD(prdPath, newMdPath string) error {
 	progressPath := filepath.Join(prdDir, "progress.txt")
 	if progressContent, err := os.ReadFile(progressPath); err == nil {
 		archiveProgressPath := filepath.Join(archiveDir, "progress.txt")
-		os.WriteFile(archiveProgressPath, progressContent, 0644)
+		// Best-effort archive of progress; failures shouldn't block conversion.
+		if err := os.WriteFile(archiveProgressPath, progressContent, 0644); err != nil {
+			_ = err // Intentionally ignore write errors for the optional archive copy.
+		}
 	}
 
 	return nil

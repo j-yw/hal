@@ -152,9 +152,11 @@ func runExplode(cmd *cobra.Command, args []string) error {
 	}
 
 	// Parse to get task count for success message
+	taskCount := 0
 	var prd engine.PRD
-	json.Unmarshal([]byte(prdJSON), &prd)
-	taskCount := countTasks(&prd)
+	if err := json.Unmarshal([]byte(prdJSON), &prd); err == nil {
+		taskCount = countTasks(&prd)
+	}
 
 	display.ShowCommandSuccess("Tasks generated", fmt.Sprintf("%d tasks • Path: %s", taskCount, outPath))
 	return nil
