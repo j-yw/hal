@@ -256,3 +256,35 @@
   - buildPRBody uses strings.Builder pattern for efficient string construction
 ---
 
+## 2026-01-30 - T-017
+- Created auto command at cmd/auto.go
+- Accepts --dry-run flag to show steps without executing
+- Accepts --resume flag to continue from last saved state
+- Accepts --skip-pr flag to skip PR creation at end
+- Accepts --report flag to specify report file (skips find latest)
+- Accepts --engine flag to select engine (defaults to claude)
+- Shows progress for each pipeline step using display methods
+- Handles no reports gracefully: exits with code 0 and informational message
+- Uses compound.NewPipeline and Pipeline.Run for pipeline orchestration
+- Returns PR URL on success (via pipeline PR step display)
+- Files changed: cmd/auto.go (new)
+- **Learnings for future iterations:**
+  - Follow analyze.go pattern for Cobra command structure
+  - ShowCommandSuccess requires two parameters (title, details) - pass "" for empty details
+  - No ShowWarning method on Display - use ShowInfo for warning-like messages
+  - Check pipeline.HasState() before running to warn about existing state
+---
+
+## 2026-01-30 - T-018
+- Verified empty reports graceful handling already implemented
+- cmd/auto.go checks for reports before starting pipeline (lines 84-92)
+- cmd/analyze.go has identical handling when no report path specified (lines 81-91)
+- Both return nil (exit code 0) with informational message about where to place reports
+- Typecheck passes (go vet ./...)
+- Files changed: .goralph/prd.json (marked T-018 as passes: true)
+- **Learnings for future iterations:**
+  - Some acceptance criteria may already be satisfied by earlier implementations
+  - Always verify AC fulfillment before implementing to avoid duplicate work
+  - The pattern for graceful handling: print info message, return nil (not error)
+---
+
