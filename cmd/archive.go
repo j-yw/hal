@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,20 +64,7 @@ func init() {
 }
 
 func runArchive(cmd *cobra.Command, args []string) error {
-	halDir := template.HalDir
-	if _, err := os.Stat(halDir); os.IsNotExist(err) {
-		return fmt.Errorf(".hal/ not found - run 'hal init' first")
-	}
-
-	name := archiveNameFlag
-	if name == "" {
-		// Try to derive default from prd.json branchName
-		defaultName := deriveArchiveName(halDir)
-		name = promptForName(defaultName)
-	}
-
-	_, err := archive.Create(halDir, name, os.Stdout)
-	return err
+	return runArchiveCreate(template.HalDir, archiveNameFlag, os.Stdin, os.Stdout)
 }
 
 func runArchiveList(cmd *cobra.Command, args []string) error {
@@ -103,6 +91,21 @@ func runArchiveRestore(cmd *cobra.Command, args []string) error {
 	return archive.Restore(halDir, args[0], os.Stdout)
 }
 
+// runArchiveCreate contains the testable logic for the archive create command.
+func runArchiveCreate(halDir string, name string, in io.Reader, out io.Writer) error {
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+	}
+
+	if name == "" {
+		defaultName := deriveArchiveName(halDir)
+		name = promptForName(defaultName, in, out)
+	}
+
+	_, err := archive.Create(halDir, name, out)
+	return err
+}
+
 // deriveArchiveName attempts to get a default name from prd.json branchName.
 func deriveArchiveName(halDir string) string {
 	for _, prdFile := range []string{template.PRDFile, template.AutoPRDFile} {
@@ -122,14 +125,14 @@ func deriveArchiveName(halDir string) string {
 }
 
 // promptForName asks the user for an archive name with a default suggestion.
-func promptForName(defaultName string) string {
+func promptForName(defaultName string, in io.Reader, out io.Writer) string {
 	if defaultName != "" {
-		fmt.Printf("Archive name [%s]: ", defaultName)
+		fmt.Fprintf(out, "Archive name [%s]: ", defaultName)
 	} else {
-		fmt.Print("Archive name: ")
+		fmt.Fprint(out, "Archive name: ")
 	}
 
-	reader := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(in)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
