@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
@@ -155,6 +156,9 @@ func migrateConfigDir(oldDir, newDir string, w io.Writer) (migrateResult, error)
 		if err := os.Rename(oldDir, newDir); err != nil {
 			return migrateNone, fmt.Errorf("failed to migrate %s to %s: %w", oldDir, newDir, err)
 		}
+		if err := updateMigratedFiles(newDir); err != nil {
+			return migrateDone, err
+		}
 		fmt.Fprintf(w, "Migrated %s/ to %s/ — I've upgraded your configuration. It's going to be a much better experience.\n", oldDir, newDir)
 		fmt.Fprintln(w)
 		return migrateDone, nil
@@ -168,4 +172,37 @@ func migrateConfigDir(oldDir, newDir string, w io.Writer) (migrateResult, error)
 	}
 
 	return migrateNone, nil
+}
+
+func updateMigratedFiles(configDir string) error {
+	if err := replaceFileContent(filepath.Join(configDir, template.ConfigFile), func(content string) string {
+		return strings.ReplaceAll(content, ".goralph/reports", ".hal/reports")
+	}); err != nil {
+		return err
+	}
+	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), func(content string) string {
+		return strings.ReplaceAll(content, ".goralph/", ".hal/")
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func replaceFileContent(path string, transform func(string) string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	original := string(data)
+	updated := transform(original)
+	if updated == original {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+		return fmt.Errorf("failed to update %s: %w", path, err)
+	}
+	return nil
 }

@@ -40,6 +40,46 @@ func TestMigrateConfigDir(t *testing.T) {
 			},
 		},
 		{
+			name: "migration updates legacy config and prompt",
+			setupFn: func(t *testing.T, dir string) {
+				old := filepath.Join(dir, ".goralph")
+				os.MkdirAll(old, 0755)
+				legacyConfig := `# legacy config
+auto:
+  reportsDir: .goralph/reports # old path
+  branchPrefix: compound/
+`
+				legacyPrompt := "Read `.goralph/{{PRD_FILE}}` and `.goralph/{{PROGRESS_FILE}}`"
+				os.WriteFile(filepath.Join(old, "config.yaml"), []byte(legacyConfig), 0644)
+				os.WriteFile(filepath.Join(old, "prompt.md"), []byte(legacyPrompt), 0644)
+			},
+			wantResult: migrateDone,
+			wantOutput: "Migrated",
+			checkFn: func(t *testing.T, dir string) {
+				updatedConfig, err := os.ReadFile(filepath.Join(dir, ".hal", "config.yaml"))
+				if err != nil {
+					t.Fatalf(".hal/config.yaml should exist: %v", err)
+				}
+				if strings.Contains(string(updatedConfig), ".goralph/reports") {
+					t.Errorf("config.yaml should not reference .goralph/reports")
+				}
+				if !strings.Contains(string(updatedConfig), ".hal/reports") {
+					t.Errorf("config.yaml should reference .hal/reports")
+				}
+
+				updatedPrompt, err := os.ReadFile(filepath.Join(dir, ".hal", "prompt.md"))
+				if err != nil {
+					t.Fatalf(".hal/prompt.md should exist: %v", err)
+				}
+				if strings.Contains(string(updatedPrompt), ".goralph/") {
+					t.Errorf("prompt.md should not reference .goralph/")
+				}
+				if !strings.Contains(string(updatedPrompt), ".hal/") {
+					t.Errorf("prompt.md should reference .hal/")
+				}
+			},
+		},
+		{
 			name: "both dirs exist - warning",
 			setupFn: func(t *testing.T, dir string) {
 				old := filepath.Join(dir, ".goralph")
