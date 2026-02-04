@@ -60,3 +60,67 @@
   - After T-006, the entire archive package is free of raw `os.Rename` — all moves go through the EXDEV-safe helpers
 ---
 
+## 2026-02-04 - T-007
+- Extracted `runArchiveCreate(halDir, name string, in io.Reader, out io.Writer) error` in `cmd/archive.go`
+- Updated `promptForName` to accept `io.Reader` and `io.Writer` instead of hardcoded `os.Stdin`/`os.Stdout`
+- Cobra `runArchive` handler now delegates to `runArchiveCreate` with `os.Stdin` and `os.Stdout`
+- Files changed: `cmd/archive.go`
+- **Learnings for future iterations:**
+  - Follow the `migrateConfigDir` pattern from `cmd/init.go` — extract testable logic into standalone functions with `io.Writer`/`io.Reader` params
+  - `promptForName` signature changed from `(defaultName string) string` to `(defaultName string, in io.Reader, out io.Writer) string` — any callers need updating
+  - `deriveArchiveName` already accepted `halDir` parameter so no change was needed
+---
+
+## 2026-02-04 - T-008
+- Extracted `runArchiveListFn(halDir string, verbose bool, out io.Writer) error` in `cmd/archive.go`
+- Extracted `runArchiveRestoreFn(halDir string, name string, out io.Writer) error` in `cmd/archive.go`
+- Cobra `runArchiveList` and `runArchiveRestore` handlers now delegate to the extracted functions with `os.Stdout`
+- Files changed: `cmd/archive.go`
+- **Learnings for future iterations:**
+  - The list/restore extracted functions are simpler than create since they don't need `io.Reader` (no interactive prompts)
+  - All three archive CLI commands now follow the same testable extraction pattern
+---
+
+## 2026-02-04 - T-009
+- Created `cmd/archive_test.go` with `TestRunArchiveCreate` — 5 table-driven subtests
+- Tests: --name flag bypass, prd branchName default in prompt, empty input uses default, missing halDir error, no state files error
+- Files changed: `cmd/archive_test.go` (new file)
+- **Learnings for future iterations:**
+  - Use `strings.NewReader` for `io.Reader` stdin simulation and `bytes.Buffer` for output capture
+  - `archive.Create` requires the `archive/` subdirectory to exist under halDir, so tests must create it with `os.MkdirAll`
+  - `writePRD` helper writes a minimal `engine.PRD` with `BranchName` — reuse it in future archive test setups
+---
+
+## 2026-02-04 - T-010
+- Created `TestRunArchiveListFn` in `cmd/archive_test.go` — 4 table-driven subtests
+- Tests: default headers (NAME/DATE/PROGRESS), verbose headers (+BRANCH/PATH), empty archive message, missing halDir error
+- Files changed: `cmd/archive_test.go`
+- **Learnings for future iterations:**
+  - Archive list tests need pre-created archive directories (e.g., `2026-01-15-test-feature`) with prd.json inside for stats to show
+  - Default output should NOT contain BRANCH or PATH columns — use `wantMissing` to assert absence
+  - `archive.List` returns `nil, nil` for non-existent archive dir, but `FormatList` handles empty slice with "No archives found."
+---
+
+## 2026-02-04 - T-011
+- Created `TestRunArchiveRestoreFn` in `cmd/archive_test.go` — 4 table-driven subtests
+- Tests: restore moves files + removes archive dir, auto-archives current state, nonexistent archive error, missing halDir error
+- Files changed: `cmd/archive_test.go`
+- **Learnings for future iterations:**
+  - Restore auto-archive test verifies the restored `prd.json` by unmarshalling and checking `BranchName` — confirms the correct archive was restored
+  - The `archive/` subdirectory must exist before restore for the auto-archive feature to work (it calls `archive.Create` internally)
+  - Setup functions return the archive name so each test controls what name is passed to `runArchiveRestoreFn`
+---
+
+## 2026-02-04 - T-012
+- End-to-end verification: all quality checks pass
+- `go test ./internal/archive/...` — 25 tests pass (moveFile, moveDir, Create, List, Restore, FeatureFromBranch)
+- `go test ./cmd/...` — 19 tests pass (archive create/list/restore CLI + migrateConfigDir)
+- `make test` — full suite passes
+- `make vet` — clean
+- `make fmt` — no formatting changes
+- No raw `os.Rename` calls in `internal/archive/archive.go`
+- **Learnings for future iterations:**
+  - Always run `make test`, `make vet`, and `make fmt` as the final verification before marking a story complete
+  - The `git diff --stat` after `make fmt` shows unrelated pre-existing changes — only check for newly introduced formatting issues
+---
+
