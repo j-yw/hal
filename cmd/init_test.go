@@ -39,6 +39,51 @@ func TestMigrateConfigDir(t *testing.T) {
 			},
 		},
 		{
+			name: "both dirs exist - warning",
+			setupFn: func(dir string) {
+				old := filepath.Join(dir, ".goralph")
+				os.MkdirAll(old, 0755)
+				os.WriteFile(filepath.Join(old, "marker-old.txt"), []byte("old"), 0644)
+				newD := filepath.Join(dir, ".hal")
+				os.MkdirAll(newD, 0755)
+				os.WriteFile(filepath.Join(newD, "marker-new.txt"), []byte("new"), 0644)
+			},
+			wantResult: migrateWarning,
+			wantOutput: "Warning: both",
+			checkFn: func(t *testing.T, dir string) {
+				dataOld, err := os.ReadFile(filepath.Join(dir, ".goralph", "marker-old.txt"))
+				if err != nil {
+					t.Fatalf(".goralph/marker-old.txt should exist: %v", err)
+				}
+				if string(dataOld) != "old" {
+					t.Errorf("old marker content = %q, want %q", string(dataOld), "old")
+				}
+				dataNew, err := os.ReadFile(filepath.Join(dir, ".hal", "marker-new.txt"))
+				if err != nil {
+					t.Fatalf(".hal/marker-new.txt should exist: %v", err)
+				}
+				if string(dataNew) != "new" {
+					t.Errorf("new marker content = %q, want %q", string(dataNew), "new")
+				}
+			},
+		},
+		{
+			name: "neither dir exists - fresh init",
+			setupFn: func(dir string) {
+				// no setup — neither directory exists
+			},
+			wantResult: migrateNone,
+			wantOutput: "",
+			checkFn: func(t *testing.T, dir string) {
+				if _, err := os.Stat(filepath.Join(dir, ".goralph")); !os.IsNotExist(err) {
+					t.Error(".goralph should not exist")
+				}
+				if _, err := os.Stat(filepath.Join(dir, ".hal")); !os.IsNotExist(err) {
+					t.Error(".hal should not have been created by migrateConfigDir")
+				}
+			},
+		},
+		{
 			name: "only new dir exists - no-op",
 			setupFn: func(dir string) {
 				newD := filepath.Join(dir, ".hal")
