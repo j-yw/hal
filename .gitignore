@@ -1,11 +1,8 @@
 # Binaries
 /hal
-/goralph
 dist/
 
 # Runtime config
-.hal/
-.goralph/
 *.exe
 *.exe~
 *.dll

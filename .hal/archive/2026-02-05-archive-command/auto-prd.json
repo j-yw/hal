@@ -1,0 +1,217 @@
+{
+  "project": "goralph",
+  "branchName": "compound/archive-cross-device-fallback",
+  "description": "Add copy-and-remove fallback to archive operations for cross-filesystem support, plus CLI-level tests for archive commands.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Create moveFile helper with EXDEV fallback",
+      "description": "As a developer, I need a moveFile helper in internal/archive that wraps os.Rename and falls back to copy-and-remove on EXDEV, so file moves work across filesystem boundaries.",
+      "acceptanceCriteria": [
+        "Create internal/archive/move.go with moveFile(src, dst string) error function",
+        "moveFile calls os.Rename first as the fast path",
+        "When os.Rename returns *os.LinkError with Err == syscall.EXDEV, falls back to copy-and-remove",
+        "Copy reads source with os.Open and writes to destination with os.Create, using io.Copy",
+        "File permissions are preserved via os.Stat on source before copy and os.Chmod on destination after write",
+        "Source file is removed only after successful copy and destination file close",
+        "Non-EXDEV rename errors are returned as-is without fallback",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Create moveDir helper for directory moves with EXDEV fallback",
+      "description": "As a developer, I need a moveDir helper that moves an entire directory tree across filesystem boundaries, so restoreDir and report directory moves work cross-device.",
+      "acceptanceCriteria": [
+        "moveDir(src, dst string) error function exists in internal/archive/move.go",
+        "Attempts os.Rename first as the fast path for the whole directory",
+        "On EXDEV, walks source directory with filepath.WalkDir and copies files individually using moveFile",
+        "Creates destination directory structure with matching permissions from source directories",
+        "Removes entire source directory tree with os.RemoveAll after all files are successfully copied",
+        "Returns error if source directory does not exist",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Unit tests for moveFile",
+      "description": "As a developer, I need unit tests for moveFile to verify both the fast rename path and edge cases, so we have confidence in file move behavior.",
+      "acceptanceCriteria": [
+        "Tests live in internal/archive/move_test.go",
+        "Test: same-device move succeeds — file content matches, source is gone, destination exists",
+        "Test: file permissions are preserved after move (e.g., 0644 source results in 0644 destination)",
+        "Test: move to non-existent destination directory returns error",
+        "Test: move of non-existent source file returns error",
+        "Table-driven test structure using t.Run subtests",
+        "Uses t.TempDir() for test isolation",
+        "go test ./internal/archive/... passes",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Unit tests for moveDir",
+      "description": "As a developer, I need unit tests for moveDir to verify directory tree moves work correctly, including nested subdirectories.",
+      "acceptanceCriteria": [
+        "Tests live in internal/archive/move_test.go",
+        "Test: same-device directory move succeeds — all files moved, source dir removed",
+        "Test: nested subdirectories with files are handled correctly (e.g., src/sub/file.txt moves to dst/sub/file.txt)",
+        "Test: move of non-existent source directory returns error",
+        "Test: empty source directory move succeeds",
+        "Table-driven test structure using t.Run subtests",
+        "go test ./internal/archive/... passes",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Update archive.Create to use moveFile",
+      "description": "As a developer, I need archive.Create to use moveFile instead of raw os.Rename, so archiving works across filesystem boundaries.",
+      "acceptanceCriteria": [
+        "os.Rename call at line ~69 (featureStateFiles) replaced with moveFile",
+        "os.Rename call at line ~81 (prd-*.md glob matches) replaced with moveFile",
+        "os.Rename call at line ~100 (reports/*.md) replaced with moveFile",
+        "No raw os.Rename calls remain in the Create function",
+        "Existing TestCreate and TestCreate_NameCollisionSuffix tests pass unchanged",
+        "go test ./internal/archive/... passes",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Update archive.Restore and restoreDir to use moveFile/moveDir",
+      "description": "As a developer, I need archive.Restore and restoreDir to use the new move helpers instead of raw os.Rename, so restoring works across filesystem boundaries.",
+      "acceptanceCriteria": [
+        "os.Rename call in Restore (line ~263) replaced with moveFile",
+        "os.Rename call in restoreDir (line ~291) replaced with moveFile",
+        "restoreDir still removes the source directory after moving all files",
+        "Existing TestRestore tests pass unchanged",
+        "No raw os.Rename calls remain in Restore or restoreDir functions",
+        "go test ./internal/archive/... passes",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Extract testable archive CLI logic for create command",
+      "description": "As a developer, I need the archive create CLI logic extracted into testable functions that accept io.Writer and io.Reader, following the migrateConfigDir pattern from cmd/init.go.",
+      "acceptanceCriteria": [
+        "runArchiveCreate(halDir string, name string, in io.Reader, out io.Writer) error function exists in cmd/archive.go",
+        "promptForName accepts io.Reader and io.Writer parameters instead of hardcoded os.Stdin/os.Stdout",
+        "deriveArchiveName remains unchanged (already takes halDir parameter)",
+        "runArchive cobra handler delegates to runArchiveCreate passing os.Stdin and os.Stdout",
+        "Existing CLI behavior is unchanged — hal archive create still works interactively",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Extract testable archive CLI logic for list and restore commands",
+      "description": "As a developer, I need the archive list and restore CLI handlers extracted into testable functions that accept io.Writer, so CLI-level tests can capture output.",
+      "acceptanceCriteria": [
+        "runArchiveListFn(halDir string, verbose bool, out io.Writer) error function exists in cmd/archive.go",
+        "runArchiveRestoreFn(halDir string, name string, out io.Writer) error function exists in cmd/archive.go",
+        "runArchiveList cobra handler delegates to runArchiveListFn passing os.Stdout",
+        "runArchiveRestore cobra handler delegates to runArchiveRestoreFn passing os.Stdout",
+        "Existing CLI behavior is unchanged",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "title": "CLI tests for hal archive create",
+      "description": "As a developer, I need CLI-level tests for the archive create command to verify prompt defaulting, --name flag behavior, and error paths.",
+      "acceptanceCriteria": [
+        "Tests live in cmd/archive_test.go",
+        "Test: --name flag bypasses prompt and uses the provided name directly",
+        "Test: when no --name and prd.json has branchName, prompt shows derived default",
+        "Test: empty input at prompt uses the derived default name",
+        "Test: error when .hal/ directory does not exist",
+        "Test: error when no feature state files exist to archive",
+        "Uses bytes.Buffer for io.Writer and strings.NewReader for io.Reader",
+        "go test ./cmd/... passes",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "title": "CLI tests for hal archive list",
+      "description": "As a developer, I need CLI-level tests for the archive list command to verify default and verbose output formatting.",
+      "acceptanceCriteria": [
+        "Tests live in cmd/archive_test.go",
+        "Test: default output contains NAME, DATE, PROGRESS column headers",
+        "Test: --verbose output contains NAME, DATE, PROGRESS, BRANCH, PATH column headers",
+        "Test: empty archive directory prints 'No archives found.'",
+        "Test: error when .hal/ directory does not exist",
+        "Uses bytes.Buffer for output capture",
+        "go test ./cmd/... passes",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-011",
+      "title": "CLI tests for hal archive restore",
+      "description": "As a developer, I need CLI-level tests for the archive restore command to verify restore behavior and error paths.",
+      "acceptanceCriteria": [
+        "Tests live in cmd/archive_test.go",
+        "Test: restore moves files back to .hal/ and removes archive directory",
+        "Test: restore with current state auto-archives current state before restoring",
+        "Test: error when archive name does not exist",
+        "Test: error when .hal/ directory does not exist",
+        "Uses bytes.Buffer for output capture",
+        "go test ./cmd/... passes",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-012",
+      "title": "End-to-end verification: all tests and checks pass",
+      "description": "As a developer, I need to verify that all existing and new tests pass, and that make test, make vet, and make fmt all succeed cleanly.",
+      "acceptanceCriteria": [
+        "go test ./internal/archive/... passes (all existing + new tests)",
+        "go test ./cmd/... passes (all existing + new tests)",
+        "make test passes (full test suite)",
+        "make vet passes (go vet ./...)",
+        "make fmt produces no changes (code is already formatted)",
+        "No raw os.Rename calls remain in internal/archive/archive.go",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+# Hal Configuration
+# See: https://github.com/jywlabs/hal
+
+# Default engine for task execution
+engine: claude
+
+# Default execution settings
+execution:
+  max_retries: 3
+  retry_delay: 5s
+
+# Git settings
+git:
+  auto_commit: true
+  commit_prefix: "hal:"
+
+# Validation settings
+validation:
+  run_tests: true
+  run_lint: true
