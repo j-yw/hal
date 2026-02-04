@@ -29,8 +29,8 @@ func TestExtractFeatureNameFromDescription(t *testing.T) {
 	}
 }
 
-func TestOutputPathIsGoralphFolder(t *testing.T) {
-	// Verify markdown output path uses .goralph folder
+func TestOutputPathIsHalFolder(t *testing.T) {
+	// Verify markdown output path uses .hal folder
 	featureName := extractFeatureNameFromDescription("test feature")
 	outputPath := filepath.Join(template.HalDir, "prd-"+featureName+".md")
 
@@ -46,8 +46,8 @@ func TestOutputPathIsGoralphFolder(t *testing.T) {
 	}
 }
 
-func TestJSONOutputPathIsGoralphFolder(t *testing.T) {
-	// Verify JSON output path uses .goralph folder
+func TestJSONOutputPathIsHalFolder(t *testing.T) {
+	// Verify JSON output path uses .hal folder
 	outputPath := filepath.Join(template.HalDir, template.PRDFile)
 
 	expected := template.HalDir + "/" + template.PRDFile

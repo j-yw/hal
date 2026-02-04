@@ -56,12 +56,12 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 	var outputPath string
 	if format == "json" {
 		outputPath = filepath.Join(template.HalDir, template.PRDFile)
-		// Convert to JSON using ralph skill
-		ralphSkill, err := skills.LoadSkill("ralph")
+		// Convert to JSON using hal skill
+		halSkill, err := skills.LoadSkill("hal")
 		if err != nil {
-			return "", fmt.Errorf("failed to load ralph skill: %w", err)
+			return "", fmt.Errorf("failed to load hal skill: %w", err)
 		}
-		jsonContent, err := convertPRDToJSON(ctx, eng, ralphSkill, prdContent, display)
+		jsonContent, err := convertPRDToJSON(ctx, eng, halSkill, prdContent, display)
 		if err != nil {
 			return "", fmt.Errorf("failed to convert PRD to JSON: %w", err)
 		}
@@ -72,7 +72,7 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 			return "", err
 		}
 	} else {
-		// Write markdown to .goralph/
+		// Write markdown to .hal/
 		featureName := extractFeatureNameFromDescription(description)
 		outputPath = filepath.Join(template.HalDir, fmt.Sprintf("prd-%s.md", featureName))
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
@@ -286,7 +286,7 @@ Return ONLY the JSON (no markdown code blocks, no explanation).
 Format must match:
 {
   "project": "...",
-  "branchName": "ralph/...",
+  "branchName": "hal/...",
   "description": "...",
   "userStories": [...]
 }`, skill, prdContent)

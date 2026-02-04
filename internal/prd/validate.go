@@ -11,7 +11,7 @@ import (
 	"github.com/jywlabs/hal/internal/skills"
 )
 
-// ValidateWithEngine validates a PRD using the ralph skill via an engine.
+// ValidateWithEngine validates a PRD using the hal skill via an engine.
 func ValidateWithEngine(ctx context.Context, eng engine.Engine, prdPath string, display *engine.Display) (*ValidationResult, error) {
 	// Load prd.json content
 	prdContent, err := os.ReadFile(prdPath)
@@ -19,14 +19,14 @@ func ValidateWithEngine(ctx context.Context, eng engine.Engine, prdPath string, 
 		return nil, fmt.Errorf("failed to read PRD: %w", err)
 	}
 
-	// Load ralph skill content
-	ralphSkill, err := skills.LoadSkill("ralph")
+	// Load hal skill content
+	halSkill, err := skills.LoadSkill("hal")
 	if err != nil {
-		return nil, fmt.Errorf("failed to load ralph skill: %w", err)
+		return nil, fmt.Errorf("failed to load hal skill: %w", err)
 	}
 
 	// Build validation prompt
-	prompt := buildValidationPrompt(ralphSkill, string(prdContent))
+	prompt := buildValidationPrompt(halSkill, string(prdContent))
 
 	// Execute prompt
 	var response string
@@ -50,7 +50,7 @@ func ValidateWithEngine(ctx context.Context, eng engine.Engine, prdPath string, 
 }
 
 func buildValidationPrompt(skill, prdContent string) string {
-	return fmt.Sprintf(`You are a PRD validator. Using the ralph skill rules below, validate this PRD.
+	return fmt.Sprintf(`You are a PRD validator. Using the hal skill rules below, validate this PRD.
 
 <skill>
 %s

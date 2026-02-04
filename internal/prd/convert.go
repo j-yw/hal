@@ -14,13 +14,13 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
-// ConvertWithEngine converts a markdown PRD to JSON using the ralph skill via an engine.
-// If mdPath is empty, the skill instructs Claude to auto-discover PRD files in .goralph/
+// ConvertWithEngine converts a markdown PRD to JSON using the hal skill via an engine.
+// If mdPath is empty, the skill instructs Claude to auto-discover PRD files in .hal/
 func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, display *engine.Display) error {
-	// Load ralph skill content
-	ralphSkill, err := skills.LoadSkill("ralph")
+	// Load hal skill content
+	halSkill, err := skills.LoadSkill("hal")
 	if err != nil {
-		return fmt.Errorf("failed to load ralph skill: %w", err)
+		return fmt.Errorf("failed to load hal skill: %w", err)
 	}
 
 	// Record output file modification time before conversion (if exists)
@@ -43,10 +43,10 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 			fmt.Fprintf(os.Stderr, "warning: failed to archive existing PRD: %v\n", err)
 		}
 
-		prompt = buildConversionPrompt(ralphSkill, string(mdContent))
+		prompt = buildConversionPrompt(halSkill, string(mdContent))
 	} else {
 		// Auto-discover mode - skill tells Claude to find the file
-		prompt = buildDiscoveryPrompt(ralphSkill)
+		prompt = buildDiscoveryPrompt(halSkill)
 	}
 
 	// Execute prompt
@@ -111,16 +111,16 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 }
 
 func buildDiscoveryPrompt(skill string) string {
-	return fmt.Sprintf(`You are a PRD converter. Follow the ralph skill instructions below.
+	return fmt.Sprintf(`You are a PRD converter. Follow the hal skill instructions below.
 
 <skill>
 %s
 </skill>
 
-Find the PRD markdown file in .goralph/ (look for prd-*.md files) and convert it to prd.json following the skill rules.
+Find the PRD markdown file in .hal/ (look for prd-*.md files) and convert it to prd.json following the skill rules.
 
 Rules for finding the PRD file:
-1. Look in .goralph/ directory for files matching prd-*.md
+1. Look in .hal/ directory for files matching prd-*.md
 2. If one file exists, use it
 3. If multiple files exist, use the most recently modified one
 4. If no files found, respond with an error message
@@ -138,7 +138,7 @@ After finding the file, convert it following the skill rules:
 Return ONLY the JSON object (no markdown, no explanation). The format must be:
 {
   "project": "ProjectName",
-  "branchName": "ralph/feature-name",
+  "branchName": "hal/feature-name",
   "description": "Feature description",
   "userStories": [
     {
@@ -155,7 +155,7 @@ Return ONLY the JSON object (no markdown, no explanation). The format must be:
 }
 
 func buildConversionPrompt(skill, mdContent string) string {
-	return fmt.Sprintf(`You are a PRD converter. Using the ralph skill rules below, convert this markdown PRD to JSON.
+	return fmt.Sprintf(`You are a PRD converter. Using the hal skill rules below, convert this markdown PRD to JSON.
 
 <skill>
 %s
@@ -178,7 +178,7 @@ Convert the markdown PRD to JSON format following the skill rules:
 Return ONLY the JSON object (no markdown, no explanation). The format must be:
 {
   "project": "ProjectName",
-  "branchName": "ralph/feature-name",
+  "branchName": "hal/feature-name",
   "description": "Feature description",
   "userStories": [
     {
@@ -296,6 +296,6 @@ func extractFeatureName(mdPath string) string {
 }
 
 func extractFeatureFromBranch(branchName string) string {
-	name := strings.TrimPrefix(branchName, "ralph/")
+	name := strings.TrimPrefix(branchName, "hal/")
 	return name
 }
