@@ -1,32 +1,32 @@
 {
   "project": "goralph",
-  "branchName": "ralph/compound-engineering",
-  "description": "Compound Engineering Integration - Port compound-product shell automation into goralph as native Go commands for autonomous overnight loops",
+  "branchName": "hal/rename-to-hal",
+  "description": "Rename GoRalph to Hal - Full rename of CLI tool from GoRalph to Hal with HAL 9000 personality touches",
   "userStories": [
     {
-      "id": "T-001",
-      "title": "Create compound types package",
-      "description": "As a developer, I need type definitions for the compound pipeline so that all components share consistent data structures.",
+      "id": "US-001",
+      "title": "Rename Go module path",
+      "description": "As a developer, I want the Go module path updated to github.com/jywlabs/hal so that the module identity matches the new name.",
       "acceptanceCriteria": [
-        "Create internal/compound/types.go with AnalysisResult struct containing: PriorityItem, Description, Rationale, AcceptanceCriteria []string, EstimatedTasks int, BranchName string",
-        "Create PipelineState struct with: Step string, BranchName string, ReportPath string, PRDPath string, StartedAt time.Time, Analysis *AnalysisResult",
-        "Step field supports values: analyze, branch, prd, explode, loop, pr",
-        "All structs have proper JSON tags for serialization",
-        "Typecheck passes (go vet ./...)"
+        "go.mod module directive reads 'module github.com/jywlabs/hal'",
+        "Every import statement in every .go file references github.com/jywlabs/hal instead of github.com/jywlabs/goralph",
+        "go build ./... succeeds with no import errors",
+        "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
       "notes": ""
     },
     {
-      "id": "T-002",
-      "title": "Create compound config loader",
-      "description": "As a developer, I need to load auto settings from config.yaml so that the pipeline behavior can be customized.",
+      "id": "US-002",
+      "title": "Update build system (Makefile and .gitignore)",
+      "description": "As a developer, I want the Makefile and .gitignore updated so the binary builds as hal.",
       "acceptanceCriteria": [
-        "Create internal/compound/config.go with AutoConfig struct",
-        "AutoConfig contains: ReportsDir string, BranchPrefix string, QualityChecks []string, MaxIterations int",
-        "Implement LoadConfig(dir string) (*AutoConfig, error) that reads from .goralph/config.yaml",
-        "Provide sensible defaults when config is missing: reportsDir: .goralph/reports, branchPrefix: compound/, maxIterations: 25",
+        "Makefile sets BINARY_NAME := hal",
+        "LDFLAGS in Makefile reference github.com/jywlabs/hal/cmd (not goralph)",
+        "Comments in Makefile say hal not goralph",
+        ".gitignore ignores hal instead of goralph",
+        "make build produces a binary named hal",
         "Typecheck passes"
       ],
       "priority": 2,
@@ -34,15 +34,14 @@
       "notes": ""
     },
     {
-      "id": "T-003",
-      "title": "Create default config.yaml template",
-      "description": "As a developer, I need a default config template so that goralph init can install it.",
+      "id": "US-003",
+      "title": "Rename GoralphDir constant to HalDir",
+      "description": "As a developer, I want the GoralphDir constant renamed to HalDir with value .hal so the runtime directory has the new name.",
       "acceptanceCriteria": [
-        "Create internal/template/config.yaml with all settings documented via comments",
-        "Include engine, maxIterations, retryDelay, maxRetries settings",
-        "Include auto section with reportsDir, branchPrefix, qualityChecks, maxIterations",
-        "Embed config.yaml in internal/template/template.go using //go:embed",
-        "Add config.yaml to DefaultFiles() map",
+        "internal/template/template.go defines const HalDir = \".hal\"",
+        "No references to GoralphDir remain in any .go file",
+        "All usages of the old constant now reference HalDir (e.g., template.HalDir)",
+        "No references to goralphDir variable name remain — all renamed to halDir",
         "Typecheck passes"
       ],
       "priority": 3,
@@ -50,14 +49,14 @@
       "notes": ""
     },
     {
-      "id": "T-004",
-      "title": "Update init command to install config.yaml",
-      "description": "As a user, I want goralph init to create a config.yaml file so that I can customize settings.",
+      "id": "US-004",
+      "title": "Update CLI root and version commands",
+      "description": "As a user, I want the CLI to identify itself as hal so the branding is consistent.",
       "acceptanceCriteria": [
-        "goralph init creates .goralph/config.yaml if it doesn't exist",
-        "goralph init creates .goralph/reports/ directory with .gitkeep",
-        "Existing config.yaml files are preserved (not overwritten)",
-        "Init output lists config.yaml in created files",
+        "cmd/root.go: Use field is 'hal'",
+        "cmd/root.go: Short and Long descriptions say Hal not GoRalph",
+        "cmd/version.go: prints 'hal' not 'goralph' in version output",
+        "cmd/version.go: Long description says Hal not GoRalph",
         "Typecheck passes"
       ],
       "priority": 4,
@@ -65,62 +64,65 @@
       "notes": ""
     },
     {
-      "id": "T-005",
-      "title": "Create autospec skill for non-interactive PRD generation",
-      "description": "As a developer, I need a skill that generates PRDs without user interaction so that the auto pipeline can create PRDs autonomously.",
+      "id": "US-005",
+      "title": "Update init command with .goralph auto-migration",
+      "description": "As a user, I want hal init to auto-detect an existing .goralph directory and rename it to .hal so my existing configuration is preserved seamlessly.",
       "acceptanceCriteria": [
-        "Create internal/skills/autospec/SKILL.md with complete PRD generation instructions",
-        "Skill self-clarifies by using context from the analysis result (no user questions)",
-        "Outputs PRD to .goralph/prd-[feature].md",
-        "Uses T-XXX IDs for tasks (not US-XXX)",
-        "Includes clear acceptance criteria patterns suitable for autonomous verification",
-        "Typecheck passes (embed.go updated)"
+        "cmd/init.go help text references .hal/ instead of .goralph/",
+        "If .goralph/ exists and .hal/ does not, hal init renames .goralph/ to .hal/ and prints migration message",
+        "If both .goralph/ and .hal/ exist, hal init prints a warning and uses .hal/",
+        "If only .hal/ exists, hal init proceeds normally",
+        "All fmt.Printf output references .hal/ not .goralph/",
+        "Typecheck passes"
       ],
       "priority": 5,
       "passes": true,
       "notes": ""
     },
     {
-      "id": "T-006",
-      "title": "Create explode skill for task breakdown",
-      "description": "As a developer, I need a skill that explodes a PRD into 8-15 granular tasks so that each task can be completed in one focused iteration.",
+      "id": "US-006",
+      "title": "Update remaining cmd files (plan, run, config, convert, explode, auto, analyze, validate)",
+      "description": "As a developer, I want all other cmd/*.go files updated so help text, comments, and variable names reflect the Hal rename.",
       "acceptanceCriteria": [
-        "Create internal/skills/explode/SKILL.md with task explosion instructions",
-        "Generates 8-15 tasks from a PRD",
-        "Tasks use boolean acceptance criteria patterns (verifiable true/false)",
-        "Ordering: investigation -\u003e schema -\u003e backend -\u003e UI -\u003e verification",
-        "Outputs to .goralph/prd.json in tasks format",
-        "Typecheck passes (embed.go updated)"
+        "cmd/plan.go: temp file pattern is hal-plan-*.md, help text references .hal/ paths",
+        "cmd/run.go: Long description says Hal loop, references .hal/prd.json",
+        "cmd/config.go: Long description references .hal/config.yaml",
+        "cmd/convert.go: help text references hal skill and .hal/ paths",
+        "cmd/explode.go: references .hal/ paths and Hal loop",
+        "cmd/auto.go: references Hal task loop, .hal/auto-state.json",
+        "cmd/analyze.go: uses template.HalDir",
+        "cmd/validate.go: references hal skill not ralph skill",
+        "No goralphDir variable names remain in any cmd file",
+        "Typecheck passes"
       ],
       "priority": 6,
       "passes": true,
       "notes": ""
     },
     {
-      "id": "T-007",
-      "title": "Update skills embed.go with new skills",
-      "description": "As a developer, I need the new skills embedded so they can be installed by goralph init.",
+      "id": "US-007",
+      "title": "Update compound pipeline and config packages",
+      "description": "As a developer, I want the compound pipeline package updated so all .goralph references become .hal and Ralph references become Hal.",
       "acceptanceCriteria": [
-        "Add //go:embed autospec/SKILL.md and //go:embed explode/SKILL.md",
-        "Add autospec and explode to SkillContent map",
-        "Add autospec and explode to SkillNames slice",
-        "Typecheck passes",
-        "go test ./internal/skills/... passes"
+        "internal/compound/config.go: default ReportsDir is .hal/reports, LoadConfig reads from .hal/config.yaml",
+        "internal/compound/pipeline.go: state file path uses .hal/auto-state.json, all template.GoralphDir -\u003e template.HalDir",
+        "internal/compound/pipeline.go: PR body references hal not goralph",
+        "internal/compound/analyze.go: all .goralph references -\u003e .hal",
+        "internal/compound/review.go: all .goralph references -\u003e .hal, ralph/ branch pattern -\u003e hal/",
+        "Typecheck passes"
       ],
       "priority": 7,
       "passes": true,
-      "notes": "Work completed during T-005 and T-006 implementation"
+      "notes": ""
     },
     {
-      "id": "T-008",
-      "title": "Add Tasks field to PRD struct for dual-format support",
-      "description": "As a developer, I need the PRD struct to support both userStories and tasks formats so that compound mode can use the new T-XXX format while maintaining backward compatibility.",
+      "id": "US-008",
+      "title": "Update compound pipeline tests",
+      "description": "As a developer, I want the pipeline tests updated so they use .hal paths and pass.",
       "acceptanceCriteria": [
-        "Add Tasks []UserStory field to PRD struct in internal/engine/prd.go with json:\"tasks,omitempty\" tag",
-        "Update CurrentStory() to check UserStories first, then Tasks (backward compatible)",
-        "Update Progress() to count both UserStories and Tasks",
-        "Existing tests pass with userStories format",
-        "New tests pass with tasks format",
+        "internal/compound/pipeline_test.go: all .goralph references -\u003e .hal",
+        "internal/compound/review_test.go: all .goralph references -\u003e .hal",
+        "go test ./internal/compound/... passes",
         "Typecheck passes"
       ],
       "priority": 8,
@@ -128,16 +130,15 @@
       "notes": ""
     },
     {
-      "id": "T-009",
-      "title": "Create report finder and analyzer",
-      "description": "As a developer, I need functions to find and analyze reports so that the pipeline can identify the highest priority item.",
+      "id": "US-009",
+      "title": "Rename ralph skill directory to hal",
+      "description": "As a developer, I want the internal/skills/ralph/ directory renamed to internal/skills/hal/ so the skill name matches the new branding.",
       "acceptanceCriteria": [
-        "Create internal/compound/analyze.go with FindLatestReport(reportsDir string) (string, error)",
-        "FindLatestReport returns most recently modified file in reports dir",
-        "Implement FindRecentPRDs(dir string, days int) ([]string, error) to find PRDs created in last N days",
-        "Implement AnalyzeReport(ctx, eng, reportPath, recentPRDs) (*AnalysisResult, error)",
-        "AnalyzeReport uses engine.Prompt() with constraint prompt, parses JSON response",
-        "Returns error if report is empty or parsing fails",
+        "Directory internal/skills/ralph/ is renamed to internal/skills/hal/",
+        "internal/skills/hal/SKILL.md exists with updated content: skill name is hal, all Ralph -\u003e Hal, all ralph/ -\u003e hal/, all .goralph -\u003e .hal",
+        "internal/skills/embed.go: embed directive reads //go:embed hal/SKILL.md, variable names reference hal not ralph",
+        "internal/skills/embed.go: SkillContent map key is 'hal' not 'ralph', SkillNames includes 'hal' not 'ralph'",
+        "internal/skills/skills.go and claude.go and linker.go: any ralph references -\u003e hal",
         "Typecheck passes"
       ],
       "priority": 9,
@@ -145,16 +146,15 @@
       "notes": ""
     },
     {
-      "id": "T-010",
-      "title": "Create analyze command",
-      "description": "As a user, I want to run goralph analyze to identify the highest priority item from a report.",
+      "id": "US-010",
+      "title": "Update other skill SKILL.md files",
+      "description": "As a developer, I want all SKILL.md files in other skills updated so they reference .hal/, hal commands, and hal/ branch prefixes.",
       "acceptanceCriteria": [
-        "Create cmd/analyze.go with Cobra command",
-        "Accepts optional [report-path] positional argument",
-        "--reports-dir flag overrides config",
-        "--output flag supports text (default) and json formats",
-        "Shows priority item, description, rationale, estimated tasks, suggested branch name",
-        "Exits cleanly with informational message when no reports found",
+        "internal/skills/prd/SKILL.md: all .goralph -\u003e .hal, all goralph references -\u003e hal",
+        "internal/skills/autospec/SKILL.md: all .goralph -\u003e .hal, all goralph references -\u003e hal",
+        "internal/skills/explode/SKILL.md: all .goralph -\u003e .hal, all Ralph loop -\u003e Hal loop, all ralph/ -\u003e hal/",
+        "internal/skills/review/SKILL.md (if exists): all .goralph -\u003e .hal, all ralph references -\u003e hal",
+        "No remaining goralph or ralph references in any SKILL.md file",
         "Typecheck passes"
       ],
       "priority": 10,
@@ -162,16 +162,16 @@
       "notes": ""
     },
     {
-      "id": "T-011",
-      "title": "Create git helper functions",
-      "description": "As a developer, I need git helper functions so that the pipeline can manage branches and PRs.",
+      "id": "US-011",
+      "title": "Update PRD package references",
+      "description": "As a developer, I want the PRD generation and conversion package updated so all ralph/goralph references become hal.",
       "acceptanceCriteria": [
-        "Create internal/compound/git.go with CreateBranch(branchName string) error",
-        "CreateBranch creates and checks out new branch from current HEAD",
-        "Implement CurrentBranch() (string, error) to return current branch name",
-        "Implement PushBranch(branchName string) error to push with -u flag",
-        "Implement CreatePR(title, body, base string) (string, error) using gh pr create --draft",
-        "All functions handle errors gracefully with descriptive messages",
+        "internal/prd/generate.go: loads 'hal' skill instead of 'ralph', branch name prefix is hal/ not ralph/",
+        "internal/prd/generate.go: all .goralph path references -\u003e .hal",
+        "internal/prd/convert.go: loads 'hal' skill, references .hal/ paths",
+        "internal/prd/validate.go: references hal skill not ralph",
+        "internal/prd/generate_test.go: all .goralph references -\u003e .hal",
+        "go test ./internal/prd/... passes",
         "Typecheck passes"
       ],
       "priority": 11,
@@ -179,16 +179,13 @@
       "notes": ""
     },
     {
-      "id": "T-012",
-      "title": "Create explode command",
-      "description": "As a user, I want to run goralph explode to break a PRD into granular tasks.",
+      "id": "US-012",
+      "title": "Update engine and loop packages",
+      "description": "As a developer, I want the engine and loop packages updated so all Ralph/goralph references become Hal.",
       "acceptanceCriteria": [
-        "Create cmd/explode.go with Cobra command",
-        "Accepts [prd-path] positional argument (required)",
-        "--branch flag sets branch name in output prd.json",
-        "Uses engine.StreamPrompt() with explode skill prompt",
-        "Outputs to .goralph/prd.json",
-        "Shows progress with display.ShowCommandHeader and ShowCommandSuccess",
+        "internal/loop/loop.go: comments say Hal loop not Ralph loop, .goralph references -\u003e .hal",
+        "internal/engine/display.go: title display shows Hal Loop not Ralph Loop",
+        "All import paths in engine and loop packages use github.com/jywlabs/hal (already covered by US-001 but verify)",
         "Typecheck passes"
       ],
       "priority": 12,
@@ -196,16 +193,12 @@
       "notes": ""
     },
     {
-      "id": "T-013",
-      "title": "Create pipeline state management",
-      "description": "As a developer, I need state management so that the pipeline can resume from interruptions.",
+      "id": "US-013",
+      "title": "Update template files",
+      "description": "As a developer, I want the embedded template files updated so the runtime config references .hal and the Hal agent identity.",
       "acceptanceCriteria": [
-        "Create internal/compound/pipeline.go with Pipeline struct",
-        "Pipeline contains: config *AutoConfig, engine engine.Engine, display *engine.Display, dir string",
-        "Implement loadState() *PipelineState that reads from .goralph/auto-state.json",
-        "Implement saveState(state *PipelineState) error that writes state atomically",
-        "Implement clearState() error that removes state file on completion",
-        "State file includes all fields needed to resume any step",
+        "internal/template/prompt.md: heading is Hal Agent Instructions, all .goralph -\u003e .hal, all Ralph agent references -\u003e Hal",
+        "internal/template/config.yaml: comments reference .hal/ not .goralph/",
         "Typecheck passes"
       ],
       "priority": 13,
@@ -213,16 +206,13 @@
       "notes": ""
     },
     {
-      "id": "T-014",
-      "title": "Implement pipeline Run method - analyze and branch steps",
-      "description": "As a developer, I need the first part of the pipeline so that reports can be analyzed and branches created.",
+      "id": "US-014",
+      "title": "Update documentation (README.md and AGENTS.md)",
+      "description": "As a developer, I want README.md and AGENTS.md updated to reflect the Hal branding.",
       "acceptanceCriteria": [
-        "Implement (p *Pipeline) Run(ctx context.Context, opts RunOptions) error",
-        "RunOptions contains: Resume bool, DryRun bool, SkipPR bool, ReportPath string",
-        "Step analyze: Find latest report, call AnalyzeReport, save result to state",
-        "Step branch: Create and checkout branch using git helpers",
-        "State is saved after each step completes",
-        "DryRun mode shows what would happen without executing",
+        "README.md: all goralph -\u003e hal, all GoRalph -\u003e Hal, all .goralph -\u003e .hal, all ralph/ branch references -\u003e hal/",
+        "AGENTS.md: command examples say hal not goralph, directory references say .hal/ not .goralph/",
+        "No remaining goralph, GoRalph, or ralph references in README.md or AGENTS.md",
         "Typecheck passes"
       ],
       "priority": 14,
@@ -230,103 +220,56 @@
       "notes": ""
     },
     {
-      "id": "T-015",
-      "title": "Implement pipeline Run method - prd and explode steps",
-      "description": "As a developer, I need the PRD generation and explosion steps so that tasks can be created from the analysis.",
+      "id": "US-015",
+      "title": "Add HAL 9000 personality easter eggs",
+      "description": "As a user, I want subtle HAL 9000 personality touches in the CLI so the tool has character and the rename feels intentional.",
       "acceptanceCriteria": [
-        "Step prd: Run engine with autospec skill prompt, passing analysis context",
-        "Step explode: Run engine with explode skill prompt, generates prd.json",
-        "Both steps use engine.StreamPrompt() for visual feedback",
-        "PRD path is saved to state after creation",
-        "State transitions correctly: prd -\u003e explode -\u003e loop",
-        "Typecheck passes"
+        "cmd/root.go Long description includes a subtle HAL 9000 reference",
+        "cmd/version.go prints a HAL 9000 quote as tagline below version info",
+        "When hal init migrates from .goralph/ to .hal/, the migration message includes a HAL reference",
+        "Easter eggs are subtle and non-intrusive — they don't interfere with scripted/automated usage",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
       ],
       "priority": 15,
       "passes": true,
       "notes": ""
     },
     {
-      "id": "T-016",
-      "title": "Implement pipeline Run method - loop and pr steps",
-      "description": "As a developer, I need the execution and PR creation steps so that the pipeline completes the full cycle.",
+      "id": "US-016",
+      "title": "Create .hal runtime directory for self-development",
+      "description": "As a developer working on the hal codebase itself, I want the .goralph/ runtime directory duplicated to .hal/ with updated contents so the tool can bootstrap itself under the new name.",
       "acceptanceCriteria": [
-        "Step loop: Create loop.Runner with config, call runner.Run(ctx)",
-        "Loop uses maxIterations from auto config",
-        "Retry failed tasks N times per config, then stop with partial progress",
-        "Step pr: Push branch and create draft PR using git helpers",
-        "PR body includes summary from analysis and task completion status",
-        "State is cleared on successful completion",
+        ".hal/ directory exists as a copy of .goralph/ with updated contents",
+        ".hal/config.yaml references .hal/ not .goralph/",
+        ".hal/prompt.md says Hal not Ralph, references .hal/ paths",
+        ".hal/skills/hal/SKILL.md exists (renamed from ralph/) with updated content",
+        "Branch names in any .hal/prd.json use hal/ prefix not ralph/",
         "Typecheck passes"
       ],
       "priority": 16,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
-      "id": "T-017",
-      "title": "Create auto command",
-      "description": "As a user, I want to run goralph auto to execute the full compound pipeline.",
+      "id": "US-017",
+      "title": "Final verification and cleanup",
+      "description": "As a developer, I want to verify no leftover goralph/ralph references exist and all tests pass.",
       "acceptanceCriteria": [
-        "Create cmd/auto.go with Cobra command",
-        "--dry-run flag shows steps without executing",
-        "--resume flag continues from last state",
-        "--skip-pr flag skips PR creation at end",
-        "--report flag specifies report file (skips find latest)",
-        "Shows progress for each pipeline step with display methods",
-        "Returns PR URL on success",
+        "grep -r 'goralph' --include='*.go' . returns zero results (excluding .git)",
+        "grep -r 'GoralphDir' --include='*.go' . returns zero results",
+        "grep -r '\"ralph\"' --include='*.go' . returns zero results",
+        "grep -r 'ralph/' --include='*.go' --include='*.md' . returns zero results (excluding .git and archive)",
+        "go build -o hal . succeeds",
+        "./hal version outputs version starting with hal",
+        "./hal --help shows Hal branding",
+        "go test ./... passes (all unit tests)",
+        "go vet ./... passes",
         "Typecheck passes"
       ],
       "priority": 17,
-      "passes": true,
+      "passes": false,
       "notes": ""
-    },
-    {
-      "id": "T-018",
-      "title": "Handle empty reports gracefully",
-      "description": "As a user, I want the auto command to exit cleanly when there are no reports to process.",
-      "acceptanceCriteria": [
-        "goralph auto checks for reports before starting pipeline",
-        "If no reports found, displays informational message and exits with code 0",
-        "Message explains where to place reports (.goralph/reports/)",
-        "goralph analyze behaves the same way",
-        "Typecheck passes"
-      ],
-      "priority": 18,
-      "passes": true,
-      "notes": "Already implemented in T-010 and T-017"
-    },
-    {
-      "id": "T-019",
-      "title": "Add integration tests for pipeline",
-      "description": "As a developer, I need integration tests so that the pipeline behavior is verified.",
-      "acceptanceCriteria": [
-        "Create internal/compound/pipeline_test.go with integration tests",
-        "Test state persistence across resume",
-        "Test dry-run mode produces correct output",
-        "Test graceful handling of missing reports",
-        "Tests are tagged integration and skip when Claude CLI unavailable",
-        "go test -tags=integration ./internal/compound/... passes"
-      ],
-      "priority": 19,
-      "passes": true,
-      "notes": "Also fixed infinite loop bug in pipeline by adding StepDone constant"
-    },
-    {
-      "id": "T-020",
-      "title": "Verify backward compatibility",
-      "description": "As a developer, I need to ensure existing workflows still work after these changes.",
-      "acceptanceCriteria": [
-        "goralph init still creates prompt.md, progress.txt, and skills",
-        "goralph plan feature still works (interactive mode)",
-        "goralph convert still works with userStories format",
-        "goralph run still works with userStories format",
-        "goralph run works with new tasks format",
-        "All existing tests pass: make test",
-        "Typecheck passes: make vet"
-      ],
-      "priority": 20,
-      "passes": true,
-      "notes": "Verified via manual testing and code review"
     }
   ]
 }

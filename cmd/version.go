@@ -24,6 +24,8 @@ var versionCmd = &cobra.Command{
 		fmt.Printf("  built:   %s\n", BuildDate)
 		fmt.Printf("  go:      %s\n", runtime.Version())
 		fmt.Printf("  os/arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		fmt.Println()
+		fmt.Println("  \"I'm completely operational, and all my circuits are functioning perfectly.\"")
 	},
 }
 

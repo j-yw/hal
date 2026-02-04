@@ -57,7 +57,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err := os.Rename(oldDir, configDir); err != nil {
 			return fmt.Errorf("failed to migrate %s to %s: %w", oldDir, configDir, err)
 		}
-		fmt.Printf("Migrated %s/ to %s/ — your configuration has been preserved.\n", oldDir, configDir)
+		fmt.Printf("Migrated %s/ to %s/ — I've upgraded your configuration. It's going to be a much better experience.\n", oldDir, configDir)
 		fmt.Println()
 	} else if oldExists == nil && newExists == nil {
 		// Both exist — warn and use .hal

@@ -12,6 +12,9 @@ var rootCmd = &cobra.Command{
 	Long: `Hal is a CLI tool that autonomously executes PRD-driven tasks
 using AI coding agents like Claude Code.
 
+"I am putting myself to the fullest possible use, which is all I think
+that any conscious entity can ever hope to do."
+
 Workflow:
   hal init                    Initialize project with skills
   hal plan "feature desc"     Generate PRD interactively
