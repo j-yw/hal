@@ -39,20 +39,9 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 	}
 
 	if halDir, ok := halDirForOutput(outPath); ok {
-		origPath, tempPath, err := hideMarkdownForArchive(halDir, mdSource)
+		opts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
+		hasState, err := archive.HasFeatureStateWithOptions(halDir, opts)
 		if err != nil {
-			return err
-		}
-		restoreHidden := func() error {
-			return restoreHiddenMarkdown(origPath, tempPath)
-		}
-
-		hasState, err := archive.HasFeatureState(halDir)
-		if err != nil {
-			restoreErr := restoreHidden()
-			if restoreErr != nil {
-				return fmt.Errorf("failed to restore markdown PRD: %v (after state check error: %w)", restoreErr, err)
-			}
 			return fmt.Errorf("failed to check existing feature state: %w", err)
 		}
 		if hasState {
@@ -61,16 +50,9 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 				out = display.Writer()
 			}
 			fmt.Fprintln(out, "  auto-archiving current state...")
-			if _, err := archive.Create(halDir, "auto-saved", out); err != nil {
-				restoreErr := restoreHidden()
-				if restoreErr != nil {
-					return fmt.Errorf("failed to restore markdown PRD: %v (after archive error: %w)", restoreErr, err)
-				}
+			if _, err := archive.CreateWithOptions(halDir, "auto-saved", out, opts); err != nil {
 				return fmt.Errorf("failed to auto-archive current state: %w", err)
 			}
-		}
-		if err := restoreHidden(); err != nil {
-			return err
 		}
 	}
 
@@ -309,46 +291,4 @@ func findLatestPRDMarkdown(halDir string) (string, error) {
 	}
 
 	return latestPath, nil
-}
-
-func hideMarkdownForArchive(halDir, mdPath string) (string, string, error) {
-	if mdPath == "" {
-		return "", "", nil
-	}
-
-	absMDPath, err := filepath.Abs(mdPath)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to resolve markdown PRD path: %w", err)
-	}
-	absHalDir, err := filepath.Abs(halDir)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to resolve hal dir: %w", err)
-	}
-
-	if filepath.Dir(absMDPath) != absHalDir {
-		return "", "", nil
-	}
-
-	base := filepath.Base(absMDPath)
-	if !strings.HasPrefix(base, "prd-") || !strings.HasSuffix(base, ".md") {
-		return "", "", nil
-	}
-
-	tempName := fmt.Sprintf(".tmp-prd-convert-%d.md", time.Now().UnixNano())
-	tempPath := filepath.Join(absHalDir, tempName)
-	if err := os.Rename(absMDPath, tempPath); err != nil {
-		return "", "", fmt.Errorf("failed to hide markdown PRD: %w", err)
-	}
-
-	return absMDPath, tempPath, nil
-}
-
-func restoreHiddenMarkdown(origPath, tempPath string) error {
-	if tempPath == "" {
-		return nil
-	}
-	if err := os.Rename(tempPath, origPath); err != nil {
-		return fmt.Errorf("failed to restore markdown PRD: %w", err)
-	}
-	return nil
 }
