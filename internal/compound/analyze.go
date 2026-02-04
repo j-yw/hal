@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jywlabs/goralph/internal/engine"
+	"github.com/jywlabs/hal/internal/engine"
 )
 
 // FindLatestReport returns the most recently modified file in the reports directory.

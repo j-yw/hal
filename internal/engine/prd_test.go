@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jywlabs/goralph/internal/template"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestPRD_CurrentStory_UserStoriesFormat(t *testing.T) {

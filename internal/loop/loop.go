@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jywlabs/goralph/internal/engine"
-	"github.com/jywlabs/goralph/internal/template"
+	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // Result represents the outcome of the loop execution.

@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jywlabs/goralph/internal/engine"
-	"github.com/jywlabs/goralph/internal/skills"
+	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/skills"
 )
 
 // ValidateWithEngine validates a PRD using the ralph skill via an engine.

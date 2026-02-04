@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jywlabs/goralph/internal/engine"
+	"github.com/jywlabs/hal/internal/engine"
 )
 
 // skipIfCLIUnavailable skips the test if the Claude CLI is not available.

@@ -1,4 +1,4 @@
-module github.com/jywlabs/goralph
+module github.com/jywlabs/hal
 
 go 1.25.6
 

@@ -10,9 +10,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jywlabs/goralph/internal/engine"
-	"github.com/jywlabs/goralph/internal/skills"
-	"github.com/jywlabs/goralph/internal/template"
+	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // GenerateWithEngine runs the two-phase PRD generation using the prd skill.

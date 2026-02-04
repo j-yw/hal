@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jywlabs/goralph/internal/skills"
-	"github.com/jywlabs/goralph/internal/template"
+	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 

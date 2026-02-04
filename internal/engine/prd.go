@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jywlabs/goralph/internal/template"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // PRD represents the structure of a prd.json file.

@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jywlabs/goralph/internal/compound"
-	"github.com/jywlabs/goralph/internal/engine"
+	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
 
 	// Register available engines
-	_ "github.com/jywlabs/goralph/internal/engine/claude"
-	_ "github.com/jywlabs/goralph/internal/engine/codex"
+	_ "github.com/jywlabs/hal/internal/engine/claude"
+	_ "github.com/jywlabs/hal/internal/engine/codex"
 )
 
 var (

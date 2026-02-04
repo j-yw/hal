@@ -7,13 +7,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jywlabs/goralph/internal/loop"
-	"github.com/jywlabs/goralph/internal/template"
+	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 
 	// Register available engines
-	_ "github.com/jywlabs/goralph/internal/engine/claude"
-	_ "github.com/jywlabs/goralph/internal/engine/codex"
+	_ "github.com/jywlabs/hal/internal/engine/claude"
+	_ "github.com/jywlabs/hal/internal/engine/codex"
 )
 
 // Run command flags

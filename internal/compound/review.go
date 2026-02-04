@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jywlabs/goralph/internal/engine"
-	"github.com/jywlabs/goralph/internal/skills"
+	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/skills"
 )
 
 // reviewContext holds gathered context for the review.

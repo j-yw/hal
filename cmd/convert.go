@@ -6,13 +6,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jywlabs/goralph/internal/engine"
-	"github.com/jywlabs/goralph/internal/prd"
-	"github.com/jywlabs/goralph/internal/template"
+	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/prd"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 
 	// Register available engines
-	_ "github.com/jywlabs/goralph/internal/engine/claude"
+	_ "github.com/jywlabs/hal/internal/engine/claude"
 )
 
 var (
