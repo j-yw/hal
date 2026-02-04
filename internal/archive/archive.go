@@ -225,6 +225,76 @@ func FormatList(archives []ArchiveInfo, w io.Writer, verbose bool) {
 	}
 }
 
+// Restore moves files from the named archive directory back into halDir.
+// If current feature state exists, it auto-archives it first via Create.
+func Restore(halDir, name string, w io.Writer) error {
+	archiveDir := filepath.Join(halDir, "archive", name)
+	if !dirExists(archiveDir) {
+		return fmt.Errorf("archive %q does not exist", name)
+	}
+
+	// If current state exists, auto-archive it first
+	hasPRD := fileExists(filepath.Join(halDir, template.PRDFile))
+	hasAutoPRD := fileExists(filepath.Join(halDir, template.AutoPRDFile))
+	if hasPRD || hasAutoPRD {
+		fmt.Fprintln(w, "  auto-archiving current state...")
+		_, err := Create(halDir, "auto-saved", w)
+		if err != nil {
+			return fmt.Errorf("failed to auto-archive current state: %w", err)
+		}
+	}
+
+	// Move all files from archive back to halDir
+	entries, err := os.ReadDir(archiveDir)
+	if err != nil {
+		return fmt.Errorf("failed to read archive directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		src := filepath.Join(archiveDir, entry.Name())
+		dst := filepath.Join(halDir, entry.Name())
+
+		if entry.IsDir() {
+			// For directories like reports/, move contents
+			if err := restoreDir(src, dst); err != nil {
+				return fmt.Errorf("failed to restore %s: %w", entry.Name(), err)
+			}
+		} else {
+			if err := os.Rename(src, dst); err != nil {
+				return fmt.Errorf("failed to restore %s: %w", entry.Name(), err)
+			}
+		}
+		fmt.Fprintf(w, "  restored %s\n", entry.Name())
+	}
+
+	// Remove the now-empty archive directory
+	if err := os.Remove(archiveDir); err != nil {
+		return fmt.Errorf("failed to remove archive directory: %w", err)
+	}
+
+	fmt.Fprintf(w, "  restored from %s\n", name)
+	return nil
+}
+
+// restoreDir moves all files from src dir into dst dir.
+func restoreDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if err := os.Rename(srcPath, dstPath); err != nil {
+			return err
+		}
+	}
+	return os.Remove(src)
+}
+
 // resolveCollision appends -2, -3, etc. if the directory already exists.
 func resolveCollision(dir string) string {
 	if !dirExists(dir) {
