@@ -219,3 +219,125 @@ func TestRunArchiveListFn(t *testing.T) {
 		})
 	}
 }
+
+func TestRunArchiveRestoreFn(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, halDir string) string // returns archive name
+		wantErr    string
+		wantOutput []string
+		checkFn    func(t *testing.T, halDir string)
+	}{
+		{
+			name: "restore moves files back and removes archive dir",
+			setup: func(t *testing.T, halDir string) string {
+				archName := "2026-01-15-my-feature"
+				archDir := filepath.Join(halDir, "archive", archName)
+				os.MkdirAll(archDir, 0755)
+				writePRD(t, archDir, "hal/my-feature")
+				writeFile(t, archDir, template.ProgressFile, "some progress")
+				return archName
+			},
+			wantOutput: []string{"restored"},
+			checkFn: func(t *testing.T, halDir string) {
+				// prd.json should be restored to halDir
+				if _, err := os.Stat(filepath.Join(halDir, template.PRDFile)); os.IsNotExist(err) {
+					t.Error("prd.json should exist in halDir after restore")
+				}
+				// progress.txt should be restored
+				if _, err := os.Stat(filepath.Join(halDir, template.ProgressFile)); os.IsNotExist(err) {
+					t.Error("progress.txt should exist in halDir after restore")
+				}
+				// archive dir should be removed
+				if _, err := os.Stat(filepath.Join(halDir, "archive", "2026-01-15-my-feature")); !os.IsNotExist(err) {
+					t.Error("archive directory should be removed after restore")
+				}
+			},
+		},
+		{
+			name: "restore with current state auto-archives first",
+			setup: func(t *testing.T, halDir string) string {
+				os.MkdirAll(filepath.Join(halDir, "archive"), 0755)
+				// Current state: prd.json in halDir
+				writePRD(t, halDir, "hal/current-feature")
+				// Archive to restore
+				archName := "2026-01-15-old-feature"
+				archDir := filepath.Join(halDir, "archive", archName)
+				os.MkdirAll(archDir, 0755)
+				writePRD(t, archDir, "hal/old-feature")
+				return archName
+			},
+			wantOutput: []string{"auto-archiving current state", "restored"},
+			checkFn: func(t *testing.T, halDir string) {
+				// The old feature's prd.json should now be in halDir
+				data, err := os.ReadFile(filepath.Join(halDir, template.PRDFile))
+				if err != nil {
+					t.Fatalf("prd.json should exist after restore: %v", err)
+				}
+				var prd engine.PRD
+				if err := json.Unmarshal(data, &prd); err != nil {
+					t.Fatalf("failed to unmarshal restored prd.json: %v", err)
+				}
+				if prd.BranchName != "hal/old-feature" {
+					t.Errorf("restored prd.json branchName = %q, want %q", prd.BranchName, "hal/old-feature")
+				}
+			},
+		},
+		{
+			name: "error when archive name does not exist",
+			setup: func(t *testing.T, halDir string) string {
+				os.MkdirAll(filepath.Join(halDir, "archive"), 0755)
+				return "nonexistent-archive"
+			},
+			wantErr: "does not exist",
+		},
+		{
+			name: "error when halDir does not exist",
+			setup: func(t *testing.T, halDir string) string {
+				return "any-name"
+			},
+			wantErr: ".hal/ not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			halDir := filepath.Join(tmpDir, ".hal")
+
+			if tt.wantErr != ".hal/ not found" {
+				os.MkdirAll(halDir, 0755)
+			}
+
+			archName := tt.setup(t, halDir)
+
+			var out bytes.Buffer
+			err := runArchiveRestoreFn(halDir, archName, &out)
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			output := out.String()
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output, want) {
+					t.Errorf("output %q does not contain %q", output, want)
+				}
+			}
+
+			if tt.checkFn != nil {
+				tt.checkFn(t, halDir)
+			}
+		})
+	}
+}
