@@ -27,11 +27,13 @@ builds:
       - -X github.com/jywlabs/hal/cmd.BuildDate={{.Date}}
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: checksums.txt
@@ -67,14 +69,11 @@ release:
   prerelease: auto
   name_template: "Hal v{{ .Version }}"
 
-brews:
+homebrew_casks:
   - name: hal
+    binaries:
+      - hal
     repository:
       owner: j-yw
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    install: |
-      bin.install "hal"
-    test: |
-      system "#{bin}/hal", "version"
