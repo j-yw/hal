@@ -3,6 +3,7 @@ package compound
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -133,6 +134,62 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 			}
 			if len(cfg.QualityChecks) != tt.wantQCCount {
 				t.Errorf("QualityChecks length = %d, want %d", len(cfg.QualityChecks), tt.wantQCCount)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_InvalidYAML(t *testing.T) {
+	tests := []struct {
+		name       string
+		yaml       string
+		wantErrSub string
+	}{
+		{
+			name:       "invalid YAML syntax",
+			yaml:       ":::not yaml",
+			wantErrSub: "",
+		},
+		{
+			name: "maxIterations negative triggers validation",
+			yaml: `auto:
+  maxIterations: -1
+`,
+			wantErrSub: "maxIterations",
+		},
+		{
+			name: "explicit empty reportsDir triggers validation",
+			yaml: `auto:
+  reportsDir: ""
+`,
+			wantErrSub: "reportsDir",
+		},
+		{
+			name: "explicit empty branchPrefix triggers validation",
+			yaml: `auto:
+  branchPrefix: ""
+`,
+			wantErrSub: "branchPrefix",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, ".hal")
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("Failed to create .hal dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(tt.yaml), 0644); err != nil {
+				t.Fatalf("Failed to write config.yaml: %v", err)
+			}
+
+			_, err := LoadConfig(dir)
+			if err == nil {
+				t.Fatal("LoadConfig() expected error, got nil")
+			}
+			if tt.wantErrSub != "" && !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErrSub)
 			}
 		})
 	}
