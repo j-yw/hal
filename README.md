@@ -1,4 +1,4 @@
-# GoRalph
+# Hal
 
 Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story one iteration at a time using AI coding agents (Claude Code or Codex).
 
@@ -25,7 +25,7 @@ The `auto` command runs the full pipeline unattended:
 2. **Branch** -- Create and checkout a new branch for the work
 3. **PRD** -- Generate a PRD using the autospec skill (non-interactive)
 4. **Explode** -- Break down the PRD into 8-15 granular tasks
-5. **Loop** -- Execute the Ralph task loop until all tasks pass
+5. **Loop** -- Execute the Hal task loop until all tasks pass
 6. **PR** -- Push the branch and create a draft pull request
 
 Each iteration gets a fresh context window. In the auto pipeline, the AI reads `auto-prd.json` and `auto-progress.txt`, implements the highest-priority incomplete story, commits, and updates progress.
@@ -48,24 +48,24 @@ Requires Go 1.25+ and one of:
 
 ```bash
 # Initialize project
-goralph init
+hal init
 
 # === Manual workflow ===
 # Generate PRD interactively
-goralph plan
+hal plan
 
 # Or write markdown PRD manually, then convert
-goralph convert .goralph/prd-auth.md
+hal convert .hal/prd-auth.md
 
 # Validate the PRD
-goralph validate
+hal validate
 
 # Run the loop
-goralph run
+hal run
 
 # === Compound engineering (automated) ===
-# Drop a report in .goralph/reports/, then:
-goralph auto
+# Drop a report in .hal/reports/, then:
+hal auto
 ```
 
 ## Planning a Feature
@@ -79,7 +79,7 @@ The `plan` command generates a PRD through a two-phase flow:
 Run `plan` with no arguments to open your `$EDITOR` with a template:
 
 ```bash
-goralph plan
+hal plan
 ```
 
 This opens a markdown file where you can write a detailed feature spec. Write as much or as little as you want, save, and quit. Comment lines (`<!-- ... -->`) are stripped automatically.
@@ -91,23 +91,23 @@ The editor is resolved in order: `$EDITOR` > `$VISUAL` > `nano` > `vim` > `vi`.
 Pass the description directly as an argument:
 
 ```bash
-goralph plan "add user authentication with OAuth"
+hal plan "add user authentication with OAuth"
 ```
 
 Good for quick, well-defined features. For anything nuanced, prefer the editor.
 
 ### Output formats
 
-By default, the PRD is written as markdown to `.goralph/prd-<feature-name>.md`. You can review and edit it before converting.
+By default, the PRD is written as markdown to `.hal/prd-<feature-name>.md`. You can review and edit it before converting.
 
 ```bash
 # Default: markdown output, then convert separately
-goralph plan "notifications"
-goralph convert .goralph/prd-notifications.md
+hal plan "notifications"
+hal convert .hal/prd-notifications.md
 
 # Skip markdown step, output JSON directly for immediate use
-goralph plan "notifications" --format json
-goralph run
+hal plan "notifications" --format json
+hal run
 ```
 
 ### Flags
@@ -119,23 +119,23 @@ goralph run
 
 ## Converting a PRD
 
-Convert a markdown PRD to the structured JSON format GoRalph needs:
+Convert a markdown PRD to the structured JSON format Hal needs:
 
 ```bash
-goralph convert .goralph/prd-auth.md
-goralph convert .goralph/prd-auth.md -o custom-output.json
-goralph convert .goralph/prd-auth.md --validate    # also validate after conversion
+hal convert .hal/prd-auth.md
+hal convert .hal/prd-auth.md -o custom-output.json
+hal convert .hal/prd-auth.md --validate    # also validate after conversion
 ```
 
-If a `prd.json` already exists for a different feature, it gets archived to `.goralph/archive/` automatically.
+If a `prd.json` already exists for a different feature, it gets archived to `.hal/archive/` automatically.
 
 ## Validating a PRD
 
 Check that stories are right-sized, properly ordered, and have verifiable criteria:
 
 ```bash
-goralph validate                       # validates .goralph/prd.json
-goralph validate path/to/other.json    # validate a specific file
+hal validate                       # validates .hal/prd.json
+hal validate path/to/other.json    # validate a specific file
 ```
 
 ## Running the Loop
@@ -143,26 +143,26 @@ goralph validate path/to/other.json    # validate a specific file
 Execute stories autonomously. Each iteration picks the highest-priority incomplete story, implements it, commits, and updates progress:
 
 ```bash
-goralph run                       # run with defaults (10 iterations)
-goralph run 5                     # run 5 iterations
-goralph run 1 -s US-001           # run single specific story
-goralph run -e codex              # use Codex engine
-goralph run --dry-run             # show what would execute without running
+hal run                       # run with defaults (10 iterations)
+hal run 5                     # run 5 iterations
+hal run 1 -s US-001           # run single specific story
+hal run -e codex              # use Codex engine
+hal run --dry-run             # show what would execute without running
 ```
 
 ## Compound Engineering Pipeline
 
-The `auto` command provides full end-to-end automation. Place analysis reports in `.goralph/reports/`, and GoRalph will find the latest one, identify the priority item, generate a PRD, break it into tasks, implement them, and open a PR.
+The `auto` command provides full end-to-end automation. Place analysis reports in `.hal/reports/`, and Hal will find the latest one, identify the priority item, generate a PRD, break it into tasks, implement them, and open a PR.
 
 ```bash
-goralph auto                     # Run full pipeline with latest report
-goralph auto --report report.md  # Use specific report file
-goralph auto --dry-run           # Show what would happen without executing
-goralph auto --resume            # Continue from last saved state
-goralph auto --skip-pr           # Skip PR creation at the end
+hal auto                     # Run full pipeline with latest report
+hal auto --report report.md  # Use specific report file
+hal auto --dry-run           # Show what would happen without executing
+hal auto --resume            # Continue from last saved state
+hal auto --skip-pr           # Skip PR creation at the end
 ```
 
-The pipeline saves state after each step to `.goralph/pipeline-state.json`, allowing you to resume from interruptions.
+The pipeline saves state after each step to `.hal/pipeline-state.json`, allowing you to resume from interruptions.
 
 ### Individual Pipeline Commands
 
@@ -170,43 +170,43 @@ Each step of the pipeline can be run independently:
 
 ```bash
 # Analyze reports to find priority item
-goralph analyze                           # Analyze latest report
-goralph analyze report.md                 # Analyze specific file
-goralph analyze --output json             # Output as JSON
+hal analyze                           # Analyze latest report
+hal analyze report.md                 # Analyze specific file
+hal analyze --output json             # Output as JSON
 
 # Break a PRD into granular tasks (auto pipeline)
-goralph explode .goralph/prd-feature.md                  # Explode a PRD (writes .goralph/auto-prd.json)
-goralph explode .goralph/prd-feature.md --branch feature # Set branch name
+hal explode .hal/prd-feature.md                  # Explode a PRD (writes .hal/auto-prd.json)
+hal explode .hal/prd-feature.md --branch feature # Set branch name
 
 # Review completed work
-goralph review                  # Review and generate report
-goralph review --skip-agents    # Skip AGENTS.md update
+hal review                  # Review and generate report
+hal review --skip-agents    # Skip AGENTS.md update
 ```
 
 ## All Commands
 
 | Command | Description |
 |---------|-------------|
-| `goralph init` | Initialize `.goralph/` directory with skills and templates |
-| `goralph plan [description]` | Generate PRD (editor mode if no args) |
-| `goralph convert <markdown-prd>` | Convert markdown PRD to `.goralph/prd.json` |
-| `goralph validate [prd-path]` | Validate PRD against quality rules |
-| `goralph run [iterations]` | Execute stories autonomously (default: 10 iterations) |
-| `goralph auto` | Run full compound engineering pipeline |
-| `goralph analyze [report]` | Analyze reports to identify priority item |
-| `goralph explode <prd-path>` | Break PRD into 8-15 granular tasks for the auto pipeline |
-| `goralph review` | Review completed work and generate a report |
-| `goralph config` | Show current configuration |
-| `goralph version` | Show version info |
+| `hal init` | Initialize `.hal/` directory with skills and templates |
+| `hal plan [description]` | Generate PRD (editor mode if no args) |
+| `hal convert <markdown-prd>` | Convert markdown PRD to `.hal/prd.json` |
+| `hal validate [prd-path]` | Validate PRD against quality rules |
+| `hal run [iterations]` | Execute stories autonomously (default: 10 iterations) |
+| `hal auto` | Run full compound engineering pipeline |
+| `hal analyze [report]` | Analyze reports to identify priority item |
+| `hal explode <prd-path>` | Break PRD into 8-15 granular tasks for the auto pipeline |
+| `hal review` | Review completed work and generate a report |
+| `hal config` | Show current configuration |
+| `hal version` | Show version info |
 
 ## PRD Format
 
-GoRalph works with structured PRDs in JSON:
+Hal works with structured PRDs in JSON:
 
 ```json
 {
   "project": "MyProject",
-  "branchName": "ralph/feature-name",
+  "branchName": "hal/feature-name",
   "description": "Feature description",
   "userStories": [
     {
@@ -235,7 +235,7 @@ GoRalph works with structured PRDs in JSON:
 
 ## Engine Architecture
 
-GoRalph supports AI engines through a pluggable interface:
+Hal supports AI engines through a pluggable interface:
 
 - **Claude** (default) -- Uses Claude Code CLI with `stream-json` output for live progress display
 - **Codex** -- Uses OpenAI Codex CLI with JSONL output for live progress display
@@ -243,14 +243,14 @@ GoRalph supports AI engines through a pluggable interface:
 Engines are registered at import time and selected via the `-e` flag:
 
 ```bash
-goralph run -e claude    # default
-goralph run -e codex     # use Codex
+hal run -e claude    # default
+hal run -e codex     # use Codex
 ```
 
 ## Project Structure
 
 ```
-.goralph/                  # Project config (created by init)
+.hal/                  # Project config (created by init)
   config.yaml              # Configuration settings
   prompt.md                # Agent instructions (customizable)
   progress.txt             # Progress log across iterations
@@ -259,7 +259,7 @@ goralph run -e codex     # use Codex
   reports/                 # Analysis reports for auto mode
   skills/                  # Installed skills
     prd/                   # PRD generation skill
-    ralph/                 # PRD-to-JSON conversion skill
+    hal/                   # PRD-to-JSON conversion skill
     autospec/              # Non-interactive PRD generation
     explode/               # Task breakdown skill
 ```

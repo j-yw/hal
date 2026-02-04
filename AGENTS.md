@@ -5,10 +5,10 @@
 - `internal/`: core packages (`engine/`, `loop/`, `prd/`, `skills/`, `template/`).
 - `main.go`: CLI entrypoint wiring.
 - `agent-os/`: product/roadmap documentation.
-- `.goralph/`: runtime config created by `goralph init` (`config.yaml`, `prd.json`, `progress.txt`, `prompt.md`, `skills/`, `archive/`, `reports/`).
+- `.hal/`: runtime config created by `hal init` (`config.yaml`, `prd.json`, `progress.txt`, `prompt.md`, `skills/`, `archive/`, `reports/`).
 
 ## Build, Test, and Development Commands
-- `make build`: compile `goralph` with version metadata.
+- `make build`: compile `hal` with version metadata.
 - `make install`: install to `~/.local/bin`.
 - `make test`: run unit tests (`go test -v ./...`).
 - `make vet`: run `go vet` checks.
