@@ -1,6 +1,7 @@
 # Binaries
 /hal
 /goralph
+dist/
 
 # Runtime config
 .hal/
