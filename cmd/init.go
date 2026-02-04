@@ -58,21 +58,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	projectDir := "."
 
 	// Auto-migrate .goralph/ to .hal/ if applicable
-	oldDir := ".goralph"
-	_, oldExists := os.Stat(oldDir)
-	_, newExists := os.Stat(configDir)
-
-	if oldExists == nil && newExists != nil {
-		// .goralph exists but .hal does not — migrate
-		if err := os.Rename(oldDir, configDir); err != nil {
-			return fmt.Errorf("failed to migrate %s to %s: %w", oldDir, configDir, err)
-		}
-		fmt.Printf("Migrated %s/ to %s/ — I've upgraded your configuration. It's going to be a much better experience.\n", oldDir, configDir)
-		fmt.Println()
-	} else if oldExists == nil && newExists == nil {
-		// Both exist — warn and use .hal
-		fmt.Printf("Warning: both %s/ and %s/ exist. Using %s/ — you may want to remove %s/ manually.\n", oldDir, configDir, configDir, oldDir)
-		fmt.Println()
+	if _, err := migrateConfigDir(".goralph", configDir, os.Stdout); err != nil {
+		return err
 	}
 
 	// Create directories (MkdirAll is idempotent - won't fail if exists)
