@@ -66,7 +66,7 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 			continue
 		}
 		dst := filepath.Join(archiveDir, f)
-		if err := os.Rename(src, dst); err != nil {
+		if err := moveFile(src, dst); err != nil {
 			return "", fmt.Errorf("failed to move %s: %w", f, err)
 		}
 		fmt.Fprintf(w, "  archived %s\n", f)
@@ -78,7 +78,7 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 	for _, src := range prdMDs {
 		base := filepath.Base(src)
 		dst := filepath.Join(archiveDir, base)
-		if err := os.Rename(src, dst); err != nil {
+		if err := moveFile(src, dst); err != nil {
 			return "", fmt.Errorf("failed to move %s: %w", base, err)
 		}
 		fmt.Fprintf(w, "  archived %s\n", base)
@@ -97,7 +97,7 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 			for _, src := range reportFiles {
 				base := filepath.Base(src)
 				dst := filepath.Join(archiveReportsDir, base)
-				if err := os.Rename(src, dst); err != nil {
+				if err := moveFile(src, dst); err != nil {
 					return "", fmt.Errorf("failed to move reports/%s: %w", base, err)
 				}
 				fmt.Fprintf(w, "  archived reports/%s\n", base)
