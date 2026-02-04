@@ -157,5 +157,28 @@ func runInit(cmd *cobra.Command, args []string) error {
 // migrateConfigDir checks for a legacy oldDir and migrates it to newDir if applicable.
 // Output messages are written to w.
 func migrateConfigDir(oldDir, newDir string, w io.Writer) (migrateResult, error) {
+	_, oldErr := os.Stat(oldDir)
+	_, newErr := os.Stat(newDir)
+
+	oldExists := oldErr == nil
+	newExists := newErr == nil
+
+	if oldExists && !newExists {
+		// oldDir exists but newDir does not — migrate
+		if err := os.Rename(oldDir, newDir); err != nil {
+			return migrateNone, fmt.Errorf("failed to migrate %s to %s: %w", oldDir, newDir, err)
+		}
+		fmt.Fprintf(w, "Migrated %s/ to %s/ — I've upgraded your configuration. It's going to be a much better experience.\n", oldDir, newDir)
+		fmt.Fprintln(w)
+		return migrateDone, nil
+	}
+
+	if oldExists && newExists {
+		// Both exist — warn and use newDir
+		fmt.Fprintf(w, "Warning: both %s/ and %s/ exist. Using %s/ — you may want to remove %s/ manually.\n", oldDir, newDir, newDir, oldDir)
+		fmt.Fprintln(w)
+		return migrateWarning, nil
+	}
+
 	return migrateNone, nil
 }
