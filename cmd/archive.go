@@ -24,7 +24,7 @@ var archiveCmd = &cobra.Command{
 	Long: `Archive all feature state files from .hal/ into .hal/archive/<date>-<name>/.
 
 Archives: prd.json, prd-*.md, progress.txt, auto-prd.json, auto-progress.txt,
-auto-state.json, and reports/*.md.
+auto-state.json, and reports/* (non-hidden files).
 
 Never touches: config.yaml, prompt.md, skills/, rules/.
 
