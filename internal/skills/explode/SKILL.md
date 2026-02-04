@@ -15,16 +15,16 @@ Transform a Product Requirements Document into 8-15 granular, autonomously-execu
 2. Analyze the scope and identify all work items
 3. Break down into 8-15 granular tasks
 4. Order tasks by dependency (investigation -> schema -> backend -> UI -> verification)
-5. Generate `.goralph/auto-prd.json` with the tasks array
+5. Generate `.hal/auto-prd.json` with the tasks array
 
-**Important:** Output JSON directly to `.goralph/auto-prd.json`. Do NOT ask clarifying questions.
+**Important:** Output JSON directly to `.hal/auto-prd.json`. Do NOT ask clarifying questions.
 
 ---
 
 ## Input
 
 You will receive:
-- Path to the PRD file (e.g., `.goralph/prd-feature-name.md`)
+- Path to the PRD file (e.g., `.hal/prd-feature-name.md`)
 - Branch name to include in the output
 
 Read the PRD and extract:
@@ -62,7 +62,7 @@ Generate an `auto-prd.json` file with this structure:
 }
 ```
 
-**Note:** Use `userStories` field (not `tasks`) for compatibility with existing Ralph loop.
+**Note:** Use `userStories` field (not `tasks`) for compatibility with existing Hal loop.
 
 ---
 
@@ -246,7 +246,7 @@ The T-XXX format indicates this is an autonomous pipeline execution.
       "description": "As a developer, I need to load state from disk so the pipeline can resume.",
       "acceptanceCriteria": [
         "Implement loadState() (*PipelineState, error) in state.go",
-        "Reads from .goralph/auto-state.json",
+        "Reads from .hal/auto-state.json",
         "Returns nil, nil when file doesn't exist",
         "Returns error when file exists but is invalid JSON",
         "Typecheck passes"
@@ -261,7 +261,7 @@ The T-XXX format indicates this is an autonomous pipeline execution.
       "description": "As a developer, I need to save state to disk so progress is preserved.",
       "acceptanceCriteria": [
         "Implement saveState(state *PipelineState) error in state.go",
-        "Writes to .goralph/auto-state.json with 0644 permissions",
+        "Writes to .hal/auto-state.json with 0644 permissions",
         "Uses atomic write pattern (write temp, then rename)",
         "Typecheck passes"
       ],
@@ -275,7 +275,7 @@ The T-XXX format indicates this is an autonomous pipeline execution.
       "description": "As a developer, I need to clear state on completion so the next run starts fresh.",
       "acceptanceCriteria": [
         "Implement clearState() error in state.go",
-        "Removes .goralph/auto-state.json file",
+        "Removes .hal/auto-state.json file",
         "Returns nil if file doesn't exist (idempotent)",
         "Typecheck passes"
       ],
@@ -303,17 +303,17 @@ Before generating auto-prd.json:
 - [ ] Every criterion is boolean (verifiable true/false)
 - [ ] Every task ends with "Typecheck passes"
 - [ ] Output is valid JSON
-- [ ] Saved to `.goralph/auto-prd.json`
+- [ ] Saved to `.hal/auto-prd.json`
 - [ ] Did NOT ask clarifying questions
 
 ---
 
 ## Output Location
 
-Write the JSON to: `.goralph/auto-prd.json`
+Write the JSON to: `.hal/auto-prd.json`
 
-This is separate from the manual flow's `.goralph/prd.json`:
-- **Manual flow** (`plan`, `convert`, `validate`, `run`) → `.goralph/prd.json`
-- **Auto flow** (`auto`, `explode`) → `.goralph/auto-prd.json`
+This is separate from the manual flow's `.hal/prd.json`:
+- **Manual flow** (`plan`, `convert`, `validate`, `run`) → `.hal/prd.json`
+- **Auto flow** (`auto`, `explode`) → `.hal/auto-prd.json`
 
-The source PRD content is preserved in the `.goralph/prd-[feature].md` file.
+The source PRD content is preserved in the `.hal/prd-[feature].md` file.

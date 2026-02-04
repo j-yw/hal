@@ -14,7 +14,7 @@ Generate Product Requirements Documents autonomously using provided analysis con
 1. Receive analysis context containing: priority item, description, rationale, acceptance criteria hints
 2. Self-clarify requirements using the analysis context (NO user questions)
 3. Generate a structured PRD
-4. Save to `.goralph/prd-[feature-name].md`
+4. Save to `.hal/prd-[feature-name].md`
 
 **Important:** This skill is designed for autonomous execution. Do NOT ask the user any questions.
 
@@ -167,7 +167,7 @@ Document assumptions in the Open Questions section.
 ## Output
 
 - **Format:** Markdown (`.md`)
-- **Location:** `.goralph/`
+- **Location:** `.hal/`
 - **Filename:** `prd-[feature-name].md` (kebab-case, derived from analysis)
 
 ---
@@ -180,7 +180,7 @@ ANALYSIS CONTEXT:
 - Priority Item: Add config file support
 - Description: Allow users to customize behavior via config.yaml
 - Rationale: Users need to override defaults without code changes
-- Acceptance Criteria Hints: Load from .goralph/config.yaml, provide defaults, document options
+- Acceptance Criteria Hints: Load from .hal/config.yaml, provide defaults, document options
 - Estimated Tasks: 4
 - Branch Name: feature/config-support
 ```
@@ -192,7 +192,7 @@ ANALYSIS CONTEXT:
 
 ## Introduction
 
-Add configuration file support so users can customize goralph behavior without modifying code. The config file will be located at `.goralph/config.yaml` and provide sensible defaults when missing.
+Add configuration file support so users can customize hal behavior without modifying code. The config file will be located at `.hal/config.yaml` and provide sensible defaults when missing.
 
 ## Goals
 
@@ -222,10 +222,10 @@ Add configuration file support so users can customize goralph behavior without m
 - [ ] Typecheck passes
 
 ### T-003: Update init to install config
-**Description:** As a user, I want goralph init to create config.yaml so I have a starting point.
+**Description:** As a user, I want hal init to create config.yaml so I have a starting point.
 
 **Acceptance Criteria:**
-- [ ] Init creates .goralph/config.yaml if missing
+- [ ] Init creates .hal/config.yaml if missing
 - [ ] Existing config files are preserved
 - [ ] Init output lists config.yaml
 - [ ] Typecheck passes
@@ -241,9 +241,9 @@ Add configuration file support so users can customize goralph behavior without m
 
 ## Functional Requirements
 
-- FR-1: Load configuration from .goralph/config.yaml when present
+- FR-1: Load configuration from .hal/config.yaml when present
 - FR-2: Provide default values for all settings when config is missing
-- FR-3: goralph init creates config.yaml template
+- FR-3: hal init creates config.yaml template
 - FR-4: Existing config files are never overwritten
 
 ## Non-Goals
@@ -274,5 +274,5 @@ Before saving the PRD:
 - [ ] Tasks ordered by dependency (schema to backend to UI)
 - [ ] Every task has "Typecheck passes" as criterion
 - [ ] Acceptance criteria are boolean (verifiable true/false)
-- [ ] Saved to `.goralph/prd-[feature-name].md`
+- [ ] Saved to `.hal/prd-[feature-name].md`
 - [ ] Did NOT ask the user any questions

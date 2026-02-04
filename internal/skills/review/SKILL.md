@@ -44,7 +44,7 @@ Only extract patterns that are:
 3. **Discovered through work** - Learnings from actual implementation, not obvious from reading code
 
 ### Good patterns (specific, actionable):
-- "Use atomic write pattern (write temp, then rename) for state files in .goralph/"
+- "Use atomic write pattern (write temp, then rename) for state files in .hal/"
 - "Engine implementations must register via init() in internal/engine/{name}/{name}.go"
 - "CLI commands delegate to compound package; cmd/ files only handle flags and display"
 - "Tests use table-driven format with subtests named after the test case"
@@ -139,7 +139,7 @@ Return ONLY valid JSON (no markdown code fences, no explanation):
     "Error messages in state.go could be more descriptive"
   ],
   "recommendations": [
-    "Add goralph review command to generate reports after pipeline completion",
+    "Add hal review command to generate reports after pipeline completion",
     "Implement retry logic for transient engine failures",
     "Add progress percentage to pipeline output"
   ]
