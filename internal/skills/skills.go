@@ -15,10 +15,10 @@ func LoadSkill(name string) (string, error) {
 	return content, nil
 }
 
-// InstallSkills writes embedded skills to .goralph/skills/ directory.
+// InstallSkills writes embedded skills to .hal/skills/ directory.
 // Existing skill files are preserved to keep user customizations.
 func InstallSkills(projectDir string) error {
-	skillsDir := filepath.Join(projectDir, ".goralph", "skills")
+	skillsDir := filepath.Join(projectDir, ".hal", "skills")
 
 	for _, name := range SkillNames {
 		content, err := LoadSkill(name)

@@ -1,5 +1,5 @@
 # Binaries
-hal
+/hal
 *.exe
 *.exe~
 *.dll

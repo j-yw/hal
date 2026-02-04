@@ -25,7 +25,7 @@ func (c *CodexLinker) SkillsDir() string {
 	return filepath.Join(home, ".codex", "skills")
 }
 
-// Link creates symlinks from ~/.codex/skills/ to .goralph/skills/.
+// Link creates symlinks from ~/.codex/skills/ to .hal/skills/.
 // Uses absolute paths since the link target is outside ~/.codex/.
 func (c *CodexLinker) Link(projectDir string, skills []string) error {
 	skillsDir := c.SkillsDir()
@@ -39,7 +39,7 @@ func (c *CodexLinker) Link(projectDir string, skills []string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(absProjectDir, ".goralph", "skills", skill)
+		target := filepath.Join(absProjectDir, ".hal", "skills", skill)
 		link := filepath.Join(skillsDir, skill)
 
 		// Skip if already correctly linked
@@ -65,7 +65,7 @@ func (c *CodexLinker) Unlink(projectDir string) error {
 
 	for _, skill := range SkillNames {
 		link := filepath.Join(skillsDir, skill)
-		target := filepath.Join(absProjectDir, ".goralph", "skills", skill)
+		target := filepath.Join(absProjectDir, ".hal", "skills", skill)
 
 		// Only remove if this symlink points to our project
 		if existing, err := os.Readlink(link); err == nil && existing == target {

@@ -8,7 +8,7 @@ type EngineLinker interface {
 	// SkillsDir returns where the engine looks for skills.
 	SkillsDir() string
 
-	// Link creates links/copies from .goralph/skills/ to engine's skill directory.
+	// Link creates links/copies from .hal/skills/ to engine's skill directory.
 	Link(projectDir string, skills []string) error
 
 	// Unlink removes links/copies from engine's skill directory.

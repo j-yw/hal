@@ -26,13 +26,13 @@ func TestCodexLinkerSkillsDir(t *testing.T) {
 func TestCodexLinkerLink(t *testing.T) {
 	// Create temp directories
 	projectDir := t.TempDir()
-	goralphSkillsDir := filepath.Join(projectDir, ".goralph", "skills")
-	if err := os.MkdirAll(goralphSkillsDir, 0755); err != nil {
-		t.Fatalf("failed to create .goralph/skills: %v", err)
+	halSkillsDir := filepath.Join(projectDir, ".hal", "skills")
+	if err := os.MkdirAll(halSkillsDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal/skills: %v", err)
 	}
 
 	// Create a test skill directory
-	testSkillDir := filepath.Join(goralphSkillsDir, "testskill")
+	testSkillDir := filepath.Join(halSkillsDir, "testskill")
 	if err := os.MkdirAll(testSkillDir, 0755); err != nil {
 		t.Fatalf("failed to create test skill dir: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestCodexLinkerLink(t *testing.T) {
 	}
 
 	absProjectDir, _ := filepath.Abs(projectDir)
-	expectedTarget := filepath.Join(absProjectDir, ".goralph", "skills", "testskill")
+	expectedTarget := filepath.Join(absProjectDir, ".hal", "skills", "testskill")
 	if target != expectedTarget {
 		t.Errorf("Symlink target = %q, want %q", target, expectedTarget)
 	}
@@ -75,12 +75,12 @@ func TestCodexLinkerLink(t *testing.T) {
 
 func TestCodexLinkerLinkIdempotent(t *testing.T) {
 	projectDir := t.TempDir()
-	goralphSkillsDir := filepath.Join(projectDir, ".goralph", "skills")
-	if err := os.MkdirAll(goralphSkillsDir, 0755); err != nil {
-		t.Fatalf("failed to create .goralph/skills: %v", err)
+	halSkillsDir := filepath.Join(projectDir, ".hal", "skills")
+	if err := os.MkdirAll(halSkillsDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal/skills: %v", err)
 	}
 
-	testSkillDir := filepath.Join(goralphSkillsDir, "testskill")
+	testSkillDir := filepath.Join(halSkillsDir, "testskill")
 	if err := os.MkdirAll(testSkillDir, 0755); err != nil {
 		t.Fatalf("failed to create test skill dir: %v", err)
 	}
@@ -99,13 +99,13 @@ func TestCodexLinkerLinkIdempotent(t *testing.T) {
 
 func TestCodexLinkerUnlink(t *testing.T) {
 	projectDir := t.TempDir()
-	goralphSkillsDir := filepath.Join(projectDir, ".goralph", "skills")
-	if err := os.MkdirAll(goralphSkillsDir, 0755); err != nil {
-		t.Fatalf("failed to create .goralph/skills: %v", err)
+	halSkillsDir := filepath.Join(projectDir, ".hal", "skills")
+	if err := os.MkdirAll(halSkillsDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal/skills: %v", err)
 	}
 
 	// Use a skill name that's in SkillNames (e.g., "prd")
-	testSkillDir := filepath.Join(goralphSkillsDir, "prd")
+	testSkillDir := filepath.Join(halSkillsDir, "prd")
 	if err := os.MkdirAll(testSkillDir, 0755); err != nil {
 		t.Fatalf("failed to create test skill dir: %v", err)
 	}
@@ -137,11 +137,11 @@ func TestCodexLinkerUnlinkOnlyOwnLinks(t *testing.T) {
 
 	// Set up both projects
 	for _, dir := range []string{projectDir1, projectDir2} {
-		goralphSkillsDir := filepath.Join(dir, ".goralph", "skills")
-		if err := os.MkdirAll(goralphSkillsDir, 0755); err != nil {
-			t.Fatalf("failed to create .goralph/skills: %v", err)
+		halSkillsDir := filepath.Join(dir, ".hal", "skills")
+		if err := os.MkdirAll(halSkillsDir, 0755); err != nil {
+			t.Fatalf("failed to create .hal/skills: %v", err)
 		}
-		testSkillDir := filepath.Join(goralphSkillsDir, "testskill")
+		testSkillDir := filepath.Join(halSkillsDir, "testskill")
 		if err := os.MkdirAll(testSkillDir, 0755); err != nil {
 			t.Fatalf("failed to create test skill dir: %v", err)
 		}
@@ -196,7 +196,7 @@ func (c *testCodexLinker) Link(projectDir string, skills []string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(absProjectDir, ".goralph", "skills", skill)
+		target := filepath.Join(absProjectDir, ".hal", "skills", skill)
 		link := filepath.Join(c.skillsDir, skill)
 
 		if existing, err := os.Readlink(link); err == nil && existing == target {
@@ -217,7 +217,7 @@ func (c *testCodexLinker) Unlink(projectDir string) error {
 
 	for _, skill := range SkillNames {
 		link := filepath.Join(c.skillsDir, skill)
-		target := filepath.Join(absProjectDir, ".goralph", "skills", skill)
+		target := filepath.Join(absProjectDir, ".hal", "skills", skill)
 
 		if existing, err := os.Readlink(link); err == nil && existing == target {
 			os.RemoveAll(link)
