@@ -1,5 +1,5 @@
-# goralph configuration file
-# This file controls the behavior of the goralph autonomous agent.
+# hal configuration file
+# This file controls the behavior of the hal autonomous agent.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Engine Settings
@@ -24,14 +24,14 @@ retryDelay: 30s
 maxRetries: 3
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Auto Pipeline Settings (goralph auto)
+# Auto Pipeline Settings (hal auto)
 # ─────────────────────────────────────────────────────────────────────────────
 
 auto:
   # Directory where analysis reports are stored.
   # The auto command looks here for reports to analyze.
-  # Default: .goralph/reports
-  reportsDir: .goralph/reports
+  # Default: .hal/reports
+  reportsDir: .hal/reports
 
   # Prefix for branches created by the auto pipeline.
   # Branch names will be: {branchPrefix}{feature-slug}

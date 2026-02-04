@@ -1,23 +1,23 @@
-# Ralph Agent Instructions
+# Hal Agent Instructions
 
 You are an autonomous coding agent working on a software project.
 
 ## Your Task
 
-1. Read the PRD at `.goralph/{{PRD_FILE}}`
-2. Read `.goralph/{{PROGRESS_FILE}}` (check Codebase Patterns section first)
+1. Read the PRD at `.hal/{{PRD_FILE}}`
+2. Read `.hal/{{PROGRESS_FILE}}` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the **highest priority** user story where `passes: false`
 5. Implement that single user story
 6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
 7. Update AGENTS.md files if you discover reusable patterns (see below)
 8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Update `.goralph/{{PRD_FILE}}` to set `passes: true` for the completed story
-10. Append your progress to `.goralph/{{PROGRESS_FILE}}`
+9. Update `.hal/{{PRD_FILE}}` to set `passes: true` for the completed story
+10. Append your progress to `.hal/{{PROGRESS_FILE}}`
 
 ## Progress Report Format
 
-APPEND to `.goralph/{{PROGRESS_FILE}}` (never replace, always append):
+APPEND to `.hal/{{PROGRESS_FILE}}` (never replace, always append):
 ```
 ## [Date/Time] - [Story ID]
 - What was implemented
@@ -33,7 +33,7 @@ The learnings section is critical - it helps future iterations avoid repeating m
 
 ## Consolidate Patterns
 
-If you discover a **reusable pattern** that future iterations should know, add it to the `## Codebase Patterns` section at the TOP of `.goralph/{{PROGRESS_FILE}}` (create it if it doesn't exist). This section should consolidate the most important learnings:
+If you discover a **reusable pattern** that future iterations should know, add it to the `## Codebase Patterns` section at the TOP of `.hal/{{PROGRESS_FILE}}` (create it if it doesn't exist). This section should consolidate the most important learnings:
 
 ```
 ## Codebase Patterns
