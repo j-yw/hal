@@ -96,6 +96,7 @@ func TestCreate(t *testing.T) {
 				reportsDir := filepath.Join(halDir, "reports")
 				os.MkdirAll(reportsDir, 0755)
 				writeFile(t, filepath.Join(reportsDir, "review.md"), "# Review")
+				writeFile(t, filepath.Join(reportsDir, "review.txt"), "notes")
 				writeFile(t, filepath.Join(reportsDir, ".gitkeep"), "")
 			},
 			archName: "feat",
@@ -103,9 +104,30 @@ func TestCreate(t *testing.T) {
 				if !fileExists(filepath.Join(archDir, "reports", "review.md")) {
 					t.Error("reports/review.md not archived")
 				}
+				if !fileExists(filepath.Join(archDir, "reports", "review.txt")) {
+					t.Error("reports/review.txt not archived")
+				}
 				// .gitkeep should still be in original reports
 				if !fileExists(filepath.Join(halDir, "reports", ".gitkeep")) {
 					t.Error(".gitkeep should not be moved")
+				}
+			},
+		},
+		{
+			name: "auto-state only archives",
+			setup: func(t *testing.T, halDir string) {
+				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+				writeFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"paused"}`)
+			},
+			archName: "auto-only",
+			check: func(t *testing.T, halDir, archDir string) {
+				for _, f := range []string{template.AutoProgressFile, template.AutoStateFile} {
+					if !fileExists(filepath.Join(archDir, f)) {
+						t.Errorf("expected %s in archive", f)
+					}
+					if fileExists(filepath.Join(halDir, f)) {
+						t.Errorf("expected %s removed from halDir", f)
+					}
 				}
 			},
 		},
@@ -152,7 +174,7 @@ func TestCreate(t *testing.T) {
 			},
 		},
 		{
-			name:      "error when no prd.json or auto-prd.json",
+			name:      "error when no feature state",
 			setup:     func(t *testing.T, halDir string) {},
 			archName:  "nothing",
 			wantErr:   true,
@@ -360,6 +382,33 @@ func TestRestore(t *testing.T) {
 				}
 
 				// Auto-saved archive should exist
+				archives, _ := List(halDir)
+				found := false
+				for _, a := range archives {
+					if strings.Contains(a.Name, "auto-saved") {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Error("expected auto-saved archive")
+				}
+			},
+		},
+		{
+			name: "auto-archives auto-state before restore",
+			setup: func(t *testing.T, halDir string) string {
+				// Create current auto state only
+				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+				writeFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"paused"}`)
+
+				// Create archive to restore
+				archDir := filepath.Join(halDir, "archive", "2026-01-02-old")
+				os.MkdirAll(archDir, 0755)
+				writePRD(t, archDir, template.PRDFile, "hal/old", nil)
+				return "2026-01-02-old"
+			},
+			check: func(t *testing.T, halDir string) {
 				archives, _ := List(halDir)
 				found := false
 				for _, a := range archives {

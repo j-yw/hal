@@ -15,7 +15,7 @@ import (
 )
 
 // featureStateFiles are the files that belong to a feature and should be archived.
-// Reports are handled separately via glob.
+// Reports are handled separately.
 var featureStateFiles = []string{
 	template.PRDFile,
 	template.AutoPRDFile,
@@ -35,13 +35,15 @@ var protectedPaths = map[string]bool{
 
 // Create moves all feature state files from halDir into halDir/archive/<date>-<name>/.
 // It returns the archive directory path on success.
-// If no prd.json and no auto-prd.json exist, it returns an error (no feature state to archive).
+// If no feature state exists, it returns an error.
 func Create(halDir, name string, w io.Writer) (string, error) {
-	// Check that at least one PRD file exists
-	hasPRD := fileExists(filepath.Join(halDir, template.PRDFile))
-	hasAutoPRD := fileExists(filepath.Join(halDir, template.AutoPRDFile))
-	if !hasPRD && !hasAutoPRD {
-		return "", fmt.Errorf("no feature state to archive (no %s or %s found)", template.PRDFile, template.AutoPRDFile)
+	// Check that at least one feature state file exists
+	hasState, err := HasFeatureState(halDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to check feature state: %w", err)
+	}
+	if !hasState {
+		return "", fmt.Errorf("no feature state to archive")
 	}
 
 	// Build archive directory name
@@ -85,10 +87,13 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 		moved++
 	}
 
-	// Move reports/*.md (but NOT .gitkeep)
+	// Move reports/* (but NOT hidden files like .gitkeep)
 	reportsDir := filepath.Join(halDir, "reports")
 	if dirExists(reportsDir) {
-		reportFiles, _ := filepath.Glob(filepath.Join(reportsDir, "*.md"))
+		reportFiles, err := listReportFiles(reportsDir)
+		if err != nil {
+			return "", fmt.Errorf("failed to read reports directory: %w", err)
+		}
 		if len(reportFiles) > 0 {
 			archiveReportsDir := filepath.Join(archiveDir, "reports")
 			if err := os.MkdirAll(archiveReportsDir, 0755); err != nil {
@@ -234,9 +239,11 @@ func Restore(halDir, name string, w io.Writer) error {
 	}
 
 	// If current state exists, auto-archive it first
-	hasPRD := fileExists(filepath.Join(halDir, template.PRDFile))
-	hasAutoPRD := fileExists(filepath.Join(halDir, template.AutoPRDFile))
-	if hasPRD || hasAutoPRD {
+	hasState, err := HasFeatureState(halDir)
+	if err != nil {
+		return fmt.Errorf("failed to check current state: %w", err)
+	}
+	if hasState {
 		fmt.Fprintln(w, "  auto-archiving current state...")
 		_, err := Create(halDir, "auto-saved", w)
 		if err != nil {
@@ -306,6 +313,57 @@ func resolveCollision(dir string) string {
 			return candidate
 		}
 	}
+}
+
+// HasFeatureState returns true if any feature state files or reports exist in halDir.
+func HasFeatureState(halDir string) (bool, error) {
+	for _, f := range featureStateFiles {
+		if fileExists(filepath.Join(halDir, f)) {
+			return true, nil
+		}
+	}
+
+	prdMDs, err := filepath.Glob(filepath.Join(halDir, "prd-*.md"))
+	if err != nil {
+		return false, fmt.Errorf("failed to scan PRD markdown files: %w", err)
+	}
+	if len(prdMDs) > 0 {
+		return true, nil
+	}
+
+	reportsDir := filepath.Join(halDir, "reports")
+	if dirExists(reportsDir) {
+		reportFiles, err := listReportFiles(reportsDir)
+		if err != nil {
+			return false, err
+		}
+		if len(reportFiles) > 0 {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func listReportFiles(reportsDir string) ([]string, error) {
+	entries, err := os.ReadDir(reportsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	reportFiles := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		reportFiles = append(reportFiles, filepath.Join(reportsDir, name))
+	}
+
+	return reportFiles, nil
 }
 
 func fileExists(path string) bool {
