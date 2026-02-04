@@ -1,12 +1,12 @@
-# GoRalph Product Specification
+# Hal Product Specification
 
 **Version:** 0.1.0
-**Command:** `goralph`
+**Command:** `hal`
 **License:** MIT
 
 ## Overview
 
-GoRalph is an autonomous AI coding loop orchestration CLI that executes AI agents on development tasks until completion. It coordinates 7 AI coding engines to work through task lists (PRDs) automatically.
+Hal is an autonomous AI coding loop orchestration CLI that executes AI agents on development tasks until completion. It coordinates 7 AI coding engines to work through task lists (PRDs) automatically.
 
 ## Supported Engines
 
@@ -25,11 +25,11 @@ GoRalph is an autonomous AI coding loop orchestration CLI that executes AI agent
 ### Commands
 
 ```
-goralph run <target>     Run tasks from file or inline
-goralph init             Initialize .goralph/ config
-goralph config           Show current configuration
-goralph config add-rule  Add a rule to config
-goralph version          Show version info
+hal run <target>     Run tasks from file or inline
+hal init             Initialize .hal/ config
+hal config           Show current configuration
+hal config add-rule  Add a rule to config
+hal version          Show version info
 ```
 
 ### Run Command
@@ -38,29 +38,29 @@ The primary command. Accepts a file path or inline task string.
 
 ```bash
 # File sources (auto-detects format by extension)
-goralph run tasks.md                    # Markdown PRD
-goralph run tasks.yaml                  # YAML tasks
+hal run tasks.md                    # Markdown PRD
+hal run tasks.yaml                  # YAML tasks
 
 # Inline task
-goralph run "add user authentication"
+hal run "add user authentication"
 
 # GitHub issues as source
-goralph run --github owner/repo -l "ai-task"
+hal run --github owner/repo -l "ai-task"
 
 # With options
-goralph run tasks.md -e opencode        # Different engine
-goralph run tasks.md -j 3               # Parallel with 3 workers
-goralph run tasks.md -n                 # Dry run
-goralph run tasks.md -v                 # Verbose output
+hal run tasks.md -e opencode        # Different engine
+hal run tasks.md -j 3               # Parallel with 3 workers
+hal run tasks.md -n                 # Dry run
+hal run tasks.md -v                 # Verbose output
 ```
 
 ### Init Command
 
-Initialize a new GoRalph project.
+Initialize a new Hal project.
 
 ```bash
-goralph init                            # Interactive setup
-goralph init --defaults                 # Use defaults, no prompts
+hal init                            # Interactive setup
+hal init --defaults                 # Use defaults, no prompts
 ```
 
 ### Config Command
@@ -68,8 +68,8 @@ goralph init --defaults                 # Use defaults, no prompts
 Manage configuration.
 
 ```bash
-goralph config                          # Show current config
-goralph config add-rule "Always write tests"
+hal config                          # Show current config
+hal config add-rule "Always write tests"
 ```
 
 ## Flags Reference
@@ -138,7 +138,7 @@ Available engines: `claude`, `opencode`, `cursor`, `codex`, `qwen`, `droid`, `co
 
 ## Configuration
 
-### File: `.goralph/config.yaml`
+### File: `.hal/config.yaml`
 
 ```yaml
 project:
@@ -197,7 +197,7 @@ tasks:
 
 ## Prompt Construction
 
-GoRalph builds prompts with this structure:
+Hal builds prompts with this structure:
 
 1. **Project Context** — From config `project` section
 2. **Rules** — "You MUST follow these"
@@ -240,7 +240,7 @@ GoRalph builds prompts with this structure:
 ### Slack
 
 ```json
-{"text": "GoRalph session completed: 5/5 tasks succeeded"}
+{"text": "Hal session completed: 5/5 tasks succeeded"}
 ```
 
 ### Custom Webhook

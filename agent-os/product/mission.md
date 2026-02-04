@@ -12,7 +12,7 @@ There is no good solution for letting AI agents work through task lists autonomo
 
 ## Solution
 
-GoRalph is an autonomous AI coding loop orchestration CLI that coordinates multiple AI engines to work through PRDs automatically. What makes it unique:
+Hal is an autonomous AI coding loop orchestration CLI that coordinates multiple AI engines to work through PRDs automatically. What makes it unique:
 
 - **Multi-engine orchestration** — Coordinates multiple AI coding tools (Claude, Cursor, Codex, OpenCode, etc.) rather than locking into one
 - **PRD-driven automation** — Converts product requirements directly into autonomous task execution loops

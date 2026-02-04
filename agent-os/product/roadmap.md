@@ -4,9 +4,9 @@
 
 Core functionality to run single-engine sequential task execution:
 
-- [ ] Core CLI with Cobra (`goralph run`, `goralph init`, `goralph config`)
-- [ ] Config loading from `.goralph/config.yaml`
-- [ ] Config writing and project detection for `goralph init`
+- [ ] Core CLI with Cobra (`hal run`, `hal init`, `hal config`)
+- [ ] Config loading from `.hal/config.yaml`
+- [ ] Config writing and project detection for `hal init`
 - [ ] Claude engine adapter with stream-json parsing
 - [ ] Sequential task execution loop
 - [ ] Markdown PRD parsing (`- [ ]` checkbox format)
@@ -16,7 +16,7 @@ Core functionality to run single-engine sequential task execution:
 - [ ] Progress spinner with step detection
 - [ ] Basic logging (info, warn, error, debug)
 
-**Goal:** Run `goralph run PRD.md` with Claude and complete tasks sequentially.
+**Goal:** Run `hal run PRD.md` with Claude and complete tasks sequentially.
 
 ## Phase 2: Feature Parity with TypeScript
 

@@ -12,7 +12,7 @@
 
 ## Configuration
 
-- **[gopkg.in/yaml.v3](https://pkg.go.dev/gopkg.in/yaml.v3)** — YAML parsing for `.goralph/config.yaml`
+- **[gopkg.in/yaml.v3](https://pkg.go.dev/gopkg.in/yaml.v3)** — YAML parsing for `.hal/config.yaml`
 - Struct tags for clean serialization/deserialization
 
 ## Git Integration
