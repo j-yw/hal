@@ -2,7 +2,39 @@
 
 ## Codebase Patterns
 
-(Add reusable patterns discovered during implementation here)
+- `moveFile` and `moveDir` in `internal/archive/move.go` are the cross-device safe helpers. Use them instead of raw `os.Rename` for any file/directory moves in the archive package.
+- `moveDir` uses `filepath.WalkDir` + `moveFile` for the EXDEV fallback, and `os.RemoveAll` to clean up the source tree after copy.
 
+---
+
+## 2026-02-04 - T-002
+- Implemented `moveDir(src, dst string) error` in `internal/archive/move.go`
+- Tries `os.Rename` first, falls back to `filepath.WalkDir` + `moveFile` on EXDEV
+- Creates destination directory structure preserving permissions via `d.Info().Mode()`
+- Removes source tree with `os.RemoveAll` after successful copy
+- Files changed: `internal/archive/move.go`
+- **Learnings for future iterations:**
+  - `moveFile` already handles individual file EXDEV fallback, so `moveDir` delegates to it for files
+  - `filepath.WalkDir` visits the root directory itself as the first entry, which creates the top-level destination dir
+  - Added `path/filepath` import to move.go (was only needed by moveDir, not moveFile)
+---
+
+## 2026-02-04 - T-003
+- Implemented unit tests for `moveFile` in `internal/archive/move_test.go`
+- 4 table-driven subtests: same-device move, permissions preserved, non-existent dest dir, non-existent source
+- Files changed: `internal/archive/move_test.go` (new file)
+- **Learnings for future iterations:**
+  - `moveFile` uses `os.Rename` on same device, so permissions are inherently preserved by the OS — the `copyAndRemove` fallback explicitly does `os.Chmod` for cross-device cases
+  - Follow the existing test pattern: table-driven with `setup` + `wantErr` + `check` callbacks, `t.TempDir()` for isolation
+---
+
+## 2026-02-04 - T-004
+- Implemented unit tests for `moveDir` in `internal/archive/move_test.go`
+- 4 table-driven subtests: same-device dir move, nested subdirectories, non-existent source, empty directory
+- Files changed: `internal/archive/move_test.go`
+- **Learnings for future iterations:**
+  - `moveDir` on same device uses `os.Rename` which atomically moves the directory, so tests on same device exercise the fast path
+  - Empty directory move is a valid case — `moveDir` handles it via `os.Rename` with no special logic needed
+  - Nested subdirectory test verifies the `filepath.WalkDir` + `moveFile` fallback path structure is correct even though same-device uses `os.Rename`
 ---
 
