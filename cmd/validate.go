@@ -43,7 +43,7 @@ func init() {
 
 func runValidate(cmd *cobra.Command, args []string) error {
 	// Determine PRD path
-	prdPath := filepath.Join(template.GoralphDir, template.PRDFile)
+	prdPath := filepath.Join(template.HalDir, template.PRDFile)
 	if len(args) > 0 {
 		prdPath = args[0]
 	}

@@ -419,7 +419,7 @@ func getCommitHistory(branch string) string {
 }
 
 func findPRDFile(dir, branch string) string {
-	goralphDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".goralph")
 
 	// Try branch-specific PRD first
 	if branch != "" && branch != "main" && branch != "master" {
@@ -434,7 +434,7 @@ func findPRDFile(dir, branch string) string {
 		}
 
 		for _, pattern := range patterns {
-			path := filepath.Join(goralphDir, pattern)
+			path := filepath.Join(halDir, pattern)
 			if _, err := os.Stat(path); err == nil {
 				return path
 			}
@@ -442,14 +442,14 @@ func findPRDFile(dir, branch string) string {
 	}
 
 	// Try to find any PRD file
-	entries, err := os.ReadDir(goralphDir)
+	entries, err := os.ReadDir(halDir)
 	if err != nil {
 		return ""
 	}
 
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), "prd-") && strings.HasSuffix(entry.Name(), ".md") {
-			return filepath.Join(goralphDir, entry.Name())
+			return filepath.Join(halDir, entry.Name())
 		}
 	}
 

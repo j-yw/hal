@@ -39,7 +39,7 @@ func init() {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
-	configDir := template.GoralphDir
+	configDir := template.HalDir
 	archiveDir := filepath.Join(configDir, "archive")
 	reportsDir := filepath.Join(configDir, "reports")
 	projectDir := "."

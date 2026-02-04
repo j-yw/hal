@@ -13,8 +13,8 @@ var DefaultProgress string
 //go:embed config.yaml
 var DefaultConfig string
 
-// GoralphDir is the name of the goralph configuration directory.
-const GoralphDir = ".goralph"
+// HalDir is the name of the hal configuration directory.
+const HalDir = ".hal"
 
 // File name constants for consistent usage across the codebase.
 const (
@@ -26,7 +26,7 @@ const (
 	ConfigFile       = "config.yaml"
 )
 
-// DefaultFiles returns the default files to create in .goralph/
+// DefaultFiles returns the default files to create in .hal/
 func DefaultFiles() map[string]string {
 	return map[string]string{
 		PromptFile:       DefaultPrompt,

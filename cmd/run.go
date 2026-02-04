@@ -84,20 +84,20 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check .goralph directory exists
-	goralphDir := template.GoralphDir
-	if _, err := os.Stat(goralphDir); os.IsNotExist(err) {
+	halDir := template.HalDir
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
 		return fmt.Errorf(".goralph/ not found. Run 'goralph init' first")
 	}
 
 	// Check prd.json exists
-	prdPath := goralphDir + "/prd.json"
+	prdPath := halDir + "/prd.json"
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
 
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
-		Dir:           goralphDir,
+		Dir:           halDir,
 		MaxIterations: iterations,
 		Engine:        engineFlag,
 		Logger:        os.Stdout,

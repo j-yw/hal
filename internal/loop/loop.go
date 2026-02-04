@@ -45,7 +45,7 @@ type Runner struct {
 // New creates a new loop Runner.
 func New(cfg Config) (*Runner, error) {
 	if cfg.Dir == "" {
-		cfg.Dir = template.GoralphDir
+		cfg.Dir = template.HalDir
 	}
 	if cfg.PRDFile == "" {
 		cfg.PRDFile = template.PRDFile

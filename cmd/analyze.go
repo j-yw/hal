@@ -107,7 +107,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 
 	// Find recent PRDs to avoid duplicating work
-	goralphDir := template.GoralphDir
+	halDir := template.HalDir
 	recentPRDs, err := compound.FindRecentPRDs(dir, 7) // Last 7 days
 	if err != nil {
 		// Non-fatal - just log and continue
@@ -125,7 +125,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	if analyzeOutputFlag == "json" {
 		return outputAnalysisJSON(result)
 	}
-	return outputAnalysisText(result, goralphDir, config.BranchPrefix)
+	return outputAnalysisText(result, halDir, config.BranchPrefix)
 }
 
 func outputAnalysisJSON(result *compound.AnalysisResult) error {
@@ -137,7 +137,7 @@ func outputAnalysisJSON(result *compound.AnalysisResult) error {
 	return nil
 }
 
-func outputAnalysisText(result *compound.AnalysisResult, goralphDir string, branchPrefix string) error {
+func outputAnalysisText(result *compound.AnalysisResult, halDir string, branchPrefix string) error {
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 	fmt.Println("  ANALYSIS RESULT")
@@ -171,7 +171,7 @@ func outputAnalysisText(result *compound.AnalysisResult, goralphDir string, bran
 
 	fmt.Println("Next steps:")
 	fmt.Printf("  1. goralph auto --report <path>  # Run full pipeline\n")
-	fmt.Printf("  2. Or manually create a PRD in %s/\n", goralphDir)
+	fmt.Printf("  2. Or manually create a PRD in %s/\n", halDir)
 	fmt.Println()
 
 	return nil

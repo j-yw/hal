@@ -66,7 +66,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	// Determine output path
 	outPath := convertOutputFlag
 	if outPath == "" {
-		outPath = filepath.Join(template.GoralphDir, template.PRDFile)
+		outPath = filepath.Join(template.HalDir, template.PRDFile)
 	}
 
 	// Create engine

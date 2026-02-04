@@ -322,13 +322,13 @@ func TestBuildReviewPrompt(t *testing.T) {
 
 func TestFindPRDFile(t *testing.T) {
 	dir := t.TempDir()
-	goralphDir := filepath.Join(dir, ".goralph")
-	if err := os.MkdirAll(goralphDir, 0755); err != nil {
+	halDir := filepath.Join(dir, ".goralph")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatalf("Failed to create .goralph: %v", err)
 	}
 
 	// Create a PRD file
-	prdPath := filepath.Join(goralphDir, "prd-test-feature.md")
+	prdPath := filepath.Join(halDir, "prd-test-feature.md")
 	if err := os.WriteFile(prdPath, []byte("# PRD"), 0644); err != nil {
 		t.Fatalf("Failed to create PRD: %v", err)
 	}

@@ -55,7 +55,7 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 	// Determine output path and write
 	var outputPath string
 	if format == "json" {
-		outputPath = filepath.Join(template.GoralphDir, template.PRDFile)
+		outputPath = filepath.Join(template.HalDir, template.PRDFile)
 		// Convert to JSON using ralph skill
 		ralphSkill, err := skills.LoadSkill("ralph")
 		if err != nil {
@@ -74,7 +74,7 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 	} else {
 		// Write markdown to .goralph/
 		featureName := extractFeatureNameFromDescription(description)
-		outputPath = filepath.Join(template.GoralphDir, fmt.Sprintf("prd-%s.md", featureName))
+		outputPath = filepath.Join(template.HalDir, fmt.Sprintf("prd-%s.md", featureName))
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 			return "", err
 		}

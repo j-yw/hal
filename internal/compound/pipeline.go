@@ -269,7 +269,7 @@ func (p *Pipeline) runPRDStep(ctx context.Context, state *PipelineState, opts Ru
 	if prdName == "" {
 		prdName = "feature"
 	}
-	prdPath := filepath.Join(p.dir, template.GoralphDir, fmt.Sprintf("prd-%s.md", prdName))
+	prdPath := filepath.Join(p.dir, template.HalDir, fmt.Sprintf("prd-%s.md", prdName))
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would generate PRD: %s\n", filepath.Base(prdPath))
@@ -362,7 +362,7 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 		return fmt.Errorf("no PRD path in state")
 	}
 
-	outPath := filepath.Join(p.dir, template.GoralphDir, template.AutoPRDFile)
+	outPath := filepath.Join(p.dir, template.HalDir, template.AutoPRDFile)
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would explode PRD to: %s\n", outPath)
@@ -491,7 +491,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return nil
 	}
 
-	progressPath := filepath.Join(p.dir, template.GoralphDir, template.AutoProgressFile)
+	progressPath := filepath.Join(p.dir, template.HalDir, template.AutoProgressFile)
 	if _, err := os.Stat(progressPath); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(progressPath), 0755); err != nil {
 			return fmt.Errorf("failed to create progress directory: %w", err)
@@ -505,7 +505,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 
 	// Create loop runner with config from auto settings
 	loopConfig := loop.Config{
-		Dir:           filepath.Join(p.dir, template.GoralphDir),
+		Dir:           filepath.Join(p.dir, template.HalDir),
 		PRDFile:       template.AutoPRDFile,
 		ProgressFile:  template.AutoProgressFile,
 		MaxIterations: p.config.MaxIterations,
@@ -577,7 +577,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	taskStatus := ""
-	if prd, err := engine.LoadPRDFile(filepath.Join(p.dir, template.GoralphDir), template.AutoPRDFile); err == nil {
+	if prd, err := engine.LoadPRDFile(filepath.Join(p.dir, template.HalDir), template.AutoPRDFile); err == nil {
 		taskStatus = buildTaskStatusSection(prd, state, p.config.MaxIterations)
 	}
 

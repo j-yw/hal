@@ -92,7 +92,7 @@ func runExplode(cmd *cobra.Command, args []string) error {
 	prompt := buildExplodePrompt(explodeSkill, string(prdContent), branchName)
 
 	// Record output file modification time before (if exists)
-	outPath := filepath.Join(template.GoralphDir, template.AutoPRDFile)
+	outPath := filepath.Join(template.HalDir, template.AutoPRDFile)
 	var preModTime time.Time
 	if stat, err := os.Stat(outPath); err == nil {
 		preModTime = stat.ModTime()
