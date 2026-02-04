@@ -1,0 +1,131 @@
+{
+  "project": "init-migration-tests",
+  "branchName": "compound/init-migration-tests",
+  "description": "Add comprehensive table-driven tests for the .goralph -\u003e .hal migration logic in cmd/init.go, covering all four migration scenarios plus error cases.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Define migrateResult type and migrateConfigDir function signature",
+      "description": "As a developer, I need a result type and function signature for the extracted migration logic so that test scaffolding and the implementation can be built against a stable API.",
+      "acceptanceCriteria": [
+        "Create a migrateResult type in cmd/init.go with constants: migrateNone, migrateDone, migrateWarning",
+        "Create function signature: func migrateConfigDir(oldDir, newDir string, w io.Writer) (migrateResult, error)",
+        "Add 'io' to the import block in cmd/init.go",
+        "Function can have a stub body (return migrateNone, nil) for now",
+        "go build ./... succeeds",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Implement migrateConfigDir function body with all migration logic",
+      "description": "As a developer, I need the migration logic from runInit lines 50-66 moved into the migrateConfigDir function so it can be tested independently.",
+      "acceptanceCriteria": [
+        "migrateConfigDir checks os.Stat for oldDir and newDir existence",
+        "When only oldDir exists: calls os.Rename(oldDir, newDir), writes migration message to w, returns migrateDone, nil",
+        "When both exist: writes warning message to w, returns migrateWarning, nil",
+        "When only newDir exists or neither exists: returns migrateNone, nil with no output",
+        "When os.Rename fails: returns migrateNone and a wrapped error containing 'failed to migrate'",
+        "go build ./... succeeds",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Update runInit to call migrateConfigDir instead of inline logic",
+      "description": "As a developer, I need runInit to delegate to migrateConfigDir so the inline migration code is removed and the single source of truth is the new function.",
+      "acceptanceCriteria": [
+        "runInit calls migrateConfigDir(oldDir, configDir, os.Stdout) where oldDir is '.goralph'",
+        "runInit propagates the error from migrateConfigDir (returns it if non-nil)",
+        "The inline migration logic (old lines 50-66 checking oldExists/newExists) is removed from runInit",
+        "go build ./... succeeds with no compilation errors",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Create cmd/init_test.go with table-driven test scaffold",
+      "description": "As a developer, I need the test file and table-driven test structure created so that scenario test cases can be added incrementally.",
+      "acceptanceCriteria": [
+        "File cmd/init_test.go exists with package cmd",
+        "Imports include: testing, bytes, os, path/filepath",
+        "A TestMigrateConfigDir function exists with a tests := []struct containing fields: name string, setupFn func(dir string), wantResult migrateResult, wantOutput string, wantErr bool, checkFn func(t *testing.T, dir string)",
+        "The test loop iterates over tests using t.Run(tt.name, ...) with t.TempDir() for each case",
+        "Each iteration calls migrateConfigDir with paths derived from the temp dir and a bytes.Buffer for output",
+        "The loop checks result, error, and output substring, then calls tt.checkFn if non-nil",
+        "File compiles even with an empty test table (go test -run TestMigrateConfigDir ./cmd/ -count=1 succeeds)",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Add test cases for migration and no-op scenarios",
+      "description": "As a developer, I need test cases covering the two straightforward scenarios: only .goralph exists (migration) and only .hal exists (no-op).",
+      "acceptanceCriteria": [
+        "Test case 'only old dir exists - migrates' is added to the table: creates .goralph with a marker file, expects migrateDone, output contains 'Migrated', checkFn verifies .goralph is gone and .hal exists with the marker file",
+        "Test case 'only new dir exists - no-op' is added to the table: creates .hal with a marker file, expects migrateNone, output is empty, checkFn verifies .hal still contains the marker file and .goralph does not exist",
+        "go test -run TestMigrateConfigDir ./cmd/ -count=1 passes with both cases green",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Add test cases for warning and fresh-init scenarios",
+      "description": "As a developer, I need test cases covering the remaining two scenarios: both directories exist (warning) and neither exists (fresh init).",
+      "acceptanceCriteria": [
+        "Test case 'both dirs exist - warning' is added: creates .goralph with marker-old and .hal with marker-new, expects migrateWarning, output contains 'Warning: both', checkFn verifies both directories and their marker files still exist",
+        "Test case 'neither dir exists - fresh init' is added: creates no directories, expects migrateNone, output is empty, checkFn verifies neither .goralph nor .hal were created",
+        "go test -run TestMigrateConfigDir ./cmd/ -count=1 passes with all four cases green",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Add error test case for rename failure",
+      "description": "As a developer, I need a test case verifying that when os.Rename fails (e.g., .hal target path is a regular file blocking the rename), migrateConfigDir returns an error.",
+      "acceptanceCriteria": [
+        "Test case 'rename fails - returns error' is added to the table: creates .goralph directory and .hal as a regular file (not a directory), expects wantErr true",
+        "The returned error message contains 'failed to migrate'",
+        "checkFn verifies .goralph still exists (not deleted on failure)",
+        "go test -run TestMigrateConfigDir ./cmd/ -count=1 passes with all five cases green",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Run full test suite and vet — verify green",
+      "description": "As a developer, I need to verify that all new and existing tests pass and no new vet warnings are introduced.",
+      "acceptanceCriteria": [
+        "make test passes with all tests green including TestMigrateConfigDir",
+        "make vet passes with no new warnings",
+        "No existing tests are broken by the refactor (all pre-existing tests still pass)",
+        "Test output shows TestMigrateConfigDir subtests running for all five scenarios",
+        "Typecheck passes (go vet ./...)"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

@@ -9,6 +9,8 @@
 - Integration tests use `//go:build integration` tag and skip when CLI unavailable
 - Use mockEngine for unit testing engine.Engine interface without LLM calls
 - State machine loops must have terminal state to avoid infinite loops
+- Extract testable logic from Cobra RunE handlers into functions with io.Writer params for output capture
+- Use os.Chmod(dir, 0555) + t.Cleanup to test filesystem permission errors without leaving read-only dirs
 
 ---
 
@@ -213,5 +215,76 @@
   - cmd/review.go was added after the initial US-006 pass and was missed — always re-grep after all stories complete
   - The .goralph migration code in cmd/init.go intentionally references ".goralph" as a string literal — this is correct and expected
   - PRD markdown files describing a rename feature will naturally contain the old name — these are documentation, not code references
+---
+
+## 2026-02-04 - T-001
+- Defined migrateResult type (int enum: migrateNone, migrateDone, migrateWarning) in cmd/init.go
+- Added migrateConfigDir function signature with stub body: func migrateConfigDir(oldDir, newDir string, w io.Writer) (migrateResult, error)
+- Added "io" to import block
+- Files changed: cmd/init.go
+- **Learnings for future iterations:**
+  - The type and function are placed after the initCmd/init() block and before/after runInit respectively
+  - Stub body returns migrateNone, nil — will be implemented in T-002
+---
+
+## 2026-02-04 - T-002
+- Implemented migrateConfigDir function body: checks os.Stat for oldDir/newDir, handles 4 cases (migrate, warning, no-op, error)
+- Uses fmt.Fprintf/Fprintln to write to io.Writer instead of fmt.Printf/Println
+- Files changed: cmd/init.go
+- **Learnings for future iterations:**
+  - Use explicit boolean variables (oldExists, newExists) from os.Stat errors for clarity
+  - Return early after each branch for clean control flow
+---
+
+## 2026-02-04 - T-003
+- Replaced 15 lines of inline migration logic in runInit with single migrateConfigDir call
+- runInit now calls migrateConfigDir(".goralph", configDir, os.Stdout) and propagates errors
+- Files changed: cmd/init.go
+- **Learnings for future iterations:**
+  - Extracting testable functions from cobra RunE handlers is a clean pattern for adding tests
+  - The io.Writer parameter allows tests to capture output without mocking os.Stdout
+---
+
+## 2026-02-04 - T-004
+- Created cmd/init_test.go with table-driven TestMigrateConfigDir scaffold
+- Struct fields: name, setupFn, wantResult, wantOutput, wantErr, checkFn
+- Test loop uses t.TempDir() and bytes.Buffer for output capture
+- Files changed: cmd/init_test.go (new)
+- **Learnings for future iterations:**
+  - Initially had "os" imported but unused — Go requires explicit removal until test cases use it
+  - The setupFn signature was later changed to func(t *testing.T, dir string) to support t.Cleanup for permission restoration
+---
+
+## 2026-02-04 - T-005
+- Added "only old dir exists - migrates" and "only new dir exists - no-op" test cases
+- Migration test uses marker file to verify content preservation
+- Files changed: cmd/init_test.go
+---
+
+## 2026-02-04 - T-006
+- Added "both dirs exist - warning" and "neither dir exists - fresh init" test cases
+- Warning test verifies both directories and markers remain untouched
+- Fresh init test verifies neither directory was created by migrateConfigDir
+- Files changed: cmd/init_test.go
+---
+
+## 2026-02-04 - T-007
+- Added "rename fails - returns error" test case using os.Chmod(dir, 0555) to make parent read-only
+- Uses t.Cleanup to restore permissions for TempDir cleanup
+- Verifies error message contains "failed to migrate" and .goralph still exists
+- Changed setupFn signature to func(t *testing.T, dir string) for t.Cleanup access
+- Added strings.Contains check for error message in test loop
+- Files changed: cmd/init_test.go
+- **Learnings for future iterations:**
+  - PRD suggested using a regular file as .hal to block rename, but os.Stat detects files too, routing to warning branch instead
+  - Using os.Chmod(dir, 0555) on the parent directory is a reliable way to force os.Rename EACCES on Linux
+  - Must restore permissions in both t.Cleanup (for TempDir removal) and checkFn (for assertions)
+---
+
+## 2026-02-04 - T-008
+- Ran make test: all tests pass (cmd, compound, engine, codex, prd, skills packages)
+- Ran make vet: no warnings
+- TestMigrateConfigDir shows all 5 subtests passing
+- No existing tests broken by the refactor
 ---
 
