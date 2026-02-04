@@ -18,11 +18,12 @@ const HalDir = ".hal"
 
 // File name constants for consistent usage across the codebase.
 const (
-	PRDFile          = "prd.json"          // Manual flow (plan, convert, validate, run)
-	AutoPRDFile      = "auto-prd.json"     // Auto flow (auto, explode)
+	PRDFile          = "prd.json"      // Manual flow (plan, convert, validate, run)
+	AutoPRDFile      = "auto-prd.json" // Auto flow (auto, explode)
 	PromptFile       = "prompt.md"
 	ProgressFile     = "progress.txt"      // Manual flow
 	AutoProgressFile = "auto-progress.txt" // Auto flow
+	AutoStateFile    = "auto-state.json"   // Auto flow pipeline state
 	ConfigFile       = "config.yaml"
 )
 

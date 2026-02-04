@@ -15,7 +15,8 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
-const stateFileName = "auto-state.json"
+// stateFileName references the shared constant for the auto-state file.
+var stateFileName = template.AutoStateFile
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
