@@ -11,6 +11,7 @@
 - State machine loops must have terminal state to avoid infinite loops
 - Archive package (`internal/archive`) handles all file archiving/restoring — use `archive.Create`, `archive.List`, `archive.Restore`
 - `archive.FeatureFromBranch` is the canonical branch-name parser — don't duplicate in other packages
+- Use `moveFile` (not `os.Rename`) for file moves in the archive package — it handles cross-device (EXDEV) fallback automatically
 
 ---
 
@@ -105,5 +106,17 @@
 - End-to-end verification: `make build`, `make test`, `make vet`, `make fmt` all pass
 - All three `--help` commands print correct usage
 - All 10 user stories complete and passing
+---
+
+## 2026-02-04 - T-001
+- Created `internal/archive/move.go` with `moveFile` and `copyAndRemove` functions
+- `moveFile` tries `os.Rename` first; on `*os.LinkError` with `syscall.EXDEV`, falls back to copy-and-remove
+- `copyAndRemove` preserves file permissions via `os.Stat`/`os.Chmod`, removes source only after successful copy+close
+- Non-EXDEV errors are returned as-is without fallback
+- Files changed: `internal/archive/move.go` (new)
+- **Learnings for future iterations:**
+  - Use `errors.As` to unwrap `*os.LinkError` and `errors.Is` to check for `syscall.EXDEV`
+  - Always close destination file before removing source to avoid data loss
+  - `copyAndRemove` cleans up destination on failure to avoid partial files
 ---
 
