@@ -9,179 +9,101 @@
 - Integration tests use `//go:build integration` tag and skip when CLI unavailable
 - Use mockEngine for unit testing engine.Engine interface without LLM calls
 - State machine loops must have terminal state to avoid infinite loops
+- Archive package (`internal/archive`) handles all file archiving/restoring — use `archive.Create`, `archive.List`, `archive.Restore`
+- `archive.FeatureFromBranch` is the canonical branch-name parser — don't duplicate in other packages
 
 ---
 
 ## 2026-02-04 - US-001
-- Updated go.mod module directive from github.com/jywlabs/goralph to github.com/jywlabs/hal
-- Updated all import statements across 27 .go files
-- Files changed: go.mod, main.go, all cmd/*.go, all internal/**/*.go files with imports
+- Added `AutoStateFile = "auto-state.json"` constant to `internal/template/template.go`
+- Updated `internal/compound/pipeline.go` to use `template.AutoStateFile` instead of local `const stateFileName` literal
+- Files changed: `internal/template/template.go`, `internal/compound/pipeline.go`
 - **Learnings for future iterations:**
-  - Bulk sed replacement works cleanly for module path renames since import paths are unique strings
-  - The pipeline.go file has a non-import reference to goralph (PR body text) that will need separate handling in US-007
-  - go build ./... and go vet ./... both pass after the rename
+  - The template package is the canonical location for all file name constants (PRDFile, AutoPRDFile, etc.)
+  - `pipeline.go` uses a package-level `var` (not `const`) for `stateFileName` since it references the template constant
+  - `go fmt` may adjust alignment in const blocks — run `make fmt` after editing
 ---
 
 ## 2026-02-04 - US-002
-- Updated Makefile: BINARY_NAME := hal, LDFLAGS reference github.com/jywlabs/hal/cmd, comments say Hal
-- Updated .gitignore: ignores hal instead of goralph
-- Files changed: Makefile, .gitignore
+- Created `internal/archive/archive.go` with `Create` function
+- Moves prd.json, auto-prd.json, progress.txt, auto-progress.txt, auto-state.json, prd-*.md, and reports/*.md (excluding .gitkeep)
+- Protects config.yaml, prompt.md, skills/, archive/, rules/
+- Collision handling appends -2, -3, etc.
+- Also added `FeatureFromBranch` and helper utilities
+- Files changed: `internal/archive/archive.go` (new)
 - **Learnings for future iterations:**
-  - Makefile uses $(BINARY_NAME) variable throughout, so only the definition and LDFLAGS needed changing
-  - The help text and comments also needed updating for consistency
-  - make build produces ./hal binary successfully
+  - Archive package uses `os.Rename` for moves — works within same filesystem
+  - `filepath.Glob` returns nil (not error) when no matches, safe to range over directly
+  - The `featureStateFiles` slice defines what gets archived — update if new state files are added
 ---
 
 ## 2026-02-04 - US-003
-- Renamed constant `GoralphDir` to `HalDir` with value `.hal` in `internal/template/template.go`
-- Updated all `template.GoralphDir` references to `template.HalDir` across 15 files
-- Renamed all `goralphDir` variable names to `halDir` in cmd/analyze.go, cmd/run.go, and internal/compound/ files
-- Files changed: internal/template/template.go, cmd/run.go, cmd/init.go, cmd/validate.go, cmd/explode.go, cmd/convert.go, cmd/analyze.go, internal/loop/loop.go, internal/prd/generate.go, internal/prd/generate_test.go, internal/compound/pipeline.go, internal/compound/analyze.go, internal/compound/review.go, internal/compound/pipeline_test.go, internal/compound/review_test.go
-- **Learnings for future iterations:**
-  - `replace_all` mode on Edit tool is efficient for renaming variables/constants across a file
-  - The compound/ test files also had `goralphDir` variable names that needed renaming
-  - US-003 only renames the constant and variable names — the string values in help text and comments are handled by later stories (US-004 through US-007)
+- `FeatureFromBranch` was already implemented as part of US-002 in `internal/archive/archive.go`
+- No additional changes needed
 ---
 
 ## 2026-02-04 - US-004
-- Updated cmd/root.go: Use field to 'hal', Short/Long descriptions say Hal, all command examples use `hal` prefix, .goralph → .hal in help text
-- Updated cmd/version.go: Long description says Hal, version output prints 'hal' not 'goralph'
-- Files changed: cmd/root.go, cmd/version.go
+- Added `ArchiveInfo` struct, `List`, and `FormatList` functions to `internal/archive/archive.go`
+- List scans archive directories, parses date/feature from name, loads PRD stats
+- FormatList supports verbose mode with branch name and full path columns
+- Uses `engine.PRD.Progress()` for completion stats
+- Files changed: `internal/archive/archive.go`
 - **Learnings for future iterations:**
-  - The root command Long description contains inline command examples and directory references that all need updating
-  - Version command is straightforward — just the Long description and the Printf format string
+  - `engine.PRD` has a `Progress()` method returning `(completed, total)` — reuse it for stats
+  - Archive dir names follow `YYYY-MM-DD-feature` convention — parse with `name[:10]` for date
 ---
 
 ## 2026-02-04 - US-005
-- Updated cmd/init.go: Short/Long descriptions reference .hal/, added .goralph→.hal auto-migration logic, updated all fmt output to use .hal/
-- Migration logic: detects .goralph/ existence and renames to .hal/ if .hal/ doesn't exist; warns if both exist
-- Updated next steps to use `hal` commands instead of `goralph`
-- Files changed: cmd/init.go
+- Added `Restore` function and `restoreDir` helper to `internal/archive/archive.go`
+- Auto-archives current state before restoring if prd.json or auto-prd.json exists
+- Handles directory entries (like reports/) via recursive restoreDir helper
+- Removes archive directory after successful restore
+- Files changed: `internal/archive/archive.go`
 - **Learnings for future iterations:**
-  - os.Stat returns nil error when path exists — use `err == nil` to check existence, `err != nil` to check non-existence
-  - The migration logic intentionally keeps `.goralph` as a string literal (not derived from a constant) since it's the legacy name being detected
-  - Comment about "Install embedded skills to .goralph/skills/" also needed updating to .hal/
+  - Restore needs to handle both flat files and subdirectories (reports/)
+  - Auto-archive name uses "auto-saved" to distinguish from user-created archives
 ---
 
 ## 2026-02-04 - US-006
-- Updated help text, examples, and string literals in all 8 remaining cmd files: plan.go, run.go, config.go, convert.go, explode.go, auto.go, analyze.go, validate.go
-- All .goralph → .hal, goralph → hal, GoRalph → Hal, Ralph → Hal in user-facing text
-- Temp file pattern in plan.go: goralph-plan-*.md → hal-plan-*.md
-- Config default commit_prefix: "goralph:" → "hal:"
-- No goralphDir variable names remain in any cmd file
-- Files changed: cmd/plan.go, cmd/run.go, cmd/config.go, cmd/convert.go, cmd/explode.go, cmd/auto.go, cmd/analyze.go, cmd/validate.go
-- **Learnings for future iterations:**
-  - The config.go file uses hardcoded ".goralph" strings (not template.HalDir) for path construction — these needed direct string replacement
-  - The explode.go buildExplodePrompt function contains a prompt string referencing .goralph/auto-prd.json that also needed updating
-  - auto.go has a state file reference in a ShowInfo message that needed updating
+- Created `internal/archive/archive_test.go` with comprehensive table-driven tests
+- TestCreate: 6 cases + TestCreate_NameCollisionSuffix (-2, -3 suffix)
+- TestList: 3 cases (multiple archives with stats, empty, malformed)
+- TestRestore: 3 cases (success, auto-archives first, non-existent)
+- TestFeatureFromBranch: 4 cases
+- All tests use t.TempDir(), no external dependencies
+- Files changed: `internal/archive/archive_test.go` (new)
 ---
 
 ## 2026-02-04 - US-007
-- Updated all .goralph → .hal string references in compound package source files
-- config.go: ReportsDir default ".hal/reports", LoadConfig reads from ".hal/config.yaml", comment updated
-- pipeline.go: statePath uses ".hal", comments updated, PR body references hal not goralph, Ralph loop → Hal loop
-- analyze.go: FindRecentPRDs searches ".hal" directory, comments/errors updated
-- review.go: progress path, reports dir, raw report dir, findPRDFile all use ".hal", ralph/ branch comment → hal/
-- Files changed: internal/compound/config.go, internal/compound/pipeline.go, internal/compound/analyze.go, internal/compound/review.go
+- Created `cmd/archive.go` with three Cobra commands: `archive`, `archive list`, `archive restore`
+- Parent command uses `--name` flag or interactive prompt with default from prd.json branchName
+- List command uses `--verbose` flag for detailed output
+- Restore command requires exactly 1 arg via `cobra.ExactArgs(1)`
+- All commands check `.hal/` existence and suggest `hal init`
+- Files changed: `cmd/archive.go` (new)
 - **Learnings for future iterations:**
-  - Test files (pipeline_test.go, review_test.go) still reference .goralph and will fail — handled in US-008
-  - The findPRDFile function had a comment example using "ralph/" prefix that also needed updating
-  - PR body in buildPRBody had "goralph" text link name that needed changing to "hal"
+  - Interactive prompts use `bufio.NewReader(os.Stdin)` pattern from generate.go
+  - Cobra parent-subcommand pattern: `parentCmd.AddCommand(childCmd)` then `rootCmd.AddCommand(parentCmd)` in init()
 ---
 
 ## 2026-02-04 - US-008
-- Updated all .goralph references to .hal in compound pipeline test files
-- pipeline_test.go: 18 occurrences of `.goralph` → `.hal` (directory creation, config.ReportsDir, state paths)
-- review_test.go: 4 occurrences of `.goralph` → `.hal` (findPRDFile paths, generateReviewReport path assertion)
-- review_test.go: updated `ralph/test-feature` branch prefix to `hal/test-feature` in TestFindPRDFile
-- Files changed: internal/compound/pipeline_test.go, internal/compound/review_test.go
-- **Learnings for future iterations:**
-  - `replace_all` mode on Edit tool handles bulk `.goralph` → `.hal` efficiently across test files
-  - Don't forget branch prefix references like `ralph/` → `hal/` in test data — they're separate from directory path references
-  - The review_test.go TestGenerateReviewReport checks the report path string for `.hal/reports/review-` — assertions need updating too
+- Refactored `archiveExistingPRD` in `internal/prd/convert.go` to delegate to `archive.Create(dir, "", io.Discard)`
+- Replaced `extractFeatureFromBranch` with `archive.FeatureFromBranch`
+- Removed `extractFeatureFromBranch` function (now in archive package)
+- Same-feature skip check remains in convert.go
+- `extractFeatureName` helper remains local (parses markdown filenames)
+- Removed unused `template` import
+- Files changed: `internal/prd/convert.go`
 ---
 
 ## 2026-02-04 - US-009
-- Renamed directory internal/skills/ralph/ to internal/skills/hal/ using git mv
-- Updated SKILL.md: skill name ralph→hal, Ralph→Hal, .goralph→.hal, ralph/→hal/ in all references
-- Updated embed.go: //go:embed hal/SKILL.md, halSkillContent variable, SkillContent key "hal", SkillNames "hal"
-- Updated skills.go, claude.go, linker.go, codex.go: all .goralph→.hal references
-- Updated codex_test.go: .goralph→.hal, goralphSkillsDir→halSkillsDir variable names
-- Fixed .gitignore: changed `hal` to `/hal` to only ignore the binary at root, not the skills/hal directory
-- Files changed: internal/skills/ralph→hal/SKILL.md, internal/skills/embed.go, internal/skills/skills.go, internal/skills/claude.go, internal/skills/linker.go, internal/skills/codex.go, internal/skills/codex_test.go, .gitignore
-- **Learnings for future iterations:**
-  - When renaming a directory to match the binary name, .gitignore may need updating to use `/hal` (root-only) instead of `hal` (matches anywhere)
-  - `git mv` properly tracks directory renames for clean git history
-  - The codex_test.go has a testCodexLinker helper struct with its own Link/Unlink methods that also reference `.goralph` paths
+- Updated `cmd/root.go` Long help text to include `archive` in Commands listing and Workflow section
+- Files changed: `cmd/root.go`
 ---
 
 ## 2026-02-04 - US-010
-- Updated all SKILL.md files in internal/skills/ (prd, autospec, explode, review) to replace .goralph → .hal and goralph/ralph/Ralph → hal/Hal
-- prd/SKILL.md: 3 occurrences of `.goralph` → `.hal`
-- autospec/SKILL.md: `.goralph` → `.hal` (bulk) + 3 standalone `goralph` → `hal` references in example text
-- explode/SKILL.md: `.goralph` → `.hal` (bulk) + `Ralph loop` → `Hal loop`
-- review/SKILL.md: `.goralph` → `.hal` (bulk) + `goralph review` → `hal review` in example JSON
-- Files changed: internal/skills/prd/SKILL.md, internal/skills/autospec/SKILL.md, internal/skills/explode/SKILL.md, internal/skills/review/SKILL.md
-- **Learnings for future iterations:**
-  - The `.goralph/skills/` runtime directory also contains copies of SKILL.md files — those are NOT the source files and are handled separately in US-016
-  - `replace_all` on `.goralph` catches most references but standalone `goralph` in example text (like "customize goralph behavior") needs a separate pass
-  - hal/SKILL.md was already updated in US-009 when the directory was renamed
----
-
-## 2026-02-04 - US-011
-- Updated all ralph/goralph references to hal in the internal/prd/ package
-- generate.go: LoadSkill("ralph") → "hal", ralphSkill → halSkill variable, comment and prompt references updated, .goralph → .hal
-- convert.go: LoadSkill("ralph") → "hal", ralphSkill → halSkill, all prompt strings updated (ralph skill → hal skill, .goralph → .hal, ralph/ branch prefix → hal/), extractFeatureFromBranch trims "hal/" instead of "ralph/"
-- validate.go: LoadSkill("ralph") → "hal", ralphSkill → halSkill, prompt string updated
-- generate_test.go: TestOutputPathIsGoralphFolder → TestOutputPathIsHalFolder, TestJSONOutputPathIsGoralphFolder → TestJSONOutputPathIsHalFolder, comments updated
-- Files changed: internal/prd/generate.go, internal/prd/convert.go, internal/prd/validate.go, internal/prd/generate_test.go
-- **Learnings for future iterations:**
-  - The prd package has three files that reference the skill by name ("ralph"): generate.go, convert.go, and validate.go
-  - The convert.go buildDiscoveryPrompt and buildConversionPrompt both have branchName example text with "ralph/" prefix that needs updating
-  - extractFeatureFromBranch in convert.go strips the branch prefix — must match the new "hal/" prefix
----
-
-## 2026-02-04 - US-012
-- Updated comments in internal/loop/loop.go: "Ralph loop" → "Hal loop", ".goralph directory" → ".hal directory"
-- Updated display title in internal/engine/display.go: "Ralph Loop" → "Hal Loop"
-- Verified all import paths already use github.com/jywlabs/hal (done in US-001)
-- Files changed: internal/loop/loop.go, internal/engine/display.go
-- **Learnings for future iterations:**
-  - The engine and loop packages had very few remaining references (3 comments + 1 display string)
-  - Import paths were already updated in US-001, so only comments and string literals needed changing
-  - All tests pass and build succeeds with no issues
----
-
-## 2026-02-04 - US-013
-- Updated internal/template/prompt.md: heading "Ralph Agent Instructions" → "Hal Agent Instructions", all `.goralph` → `.hal` (7 occurrences)
-- Updated internal/template/config.yaml: all `goralph` → `hal` in comments and values (4 occurrences), `.goralph/reports` → `.hal/reports`
-- Files changed: internal/template/prompt.md, internal/template/config.yaml
-- **Learnings for future iterations:**
-  - The template files are embedded via `//go:embed` directives in template.go — changes to prompt.md and config.yaml are picked up at compile time
-  - prompt.md only had one "Ralph" reference (the heading) — the rest of the agent identity comes from `.goralph` path references
-  - config.yaml had both comment text (`goralph`) and a YAML value (`reportsDir: .goralph/reports`) that both needed updating
----
-
-## 2026-02-04 - US-014
-- Updated README.md: all GoRalph → Hal, goralph → hal, .goralph → .hal, ralph/ → hal/ (branch prefix), Ralph task loop → Hal task loop, ralph/ skill dir → hal/
-- Updated AGENTS.md: .goralph → .hal, goralph → hal in command examples and directory references
-- Verified zero remaining goralph/GoRalph/ralph references in both files via grep
-- Files changed: README.md, AGENTS.md
-- **Learnings for future iterations:**
-  - `replace_all` handles `.goralph` and `goralph` bulk replacements efficiently, but standalone `Ralph` and `ralph/` references need separate targeted passes
-  - The README PRD Format section has an example JSON with `ralph/feature-name` branch prefix that's easy to miss
-  - The Project Structure section lists runtime skill directories — `ralph/` needed updating to `hal/` there too
----
-
-## 2026-02-04 - US-015
-- Added HAL 9000 quote to cmd/root.go Long description: "I am putting myself to the fullest possible use..."
-- Added HAL 9000 tagline to cmd/version.go output: "I'm completely operational, and all my circuits are functioning perfectly."
-- Updated migration message in cmd/init.go: "I've upgraded your configuration. It's going to be a much better experience."
-- All easter eggs are text-only, non-intrusive, and don't affect scripted/automated usage
-- Files changed: cmd/root.go, cmd/version.go, cmd/init.go
-- **Learnings for future iterations:**
-  - HAL 9000 quotes work best when they relate to the context (version → operational status, root → purpose, migration → upgrade)
-  - The quotes don't affect exit codes, parseable output, or subcommand behavior — they're purely decorative text
-  - Browser verification not applicable — this is a CLI tool with no frontend
+- End-to-end verification: `make build`, `make test`, `make vet`, `make fmt` all pass
+- All three `--help` commands print correct usage
+- All 10 user stories complete and passing
 ---
 

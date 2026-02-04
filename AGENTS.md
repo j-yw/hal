@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `cmd/`: Cobra CLI commands and flags.
-- `internal/`: core packages (`engine/`, `loop/`, `prd/`, `skills/`, `template/`).
+- `internal/`: core packages (`archive/`, `engine/`, `loop/`, `prd/`, `skills/`, `template/`).
 - `main.go`: CLI entrypoint wiring.
 - `agent-os/`: product/roadmap documentation.
 - `.hal/`: runtime config created by `hal init` (`config.yaml`, `prd.json`, `progress.txt`, `prompt.md`, `skills/`, `archive/`, `reports/`).
@@ -48,3 +48,11 @@
 - To test Cobra RunE handlers, extract testable logic into standalone functions that accept an `io.Writer` for output capture (e.g., `migrateConfigDir(oldDir, newDir string, w io.Writer)`), then test the function directly with `bytes.Buffer`.
 - To force `os.Rename` failure in tests, use `os.Chmod(dir, 0555)` on the parent directory to deny write permission; remember to restore with `t.Cleanup` so `t.TempDir()` cleanup succeeds.
 - Migration logic in cmd/init.go is now in `migrateConfigDir` function with `migrateResult` enum — update this function when changing migration behavior.
+
+## Patterns from hal/archive-command (2026-02-04)
+
+- Archive package (`internal/archive`) is the single source of truth for archiving/restoring feature state. Use `archive.Create`, `archive.List`, `archive.Restore` — don't duplicate logic in other packages.
+- `archive.FeatureFromBranch` is the canonical branch-name parser (trims `hal/` prefix). `convert.go` delegates to it.
+- The `featureStateFiles` slice in `archive.go` defines which files get archived. Update it when adding new state files.
+- Cobra parent-subcommand pattern: define parent and child `*cobra.Command` vars, then `parent.AddCommand(child)` and `rootCmd.AddCommand(parent)` in `init()`.
+- Archive tests use `t.TempDir()` and helper functions (`writePRD`, `writeFile`) for clean setup — follow this pattern for new archive-related tests.

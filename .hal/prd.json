@@ -1,16 +1,17 @@
 {
-  "project": "goralph",
-  "branchName": "hal/rename-to-hal",
-  "description": "Rename GoRalph to Hal - Full rename of CLI tool from GoRalph to Hal with HAL 9000 personality touches",
+  "project": "Hal",
+  "branchName": "hal/archive-command",
+  "description": "Archive Command Suite - Explicit CLI commands for archiving, listing, and restoring feature state",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Rename Go module path",
-      "description": "As a developer, I want the Go module path updated to github.com/jywlabs/hal so that the module identity matches the new name.",
+      "title": "Add AutoStateFile constant to template package",
+      "description": "As a developer, I want a shared constant for the auto-state filename so that both the archive package and the compound pipeline reference the same value.",
       "acceptanceCriteria": [
-        "go.mod module directive reads 'module github.com/jywlabs/hal'",
-        "Every import statement in every .go file references github.com/jywlabs/hal instead of github.com/jywlabs/goralph",
-        "go build ./... succeeds with no import errors",
+        "template.AutoStateFile = \"auto-state.json\" constant added to internal/template/template.go",
+        "internal/compound/pipeline.go line 18 replaced: const stateFileName uses template.AutoStateFile instead of a local literal",
+        "No behavioral change — existing auto pipeline works identically",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 1,
@@ -19,14 +20,18 @@
     },
     {
       "id": "US-002",
-      "title": "Update build system (Makefile and .gitignore)",
-      "description": "As a developer, I want the Makefile and .gitignore updated so the binary builds as hal.",
+      "title": "Create archive.Create function",
+      "description": "As a developer, I need a Create function in internal/archive/archive.go that moves all feature state files from .hal/ into .hal/archive/\u003cdate\u003e-\u003cfeature\u003e/, so archiving logic is reusable across commands.",
       "acceptanceCriteria": [
-        "Makefile sets BINARY_NAME := hal",
-        "LDFLAGS in Makefile reference github.com/jywlabs/hal/cmd (not goralph)",
-        "Comments in Makefile say hal not goralph",
-        ".gitignore ignores hal instead of goralph",
-        "make build produces a binary named hal",
+        "New package internal/archive with archive.go",
+        "Create(halDir, name string, w io.Writer) (string, error) function implemented",
+        "Moves these files (if they exist): prd.json, prd-*.md, progress.txt, auto-prd.json, auto-progress.txt, auto-state.json, reports/*.md (but NOT reports/.gitkeep)",
+        "Never touches: config.yaml, prompt.md, skills/, archive/, rules/",
+        "Archive directory named \u003cYYYY-MM-DD\u003e-\u003cname\u003e under .hal/archive/",
+        "On name collision, appends -2, -3, etc.",
+        "Returns error if no prd.json and no auto-prd.json exist (no feature state to archive)",
+        "All output written to the provided io.Writer",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 2,
@@ -35,13 +40,11 @@
     },
     {
       "id": "US-003",
-      "title": "Rename GoralphDir constant to HalDir",
-      "description": "As a developer, I want the GoralphDir constant renamed to HalDir with value .hal so the runtime directory has the new name.",
+      "title": "Create archive.FeatureFromBranch function",
+      "description": "As a developer, I need a shared FeatureFromBranch function so that branch-name parsing logic lives in one place instead of being duplicated in convert.go.",
       "acceptanceCriteria": [
-        "internal/template/template.go defines const HalDir = \".hal\"",
-        "No references to GoralphDir remain in any .go file",
-        "All usages of the old constant now reference HalDir (e.g., template.HalDir)",
-        "No references to goralphDir variable name remain — all renamed to halDir",
+        "FeatureFromBranch(branchName string) string function in internal/archive/archive.go",
+        "Trims hal/ prefix from branch name (same behavior as current extractFeatureFromBranch in convert.go)",
         "Typecheck passes"
       ],
       "priority": 3,
@@ -50,13 +53,16 @@
     },
     {
       "id": "US-004",
-      "title": "Update CLI root and version commands",
-      "description": "As a user, I want the CLI to identify itself as hal so the branding is consistent.",
+      "title": "Create archive.List and archive.FormatList functions",
+      "description": "As a developer, I need List and FormatList functions so the CLI can display all archived features with date, name, and completion stats.",
       "acceptanceCriteria": [
-        "cmd/root.go: Use field is 'hal'",
-        "cmd/root.go: Short and Long descriptions say Hal not GoRalph",
-        "cmd/version.go: prints 'hal' not 'goralph' in version output",
-        "cmd/version.go: Long description says Hal not GoRalph",
+        "ArchiveInfo struct with fields: Name, Date, Feature, Dir, BranchName, Completed, Total",
+        "List(halDir string) ([]ArchiveInfo, error) scans .hal/archive/ directories",
+        "Parses prd.json (or auto-prd.json fallback) in each archive to populate BranchName, Completed (stories with passes=true), Total",
+        "FormatList(archives []ArchiveInfo, w io.Writer, verbose bool) prints a formatted table with columns: Name, Date, Progress",
+        "Verbose mode adds branch name and full path columns",
+        "Returns empty slice (not error) when no archives exist",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 4,
@@ -65,14 +71,16 @@
     },
     {
       "id": "US-005",
-      "title": "Update init command with .goralph auto-migration",
-      "description": "As a user, I want hal init to auto-detect an existing .goralph directory and rename it to .hal so my existing configuration is preserved seamlessly.",
+      "title": "Create archive.Restore function",
+      "description": "As a developer, I need a Restore function that moves files from an archive directory back into .hal/ so users can resume work on a previously archived feature.",
       "acceptanceCriteria": [
-        "cmd/init.go help text references .hal/ instead of .goralph/",
-        "If .goralph/ exists and .hal/ does not, hal init renames .goralph/ to .hal/ and prints migration message",
-        "If both .goralph/ and .hal/ exist, hal init prints a warning and uses .hal/",
-        "If only .hal/ exists, hal init proceeds normally",
-        "All fmt.Printf output references .hal/ not .goralph/",
+        "Restore(halDir, name string, w io.Writer) error function implemented",
+        "If current state exists (prd.json or auto-prd.json present), auto-archives it first via Create",
+        "Moves all files from the named archive directory back into .hal/",
+        "Removes the archive directory after successful restore",
+        "Returns descriptive error if named archive does not exist",
+        "All output written to the provided io.Writer",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 5,
@@ -81,18 +89,16 @@
     },
     {
       "id": "US-006",
-      "title": "Update remaining cmd files (plan, run, config, convert, explode, auto, analyze, validate)",
-      "description": "As a developer, I want all other cmd/*.go files updated so help text, comments, and variable names reflect the Hal rename.",
+      "title": "Unit tests for archive package",
+      "description": "As a developer, I need comprehensive table-driven tests for all archive functions to ensure correctness and prevent regressions.",
       "acceptanceCriteria": [
-        "cmd/plan.go: temp file pattern is hal-plan-*.md, help text references .hal/ paths",
-        "cmd/run.go: Long description says Hal loop, references .hal/prd.json",
-        "cmd/config.go: Long description references .hal/config.yaml",
-        "cmd/convert.go: help text references hal skill and .hal/ paths",
-        "cmd/explode.go: references .hal/ paths and Hal loop",
-        "cmd/auto.go: references Hal task loop, .hal/auto-state.json",
-        "cmd/analyze.go: uses template.HalDir",
-        "cmd/validate.go: references hal skill not ralph skill",
-        "No goralphDir variable names remain in any cmd file",
+        "internal/archive/archive_test.go with table-driven tests",
+        "Tests for Create: successful archive with manual + auto files; prd-*.md globs picked up; reports moved but .gitkeep preserved; config/skills/rules never touched; name collision handling (-2, -3 suffix); error when no prd.json or auto-prd.json",
+        "Tests for List: multiple archives with completion stats; empty archive dir returns empty slice; malformed prd.json handled gracefully",
+        "Tests for Restore: successful restore removes archive dir; auto-archives current state first; error on non-existent archive name",
+        "Tests for FeatureFromBranch: trims hal/ prefix; handles names without prefix",
+        "All tests use t.TempDir() — no network or CLI dependencies",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 6,
@@ -101,14 +107,15 @@
     },
     {
       "id": "US-007",
-      "title": "Update compound pipeline and config packages",
-      "description": "As a developer, I want the compound pipeline package updated so all .goralph references become .hal and Ralph references become Hal.",
+      "title": "Create Cobra commands for archive suite",
+      "description": "As a user, I want hal archive, hal archive list, and hal archive restore commands so I can manage archives from the CLI.",
       "acceptanceCriteria": [
-        "internal/compound/config.go: default ReportsDir is .hal/reports, LoadConfig reads from .hal/config.yaml",
-        "internal/compound/pipeline.go: state file path uses .hal/auto-state.json, all template.GoralphDir -\u003e template.HalDir",
-        "internal/compound/pipeline.go: PR body references hal not goralph",
-        "internal/compound/analyze.go: all .goralph references -\u003e .hal",
-        "internal/compound/review.go: all .goralph references -\u003e .hal, ralph/ branch pattern -\u003e hal/",
+        "New file cmd/archive.go with three Cobra commands following the configCmd/addRuleCmd parent-subcommand pattern",
+        "hal archive (parent): archives current feature state; --name flag for explicit name; if no --name, prompts user interactively for a name (with default derived from prd.json branchName)",
+        "hal archive list: lists all archives with completion stats; --verbose flag for detailed output",
+        "hal archive restore \u003cname\u003e: requires exactly 1 arg; restores named archive, auto-archiving current state first",
+        "All commands check .hal/ exists and error with 'run hal init first' if missing",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 7,
@@ -117,12 +124,15 @@
     },
     {
       "id": "US-008",
-      "title": "Update compound pipeline tests",
-      "description": "As a developer, I want the pipeline tests updated so they use .hal paths and pass.",
+      "title": "Refactor convert.go to use shared archive package",
+      "description": "As a developer, I want internal/prd/convert.go to delegate to the shared archive package so archive logic is not duplicated.",
       "acceptanceCriteria": [
-        "internal/compound/pipeline_test.go: all .goralph references -\u003e .hal",
-        "internal/compound/review_test.go: all .goralph references -\u003e .hal",
-        "go test ./internal/compound/... passes",
+        "archiveExistingPRD in convert.go delegates to archive.Create(dir, \"\", io.Discard) for the actual file move",
+        "Same-feature skip check (comparing new feature name to existing feature name) remains in convert.go",
+        "extractFeatureFromBranch removed from convert.go; replaced with archive.FeatureFromBranch",
+        "extractFeatureName helper can remain local (it parses markdown filenames, not branch names)",
+        "Existing convert behavior unchanged — same-feature conversion does not trigger archive",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 8,
@@ -131,14 +141,12 @@
     },
     {
       "id": "US-009",
-      "title": "Rename ralph skill directory to hal",
-      "description": "As a developer, I want the internal/skills/ralph/ directory renamed to internal/skills/hal/ so the skill name matches the new branding.",
+      "title": "Update root command help text",
+      "description": "As a user reading hal --help, I want to see the archive command listed so I know it exists.",
       "acceptanceCriteria": [
-        "Directory internal/skills/ralph/ is renamed to internal/skills/hal/",
-        "internal/skills/hal/SKILL.md exists with updated content: skill name is hal, all Ralph -\u003e Hal, all ralph/ -\u003e hal/, all .goralph -\u003e .hal",
-        "internal/skills/embed.go: embed directive reads //go:embed hal/SKILL.md, variable names reference hal not ralph",
-        "internal/skills/embed.go: SkillContent map key is 'hal' not 'ralph', SkillNames includes 'hal' not 'ralph'",
-        "internal/skills/skills.go and claude.go and linker.go: any ralph references -\u003e hal",
+        "cmd/root.go Long help text includes archive in the Commands listing (e.g., archive     Archive and manage feature state)",
+        "Workflow section updated to include archive step (e.g., after hal run)",
+        "make test passes",
         "Typecheck passes"
       ],
       "priority": 9,
@@ -147,128 +155,20 @@
     },
     {
       "id": "US-010",
-      "title": "Update other skill SKILL.md files",
-      "description": "As a developer, I want all SKILL.md files in other skills updated so they reference .hal/, hal commands, and hal/ branch prefixes.",
+      "title": "End-to-end verification",
+      "description": "As a developer, I want to verify the full archive workflow compiles and passes all checks.",
       "acceptanceCriteria": [
-        "internal/skills/prd/SKILL.md: all .goralph -\u003e .hal, all goralph references -\u003e hal",
-        "internal/skills/autospec/SKILL.md: all .goralph -\u003e .hal, all goralph references -\u003e hal",
-        "internal/skills/explode/SKILL.md: all .goralph -\u003e .hal, all Ralph loop -\u003e Hal loop, all ralph/ -\u003e hal/",
-        "internal/skills/review/SKILL.md (if exists): all .goralph -\u003e .hal, all ralph references -\u003e hal",
-        "No remaining goralph or ralph references in any SKILL.md file",
+        "make build succeeds",
+        "make test passes (all existing + new tests)",
+        "make vet passes",
+        "make fmt produces no changes",
+        "./hal archive --help prints usage",
+        "./hal archive list --help prints usage",
+        "./hal archive restore --help prints usage",
         "Typecheck passes"
       ],
       "priority": 10,
       "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-011",
-      "title": "Update PRD package references",
-      "description": "As a developer, I want the PRD generation and conversion package updated so all ralph/goralph references become hal.",
-      "acceptanceCriteria": [
-        "internal/prd/generate.go: loads 'hal' skill instead of 'ralph', branch name prefix is hal/ not ralph/",
-        "internal/prd/generate.go: all .goralph path references -\u003e .hal",
-        "internal/prd/convert.go: loads 'hal' skill, references .hal/ paths",
-        "internal/prd/validate.go: references hal skill not ralph",
-        "internal/prd/generate_test.go: all .goralph references -\u003e .hal",
-        "go test ./internal/prd/... passes",
-        "Typecheck passes"
-      ],
-      "priority": 11,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-012",
-      "title": "Update engine and loop packages",
-      "description": "As a developer, I want the engine and loop packages updated so all Ralph/goralph references become Hal.",
-      "acceptanceCriteria": [
-        "internal/loop/loop.go: comments say Hal loop not Ralph loop, .goralph references -\u003e .hal",
-        "internal/engine/display.go: title display shows Hal Loop not Ralph Loop",
-        "All import paths in engine and loop packages use github.com/jywlabs/hal (already covered by US-001 but verify)",
-        "Typecheck passes"
-      ],
-      "priority": 12,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-013",
-      "title": "Update template files",
-      "description": "As a developer, I want the embedded template files updated so the runtime config references .hal and the Hal agent identity.",
-      "acceptanceCriteria": [
-        "internal/template/prompt.md: heading is Hal Agent Instructions, all .goralph -\u003e .hal, all Ralph agent references -\u003e Hal",
-        "internal/template/config.yaml: comments reference .hal/ not .goralph/",
-        "Typecheck passes"
-      ],
-      "priority": 13,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-014",
-      "title": "Update documentation (README.md and AGENTS.md)",
-      "description": "As a developer, I want README.md and AGENTS.md updated to reflect the Hal branding.",
-      "acceptanceCriteria": [
-        "README.md: all goralph -\u003e hal, all GoRalph -\u003e Hal, all .goralph -\u003e .hal, all ralph/ branch references -\u003e hal/",
-        "AGENTS.md: command examples say hal not goralph, directory references say .hal/ not .goralph/",
-        "No remaining goralph, GoRalph, or ralph references in README.md or AGENTS.md",
-        "Typecheck passes"
-      ],
-      "priority": 14,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-015",
-      "title": "Add HAL 9000 personality easter eggs",
-      "description": "As a user, I want subtle HAL 9000 personality touches in the CLI so the tool has character and the rename feels intentional.",
-      "acceptanceCriteria": [
-        "cmd/root.go Long description includes a subtle HAL 9000 reference",
-        "cmd/version.go prints a HAL 9000 quote as tagline below version info",
-        "When hal init migrates from .goralph/ to .hal/, the migration message includes a HAL reference",
-        "Easter eggs are subtle and non-intrusive — they don't interfere with scripted/automated usage",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 15,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-016",
-      "title": "Create .hal runtime directory for self-development",
-      "description": "As a developer working on the hal codebase itself, I want the .goralph/ runtime directory duplicated to .hal/ with updated contents so the tool can bootstrap itself under the new name.",
-      "acceptanceCriteria": [
-        ".hal/ directory exists as a copy of .goralph/ with updated contents",
-        ".hal/config.yaml references .hal/ not .goralph/",
-        ".hal/prompt.md says Hal not Ralph, references .hal/ paths",
-        ".hal/skills/hal/SKILL.md exists (renamed from ralph/) with updated content",
-        "Branch names in any .hal/prd.json use hal/ prefix not ralph/",
-        "Typecheck passes"
-      ],
-      "priority": 16,
-      "passes": false,
-      "notes": ""
-    },
-    {
-      "id": "US-017",
-      "title": "Final verification and cleanup",
-      "description": "As a developer, I want to verify no leftover goralph/ralph references exist and all tests pass.",
-      "acceptanceCriteria": [
-        "grep -r 'goralph' --include='*.go' . returns zero results (excluding .git)",
-        "grep -r 'GoralphDir' --include='*.go' . returns zero results",
-        "grep -r '\"ralph\"' --include='*.go' . returns zero results",
-        "grep -r 'ralph/' --include='*.go' --include='*.md' . returns zero results (excluding .git and archive)",
-        "go build -o hal . succeeds",
-        "./hal version outputs version starting with hal",
-        "./hal --help shows Hal branding",
-        "go test ./... passes (all unit tests)",
-        "go vet ./... passes",
-        "Typecheck passes"
-      ],
-      "priority": 17,
-      "passes": false,
       "notes": ""
     }
   ]
