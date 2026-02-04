@@ -1,0 +1,87 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Engines are registered via init() using `engine.RegisterEngine(name, constructor)`
+- Engines must implement `engine.Engine` interface: Name(), Execute(), Prompt(), StreamPrompt()
+- Engine packages live in `internal/engine/<name>/` with main file `<name>.go`
+- CLI tools are imported via blank import (e.g., `_ "github.com/jywlabs/goralph/internal/engine/codex"`)
+- Use `syscall.SysProcAttr{Setsid: true}` to detach CLI processes from TTY
+
+- Codex JSONL events: thread.started, turn.started, item.started, item.completed, turn.completed
+- Item types: command_execution (for tools), agent_message (for text), reasoning (for thinking)
+- Commands are wrapped in bash: `/usr/bin/bash -lc 'actual command'` - extract with extractCommand()
+
+---
+
+## 2026-01-29 - US-008
+- What was implemented: Integration tests with actual Codex CLI to verify end-to-end functionality
+- Files changed: internal/engine/codex/integration_test.go (new)
+- **Learnings for future iterations:**
+  - Use build tags (`//go:build integration`) for tests that require external dependencies
+  - Run integration tests with: `go test -tags=integration ./internal/engine/codex/...`
+  - Codex CLI shows model as "codex" (not actual model version like "gpt-4o")
+  - Token counts are provided in turn.completed usage field (input_tokens, output_tokens, cached_input_tokens)
+  - Timeout errors include "timed out" in message, useful for retry logic detection
+  - StreamPrompt() correctly collects text from agent_message item.completed events
+  - <promise>COMPLETE</promise> detection works when included in agent_message text
+---
+
+## 2026-01-29 - US-007
+- What was implemented: Added comprehensive unit tests for Codex engine
+- Files changed: internal/engine/codex/codex_test.go (new)
+- **Learnings for future iterations:**
+  - Test engine registration with `engine.New("codex")` to verify init() worked
+  - Parser tests should cover all event types: thread.started, item.started/completed, turn.completed
+  - Test both success and error cases for command_execution (exit_code 0 vs non-zero)
+  - extractCommand() returns original string when the pattern doesn't match (e.g., empty command)
+---
+
+## 2026-01-29 - US-006
+- What was implemented: Implemented StreamPrompt method for streaming display feedback while collecting text response
+- Files changed: internal/engine/codex/codex.go
+- **Learnings for future iterations:**
+  - StreamPrompt() uses --json flag (via BuildArgs) to get JSONL output for streaming display
+  - textCollectingStreamHandler parses events via parser AND collects text from agent_message items
+  - Text is extracted from item.completed events where item.type == "agent_message"
+  - Follow the claude engine's StreamPrompt() pattern closely - includes display.StopSpinner() at end
+---
+
+## 2026-01-29 - US-005
+- What was implemented: Implemented Prompt method for simple prompt/response without streaming JSON
+- Files changed: internal/engine/codex/codex.go
+- **Learnings for future iterations:**
+  - Prompt() method uses simpler args without --json flag: `exec --dangerously-bypass-approvals-and-sandbox <prompt>`
+  - Follow the claude engine's Prompt() pattern for consistency: timeout handling, context cancellation, stdout/stderr capture
+  - Plain text output is returned directly without any JSON parsing
+---
+
+## 2026-01-29 - US-004
+- What was implemented: Implemented Execute method for Codex engine with streaming output parser
+- Files changed: internal/engine/codex/codex.go
+- **Learnings for future iterations:**
+  - Follow the claude engine pattern for Execute() implementation - same structure works well
+  - streamHandler type needs nil check for display.ShowEvent() in case display is nil
+  - parseSuccess() scans output for EventResult to determine success status
+  - Check for `<promise>COMPLETE</promise>` in output to set Result.Complete flag
+---
+
+## 2026-01-29 - US-003
+- What was implemented: Created Codex output parser that maps JSONL events to engine.Event types
+- Files changed: internal/engine/codex/parser.go (new)
+- **Learnings for future iterations:**
+  - Codex wraps commands in bash like `/usr/bin/bash -lc 'command'` - need to extract actual command
+  - Codex event types: thread.started (init), item.completed (tool/text/reasoning), turn.completed (result with usage)
+  - Codex doesn't include explicit success/failure in turn.completed, assume success if no error
+  - turn.completed contains usage with input_tokens, output_tokens, cached_input_tokens
+---
+
+## 2026-01-29 - US-001
+- What was implemented: Created Codex engine package structure with Engine struct, init() registration, and stub methods
+- Files changed: internal/engine/codex/codex.go (new)
+- **Learnings for future iterations:**
+  - Follow the claude engine pattern exactly for consistency
+  - BuildArgs() for Codex uses `exec --dangerously-bypass-approvals-and-sandbox --json <prompt>`
+  - Codex CLI command is simply "codex"
+---
+
