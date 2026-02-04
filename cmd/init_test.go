@@ -96,6 +96,11 @@ func TestMigrateConfigDir(t *testing.T) {
 					// Restore permissions so t.TempDir() cleanup can remove the dir
 					os.Chmod(dir, 0755)
 				})
+				probe := filepath.Join(dir, "probe.txt")
+				if err := os.WriteFile(probe, []byte("probe"), 0644); err == nil {
+					os.Remove(probe)
+					t.Skip("chmod did not prevent writes; skipping rename failure test")
+				}
 			},
 			wantResult: migrateNone,
 			wantErr:    true,
