@@ -68,27 +68,11 @@ func runArchive(cmd *cobra.Command, args []string) error {
 }
 
 func runArchiveList(cmd *cobra.Command, args []string) error {
-	halDir := template.HalDir
-	if _, err := os.Stat(halDir); os.IsNotExist(err) {
-		return fmt.Errorf(".hal/ not found - run 'hal init' first")
-	}
-
-	archives, err := archive.List(halDir)
-	if err != nil {
-		return err
-	}
-
-	archive.FormatList(archives, os.Stdout, archiveVerboseFlag)
-	return nil
+	return runArchiveListFn(template.HalDir, archiveVerboseFlag, os.Stdout)
 }
 
 func runArchiveRestore(cmd *cobra.Command, args []string) error {
-	halDir := template.HalDir
-	if _, err := os.Stat(halDir); os.IsNotExist(err) {
-		return fmt.Errorf(".hal/ not found - run 'hal init' first")
-	}
-
-	return archive.Restore(halDir, args[0], os.Stdout)
+	return runArchiveRestoreFn(template.HalDir, args[0], os.Stdout)
 }
 
 // runArchiveCreate contains the testable logic for the archive create command.
@@ -104,6 +88,30 @@ func runArchiveCreate(halDir string, name string, in io.Reader, out io.Writer) e
 
 	_, err := archive.Create(halDir, name, out)
 	return err
+}
+
+// runArchiveListFn contains the testable logic for the archive list command.
+func runArchiveListFn(halDir string, verbose bool, out io.Writer) error {
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+	}
+
+	archives, err := archive.List(halDir)
+	if err != nil {
+		return err
+	}
+
+	archive.FormatList(archives, out, verbose)
+	return nil
+}
+
+// runArchiveRestoreFn contains the testable logic for the archive restore command.
+func runArchiveRestoreFn(halDir string, name string, out io.Writer) error {
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+	}
+
+	return archive.Restore(halDir, name, out)
 }
 
 // deriveArchiveName attempts to get a default name from prd.json branchName.
