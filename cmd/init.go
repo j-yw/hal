@@ -12,25 +12,28 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize .goralph/ directory",
-	Long: `Initialize the .goralph/ directory in the current project.
+	Short: "Initialize .hal/ directory",
+	Long: `Initialize the .hal/ directory in the current project.
+
+If an existing .goralph/ directory is detected and no .hal/ directory exists,
+it will be automatically renamed to .hal/ to preserve your configuration.
 
 Creates:
-  .goralph/
+  .hal/
     config.yaml    # Configuration settings
     prompt.md      # Agent instructions template
     progress.txt   # Progress log for learnings
     archive/       # Archived runs
     reports/       # Analysis reports for auto mode
-    skills/        # PRD and Ralph skills
+    skills/        # PRD and Hal skills
       prd/         # PRD generation skill
-      ralph/       # PRD-to-JSON conversion skill
+      hal/         # PRD-to-JSON conversion skill
 
-Also creates .claude/skills/ with symlinks to .goralph/skills/ for Claude Code
+Also creates .claude/skills/ with symlinks to .hal/skills/ for Claude Code
 skill discovery.
 
-After init, create a prd.json with your user stories and run 'goralph run'.
-Or use 'goralph plan' to interactively generate a PRD.`,
+After init, create a prd.json with your user stories and run 'hal run'.
+Or use 'hal plan' to interactively generate a PRD.`,
 	RunE: runInit,
 }
 
@@ -43,6 +46,24 @@ func runInit(cmd *cobra.Command, args []string) error {
 	archiveDir := filepath.Join(configDir, "archive")
 	reportsDir := filepath.Join(configDir, "reports")
 	projectDir := "."
+
+	// Auto-migrate .goralph/ to .hal/ if applicable
+	oldDir := ".goralph"
+	_, oldExists := os.Stat(oldDir)
+	_, newExists := os.Stat(configDir)
+
+	if oldExists == nil && newExists != nil {
+		// .goralph exists but .hal does not — migrate
+		if err := os.Rename(oldDir, configDir); err != nil {
+			return fmt.Errorf("failed to migrate %s to %s: %w", oldDir, configDir, err)
+		}
+		fmt.Printf("Migrated %s/ to %s/ — your configuration has been preserved.\n", oldDir, configDir)
+		fmt.Println()
+	} else if oldExists == nil && newExists == nil {
+		// Both exist — warn and use .hal
+		fmt.Printf("Warning: both %s/ and %s/ exist. Using %s/ — you may want to remove %s/ manually.\n", oldDir, configDir, configDir, oldDir)
+		fmt.Println()
+	}
 
 	// Create directories (MkdirAll is idempotent - won't fail if exists)
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
@@ -82,7 +103,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Install embedded skills to .goralph/skills/
+	// Install embedded skills to .hal/skills/
 	if err := skills.InstallSkills(projectDir); err != nil {
 		return fmt.Errorf("failed to install skills: %w", err)
 	}
@@ -92,20 +113,20 @@ func runInit(cmd *cobra.Command, args []string) error {
 		_ = err // Errors are logged as warnings in LinkAllEngines.
 	}
 
-	fmt.Println("Initialized .goralph/")
+	fmt.Println("Initialized .hal/")
 	fmt.Println()
 
 	if len(created) > 0 {
 		fmt.Println("Created:")
 		for _, f := range created {
-			fmt.Printf("  .goralph/%s\n", f)
+			fmt.Printf("  .hal/%s\n", f)
 		}
 	}
 
 	if len(skipped) > 0 {
 		fmt.Println("Already existed (preserved):")
 		for _, f := range skipped {
-			fmt.Printf("  .goralph/%s\n", f)
+			fmt.Printf("  .hal/%s\n", f)
 		}
 	}
 
@@ -115,9 +136,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println()
 		fmt.Println("Next steps:")
-		fmt.Println("  1. Run: goralph plan \"feature description\" to generate a PRD")
-		fmt.Println("  2. Or create .goralph/prd.json manually")
-		fmt.Println("  3. Run: goralph run")
+		fmt.Println("  1. Run: hal plan \"feature description\" to generate a PRD")
+		fmt.Println("  2. Or create .hal/prd.json manually")
+		fmt.Println("  3. Run: hal run")
 	}
 
 	return nil
