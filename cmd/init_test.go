@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -14,7 +15,52 @@ func TestMigrateConfigDir(t *testing.T) {
 		wantOutput string
 		wantErr    bool
 		checkFn    func(t *testing.T, dir string)
-	}{}
+	}{
+		{
+			name: "only old dir exists - migrates",
+			setupFn: func(dir string) {
+				old := filepath.Join(dir, ".goralph")
+				os.MkdirAll(old, 0755)
+				os.WriteFile(filepath.Join(old, "marker.txt"), []byte("hello"), 0644)
+			},
+			wantResult: migrateDone,
+			wantOutput: "Migrated",
+			checkFn: func(t *testing.T, dir string) {
+				if _, err := os.Stat(filepath.Join(dir, ".goralph")); !os.IsNotExist(err) {
+					t.Error(".goralph should not exist after migration")
+				}
+				data, err := os.ReadFile(filepath.Join(dir, ".hal", "marker.txt"))
+				if err != nil {
+					t.Fatalf(".hal/marker.txt should exist: %v", err)
+				}
+				if string(data) != "hello" {
+					t.Errorf("marker content = %q, want %q", string(data), "hello")
+				}
+			},
+		},
+		{
+			name: "only new dir exists - no-op",
+			setupFn: func(dir string) {
+				newD := filepath.Join(dir, ".hal")
+				os.MkdirAll(newD, 0755)
+				os.WriteFile(filepath.Join(newD, "marker.txt"), []byte("existing"), 0644)
+			},
+			wantResult: migrateNone,
+			wantOutput: "",
+			checkFn: func(t *testing.T, dir string) {
+				data, err := os.ReadFile(filepath.Join(dir, ".hal", "marker.txt"))
+				if err != nil {
+					t.Fatalf(".hal/marker.txt should exist: %v", err)
+				}
+				if string(data) != "existing" {
+					t.Errorf("marker content = %q, want %q", string(data), "existing")
+				}
+				if _, err := os.Stat(filepath.Join(dir, ".goralph")); !os.IsNotExist(err) {
+					t.Error(".goralph should not exist")
+				}
+			},
+		},
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
