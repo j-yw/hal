@@ -1,0 +1,80 @@
+version: 2
+
+project_name: hal
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/jywlabs/hal/cmd.Version={{.Version}}
+      - -X github.com/jywlabs/hal/cmd.Commit={{.Commit}}
+      - -X github.com/jywlabs/hal/cmd.BuildDate={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+  groups:
+    - title: Features
+      regexp: "^.*feat.*:+.*$"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^.*fix.*:+.*$"
+      order: 1
+    - title: Refactoring
+      regexp: "^.*refactor.*:+.*$"
+      order: 2
+    - title: Others
+      order: 999
+
+release:
+  github:
+    owner: j-yw
+    name: goralph
+  draft: false
+  prerelease: auto
+  name_template: "Hal v{{ .Version }}"
+
+brews:
+  - name: hal
+    repository:
+      owner: j-yw
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    install: |
+      bin.install "hal"
+    test: |
+      system "#{bin}/hal", "version"
