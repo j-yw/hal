@@ -33,12 +33,26 @@ var protectedPaths = map[string]bool{
 	"rules":             true,
 }
 
+// CreateOptions controls which files are archived.
+type CreateOptions struct {
+	ExcludePaths []string
+}
+
 // Create moves all feature state files from halDir into halDir/archive/<date>-<name>/.
 // It returns the archive directory path on success.
 // If no feature state exists, it returns an error.
 func Create(halDir, name string, w io.Writer) (string, error) {
+	return CreateWithOptions(halDir, name, w, CreateOptions{})
+}
+
+// CreateWithOptions moves all feature state files from halDir into halDir/archive/<date>-<name>/.
+// It returns the archive directory path on success.
+// If no feature state exists, it returns an error.
+func CreateWithOptions(halDir, name string, w io.Writer, opts CreateOptions) (string, error) {
+	exclude := normalizeExcludePaths(opts.ExcludePaths)
+
 	// Check that at least one feature state file exists
-	hasState, err := HasFeatureState(halDir)
+	hasState, err := HasFeatureStateWithOptions(halDir, opts)
 	if err != nil {
 		return "", fmt.Errorf("failed to check feature state: %w", err)
 	}
@@ -64,7 +78,7 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 	// Move known state files
 	for _, f := range featureStateFiles {
 		src := filepath.Join(halDir, f)
-		if !fileExists(src) {
+		if !fileExists(src) || isExcluded(src, exclude) {
 			continue
 		}
 		dst := filepath.Join(archiveDir, f)
@@ -78,6 +92,9 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 	// Move prd-*.md files (glob)
 	prdMDs, _ := filepath.Glob(filepath.Join(halDir, "prd-*.md"))
 	for _, src := range prdMDs {
+		if isExcluded(src, exclude) {
+			continue
+		}
 		base := filepath.Base(src)
 		dst := filepath.Join(archiveDir, base)
 		if err := moveFile(src, dst); err != nil {
@@ -100,6 +117,9 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 				return "", fmt.Errorf("failed to create archive reports directory: %w", err)
 			}
 			for _, src := range reportFiles {
+				if isExcluded(src, exclude) {
+					continue
+				}
 				base := filepath.Base(src)
 				dst := filepath.Join(archiveReportsDir, base)
 				if err := moveFile(src, dst); err != nil {
@@ -317,8 +337,18 @@ func resolveCollision(dir string) string {
 
 // HasFeatureState returns true if any feature state files or reports exist in halDir.
 func HasFeatureState(halDir string) (bool, error) {
+	return HasFeatureStateWithOptions(halDir, CreateOptions{})
+}
+
+// HasFeatureStateWithOptions returns true if any feature state files or reports exist in halDir.
+func HasFeatureStateWithOptions(halDir string, opts CreateOptions) (bool, error) {
+	exclude := normalizeExcludePaths(opts.ExcludePaths)
 	for _, f := range featureStateFiles {
-		if fileExists(filepath.Join(halDir, f)) {
+		path := filepath.Join(halDir, f)
+		if isExcluded(path, exclude) {
+			continue
+		}
+		if fileExists(path) {
 			return true, nil
 		}
 	}
@@ -327,8 +357,13 @@ func HasFeatureState(halDir string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to scan PRD markdown files: %w", err)
 	}
-	if len(prdMDs) > 0 {
-		return true, nil
+	for _, path := range prdMDs {
+		if isExcluded(path, exclude) {
+			continue
+		}
+		if fileExists(path) {
+			return true, nil
+		}
 	}
 
 	reportsDir := filepath.Join(halDir, "reports")
@@ -337,12 +372,47 @@ func HasFeatureState(halDir string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if len(reportFiles) > 0 {
-			return true, nil
+		for _, path := range reportFiles {
+			if isExcluded(path, exclude) {
+				continue
+			}
+			if fileExists(path) {
+				return true, nil
+			}
 		}
 	}
 
 	return false, nil
+}
+
+func normalizeExcludePaths(paths []string) map[string]struct{} {
+	if len(paths) == 0 {
+		return nil
+	}
+	exclude := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = filepath.Clean(path)
+		}
+		exclude[abs] = struct{}{}
+	}
+	return exclude
+}
+
+func isExcluded(path string, exclude map[string]struct{}) bool {
+	if len(exclude) == 0 {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	_, ok := exclude[abs]
+	return ok
 }
 
 func listReportFiles(reportsDir string) ([]string, error) {

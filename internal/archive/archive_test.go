@@ -245,6 +245,29 @@ func TestCreate_NameCollisionSuffix(t *testing.T) {
 	}
 }
 
+func TestHasFeatureStateWithOptions(t *testing.T) {
+	halDir := t.TempDir()
+	mdPath := filepath.Join(halDir, "prd-test.md")
+	writeFile(t, mdPath, "# PRD")
+
+	hasState, err := HasFeatureStateWithOptions(halDir, CreateOptions{ExcludePaths: []string{mdPath}})
+	if err != nil {
+		t.Fatalf("HasFeatureStateWithOptions error: %v", err)
+	}
+	if hasState {
+		t.Fatal("expected no feature state when only excluded markdown exists")
+	}
+
+	writeFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"paused"}`)
+	hasState, err = HasFeatureStateWithOptions(halDir, CreateOptions{ExcludePaths: []string{mdPath}})
+	if err != nil {
+		t.Fatalf("HasFeatureStateWithOptions error: %v", err)
+	}
+	if !hasState {
+		t.Fatal("expected feature state when auto-state exists")
+	}
+}
+
 func TestList(t *testing.T) {
 	tests := []struct {
 		name       string
