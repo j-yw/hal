@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/archive"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
-	"github.com/jywlabs/hal/internal/template"
 )
 
 // ConvertWithEngine converts a markdown PRD to JSON using the hal skill via an engine.
@@ -255,47 +256,22 @@ func archiveExistingPRD(prdPath, newMdPath string) error {
 
 	// Extract feature name from new markdown file
 	newFeature := extractFeatureName(newMdPath)
-	existingFeature := extractFeatureFromBranch(existingPRD.BranchName)
+	existingFeature := archive.FeatureFromBranch(existingPRD.BranchName)
 
 	// If same feature, no need to archive
 	if newFeature == existingFeature {
 		return nil
 	}
 
-	// Archive existing PRD
-	prdDir := filepath.Dir(prdPath)
-	archiveDir := filepath.Join(prdDir, "archive", fmt.Sprintf("%s-%s", time.Now().Format("2006-01-02"), existingFeature))
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
-		return err
-	}
-
-	// Copy prd.json to archive
-	archivePRDPath := filepath.Join(archiveDir, template.PRDFile)
-	if err := os.WriteFile(archivePRDPath, existingContent, 0644); err != nil {
-		return err
-	}
-
-	// Copy progress.txt if it exists
-	progressPath := filepath.Join(prdDir, "progress.txt")
-	if progressContent, err := os.ReadFile(progressPath); err == nil {
-		archiveProgressPath := filepath.Join(archiveDir, "progress.txt")
-		// Best-effort archive of progress; failures shouldn't block conversion.
-		if err := os.WriteFile(archiveProgressPath, progressContent, 0644); err != nil {
-			_ = err // Intentionally ignore write errors for the optional archive copy.
-		}
-	}
-
-	return nil
+	// Delegate to shared archive package
+	dir := filepath.Dir(prdPath)
+	_, err = archive.Create(dir, "", io.Discard)
+	return err
 }
 
 func extractFeatureName(mdPath string) string {
 	base := filepath.Base(mdPath)
 	name := strings.TrimSuffix(base, filepath.Ext(base))
 	name = strings.TrimPrefix(name, "prd-")
-	return name
-}
-
-func extractFeatureFromBranch(branchName string) string {
-	name := strings.TrimPrefix(branchName, "hal/")
 	return name
 }
