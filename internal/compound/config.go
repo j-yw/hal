@@ -1,6 +1,7 @@
 package compound
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -32,6 +33,20 @@ func DefaultAutoConfig() AutoConfig {
 		QualityChecks: []string{},
 		MaxIterations: 25,
 	}
+}
+
+// Validate checks that the AutoConfig fields are valid.
+func (c *AutoConfig) Validate() error {
+	if c.ReportsDir == "" {
+		return fmt.Errorf("auto.reportsDir must not be empty")
+	}
+	if c.BranchPrefix == "" {
+		return fmt.Errorf("auto.branchPrefix must not be empty")
+	}
+	if c.MaxIterations <= 0 {
+		return fmt.Errorf("auto.maxIterations must be greater than 0")
+	}
+	return nil
 }
 
 // LoadConfig reads configuration from .hal/config.yaml in the given directory.
@@ -70,6 +85,10 @@ func LoadConfig(dir string) (*AutoConfig, error) {
 	}
 	if config.Auto.MaxIterations > 0 {
 		autoConfig.MaxIterations = config.Auto.MaxIterations
+	}
+
+	if err := autoConfig.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &autoConfig, nil
