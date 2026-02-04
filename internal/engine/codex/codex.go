@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jywlabs/goralph/internal/engine"
+	"github.com/jywlabs/hal/internal/engine"
 )
 
 func init() {

@@ -185,3 +185,33 @@
   - Browser verification not applicable — this is a CLI tool with no frontend
 ---
 
+## 2026-02-04 - US-016
+- Created .hal/ directory as a copy of .goralph/ with all content updated for the Hal rename
+- Updated .hal/config.yaml: GoRalph → Hal, goralph → hal in comments/values, commit_prefix "hal:"
+- Updated .hal/prompt.md: Ralph Agent Instructions → Hal Agent Instructions, all .goralph → .hal
+- Updated .hal/auto-progress.txt: Ralph Progress Log → Hal Progress Log
+- Renamed .hal/skills/ralph/ to .hal/skills/hal/ and updated SKILL.md with all name references
+- Updated all SKILL.md files in .hal/skills/ (prd, autospec, explode, review): .goralph → .hal, goralph → hal, Ralph → Hal
+- Files changed: .hal/config.yaml, .hal/prompt.md, .hal/auto-progress.txt, .hal/skills/hal/SKILL.md, .hal/skills/prd/SKILL.md, .hal/skills/autospec/SKILL.md, .hal/skills/explode/SKILL.md, .hal/skills/review/SKILL.md
+- **Learnings for future iterations:**
+  - The .goralph/ runtime directory is a self-referencing bootstrap — it contains the tool's own config and skills for development
+  - When creating a renamed copy, the skills/ralph/ subdirectory must also be renamed to skills/hal/ to match the embedded skill name
+  - PRD files (prd-*.md, prd.json) contain historical references to the rename and are acceptable — they describe the feature, not runtime paths
+  - Archive directories contain old run data and don't need content updates
+---
+
+## 2026-02-04 - US-017
+- Fixed remaining `goralph` references in cmd/review.go (help text and examples still said `goralph review`)
+- Committed previously unstaged import path updates in engine/claude and engine/codex packages (from US-001)
+- Verified zero `goralph` references in .go files (except intentional migration code in cmd/init.go)
+- Verified zero `GoralphDir`, `"ralph"`, and standalone `ralph/` references in .go files
+- Verified `ralph/` references in .md files are only in PRD docs describing the rename feature and legacy .goralph/ directory
+- go build -o hal . succeeds; ./hal version outputs "hal dev"; ./hal --help shows Hal branding
+- go test ./... passes all unit tests; go vet ./... passes
+- Files changed: cmd/review.go, .goralph/prd.json, .goralph/progress.txt
+- **Learnings for future iterations:**
+  - cmd/review.go was added after the initial US-006 pass and was missed — always re-grep after all stories complete
+  - The .goralph migration code in cmd/init.go intentionally references ".goralph" as a string literal — this is correct and expected
+  - PRD markdown files describing a rename feature will naturally contain the old name — these are documentation, not code references
+---
+

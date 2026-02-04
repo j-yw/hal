@@ -3,7 +3,7 @@ package codex
 import (
 	"testing"
 
-	"github.com/jywlabs/goralph/internal/engine"
+	"github.com/jywlabs/hal/internal/engine"
 )
 
 func TestNew(t *testing.T) {

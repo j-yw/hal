@@ -43,7 +43,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jywlabs/goralph/internal/engine"
+	"github.com/jywlabs/hal/internal/engine"
 )
 
 // These tests require the Codex CLI to be installed and authenticated.

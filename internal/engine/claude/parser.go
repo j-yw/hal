@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/jywlabs/goralph/internal/engine"
+	"github.com/jywlabs/hal/internal/engine"
 )
 
 // Parser parses Claude's stream-json output format.

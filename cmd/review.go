@@ -32,14 +32,14 @@ The review process:
   4. Updates AGENTS.md with discovered patterns
   5. Generates a report with recommendations
 
-The generated report can be used by 'goralph auto' to identify
+The generated report can be used by 'hal auto' to identify
 the next priority item to work on.
 
 Examples:
-  goralph review                  # Review with codex engine (default)
-  goralph review --engine claude  # Use Claude instead
-  goralph review --dry-run        # Preview what would be reviewed
-  goralph review --skip-agents    # Skip AGENTS.md update`,
+  hal review                  # Review with codex engine (default)
+  hal review --engine claude  # Use Claude instead
+  hal review --dry-run        # Preview what would be reviewed
+  hal review --skip-agents    # Skip AGENTS.md update`,
 	RunE: runReview,
 }
 
