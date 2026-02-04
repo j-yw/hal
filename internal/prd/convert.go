@@ -13,15 +13,65 @@ import (
 	"github.com/jywlabs/hal/internal/archive"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // ConvertWithEngine converts a markdown PRD to JSON using the hal skill via an engine.
-// If mdPath is empty, the skill instructs Claude to auto-discover PRD files in .hal/
+// If mdPath is empty, the most recent prd-*.md in .hal/ is used.
 func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, display *engine.Display) error {
 	// Load hal skill content
 	halSkill, err := skills.LoadSkill("hal")
 	if err != nil {
 		return fmt.Errorf("failed to load hal skill: %w", err)
+	}
+
+	mdSource := mdPath
+	if mdSource == "" {
+		mdSource, err = findLatestPRDMarkdown(template.HalDir)
+		if err != nil {
+			return err
+		}
+	}
+
+	mdContent, err := os.ReadFile(mdSource)
+	if err != nil {
+		return fmt.Errorf("failed to read markdown PRD: %w", err)
+	}
+
+	if halDir, ok := halDirForOutput(outPath); ok {
+		origPath, tempPath, err := hideMarkdownForArchive(halDir, mdSource)
+		if err != nil {
+			return err
+		}
+		restoreHidden := func() error {
+			return restoreHiddenMarkdown(origPath, tempPath)
+		}
+
+		hasState, err := archive.HasFeatureState(halDir)
+		if err != nil {
+			restoreErr := restoreHidden()
+			if restoreErr != nil {
+				return fmt.Errorf("failed to restore markdown PRD: %v (after state check error: %w)", restoreErr, err)
+			}
+			return fmt.Errorf("failed to check existing feature state: %w", err)
+		}
+		if hasState {
+			out := io.Discard
+			if display != nil {
+				out = display.Writer()
+			}
+			fmt.Fprintln(out, "  auto-archiving current state...")
+			if _, err := archive.Create(halDir, "auto-saved", out); err != nil {
+				restoreErr := restoreHidden()
+				if restoreErr != nil {
+					return fmt.Errorf("failed to restore markdown PRD: %v (after archive error: %w)", restoreErr, err)
+				}
+				return fmt.Errorf("failed to auto-archive current state: %w", err)
+			}
+		}
+		if err := restoreHidden(); err != nil {
+			return err
+		}
 	}
 
 	// Record output file modification time before conversion (if exists)
@@ -30,25 +80,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		preModTime = stat.ModTime()
 	}
 
-	var prompt string
-	if mdPath != "" {
-		// Explicit path provided - read and embed content
-		mdContent, err := os.ReadFile(mdPath)
-		if err != nil {
-			return fmt.Errorf("failed to read markdown PRD: %w", err)
-		}
-
-		// Archive existing PRD if different feature
-		if err := archiveExistingPRD(outPath, mdPath); err != nil {
-			// Log warning but continue
-			fmt.Fprintf(os.Stderr, "warning: failed to archive existing PRD: %v\n", err)
-		}
-
-		prompt = buildConversionPrompt(halSkill, string(mdContent))
-	} else {
-		// Auto-discover mode - skill tells Claude to find the file
-		prompt = buildDiscoveryPrompt(halSkill)
-	}
+	prompt := buildConversionPrompt(halSkill, string(mdContent))
 
 	// Execute prompt
 	var response string
@@ -238,40 +270,85 @@ func extractJSONFromResponse(response string) (string, error) {
 	return string(formatted), nil
 }
 
-func archiveExistingPRD(prdPath, newMdPath string) error {
-	// Check if existing prd.json exists
-	existingContent, err := os.ReadFile(prdPath)
-	if os.IsNotExist(err) {
-		return nil // No existing PRD, nothing to archive
+func halDirForOutput(outPath string) (string, bool) {
+	clean := filepath.Clean(outPath)
+	if filepath.Base(clean) != template.PRDFile {
+		return "", false
 	}
-	if err != nil {
-		return err
+	dir := filepath.Dir(clean)
+	if filepath.Base(dir) != template.HalDir {
+		return "", false
 	}
-
-	// Parse existing PRD
-	var existingPRD engine.PRD
-	if err := json.Unmarshal(existingContent, &existingPRD); err != nil {
-		return err
-	}
-
-	// Extract feature name from new markdown file
-	newFeature := extractFeatureName(newMdPath)
-	existingFeature := archive.FeatureFromBranch(existingPRD.BranchName)
-
-	// If same feature, no need to archive
-	if newFeature == existingFeature {
-		return nil
-	}
-
-	// Delegate to shared archive package
-	dir := filepath.Dir(prdPath)
-	_, err = archive.Create(dir, "", io.Discard)
-	return err
+	return dir, true
 }
 
-func extractFeatureName(mdPath string) string {
-	base := filepath.Base(mdPath)
-	name := strings.TrimSuffix(base, filepath.Ext(base))
-	name = strings.TrimPrefix(name, "prd-")
-	return name
+func findLatestPRDMarkdown(halDir string) (string, error) {
+	prdMDs, err := filepath.Glob(filepath.Join(halDir, "prd-*.md"))
+	if err != nil {
+		return "", fmt.Errorf("failed to scan PRD markdown files: %w", err)
+	}
+	if len(prdMDs) == 0 {
+		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
+	}
+
+	var latestPath string
+	var latestTime time.Time
+	for _, path := range prdMDs {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if latestPath == "" || info.ModTime().After(latestTime) {
+			latestPath = path
+			latestTime = info.ModTime()
+		}
+	}
+
+	if latestPath == "" {
+		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
+	}
+
+	return latestPath, nil
+}
+
+func hideMarkdownForArchive(halDir, mdPath string) (string, string, error) {
+	if mdPath == "" {
+		return "", "", nil
+	}
+
+	absMDPath, err := filepath.Abs(mdPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to resolve markdown PRD path: %w", err)
+	}
+	absHalDir, err := filepath.Abs(halDir)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to resolve hal dir: %w", err)
+	}
+
+	if filepath.Dir(absMDPath) != absHalDir {
+		return "", "", nil
+	}
+
+	base := filepath.Base(absMDPath)
+	if !strings.HasPrefix(base, "prd-") || !strings.HasSuffix(base, ".md") {
+		return "", "", nil
+	}
+
+	tempName := fmt.Sprintf(".tmp-prd-convert-%d.md", time.Now().UnixNano())
+	tempPath := filepath.Join(absHalDir, tempName)
+	if err := os.Rename(absMDPath, tempPath); err != nil {
+		return "", "", fmt.Errorf("failed to hide markdown PRD: %w", err)
+	}
+
+	return absMDPath, tempPath, nil
+}
+
+func restoreHiddenMarkdown(origPath, tempPath string) error {
+	if tempPath == "" {
+		return nil
+	}
+	if err := os.Rename(tempPath, origPath); err != nil {
+		return fmt.Errorf("failed to restore markdown PRD: %w", err)
+	}
+	return nil
 }
