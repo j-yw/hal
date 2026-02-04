@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jywlabs/hal/internal/archive"
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -114,7 +115,8 @@ func runArchiveRestoreFn(halDir string, name string, out io.Writer) error {
 	return archive.Restore(halDir, name, out)
 }
 
-// deriveArchiveName attempts to get a default name from prd.json branchName.
+// deriveArchiveName attempts to get a default name from prd.json branchName,
+// falling back to the current git branch name.
 func deriveArchiveName(halDir string) string {
 	for _, prdFile := range []string{template.PRDFile, template.AutoPRDFile} {
 		data, err := os.ReadFile(filepath.Join(halDir, prdFile))
@@ -129,6 +131,12 @@ func deriveArchiveName(halDir string) string {
 			return archive.FeatureFromBranch(prd.BranchName)
 		}
 	}
+
+	// Fall back to current git branch name
+	if branch, err := compound.CurrentBranch(); err == nil && branch != "" {
+		return archive.FeatureFromBranch(branch)
+	}
+
 	return ""
 }
 
