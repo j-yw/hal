@@ -17,9 +17,9 @@ var (
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version info",
-	Long:  `Show GoRalph version, commit hash, and build information.`,
+	Long:  `Show Hal version, commit hash, and build information.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("goralph %s\n", Version)
+		fmt.Printf("hal %s\n", Version)
 		fmt.Printf("  commit:  %s\n", Commit)
 		fmt.Printf("  built:   %s\n", BuildDate)
 		fmt.Printf("  go:      %s\n", runtime.Version())
