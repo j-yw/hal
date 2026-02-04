@@ -2,12 +2,22 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
+)
+
+// migrateResult indicates the outcome of a config directory migration.
+type migrateResult int
+
+const (
+	migrateNone    migrateResult = iota // no migration needed
+	migrateDone                         // .goralph was renamed to .hal
+	migrateWarning                      // both directories exist
 )
 
 var initCmd = &cobra.Command{
@@ -142,4 +152,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// migrateConfigDir checks for a legacy oldDir and migrates it to newDir if applicable.
+// Output messages are written to w.
+func migrateConfigDir(oldDir, newDir string, w io.Writer) (migrateResult, error) {
+	return migrateNone, nil
 }
