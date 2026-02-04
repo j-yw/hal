@@ -232,7 +232,6 @@ func collectAnswersStyled(questions []Question, display *engine.Display) (map[in
 	return answers, nil
 }
 
-
 func generatePRD(ctx context.Context, eng engine.Engine, skill, description string, answers map[int]string, projectInfo string, display *engine.Display) (string, error) {
 	// Format answers
 	var answerText strings.Builder

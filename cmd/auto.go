@@ -15,11 +15,11 @@ import (
 )
 
 var (
-	autoDryRunFlag  bool
-	autoResumeFlag  bool
-	autoSkipPRFlag  bool
-	autoReportFlag  string
-	autoEngineFlag  string
+	autoDryRunFlag bool
+	autoResumeFlag bool
+	autoSkipPRFlag bool
+	autoReportFlag string
+	autoEngineFlag string
 )
 
 var autoCmd = &cobra.Command{

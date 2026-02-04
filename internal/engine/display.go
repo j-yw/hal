@@ -92,7 +92,7 @@ func (d *Display) StartSpinner(msg string) {
 				// Get current gradient color for the dot
 				color := SpinnerGradient[colorIdx%len(SpinnerGradient)]
 				dotStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
-				
+
 				// Render brackets static, dot pulsing
 				bracket := bracketStyle.Render("[")
 				dot := dotStyle.Render(SpinnerFrames[frame%len(SpinnerFrames)])
@@ -548,5 +548,3 @@ func (d *Display) ShowNextSteps(steps []string) {
 func (d *Display) Writer() io.Writer {
 	return d.out
 }
-
-

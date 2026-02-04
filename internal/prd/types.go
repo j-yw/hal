@@ -15,12 +15,11 @@ type Issue struct {
 	Severity string `json:"severity"` // "error" or "warning"
 }
 
-
 // Question represents a clarifying question during PRD generation.
 type Question struct {
-	Number   int      `json:"number"`
-	Text     string   `json:"text"`
-	Options  []Option `json:"options"`
+	Number  int      `json:"number"`
+	Text    string   `json:"text"`
+	Options []Option `json:"options"`
 }
 
 // Option represents a selectable option for a question.
@@ -37,9 +36,9 @@ type QuestionsResponse struct {
 
 // GenerationRequest holds the inputs for PRD generation.
 type GenerationRequest struct {
-	Description string            // Feature description from user
-	Answers     map[int]string    // Question number -> selected option(s)
-	ProjectInfo string            // Optional codebase context
+	Description string         // Feature description from user
+	Answers     map[int]string // Question number -> selected option(s)
+	ProjectInfo string         // Optional codebase context
 }
 
 // ConversionRequest holds the inputs for PRD conversion.

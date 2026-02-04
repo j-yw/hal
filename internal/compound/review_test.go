@@ -33,7 +33,7 @@ func TestParseReviewResponse(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "JSON with markdown fences",
+			name:  "JSON with markdown fences",
 			input: "Here is the analysis:\n```json\n{\"summary\": \"Built thing\", \"patterns\": [], \"issues\": [], \"techDebt\": [], \"recommendations\": []}\n```\nDone!",
 			want: &parsedReview{
 				Summary:         "Built thing",
