@@ -6,6 +6,8 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -ldflags "-X github.com/jywlabs/hal/cmd.Version=$(VERSION) -X github.com/jywlabs/hal/cmd.Commit=$(COMMIT) -X github.com/jywlabs/hal/cmd.BuildDate=$(BUILD_DATE)"
+GOCACHE ?= /tmp/hal-gocache
+export GOCACHE
 
 .PHONY: all build install uninstall clean test vet fmt lint run help
 
