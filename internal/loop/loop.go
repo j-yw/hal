@@ -23,7 +23,7 @@ type Result struct {
 
 // Config holds configuration for the loop.
 type Config struct {
-	Dir           string        // Path to .goralph directory
+	Dir           string        // Path to .hal directory
 	PRDFile       string        // PRD file name (default: template.PRDFile)
 	ProgressFile  string        // Progress file name (default: template.ProgressFile)
 	MaxIterations int           // Maximum iterations (0 = unlimited)
@@ -35,7 +35,7 @@ type Config struct {
 	StoryID       string        // Run specific story by ID (e.g., US-001)
 }
 
-// Runner orchestrates the Ralph loop.
+// Runner orchestrates the Hal loop.
 type Runner struct {
 	config  Config
 	engine  engine.Engine
@@ -81,7 +81,7 @@ func New(cfg Config) (*Runner, error) {
 	}, nil
 }
 
-// Run executes the Ralph loop.
+// Run executes the Hal loop.
 func (r *Runner) Run(ctx context.Context) Result {
 	// Load prompt
 	prompt, err := r.loadPrompt()

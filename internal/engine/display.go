@@ -229,7 +229,7 @@ func (d *Display) ShowLoopHeader(engineName string, maxIterations int) {
 	d.loopStart = time.Now()
 
 	icon := StyleCommandIcon.Render()
-	title := StyleTitle.Render("Ralph Loop")
+	title := StyleTitle.Render("Hal Loop")
 	details := StyleMuted.Render(fmt.Sprintf("%s │ max %d iterations", engineName, maxIterations))
 
 	content := fmt.Sprintf("%s %s\n%s", icon, title, details)
