@@ -38,3 +38,25 @@
   - Nested subdirectory test verifies the `filepath.WalkDir` + `moveFile` fallback path structure is correct even though same-device uses `os.Rename`
 ---
 
+## 2026-02-04 - T-005
+- Replaced all 3 `os.Rename` calls in `archive.Create` with `moveFile` for cross-device support
+- Calls replaced: featureStateFiles loop (line 69), prd-*.md glob loop (line 81), reports/*.md loop (line 100)
+- Files changed: `internal/archive/archive.go`
+- **Learnings for future iterations:**
+  - The replacement is a simple drop-in: `moveFile` has the same signature as `os.Rename` (`src, dst string`) returning `error`
+  - Existing `TestCreate` and `TestCreate_NameCollisionSuffix` tests pass unchanged since they run on same device (fast path via `os.Rename` inside `moveFile`)
+  - Remaining `os.Rename` calls in `Restore` and `restoreDir` are for T-006
+---
+
+## 2026-02-04 - T-006
+- Replaced `os.Rename` with `moveFile` in `Restore` (line 263) and `restoreDir` (line 291)
+- `restoreDir` still removes source dir via `os.Remove(src)` after moving all files — unchanged
+- No raw `os.Rename` calls remain anywhere in `internal/archive/archive.go`
+- All existing tests pass unchanged (TestRestore, TestCreate, etc.)
+- Files changed: `internal/archive/archive.go`
+- **Learnings for future iterations:**
+  - `restoreDir` iterates flat entries (files only for reports/), so `moveFile` is sufficient — no need for `moveDir` here
+  - The replacement is a drop-in since `moveFile` has the same `(src, dst string) error` signature as `os.Rename`
+  - After T-006, the entire archive package is free of raw `os.Rename` — all moves go through the EXDEV-safe helpers
+---
+

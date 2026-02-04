@@ -260,7 +260,7 @@ func Restore(halDir, name string, w io.Writer) error {
 				return fmt.Errorf("failed to restore %s: %w", entry.Name(), err)
 			}
 		} else {
-			if err := os.Rename(src, dst); err != nil {
+			if err := moveFile(src, dst); err != nil {
 				return fmt.Errorf("failed to restore %s: %w", entry.Name(), err)
 			}
 		}
@@ -288,7 +288,7 @@ func restoreDir(src, dst string) error {
 	for _, entry := range entries {
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
-		if err := os.Rename(srcPath, dstPath); err != nil {
+		if err := moveFile(srcPath, dstPath); err != nil {
 			return err
 		}
 	}
