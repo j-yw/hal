@@ -95,3 +95,91 @@ func TestFindLatestReport(t *testing.T) {
 		}
 	})
 }
+
+func TestFindRecentPRDs(t *testing.T) {
+	t.Run("returns recent PRD files within N days", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		recentPRD := filepath.Join(halDir, "prd-feature-a.md")
+		if err := os.WriteFile(recentPRD, []byte("# PRD A"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := FindRecentPRDs(dir, 7)
+		if err != nil {
+			t.Fatalf("FindRecentPRDs() unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0] != recentPRD {
+			t.Errorf("FindRecentPRDs() = %v, want [%s]", got, recentPRD)
+		}
+	})
+
+	t.Run("excludes PRD files older than N days", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		oldPRD := filepath.Join(halDir, "prd-old-feature.md")
+		if err := os.WriteFile(oldPRD, []byte("# Old PRD"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// Set mtime to 30 days ago
+		oldTime := time.Now().AddDate(0, 0, -30)
+		if err := os.Chtimes(oldPRD, oldTime, oldTime); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := FindRecentPRDs(dir, 7)
+		if err != nil {
+			t.Fatalf("FindRecentPRDs() unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("FindRecentPRDs() = %v, want empty slice", got)
+		}
+	})
+
+	t.Run("returns nil when hal directory does not exist", func(t *testing.T) {
+		dir := t.TempDir()
+		got, err := FindRecentPRDs(dir, 7)
+		if err != nil {
+			t.Fatalf("FindRecentPRDs() unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("FindRecentPRDs() = %v, want nil", got)
+		}
+	})
+
+	t.Run("only matches prd- prefix and .md suffix", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		// Valid PRD file
+		validPRD := filepath.Join(halDir, "prd-valid.md")
+		if err := os.WriteFile(validPRD, []byte("# PRD"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// Non-matching files
+		for _, name := range []string{"notes.md", "prd-foo.txt", "readme.md", "config.yaml"} {
+			if err := os.WriteFile(filepath.Join(halDir, name), []byte("content"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		got, err := FindRecentPRDs(dir, 7)
+		if err != nil {
+			t.Fatalf("FindRecentPRDs() unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0] != validPRD {
+			t.Errorf("FindRecentPRDs() = %v, want [%s]", got, validPRD)
+		}
+	})
+}
