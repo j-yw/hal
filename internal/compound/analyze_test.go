@@ -183,3 +183,84 @@ func TestFindRecentPRDs(t *testing.T) {
 		}
 	})
 }
+
+func TestParseAnalysisResponse(t *testing.T) {
+	validJSON := `{
+		"priorityItem": "Add user auth",
+		"description": "Implement user authentication with JWT",
+		"rationale": "Security is critical",
+		"acceptanceCriteria": ["Login works", "Logout works"],
+		"estimatedTasks": 10,
+		"branchName": "add-user-auth"
+	}`
+
+	tests := []struct {
+		name       string
+		input      string
+		wantErr    bool
+		wantErrSub string
+		wantItem   string
+		wantBranch string
+	}{
+		{
+			name:       "valid JSON returns correct result",
+			input:      validJSON,
+			wantErr:    false,
+			wantItem:   "Add user auth",
+			wantBranch: "add-user-auth",
+		},
+		{
+			name:       "JSON wrapped in code fences",
+			input:      "Here is the analysis:\n```json\n" + validJSON + "\n```\nDone!",
+			wantErr:    false,
+			wantItem:   "Add user auth",
+			wantBranch: "add-user-auth",
+		},
+		{
+			name:       "missing priorityItem returns error",
+			input:      `{"description": "desc", "branchName": "branch"}`,
+			wantErr:    true,
+			wantErrSub: "priorityItem",
+		},
+		{
+			name:       "missing branchName returns error",
+			input:      `{"priorityItem": "item", "description": "desc"}`,
+			wantErr:    true,
+			wantErrSub: "branchName",
+		},
+		{
+			name:       "no JSON at all returns error",
+			input:      "This response has no JSON whatsoever",
+			wantErr:    true,
+			wantErrSub: "no JSON object found",
+		},
+		{
+			name:       "malformed JSON returns error",
+			input:      `{"priorityItem": "test", "branchName": "branch"`,
+			wantErr:    true,
+			wantErrSub: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAnalysisResponse(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseAnalysisResponse() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				if tt.wantErrSub != "" && !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErrSub)
+				}
+				return
+			}
+			if got.PriorityItem != tt.wantItem {
+				t.Errorf("PriorityItem = %q, want %q", got.PriorityItem, tt.wantItem)
+			}
+			if got.BranchName != tt.wantBranch {
+				t.Errorf("BranchName = %q, want %q", got.BranchName, tt.wantBranch)
+			}
+		})
+	}
+}
