@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestMigrateConfigDir(t *testing.T) {
 	tests := []struct {
 		name       string
-		setupFn    func(dir string)
+		setupFn    func(t *testing.T, dir string)
 		wantResult migrateResult
 		wantOutput string
 		wantErr    bool
@@ -18,7 +19,7 @@ func TestMigrateConfigDir(t *testing.T) {
 	}{
 		{
 			name: "only old dir exists - migrates",
-			setupFn: func(dir string) {
+			setupFn: func(t *testing.T, dir string) {
 				old := filepath.Join(dir, ".goralph")
 				os.MkdirAll(old, 0755)
 				os.WriteFile(filepath.Join(old, "marker.txt"), []byte("hello"), 0644)
@@ -40,7 +41,7 @@ func TestMigrateConfigDir(t *testing.T) {
 		},
 		{
 			name: "both dirs exist - warning",
-			setupFn: func(dir string) {
+			setupFn: func(t *testing.T, dir string) {
 				old := filepath.Join(dir, ".goralph")
 				os.MkdirAll(old, 0755)
 				os.WriteFile(filepath.Join(old, "marker-old.txt"), []byte("old"), 0644)
@@ -69,7 +70,7 @@ func TestMigrateConfigDir(t *testing.T) {
 		},
 		{
 			name: "neither dir exists - fresh init",
-			setupFn: func(dir string) {
+			setupFn: func(t *testing.T, dir string) {
 				// no setup — neither directory exists
 			},
 			wantResult: migrateNone,
@@ -84,8 +85,31 @@ func TestMigrateConfigDir(t *testing.T) {
 			},
 		},
 		{
+			name: "rename fails - returns error",
+			setupFn: func(t *testing.T, dir string) {
+				old := filepath.Join(dir, ".goralph")
+				os.MkdirAll(old, 0755)
+				os.WriteFile(filepath.Join(old, "marker.txt"), []byte("data"), 0644)
+				// Remove write permission on parent dir so os.Rename fails
+				os.Chmod(dir, 0555)
+				t.Cleanup(func() {
+					// Restore permissions so t.TempDir() cleanup can remove the dir
+					os.Chmod(dir, 0755)
+				})
+			},
+			wantResult: migrateNone,
+			wantErr:    true,
+			checkFn: func(t *testing.T, dir string) {
+				// Restore permissions for checkFn stat calls
+				os.Chmod(dir, 0755)
+				if _, err := os.Stat(filepath.Join(dir, ".goralph")); os.IsNotExist(err) {
+					t.Error(".goralph should still exist on rename failure")
+				}
+			},
+		},
+		{
 			name: "only new dir exists - no-op",
-			setupFn: func(dir string) {
+			setupFn: func(t *testing.T, dir string) {
 				newD := filepath.Join(dir, ".hal")
 				os.MkdirAll(newD, 0755)
 				os.WriteFile(filepath.Join(newD, "marker.txt"), []byte("existing"), 0644)
@@ -112,7 +136,7 @@ func TestMigrateConfigDir(t *testing.T) {
 			tmpDir := t.TempDir()
 
 			if tt.setupFn != nil {
-				tt.setupFn(tmpDir)
+				tt.setupFn(t, tmpDir)
 			}
 
 			oldDir := filepath.Join(tmpDir, ".goralph")
@@ -123,6 +147,11 @@ func TestMigrateConfigDir(t *testing.T) {
 
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("migrateConfigDir() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil {
+				if !strings.Contains(err.Error(), "failed to migrate") {
+					t.Errorf("error %q should contain 'failed to migrate'", err.Error())
+				}
 			}
 			if result != tt.wantResult {
 				t.Errorf("migrateConfigDir() result = %v, want %v", result, tt.wantResult)
