@@ -51,7 +51,7 @@ func (m *mockEngine) StreamPrompt(ctx context.Context, prompt string, display *e
 // TestStatePersistence tests that state is saved and can be loaded for resume.
 func TestStatePersistence(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestStatePersistence(t *testing.T) {
 // TestDryRunMode tests that dry-run mode shows what would happen without executing.
 func TestDryRunMode(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	reportsDir := filepath.Join(halDir, "reports")
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestDryRunMode(t *testing.T) {
 	display := engine.NewDisplay(&buf)
 
 	config := DefaultAutoConfig()
-	config.ReportsDir = ".goralph/reports"
+	config.ReportsDir = ".hal/reports"
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	ctx := context.Background()
@@ -197,7 +197,7 @@ func TestDryRunMode(t *testing.T) {
 // TestDryRunModeWithPresetState tests dry-run starting from a saved state.
 func TestDryRunModeWithPresetState(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestDryRunModeWithPresetState(t *testing.T) {
 // TestMissingReportsGraceful tests graceful handling when no reports exist.
 func TestMissingReportsGraceful(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	reportsDir := filepath.Join(halDir, "reports")
 	// Create empty reports directory
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
@@ -271,7 +271,7 @@ func TestMissingReportsGraceful(t *testing.T) {
 	display := engine.NewDisplay(&buf)
 
 	config := DefaultAutoConfig()
-	config.ReportsDir = ".goralph/reports"
+	config.ReportsDir = ".hal/reports"
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	ctx := context.Background()
@@ -292,7 +292,7 @@ func TestMissingReportsGraceful(t *testing.T) {
 // TestMissingReportsDirectory tests handling when reports directory doesn't exist.
 func TestMissingReportsDirectory(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestMissingReportsDirectory(t *testing.T) {
 	display := engine.NewDisplay(&buf)
 
 	config := DefaultAutoConfig()
-	config.ReportsDir = ".goralph/reports"
+	config.ReportsDir = ".hal/reports"
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	ctx := context.Background()
@@ -322,7 +322,7 @@ func TestMissingReportsDirectory(t *testing.T) {
 // TestResumeWithNoState tests that resume fails gracefully when no state exists.
 func TestResumeWithNoState(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestResumeWithNoState(t *testing.T) {
 // TestStatePersistenceOnStepTransition tests state is saved after each step.
 func TestStatePersistenceOnStepTransition(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	reportsDir := filepath.Join(halDir, "reports")
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatal(err)
@@ -375,7 +375,7 @@ func TestStatePersistenceOnStepTransition(t *testing.T) {
 	display := engine.NewDisplay(&buf)
 
 	config := DefaultAutoConfig()
-	config.ReportsDir = ".goralph/reports"
+	config.ReportsDir = ".hal/reports"
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	ctx := context.Background()
@@ -412,7 +412,7 @@ func TestStatePersistenceOnStepTransition(t *testing.T) {
 // TestStateAtomicWrite tests that state writes are atomic (no partial writes).
 func TestStateAtomicWrite(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestStateAtomicWrite(t *testing.T) {
 		Step:       StepPRD,
 		BranchName: "compound/atomic-test",
 		ReportPath: "/tmp/report.md",
-		PRDPath:    ".goralph/prd-test.md",
+		PRDPath:    ".hal/prd-test.md",
 		StartedAt:  time.Now(),
 		Analysis: &AnalysisResult{
 			PriorityItem:       "Atomic Test",
@@ -467,7 +467,7 @@ func TestStateAtomicWrite(t *testing.T) {
 // TestPipelineWithSpecificReportPath tests using --report flag (ReportPath option).
 func TestPipelineWithSpecificReportPath(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestPipelineWithSpecificReportPath(t *testing.T) {
 // TestContextCancellation tests that context cancellation saves state before exiting.
 func TestContextCancellation(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	reportsDir := filepath.Join(halDir, "reports")
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatal(err)
@@ -531,7 +531,7 @@ func TestContextCancellation(t *testing.T) {
 	display := engine.NewDisplay(&buf)
 
 	config := DefaultAutoConfig()
-	config.ReportsDir = ".goralph/reports"
+	config.ReportsDir = ".hal/reports"
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	// Create a context that's already cancelled
@@ -555,7 +555,7 @@ func TestIntegrationWithClaudeCLI(t *testing.T) {
 	// This is a lightweight integration test that just verifies
 	// the CLI can be invoked without errors
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	reportsDir := filepath.Join(halDir, "reports")
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatal(err)

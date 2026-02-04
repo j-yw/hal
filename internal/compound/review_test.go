@@ -169,8 +169,8 @@ func TestGenerateReviewReport(t *testing.T) {
 	}
 
 	// Verify report was created in correct location
-	if !strings.Contains(reportPath, ".goralph/reports/review-") {
-		t.Errorf("Report path = %q, expected to contain .goralph/reports/review-", reportPath)
+	if !strings.Contains(reportPath, ".hal/reports/review-") {
+		t.Errorf("Report path = %q, expected to contain .hal/reports/review-", reportPath)
 	}
 
 	// Read and verify content
@@ -322,9 +322,9 @@ func TestBuildReviewPrompt(t *testing.T) {
 
 func TestFindPRDFile(t *testing.T) {
 	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
-		t.Fatalf("Failed to create .goralph: %v", err)
+		t.Fatalf("Failed to create .hal: %v", err)
 	}
 
 	// Create a PRD file
@@ -334,7 +334,7 @@ func TestFindPRDFile(t *testing.T) {
 	}
 
 	t.Run("finds PRD by branch name", func(t *testing.T) {
-		found := findPRDFile(dir, "ralph/test-feature")
+		found := findPRDFile(dir, "hal/test-feature")
 		if found != prdPath {
 			t.Errorf("findPRDFile() = %q, want %q", found, prdPath)
 		}
