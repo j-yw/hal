@@ -24,30 +24,30 @@ var (
 var convertCmd = &cobra.Command{
 	Use:   "convert [markdown-prd]",
 	Short: "Convert markdown PRD to JSON",
-	Long: `Convert a markdown PRD file to prd.json format using the ralph skill.
+	Long: `Convert a markdown PRD file to prd.json format using the hal skill.
 
-Without arguments, automatically finds prd-*.md files in .goralph/ directory.
+Without arguments, automatically finds prd-*.md files in .hal/ directory.
 With a path argument, uses that file directly.
 
 The conversion uses an AI engine to parse the markdown and generate
 properly-sized user stories with verifiable acceptance criteria.
 
 If an existing prd.json exists with a different feature, it will be
-archived to .goralph/archive/ before the new one is written.
+archived to .hal/archive/ before the new one is written.
 
 Examples:
-  goralph convert                                  # Auto-discover PRD in .goralph/
-  goralph convert .goralph/prd-auth.md            # Explicit path
-  goralph convert .goralph/prd.md -o custom.json  # Custom output path
-  goralph convert .goralph/prd.md --validate      # Also validate after conversion
-  goralph convert .goralph/prd.md -e claude       # Use Claude engine`,
+  hal convert                                  # Auto-discover PRD in .hal/
+  hal convert .hal/prd-auth.md            # Explicit path
+  hal convert .hal/prd.md -o custom.json  # Custom output path
+  hal convert .hal/prd.md --validate      # Also validate after conversion
+  hal convert .hal/prd.md -e claude       # Use Claude engine`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runConvert,
 }
 
 func init() {
 	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
-	convertCmd.Flags().StringVarP(&convertOutputFlag, "output", "o", "", "Output path (default: .goralph/prd.json)")
+	convertCmd.Flags().StringVarP(&convertOutputFlag, "output", "o", "", "Output path (default: .hal/prd.json)")
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
 	rootCmd.AddCommand(convertCmd)
 }

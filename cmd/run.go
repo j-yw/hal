@@ -32,8 +32,8 @@ var (
 
 var runCmd = &cobra.Command{
 	Use:   "run [iterations]",
-	Short: "Run the Ralph loop",
-	Long: `Run the Ralph loop to execute tasks from .goralph/prd.json.
+	Short: "Run the Hal loop",
+	Long: `Run the Hal loop to execute tasks from .hal/prd.json.
 
 The loop spawns fresh AI instances that:
 1. Read prd.json and pick the highest priority pending story
@@ -44,11 +44,11 @@ The loop spawns fresh AI instances that:
 6. Repeat until all stories pass or max iterations reached
 
 Examples:
-  goralph run                          # Run with defaults (10 iterations)
-  goralph run 5                        # Run 5 iterations
-  goralph run 1 -s US-001              # Run single specific story
-  goralph run -e codex                 # Use Codex engine
-  goralph run --dry-run                # Show what would execute
+  hal run                          # Run with defaults (10 iterations)
+  hal run 5                        # Run 5 iterations
+  hal run 1 -s US-001              # Run single specific story
+  hal run -e codex                 # Use Codex engine
+  hal run --dry-run                # Show what would execute
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runRun,
@@ -83,10 +83,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		iterations = n
 	}
 
-	// Check .goralph directory exists
+	// Check .hal directory exists
 	halDir := template.HalDir
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
-		return fmt.Errorf(".goralph/ not found. Run 'goralph init' first")
+		return fmt.Errorf(".hal/ not found. Run 'hal init' first")
 	}
 
 	// Check prd.json exists

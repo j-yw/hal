@@ -20,7 +20,7 @@ var validateEngineFlag string
 var validateCmd = &cobra.Command{
 	Use:   "validate [prd-path]",
 	Short: "Validate a PRD using AI",
-	Long: `Validate a PRD file against the ralph skill rules using an AI engine.
+	Long: `Validate a PRD file against the hal skill rules using an AI engine.
 
 Checks:
   - Each story is completable in one iteration (small scope)
@@ -30,9 +30,9 @@ Checks:
   - Acceptance criteria are verifiable (not vague)
 
 Examples:
-  goralph validate                    # Validate .goralph/prd.json
-  goralph validate path/to/prd.json   # Validate specific file
-  goralph validate -e claude          # Use Claude engine`,
+  hal validate                    # Validate .hal/prd.json
+  hal validate path/to/prd.json   # Validate specific file
+  hal validate -e claude          # Use Claude engine`,
 	RunE: runValidate,
 }
 

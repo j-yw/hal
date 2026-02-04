@@ -31,13 +31,13 @@ var explodeCmd = &cobra.Command{
 Each task is sized to be completable in a single agent iteration with
 boolean acceptance criteria suitable for autonomous verification.
 
-The output is written to .goralph/auto-prd.json in the userStories format,
+The output is written to .hal/auto-prd.json in the userStories format,
 and is used by the auto pipeline (not the manual run command).
 
 Examples:
-  goralph explode .goralph/prd-feature.md                    # Explode a PRD
-  goralph explode .goralph/prd-feature.md --branch feature   # Set branch name
-  goralph explode .goralph/prd-feature.md --engine claude     # Use specific engine`,
+  hal explode .hal/prd-feature.md                    # Explode a PRD
+  hal explode .hal/prd-feature.md --branch feature   # Set branch name
+  hal explode .hal/prd-feature.md --engine claude     # Use specific engine`,
 	Args: cobra.ExactArgs(1),
 	RunE: runExplode,
 }
@@ -183,7 +183,7 @@ Break down this PRD into 8-15 granular tasks following the skill rules:
 5. Use T-XXX IDs (T-001, T-002, etc.)
 6. All tasks have passes: false and empty notes
 
-Write the JSON directly to .goralph/auto-prd.json using the Write tool.`, skill, prdContent, branchName)
+Write the JSON directly to .hal/auto-prd.json using the Write tool.`, skill, prdContent, branchName)
 }
 
 func extractBranchFromPRDPath(prdPath string) string {

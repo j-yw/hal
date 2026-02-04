@@ -32,18 +32,18 @@ The pipeline steps are:
   2. branch   - Create and checkout a new branch for the work
   3. prd      - Generate a PRD using the autospec skill
   4. explode  - Break down the PRD into 8-15 granular tasks
-  5. loop     - Execute the Ralph task loop until all tasks pass
+  5. loop     - Execute the Hal task loop until all tasks pass
   6. pr       - Push the branch and create a draft pull request
 
 The pipeline saves state after each step, allowing you to resume
 from interruptions using the --resume flag.
 
 Examples:
-  goralph auto                     # Run full pipeline with latest report
-  goralph auto --report report.md  # Use specific report file
-  goralph auto --dry-run           # Show what would happen without executing
-  goralph auto --resume            # Continue from last saved state
-  goralph auto --skip-pr           # Skip PR creation at the end`,
+  hal auto                     # Run full pipeline with latest report
+  hal auto --report report.md  # Use specific report file
+  hal auto --dry-run           # Show what would happen without executing
+  hal auto --resume            # Continue from last saved state
+  hal auto --skip-pr           # Skip PR creation at the end`,
 	RunE: runAuto,
 }
 
@@ -100,7 +100,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		}
 		display.ShowInfo("   Resuming pipeline from saved state\n")
 	} else if pipeline.HasState() {
-		display.ShowInfo("   Note: Previous state exists. Use --resume to continue, or delete .goralph/auto-state.json to start fresh.\n")
+		display.ShowInfo("   Note: Previous state exists. Use --resume to continue, or delete .hal/auto-state.json to start fresh.\n")
 	}
 
 	// Run options

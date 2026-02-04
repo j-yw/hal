@@ -31,14 +31,14 @@ The plan command uses a two-phase approach:
 
 If no description is provided, your $EDITOR will open for you to write the spec.
 
-By default, the PRD is written as markdown to .goralph/prd-[feature-name].md.
-Use --format json to output directly to .goralph/prd.json for immediate use with 'goralph run'.
+By default, the PRD is written as markdown to .hal/prd-[feature-name].md.
+Use --format json to output directly to .hal/prd.json for immediate use with 'hal run'.
 
 Examples:
-  goralph plan                            # Opens editor for full spec
-  goralph plan "user authentication"      # Interactive PRD generation
-  goralph plan "add dark mode" -f json    # Output directly to prd.json
-  goralph plan "notifications" -e claude  # Use Claude engine`,
+  hal plan                            # Opens editor for full spec
+  hal plan "user authentication"      # Interactive PRD generation
+  hal plan "add dark mode" -f json    # Output directly to prd.json
+  hal plan "notifications" -e claude  # Use Claude engine`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runPlan,
 }
@@ -90,11 +90,11 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	// Show next steps
 	if planFormatFlag == "json" {
-		display.ShowNextSteps([]string{"goralph run    # Execute the stories"})
+		display.ShowNextSteps([]string{"hal run    # Execute the stories"})
 	} else {
 		display.ShowNextSteps([]string{
-			fmt.Sprintf("goralph convert %s", outputPath),
-			"goralph run",
+			fmt.Sprintf("hal convert %s", outputPath),
+			"hal run",
 		})
 	}
 
@@ -103,7 +103,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 func openEditorForInput() (string, error) {
 	// Create temp file with template
-	tmpfile, err := os.CreateTemp("", "goralph-plan-*.md")
+	tmpfile, err := os.CreateTemp("", "hal-plan-*.md")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}

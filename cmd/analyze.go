@@ -28,7 +28,7 @@ var analyzeCmd = &cobra.Command{
 	Short: "Analyze a report to identify the highest priority item",
 	Long: `Analyze a product/engineering report to identify the highest priority item.
 
-By default, looks for the most recently modified file in .goralph/reports/.
+By default, looks for the most recently modified file in .hal/reports/.
 You can specify a report file path directly as an argument.
 
 The analysis returns:
@@ -39,10 +39,10 @@ The analysis returns:
   - Suggested branch name
 
 Examples:
-  goralph analyze                           # Analyze latest report
-  goralph analyze report.md                 # Analyze specific file
-  goralph analyze --reports-dir ./reports   # Use custom reports directory
-  goralph analyze --output json             # Output as JSON`,
+  hal analyze                           # Analyze latest report
+  hal analyze report.md                 # Analyze specific file
+  hal analyze --reports-dir ./reports   # Use custom reports directory
+  hal analyze --output json             # Output as JSON`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAnalyze,
 }
@@ -170,7 +170,7 @@ func outputAnalysisText(result *compound.AnalysisResult, halDir string, branchPr
 	fmt.Println()
 
 	fmt.Println("Next steps:")
-	fmt.Printf("  1. goralph auto --report <path>  # Run full pipeline\n")
+	fmt.Printf("  1. hal auto --report <path>  # Run full pipeline\n")
 	fmt.Printf("  2. Or manually create a PRD in %s/\n", halDir)
 	fmt.Println()
 
