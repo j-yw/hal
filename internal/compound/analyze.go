@@ -54,15 +54,15 @@ func FindLatestReport(reportsDir string) (string, error) {
 }
 
 // FindRecentPRDs returns PRD files created in the last N days.
-// It searches for files matching .goralph/prd-*.md pattern.
+// It searches for files matching .hal/prd-*.md pattern.
 func FindRecentPRDs(dir string, days int) ([]string, error) {
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 	entries, err := os.ReadDir(halDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil // No .goralph directory means no PRDs
+			return nil, nil // No .hal directory means no PRDs
 		}
-		return nil, fmt.Errorf("failed to read .goralph directory: %w", err)
+		return nil, fmt.Errorf("failed to read .hal directory: %w", err)
 	}
 
 	cutoff := time.Now().AddDate(0, 0, -days)

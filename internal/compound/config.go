@@ -15,7 +15,7 @@ type AutoConfig struct {
 	MaxIterations int      `yaml:"maxIterations"`
 }
 
-// Config represents the full .goralph/config.yaml structure.
+// Config represents the full .hal/config.yaml structure.
 type Config struct {
 	Engine        string     `yaml:"engine"`
 	MaxIterations int        `yaml:"maxIterations"`
@@ -27,17 +27,17 @@ type Config struct {
 // DefaultAutoConfig returns sensible defaults for auto configuration.
 func DefaultAutoConfig() AutoConfig {
 	return AutoConfig{
-		ReportsDir:    ".goralph/reports",
+		ReportsDir:    ".hal/reports",
 		BranchPrefix:  "compound/",
 		QualityChecks: []string{},
 		MaxIterations: 25,
 	}
 }
 
-// LoadConfig reads configuration from .goralph/config.yaml in the given directory.
+// LoadConfig reads configuration from .hal/config.yaml in the given directory.
 // If the config file doesn't exist or the auto section is missing, sensible defaults are returned.
 func LoadConfig(dir string) (*AutoConfig, error) {
-	configPath := filepath.Join(dir, ".goralph", "config.yaml")
+	configPath := filepath.Join(dir, ".hal", "config.yaml")
 
 	// Check if config file exists
 	data, err := os.ReadFile(configPath)

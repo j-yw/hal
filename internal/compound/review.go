@@ -130,7 +130,7 @@ func gatherReviewContext(dir string) (*reviewContext, error) {
 	}
 
 	// Read progress log
-	progressPath := filepath.Join(dir, ".goralph", "progress.txt")
+	progressPath := filepath.Join(dir, ".hal", "progress.txt")
 	if content, err := os.ReadFile(progressPath); err == nil {
 		rc.ProgressContent = string(content)
 	} else {
@@ -283,7 +283,7 @@ func updateAgentsMD(dir, branch string, patterns []string) error {
 
 // generateReviewReport creates a markdown report file.
 func generateReviewReport(dir string, rc *reviewContext, pr *parsedReview) (string, error) {
-	reportsDir := filepath.Join(dir, ".goralph", "reports")
+	reportsDir := filepath.Join(dir, ".hal", "reports")
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create reports directory: %w", err)
 	}
@@ -347,7 +347,7 @@ func generateReviewReport(dir string, rc *reviewContext, pr *parsedReview) (stri
 
 // saveRawReviewReport saves raw AI response when parsing fails.
 func saveRawReviewReport(dir string, rc *reviewContext, response string) (string, error) {
-	reportsDir := filepath.Join(dir, ".goralph", "reports")
+	reportsDir := filepath.Join(dir, ".hal", "reports")
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create reports directory: %w", err)
 	}
@@ -419,11 +419,11 @@ func getCommitHistory(branch string) string {
 }
 
 func findPRDFile(dir, branch string) string {
-	halDir := filepath.Join(dir, ".goralph")
+	halDir := filepath.Join(dir, ".hal")
 
 	// Try branch-specific PRD first
 	if branch != "" && branch != "main" && branch != "master" {
-		// Extract feature name from branch (e.g., "ralph/compound-engineering" -> "compound-engineering")
+		// Extract feature name from branch (e.g., "hal/compound-engineering" -> "compound-engineering")
 		parts := strings.Split(branch, "/")
 		feature := parts[len(parts)-1]
 
