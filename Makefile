@@ -1,11 +1,11 @@
-# GoRalph Makefile
+# Hal Makefile
 
-BINARY_NAME := goralph
+BINARY_NAME := hal
 INSTALL_PATH := ~/.local/bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-LDFLAGS := -ldflags "-X github.com/jywlabs/goralph/cmd.Version=$(VERSION) -X github.com/jywlabs/goralph/cmd.Commit=$(COMMIT) -X github.com/jywlabs/goralph/cmd.BuildDate=$(BUILD_DATE)"
+LDFLAGS := -ldflags "-X github.com/jywlabs/hal/cmd.Version=$(VERSION) -X github.com/jywlabs/hal/cmd.Commit=$(COMMIT) -X github.com/jywlabs/hal/cmd.BuildDate=$(BUILD_DATE)"
 
 .PHONY: all build install uninstall clean test vet fmt lint run help
 
@@ -58,7 +58,7 @@ lint:
 	@echo "==> Running linter..."
 	@golangci-lint run ./... || echo "    Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
 
-## Run goralph (for quick testing)
+## Run hal (for quick testing)
 run: build
 	@./$(BINARY_NAME) $(ARGS)
 
@@ -68,7 +68,7 @@ version: build
 
 ## Show help
 help:
-	@echo "GoRalph Makefile"
+	@echo "Hal Makefile"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make build      Build the binary"
