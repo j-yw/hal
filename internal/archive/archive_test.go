@@ -114,6 +114,38 @@ func TestCreate(t *testing.T) {
 			},
 		},
 		{
+			name: "sanitizes archive name with separators",
+			setup: func(t *testing.T, halDir string) {
+				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+			},
+			archName: "feature/foo",
+			check: func(t *testing.T, halDir, archDir string) {
+				archiveRoot := filepath.Join(halDir, "archive")
+				if filepath.Dir(archDir) != archiveRoot {
+					t.Errorf("expected archive dir under %s, got %s", archiveRoot, archDir)
+				}
+				if !strings.Contains(filepath.Base(archDir), "feature-foo") {
+					t.Errorf("expected sanitized name in %s", filepath.Base(archDir))
+				}
+			},
+		},
+		{
+			name: "sanitizes empty archive name",
+			setup: func(t *testing.T, halDir string) {
+				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+			},
+			archName: "   ",
+			check: func(t *testing.T, halDir, archDir string) {
+				archiveRoot := filepath.Join(halDir, "archive")
+				if filepath.Dir(archDir) != archiveRoot {
+					t.Errorf("expected archive dir under %s, got %s", archiveRoot, archDir)
+				}
+				if !strings.Contains(filepath.Base(archDir), "-archive") {
+					t.Errorf("expected fallback name in %s", filepath.Base(archDir))
+				}
+			},
+		},
+		{
 			name: "auto-state only archives",
 			setup: func(t *testing.T, halDir string) {
 				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
@@ -489,6 +521,9 @@ func TestFeatureFromBranch(t *testing.T) {
 	}{
 		{"hal/my-feature", "my-feature"},
 		{"hal/archive-command", "archive-command"},
+		{"hal/feature/foo", "feature-foo"},
+		{"compound/foo", "compound-foo"},
+		{"nested/feature/bar/baz", "nested-feature-bar-baz"},
 		{"no-prefix", "no-prefix"},
 		{"", ""},
 	}
