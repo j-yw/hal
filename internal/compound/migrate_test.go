@@ -10,13 +10,9 @@ import (
 )
 
 // mockDisplay is a simple DisplayWriter implementation for testing.
-type mockDisplay struct {
-	messages []string
-}
+type mockDisplay struct{}
 
-func (m *mockDisplay) ShowInfo(format string, args ...any) {
-	// Not used in these tests but satisfies interface
-}
+func (m *mockDisplay) ShowInfo(format string, args ...any) {}
 
 func TestMigrateAutoProgress_MergeBothHaveContent(t *testing.T) {
 	// Create temp directory
