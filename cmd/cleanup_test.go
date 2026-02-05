@@ -49,3 +49,50 @@ func TestRunCleanupFn_DryRun(t *testing.T) {
 		t.Errorf("expected output to contain summary 'Would remove 1 file(s)', got: %s", output)
 	}
 }
+
+func TestRunCleanupFn_ActualDeletion(t *testing.T) {
+	// Create temp directory to simulate .hal/
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal directory: %v", err)
+	}
+
+	// Create auto-progress.txt file (orphaned file)
+	autoProgressPath := filepath.Join(halDir, "auto-progress.txt")
+	if err := os.WriteFile(autoProgressPath, []byte("test content"), 0644); err != nil {
+		t.Fatalf("failed to create auto-progress.txt: %v", err)
+	}
+
+	// Verify file exists before cleanup
+	if _, err := os.Stat(autoProgressPath); os.IsNotExist(err) {
+		t.Fatal("auto-progress.txt should exist before cleanup")
+	}
+
+	// Run cleanup with dryRun=false (actual deletion)
+	var out bytes.Buffer
+	err := runCleanupFn(halDir, false, &out)
+	if err != nil {
+		t.Fatalf("runCleanupFn returned error: %v", err)
+	}
+
+	output := out.String()
+
+	// Verify output contains "Removed:" and the file path
+	if !strings.Contains(output, "Removed:") {
+		t.Errorf("expected output to contain 'Removed:', got: %s", output)
+	}
+	if !strings.Contains(output, autoProgressPath) {
+		t.Errorf("expected output to contain file path %s, got: %s", autoProgressPath, output)
+	}
+
+	// Verify file no longer exists after cleanup
+	if _, err := os.Stat(autoProgressPath); !os.IsNotExist(err) {
+		t.Error("auto-progress.txt should not exist after cleanup")
+	}
+
+	// Verify summary of how many files were removed
+	if !strings.Contains(output, "Removed 1 file(s)") {
+		t.Errorf("expected output to contain summary 'Removed 1 file(s)', got: %s", output)
+	}
+}
