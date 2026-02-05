@@ -73,18 +73,22 @@ hal init → hal plan → hal convert → hal validate → hal run
 ### Compound Pipeline (Fully Automated)
 
 ```
-hal auto
-  └── analyze → branch → prd → explode → loop → pr
+hal review → hal auto → hal review → hal auto → ...
 ```
 
-Drop a report in `.hal/reports/` and run `hal auto`. It will:
+The compound pipeline creates a continuous development cycle:
 
-1. **Analyze** — Identify priority item from the report
-2. **Branch** — Create a feature branch
-3. **PRD** — Generate a PRD non-interactively
-4. **Explode** — Break into 8-15 granular tasks
-5. **Loop** — Execute tasks autonomously
-6. **PR** — Push and open a draft pull request
+1. **`hal review`** — After completing work, generates a report analyzing what was done, what's left, and recommended next steps. Saves to `.hal/reports/`.
+
+2. **`hal auto`** — Reads the latest report from `.hal/reports/`, identifies the priority item, and executes the full pipeline:
+   - **Analyze** — Parse report to find highest-priority item
+   - **Branch** — Create a feature branch
+   - **PRD** — Generate a PRD non-interactively
+   - **Explode** — Break into 8-15 granular tasks
+   - **Loop** — Execute tasks autonomously
+   - **PR** — Push and open a draft pull request
+
+3. **Repeat** — After the PR is merged, run `hal review` again to generate a new report, then `hal auto` for the next item.
 
 State is saved after each step — use `--resume` to continue from interruptions.
 
@@ -104,10 +108,10 @@ State is saved after each step — use `--resume` to continue from interruptions
 
 | Command | Description |
 |---------|-------------|
-| `hal auto` | Run full pipeline from analysis to PR |
-| `hal analyze [report]` | Analyze reports to find priority item |
+| `hal review` | Generate report from completed work → `.hal/reports/` |
+| `hal auto` | Run full pipeline using latest report |
+| `hal analyze [report]` | Analyze a report to find priority item |
 | `hal explode <prd.md>` | Break PRD into 8-15 granular tasks |
-| `hal review` | Review completed work and update AGENTS.md |
 
 ### Archive Management
 
