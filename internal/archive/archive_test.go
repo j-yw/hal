@@ -56,13 +56,12 @@ func TestCreate(t *testing.T) {
 				writePRD(t, halDir, template.PRDFile, "hal/my-feature", nil)
 				writePRD(t, halDir, template.AutoPRDFile, "hal/my-feature", nil)
 				writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
-				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
 				writeFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"done"}`)
 			},
 			archName: "my-feature",
 			check: func(t *testing.T, halDir, archDir string) {
 				// Files should be in archive
-				for _, f := range []string{template.PRDFile, template.AutoPRDFile, template.ProgressFile, template.AutoProgressFile, template.AutoStateFile} {
+				for _, f := range []string{template.PRDFile, template.AutoPRDFile, template.ProgressFile, template.AutoStateFile} {
 					if !fileExists(filepath.Join(archDir, f)) {
 						t.Errorf("expected %s in archive", f)
 					}
@@ -116,7 +115,7 @@ func TestCreate(t *testing.T) {
 		{
 			name: "sanitizes archive name with separators",
 			setup: func(t *testing.T, halDir string) {
-				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+				writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 			},
 			archName: "feature/foo",
 			check: func(t *testing.T, halDir, archDir string) {
@@ -132,7 +131,7 @@ func TestCreate(t *testing.T) {
 		{
 			name: "sanitizes empty archive name",
 			setup: func(t *testing.T, halDir string) {
-				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+				writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 			},
 			archName: "   ",
 			check: func(t *testing.T, halDir, archDir string) {
@@ -148,12 +147,12 @@ func TestCreate(t *testing.T) {
 		{
 			name: "auto-state only archives",
 			setup: func(t *testing.T, halDir string) {
-				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+				writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 				writeFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"paused"}`)
 			},
 			archName: "auto-only",
 			check: func(t *testing.T, halDir, archDir string) {
-				for _, f := range []string{template.AutoProgressFile, template.AutoStateFile} {
+				for _, f := range []string{template.ProgressFile, template.AutoStateFile} {
 					if !fileExists(filepath.Join(archDir, f)) {
 						t.Errorf("expected %s in archive", f)
 					}
@@ -454,7 +453,7 @@ func TestRestore(t *testing.T) {
 			name: "auto-archives auto-state before restore",
 			setup: func(t *testing.T, halDir string) string {
 				// Create current auto state only
-				writeFile(t, filepath.Join(halDir, template.AutoProgressFile), "auto-progress")
+				writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 				writeFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"paused"}`)
 
 				// Create archive to restore

@@ -1,110 +1,168 @@
 {
   "project": "Hal",
-  "branchName": "hal/goreleaser-cicd",
-  "description": "GoReleaser CI/CD and Homebrew Release Pipeline - Automated cross-platform releases using GoReleaser v2, GitHub Actions, and a Homebrew tap",
+  "branchName": "hal/consolidate-progress-files",
+  "description": "Consolidate auto-progress.txt into progress.txt so both manual and auto workflows use a single progress file",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Create GoReleaser v2 configuration",
-      "description": "As a developer, I want a .goreleaser.yaml config file so that GoReleaser can build cross-platform binaries, generate changelogs, create GitHub releases, and push a Homebrew formula.",
+      "title": "Remove AutoProgressFile constant from template package",
+      "description": "As a developer, I need the codebase to use a single progress file constant so both workflows write to the same location.",
       "acceptanceCriteria": [
-        ".goreleaser.yaml exists at the repo root with version: 2",
-        "project_name is 'hal'",
-        "before.hooks runs 'go mod tidy' and 'go vet ./...'",
-        "Build config: CGO_ENABLED=0, targets linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64",
-        "Ldflags set -s -w and inject Version, Commit, BuildDate into github.com/jywlabs/hal/cmd",
-        "Archives use tar.gz by default, zip for Windows, name template: {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}",
-        "Checksum file generated as checksums.txt using sha256",
-        "Changelog sorted ascending, uses GitHub, excludes docs:/test:/chore:/ci: commits, groups by Features/Bug Fixes/Refactoring/Others",
-        "Release targets j-yw/goralph, draft false, prerelease auto, name template 'Hal v{{ .Version }}'",
-        "Brews section: formula name 'hal', pushes to j-yw/homebrew-tap using HOMEBREW_TAP_TOKEN env, directory Formula, includes install and test blocks",
+        "Remove AutoProgressFile = \"auto-progress.txt\" constant from internal/template/template.go:25",
+        "Remove AutoProgressFile: DefaultProgress from DefaultFiles() map at internal/template/template.go:35",
+        "hal init no longer creates auto-progress.txt",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": ""
+      "notes": "Completed - removed constant and updated all usages to make it compile"
     },
     {
       "id": "US-002",
-      "title": "Create release GitHub Actions workflow",
-      "description": "As a developer, I want a GitHub Actions workflow that triggers on version tag pushes so that releases are fully automated.",
+      "title": "Update auto pipeline to use unified progress file",
+      "description": "As an operator running hal auto, I want progress written to progress.txt so hal review can see my work.",
       "acceptanceCriteria": [
-        ".github/workflows/release.yml exists",
-        "Triggers on push of tags matching v*",
-        "Sets permissions: contents: write",
-        "Uses actions/checkout@v4 with fetch-depth: 0",
-        "Uses actions/setup-go@v5 with go-version-file: go.mod",
-        "Runs 'go test -v ./...' before releasing (tests gate the release)",
-        "Uses goreleaser/goreleaser-action@v6 with version '~> v2' and args 'release --clean'",
-        "Passes GITHUB_TOKEN and HOMEBREW_TAP_TOKEN as env vars to GoReleaser step",
+        "Change template.AutoProgressFile to template.ProgressFile in internal/compound/pipeline.go:495",
+        "Update error messages at lines 501 and 504 to reference ProgressFile",
+        "Change ProgressFile: template.AutoProgressFile to ProgressFile: template.ProgressFile in loop config at line 511",
+        "Auto pipeline writes to progress.txt",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": ""
+      "notes": "Completed as part of US-001 to make codebase compile"
     },
     {
       "id": "US-003",
-      "title": "Create CI GitHub Actions workflow",
-      "description": "As a developer, I want a CI workflow that runs tests and validates GoReleaser config on pushes and PRs so that I catch issues before merging.",
+      "title": "Add migration logic for existing auto-progress.txt",
+      "description": "As a user with an existing auto-progress.txt, I want its content merged into progress.txt when running hal auto so I don't lose progress history.",
       "acceptanceCriteria": [
-        ".github/workflows/ci.yml exists",
-        "Triggers on push to main and develop branches, and on PRs to main",
-        "Contains a 'test' job that checks out code, sets up Go from go.mod, runs 'go vet ./...', runs 'go test -v ./...'",
-        "Contains a 'goreleaser-check' job that checks out code with fetch-depth: 0, sets up Go from go.mod, runs goreleaser check via goreleaser/goreleaser-action@v6",
-        "Both jobs run on ubuntu-latest",
-        "Both jobs run in parallel (no dependency between them)",
+        "Before progress file initialization in runLoopStep(), check if auto-progress.txt exists",
+        "If auto-progress.txt exists and progress.txt is empty/default, append auto-progress content to progress.txt",
+        "If both files have content, append auto-progress content to progress.txt with separator line",
+        "Delete auto-progress.txt after successful migration",
+        "Migration is logged to display output",
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-004",
-      "title": "Update .gitignore for GoReleaser dist output",
-      "description": "As a developer, I want dist/ ignored by git so that local GoReleaser dry-run output is not accidentally committed.",
+      "title": "Fix hardcoded path in hal review context gathering",
+      "description": "As a user running hal review, I want progress read from the correct location using the template constant so maintenance is easier.",
       "acceptanceCriteria": [
-        ".gitignore contains dist/ entry",
-        "Entry is in the binaries/build-artifacts section of the file",
-        "Existing entries are unchanged",
+        "Add github.com/jywlabs/hal/internal/template import to internal/compound/review.go",
+        "Change hardcoded filepath.Join(dir, \".hal\", \"progress.txt\") to filepath.Join(dir, template.HalDir, template.ProgressFile) at line 133",
+        "Behavior unchanged for review command",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-005",
-      "title": "Add release Makefile targets",
-      "description": "As a developer, I want make release-dry-run and make release-check targets so that I can test releases locally before pushing tags.",
+      "title": "Add JSON PRD reading to hal review context",
+      "description": "As a user running hal review, I want the review to see task completion status from JSON PRDs so recommendations are based on actual progress.",
       "acceptanceCriteria": [
-        "release-dry-run target runs 'goreleaser release --snapshot --clean'",
-        "release-check target runs 'goreleaser check'",
-        "Both targets are listed in the .PHONY line",
-        "Both targets are documented in the help target output",
-        "Existing Makefile targets and behavior are unchanged",
+        "Add PRDJSONContent string and AutoPRDContent string fields to reviewContext struct",
+        "After reading markdown PRD (around line 155), read prd.json content if exists",
+        "Read auto-prd.json content if exists",
+        "Update hasAnyContext() to include new JSON PRD fields",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-006",
-      "title": "Verify end-to-end release pipeline locally",
-      "description": "As a developer, I want to verify the full pipeline works by running a local dry-run and checking all expected artifacts are produced.",
+      "title": "Include JSON PRD content in review prompt",
+      "description": "As a user running hal review, I want the AI to see task completion percentages so it can accurately report what's done vs remaining.",
       "acceptanceCriteria": [
-        "make release-check exits 0 (config is valid)",
-        "make release-dry-run exits 0 (snapshot build succeeds)",
-        "dist/ directory contains 5 archive files matching hal_*_linux_amd64.tar.gz, hal_*_linux_arm64.tar.gz, hal_*_darwin_amd64.tar.gz, hal_*_darwin_arm64.tar.gz, hal_*_windows_amd64.zip",
-        "dist/ contains checksums.txt with sha256 hashes for all 5 archives",
-        "Each archive contains a hal binary (or hal.exe for Windows)",
-        "make test and make vet still pass (no regressions)",
+        "Update buildReviewPrompt() to include PRDJSONContent section when available",
+        "Update buildReviewPrompt() to include AutoPRDContent section when available",
+        "Truncate JSON PRD content to reasonable size (5000 chars each)",
+        "Dry-run output shows JSON PRD context sizes when available",
         "Typecheck passes"
       ],
       "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Remove AutoProgressFile from archive feature state files",
+      "description": "As a developer, I need the archive system to stop treating auto-progress.txt as a feature state file since it no longer exists.",
+      "acceptanceCriteria": [
+        "Remove template.AutoProgressFile from featureStateFiles slice in internal/archive/archive.go:23",
+        "hal archive no longer includes auto-progress.txt in new archives",
+        "Old archives with auto-progress.txt still restore correctly (restore iterates all files)",
+        "Typecheck passes"
+      ],
+      "priority": 7,
       "passes": true,
+      "notes": "Completed as part of US-001 to make codebase compile"
+    },
+    {
+      "id": "US-008",
+      "title": "Update archive command help text",
+      "description": "As a user reading help text, I want accurate documentation about which files are archived.",
+      "acceptanceCriteria": [
+        "Remove auto-progress.txt from the archived files list in cmd/archive.go:27 Long description",
+        "Help text accurately reflects current behavior",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Update archive tests for consolidated progress",
+      "description": "As a developer, I need tests to pass after removing AutoProgressFile references.",
+      "acceptanceCriteria": [
+        "Remove writeFile(t, filepath.Join(halDir, template.AutoProgressFile), ...) calls from internal/archive/archive_test.go",
+        "Remove template.AutoProgressFile from verification slices in tests",
+        "Update auto-state only archives test (line ~148-165) to use ProgressFile instead",
+        "All archive tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Completed as part of US-001 to make tests pass"
+    },
+    {
+      "id": "US-010",
+      "title": "Add hal cleanup command",
+      "description": "As a user who upgraded hal, I want a command to remove orphaned files like auto-progress.txt that are no longer used.",
+      "acceptanceCriteria": [
+        "Create cmd/cleanup.go with hal cleanup command",
+        "Command checks for and removes orphaned auto-progress.txt in .hal/",
+        "Command reports which files were removed",
+        "Command is idempotent (safe to run multiple times)",
+        "Add --dry-run flag to preview what would be removed",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Document consolidation pattern in AGENTS.md",
+      "description": "As a future developer, I want documentation about why progress files were consolidated so I understand the design decision.",
+      "acceptanceCriteria": [
+        "Add Patterns from hal/consolidate-progress-files section to AGENTS.md",
+        "Document that progress.txt is the single source of truth for both workflows",
+        "Document migration approach (append with separator)",
+        "Document that old auto-progress.txt files are orphaned but harmless",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
       "notes": ""
     }
   ]

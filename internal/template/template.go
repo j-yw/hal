@@ -18,21 +18,19 @@ const HalDir = ".hal"
 
 // File name constants for consistent usage across the codebase.
 const (
-	PRDFile          = "prd.json"      // Manual flow (plan, convert, validate, run)
-	AutoPRDFile      = "auto-prd.json" // Auto flow (auto, explode)
-	PromptFile       = "prompt.md"
-	ProgressFile     = "progress.txt"      // Manual flow
-	AutoProgressFile = "auto-progress.txt" // Auto flow
-	AutoStateFile    = "auto-state.json"   // Auto flow pipeline state
-	ConfigFile       = "config.yaml"
+	PRDFile       = "prd.json"      // Manual flow (plan, convert, validate, run)
+	AutoPRDFile   = "auto-prd.json" // Auto flow (auto, explode)
+	PromptFile    = "prompt.md"
+	ProgressFile  = "progress.txt"       // Unified progress for both flows
+	AutoStateFile = "auto-state.json"    // Auto flow pipeline state
+	ConfigFile    = "config.yaml"
 )
 
 // DefaultFiles returns the default files to create in .hal/
 func DefaultFiles() map[string]string {
 	return map[string]string{
-		PromptFile:       DefaultPrompt,
-		ProgressFile:     DefaultProgress,
-		AutoProgressFile: DefaultProgress,
-		ConfigFile:       DefaultConfig,
+		PromptFile:   DefaultPrompt,
+		ProgressFile: DefaultProgress,
+		ConfigFile:   DefaultConfig,
 	}
 }
