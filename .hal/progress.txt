@@ -40,3 +40,12 @@
   - Use template constants for all .hal directory paths to ensure consistency
   - Template package provides HalDir, ProgressFile, PRDFile, etc. constants
 ---
+
+## 2026-02-05 - US-005: Add JSON PRD reading to hal review context
+- Added PRDJSONContent and AutoPRDContent fields to reviewContext struct
+- Read prd.json and auto-prd.json content after markdown PRD reading
+- Updated hasAnyContext() to include PRDJSONContent and AutoPRDContent
+- **Learnings for future iterations:**
+  - JSON PRDs contain task completion status (passes field) that markdown PRDs don't
+  - Both prd.json (manual flow) and auto-prd.json (auto flow) should be checked
+---

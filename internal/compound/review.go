@@ -22,6 +22,8 @@ type reviewContext struct {
 	GitDiff         string
 	CommitHistory   string
 	PRDContent      string
+	PRDJSONContent  string
+	AutoPRDContent  string
 	BranchName      string
 	Warnings        []string
 }
@@ -148,7 +150,7 @@ func gatherReviewContext(dir string) (*reviewContext, error) {
 	// Get commit history
 	rc.CommitHistory = getCommitHistory(rc.BranchName)
 
-	// Find and read PRD
+	// Find and read PRD (markdown)
 	prdPath := findPRDFile(dir, rc.BranchName)
 	if prdPath != "" {
 		if content, err := os.ReadFile(prdPath); err == nil {
@@ -156,6 +158,15 @@ func gatherReviewContext(dir string) (*reviewContext, error) {
 		}
 	} else {
 		rc.Warnings = append(rc.Warnings, "No PRD found, generating recommendations without goal context")
+	}
+
+	// Read JSON PRDs for task completion status
+	halDir := filepath.Join(dir, template.HalDir)
+	if content, err := os.ReadFile(filepath.Join(halDir, template.PRDFile)); err == nil {
+		rc.PRDJSONContent = string(content)
+	}
+	if content, err := os.ReadFile(filepath.Join(halDir, template.AutoPRDFile)); err == nil {
+		rc.AutoPRDContent = string(content)
 	}
 
 	// Check if we have anything to review
@@ -171,7 +182,9 @@ func (rc *reviewContext) hasAnyContext() bool {
 	return rc.ProgressContent != "" ||
 		rc.GitDiff != "" ||
 		rc.CommitHistory != "" ||
-		rc.PRDContent != ""
+		rc.PRDContent != "" ||
+		rc.PRDJSONContent != "" ||
+		rc.AutoPRDContent != ""
 }
 
 // buildReviewPrompt constructs the prompt for the review engine.
