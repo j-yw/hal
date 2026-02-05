@@ -3,6 +3,7 @@
 dist/
 
 # Runtime config
+.hal/
 *.exe
 *.exe~
 *.dll

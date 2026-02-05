@@ -127,6 +127,7 @@ State is saved after each step — use `hal auto --resume` to continue from inte
 |---------|-------------|
 | `hal config` | Show current configuration |
 | `hal config add-rule <name>` | Create a custom rule template |
+| `hal cleanup` | Remove orphaned legacy files (supports `--dry-run`) |
 | `hal version` | Show version information |
 
 ## Planning a Feature
