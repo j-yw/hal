@@ -13,6 +13,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // reviewContext holds gathered context for the review.
@@ -130,7 +131,7 @@ func gatherReviewContext(dir string) (*reviewContext, error) {
 	}
 
 	// Read progress log
-	progressPath := filepath.Join(dir, ".hal", "progress.txt")
+	progressPath := filepath.Join(dir, template.HalDir, template.ProgressFile)
 	if content, err := os.ReadFile(progressPath); err == nil {
 		rc.ProgressContent = string(content)
 	} else {

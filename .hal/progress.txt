@@ -32,3 +32,11 @@
   - Use os.IsNotExist() to distinguish "file not found" from other read errors
   - Template.DefaultProgress can be used to detect "unchanged default" state
 ---
+
+## 2026-02-05 - US-004: Fix hardcoded path in hal review context gathering
+- Added template import to internal/compound/review.go
+- Changed hardcoded filepath.Join(dir, ".hal", "progress.txt") to filepath.Join(dir, template.HalDir, template.ProgressFile)
+- **Learnings for future iterations:**
+  - Use template constants for all .hal directory paths to ensure consistency
+  - Template package provides HalDir, ProgressFile, PRDFile, etc. constants
+---
