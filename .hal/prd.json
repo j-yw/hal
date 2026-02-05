@@ -116,8 +116,8 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Removed auto-progress.txt from help text"
     },
     {
       "id": "US-009",

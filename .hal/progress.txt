@@ -58,3 +58,10 @@
   - JSON PRDs provide task completion percentages for accurate progress reporting
   - Keep truncation limits reasonable to fit within model context windows
 ---
+
+## 2026-02-05 - US-008: Update archive command help text
+- Removed auto-progress.txt from the archived files list in cmd/archive.go help text
+- **Learnings for future iterations:**
+  - Keep CLI help text synchronized with actual behavior
+  - Help text is in cobra.Command Long field
+---
