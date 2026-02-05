@@ -1,5 +1,8 @@
 # Hal
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Release](https://img.shields.io/github/v/release/j-yw/hal)](https://github.com/j-yw/hal/releases)
+
 Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story one iteration at a time using AI coding agents.
 
 > "I'm sorry Dave, I'm afraid I can't do that... without a proper PRD."
@@ -34,7 +37,7 @@ make install    # Installs to ~/.local/bin
 
 - Go 1.22+ (for building from source)
 - One of the following AI coding agents:
-  - [Claude Code](https://claude.ai/code) CLI (default engine)
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (default engine)
   - [Codex](https://github.com/openai/codex) CLI
 
 ## Quick Start
@@ -78,19 +81,16 @@ hal review → hal auto → hal review → hal auto → ...
 
 The compound pipeline creates a continuous development cycle:
 
-1. **`hal review`** — After completing work, generates a report analyzing what was done, what's left, and recommended next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
+1. **`hal review`** — Analyzes completed work and generates a report with recommendations for next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
 
-2. **`hal auto`** — Reads the latest report from `.hal/reports/`, identifies the priority item, and executes the full pipeline:
-   - **Analyze** — Parse report to find highest-priority item
-   - **Branch** — Create a feature branch
-   - **PRD** — Generate a PRD non-interactively
-   - **Explode** — Break into 8-15 granular tasks
-   - **Loop** — Execute tasks autonomously
-   - **PR** — Push and open a draft pull request
+2. **`hal auto`** — Reads the latest report, identifies the priority item, and runs the full pipeline:
+   - **Analyze** → **Branch** → **PRD** → **Explode** → **Loop** → **PR**
 
-3. **Repeat** — After the PR is merged, run `hal review` again to generate a new report, then `hal auto` for the next item.
+3. **Repeat** — After the PR merges, run `hal review` again to generate the next report.
 
-State is saved after each step — use `--resume` to continue from interruptions.
+**Getting started:** Run the manual workflow first (`hal plan` → `hal run`), then `hal review` to generate your first report. Or place a report directly in `.hal/reports/`.
+
+State is saved after each step — use `hal auto --resume` to continue from interruptions.
 
 ## Commands
 
@@ -241,41 +241,20 @@ auto:
   maxIterations: 25
 ```
 
-## Engine Architecture
+## Engines
 
-Hal supports pluggable AI engines:
+Hal supports multiple AI coding agents:
 
-| Engine | CLI | Output Format |
-|--------|-----|---------------|
-| Claude (default) | `claude` | stream-json |
-| Codex | `codex` | JSONL |
+| Engine | CLI Command | Install |
+|--------|-------------|---------|
+| Claude (default) | `claude` | [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) |
+| Codex | `codex` | [Codex repo](https://github.com/openai/codex) |
 
-Select with the `-e` flag:
+Switch engines with `-e`:
 
 ```bash
-hal run -e claude    # default
 hal run -e codex
 ```
-
-## Archive & Restore
-
-Switch between features without losing state:
-
-```bash
-# Archive current feature
-hal archive --name auth-feature
-
-# List archives
-hal archive list
-
-# Restore a previous feature
-hal archive restore 2026-01-15-auth-feature
-```
-
-Archives are stored in `.hal/archive/YYYY-MM-DD-name/` and include:
-- `prd.json`, `auto-prd.json`
-- `progress.txt`, `auto-progress.txt`
-- Reports and state files
 
 ## Development
 
