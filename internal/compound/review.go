@@ -13,6 +13,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // reviewContext holds gathered context for the review.
@@ -21,6 +22,8 @@ type reviewContext struct {
 	GitDiff         string
 	CommitHistory   string
 	PRDContent      string
+	PRDJSONContent  string
+	AutoPRDContent  string
 	BranchName      string
 	Warnings        []string
 }
@@ -64,6 +67,12 @@ func Review(ctx context.Context, eng engine.Engine, display *engine.Display, dir
 		}
 		if rc.PRDContent != "" {
 			display.ShowInfo("     - PRD content (%d bytes)\n", len(rc.PRDContent))
+		}
+		if rc.PRDJSONContent != "" {
+			display.ShowInfo("     - PRD JSON (%d bytes)\n", len(rc.PRDJSONContent))
+		}
+		if rc.AutoPRDContent != "" {
+			display.ShowInfo("     - Auto PRD JSON (%d bytes)\n", len(rc.AutoPRDContent))
 		}
 		return &ReviewResult{}, nil
 	}
@@ -130,7 +139,7 @@ func gatherReviewContext(dir string) (*reviewContext, error) {
 	}
 
 	// Read progress log
-	progressPath := filepath.Join(dir, ".hal", "progress.txt")
+	progressPath := filepath.Join(dir, template.HalDir, template.ProgressFile)
 	if content, err := os.ReadFile(progressPath); err == nil {
 		rc.ProgressContent = string(content)
 	} else {
@@ -147,7 +156,7 @@ func gatherReviewContext(dir string) (*reviewContext, error) {
 	// Get commit history
 	rc.CommitHistory = getCommitHistory(rc.BranchName)
 
-	// Find and read PRD
+	// Find and read PRD (markdown)
 	prdPath := findPRDFile(dir, rc.BranchName)
 	if prdPath != "" {
 		if content, err := os.ReadFile(prdPath); err == nil {
@@ -155,6 +164,15 @@ func gatherReviewContext(dir string) (*reviewContext, error) {
 		}
 	} else {
 		rc.Warnings = append(rc.Warnings, "No PRD found, generating recommendations without goal context")
+	}
+
+	// Read JSON PRDs for task completion status
+	halDir := filepath.Join(dir, template.HalDir)
+	if content, err := os.ReadFile(filepath.Join(halDir, template.PRDFile)); err == nil {
+		rc.PRDJSONContent = string(content)
+	}
+	if content, err := os.ReadFile(filepath.Join(halDir, template.AutoPRDFile)); err == nil {
+		rc.AutoPRDContent = string(content)
 	}
 
 	// Check if we have anything to review
@@ -170,7 +188,9 @@ func (rc *reviewContext) hasAnyContext() bool {
 	return rc.ProgressContent != "" ||
 		rc.GitDiff != "" ||
 		rc.CommitHistory != "" ||
-		rc.PRDContent != ""
+		rc.PRDContent != "" ||
+		rc.PRDJSONContent != "" ||
+		rc.AutoPRDContent != ""
 }
 
 // buildReviewPrompt constructs the prompt for the review engine.
@@ -205,6 +225,18 @@ func buildReviewPrompt(rc *reviewContext) string {
 	if rc.PRDContent != "" {
 		sb.WriteString("### PRD Goals\n```markdown\n")
 		sb.WriteString(truncateContent(rc.PRDContent, 8000))
+		sb.WriteString("\n```\n\n")
+	}
+
+	if rc.PRDJSONContent != "" {
+		sb.WriteString("### PRD Task Status (prd.json)\n```json\n")
+		sb.WriteString(truncateContent(rc.PRDJSONContent, 5000))
+		sb.WriteString("\n```\n\n")
+	}
+
+	if rc.AutoPRDContent != "" {
+		sb.WriteString("### Auto PRD Task Status (auto-prd.json)\n```json\n")
+		sb.WriteString(truncateContent(rc.AutoPRDContent, 5000))
 		sb.WriteString("\n```\n\n")
 	}
 

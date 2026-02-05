@@ -20,7 +20,6 @@ var featureStateFiles = []string{
 	template.PRDFile,
 	template.AutoPRDFile,
 	template.ProgressFile,
-	template.AutoProgressFile,
 	template.AutoStateFile,
 }
 
