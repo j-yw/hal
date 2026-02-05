@@ -21,8 +21,8 @@ const (
 	PRDFile       = "prd.json"      // Manual flow (plan, convert, validate, run)
 	AutoPRDFile   = "auto-prd.json" // Auto flow (auto, explode)
 	PromptFile    = "prompt.md"
-	ProgressFile  = "progress.txt"       // Unified progress for both flows
-	AutoStateFile = "auto-state.json"    // Auto flow pipeline state
+	ProgressFile  = "progress.txt"    // Unified progress for both flows
+	AutoStateFile = "auto-state.json" // Auto flow pipeline state
 	ConfigFile    = "config.yaml"
 )
 
