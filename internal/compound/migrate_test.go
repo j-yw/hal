@@ -184,3 +184,39 @@ func TestMigrateAutoProgress_ReplaceWhenDefault(t *testing.T) {
 		t.Errorf("auto-progress.txt should be deleted after replacement")
 	}
 }
+
+func TestMigrateAutoProgress_NoOpWhenNoLegacyFile(t *testing.T) {
+	// Create temp directory
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("failed to create hal dir: %v", err)
+	}
+
+	// Create only progress.txt with content (no auto-progress.txt)
+	progressPath := filepath.Join(halDir, template.ProgressFile)
+	existingContent := "Existing content"
+	if err := os.WriteFile(progressPath, []byte(existingContent), 0644); err != nil {
+		t.Fatalf("failed to write progress.txt: %v", err)
+	}
+
+	// Run migration
+	display := &mockDisplay{}
+	err := MigrateAutoProgress(dir, display)
+
+	// Function should return nil (no error)
+	if err != nil {
+		t.Errorf("MigrateAutoProgress should return nil when no legacy file exists, got: %v", err)
+	}
+
+	// Verify progress.txt is unchanged
+	result, err := os.ReadFile(progressPath)
+	if err != nil {
+		t.Fatalf("failed to read progress.txt: %v", err)
+	}
+	resultStr := string(result)
+
+	if resultStr != existingContent {
+		t.Errorf("progress.txt should be unchanged, got %q, want %q", resultStr, existingContent)
+	}
+}
