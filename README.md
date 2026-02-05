@@ -78,7 +78,7 @@ hal review → hal auto → hal review → hal auto → ...
 
 The compound pipeline creates a continuous development cycle:
 
-1. **`hal review`** — After completing work, generates a report analyzing what was done, what's left, and recommended next steps. Saves to `.hal/reports/`.
+1. **`hal review`** — After completing work, generates a report analyzing what was done, what's left, and recommended next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
 
 2. **`hal auto`** — Reads the latest report from `.hal/reports/`, identifies the priority item, and executes the full pipeline:
    - **Analyze** — Parse report to find highest-priority item
@@ -108,7 +108,7 @@ State is saved after each step — use `--resume` to continue from interruptions
 
 | Command | Description |
 |---------|-------------|
-| `hal review` | Generate report from completed work → `.hal/reports/` |
+| `hal review` | Generate report → `.hal/reports/`, update AGENTS.md |
 | `hal auto` | Run full pipeline using latest report |
 | `hal analyze [report]` | Analyze a report to find priority item |
 | `hal explode <prd.md>` | Break PRD into 8-15 granular tasks |
@@ -237,7 +237,7 @@ maxRetries: 3
 
 auto:
   reportsDir: .hal/reports
-  branchPrefix: hal/
+  branchPrefix: compound/
   maxIterations: 25
 ```
 
