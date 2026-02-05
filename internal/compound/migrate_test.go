@@ -185,6 +185,98 @@ func TestMigrateAutoProgress_ReplaceWhenDefault(t *testing.T) {
 	}
 }
 
+func TestMigrateAutoProgress_RemoveEmptyLegacy(t *testing.T) {
+	t.Run("empty auto-progress.txt", func(t *testing.T) {
+		// Create temp directory
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, template.HalDir)
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("failed to create hal dir: %v", err)
+		}
+
+		// Create progress.txt with existing content
+		progressPath := filepath.Join(halDir, template.ProgressFile)
+		existingContent := "Existing content"
+		if err := os.WriteFile(progressPath, []byte(existingContent), 0644); err != nil {
+			t.Fatalf("failed to write progress.txt: %v", err)
+		}
+
+		// Create empty auto-progress.txt
+		autoProgressPath := filepath.Join(halDir, "auto-progress.txt")
+		if err := os.WriteFile(autoProgressPath, []byte(""), 0644); err != nil {
+			t.Fatalf("failed to write empty auto-progress.txt: %v", err)
+		}
+
+		// Run migration
+		display := &mockDisplay{}
+		err := MigrateAutoProgress(dir, display)
+		if err != nil {
+			t.Fatalf("MigrateAutoProgress returned error: %v", err)
+		}
+
+		// Verify progress.txt is unchanged
+		result, err := os.ReadFile(progressPath)
+		if err != nil {
+			t.Fatalf("failed to read progress.txt: %v", err)
+		}
+		resultStr := string(result)
+
+		if resultStr != existingContent {
+			t.Errorf("progress.txt should be unchanged, got %q, want %q", resultStr, existingContent)
+		}
+
+		// Verify auto-progress.txt was deleted
+		if _, err := os.Stat(autoProgressPath); !os.IsNotExist(err) {
+			t.Errorf("empty auto-progress.txt should be deleted")
+		}
+	})
+
+	t.Run("auto-progress.txt with default content", func(t *testing.T) {
+		// Create temp directory
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, template.HalDir)
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("failed to create hal dir: %v", err)
+		}
+
+		// Create progress.txt with existing content
+		progressPath := filepath.Join(halDir, template.ProgressFile)
+		existingContent := "Existing content"
+		if err := os.WriteFile(progressPath, []byte(existingContent), 0644); err != nil {
+			t.Fatalf("failed to write progress.txt: %v", err)
+		}
+
+		// Create auto-progress.txt with only default template content
+		autoProgressPath := filepath.Join(halDir, "auto-progress.txt")
+		if err := os.WriteFile(autoProgressPath, []byte(template.DefaultProgress), 0644); err != nil {
+			t.Fatalf("failed to write auto-progress.txt with default content: %v", err)
+		}
+
+		// Run migration
+		display := &mockDisplay{}
+		err := MigrateAutoProgress(dir, display)
+		if err != nil {
+			t.Fatalf("MigrateAutoProgress returned error: %v", err)
+		}
+
+		// Verify progress.txt is unchanged
+		result, err := os.ReadFile(progressPath)
+		if err != nil {
+			t.Fatalf("failed to read progress.txt: %v", err)
+		}
+		resultStr := string(result)
+
+		if resultStr != existingContent {
+			t.Errorf("progress.txt should be unchanged, got %q, want %q", resultStr, existingContent)
+		}
+
+		// Verify auto-progress.txt was deleted
+		if _, err := os.Stat(autoProgressPath); !os.IsNotExist(err) {
+			t.Errorf("auto-progress.txt with default content should be deleted")
+		}
+	})
+}
+
 func TestMigrateAutoProgress_NoOpWhenNoLegacyFile(t *testing.T) {
 	// Create temp directory
 	dir := t.TempDir()
