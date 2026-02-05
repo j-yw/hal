@@ -76,3 +76,14 @@
   - Always provide --dry-run flag for destructive operations
   - Use os.IsNotExist() to handle missing files gracefully
 ---
+
+## 2026-02-05 - US-011: Document consolidation pattern in AGENTS.md
+- Added "Patterns from hal/consolidate-progress-files" section to AGENTS.md
+- Documented progress.txt as single source of truth for both workflows
+- Documented migration approach (append with separator)
+- Documented cleanup command for orphaned files
+- Documented JSON PRD reading for review context
+- **Learnings for future iterations:**
+  - Add AGENTS.md patterns section when completing significant refactoring work
+  - Document both the what and the why for future developers
+---
