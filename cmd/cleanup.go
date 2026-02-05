@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -36,7 +37,10 @@ var orphanedFiles = []string{
 }
 
 func runCleanup(cmd *cobra.Command, args []string) error {
-	halDir := template.HalDir
+	return runCleanupFn(template.HalDir, cleanupDryRun, os.Stdout)
+}
+
+func runCleanupFn(halDir string, dryRun bool, w io.Writer) error {
 	removed := 0
 
 	for _, file := range orphanedFiles {
@@ -54,23 +58,23 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		if cleanupDryRun {
-			fmt.Printf("Would remove: %s\n", path)
+		if dryRun {
+			fmt.Fprintf(w, "Would remove: %s\n", path)
 		} else {
 			if err := os.Remove(path); err != nil {
 				return fmt.Errorf("failed to remove %s: %w", file, err)
 			}
-			fmt.Printf("Removed: %s\n", path)
+			fmt.Fprintf(w, "Removed: %s\n", path)
 		}
 		removed++
 	}
 
 	if removed == 0 {
-		fmt.Println("No orphaned files found.")
-	} else if cleanupDryRun {
-		fmt.Printf("\nWould remove %d file(s). Run without --dry-run to remove.\n", removed)
+		fmt.Fprintln(w, "No orphaned files found.")
+	} else if dryRun {
+		fmt.Fprintf(w, "\nWould remove %d file(s). Run without --dry-run to remove.\n", removed)
 	} else {
-		fmt.Printf("\nRemoved %d file(s).\n", removed)
+		fmt.Fprintf(w, "\nRemoved %d file(s).\n", removed)
 	}
 
 	return nil
