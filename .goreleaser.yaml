@@ -42,23 +42,33 @@ checksum:
 changelog:
   sort: asc
   use: github
+  abbrev: -1
+  format: "{{ .Message }}"
   filters:
     exclude:
-      - "^docs:"
       - "^test:"
       - "^chore:"
       - "^ci:"
+      - "^Merge"
+      - "^style:"
+      - "^build:"
   groups:
-    - title: Features
+    - title: Added
       regexp: "^.*feat.*:+.*$"
       order: 0
-    - title: Bug Fixes
+    - title: Fixed
       regexp: "^.*fix.*:+.*$"
       order: 1
-    - title: Refactoring
+    - title: Changed
       regexp: "^.*refactor.*:+.*$"
       order: 2
-    - title: Others
+    - title: Documentation
+      regexp: "^.*docs.*:+.*$"
+      order: 3
+    - title: Security
+      regexp: "^.*security.*:+.*$"
+      order: 4
+    - title: Other
       order: 999
 
 release:
