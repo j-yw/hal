@@ -51,6 +51,11 @@ func Create(halDir, name string, w io.Writer) (string, error) {
 func CreateWithOptions(halDir, name string, w io.Writer, opts CreateOptions) (string, error) {
 	exclude := normalizeExcludePaths(opts.ExcludePaths)
 
+	name = sanitizeArchiveName(name)
+	if name == "" {
+		name = "archive"
+	}
+
 	// Check that at least one feature state file exists
 	hasState, err := HasFeatureStateWithOptions(halDir, opts)
 	if err != nil {
@@ -141,9 +146,17 @@ func CreateWithOptions(halDir, name string, w io.Writer, opts CreateOptions) (st
 	return archiveDir, nil
 }
 
-// FeatureFromBranch trims the hal/ prefix from a branch name.
+// FeatureFromBranch trims the hal/ prefix from a branch name and sanitizes
+// path separators so archive names remain top-level directories.
 func FeatureFromBranch(branchName string) string {
-	return strings.TrimPrefix(branchName, "hal/")
+	name := strings.TrimPrefix(branchName, "hal/")
+	return sanitizeArchiveName(name)
+}
+
+func sanitizeArchiveName(name string) string {
+	name = strings.TrimSpace(name)
+	replacer := strings.NewReplacer("/", "-", "\\", "-")
+	return replacer.Replace(name)
 }
 
 // ArchiveInfo holds metadata about a single archive entry.
