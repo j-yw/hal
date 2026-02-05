@@ -492,6 +492,11 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return nil
 	}
 
+	// Migrate legacy auto-progress.txt to unified progress.txt
+	if err := p.migrateAutoProgress(); err != nil {
+		return fmt.Errorf("failed to migrate auto-progress.txt: %w", err)
+	}
+
 	progressPath := filepath.Join(p.dir, template.HalDir, template.ProgressFile)
 	if _, err := os.Stat(progressPath); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(progressPath), 0755); err != nil {
@@ -545,6 +550,74 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 
+	return nil
+}
+
+// migrateAutoProgress migrates content from legacy auto-progress.txt to unified progress.txt.
+// If auto-progress.txt exists, its content is appended to progress.txt and the legacy file is deleted.
+func (p *Pipeline) migrateAutoProgress() error {
+	halDir := filepath.Join(p.dir, template.HalDir)
+	autoProgressPath := filepath.Join(halDir, "auto-progress.txt")
+	progressPath := filepath.Join(halDir, template.ProgressFile)
+
+	// Check if legacy auto-progress.txt exists
+	autoProgressData, err := os.ReadFile(autoProgressPath)
+	if os.IsNotExist(err) {
+		// No legacy file to migrate
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read auto-progress.txt: %w", err)
+	}
+
+	autoContent := string(autoProgressData)
+	// Skip if auto-progress.txt is empty or just the default template
+	if autoContent == "" || autoContent == template.DefaultProgress {
+		// Remove empty/default legacy file
+		if err := os.Remove(autoProgressPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove empty auto-progress.txt: %w", err)
+		}
+		p.display.ShowInfo("   Removed empty auto-progress.txt\n")
+		return nil
+	}
+
+	// Read current progress.txt content
+	progressData, err := os.ReadFile(progressPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read progress.txt: %w", err)
+	}
+	progressContent := string(progressData)
+
+	// Determine if progress.txt has meaningful content
+	progressIsEmpty := progressContent == "" || progressContent == template.DefaultProgress
+
+	var newContent string
+	if progressIsEmpty {
+		// Replace default/empty with auto-progress content
+		newContent = autoContent
+	} else {
+		// Append auto-progress content with separator
+		newContent = progressContent
+		if !strings.HasSuffix(newContent, "\n") {
+			newContent += "\n"
+		}
+		newContent += "\n---\n\n## Migrated from auto-progress.txt\n\n" + autoContent
+	}
+
+	// Write merged content to progress.txt
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .hal directory: %w", err)
+	}
+	if err := os.WriteFile(progressPath, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to write merged progress.txt: %w", err)
+	}
+
+	// Remove legacy auto-progress.txt
+	if err := os.Remove(autoProgressPath); err != nil {
+		return fmt.Errorf("failed to remove auto-progress.txt after migration: %w", err)
+	}
+
+	p.display.ShowInfo("   Migrated auto-progress.txt to progress.txt\n")
 	return nil
 }
 

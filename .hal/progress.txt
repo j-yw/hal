@@ -18,3 +18,17 @@
   - The featureStateFiles slice defines which files are archived - update it when removing state files
   - Pipeline uses ProgressFile for loop config, not a separate auto file
 ---
+
+## 2026-02-05 - US-003: Add migration logic for existing auto-progress.txt
+- Added migrateAutoProgress() method to internal/compound/pipeline.go
+- Migration runs before progress file initialization in runLoopStep()
+- If auto-progress.txt exists and has content, it is merged into progress.txt:
+  - If progress.txt is empty/default: auto-progress content replaces it
+  - If both have content: auto-progress content is appended with separator
+- Legacy auto-progress.txt is deleted after successful migration
+- Migration is logged to display output
+- **Learnings for future iterations:**
+  - Migration logic should handle edge cases: empty files, default content, missing files
+  - Use os.IsNotExist() to distinguish "file not found" from other read errors
+  - Template.DefaultProgress can be used to detect "unchanged default" state
+---

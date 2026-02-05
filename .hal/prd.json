@@ -45,8 +45,8 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented migrateAutoProgress() method in pipeline.go"
     },
     {
       "id": "US-004",
