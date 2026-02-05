@@ -51,22 +51,30 @@
 
 ## Patterns from hal/archive-command (2026-02-04)
 
-- Archive package (`internal/archive`) is the single source of truth for archiving/restoring feature state. Use `archive.Create`, `archive.List`, `archive.Restore` — don't duplicate logic in other packages.
+- Archive package (`internal/archive`) is the single source of truth for archiving/restoring feature state. Use `archive.Create`, `archive.List`, `archive.Restore`, and `archive.FeatureFromBranch` instead of duplicating logic.
 - `archive.FeatureFromBranch` is the canonical branch-name parser (trims `hal/` prefix). `convert.go` delegates to it.
-- The `featureStateFiles` slice in `archive.go` defines which files get archived. Update it when adding new state files.
-- Cobra parent-subcommand pattern: define parent and child `*cobra.Command` vars, then `parent.AddCommand(child)` and `rootCmd.AddCommand(parent)` in `init()`.
-- Archive tests use `t.TempDir()` and helper functions (`writePRD`, `writeFile`) for clean setup — follow this pattern for new archive-related tests.
-
-## Patterns from hal/archive-command (2026-02-04)
-
-- Keep file-name constants in internal/template (e.g., template.AutoStateFile) and reference them from other packages; use a package-level var when a constant depends on template values.
-- All archiving behavior lives in internal/archive; other packages should call archive.Create/List/Restore and reuse archive.FeatureFromBranch instead of duplicating parsing.
-- Update the featureStateFiles slice in internal/archive/archive.go whenever new state files are introduced; it is the single list that drives what gets archived.
+- Keep file-name constants in internal/template (e.g., `template.AutoStateFile`) and reference them from other packages; use a package-level var when a constant depends on template values.
+- The `featureStateFiles` slice in `internal/archive/archive.go` defines which files get archived. Update it when adding new state files.
 - Archive directories are named YYYY-MM-DD-feature and list parsing expects the date in name[:10]; keep this naming consistent for reliable listing.
-- Archive CLI commands follow the Cobra parent-subcommand pattern and prompt for missing names using bufio.NewReader(os.Stdin) with a default derived from prd.json branchName.
+- Archive CLI commands follow the Cobra parent-subcommand pattern and prompt for missing names using `bufio.NewReader(os.Stdin)` with a default derived from prd.json branchName.
+- Archive tests use `t.TempDir()` and helper functions (`writePRD`, `writeFile`) for clean setup — follow this pattern for new archive-related tests.
 
 ## Patterns from compound/archive-cross-device-fallback (2026-02-04)
 
 - Use `moveFile` and `moveDir` from `internal/archive/move.go` instead of raw `os.Rename` for any file/directory moves — they handle EXDEV (cross-device) errors via copy-and-remove fallback.
 - Archive CLI handlers (`cmd/archive.go`) are extracted into testable functions: `runArchiveCreate(halDir, name, in, out)`, `runArchiveListFn(halDir, verbose, out)`, `runArchiveRestoreFn(halDir, name, out)` — following the `migrateConfigDir` pattern from `cmd/init.go`.
 - CLI tests in `cmd/archive_test.go` use `strings.NewReader` for stdin simulation, `bytes.Buffer` for output capture, and `t.TempDir()` for isolation — reuse the `writePRD` and `writeFile` helpers for setup.
+
+## Patterns from hal/goreleaser-cicd (2026-02-05)
+
+- Version metadata is wired via ldflags into cmd package variables: cmd.Version, cmd.Commit, and cmd.BuildDate.
+- Platform-specific process attributes must go through newSysProcAttr in sysproc_unix.go/sysproc_windows.go; engine code should not touch syscall.SysProcAttr directly.
+- GoReleaser v2 configs require version: 2, archives use formats (list), Homebrew uses homebrew_casks with repository, and target exclusions go under ignore.
+- GoReleaser CI checks need full tag history, so actions/checkout must use fetch-depth: 0.
+
+## Patterns from compound/compound-pipeline-foundations (2026-02-05)
+
+- LoadConfig in internal/compound/config.go uses rawAutoConfig with pointer fields (*string, *int) for YAML unmarshaling to distinguish missing keys (nil → use default) from explicit empty values (non-nil → pass through to Validate).
+- AutoConfig.Validate() checks 3 fields: ReportsDir non-empty, BranchPrefix non-empty, MaxIterations > 0. Error messages follow the format "auto.<field> must not be empty" / "must be greater than 0".
+- runInit in cmd/init.go uses relative paths (.hal, .) so tests must os.Chdir to a temp directory and restore with t.Cleanup. runInit(nil, nil) works for testing.
+- FindLatestReport skips hidden files (dot prefix) and directories. FindRecentPRDs matches prd-*.md in .hal/ and returns nil (not error) for missing directories.
