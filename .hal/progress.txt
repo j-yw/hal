@@ -65,3 +65,14 @@
   - Keep CLI help text synchronized with actual behavior
   - Help text is in cobra.Command Long field
 ---
+
+## 2026-02-05 - US-010: Add hal cleanup command
+- Created cmd/cleanup.go with hal cleanup command
+- Command checks for and removes orphaned auto-progress.txt
+- Added --dry-run flag to preview what would be removed
+- Command is idempotent (no-op when files don't exist)
+- **Learnings for future iterations:**
+  - Use a slice of orphanedFiles to easily add more files in the future
+  - Always provide --dry-run flag for destructive operations
+  - Use os.IsNotExist() to handle missing files gracefully
+---
