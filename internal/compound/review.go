@@ -68,6 +68,12 @@ func Review(ctx context.Context, eng engine.Engine, display *engine.Display, dir
 		if rc.PRDContent != "" {
 			display.ShowInfo("     - PRD content (%d bytes)\n", len(rc.PRDContent))
 		}
+		if rc.PRDJSONContent != "" {
+			display.ShowInfo("     - PRD JSON (%d bytes)\n", len(rc.PRDJSONContent))
+		}
+		if rc.AutoPRDContent != "" {
+			display.ShowInfo("     - Auto PRD JSON (%d bytes)\n", len(rc.AutoPRDContent))
+		}
 		return &ReviewResult{}, nil
 	}
 
@@ -219,6 +225,18 @@ func buildReviewPrompt(rc *reviewContext) string {
 	if rc.PRDContent != "" {
 		sb.WriteString("### PRD Goals\n```markdown\n")
 		sb.WriteString(truncateContent(rc.PRDContent, 8000))
+		sb.WriteString("\n```\n\n")
+	}
+
+	if rc.PRDJSONContent != "" {
+		sb.WriteString("### PRD Task Status (prd.json)\n```json\n")
+		sb.WriteString(truncateContent(rc.PRDJSONContent, 5000))
+		sb.WriteString("\n```\n\n")
+	}
+
+	if rc.AutoPRDContent != "" {
+		sb.WriteString("### Auto PRD Task Status (auto-prd.json)\n```json\n")
+		sb.WriteString(truncateContent(rc.AutoPRDContent, 5000))
 		sb.WriteString("\n```\n\n")
 	}
 

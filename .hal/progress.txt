@@ -49,3 +49,12 @@
   - JSON PRDs contain task completion status (passes field) that markdown PRDs don't
   - Both prd.json (manual flow) and auto-prd.json (auto flow) should be checked
 ---
+
+## 2026-02-05 - US-006: Include JSON PRD content in review prompt
+- Updated buildReviewPrompt() to include PRDJSONContent and AutoPRDContent sections
+- Truncate JSON PRD content to 5000 chars each
+- Updated dry-run output to show JSON PRD context sizes
+- **Learnings for future iterations:**
+  - JSON PRDs provide task completion percentages for accurate progress reporting
+  - Keep truncation limits reasonable to fit within model context windows
+---
