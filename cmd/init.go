@@ -29,6 +29,8 @@ var initCmd = &cobra.Command{
 If an existing .goralph/ directory is detected and no .hal/ directory exists,
 it will be automatically renamed to .hal/ to preserve your configuration.
 
+Also adds .hal/ to .gitignore if not already present.
+
 Creates:
   .hal/
     config.yaml    # Configuration settings
@@ -50,6 +52,48 @@ Or use 'hal plan' to interactively generate a PRD.`,
 
 func init() {
 	rootCmd.AddCommand(initCmd)
+}
+
+// ensureGitignore adds .hal/ to .gitignore if not already present.
+// Creates .gitignore if it doesn't exist.
+func ensureGitignore(projectDir string, w io.Writer) error {
+	gitignorePath := filepath.Join(projectDir, ".gitignore")
+	halEntry := ".hal/"
+
+	// Read existing content (if any)
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read .gitignore: %w", err)
+	}
+
+	// Check if .hal/ is already in gitignore
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == ".hal" || trimmed == ".hal/" {
+			return nil // Already present, nothing to do
+		}
+	}
+
+	// Append .hal/ to gitignore
+	var newContent string
+	if len(content) == 0 {
+		newContent = "# hal runtime config\n" + halEntry + "\n"
+	} else {
+		// Ensure trailing newline before appending
+		existing := string(content)
+		if !strings.HasSuffix(existing, "\n") {
+			existing += "\n"
+		}
+		newContent = existing + "\n# hal runtime config\n" + halEntry + "\n"
+	}
+
+	if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to update .gitignore: %w", err)
+	}
+
+	fmt.Fprintf(w, "  Added .hal/ to .gitignore\n")
+	return nil
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -99,6 +143,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err := os.WriteFile(reportsGitkeepPath, []byte(""), 0644); err != nil {
 			return fmt.Errorf("failed to write reports .gitkeep: %w", err)
 		}
+	}
+
+	// Add .hal/ to project .gitignore
+	if err := ensureGitignore(projectDir, os.Stdout); err != nil {
+		return err
 	}
 
 	// Install embedded skills to .hal/skills/
