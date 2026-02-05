@@ -65,12 +65,12 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 	defaults := DefaultAutoConfig()
 
 	tests := []struct {
-		name         string
-		yaml         string
-		wantDir      string
-		wantPrefix   string
-		wantMaxIter  int
-		wantQCCount  int
+		name        string
+		yaml        string
+		wantDir     string
+		wantPrefix  string
+		wantMaxIter int
+		wantQCCount int
 	}{
 		{
 			name: "full config overrides all defaults",
@@ -98,12 +98,12 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 			wantQCCount: 0,
 		},
 		{
-			name:         "empty auto section uses all defaults",
-			yaml:         "auto:\n",
-			wantDir:      defaults.ReportsDir,
-			wantPrefix:   defaults.BranchPrefix,
-			wantMaxIter:  defaults.MaxIterations,
-			wantQCCount:  0,
+			name:        "empty auto section uses all defaults",
+			yaml:        "auto:\n",
+			wantDir:     defaults.ReportsDir,
+			wantPrefix:  defaults.BranchPrefix,
+			wantMaxIter: defaults.MaxIterations,
+			wantQCCount: 0,
 		},
 	}
 
