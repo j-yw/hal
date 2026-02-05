@@ -64,7 +64,7 @@ changelog:
 release:
   github:
     owner: j-yw
-    name: goralph
+    name: hal
   draft: false
   prerelease: auto
   name_template: "Hal v{{ .Version }}"
