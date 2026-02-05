@@ -305,3 +305,218 @@ func TestRunInit(t *testing.T) {
 		}
 	})
 }
+
+func TestEnsureGitignore(t *testing.T) {
+	tests := []struct {
+		name            string
+		existingContent string
+		wantContains    string
+		wantSkip        bool // true if .hal/ already present (no output expected)
+	}{
+		{
+			name:            "creates new gitignore",
+			existingContent: "",
+			wantContains:    ".hal/",
+		},
+		{
+			name:            "appends to existing",
+			existingContent: "node_modules/\n",
+			wantContains:    ".hal/",
+		},
+		{
+			name:            "appends to existing without trailing newline",
+			existingContent: "node_modules/",
+			wantContains:    ".hal/",
+		},
+		{
+			name:            "skips if .hal/ present",
+			existingContent: ".hal/\n",
+			wantSkip:        true,
+		},
+		{
+			name:            "skips if .hal present (no slash)",
+			existingContent: ".hal\n",
+			wantSkip:        true,
+		},
+		{
+			name:            "skips if .hal/ present with other entries",
+			existingContent: "node_modules/\n.hal/\nbuild/\n",
+			wantSkip:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			gitignorePath := filepath.Join(tmpDir, ".gitignore")
+
+			// Setup existing .gitignore if specified
+			if tt.existingContent != "" {
+				if err := os.WriteFile(gitignorePath, []byte(tt.existingContent), 0644); err != nil {
+					t.Fatalf("failed to write initial .gitignore: %v", err)
+				}
+			}
+
+			var buf bytes.Buffer
+			err := ensureGitignore(tmpDir, &buf)
+			if err != nil {
+				t.Fatalf("ensureGitignore() error = %v", err)
+			}
+
+			// Read result
+			content, err := os.ReadFile(gitignorePath)
+			if err != nil {
+				t.Fatalf("failed to read .gitignore: %v", err)
+			}
+
+			if tt.wantSkip {
+				// Should not have modified the file or produced output
+				if buf.Len() > 0 {
+					t.Errorf("expected no output for skip case, got %q", buf.String())
+				}
+				if string(content) != tt.existingContent {
+					t.Errorf("content should be unchanged\ngot:  %q\nwant: %q", string(content), tt.existingContent)
+				}
+			} else {
+				// Should contain .hal/
+				if !strings.Contains(string(content), tt.wantContains) {
+					t.Errorf("content should contain %q\ngot: %q", tt.wantContains, string(content))
+				}
+				// Should have output message
+				if !strings.Contains(buf.String(), "Added .hal/ to .gitignore") {
+					t.Errorf("expected output message, got %q", buf.String())
+				}
+				// Should preserve existing content
+				if tt.existingContent != "" {
+					// Check that original entries are preserved (without trailing newline for comparison)
+					originalEntries := strings.TrimRight(tt.existingContent, "\n")
+					if !strings.Contains(string(content), originalEntries) {
+						t.Errorf("should preserve existing content %q in %q", originalEntries, string(content))
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestEnsureGitignoreIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+
+	var buf bytes.Buffer
+
+	// First call - should add .hal/
+	if err := ensureGitignore(tmpDir, &buf); err != nil {
+		t.Fatalf("first ensureGitignore() error = %v", err)
+	}
+
+	content1, _ := os.ReadFile(gitignorePath)
+	count1 := strings.Count(string(content1), ".hal")
+
+	// Second call - should be no-op
+	buf.Reset()
+	if err := ensureGitignore(tmpDir, &buf); err != nil {
+		t.Fatalf("second ensureGitignore() error = %v", err)
+	}
+
+	content2, _ := os.ReadFile(gitignorePath)
+	count2 := strings.Count(string(content2), ".hal")
+
+	// Should have same count (idempotent)
+	if count1 != count2 {
+		t.Errorf("not idempotent: first call added %d .hal entries, second call has %d", count1, count2)
+	}
+	if count2 != 1 {
+		t.Errorf("expected exactly 1 .hal entry, got %d", count2)
+	}
+
+	// Second call should produce no output
+	if buf.Len() > 0 {
+		t.Errorf("second call should produce no output, got %q", buf.String())
+	}
+}
+
+func TestRunInitAddsGitignore(t *testing.T) {
+	// Save and restore working directory
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	t.Run("adds .hal/ to new gitignore", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("runInit() error: %v", err)
+		}
+
+		gitignorePath := filepath.Join(dir, ".gitignore")
+		content, err := os.ReadFile(gitignorePath)
+		if err != nil {
+			t.Fatalf(".gitignore should exist: %v", err)
+		}
+		if !strings.Contains(string(content), ".hal/") {
+			t.Errorf(".gitignore should contain .hal/, got: %q", string(content))
+		}
+	})
+
+	t.Run("adds .hal/ to existing gitignore", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		// Create existing .gitignore
+		gitignorePath := filepath.Join(dir, ".gitignore")
+		if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0644); err != nil {
+			t.Fatalf("Failed to write .gitignore: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("runInit() error: %v", err)
+		}
+
+		content, err := os.ReadFile(gitignorePath)
+		if err != nil {
+			t.Fatalf("Failed to read .gitignore: %v", err)
+		}
+		if !strings.Contains(string(content), "node_modules/") {
+			t.Errorf(".gitignore should preserve node_modules/, got: %q", string(content))
+		}
+		if !strings.Contains(string(content), ".hal/") {
+			t.Errorf(".gitignore should contain .hal/, got: %q", string(content))
+		}
+	})
+
+	t.Run("does not duplicate .hal/ on second init", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		// First init
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("first runInit() error: %v", err)
+		}
+
+		// Second init
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("second runInit() error: %v", err)
+		}
+
+		gitignorePath := filepath.Join(dir, ".gitignore")
+		content, err := os.ReadFile(gitignorePath)
+		if err != nil {
+			t.Fatalf("Failed to read .gitignore: %v", err)
+		}
+
+		count := strings.Count(string(content), ".hal")
+		if count != 1 {
+			t.Errorf("expected exactly 1 .hal entry, got %d in: %q", count, string(content))
+		}
+	})
+}
