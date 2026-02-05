@@ -1,0 +1,175 @@
+{
+  "project": "Hal",
+  "branchName": "hal/archive-command",
+  "description": "Archive Command Suite - Explicit CLI commands for archiving, listing, and restoring feature state",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Add AutoStateFile constant to template package",
+      "description": "As a developer, I want a shared constant for the auto-state filename so that both the archive package and the compound pipeline reference the same value.",
+      "acceptanceCriteria": [
+        "template.AutoStateFile = \"auto-state.json\" constant added to internal/template/template.go",
+        "internal/compound/pipeline.go line 18 replaced: const stateFileName uses template.AutoStateFile instead of a local literal",
+        "No behavioral change — existing auto pipeline works identically",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Create archive.Create function",
+      "description": "As a developer, I need a Create function in internal/archive/archive.go that moves all feature state files from .hal/ into .hal/archive/\u003cdate\u003e-\u003cfeature\u003e/, so archiving logic is reusable across commands.",
+      "acceptanceCriteria": [
+        "New package internal/archive with archive.go",
+        "Create(halDir, name string, w io.Writer) (string, error) function implemented",
+        "Moves these files (if they exist): prd.json, prd-*.md, progress.txt, auto-prd.json, auto-progress.txt, auto-state.json, reports/*.md (but NOT reports/.gitkeep)",
+        "Never touches: config.yaml, prompt.md, skills/, archive/, rules/",
+        "Archive directory named \u003cYYYY-MM-DD\u003e-\u003cname\u003e under .hal/archive/",
+        "On name collision, appends -2, -3, etc.",
+        "Returns error if no prd.json and no auto-prd.json exist (no feature state to archive)",
+        "All output written to the provided io.Writer",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Create archive.FeatureFromBranch function",
+      "description": "As a developer, I need a shared FeatureFromBranch function so that branch-name parsing logic lives in one place instead of being duplicated in convert.go.",
+      "acceptanceCriteria": [
+        "FeatureFromBranch(branchName string) string function in internal/archive/archive.go",
+        "Trims hal/ prefix from branch name (same behavior as current extractFeatureFromBranch in convert.go)",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Create archive.List and archive.FormatList functions",
+      "description": "As a developer, I need List and FormatList functions so the CLI can display all archived features with date, name, and completion stats.",
+      "acceptanceCriteria": [
+        "ArchiveInfo struct with fields: Name, Date, Feature, Dir, BranchName, Completed, Total",
+        "List(halDir string) ([]ArchiveInfo, error) scans .hal/archive/ directories",
+        "Parses prd.json (or auto-prd.json fallback) in each archive to populate BranchName, Completed (stories with passes=true), Total",
+        "FormatList(archives []ArchiveInfo, w io.Writer, verbose bool) prints a formatted table with columns: Name, Date, Progress",
+        "Verbose mode adds branch name and full path columns",
+        "Returns empty slice (not error) when no archives exist",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Create archive.Restore function",
+      "description": "As a developer, I need a Restore function that moves files from an archive directory back into .hal/ so users can resume work on a previously archived feature.",
+      "acceptanceCriteria": [
+        "Restore(halDir, name string, w io.Writer) error function implemented",
+        "If current state exists (prd.json or auto-prd.json present), auto-archives it first via Create",
+        "Moves all files from the named archive directory back into .hal/",
+        "Removes the archive directory after successful restore",
+        "Returns descriptive error if named archive does not exist",
+        "All output written to the provided io.Writer",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Unit tests for archive package",
+      "description": "As a developer, I need comprehensive table-driven tests for all archive functions to ensure correctness and prevent regressions.",
+      "acceptanceCriteria": [
+        "internal/archive/archive_test.go with table-driven tests",
+        "Tests for Create: successful archive with manual + auto files; prd-*.md globs picked up; reports moved but .gitkeep preserved; config/skills/rules never touched; name collision handling (-2, -3 suffix); error when no prd.json or auto-prd.json",
+        "Tests for List: multiple archives with completion stats; empty archive dir returns empty slice; malformed prd.json handled gracefully",
+        "Tests for Restore: successful restore removes archive dir; auto-archives current state first; error on non-existent archive name",
+        "Tests for FeatureFromBranch: trims hal/ prefix; handles names without prefix",
+        "All tests use t.TempDir() — no network or CLI dependencies",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Create Cobra commands for archive suite",
+      "description": "As a user, I want hal archive, hal archive list, and hal archive restore commands so I can manage archives from the CLI.",
+      "acceptanceCriteria": [
+        "New file cmd/archive.go with three Cobra commands following the configCmd/addRuleCmd parent-subcommand pattern",
+        "hal archive (parent): archives current feature state; --name flag for explicit name; if no --name, prompts user interactively for a name (with default derived from prd.json branchName)",
+        "hal archive list: lists all archives with completion stats; --verbose flag for detailed output",
+        "hal archive restore \u003cname\u003e: requires exactly 1 arg; restores named archive, auto-archiving current state first",
+        "All commands check .hal/ exists and error with 'run hal init first' if missing",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Refactor convert.go to use shared archive package",
+      "description": "As a developer, I want internal/prd/convert.go to delegate to the shared archive package so archive logic is not duplicated.",
+      "acceptanceCriteria": [
+        "archiveExistingPRD in convert.go delegates to archive.Create(dir, \"\", io.Discard) for the actual file move",
+        "Same-feature skip check (comparing new feature name to existing feature name) remains in convert.go",
+        "extractFeatureFromBranch removed from convert.go; replaced with archive.FeatureFromBranch",
+        "extractFeatureName helper can remain local (it parses markdown filenames, not branch names)",
+        "Existing convert behavior unchanged — same-feature conversion does not trigger archive",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Update root command help text",
+      "description": "As a user reading hal --help, I want to see the archive command listed so I know it exists.",
+      "acceptanceCriteria": [
+        "cmd/root.go Long help text includes archive in the Commands listing (e.g., archive     Archive and manage feature state)",
+        "Workflow section updated to include archive step (e.g., after hal run)",
+        "make test passes",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "End-to-end verification",
+      "description": "As a developer, I want to verify the full archive workflow compiles and passes all checks.",
+      "acceptanceCriteria": [
+        "make build succeeds",
+        "make test passes (all existing + new tests)",
+        "make vet passes",
+        "make fmt produces no changes",
+        "./hal archive --help prints usage",
+        "./hal archive list --help prints usage",
+        "./hal archive restore --help prints usage",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

@@ -9,7 +9,7 @@ LDFLAGS := -ldflags "-X github.com/jywlabs/hal/cmd.Version=$(VERSION) -X github.
 GOCACHE ?= /tmp/hal-gocache
 export GOCACHE
 
-.PHONY: all build install uninstall clean test vet fmt lint run help
+.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check
 
 ## Default target
 all: build
@@ -64,6 +64,16 @@ lint:
 run: build
 	@./$(BINARY_NAME) $(ARGS)
 
+## Dry-run a release locally (snapshot, no publish)
+release-dry-run:
+	@echo "==> Running GoReleaser snapshot release..."
+	@goreleaser release --snapshot --clean
+
+## Check GoReleaser config validity
+release-check:
+	@echo "==> Checking GoReleaser config..."
+	@goreleaser check
+
 ## Show version info
 version: build
 	@./$(BINARY_NAME) version
@@ -73,16 +83,18 @@ help:
 	@echo "Hal Makefile"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make build      Build the binary"
-	@echo "  make install    Install to ~/.local/bin"
-	@echo "  make uninstall  Remove from ~/.local/bin"
-	@echo "  make clean      Remove build artifacts"
-	@echo "  make test       Run tests"
-	@echo "  make vet        Run go vet"
-	@echo "  make fmt        Format code"
-	@echo "  make lint       Run golangci-lint"
-	@echo "  make run        Build and run (use ARGS=... for args)"
-	@echo "  make version    Show version info"
+	@echo "  make build            Build the binary"
+	@echo "  make install          Install to ~/.local/bin"
+	@echo "  make uninstall        Remove from ~/.local/bin"
+	@echo "  make clean            Remove build artifacts"
+	@echo "  make test             Run tests"
+	@echo "  make vet              Run go vet"
+	@echo "  make fmt              Format code"
+	@echo "  make lint             Run golangci-lint"
+	@echo "  make run              Build and run (use ARGS=... for args)"
+	@echo "  make version          Show version info"
+	@echo "  make release-dry-run  Snapshot release locally (no publish)"
+	@echo "  make release-check    Validate GoReleaser config"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make install"

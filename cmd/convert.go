@@ -32,7 +32,7 @@ With a path argument, uses that file directly.
 The conversion uses an AI engine to parse the markdown and generate
 properly-sized user stories with verifiable acceptance criteria.
 
-If an existing prd.json exists with a different feature, it will be
+If existing feature state exists in .hal/, it will be
 archived to .hal/archive/ before the new one is written.
 
 Examples:

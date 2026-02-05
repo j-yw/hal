@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestMigrateConfigDir(t *testing.T) {
@@ -212,4 +214,94 @@ auto:
 			}
 		})
 	}
+}
+
+func TestRunInit(t *testing.T) {
+	// Save and restore working directory
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	t.Run("creates reports directory and gitkeep", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("runInit() error: %v", err)
+		}
+
+		// Verify .hal/reports/ exists
+		reportsDir := filepath.Join(dir, ".hal", "reports")
+		info, err := os.Stat(reportsDir)
+		if err != nil {
+			t.Fatalf(".hal/reports/ should exist: %v", err)
+		}
+		if !info.IsDir() {
+			t.Error(".hal/reports/ should be a directory")
+		}
+
+		// Verify .hal/reports/.gitkeep exists
+		gitkeep := filepath.Join(reportsDir, ".gitkeep")
+		if _, err := os.Stat(gitkeep); err != nil {
+			t.Fatalf(".hal/reports/.gitkeep should exist: %v", err)
+		}
+	})
+
+	t.Run("creates config.yaml matching template", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("runInit() error: %v", err)
+		}
+
+		configPath := filepath.Join(dir, ".hal", "config.yaml")
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read config.yaml: %v", err)
+		}
+
+		if string(data) != template.DefaultConfig {
+			t.Errorf("config.yaml content does not match template.DefaultConfig\ngot:  %q\nwant: %q", string(data), template.DefaultConfig)
+		}
+	})
+
+	t.Run("second run does not overwrite existing config", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		// First run
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("first runInit() error: %v", err)
+		}
+
+		// Write custom content to config.yaml
+		configPath := filepath.Join(dir, ".hal", "config.yaml")
+		customContent := "# custom config\nengine: codex\n"
+		if err := os.WriteFile(configPath, []byte(customContent), 0644); err != nil {
+			t.Fatalf("Failed to write custom config: %v", err)
+		}
+
+		// Second run
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("second runInit() error: %v", err)
+		}
+
+		// Verify custom content is preserved
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read config.yaml: %v", err)
+		}
+		if string(data) != customContent {
+			t.Errorf("config.yaml was overwritten\ngot:  %q\nwant: %q", string(data), customContent)
+		}
+	})
 }

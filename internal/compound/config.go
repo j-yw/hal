@@ -1,6 +1,7 @@
 package compound
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -15,13 +16,21 @@ type AutoConfig struct {
 	MaxIterations int      `yaml:"maxIterations"`
 }
 
+// rawAutoConfig is used for YAML unmarshaling to distinguish missing keys from explicit empty values.
+type rawAutoConfig struct {
+	ReportsDir    *string  `yaml:"reportsDir"`
+	BranchPrefix  *string  `yaml:"branchPrefix"`
+	QualityChecks []string `yaml:"qualityChecks"`
+	MaxIterations *int     `yaml:"maxIterations"`
+}
+
 // Config represents the full .hal/config.yaml structure.
 type Config struct {
-	Engine        string     `yaml:"engine"`
-	MaxIterations int        `yaml:"maxIterations"`
-	RetryDelay    string     `yaml:"retryDelay"`
-	MaxRetries    int        `yaml:"maxRetries"`
-	Auto          AutoConfig `yaml:"auto"`
+	Engine        string        `yaml:"engine"`
+	MaxIterations int           `yaml:"maxIterations"`
+	RetryDelay    string        `yaml:"retryDelay"`
+	MaxRetries    int           `yaml:"maxRetries"`
+	Auto          rawAutoConfig `yaml:"auto"`
 }
 
 // DefaultAutoConfig returns sensible defaults for auto configuration.
@@ -32,6 +41,20 @@ func DefaultAutoConfig() AutoConfig {
 		QualityChecks: []string{},
 		MaxIterations: 25,
 	}
+}
+
+// Validate checks that the AutoConfig fields are valid.
+func (c *AutoConfig) Validate() error {
+	if c.ReportsDir == "" {
+		return fmt.Errorf("auto.reportsDir must not be empty")
+	}
+	if c.BranchPrefix == "" {
+		return fmt.Errorf("auto.branchPrefix must not be empty")
+	}
+	if c.MaxIterations <= 0 {
+		return fmt.Errorf("auto.maxIterations must be greater than 0")
+	}
+	return nil
 }
 
 // LoadConfig reads configuration from .hal/config.yaml in the given directory.
@@ -56,20 +79,24 @@ func LoadConfig(dir string) (*AutoConfig, error) {
 		return nil, err
 	}
 
-	// Merge with defaults for any missing fields
+	// Merge with defaults: only apply default when key was not set in YAML
 	autoConfig := DefaultAutoConfig()
 
-	if config.Auto.ReportsDir != "" {
-		autoConfig.ReportsDir = config.Auto.ReportsDir
+	if config.Auto.ReportsDir != nil {
+		autoConfig.ReportsDir = *config.Auto.ReportsDir
 	}
-	if config.Auto.BranchPrefix != "" {
-		autoConfig.BranchPrefix = config.Auto.BranchPrefix
+	if config.Auto.BranchPrefix != nil {
+		autoConfig.BranchPrefix = *config.Auto.BranchPrefix
 	}
 	if len(config.Auto.QualityChecks) > 0 {
 		autoConfig.QualityChecks = config.Auto.QualityChecks
 	}
-	if config.Auto.MaxIterations > 0 {
-		autoConfig.MaxIterations = config.Auto.MaxIterations
+	if config.Auto.MaxIterations != nil {
+		autoConfig.MaxIterations = *config.Auto.MaxIterations
+	}
+
+	if err := autoConfig.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &autoConfig, nil

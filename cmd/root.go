@@ -20,6 +20,7 @@ Workflow:
   hal plan "feature desc"     Generate PRD interactively
   hal validate                Validate PRD quality
   hal run                     Execute stories autonomously
+  hal archive                 Archive feature state when done
 
 Commands:
   init        Initialize .hal/ directory and install skills
@@ -27,6 +28,7 @@ Commands:
   convert     Convert markdown PRD to JSON format
   validate    Validate PRD against quality rules
   run         Execute stories from prd.json
+  archive     Archive and manage feature state
   config      Show current configuration
   version     Show version info
 

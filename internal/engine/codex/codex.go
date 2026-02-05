@@ -8,7 +8,6 @@ import (
 	"io"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
@@ -80,9 +79,7 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 	// Pass prompt via stdin
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // Create new session, detach from controlling TTY
-	}
+	cmd.SysProcAttr = newSysProcAttr()
 
 	// Set up output capture with streaming parser
 	var stdout, stderr bytes.Buffer
@@ -215,9 +212,7 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 	args := e.BuildArgsNoJSON()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
+	cmd.SysProcAttr = newSysProcAttr()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -250,9 +245,7 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	args := e.BuildArgs()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
+	cmd.SysProcAttr = newSysProcAttr()
 
 	var stdout, stderr bytes.Buffer
 	parser := NewParser()

@@ -4,23 +4,56 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/archive"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 )
 
 // ConvertWithEngine converts a markdown PRD to JSON using the hal skill via an engine.
-// If mdPath is empty, the skill instructs Claude to auto-discover PRD files in .hal/
+// If mdPath is empty, the most recent prd-*.md in .hal/ is used.
 func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, display *engine.Display) error {
 	// Load hal skill content
 	halSkill, err := skills.LoadSkill("hal")
 	if err != nil {
 		return fmt.Errorf("failed to load hal skill: %w", err)
+	}
+
+	mdSource := mdPath
+	if mdSource == "" {
+		mdSource, err = findLatestPRDMarkdown(template.HalDir)
+		if err != nil {
+			return err
+		}
+	}
+
+	mdContent, err := os.ReadFile(mdSource)
+	if err != nil {
+		return fmt.Errorf("failed to read markdown PRD: %w", err)
+	}
+
+	if halDir, ok := halDirForOutput(outPath); ok {
+		opts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
+		hasState, err := archive.HasFeatureStateWithOptions(halDir, opts)
+		if err != nil {
+			return fmt.Errorf("failed to check existing feature state: %w", err)
+		}
+		if hasState {
+			out := io.Discard
+			if display != nil {
+				out = display.Writer()
+			}
+			fmt.Fprintln(out, "  auto-archiving current state...")
+			if _, err := archive.CreateWithOptions(halDir, "auto-saved", out, opts); err != nil {
+				return fmt.Errorf("failed to auto-archive current state: %w", err)
+			}
+		}
 	}
 
 	// Record output file modification time before conversion (if exists)
@@ -29,25 +62,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		preModTime = stat.ModTime()
 	}
 
-	var prompt string
-	if mdPath != "" {
-		// Explicit path provided - read and embed content
-		mdContent, err := os.ReadFile(mdPath)
-		if err != nil {
-			return fmt.Errorf("failed to read markdown PRD: %w", err)
-		}
-
-		// Archive existing PRD if different feature
-		if err := archiveExistingPRD(outPath, mdPath); err != nil {
-			// Log warning but continue
-			fmt.Fprintf(os.Stderr, "warning: failed to archive existing PRD: %v\n", err)
-		}
-
-		prompt = buildConversionPrompt(halSkill, string(mdContent))
-	} else {
-		// Auto-discover mode - skill tells Claude to find the file
-		prompt = buildDiscoveryPrompt(halSkill)
-	}
+	prompt := buildConversionPrompt(halSkill, string(mdContent))
 
 	// Execute prompt
 	var response string
@@ -237,65 +252,43 @@ func extractJSONFromResponse(response string) (string, error) {
 	return string(formatted), nil
 }
 
-func archiveExistingPRD(prdPath, newMdPath string) error {
-	// Check if existing prd.json exists
-	existingContent, err := os.ReadFile(prdPath)
-	if os.IsNotExist(err) {
-		return nil // No existing PRD, nothing to archive
+func halDirForOutput(outPath string) (string, bool) {
+	clean := filepath.Clean(outPath)
+	if filepath.Base(clean) != template.PRDFile {
+		return "", false
 	}
+	dir := filepath.Dir(clean)
+	if filepath.Base(dir) != template.HalDir {
+		return "", false
+	}
+	return dir, true
+}
+
+func findLatestPRDMarkdown(halDir string) (string, error) {
+	prdMDs, err := filepath.Glob(filepath.Join(halDir, "prd-*.md"))
 	if err != nil {
-		return err
+		return "", fmt.Errorf("failed to scan PRD markdown files: %w", err)
+	}
+	if len(prdMDs) == 0 {
+		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
 	}
 
-	// Parse existing PRD
-	var existingPRD engine.PRD
-	if err := json.Unmarshal(existingContent, &existingPRD); err != nil {
-		return err
-	}
-
-	// Extract feature name from new markdown file
-	newFeature := extractFeatureName(newMdPath)
-	existingFeature := extractFeatureFromBranch(existingPRD.BranchName)
-
-	// If same feature, no need to archive
-	if newFeature == existingFeature {
-		return nil
-	}
-
-	// Archive existing PRD
-	prdDir := filepath.Dir(prdPath)
-	archiveDir := filepath.Join(prdDir, "archive", fmt.Sprintf("%s-%s", time.Now().Format("2006-01-02"), existingFeature))
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
-		return err
-	}
-
-	// Copy prd.json to archive
-	archivePRDPath := filepath.Join(archiveDir, template.PRDFile)
-	if err := os.WriteFile(archivePRDPath, existingContent, 0644); err != nil {
-		return err
-	}
-
-	// Copy progress.txt if it exists
-	progressPath := filepath.Join(prdDir, "progress.txt")
-	if progressContent, err := os.ReadFile(progressPath); err == nil {
-		archiveProgressPath := filepath.Join(archiveDir, "progress.txt")
-		// Best-effort archive of progress; failures shouldn't block conversion.
-		if err := os.WriteFile(archiveProgressPath, progressContent, 0644); err != nil {
-			_ = err // Intentionally ignore write errors for the optional archive copy.
+	var latestPath string
+	var latestTime time.Time
+	for _, path := range prdMDs {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if latestPath == "" || info.ModTime().After(latestTime) {
+			latestPath = path
+			latestTime = info.ModTime()
 		}
 	}
 
-	return nil
-}
+	if latestPath == "" {
+		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
+	}
 
-func extractFeatureName(mdPath string) string {
-	base := filepath.Base(mdPath)
-	name := strings.TrimSuffix(base, filepath.Ext(base))
-	name = strings.TrimPrefix(name, "prd-")
-	return name
-}
-
-func extractFeatureFromBranch(branchName string) string {
-	name := strings.TrimPrefix(branchName, "hal/")
-	return name
+	return latestPath, nil
 }

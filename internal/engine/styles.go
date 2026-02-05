@@ -70,8 +70,8 @@ func WarningBox() lipgloss.Style { return BoxStyle(ColorWarning) }
 
 // Progress bar styles - HAL red for filled
 var (
-	StyleProgressFilled = lipgloss.NewStyle().Foreground(ColorAccent)  // HAL red
-	StyleProgressEmpty  = lipgloss.NewStyle().Foreground(ColorMuted)   // Dim gray
+	StyleProgressFilled = lipgloss.NewStyle().Foreground(ColorAccent) // HAL red
+	StyleProgressEmpty  = lipgloss.NewStyle().Foreground(ColorMuted)  // Dim gray
 )
 
 // Tool event styles
