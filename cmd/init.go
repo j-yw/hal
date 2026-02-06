@@ -54,11 +54,11 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
-// ensureGitignore adds .hal/ to .gitignore if not already present.
+// ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
+// .hal/standards/ and .hal/commands/ to be committed (shared project knowledge).
 // Creates .gitignore if it doesn't exist.
 func ensureGitignore(projectDir string, w io.Writer) error {
 	gitignorePath := filepath.Join(projectDir, ".gitignore")
-	halEntry := ".hal/"
 
 	// Read existing content (if any)
 	content, err := os.ReadFile(gitignorePath)
@@ -66,33 +66,86 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 		return fmt.Errorf("failed to read .gitignore: %w", err)
 	}
 
-	// Check if .hal/ is already in gitignore
 	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
+
+	hasHalStar := false
+	hasStandardsException := false
+	hasCommandsException := false
+	oldHalIdx := -1
+
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == ".hal" || trimmed == ".hal/" {
-			return nil // Already present, nothing to do
+		switch trimmed {
+		case ".hal/*":
+			hasHalStar = true
+		case "!.hal/standards/":
+			hasStandardsException = true
+		case "!.hal/commands/":
+			hasCommandsException = true
+		case ".hal", ".hal/":
+			oldHalIdx = i
 		}
 	}
 
-	// Append .hal/ to gitignore
+	// Already correct
+	if hasHalStar && hasStandardsException && hasCommandsException {
+		return nil
+	}
+
+	// Migrate: add missing exceptions to existing .hal/* pattern
+	if hasHalStar && (!hasStandardsException || !hasCommandsException) {
+		var additions []string
+		if !hasStandardsException {
+			additions = append(additions, "!.hal/standards/")
+		}
+		if !hasCommandsException {
+			additions = append(additions, "!.hal/commands/")
+		}
+		// Insert after .hal/*
+		for i, line := range lines {
+			if strings.TrimSpace(line) == ".hal/*" {
+				rest := append(additions, lines[i+1:]...)
+				lines = append(lines[:i+1], rest...)
+				break
+			}
+		}
+		newContent := strings.Join(lines, "\n")
+		if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
+			return fmt.Errorf("failed to update .gitignore: %w", err)
+		}
+		fmt.Fprintf(w, "  Updated .gitignore: added committable exceptions\n")
+		return nil
+	}
+
+	// Migrate old pattern (.hal/ → .hal/* with exceptions)
+	if oldHalIdx >= 0 {
+		lines[oldHalIdx] = ".hal/*\n!.hal/standards/\n!.hal/commands/"
+		newContent := strings.Join(lines, "\n")
+		if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
+			return fmt.Errorf("failed to update .gitignore: %w", err)
+		}
+		fmt.Fprintf(w, "  Updated .gitignore: .hal/* (standards and commands are committed)\n")
+		return nil
+	}
+
+	// Add new entries
+	halBlock := "# hal runtime config (standards and commands are committed)\n.hal/*\n!.hal/standards/\n!.hal/commands/\n"
 	var newContent string
 	if len(content) == 0 {
-		newContent = "# hal runtime config\n" + halEntry + "\n"
+		newContent = halBlock
 	} else {
-		// Ensure trailing newline before appending
 		existing := string(content)
 		if !strings.HasSuffix(existing, "\n") {
 			existing += "\n"
 		}
-		newContent = existing + "\n# hal runtime config\n" + halEntry + "\n"
+		newContent = existing + "\n" + halBlock
 	}
 
 	if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
 		return fmt.Errorf("failed to update .gitignore: %w", err)
 	}
 
-	fmt.Fprintf(w, "  Added .hal/ to .gitignore\n")
+	fmt.Fprintf(w, "  Added .hal/* to .gitignore (standards and commands are committed)\n")
 	return nil
 }
 
@@ -100,6 +153,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	configDir := template.HalDir
 	archiveDir := filepath.Join(configDir, "archive")
 	reportsDir := filepath.Join(configDir, "reports")
+	standardsDir := filepath.Join(configDir, template.StandardsDir)
 	projectDir := "."
 
 	// Auto-migrate .goralph/ to .hal/ if applicable
@@ -113,6 +167,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create reports directory: %w", err)
+	}
+	if err := os.MkdirAll(standardsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create standards directory: %w", err)
 	}
 
 	// Create default files from templates only if they don't exist
@@ -163,6 +220,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// Create symlinks for engine skill discovery
 	if err := skills.LinkAllEngines(projectDir); err != nil {
 		_ = err // Errors are logged as warnings in LinkAllEngines.
+	}
+
+	// Install interactive commands (discover-standards, etc.) to .hal/commands/
+	if err := skills.InstallCommands(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to install commands: %v\n", err)
+	}
+
+	// Create symlinks from engine command directories to .hal/commands/
+	if err := skills.LinkAllCommands(projectDir); err != nil {
+		_ = err // Errors are logged as warnings in LinkAllCommands.
 	}
 
 	fmt.Println("Initialized .hal/")
@@ -299,6 +366,18 @@ func migrateTemplates(configDir string) error {
 		}); err != nil {
 			return err
 		}
+	}
+
+	// Add {{STANDARDS}} placeholder to prompt.md if missing
+	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), func(content string) string {
+		if strings.Contains(content, "{{STANDARDS}}") {
+			return content
+		}
+		old := "You are an autonomous coding agent working on a software project.\n\n## Your Task"
+		replacement := "You are an autonomous coding agent working on a software project.\n\n{{STANDARDS}}\n\n## Your Task"
+		return strings.Replace(content, old, replacement, 1)
+	}); err != nil {
+		return err
 	}
 
 	return nil

@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // LoadSkill returns the embedded SKILL.md content for a skill by name.
@@ -47,6 +49,45 @@ func InstallSkills(projectDir string) error {
 
 		return os.WriteFile(destPath, content, 0644)
 	})
+}
+
+// InstallCommands writes embedded commands to .hal/commands/ directory.
+// Commands are interactive tools users invoke directly in their agent.
+// After installation, call LinkAllCommands to create engine-specific links.
+func InstallCommands(projectDir string) error {
+	commandsDir := filepath.Join(projectDir, template.HalDir, template.CommandsDir)
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create commands dir: %w", err)
+	}
+
+	for _, name := range CommandNames {
+		srcPath := "commands/" + name + ".md"
+		content, err := fs.ReadFile(commandsFS, srcPath)
+		if err != nil {
+			return fmt.Errorf("failed to read embedded command %s: %w", name, err)
+		}
+
+		destPath := filepath.Join(commandsDir, name+".md")
+		// Always overwrite (commands are hal-managed, not user-customized)
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			return fmt.Errorf("failed to write command %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+// LinkAllCommands creates command links for all registered engines.
+// Each engine gets a symlink from its commands directory to .hal/commands/.
+func LinkAllCommands(projectDir string) error {
+	var lastErr error
+	for _, linker := range linkers {
+		if err := linker.LinkCommands(projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to link commands for %s: %v\n", linker.Name(), err)
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 // LinkAllEngines creates skill links for all registered engines.

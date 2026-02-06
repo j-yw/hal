@@ -310,37 +310,55 @@ func TestEnsureGitignore(t *testing.T) {
 	tests := []struct {
 		name            string
 		existingContent string
-		wantContains    string
-		wantSkip        bool // true if .hal/ already present (no output expected)
+		wantContains    []string
+		wantMsgSubstr   string // expected output message substring
+		wantSkip        bool   // true if already correct (no changes)
 	}{
 		{
 			name:            "creates new gitignore",
 			existingContent: "",
-			wantContains:    ".hal/",
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantMsgSubstr:   "Added .hal/*",
 		},
 		{
 			name:            "appends to existing",
 			existingContent: "node_modules/\n",
-			wantContains:    ".hal/",
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "node_modules/"},
+			wantMsgSubstr:   "Added .hal/*",
 		},
 		{
 			name:            "appends to existing without trailing newline",
 			existingContent: "node_modules/",
-			wantContains:    ".hal/",
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "node_modules/"},
+			wantMsgSubstr:   "Added .hal/*",
 		},
 		{
-			name:            "skips if .hal/ present",
+			name:            "migrates old .hal/ to .hal/* with exceptions",
 			existingContent: ".hal/\n",
-			wantSkip:        true,
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantMsgSubstr:   "Updated .gitignore",
 		},
 		{
-			name:            "skips if .hal present (no slash)",
+			name:            "migrates old .hal (no slash) to .hal/* with exceptions",
 			existingContent: ".hal\n",
-			wantSkip:        true,
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantMsgSubstr:   "Updated .gitignore",
 		},
 		{
-			name:            "skips if .hal/ present with other entries",
+			name:            "migrates .hal/ preserving other entries",
 			existingContent: "node_modules/\n.hal/\nbuild/\n",
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "node_modules/", "build/"},
+			wantMsgSubstr:   "Updated .gitignore",
+		},
+		{
+			name:            "migrates .hal/* with only standards exception to add commands",
+			existingContent: ".hal/*\n!.hal/standards/\n",
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantMsgSubstr:   "Updated .gitignore",
+		},
+		{
+			name:            "skips if already correct",
+			existingContent: ".hal/*\n!.hal/standards/\n!.hal/commands/\n",
 			wantSkip:        true,
 		},
 	}
@@ -370,7 +388,6 @@ func TestEnsureGitignore(t *testing.T) {
 			}
 
 			if tt.wantSkip {
-				// Should not have modified the file or produced output
 				if buf.Len() > 0 {
 					t.Errorf("expected no output for skip case, got %q", buf.String())
 				}
@@ -378,21 +395,13 @@ func TestEnsureGitignore(t *testing.T) {
 					t.Errorf("content should be unchanged\ngot:  %q\nwant: %q", string(content), tt.existingContent)
 				}
 			} else {
-				// Should contain .hal/
-				if !strings.Contains(string(content), tt.wantContains) {
-					t.Errorf("content should contain %q\ngot: %q", tt.wantContains, string(content))
-				}
-				// Should have output message
-				if !strings.Contains(buf.String(), "Added .hal/ to .gitignore") {
-					t.Errorf("expected output message, got %q", buf.String())
-				}
-				// Should preserve existing content
-				if tt.existingContent != "" {
-					// Check that original entries are preserved (without trailing newline for comparison)
-					originalEntries := strings.TrimRight(tt.existingContent, "\n")
-					if !strings.Contains(string(content), originalEntries) {
-						t.Errorf("should preserve existing content %q in %q", originalEntries, string(content))
+				for _, want := range tt.wantContains {
+					if !strings.Contains(string(content), want) {
+						t.Errorf("content should contain %q\ngot: %q", want, string(content))
 					}
+				}
+				if !strings.Contains(buf.String(), tt.wantMsgSubstr) {
+					t.Errorf("expected output containing %q, got %q", tt.wantMsgSubstr, buf.String())
 				}
 			}
 		})
@@ -405,13 +414,12 @@ func TestEnsureGitignoreIdempotent(t *testing.T) {
 
 	var buf bytes.Buffer
 
-	// First call - should add .hal/
+	// First call - should add .hal/* and !.hal/standards/
 	if err := ensureGitignore(tmpDir, &buf); err != nil {
 		t.Fatalf("first ensureGitignore() error = %v", err)
 	}
 
 	content1, _ := os.ReadFile(gitignorePath)
-	count1 := strings.Count(string(content1), ".hal")
 
 	// Second call - should be no-op
 	buf.Reset()
@@ -420,14 +428,16 @@ func TestEnsureGitignoreIdempotent(t *testing.T) {
 	}
 
 	content2, _ := os.ReadFile(gitignorePath)
-	count2 := strings.Count(string(content2), ".hal")
 
-	// Should have same count (idempotent)
-	if count1 != count2 {
-		t.Errorf("not idempotent: first call added %d .hal entries, second call has %d", count1, count2)
+	// Content should be identical
+	if string(content1) != string(content2) {
+		t.Errorf("not idempotent\nfirst:  %q\nsecond: %q", string(content1), string(content2))
 	}
-	if count2 != 1 {
-		t.Errorf("expected exactly 1 .hal entry, got %d", count2)
+
+	// Should contain exactly one .hal/* entry
+	count := strings.Count(string(content2), ".hal/*")
+	if count != 1 {
+		t.Errorf("expected exactly 1 .hal/* entry, got %d", count)
 	}
 
 	// Second call should produce no output
@@ -444,7 +454,7 @@ func TestRunInitAddsGitignore(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chdir(origDir) })
 
-	t.Run("adds .hal/ to new gitignore", func(t *testing.T) {
+	t.Run("adds .hal/* to new gitignore", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
@@ -459,12 +469,18 @@ func TestRunInitAddsGitignore(t *testing.T) {
 		if err != nil {
 			t.Fatalf(".gitignore should exist: %v", err)
 		}
-		if !strings.Contains(string(content), ".hal/") {
-			t.Errorf(".gitignore should contain .hal/, got: %q", string(content))
+		if !strings.Contains(string(content), ".hal/*") {
+			t.Errorf(".gitignore should contain .hal/*, got: %q", string(content))
+		}
+		if !strings.Contains(string(content), "!.hal/standards/") {
+			t.Errorf(".gitignore should contain !.hal/standards/, got: %q", string(content))
+		}
+		if !strings.Contains(string(content), "!.hal/commands/") {
+			t.Errorf(".gitignore should contain !.hal/commands/, got: %q", string(content))
 		}
 	})
 
-	t.Run("adds .hal/ to existing gitignore", func(t *testing.T) {
+	t.Run("adds .hal/* to existing gitignore", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
@@ -487,12 +503,12 @@ func TestRunInitAddsGitignore(t *testing.T) {
 		if !strings.Contains(string(content), "node_modules/") {
 			t.Errorf(".gitignore should preserve node_modules/, got: %q", string(content))
 		}
-		if !strings.Contains(string(content), ".hal/") {
-			t.Errorf(".gitignore should contain .hal/, got: %q", string(content))
+		if !strings.Contains(string(content), ".hal/*") {
+			t.Errorf(".gitignore should contain .hal/*, got: %q", string(content))
 		}
 	})
 
-	t.Run("does not duplicate .hal/ on second init", func(t *testing.T) {
+	t.Run("does not duplicate on second init", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
@@ -514,9 +530,9 @@ func TestRunInitAddsGitignore(t *testing.T) {
 			t.Fatalf("Failed to read .gitignore: %v", err)
 		}
 
-		count := strings.Count(string(content), ".hal")
+		count := strings.Count(string(content), ".hal/*")
 		if count != 1 {
-			t.Errorf("expected exactly 1 .hal entry, got %d in: %q", count, string(content))
+			t.Errorf("expected exactly 1 .hal/* entry, got %d in: %q", count, string(content))
 		}
 	})
 }
