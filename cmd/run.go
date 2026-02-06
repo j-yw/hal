@@ -7,13 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
-	_ "github.com/jywlabs/hal/internal/engine/codex"
 )
 
 // Run command flags
@@ -56,7 +53,7 @@ Examples:
 
 func init() {
 	// Engine selection
-	runCmd.Flags().StringVarP(&engineFlag, "engine", "e", "claude", "Engine to use (claude, codex)")
+	runCmd.Flags().StringVarP(&engineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 
 	// Execution control
 	runCmd.Flags().IntVar(&maxRetries, "retries", 3, "Max retries per iteration on failure")
@@ -100,6 +97,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Dir:           halDir,
 		MaxIterations: iterations,
 		Engine:        engineFlag,
+		EngineConfig:  compound.LoadEngineConfig(".", engineFlag),
 		Logger:        os.Stdout,
 		RetryDelay:    retryDelay,
 		MaxRetries:    maxRetries,
