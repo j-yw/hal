@@ -25,11 +25,13 @@ var featureStateFiles = []string{
 
 // protectedPaths are paths that must never be archived.
 var protectedPaths = map[string]bool{
-	template.ConfigFile: true,
-	template.PromptFile: true,
-	"skills":            true,
-	"archive":           true,
-	"rules":             true,
+	template.ConfigFile:   true,
+	template.PromptFile:   true,
+	"skills":              true,
+	"archive":             true,
+	"rules":               true,
+	template.StandardsDir: true,
+	template.CommandsDir:  true,
 }
 
 // CreateOptions controls which files are archived.

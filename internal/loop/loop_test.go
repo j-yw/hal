@@ -1,8 +1,14 @@
 package loop
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestIsRetryable(t *testing.T) {
@@ -68,5 +74,159 @@ func TestContainsIgnoreCase(t *testing.T) {
 				t.Errorf("containsIgnoreCase(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadPrompt_InjectsStandards(t *testing.T) {
+	halDir := t.TempDir()
+
+	// Write a prompt template with the {{STANDARDS}} placeholder
+	promptContent := `# Agent Instructions
+
+You are an autonomous coding agent.
+
+{{STANDARDS}}
+
+## Your Task
+
+1. Read the PRD at ` + "`.hal/{{PRD_FILE}}`" + `
+2. Read ` + "`.hal/{{PROGRESS_FILE}}`" + `
+`
+	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte(promptContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create standards directory with some standards
+	engDir := filepath.Join(halDir, template.StandardsDir, "engine")
+	if err := os.MkdirAll(engDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(engDir, "process-isolation.md"), []byte("# Process Isolation\n\nAlways use setsid."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	testStdDir := filepath.Join(halDir, template.StandardsDir, "testing")
+	if err := os.MkdirAll(testStdDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(testStdDir, "table-driven.md"), []byte("# Table-Driven Tests\n\nUse t.Run subtests."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf bytes.Buffer
+	r := &Runner{
+		config: Config{
+			Dir:          halDir,
+			PRDFile:      "prd.json",
+			ProgressFile: "progress.txt",
+			Logger:       &logBuf,
+		},
+	}
+
+	prompt, err := r.loadPrompt()
+	if err != nil {
+		t.Fatalf("loadPrompt() error: %v", err)
+	}
+
+	// Placeholder should be gone
+	if strings.Contains(prompt, "{{STANDARDS}}") {
+		t.Error("{{STANDARDS}} placeholder was not replaced")
+	}
+
+	// Standards content should be present
+	if !strings.Contains(prompt, "## Project Standards") {
+		t.Error("missing '## Project Standards' header")
+	}
+	if !strings.Contains(prompt, "Process Isolation") {
+		t.Error("missing engine/process-isolation standard content")
+	}
+	if !strings.Contains(prompt, "Table-Driven Tests") {
+		t.Error("missing testing/table-driven standard content")
+	}
+
+	// Other placeholders should also be replaced
+	if !strings.Contains(prompt, ".hal/prd.json") {
+		t.Error("{{PRD_FILE}} was not replaced")
+	}
+	if !strings.Contains(prompt, ".hal/progress.txt") {
+		t.Error("{{PROGRESS_FILE}} was not replaced")
+	}
+}
+
+func TestLoadPrompt_NoStandardsGraceful(t *testing.T) {
+	halDir := t.TempDir()
+
+	// Write a prompt template with the placeholder but NO standards directory
+	promptContent := "# Agent\n\n{{STANDARDS}}\n\n## Task\n"
+	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte(promptContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf bytes.Buffer
+	r := &Runner{
+		config: Config{
+			Dir:          halDir,
+			PRDFile:      "prd.json",
+			ProgressFile: "progress.txt",
+			Logger:       &logBuf,
+		},
+	}
+
+	prompt, err := r.loadPrompt()
+	if err != nil {
+		t.Fatalf("loadPrompt() error: %v", err)
+	}
+
+	// Placeholder should be replaced with empty string
+	if strings.Contains(prompt, "{{STANDARDS}}") {
+		t.Error("{{STANDARDS}} placeholder was not replaced when no standards exist")
+	}
+
+	// Should still have the rest of the prompt
+	if !strings.Contains(prompt, "# Agent") {
+		t.Error("rest of prompt is missing")
+	}
+	if !strings.Contains(prompt, "## Task") {
+		t.Error("rest of prompt is missing")
+	}
+}
+
+func TestLoadPrompt_OldTemplateWithoutPlaceholder(t *testing.T) {
+	halDir := t.TempDir()
+
+	// Simulate a prompt.md that hasn't been migrated (no {{STANDARDS}})
+	promptContent := "# Agent\n\n## Task\n\n1. Read the PRD at `.hal/{{PRD_FILE}}`\n"
+	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte(promptContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create standards anyway
+	sDir := filepath.Join(halDir, template.StandardsDir, "config")
+	os.MkdirAll(sDir, 0755)
+	os.WriteFile(filepath.Join(sDir, "init.md"), []byte("# Init\n\nBe idempotent."), 0644)
+
+	var logBuf bytes.Buffer
+	r := &Runner{
+		config: Config{
+			Dir:          halDir,
+			PRDFile:      "prd.json",
+			ProgressFile: "progress.txt",
+			Logger:       &logBuf,
+		},
+	}
+
+	prompt, err := r.loadPrompt()
+	if err != nil {
+		t.Fatalf("loadPrompt() error: %v", err)
+	}
+
+	// Without the placeholder, standards content won't appear — but it should not crash
+	if strings.Contains(prompt, "{{STANDARDS}}") {
+		t.Error("phantom {{STANDARDS}} placeholder appeared")
+	}
+
+	// The prompt should still work, just without standards
+	if !strings.Contains(prompt, "# Agent") {
+		t.Error("prompt content is missing")
 	}
 }

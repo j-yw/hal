@@ -2,6 +2,8 @@
 
 You are an autonomous coding agent working on a software project.
 
+{{STANDARDS}}
+
 ## Your Task
 
 1. Read the PRD at `.hal/{{PRD_FILE}}`

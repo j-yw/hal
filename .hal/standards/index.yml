@@ -1,4 +1,4 @@
-# Agent OS Standards Index
+# Hal Standards Index
 
 config:
   init-idempotency:
