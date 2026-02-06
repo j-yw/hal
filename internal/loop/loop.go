@@ -146,7 +146,17 @@ func (r *Runner) Run(ctx context.Context) Result {
 		return Result{Success: true}
 	}
 
-	r.display.ShowLoopHeader(r.engine.Name(), r.config.MaxIterations)
+	repo, branch := engine.GetGitInfo()
+	model := ""
+	if r.config.EngineConfig != nil {
+		model = r.config.EngineConfig.Model
+	}
+	r.display.ShowLoopHeader(engine.HeaderContext{
+		Engine: r.engine.Name(),
+		Model:  model,
+		Repo:   repo,
+		Branch: branch,
+	}, r.config.MaxIterations)
 
 	result := Result{}
 

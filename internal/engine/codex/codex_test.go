@@ -120,8 +120,8 @@ func TestParser_ParseLine_ThreadStarted(t *testing.T) {
 	if event.Type != engine.EventInit {
 		t.Errorf("expected Type=EventInit, got %v", event.Type)
 	}
-	if event.Data.Model != "codex" {
-		t.Errorf("expected Model=\"codex\", got %q", event.Data.Model)
+	if event.Data.Model != "" {
+		t.Errorf("expected Model=\"\", got %q", event.Data.Model)
 	}
 }
 

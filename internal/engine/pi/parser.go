@@ -89,10 +89,11 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 
 func (p *Parser) parseSession(raw map[string]interface{}) *engine.Event {
 	// Session event doesn't include model; we'll pick it up from message_start.
+	// Model left empty — the real model name arrives in the first assistant message_start.
 	return &engine.Event{
 		Type: engine.EventInit,
 		Data: engine.EventData{
-			Model: "pi",
+			Model: "",
 		},
 	}
 }
