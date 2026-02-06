@@ -73,7 +73,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Plan", description, eng.Name())
+	display.ShowCommandHeader("Plan", description, buildHeaderCtx(planEngineFlag))
 
 	// Generate PRD
 	ctx := context.Background()

@@ -1,0 +1,64 @@
+{
+  "project": "Hal",
+  "branchName": "hal/pipeline-state",
+  "description": "Pipeline state management for resumable autonomous execution",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Create PipelineState type definition",
+      "description": "As a developer, I need a state struct so pipeline data can be serialized.",
+      "acceptanceCriteria": [
+        "Create internal/compound/state.go with PipelineState struct",
+        "PipelineState contains: Step, BranchName, ReportPath, PRDPath, StartedAt, Analysis",
+        "All fields have JSON tags for serialization",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Implement loadState function",
+      "description": "As a developer, I need to load state from disk so the pipeline can resume.",
+      "acceptanceCriteria": [
+        "Implement loadState() (*PipelineState, error) in state.go",
+        "Reads from .hal/auto-state.json",
+        "Returns nil, nil when file doesn't exist",
+        "Returns error when file exists but is invalid JSON",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Implement saveState function",
+      "description": "As a developer, I need to save state to disk so progress is preserved.",
+      "acceptanceCriteria": [
+        "Implement saveState(state *PipelineState) error in state.go",
+        "Writes to .hal/auto-state.json with 0644 permissions",
+        "Uses atomic write pattern (write temp, then rename)",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Implement clearState function",
+      "description": "As a developer, I need to clear state on completion so the next run starts fresh.",
+      "acceptanceCriteria": [
+        "Implement clearState() error in state.go",
+        "Removes .hal/auto-state.json file",
+        "Returns nil if file doesn't exist (idempotent)",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

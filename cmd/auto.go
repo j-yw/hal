@@ -73,7 +73,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Auto", "compound pipeline", eng.Name())
+	display.ShowCommandHeader("Auto", "compound pipeline", buildHeaderCtx(autoEngineFlag))
 
 	// Create pipeline (pass same config for inner loop engine creation)
 	pipeline := compound.NewPipeline(config, eng, display, dir)

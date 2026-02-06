@@ -76,10 +76,11 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
+	hctx := buildHeaderCtx(convertEngineFlag)
 	if mdPath != "" {
-		display.ShowCommandHeader("Convert", fmt.Sprintf("%s → prd.json", mdPath), eng.Name())
+		display.ShowCommandHeader("Convert", fmt.Sprintf("%s → prd.json", mdPath), hctx)
 	} else {
-		display.ShowCommandHeader("Convert", "auto-discover → prd.json", eng.Name())
+		display.ShowCommandHeader("Convert", "auto-discover → prd.json", hctx)
 	}
 
 	// Convert

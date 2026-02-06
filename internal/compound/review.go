@@ -198,7 +198,10 @@ func buildReviewPrompt(rc *reviewContext) string {
 	var sb strings.Builder
 
 	// Load the review skill content
-	skillContent := skills.SkillContent["review"]
+	skillContent, err := skills.LoadSkill("review")
+	if err != nil {
+		skillContent = "Analyze the work session and return structured JSON."
+	}
 	sb.WriteString(skillContent)
 
 	sb.WriteString("\n\n---\n\n## Context for This Review\n\n")

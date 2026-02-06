@@ -49,10 +49,12 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 }
 
 func (p *Parser) parseThreadStarted(raw map[string]interface{}) *engine.Event {
+	// Codex doesn't include model in thread.started — left empty.
+	// Model is shown in the header from config if configured.
 	return &engine.Event{
 		Type: engine.EventInit,
 		Data: engine.EventData{
-			Model: "codex", // Codex doesn't include model in thread.started
+			Model: "",
 		},
 	}
 }

@@ -60,7 +60,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Validate", prdPath, eng.Name())
+	display.ShowCommandHeader("Validate", prdPath, buildHeaderCtx(validateEngineFlag))
 
 	// Validate
 	ctx := context.Background()

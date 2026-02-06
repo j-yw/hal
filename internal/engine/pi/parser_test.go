@@ -146,8 +146,8 @@ func TestParser_ParseLine_Session(t *testing.T) {
 	if event.Type != engine.EventInit {
 		t.Errorf("expected Type=EventInit, got %v", event.Type)
 	}
-	if event.Data.Model != "pi" {
-		t.Errorf("expected Model=\"pi\", got %q", event.Data.Model)
+	if event.Data.Model != "" {
+		t.Errorf("expected Model=\"\", got %q", event.Data.Model)
 	}
 }
 

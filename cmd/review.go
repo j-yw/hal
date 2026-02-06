@@ -60,7 +60,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Review", "work session", eng.Name())
+	display.ShowCommandHeader("Review", "work session", buildHeaderCtx(reviewEngineFlag))
 
 	// Run review
 	result, err := compound.Review(ctx, eng, display, dir, compound.ReviewOptions{
