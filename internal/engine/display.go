@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 )
 
 // HAL personality words with trailing ... for measured speech
@@ -30,6 +32,7 @@ func randomHalWord(words []string) string {
 // Display handles terminal output with spinners and formatted status.
 type Display struct {
 	out        io.Writer
+	isTTY      bool       // Whether output is a real terminal (supports ANSI escapes)
 	mu         sync.Mutex
 	spinMu     sync.Mutex // Separate mutex for spinner to avoid deadlock
 	spinning   bool
@@ -50,14 +53,21 @@ type Display struct {
 // NewDisplay creates a new display writer.
 func NewDisplay(out io.Writer) *Display {
 	now := time.Now()
+	isTTY := false
+	if f, ok := out.(*os.File); ok {
+		isTTY = term.IsTerminal(f.Fd())
+	}
 	return &Display{
 		out:       out,
+		isTTY:     isTTY,
 		startTime: now,
 		loopStart: now,
 	}
 }
 
 // StartSpinner begins a gradient color-cycling spinner.
+// When output is not a TTY (e.g., piped to another process), the spinner
+// is suppressed to avoid dumping ANSI escape sequences into captured output.
 func (d *Display) StartSpinner(msg string) {
 	d.spinMu.Lock()
 	if d.spinning {
@@ -66,6 +76,13 @@ func (d *Display) StartSpinner(msg string) {
 	}
 	d.spinning = true
 	d.spinMsg = msg
+
+	// Non-TTY: mark as spinning but don't animate. StopSpinner handles cleanup.
+	if !d.isTTY {
+		d.spinMu.Unlock()
+		return
+	}
+
 	d.spinCtx, d.spinCancel = context.WithCancel(context.Background())
 	d.spinDone = make(chan struct{})
 	d.spinMu.Unlock()
@@ -127,6 +144,13 @@ func (d *Display) StopSpinner() {
 		return
 	}
 	d.spinning = false
+
+	// Non-TTY: no goroutine was started, just clear state.
+	if !d.isTTY {
+		d.spinMu.Unlock()
+		return
+	}
+
 	d.spinCancel()
 	d.spinMu.Unlock()
 	<-d.spinDone

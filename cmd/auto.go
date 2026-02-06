@@ -8,10 +8,6 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
-	_ "github.com/jywlabs/hal/internal/engine/codex"
 )
 
 var (
@@ -52,7 +48,7 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoResumeFlag, "resume", false, "Continue from last saved state")
 	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "Skip PR creation at end")
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
-	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex)")
+	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -66,8 +62,9 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Create engine
-	eng, err := engine.New(autoEngineFlag)
+	// Create engine with per-engine config
+	engineCfg := compound.LoadEngineConfig(dir, autoEngineFlag)
+	eng, err := engine.NewWithConfig(autoEngineFlag, engineCfg)
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
@@ -78,8 +75,9 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Show command header
 	display.ShowCommandHeader("Auto", "compound pipeline", eng.Name())
 
-	// Create pipeline
+	// Create pipeline (pass same config for inner loop engine creation)
 	pipeline := compound.NewPipeline(config, eng, display, dir)
+	pipeline.SetEngineConfig(engineCfg)
 
 	// Check for reports before starting (unless resuming or report specified)
 	if !autoResumeFlag && autoReportFlag == "" {

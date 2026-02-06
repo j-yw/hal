@@ -10,9 +10,6 @@ import (
 	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
 )
 
 var (
@@ -46,7 +43,7 @@ Examples:
 }
 
 func init() {
-	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
+	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 	convertCmd.Flags().StringVarP(&convertOutputFlag, "output", "o", "", "Output path (default: .hal/prd.json)")
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
 	rootCmd.AddCommand(convertCmd)
@@ -70,7 +67,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engine
-	eng, err := engine.New(convertEngineFlag)
+	eng, err := newEngine(convertEngineFlag)
 	if err != nil {
 		return err
 	}

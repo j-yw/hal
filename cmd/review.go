@@ -8,10 +8,6 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
-	_ "github.com/jywlabs/hal/internal/engine/codex"
 )
 
 var (
@@ -46,7 +42,7 @@ Examples:
 func init() {
 	reviewCmd.Flags().BoolVar(&reviewDryRunFlag, "dry-run", false, "Preview without executing")
 	reviewCmd.Flags().BoolVar(&reviewSkipAgentsFlag, "skip-agents", false, "Skip AGENTS.md update")
-	reviewCmd.Flags().StringVarP(&reviewEngineFlag, "engine", "e", "codex", "Engine to use (codex, claude)")
+	reviewCmd.Flags().StringVarP(&reviewEngineFlag, "engine", "e", "codex", "Engine to use (codex, claude, pi)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -55,7 +51,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	dir := "."
 
 	// Create engine (default: codex for review)
-	eng, err := engine.New(reviewEngineFlag)
+	eng, err := newEngine(reviewEngineFlag)
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
