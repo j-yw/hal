@@ -295,7 +295,6 @@ func (r *Runner) isRetryable(err error) bool {
 	retryablePatterns := []string{
 		"rate limit",
 		"timeout",
-		"timed out",
 		"connection",
 		"503",
 		"429",

@@ -37,6 +37,9 @@ func New(cfg *engine.EngineConfig) *Engine {
 		if cfg.Provider != "" {
 			e.provider = cfg.Provider
 		}
+		if cfg.Timeout > 0 {
+			e.Timeout = cfg.Timeout
+		}
 	}
 	return e
 }
@@ -104,6 +107,7 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 	// Pipe prompt via stdin.
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
+	setupProcessCleanup(cmd)
 
 	// Set up output capture with streaming parser
 	var stdout, stderr bytes.Buffer
@@ -170,6 +174,7 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
+	setupProcessCleanup(cmd)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -203,6 +208,7 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
+	setupProcessCleanup(cmd)
 
 	var stdout, stderr bytes.Buffer
 	parser := NewParser()

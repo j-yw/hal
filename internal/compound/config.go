@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
@@ -31,6 +32,7 @@ type rawAutoConfig struct {
 type RawEngineConfig struct {
 	Model    *string `yaml:"model"`
 	Provider *string `yaml:"provider"`
+	Timeout  *string `yaml:"timeout"`
 }
 
 // Config represents the full .hal/config.yaml structure.
@@ -143,9 +145,15 @@ func LoadEngineConfig(dir, engineName string) *engine.EngineConfig {
 	if raw.Provider != nil {
 		cfg.Provider = *raw.Provider
 	}
+	if raw.Timeout != nil {
+		d, err := time.ParseDuration(*raw.Timeout)
+		if err == nil && d > 0 {
+			cfg.Timeout = d
+		}
+	}
 
 	// Return nil if nothing was actually configured
-	if cfg.Model == "" && cfg.Provider == "" {
+	if cfg.Model == "" && cfg.Provider == "" && cfg.Timeout == 0 {
 		return nil
 	}
 

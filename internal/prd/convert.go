@@ -144,7 +144,7 @@ After finding the file, convert it following the skill rules:
 1. Each story must be completable in ONE iteration (split large stories)
 2. Stories ordered by dependency (schema → backend → UI)
 3. Every story has "Typecheck passes" as acceptance criteria
-4. UI stories have "Verify in browser using dev-browser skill"
+4. UI stories have "Verify in browser using agent-browser skill (skip if no dev server running)"
 5. Acceptance criteria are verifiable (not vague)
 6. IDs are sequential (US-001, US-002, etc.)
 7. Priority based on dependency order
@@ -184,7 +184,7 @@ Convert the markdown PRD to JSON format following the skill rules:
 1. Each story must be completable in ONE iteration (split large stories)
 2. Stories ordered by dependency (schema → backend → UI)
 3. Every story has "Typecheck passes" as acceptance criteria
-4. UI stories have "Verify in browser using dev-browser skill"
+4. UI stories have "Verify in browser using agent-browser skill (skip if no dev server running)"
 5. Acceptance criteria are verifiable (not vague)
 6. IDs are sequential (US-001, US-002, etc.)
 7. Priority based on dependency order

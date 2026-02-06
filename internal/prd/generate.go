@@ -259,7 +259,7 @@ Generate a complete PRD following the skill format. Requirements:
 - Each user story must be small enough to complete in one iteration
 - Acceptance criteria must be verifiable (not vague)
 - Include "Typecheck passes" for all stories
-- Include "Verify in browser using dev-browser skill" for UI stories
+- Include "Verify in browser using agent-browser skill (skip if no dev server running)" for UI stories
 - Order: schema changes → backend → frontend
 
 Return ONLY the markdown PRD content (no JSON, no code blocks wrapping it).`, skill, projectInfo, description, answerText.String())

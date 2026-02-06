@@ -155,6 +155,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to install skills: %w", err)
 	}
 
+	// Migrate stale templates (idempotent — safe to run every init)
+	if err := migrateTemplates(configDir); err != nil {
+		return fmt.Errorf("failed to migrate templates: %w", err)
+	}
+
 	// Create symlinks for engine skill discovery
 	if err := skills.LinkAllEngines(projectDir); err != nil {
 		_ = err // Errors are logged as warnings in LinkAllEngines.
@@ -234,6 +239,68 @@ func updateMigratedFiles(configDir string) error {
 	}); err != nil {
 		return err
 	}
+	return nil
+}
+
+// migrateTemplates applies idempotent fixes to existing .hal/ files.
+// This runs on every `hal init` to ensure stale templates pick up fixes.
+func migrateTemplates(configDir string) error {
+	// Rename dev-browser → agent-browser in all skill files and prompt.md
+	devBrowserMigration := func(content string) string {
+		return strings.ReplaceAll(content, "dev-browser skill", "agent-browser skill (skip if no dev server running)")
+	}
+
+	// Migrate prompt.md
+	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), devBrowserMigration); err != nil {
+		return err
+	}
+
+	// Migrate skill files
+	skillsDir := filepath.Join(configDir, "skills")
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return nil // skills dir may not exist yet
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillDir := filepath.Join(skillsDir, entry.Name())
+		// Walk all files in the skill directory (SKILL.md, examples/*)
+		_ = filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			_ = replaceFileContent(path, devBrowserMigration) // best-effort per file
+			return nil
+		})
+	}
+
+	// Ensure Command Safety section exists in prompt.md
+	promptPath := filepath.Join(configDir, template.PromptFile)
+	data, err := os.ReadFile(promptPath)
+	if err != nil {
+		return nil // prompt.md may not exist yet
+	}
+	if !strings.Contains(string(data), "## Command Safety") {
+		if err := replaceFileContent(promptPath, func(content string) string {
+			// Insert before Quality Requirements section
+			marker := "## Quality Requirements"
+			if idx := strings.Index(content, marker); idx >= 0 {
+				section := "## Command Safety\n\n" +
+					"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+					"- Never run commands that block indefinitely without a timeout\n" +
+					"- Before any browser verification, check if a dev server is running first\n" +
+					"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+					"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
+				return content[:idx] + section + content[idx:]
+			}
+			return content
+		}); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

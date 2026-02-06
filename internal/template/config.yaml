@@ -32,6 +32,7 @@ maxRetries: 3
 # engines:
 #   claude:
 #     model: claude-sonnet-4-20250514
+#     timeout: 15m    # Per-session timeout (default: 15m)
 #   codex:
 #     model: o3
 #   pi:

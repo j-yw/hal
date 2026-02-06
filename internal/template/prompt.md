@@ -70,6 +70,14 @@ Before committing, check if any edited files have learnings worth preserving in 
 
 Only update AGENTS.md if you have **genuinely reusable knowledge** that would help future work in that directory.
 
+## Command Safety
+
+- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`
+- Never run commands that block indefinitely without a timeout
+- Before any browser verification, check if a dev server is running first
+- If no server is running, SKIP browser verification — rely on typecheck + build
+- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)
+
 ## Quality Requirements
 
 - ALL commits must pass your project's quality checks (typecheck, lint, test)
