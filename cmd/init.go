@@ -334,8 +334,8 @@ func migrateTemplates(configDir string) error {
 		}
 		skillDir := filepath.Join(skillsDir, entry.Name())
 		// Walk all files in the skill directory (SKILL.md, examples/*)
-		_ = filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+		_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
 				return nil
 			}
 			_ = replaceFileContent(path, devBrowserMigration) // best-effort per file

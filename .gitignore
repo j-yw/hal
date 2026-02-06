@@ -2,7 +2,7 @@
 /hal
 dist/
 
-# hal runtime config (standards are committed)
+# hal runtime config (standards and commands are committed)
 .hal/*
 !.hal/commands/
 !.hal/standards/
