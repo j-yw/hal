@@ -20,10 +20,11 @@ var stateFileName = template.AutoStateFile
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
-	config  *AutoConfig
-	engine  engine.Engine
-	display *engine.Display
-	dir     string
+	config       *AutoConfig
+	engine       engine.Engine
+	engineConfig *engine.EngineConfig
+	display      *engine.Display
+	dir          string
 }
 
 // NewPipeline creates a new pipeline instance.
@@ -34,6 +35,11 @@ func NewPipeline(config *AutoConfig, eng engine.Engine, display *engine.Display,
 		display: display,
 		dir:     dir,
 	}
+}
+
+// SetEngineConfig sets optional per-engine configuration for the pipeline loop.
+func (p *Pipeline) SetEngineConfig(cfg *engine.EngineConfig) {
+	p.engineConfig = cfg
 }
 
 // statePath returns the full path to the state file.
@@ -516,6 +522,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		ProgressFile:  template.ProgressFile,
 		MaxIterations: p.config.MaxIterations,
 		Engine:        p.engine.Name(),
+		EngineConfig:  p.engineConfig,
 		Logger:        p.display.Writer(),
 		MaxRetries:    3, // Use default retry count
 	}

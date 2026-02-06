@@ -10,9 +10,6 @@ import (
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/prd"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
 )
 
 var (
@@ -44,7 +41,7 @@ Examples:
 }
 
 func init() {
-	planCmd.Flags().StringVarP(&planEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
+	planCmd.Flags().StringVarP(&planEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 	planCmd.Flags().StringVarP(&planFormatFlag, "format", "f", "markdown", "Output format: markdown, json")
 	rootCmd.AddCommand(planCmd)
 }
@@ -67,7 +64,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engine
-	eng, err := engine.New(planEngineFlag)
+	eng, err := newEngine(planEngineFlag)
 	if err != nil {
 		return err
 	}
