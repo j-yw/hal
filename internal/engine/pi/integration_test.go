@@ -56,18 +56,18 @@ func TestParser_RealPiOutput(t *testing.T) {
 	}
 	t.Logf("event types: %v", types)
 
-	// First event should be EventInit (session)
+	// First event should be EventInit (session) with empty model
 	if events[0].Type != engine.EventInit {
 		t.Errorf("first event: want EventInit, got %s", events[0].Type)
 	}
-	if events[0].Data.Model != "pi" {
-		t.Errorf("session event model: want \"pi\", got %q", events[0].Data.Model)
+	if events[0].Data.Model != "" {
+		t.Errorf("session event model: want empty, got %q", events[0].Data.Model)
 	}
 
 	// Should have a second EventInit with real model name
 	var modelEvent *engine.Event
 	for _, e := range events {
-		if e.Type == engine.EventInit && e.Data.Model != "pi" {
+		if e.Type == engine.EventInit && e.Data.Model != "" {
 			modelEvent = e
 			break
 		}

@@ -2,46 +2,51 @@ package skills
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
 
-// LoadSkill returns the embedded content of a skill by name.
+// LoadSkill returns the embedded SKILL.md content for a skill by name.
 func LoadSkill(name string) (string, error) {
-	content, ok := SkillContent[name]
-	if !ok {
+	content, err := fs.ReadFile(skillsFS, name+"/SKILL.md")
+	if err != nil {
 		return "", fmt.Errorf("unknown skill: %s", name)
 	}
-	return content, nil
+	return string(content), nil
 }
 
 // InstallSkills writes embedded skills to .hal/skills/ directory.
-// Existing skill files are preserved to keep user customizations.
+// Existing files are preserved to keep user customizations.
 func InstallSkills(projectDir string) error {
 	skillsDir := filepath.Join(projectDir, ".hal", "skills")
 
-	for _, name := range SkillNames {
-		content, err := LoadSkill(name)
+	return fs.WalkDir(skillsFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-
-		dir := filepath.Join(skillsDir, name)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create skill directory %s: %w", name, err)
+		if path == "." {
+			return nil
 		}
 
-		filePath := filepath.Join(dir, "SKILL.md")
-		if _, err := os.Stat(filePath); err == nil {
-			// File exists, preserve user customizations
-			continue
-		}
-		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-			return fmt.Errorf("failed to write skill %s: %w", name, err)
-		}
-	}
+		destPath := filepath.Join(skillsDir, path)
 
-	return nil
+		if d.IsDir() {
+			return os.MkdirAll(destPath, 0755)
+		}
+
+		// Preserve existing files (user customizations)
+		if _, err := os.Stat(destPath); err == nil {
+			return nil
+		}
+
+		content, err := fs.ReadFile(skillsFS, path)
+		if err != nil {
+			return fmt.Errorf("failed to read embedded file %s: %w", path, err)
+		}
+
+		return os.WriteFile(destPath, content, 0644)
+	})
 }
 
 // LinkAllEngines creates skill links for all registered engines.

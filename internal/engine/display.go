@@ -29,10 +29,18 @@ func randomHalWord(words []string) string {
 	return words[rand.Intn(len(words))]
 }
 
+// HeaderContext holds engine/model/git info for command and loop headers.
+type HeaderContext struct {
+	Engine string // "pi", "claude", "codex"
+	Model  string // from config, may be empty
+	Repo   string // git repo basename, may be empty
+	Branch string // git branch, may be empty
+}
+
 // Display handles terminal output with spinners and formatted status.
 type Display struct {
 	out        io.Writer
-	isTTY      bool       // Whether output is a real terminal (supports ANSI escapes)
+	isTTY      bool // Whether output is a real terminal (supports ANSI escapes)
 	mu         sync.Mutex
 	spinMu     sync.Mutex // Separate mutex for spinner to avoid deadlock
 	spinning   bool
@@ -48,6 +56,9 @@ type Display struct {
 	totalTokens    int
 	iterationCount int
 	maxIterations  int
+
+	// Model tracking — suppresses duplicate model lines after first EventInit
+	modelShown bool
 }
 
 // NewDisplay creates a new display writer.
@@ -171,9 +182,10 @@ func (d *Display) ShowEvent(e *Event) {
 
 	switch e.Type {
 	case EventInit:
-		if e.Data.Model != "" {
+		if e.Data.Model != "" && !d.modelShown {
 			modelText := StyleMuted.Render(fmt.Sprintf("   model: %s", e.Data.Model))
 			fmt.Fprintln(d.out, modelText)
+			d.modelShown = true
 		}
 		startSpinnerMsg = randomHalWord(HalThinkingWords)
 
@@ -248,15 +260,29 @@ func (d *Display) ShowEvent(e *Event) {
 }
 
 // ShowLoopHeader displays the initial loop information.
-func (d *Display) ShowLoopHeader(engineName string, maxIterations int) {
+func (d *Display) ShowLoopHeader(hctx HeaderContext, maxIterations int) {
 	d.maxIterations = maxIterations
 	d.loopStart = time.Now()
 
 	icon := StyleCommandIcon.Render()
 	title := StyleTitle.Render("Hal Loop")
-	details := StyleMuted.Render(fmt.Sprintf("%s │ max %d iterations", engineName, maxIterations))
 
-	content := fmt.Sprintf("%s %s\n%s", icon, title, details)
+	// Detail line: engine: X · model: Y │ max N iterations
+	detail := "engine: " + hctx.Engine
+	if hctx.Model != "" {
+		detail += " · model: " + hctx.Model
+		d.modelShown = true
+	}
+	detail += fmt.Sprintf(" │ max %d iterations", maxIterations)
+	detailLine := StyleMuted.Render(detail)
+
+	content := fmt.Sprintf("%s %s\n%s", icon, title, detailLine)
+
+	// Repo/branch line
+	if repoBranch := formatRepoBranch(hctx.Repo, hctx.Branch); repoBranch != "" {
+		content += "\n" + StyleMuted.Render(repoBranch)
+	}
+
 	box := HeaderBox().Render(content)
 
 	fmt.Fprintln(d.out, box)
@@ -416,16 +442,29 @@ type QuestionOption struct {
 // ShowCommandHeader displays a boxed header for any command.
 // title: "Plan", "Convert", "Validate"
 // context: "user auth", "tasks/prd.md → prd.json"
-// engineName: "claude"
-func (d *Display) ShowCommandHeader(title, context, engineName string) {
+// hctx: engine/model/repo/branch context
+func (d *Display) ShowCommandHeader(title, context string, hctx HeaderContext) {
 	d.loopStart = time.Now()
 	d.totalTokens = 0
 
 	icon := StyleCommandIcon.Render()
 	titleText := StyleTitle.Render(title)
-	details := StyleMuted.Render(fmt.Sprintf("%s │ %s engine", context, engineName))
 
-	content := fmt.Sprintf("%s %s\n%s", icon, titleText, details)
+	// Detail line: context │ engine: X · model: Y
+	detail := context + " │ engine: " + hctx.Engine
+	if hctx.Model != "" {
+		detail += " · model: " + hctx.Model
+		d.modelShown = true
+	}
+	detailLine := StyleMuted.Render(detail)
+
+	content := fmt.Sprintf("%s %s\n%s", icon, titleText, detailLine)
+
+	// Repo/branch line
+	if repoBranch := formatRepoBranch(hctx.Repo, hctx.Branch); repoBranch != "" {
+		content += "\n" + StyleMuted.Render(repoBranch)
+	}
+
 	box := HeaderBox().Render(content)
 
 	fmt.Fprintln(d.out, box)
@@ -566,6 +605,22 @@ func (d *Display) ShowNextSteps(steps []string) {
 	for _, step := range steps {
 		fmt.Fprintf(d.out, "  %s\n", step)
 	}
+}
+
+// formatRepoBranch builds the "repo: X · branch: Y" line.
+// Returns empty string if both are empty; omits individual segments when empty.
+func formatRepoBranch(repo, branch string) string {
+	var parts []string
+	if repo != "" {
+		parts = append(parts, "repo: "+repo)
+	}
+	if branch != "" {
+		parts = append(parts, "branch: "+branch)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " · ")
 }
 
 // Writer returns the underlying io.Writer for the display.

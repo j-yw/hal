@@ -99,7 +99,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 
 	// Show command header
 	if analyzeOutputFlag != "json" {
-		display.ShowCommandHeader("Analyze", filepath.Base(reportPath), eng.Name())
+		display.ShowCommandHeader("Analyze", filepath.Base(reportPath), buildHeaderCtx(analyzeEngineFlag))
 	}
 
 	// Find recent PRDs to avoid duplicating work
