@@ -12,7 +12,8 @@ Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story 
 - **PRD-driven development** — Generate, convert, and validate Product Requirements Documents
 - **Autonomous execution** — Each iteration picks the next story, implements it, commits, and updates progress
 - **Fresh context per iteration** — Every story gets a clean context window, no memory pollution
-- **Pluggable engines** — Works with Claude Code or OpenAI Codex
+- **Pluggable engines** — Works with Claude Code, OpenAI Codex, or Pi
+- **Project standards** — Codify patterns into standards that are injected into every agent iteration
 - **Archive & restore** — Switch between features without losing state
 - **Compound pipeline** — Full automation from analysis to pull request
 
@@ -39,6 +40,7 @@ make install    # Installs to ~/.local/bin
 - One of the following AI coding agents:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (default engine)
   - [Codex](https://github.com/openai/codex) CLI
+  - [Pi](https://github.com/mariozechner/pi-coding-agent) CLI
 
 ## Quick Start
 
@@ -67,7 +69,7 @@ hal run
 hal init → hal plan → hal convert → hal validate → hal run
 ```
 
-1. **init** — Set up `.hal/` directory with config, templates, and skills
+1. **init** — Set up `.hal/` directory with config, templates, skills, and commands
 2. **plan** — Generate a PRD through clarifying questions
 3. **convert** — Transform markdown PRD to structured JSON
 4. **validate** — Check stories against quality rules
@@ -98,7 +100,7 @@ State is saved after each step — use `hal auto --resume` to continue from inte
 
 | Command | Description |
 |---------|-------------|
-| `hal init` | Initialize `.hal/` directory with config and skills |
+| `hal init` | Initialize `.hal/` directory with config, skills, and commands |
 | `hal plan [description]` | Generate PRD (opens editor if no args) |
 | `hal convert <prd.md>` | Convert markdown PRD to JSON |
 | `hal validate [prd.json]` | Validate PRD against quality rules |
@@ -112,6 +114,13 @@ State is saved after each step — use `hal auto --resume` to continue from inte
 | `hal auto` | Run full pipeline using latest report |
 | `hal analyze [report]` | Analyze a report to find priority item |
 | `hal explode <prd.md>` | Break PRD into 8-15 granular tasks |
+
+### Standards
+
+| Command | Description |
+|---------|-------------|
+| `hal standards list` | List configured standards with index |
+| `hal standards discover` | Guide for discovering standards interactively |
 
 ### Archive Management
 
@@ -165,16 +174,87 @@ hal run 5            # Run 5 iterations
 hal run 1 -s US-001  # Run a specific story
 hal run --dry-run    # Preview without executing
 hal run -e codex     # Use Codex engine
+hal run -e pi        # Use Pi engine
 ```
 
 Each iteration:
 1. Reads `prd.json` and `progress.txt`
-2. Picks highest-priority incomplete story
-3. Spawns fresh engine instance
-4. Implements the story
-5. Commits changes
-6. Updates `prd.json` (marks story complete)
-7. Appends learnings to `progress.txt`
+2. Loads project standards from `.hal/standards/` and injects them into the prompt
+3. Picks highest-priority incomplete story
+4. Spawns fresh engine instance
+5. Implements the story
+6. Commits changes
+7. Updates `prd.json` (marks story complete)
+8. Appends learnings to `progress.txt`
+
+## Project Standards
+
+Standards are concise, codebase-specific rules stored in `.hal/standards/` as markdown files. They are automatically injected into the agent prompt on every `hal run` iteration, ensuring consistent code quality and pattern adherence across all AI-driven work.
+
+### How Standards Work
+
+1. **`hal init`** creates `.hal/standards/` and installs discovery commands for all engines
+2. Standards are `.md` files organized by domain (e.g., `config/`, `engine/`, `testing/`)
+3. On every `hal run`, all `.md` files are loaded, concatenated, and injected into the `{{STANDARDS}}` placeholder in `prompt.md`
+4. The agent sees them as "## Project Standards — You MUST follow these..."
+
+### Discovering Standards
+
+Standards discovery is interactive — it scans your codebase, identifies patterns, and walks through each one with you:
+
+```bash
+# See what's available
+hal standards list
+
+# Get instructions for your engine
+hal standards discover
+```
+
+The discovery commands are installed for all engines during `hal init`:
+
+| Engine | Command |
+|--------|---------|
+| Claude Code | `/hal/discover-standards` |
+| Pi | `/hal/discover-standards` |
+| Codex | Ask agent to read `.hal/commands/discover-standards.md` |
+
+### Example Standard
+
+```markdown
+# Init Idempotency
+
+`hal init` is safe to run repeatedly. It never destroys existing state.
+
+## Rules
+
+- **Directories**: Use `os.MkdirAll` — idempotent by design
+- **Default files**: Only write if file doesn't exist (`os.Stat` check first)
+- **Skills**: Reinstalled every init (embedded files overwrite installed copies)
+- **Template migrations**: Run every init via `migrateTemplates` (idempotent patches)
+
+## Never Overwrite User Files
+
+User customizations to `config.yaml`, `prompt.md`, and `progress.txt` are sacred.
+```
+
+### Standards Index
+
+An optional `index.yml` catalogs all standards with descriptions:
+
+```yaml
+config:
+  init-idempotency:
+    description: hal init never overwrites user files; uses MkdirAll and stat-before-write
+  template-constants:
+    description: All .hal/ paths defined in internal/template/template.go; never hardcode
+engine:
+  process-isolation:
+    description: Setsid + process group kill for TTY detachment and orphan prevention
+```
+
+### Committing Standards
+
+Standards and commands in `.hal/` are committed to git (not ignored), while runtime state (`config.yaml`, `prd.json`, `progress.txt`) stays ignored. This means your team shares the same standards and discovery commands across all clones.
 
 ## PRD Format
 
@@ -212,26 +292,44 @@ Each iteration:
 
 ```
 .hal/                       # Created by hal init
-├── config.yaml             # Engine, retries, auto settings
-├── prompt.md               # Agent instructions (customizable)
-├── progress.txt            # Append-only progress log
-├── prd.json                # Current PRD
+├── config.yaml             # Engine, retries, auto settings (gitignored)
+├── prompt.md               # Agent instructions (gitignored, customizable)
+├── progress.txt            # Append-only progress log (gitignored)
+├── prd.json                # Current PRD (gitignored)
 ├── archive/                # Archived feature states
 ├── reports/                # Analysis reports for auto mode
-└── skills/                 # Installed skills
-    ├── prd/                # PRD generation
-    ├── hal/                # PRD-to-JSON conversion
-    ├── explode/            # Task breakdown
-    ├── autospec/           # Non-interactive PRD generation
-    └── review/             # Work review and patterns
+├── skills/                 # Installed skills (auto-generated)
+│   ├── prd/                # PRD generation
+│   ├── hal/                # PRD-to-JSON conversion
+│   ├── explode/            # Task breakdown
+│   ├── autospec/           # Non-interactive PRD generation
+│   └── review/             # Work review and patterns
+├── standards/              # Project standards (committed to git)
+│   ├── index.yml           # Standards catalog
+│   ├── config/             # Config-related standards
+│   ├── engine/             # Engine-related standards
+│   ├── state/              # State management standards
+│   └── testing/            # Testing standards
+└── commands/               # Agent commands (committed to git)
+    ├── discover-standards.md
+    ├── index-standards.md
+    └── inject-standards.md
 ```
+
+Engine-specific symlinks are created during `hal init`:
+- `.claude/commands/hal` → `.hal/commands/`
+- `.claude/skills/*` → `.hal/skills/*`
+- `.pi/commands/hal` → `.hal/commands/`
+- `.pi/skills/*` → `.hal/skills/*`
+- `~/.codex/commands/hal` → `.hal/commands/` (absolute)
+- `~/.codex/skills/*` → `.hal/skills/*` (absolute)
 
 ## Configuration
 
 Edit `.hal/config.yaml`:
 
 ```yaml
-engine: claude              # or codex
+engine: claude              # or codex, pi
 maxIterations: 10
 retryDelay: 30s
 maxRetries: 3
@@ -240,6 +338,11 @@ auto:
   reportsDir: .hal/reports
   branchPrefix: compound/
   maxIterations: 25
+
+engines:
+  pi:
+    model: anthropic/claude-sonnet-4-20250514
+    provider: openrouter
 ```
 
 ## Engines
@@ -250,11 +353,13 @@ Hal supports multiple AI coding agents:
 |--------|-------------|---------|
 | Claude (default) | `claude` | [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) |
 | Codex | `codex` | [Codex repo](https://github.com/openai/codex) |
+| Pi | `pi` | [Pi repo](https://github.com/mariozechner/pi-coding-agent) |
 
 Switch engines with `-e`:
 
 ```bash
 hal run -e codex
+hal run -e pi
 ```
 
 ## Development
