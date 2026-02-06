@@ -27,12 +27,3 @@ func RegisterLinker(l EngineLinker) {
 func GetLinker(name string) EngineLinker {
 	return linkers[name]
 }
-
-// AvailableLinkers returns the names of all registered linkers.
-func AvailableLinkers() []string {
-	names := make([]string, 0, len(linkers))
-	for name := range linkers {
-		names = append(names, name)
-	}
-	return names
-}
