@@ -75,7 +75,7 @@ func runExplode(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Explode", filepath.Base(prdPath), eng.Name())
+	display.ShowCommandHeader("Explode", filepath.Base(prdPath), buildHeaderCtx(explodeEngineFlag))
 
 	// Determine branch name
 	branchName := explodeBranchFlag
