@@ -24,7 +24,7 @@
         "Each task card shows colored status badge",
         "Badge colors: gray=pending, blue=in_progress, green=done",
         "Typecheck passes",
-        "Verify in browser using dev-browser skill"
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
       ],
       "priority": 2,
       "passes": false,
@@ -39,7 +39,7 @@
         "Changing status saves immediately",
         "UI updates without page refresh",
         "Typecheck passes",
-        "Verify in browser using dev-browser skill"
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
       ],
       "priority": 3,
       "passes": false,
@@ -53,7 +53,7 @@
         "Filter dropdown: All | Pending | In Progress | Done",
         "Filter persists in URL params",
         "Typecheck passes",
-        "Verify in browser using dev-browser skill"
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
       ],
       "priority": 4,
       "passes": false,

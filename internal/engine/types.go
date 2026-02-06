@@ -73,9 +73,10 @@ type OutputParser interface {
 // EngineConfig holds optional per-engine configuration from .hal/config.yaml.
 // Nil or empty fields mean "use engine defaults".
 type EngineConfig struct {
-	Model    string // Model ID (e.g., "claude-sonnet-4-20250514", "gemini-2.5-pro")
-	Provider string // Provider name (pi-only: "anthropic", "google", "openai", etc.)
+	Model    string        // Model ID (e.g., "claude-sonnet-4-20250514", "gemini-2.5-pro")
+	Provider string        // Provider name (pi-only: "anthropic", "google", "openai", etc.)
+	Timeout  time.Duration // Per-session timeout (0 means use DefaultTimeout)
 }
 
 // DefaultTimeout for engine execution.
-const DefaultTimeout = 30 * time.Minute
+const DefaultTimeout = 15 * time.Minute

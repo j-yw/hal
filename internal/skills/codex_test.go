@@ -186,6 +186,14 @@ func (c *testCodexLinker) SkillsDir() string {
 	return c.skillsDir
 }
 
+func (c *testCodexLinker) CommandsDir() string {
+	return filepath.Join(c.skillsDir, "..", "commands", "hal")
+}
+
+func (c *testCodexLinker) LinkCommands(projectDir string) error {
+	return nil // not tested here
+}
+
 func (c *testCodexLinker) Link(projectDir string, skills []string) error {
 	if err := os.MkdirAll(c.skillsDir, 0755); err != nil {
 		return err

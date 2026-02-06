@@ -1,2 +1,41 @@
 # Agent OS Standards Index
 
+config:
+  init-idempotency:
+    description: hal init never overwrites user files; uses MkdirAll and stat-before-write
+  migration-pattern:
+    description: Structural migrations use migrateResult enum; template migrations use replaceFileContent
+  pointer-yaml-defaults:
+    description: Pointer fields in raw config structs distinguish unset from explicit empty
+  template-constants:
+    description: All .hal/ paths defined in internal/template/template.go; never hardcode
+
+engine:
+  engine-adapter-structure:
+    description: Engine file layout and init() self-registration pattern
+  process-isolation:
+    description: Setsid + process group kill for TTY detachment and orphan prevention
+  stream-parser-contract:
+    description: ParseLine normalization of CLI JSONL into shared Event types
+  three-prompt-modes:
+    description: Execute, Prompt, and StreamPrompt method contracts
+
+state:
+  archive-naming:
+    description: YYYY-MM-DD-feature naming, featureStateFiles, and protectedPaths lists
+  atomic-state-saves:
+    description: Temp file + rename for pipeline state; save after each step for resumability
+  cross-device-move:
+    description: moveFile/moveDir with EXDEV fallback for Docker, tmpfs, and CI environments
+  orphaned-file-cleanup:
+    description: Migrate content first, then register in orphanedFiles for hal cleanup
+
+testing:
+  integration-test-tagging:
+    description: Build tags, LookPath skip guards, and CLI quirk documentation in test files
+  table-driven-tests:
+    description: "Standard struct fields: name, setup, wantErr, check with t.Run subtests"
+  test-helpers-isolation:
+    description: t.TempDir(), t.Helper(), writePRD/writeFile helpers, permission testing
+  testable-extraction:
+    description: Extract Cobra RunE logic into run<Command>(halDir, in, out) for unit testing

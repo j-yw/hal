@@ -56,7 +56,7 @@ Convert a markdown PRD from `.hal/prd-*.md` to `.hal/prd.json`.
 **Required final criteria:**
 - Every story: `"Typecheck passes"`
 - Testable logic: `"Tests pass"`
-- UI changes: `"Verify in browser using dev-browser skill"`
+- UI changes: `"Verify in browser using agent-browser skill (skip if no dev server running)"`
 
 ## Splitting Large Stories
 

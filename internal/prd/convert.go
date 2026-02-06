@@ -125,50 +125,6 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 	return nil
 }
 
-func buildDiscoveryPrompt(skill string) string {
-	return fmt.Sprintf(`You are a PRD converter. Follow the hal skill instructions below.
-
-<skill>
-%s
-</skill>
-
-Find the PRD markdown file in .hal/ (look for prd-*.md files) and convert it to prd.json following the skill rules.
-
-Rules for finding the PRD file:
-1. Look in .hal/ directory for files matching prd-*.md
-2. If one file exists, use it
-3. If multiple files exist, use the most recently modified one
-4. If no files found, respond with an error message
-
-After finding the file, convert it following the skill rules:
-1. Each story must be completable in ONE iteration (split large stories)
-2. Stories ordered by dependency (schema → backend → UI)
-3. Every story has "Typecheck passes" as acceptance criteria
-4. UI stories have "Verify in browser using dev-browser skill"
-5. Acceptance criteria are verifiable (not vague)
-6. IDs are sequential (US-001, US-002, etc.)
-7. Priority based on dependency order
-8. All stories have passes: false and empty notes
-
-Return ONLY the JSON object (no markdown, no explanation). The format must be:
-{
-  "project": "ProjectName",
-  "branchName": "hal/feature-name",
-  "description": "Feature description",
-  "userStories": [
-    {
-      "id": "US-001",
-      "title": "Story title",
-      "description": "As a user, I want X so that Y",
-      "acceptanceCriteria": ["Criterion 1", "Criterion 2", "Typecheck passes"],
-      "priority": 1,
-      "passes": false,
-      "notes": ""
-    }
-  ]
-}`, skill)
-}
-
 func buildConversionPrompt(skill, mdContent string) string {
 	return fmt.Sprintf(`You are a PRD converter. Using the hal skill rules below, convert this markdown PRD to JSON.
 
@@ -184,7 +140,7 @@ Convert the markdown PRD to JSON format following the skill rules:
 1. Each story must be completable in ONE iteration (split large stories)
 2. Stories ordered by dependency (schema → backend → UI)
 3. Every story has "Typecheck passes" as acceptance criteria
-4. UI stories have "Verify in browser using dev-browser skill"
+4. UI stories have "Verify in browser using agent-browser skill (skip if no dev server running)"
 5. Acceptance criteria are verifiable (not vague)
 6. IDs are sequential (US-001, US-002, etc.)
 7. Priority based on dependency order

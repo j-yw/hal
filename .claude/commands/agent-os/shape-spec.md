@@ -91,7 +91,7 @@ If no product folder exists, skip this step.
 
 ### Step 5: Surface Relevant Standards
 
-Read `agent-os/standards/index.yml` to identify relevant standards based on the feature being built.
+Read `.hal/standards/index.yml` to identify relevant standards based on the feature being built.
 
 Use AskUserQuestion to confirm:
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/standards"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -245,6 +246,16 @@ func (r *Runner) loadPrompt() (string, error) {
 	prompt := string(data)
 	prompt = strings.Replace(prompt, "{{PRD_FILE}}", r.config.PRDFile, -1)
 	prompt = strings.Replace(prompt, "{{PROGRESS_FILE}}", r.config.ProgressFile, -1)
+
+	// Inject project standards
+	standardsContent, err := standards.Load(r.config.Dir)
+	if err != nil {
+		// Non-fatal — log warning and continue without standards
+		fmt.Fprintf(r.config.Logger, "warning: failed to load standards: %v\n", err)
+		standardsContent = ""
+	}
+	prompt = strings.Replace(prompt, "{{STANDARDS}}", standardsContent, -1)
+
 	return prompt, nil
 }
 
@@ -295,7 +306,6 @@ func (r *Runner) isRetryable(err error) bool {
 	retryablePatterns := []string{
 		"rate limit",
 		"timeout",
-		"timed out",
 		"connection",
 		"503",
 		"429",

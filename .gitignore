@@ -2,8 +2,10 @@
 /hal
 dist/
 
-# Runtime config
-.hal/
+# hal runtime config (standards and commands are committed)
+.hal/*
+!.hal/commands/
+!.hal/standards/
 *.exe
 *.exe~
 *.dll

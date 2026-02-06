@@ -22,6 +22,25 @@ func (p *PiLinker) SkillsDir() string {
 	return ".pi/skills"
 }
 
+// CommandsDir returns where pi looks for user-invocable commands.
+func (p *PiLinker) CommandsDir() string {
+	return ".pi/commands/hal"
+}
+
+// LinkCommands creates a symlink from .pi/commands/hal to .hal/commands/.
+func (p *PiLinker) LinkCommands(projectDir string) error {
+	link := filepath.Join(projectDir, p.CommandsDir())
+	target := filepath.Join("..", "..", ".hal", "commands")
+
+	os.RemoveAll(link)
+
+	if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+		return err
+	}
+
+	return os.Symlink(target, link)
+}
+
 // Link creates symlinks from .pi/skills/ to .hal/skills/.
 func (p *PiLinker) Link(projectDir string, skills []string) error {
 	skillsDir := filepath.Join(projectDir, p.SkillsDir())
@@ -45,7 +64,7 @@ func (p *PiLinker) Link(projectDir string, skills []string) error {
 	return nil
 }
 
-// Unlink removes skill symlinks from .pi/skills/.
+// Unlink removes skill and command symlinks from .pi/.
 func (p *PiLinker) Unlink(projectDir string) error {
 	skillsDir := filepath.Join(projectDir, p.SkillsDir())
 
@@ -53,6 +72,9 @@ func (p *PiLinker) Unlink(projectDir string) error {
 		link := filepath.Join(skillsDir, skill)
 		os.RemoveAll(link)
 	}
+
+	// Remove commands symlink
+	os.RemoveAll(filepath.Join(projectDir, p.CommandsDir()))
 
 	return nil
 }

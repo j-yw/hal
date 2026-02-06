@@ -88,7 +88,7 @@ After they respond, use AskUserQuestion:
 
 ### Step 4: Establish Tech Stack (for tech-stack.md)
 
-First, check if `agent-os/standards/global/tech-stack.md` exists.
+First, check if `.hal/standards/global/tech-stack.md` exists.
 
 **If the tech-stack standard exists**, read it and use AskUserQuestion:
 
