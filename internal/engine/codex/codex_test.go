@@ -7,7 +7,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	e := New()
+	e := New(nil)
 	if e == nil {
 		t.Fatal("New() returned nil")
 	}
@@ -17,21 +17,21 @@ func TestNew(t *testing.T) {
 }
 
 func TestName(t *testing.T) {
-	e := New()
+	e := New(nil)
 	if e.Name() != "codex" {
 		t.Errorf("expected Name()=\"codex\", got %q", e.Name())
 	}
 }
 
 func TestCLICommand(t *testing.T) {
-	e := New()
+	e := New(nil)
 	if e.CLICommand() != "codex" {
 		t.Errorf("expected CLICommand()=\"codex\", got %q", e.CLICommand())
 	}
 }
 
 func TestBuildArgs(t *testing.T) {
-	e := New()
+	e := New(nil)
 	args := e.BuildArgs()
 
 	expected := []string{
@@ -53,7 +53,7 @@ func TestBuildArgs(t *testing.T) {
 }
 
 func TestBuildArgsNoJSON(t *testing.T) {
-	e := New()
+	e := New(nil)
 	args := e.BuildArgsNoJSON()
 
 	expected := []string{
@@ -349,7 +349,7 @@ func TestParser_ParseLine_UnknownItemType_FailedStatus(t *testing.T) {
 }
 
 func TestEngine_parseSuccess_FailureWithoutTurnCompleted(t *testing.T) {
-	e := New()
+	e := New(nil)
 	output := `{"type":"error","message":"auth failed"}`
 
 	if e.parseSuccess(output) {
@@ -358,7 +358,7 @@ func TestEngine_parseSuccess_FailureWithoutTurnCompleted(t *testing.T) {
 }
 
 func TestEngine_parseSuccess_ItemFailureWithoutTurnCompleted(t *testing.T) {
-	e := New()
+	e := New(nil)
 	output := `{"type":"item.completed","item":{"type":"file_change","status":"failed"}}`
 
 	if e.parseSuccess(output) {

@@ -6,7 +6,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Which AI engine to use for code generation.
-# Options: claude, codex
+# Options: claude, codex, pi
 # Default: claude
 engine: claude
 
@@ -22,6 +22,21 @@ retryDelay: 30s
 # Maximum number of retries for a failed iteration before giving up.
 # Default: 3
 maxRetries: 3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-Engine Settings (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# Configure model and provider overrides for each engine.
+# Omit or leave empty to use each engine's own defaults.
+#
+# engines:
+#   claude:
+#     model: claude-sonnet-4-20250514
+#   codex:
+#     model: o3
+#   pi:
+#     provider: anthropic
+#     model: claude-sonnet-4-20250514
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto Pipeline Settings (hal auto)

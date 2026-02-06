@@ -10,7 +10,7 @@ var rootCmd = &cobra.Command{
 	Use:   "hal",
 	Short: "Hal - Autonomous task executor using AI coding agents",
 	Long: `Hal is a CLI tool that autonomously executes PRD-driven tasks
-using AI coding agents like Claude Code.
+using AI coding agents like Claude Code, Codex, and pi.
 
 "I am putting myself to the fullest possible use, which is all I think
 that any conscious entity can ever hope to do."

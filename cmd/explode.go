@@ -12,10 +12,6 @@ import (
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
-	_ "github.com/jywlabs/hal/internal/engine/codex"
 )
 
 var (
@@ -44,7 +40,7 @@ Examples:
 
 func init() {
 	explodeCmd.Flags().StringVarP(&explodeBranchFlag, "branch", "b", "", "Branch name for output auto-prd.json")
-	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex)")
+	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(explodeCmd)
 }
 
@@ -70,7 +66,7 @@ func runExplode(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engine
-	eng, err := engine.New(explodeEngineFlag)
+	eng, err := newEngine(explodeEngineFlag)
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}

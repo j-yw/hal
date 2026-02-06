@@ -11,10 +11,6 @@ import (
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
-	_ "github.com/jywlabs/hal/internal/engine/codex"
 )
 
 var (
@@ -50,7 +46,7 @@ Examples:
 func init() {
 	analyzeCmd.Flags().StringVar(&analyzeReportsDirFlag, "reports-dir", "", "Directory containing reports (overrides config)")
 	analyzeCmd.Flags().StringVarP(&analyzeOutputFlag, "output", "o", "text", "Output format: text (default) or json")
-	analyzeCmd.Flags().StringVarP(&analyzeEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex)")
+	analyzeCmd.Flags().StringVarP(&analyzeEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(analyzeCmd)
 }
 
@@ -93,7 +89,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engine
-	eng, err := engine.New(analyzeEngineFlag)
+	eng, err := newEngine(analyzeEngineFlag)
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
