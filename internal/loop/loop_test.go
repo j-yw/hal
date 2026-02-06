@@ -202,8 +202,12 @@ func TestLoadPrompt_OldTemplateWithoutPlaceholder(t *testing.T) {
 
 	// Create standards anyway
 	sDir := filepath.Join(halDir, template.StandardsDir, "config")
-	os.MkdirAll(sDir, 0755)
-	os.WriteFile(filepath.Join(sDir, "init.md"), []byte("# Init\n\nBe idempotent."), 0644)
+	if err := os.MkdirAll(sDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sDir, "init.md"), []byte("# Init\n\nBe idempotent."), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	var logBuf bytes.Buffer
 	r := &Runner{

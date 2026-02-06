@@ -34,7 +34,9 @@ func TestLoad(t *testing.T) {
 		{
 			name: "empty standards directory",
 			setup: func(t *testing.T, halDir string) {
-				os.MkdirAll(filepath.Join(halDir, "standards"), 0755)
+				if err := os.MkdirAll(filepath.Join(halDir, "standards"), 0755); err != nil {
+					t.Fatalf("failed to create standards dir: %v", err)
+				}
 			},
 			wantEmpty: true,
 		},
@@ -83,7 +85,9 @@ func TestLoad(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			halDir := filepath.Join(t.TempDir(), ".hal")
-			os.MkdirAll(halDir, 0755)
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("failed to create halDir: %v", err)
+			}
 			tt.setup(t, halDir)
 
 			got, err := Load(halDir)
