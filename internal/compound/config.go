@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/template"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,13 +26,21 @@ type rawAutoConfig struct {
 	MaxIterations *int     `yaml:"maxIterations"`
 }
 
+// RawEngineConfig holds per-engine settings from YAML.
+// Pointer fields distinguish "not set" (nil) from "set to empty string".
+type RawEngineConfig struct {
+	Model    *string `yaml:"model"`
+	Provider *string `yaml:"provider"`
+}
+
 // Config represents the full .hal/config.yaml structure.
 type Config struct {
-	Engine        string        `yaml:"engine"`
-	MaxIterations int           `yaml:"maxIterations"`
-	RetryDelay    string        `yaml:"retryDelay"`
-	MaxRetries    int           `yaml:"maxRetries"`
-	Auto          rawAutoConfig `yaml:"auto"`
+	Engine        string                      `yaml:"engine"`
+	MaxIterations int                         `yaml:"maxIterations"`
+	RetryDelay    string                      `yaml:"retryDelay"`
+	MaxRetries    int                         `yaml:"maxRetries"`
+	Engines       map[string]*RawEngineConfig `yaml:"engines"`
+	Auto          rawAutoConfig               `yaml:"auto"`
 }
 
 // DefaultAutoConfig returns sensible defaults for auto configuration.
@@ -60,7 +70,7 @@ func (c *AutoConfig) Validate() error {
 // LoadConfig reads configuration from .hal/config.yaml in the given directory.
 // If the config file doesn't exist or the auto section is missing, sensible defaults are returned.
 func LoadConfig(dir string) (*AutoConfig, error) {
-	configPath := filepath.Join(dir, ".hal", "config.yaml")
+	configPath := filepath.Join(dir, template.HalDir, "config.yaml")
 
 	// Check if config file exists
 	data, err := os.ReadFile(configPath)
@@ -100,4 +110,44 @@ func LoadConfig(dir string) (*AutoConfig, error) {
 	}
 
 	return &autoConfig, nil
+}
+
+// LoadEngineConfig reads per-engine configuration from .hal/config.yaml.
+// Returns nil if no engine-specific config is set (engine uses its own defaults).
+func LoadEngineConfig(dir, engineName string) *engine.EngineConfig {
+	configPath := filepath.Join(dir, template.HalDir, "config.yaml")
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+
+	if config.Engines == nil {
+		return nil
+	}
+
+	raw, ok := config.Engines[engineName]
+	if !ok || raw == nil {
+		return nil
+	}
+
+	cfg := &engine.EngineConfig{}
+	if raw.Model != nil {
+		cfg.Model = *raw.Model
+	}
+	if raw.Provider != nil {
+		cfg.Provider = *raw.Provider
+	}
+
+	// Return nil if nothing was actually configured
+	if cfg.Model == "" && cfg.Provider == "" {
+		return nil
+	}
+
+	return cfg
 }

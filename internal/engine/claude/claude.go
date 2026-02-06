@@ -14,21 +14,26 @@ import (
 )
 
 func init() {
-	engine.RegisterEngine("claude", func() engine.Engine {
-		return New()
+	engine.RegisterEngine("claude", func(cfg *engine.EngineConfig) engine.Engine {
+		return New(cfg)
 	})
 }
 
 // Engine executes prompts using Claude Code CLI.
 type Engine struct {
 	Timeout time.Duration
+	model   string
 }
 
 // New creates a new Claude engine.
-func New() *Engine {
-	return &Engine{
+func New(cfg *engine.EngineConfig) *Engine {
+	e := &Engine{
 		Timeout: engine.DefaultTimeout,
 	}
+	if cfg != nil && cfg.Model != "" {
+		e.model = cfg.Model
+	}
+	return e
 }
 
 // Name returns the engine identifier.
@@ -43,13 +48,17 @@ func (e *Engine) CLICommand() string {
 
 // BuildArgs returns the CLI arguments for execution.
 func (e *Engine) BuildArgs(prompt string) []string {
-	return []string{
+	args := []string{
 		"-p",
 		"--dangerously-skip-permissions",
 		"--verbose",
 		"--output-format", "stream-json",
-		prompt,
 	}
+	if e.model != "" {
+		args = append(args, "--model", e.model)
+	}
+	args = append(args, prompt)
+	return args
 }
 
 // Execute runs the prompt using Claude Code CLI.
@@ -162,8 +171,11 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 	args := []string{
 		"-p",
 		"--dangerously-skip-permissions",
-		prompt,
 	}
+	if e.model != "" {
+		args = append(args, "--model", e.model)
+	}
+	args = append(args, prompt)
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 	cmd.Stdin = nil
 	cmd.SysProcAttr = newSysProcAttr()

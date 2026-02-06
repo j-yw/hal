@@ -23,16 +23,17 @@ type Result struct {
 
 // Config holds configuration for the loop.
 type Config struct {
-	Dir           string        // Path to .hal directory
-	PRDFile       string        // PRD file name (default: template.PRDFile)
-	ProgressFile  string        // Progress file name (default: template.ProgressFile)
-	MaxIterations int           // Maximum iterations (0 = unlimited)
-	Engine        string        // Engine name (claude)
-	Logger        io.Writer     // Where to write logs
-	RetryDelay    time.Duration // Delay between retries on failure
-	MaxRetries    int           // Max retries per iteration on failure
-	DryRun        bool          // Show what would execute without running
-	StoryID       string        // Run specific story by ID (e.g., US-001)
+	Dir           string               // Path to .hal directory
+	PRDFile       string               // PRD file name (default: template.PRDFile)
+	ProgressFile  string               // Progress file name (default: template.ProgressFile)
+	MaxIterations int                  // Maximum iterations (0 = unlimited)
+	Engine        string               // Engine name (claude, codex, pi)
+	EngineConfig  *engine.EngineConfig // Optional per-engine config (model, provider)
+	Logger        io.Writer            // Where to write logs
+	RetryDelay    time.Duration        // Delay between retries on failure
+	MaxRetries    int                  // Max retries per iteration on failure
+	DryRun        bool                 // Show what would execute without running
+	StoryID       string               // Run specific story by ID (e.g., US-001)
 }
 
 // Runner orchestrates the Hal loop.
@@ -69,7 +70,7 @@ func New(cfg Config) (*Runner, error) {
 		cfg.MaxRetries = 3
 	}
 
-	eng, err := engine.New(cfg.Engine)
+	eng, err := engine.NewWithConfig(cfg.Engine, cfg.EngineConfig)
 	if err != nil {
 		return nil, err
 	}

@@ -14,21 +14,26 @@ import (
 )
 
 func init() {
-	engine.RegisterEngine("codex", func() engine.Engine {
-		return New()
+	engine.RegisterEngine("codex", func(cfg *engine.EngineConfig) engine.Engine {
+		return New(cfg)
 	})
 }
 
 // Engine executes prompts using OpenAI Codex CLI.
 type Engine struct {
 	Timeout time.Duration
+	model   string
 }
 
 // New creates a new Codex engine.
-func New() *Engine {
-	return &Engine{
+func New(cfg *engine.EngineConfig) *Engine {
+	e := &Engine{
 		Timeout: engine.DefaultTimeout,
 	}
+	if cfg != nil && cfg.Model != "" {
+		e.model = cfg.Model
+	}
+	return e
 }
 
 // Name returns the engine identifier.
@@ -44,21 +49,29 @@ func (e *Engine) CLICommand() string {
 // BuildArgs returns the CLI arguments for execution.
 // Prompt is passed via stdin using "-" placeholder.
 func (e *Engine) BuildArgs() []string {
-	return []string{
+	args := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--json",
-		"-", // Read prompt from stdin
 	}
+	if e.model != "" {
+		args = append(args, "--model", e.model)
+	}
+	args = append(args, "-") // Read prompt from stdin
+	return args
 }
 
 // BuildArgsNoJSON returns CLI arguments without JSON flag.
 func (e *Engine) BuildArgsNoJSON() []string {
-	return []string{
+	args := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
-		"-", // Read prompt from stdin
 	}
+	if e.model != "" {
+		args = append(args, "--model", e.model)
+	}
+	args = append(args, "-") // Read prompt from stdin
+	return args
 }
 
 // Execute runs the prompt using Codex CLI.
