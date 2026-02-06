@@ -10,9 +10,6 @@ import (
 	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
-
-	// Register available engines
-	_ "github.com/jywlabs/hal/internal/engine/claude"
 )
 
 var validateEngineFlag string
@@ -37,7 +34,7 @@ Examples:
 }
 
 func init() {
-	validateCmd.Flags().StringVarP(&validateEngineFlag, "engine", "e", "claude", "Engine to use (claude)")
+	validateCmd.Flags().StringVarP(&validateEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(validateCmd)
 }
 
@@ -54,7 +51,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engine
-	eng, err := engine.New(validateEngineFlag)
+	eng, err := newEngine(validateEngineFlag)
 	if err != nil {
 		return err
 	}

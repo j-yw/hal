@@ -139,6 +139,111 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 	}
 }
 
+func TestLoadEngineConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		yaml         string
+		engineName   string
+		wantNil      bool
+		wantModel    string
+		wantProvider string
+	}{
+		{
+			name:       "no engines section returns nil",
+			yaml:       "engine: claude\n",
+			engineName: "pi",
+			wantNil:    true,
+		},
+		{
+			name: "engine not in engines map returns nil",
+			yaml: `engines:
+  claude:
+    model: claude-sonnet-4-20250514
+`,
+			engineName: "pi",
+			wantNil:    true,
+		},
+		{
+			name: "pi with model and provider",
+			yaml: `engines:
+  pi:
+    provider: google
+    model: gemini-2.5-pro
+`,
+			engineName:   "pi",
+			wantModel:    "gemini-2.5-pro",
+			wantProvider: "google",
+		},
+		{
+			name: "claude with model only",
+			yaml: `engines:
+  claude:
+    model: claude-sonnet-4-20250514
+`,
+			engineName: "claude",
+			wantModel:  "claude-sonnet-4-20250514",
+		},
+		{
+			name: "pi with provider only",
+			yaml: `engines:
+  pi:
+    provider: anthropic
+`,
+			engineName:   "pi",
+			wantProvider: "anthropic",
+		},
+		{
+			name: "empty values return nil",
+			yaml: `engines:
+  pi:
+    provider: ""
+    model: ""
+`,
+			engineName: "pi",
+			wantNil:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, ".hal")
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("Failed to create .hal dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(tt.yaml), 0644); err != nil {
+				t.Fatalf("Failed to write config.yaml: %v", err)
+			}
+
+			cfg := LoadEngineConfig(dir, tt.engineName)
+
+			if tt.wantNil {
+				if cfg != nil {
+					t.Errorf("expected nil, got %+v", cfg)
+				}
+				return
+			}
+
+			if cfg == nil {
+				t.Fatal("expected non-nil config, got nil")
+			}
+			if cfg.Model != tt.wantModel {
+				t.Errorf("Model = %q, want %q", cfg.Model, tt.wantModel)
+			}
+			if cfg.Provider != tt.wantProvider {
+				t.Errorf("Provider = %q, want %q", cfg.Provider, tt.wantProvider)
+			}
+		})
+	}
+}
+
+func TestLoadEngineConfig_MissingFile(t *testing.T) {
+	cfg := LoadEngineConfig(t.TempDir(), "pi")
+	if cfg != nil {
+		t.Errorf("expected nil for missing config file, got %+v", cfg)
+	}
+}
+
 func TestLoadConfig_InvalidYAML(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -112,14 +112,16 @@ Describe what this rule is for.
 }
 
 func printDefaults() {
-	fmt.Println("  engine: claude")
-	fmt.Println("  execution:")
-	fmt.Println("    max_retries: 3")
-	fmt.Println("    retry_delay: 5s")
-	fmt.Println("  git:")
-	fmt.Println("    auto_commit: true")
-	fmt.Println("    commit_prefix: \"hal:\"")
-	fmt.Println("  validation:")
-	fmt.Println("    run_tests: true")
-	fmt.Println("    run_lint: true")
+	fmt.Println("  engine: claude          # Options: claude, codex, pi")
+	fmt.Println("  maxIterations: 10")
+	fmt.Println("  retryDelay: 30s")
+	fmt.Println("  maxRetries: 3")
+	fmt.Println("  engines:                # Per-engine model/provider overrides")
+	fmt.Println("    claude:")
+	fmt.Println("      model: \"\"          # Use Claude's default")
+	fmt.Println("    codex:")
+	fmt.Println("      model: \"\"          # Use Codex's default")
+	fmt.Println("    pi:")
+	fmt.Println("      provider: \"\"       # Use pi's default")
+	fmt.Println("      model: \"\"          # Use pi's default")
 }
