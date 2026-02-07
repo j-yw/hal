@@ -121,3 +121,4 @@
 - For tool-phase spinner assertions, wait on spinner-inclusive markers like `[●] Read README.md` (not only `Read README.md`) so tests confirm animated PTY spinner frames rendered in addition to immutable tool history lines.
 - For continuity assertions across spinner-active transitions (thinking→tool, text→tool), capture `Display` spinner runtime state under `spinMu` and compare `spinDone` channel identity before/after; unchanged channel proves the spinner goroutine was not restarted.
 - For error-path lifecycle assertions, validate output ordering on normalized terminal snapshots (for example `strings.Index` on `> Read ...` before `[!!]`) to prove tool history is emitted before terminal error output.
+- For terminal teardown assertions in PTY tests, verify both `d.fsm.State() == StateIdle` and `!d.isThinkingSpinnerActive()` after completion/error markers to ensure FSM reset and spinner shutdown are both enforced.

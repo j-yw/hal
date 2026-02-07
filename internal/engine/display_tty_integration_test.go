@@ -404,6 +404,7 @@ func TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion(t *testing.T)
 	assertPhaseSnapshotContains(t, snapshots, phaseThinking, "[●]")
 	assertPhaseSnapshotContains(t, snapshots, phaseTool, "[●] Read README.md")
 	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "[OK]")
+	assertTerminalTeardownState(t, h.display, "completion")
 }
 
 func TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError(t *testing.T) {
@@ -427,6 +428,7 @@ func TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError(t *testing.T) {
 
 	terminal := snapshots[phaseTerminal].Normalized
 	assertMarkerOrder(t, terminal, "> Read README.md", "[!!]")
+	assertTerminalTeardownState(t, h.display, "error")
 }
 
 func TestDisplayTTYLifecycle_SpinnerContinuity_ThinkingToTool(t *testing.T) {
@@ -489,6 +491,22 @@ func assertMarkerOrder(t *testing.T, output, first, second string) {
 
 	if firstIndex >= secondIndex {
 		t.Fatalf("marker order invalid: %q (idx=%d) should appear before %q (idx=%d)\noutput: %q", first, firstIndex, second, secondIndex, output)
+	}
+}
+
+func assertTerminalTeardownState(t *testing.T, display *Display, path string) {
+	t.Helper()
+
+	display.mu.Lock()
+	state := display.fsm.State()
+	display.mu.Unlock()
+
+	if state != StateIdle {
+		t.Fatalf("expected FSM to reset to %s after %s terminal event, got %s", StateIdle, path, state)
+	}
+
+	if display.isThinkingSpinnerActive() {
+		t.Fatalf("expected spinner to be inactive after %s terminal event", path)
 	}
 }
 

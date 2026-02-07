@@ -18,6 +18,7 @@
 - In PTY spinner assertions, use spinner-inclusive markers (for example `[●] Read README.md`) so waits prove animated spinner frames rendered, not just static tool history lines.
 - For PTY spinner continuity assertions (thinking→tool, text→tool), capture spinner runtime state under `spinMu` and compare `spinDone` channel identity before/after; unchanged channel means no spinner restart gap.
 - For PTY error-lifecycle assertions, use normalized terminal snapshots and compare marker indices (`> tool ...` before `[!!]`) to verify tool history prints before error output.
+- Terminal-event teardown assertions should check both `display.fsm.State() == StateIdle` and `!display.isThinkingSpinnerActive()` after completion/error markers to verify FSM reset and spinner shutdown together.
 
 ---
 
@@ -249,5 +250,17 @@
   - To prove spinner continuity (no restart gap), compare `spinDone` channel identity before/after transition while holding `spinMu`.
   - Pair internal continuity assertions with normalized output checks that include `[●]` markers to confirm HAL-eye branding stays visible through transition boundaries.
   - A dedicated text emitter helper keeps text→tool transition tests deterministic and avoids repeating raw `EventText` setup in each case.
+---
+
+## 2026-02-07 19:35 +08 - T-008
+- Extended PTY lifecycle integration tests to assert teardown state after both completion and error terminal events.
+- Added `assertTerminalTeardownState` helper and invoked it from the success-path and error-path lifecycle tests.
+- The teardown helper checks FSM idle state and spinner shutdown using `display.isThinkingSpinnerActive()`.
+- Ran checks: `go test ./internal/engine/...`, `go test ./...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion|TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError'`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Teardown regressions are best caught by pairing `display.fsm.State() == StateIdle` with spinner inactivity assertions; either signal alone can miss partial cleanup bugs.
+  - Read FSM state under `display.mu` in tests to align with Display's split-lock discipline (`mu` for FSM/output, `spinMu` for spinner runtime fields).
+  - Use `display.isThinkingSpinnerActive()` as the spinner-active indicator instead of reading spinner fields directly.
 ---
 
