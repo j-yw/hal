@@ -1,9 +1,12 @@
 package prd
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -53,5 +56,60 @@ func TestJSONOutputPathIsHalFolder(t *testing.T) {
 	expected := template.HalDir + "/" + template.PRDFile
 	if outputPath != expected {
 		t.Errorf("JSON output path = %q, want %q", outputPath, expected)
+	}
+}
+
+type sequenceMockEngine struct {
+	promptResponses []string
+	promptErrors    []error
+	promptCalls     int
+}
+
+func (m *sequenceMockEngine) Name() string {
+	return "mock-sequence"
+}
+
+func (m *sequenceMockEngine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {
+	return engine.Result{}
+}
+
+func (m *sequenceMockEngine) Prompt(ctx context.Context, prompt string) (string, error) {
+	i := m.promptCalls
+	m.promptCalls++
+
+	var response string
+	if i < len(m.promptResponses) {
+		response = m.promptResponses[i]
+	}
+
+	var err error
+	if i < len(m.promptErrors) {
+		err = m.promptErrors[i]
+	}
+
+	return response, err
+}
+
+func (m *sequenceMockEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
+	return m.Prompt(ctx, prompt)
+}
+
+func TestGenerateQuestions_PropagatesRepairPromptError(t *testing.T) {
+	eng := &sequenceMockEngine{
+		promptResponses: []string{
+			`not-json`,
+		},
+		promptErrors: []error{
+			nil,
+			context.Canceled,
+		},
+	}
+
+	_, err := generateQuestions(context.Background(), eng, "skill", "desc", "project", nil)
+	if err == nil {
+		t.Fatal("generateQuestions() expected error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("generateQuestions() error = %v, want context.Canceled", err)
 	}
 }
