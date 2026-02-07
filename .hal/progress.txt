@@ -16,6 +16,7 @@
 - PTY output assertions should use bounded polling with explicit timeout/interval and normalize terminal output (strip ANSI CSI + convert `\r` redraws to `\n`) before matching markers.
 - For TTY lifecycle flows, drive events through reusable canonical emit helpers (thinking/tool/terminal) and capture per-phase snapshots after checkpoint waits so assertions can target phase boundaries deterministically.
 - In PTY spinner assertions, use spinner-inclusive markers (for example `[●] Read README.md`) so waits prove animated spinner frames rendered, not just static tool history lines.
+- For PTY error-lifecycle assertions, use normalized terminal snapshots and compare marker indices (`> tool ...` before `[!!]`) to verify tool history prints before error output.
 
 ---
 
@@ -223,5 +224,17 @@
   - Use spinner-inclusive tool checkpoints (`[●] Read ...`) instead of plain tool text markers so tests prove animated spinner frames rendered, not just immutable tool history output.
   - Reusing `DriveSuccessLifecycle` keeps success-path coverage explicit (thinking start/delta → tool → result) while preserving deterministic checkpoint waits.
   - Key terminal assertions off `[OK]` with bounded waits so failures surface immediately with normalized/raw capture context from the harness.
+---
+
+## 2026-02-07 19:26 +08 - T-006
+- Added `TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError` in `internal/engine/display_tty_integration_test.go` to exercise the full PTY-backed error flow: thinking start/delta → tool event → terminal error event.
+- Added `assertMarkerOrder` helper and used index-order assertions on normalized terminal output to verify the tool history line (`> Read README.md`) appears before the error badge (`[!!]`).
+- Added deterministic terminal checks for both error badge and error message content in the terminal phase snapshot.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - For error-path lifecycle tests, assert ordering on the terminal snapshot (not just the tool snapshot) so checks include the full accumulated PTY stream.
+  - Use the immutable history marker (`> Read ...`) for ordering checks; spinner redraw markers can appear multiple times and are less stable for index-based assertions.
+  - Assert both `[!!]` and the concrete error message to keep failures deterministic across style changes.
 ---
 

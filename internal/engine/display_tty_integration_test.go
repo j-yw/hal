@@ -397,6 +397,29 @@ func TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion(t *testing.T)
 	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "[OK]")
 }
 
+func TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError(t *testing.T) {
+	h := newDisplayTTYHarness(t)
+	driver := newDisplayLifecycleDriver(h)
+	const errMsg = "integration failure"
+
+	snapshots := driver.DriveErrorLifecycle(errMsg, lifecycleCheckpoints{
+		ThinkingMarker: "[●]",
+		ToolMarker:     "[●] Read README.md",
+		TerminalMarker: "[!!]",
+		Timeout:        ptyWaitTimeout,
+		Interval:       ptyPollInterval,
+	})
+
+	assertPhaseSnapshotContains(t, snapshots, phaseThinking, "[●]")
+	assertPhaseSnapshotContains(t, snapshots, phaseTool, "[●] Read README.md")
+	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "> Read README.md")
+	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "[!!]")
+	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, errMsg)
+
+	terminal := snapshots[phaseTerminal].Normalized
+	assertMarkerOrder(t, terminal, "> Read README.md", "[!!]")
+}
+
 func assertPhaseSnapshotContains(t *testing.T, snapshots map[lifecyclePhase]phaseOutputSnapshot, phase lifecyclePhase, marker string) {
 	t.Helper()
 
@@ -409,5 +432,23 @@ func assertPhaseSnapshotContains(t *testing.T, snapshots map[lifecyclePhase]phas
 	}
 	if !strings.Contains(snapshot.Normalized, marker) {
 		t.Fatalf("snapshot for phase %q missing marker %q in normalized output: %q", phase, marker, snapshot.Normalized)
+	}
+}
+
+func assertMarkerOrder(t *testing.T, output, first, second string) {
+	t.Helper()
+
+	firstIndex := strings.Index(output, first)
+	if firstIndex < 0 {
+		t.Fatalf("missing first marker %q in output: %q", first, output)
+	}
+
+	secondIndex := strings.Index(output, second)
+	if secondIndex < 0 {
+		t.Fatalf("missing second marker %q in output: %q", second, output)
+	}
+
+	if firstIndex >= secondIndex {
+		t.Fatalf("marker order invalid: %q (idx=%d) should appear before %q (idx=%d)\noutput: %q", first, firstIndex, second, secondIndex, output)
 	}
 }
