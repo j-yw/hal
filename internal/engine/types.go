@@ -27,12 +27,13 @@ type Event struct {
 type EventType string
 
 const (
-	EventInit    EventType = "init"    // Session initialization
-	EventTool    EventType = "tool"    // Tool invocation
-	EventText    EventType = "text"    // Text response
-	EventResult  EventType = "result"  // Final result
-	EventError   EventType = "error"   // Error occurred
-	EventUnknown EventType = "unknown" // Unrecognized event
+	EventInit     EventType = "init"     // Session initialization
+	EventTool     EventType = "tool"     // Tool invocation
+	EventText     EventType = "text"     // Text response
+	EventThinking EventType = "thinking" // Model is thinking/reasoning
+	EventResult   EventType = "result"   // Final result
+	EventError    EventType = "error"    // Error occurred
+	EventUnknown  EventType = "unknown"  // Unrecognized event
 )
 
 // EventData holds optional structured data for events.

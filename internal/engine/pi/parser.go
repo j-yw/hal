@@ -15,7 +15,7 @@ import (
 //	agent_start    — agent begins processing
 //	turn_start     — new turn begins
 //	message_start  — message begins (user or assistant)
-//	message_update — streaming content (text deltas, tool calls)
+//	message_update — streaming content (text deltas, tool calls, thinking)
 //	message_end    — message complete
 //	tool_execution_start/update/end — tool execution lifecycle
 //	turn_end       — turn complete with usage
@@ -24,11 +24,13 @@ import (
 // Tool calls are nested inside message_update events under
 // assistantMessageEvent with types: toolcall_start, toolcall_delta, toolcall_end.
 // Text content uses: text_start, text_delta, text_end.
+// Thinking/reasoning uses: thinking_start, thinking_delta, thinking_end.
 type Parser struct {
 	model       string
 	totalTokens int
 	hasFailure  bool
 	text        strings.Builder
+	isThinking  bool // tracks whether model is currently in a thinking block
 }
 
 // NewParser creates a new Pi output parser.
@@ -133,12 +135,65 @@ func (p *Parser) parseMessageUpdate(raw map[string]interface{}) *engine.Event {
 	ameType, _ := ame["type"].(string)
 
 	switch ameType {
+	case "thinking_start":
+		return p.parseThinkingStart()
+	case "thinking_delta":
+		return p.parseThinkingDelta(ame)
+	case "thinking_end":
+		return p.parseThinkingEnd()
 	case "toolcall_end":
+		p.clearThinking()
 		return p.parseToolCallEnd(ame)
 	case "text_end":
+		p.clearThinking()
 		return p.parseTextEnd(ame)
 	default:
 		return nil
+	}
+}
+
+func (p *Parser) clearThinking() {
+	p.isThinking = false
+}
+
+func (p *Parser) parseThinkingStart() *engine.Event {
+	p.isThinking = true
+	return &engine.Event{
+		Type: engine.EventThinking,
+		Data: engine.EventData{
+			Message: "start",
+		},
+	}
+}
+
+func (p *Parser) parseThinkingDelta(ame map[string]interface{}) *engine.Event {
+	if !p.isThinking {
+		return nil
+	}
+
+	// Emit activity only when the provider sends a non-empty delta.
+	if delta, _ := ame["delta"].(string); delta == "" {
+		return nil
+	}
+	return &engine.Event{
+		Type: engine.EventThinking,
+		Data: engine.EventData{
+			Message: "delta",
+		},
+	}
+}
+
+func (p *Parser) parseThinkingEnd() *engine.Event {
+	if !p.isThinking {
+		return nil
+	}
+
+	p.clearThinking()
+	return &engine.Event{
+		Type: engine.EventThinking,
+		Data: engine.EventData{
+			Message: "end",
+		},
 	}
 }
 
