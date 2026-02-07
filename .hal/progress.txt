@@ -1,0 +1,162 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Display struct now delegates state tracking to `fsm *SpinnerFSM` — old fields `isThinking`, `thinkingStart`, `lastTool` are removed.
+- Display uses two mutexes: `mu` (general output) and `spinMu` (spinner state). FSM fields are guarded by `mu`.
+- Event types are defined in `internal/engine/types.go` as string constants (EventInit, EventTool, etc.).
+- Existing display tests use `bytes.Buffer` (non-TTY) to avoid spinner goroutine timing issues.
+- `ShowIterationHeader` calls `fsm.Reset()` to clear state for new iterations.
+- `clearThinkingState()` is now dead code — no ShowEvent handler calls it. T-010 should remove it.
+- `d.fsm.thinkingStart` (unexported field) is accessible within the `engine` package — used by `formatThinkingComplete()` in thinking "end" handler.
+- Tool dedup key is `e.Tool + e.Detail` (no space) — space is added later for display only.
+- ShowEvent lifecycle tests must call `d.StopSpinner()` between events to clean up spinner state for FSM assertions.
+
+---
+
+## 2026-02-07 - T-001
+- Implemented SpinnerState type with iota constants: StateIdle, StateThinking, StateToolActivity, StateCompletion, StateError
+- Implemented Transition(from, to) error function with explicit allow-list of 11 valid transitions
+- Added String() method for human-readable state names
+- Files changed: internal/engine/spinner_state.go (new)
+- **Learnings for future iterations:**
+  - The transition table includes Idle→Idle for idempotent resets and ToolActivity→ToolActivity for consecutive tool events
+  - Display struct has `lastTool string` that tracks tool dedup — this will move into SpinnerFSM in T-002
+  - `clearThinkingState()` zeroes both `isThinking` and `thinkingStart` — FSM equivalent is GoTo(StateIdle) or Reset()
+---
+
+## 2026-02-07 - T-002
+- Implemented SpinnerFSM struct with fields: state, message, thinkingStart, lastTool
+- NewSpinnerFSM() constructor returns FSM in StateIdle
+- State(), GoTo(), Message(), ThinkingElapsed(), SetLastTool(), LastTool(), Reset() methods
+- GoTo() validates transitions via Transition() and auto-sets thinkingStart on StateThinking entry
+- ThinkingElapsed() returns duration only when in StateThinking, zero otherwise
+- Reset() clears all fields back to zero values
+- Files changed: internal/engine/spinner_state.go (modified)
+- **Learnings for future iterations:**
+  - SpinnerFSM is intentionally not thread-safe — Display's `mu` mutex already guards access
+  - GoTo() only sets thinkingStart on StateThinking entry; other state transitions don't touch it
+  - Reset() is a hard reset (Idle + clear all) vs GoTo(StateIdle) which only changes state+message
+---
+
+## 2026-02-07 - T-003
+- Implemented exhaustive table-driven tests in internal/engine/spinner_state_test.go
+- TestTransition_ValidTransitions: covers all 11 valid transitions
+- TestTransition_InvalidTransitions: covers 11 invalid transitions (exceeding the minimum 5)
+- TestSpinnerState_String: covers all named states plus unknown state fallback
+- TestNewSpinnerFSM: verifies initial zero-value state
+- TestFSM_GoTo_UpdatesStateAndMessage: table-driven test for state/message updates and invalid transition rejection
+- TestFSM_GoTo_ThinkingSetsThinkingStart: verifies thinkingStart is set within time bounds on StateThinking entry
+- TestFSM_GoTo_NonThinkingDoesNotSetThinkingStart: verifies thinkingStart is preserved on non-Thinking transitions
+- TestFSM_ThinkingElapsed_ZeroWhenNotThinking: verifies zero duration in non-Thinking states
+- TestFSM_LastTool: verifies SetLastTool/LastTool pair
+- TestFSM_Reset: verifies all fields cleared (state, message, thinkingStart, lastTool)
+- Files changed: internal/engine/spinner_state_test.go (new)
+- **Learnings for future iterations:**
+  - Test file uses `package engine` (not `engine_test`) since it needs access to unexported fields (thinkingStart) for time assertions
+  - ThinkingElapsed() test needs state transitions first (Idle→Thinking→ToolActivity) to get the FSM into the right state for assertions
+---
+
+## 2026-02-07 - T-004
+- Replaced `isThinking bool`, `thinkingStart time.Time`, `lastTool string` on Display with single `fsm *SpinnerFSM` field
+- NewDisplay initializes fsm via NewSpinnerFSM()
+- clearThinkingState() delegates to fsm.Reset() when in StateThinking
+- spinnerDisplayMessage() reads elapsed from fsm.ThinkingElapsed() instead of d.thinkingStart
+- ShowEvent tool dedup uses fsm.LastTool() / fsm.SetLastTool() instead of d.lastTool
+- EventThinking "start" uses fsm.GoTo(StateThinking, msg) with auto-set thinkingStart
+- EventThinking "end" reads d.fsm.thinkingStart for formatThinkingComplete()
+- ShowIterationHeader calls fsm.Reset() instead of d.lastTool = ""
+- spinning, spinMsg, spinCtx, spinCancel, spinDone fields unchanged (spinner goroutine state)
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - clearThinkingState() uses fsm.Reset() (hard reset) rather than GoTo because Thinking→Idle is not a valid transition in the FSM table — Reset() bypasses transition validation
+  - d.fsm.thinkingStart is accessible as unexported field within the same package — no getter needed for formatThinkingComplete()
+  - EventThinking "start" does fsm.Reset() first to ensure clean state, then GoTo(StateThinking) — this handles edge cases where thinking restarts without proper end
+  - The keepSpinner logic at top of ShowEvent is unchanged — it still uses event type checks, not FSM state. T-007 will refactor this.
+---
+
+## 2026-02-07 - T-005
+- Refactored EventInit handler: replaced `clearThinkingState()` with `fsm.Reset()` + `fsm.GoTo(StateThinking, msg)`, spinner message driven from `fsm.Message()`
+- Refactored EventThinking "end": replaced `clearThinkingState()` with `fsm.GoTo(StateCompletion, "")` then `fsm.Reset()` — properly transitions through Completion state
+- EventThinking "start" and "delta" handlers were already FSM-driven from T-004, no changes needed
+- No direct boolean assignments (`d.isThinking`, `d.thinkingStart`) exist — all removed in T-004
+- Spinner stays active across thinking deltas via keepSpinner logic (unchanged)
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - EventInit uses `fsm.Reset()` before `GoTo(StateThinking)` because init can arrive from any FSM state (e.g., after an error) — Reset bypasses transition validation
+  - EventThinking "end" must read `d.fsm.thinkingStart` BEFORE transitioning to Completion, since GoTo doesn't clear timing fields but Reset does
+  - Only EventInit and EventThinking handlers were modified for T-005 — EventTool, EventResult, EventError, EventText still use `clearThinkingState()` and will be refactored in T-006/T-007
+---
+
+## 2026-02-07 - T-006
+- Refactored EventTool handler: replaced `clearThinkingState()` with `fsm.GoTo(StateToolActivity, toolMsg)` — FSM now governs tool-activity state
+- Refactored EventText handler: replaced `clearThinkingState()` with `fsm.GoTo(StateToolActivity, workingMsg)` — FSM now governs working state
+- Duplicate tool dedup already uses `fsm.LastTool()` / `fsm.SetLastTool()` from T-004 — no direct `d.lastTool` assignments exist
+- Spinner line clearing before tool history output preserved unchanged
+- Edge case handling: if FSM GoTo fails (unexpected state), falls back to `fsm.Reset()`
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - `toolMsg` must be constructed AFTER the `detail` space-prefix logic (`detail = " " + detail`) to avoid missing space in spinner messages (caught by TestShowEvent_ToolKeepsSpinnerAndUpdatesMessage)
+  - Dedup check should happen BEFORE FSM transition so duplicate tools don't change FSM state needlessly
+  - EventResult and EventError still use `clearThinkingState()` — T-007 will refactor these
+  - After T-006, only EventResult and EventError handlers still call `clearThinkingState()`
+---
+
+## 2026-02-07 - T-007
+- Refactored EventResult handler: replaced `clearThinkingState()` with `fsm.GoTo(StateCompletion, "")` then `fsm.Reset()` — proper FSM transitions through Completion→Idle
+- Refactored EventError handler: replaced `clearThinkingState()` with `fsm.GoTo(StateError, errorMsg)` then `fsm.Reset()` — proper FSM transitions through Error→Idle
+- Replaced keepSpinner logic with FSM-driven switch statement using descriptive comments about spinner-continuing vs terminal states
+- Both handlers use fallback `fsm.Reset()` if GoTo fails (unexpected FSM state)
+- `clearThinkingState()` is now completely unused in ShowEvent — only the function definition remains (T-010 cleanup target)
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - EventResult/EventError use the same pattern as EventThinking "end": GoTo(terminal state) → Reset() — this is the canonical teardown pattern
+  - GoTo(StateCompletion/StateError) can fail if FSM is in Idle (e.g., result event arrives without prior thinking/tool) — always fall back to Reset()
+  - `clearThinkingState()` is now dead code — T-010 should remove it entirely since no ShowEvent handler calls it anymore
+  - The keepSpinner switch-statement approach is more extensible than the boolean expression — new event types can be added as additional cases
+---
+
+## 2026-02-07 - T-008
+- Added 4 new ShowEvent unit tests for full event lifecycle sequences in display_test.go
+- TestShowEvent_FullLifecycleSequence: Init → Thinking start → Thinking delta → Tool → Tool → Thinking end → Result — verifies FSM state at each step
+- TestShowEvent_ErrorResetsToIdle: Init → Thinking start → Error — verifies error handling resets FSM to StateIdle
+- TestShowEvent_DuplicateToolDedup: verifies duplicate consecutive tool events are deduplicated via FSM lastTool
+- TestShowEvent_SpinnerMessageUpdatesOnTransition: verifies spinner message updates on Thinking→ToolActivity transition
+- All tests use bytes.Buffer writer (non-TTY) to avoid goroutine timing issues
+- Files changed: internal/engine/display_test.go (modified)
+- **Learnings for future iterations:**
+  - Tool dedup key is `e.Tool + e.Detail` (no space separator) — the space is added later for display only (`detail = " " + detail`)
+  - ShowEvent must be followed by `d.StopSpinner()` in tests to clean up spinner state before the next event when checking FSM state between events
+  - EventThinking "delta" does NOT change FSM state — it only starts the spinner if not already running
+  - To test EventResult, the FSM needs to be in a valid source state (Thinking or ToolActivity) — use EventInit first to get there
+---
+
+## 2026-02-07 - T-009
+- Added TestShowEvent_GoldenLifecycle golden-output test in display_test.go
+- Feeds event sequence: Init(claude-3) → Thinking start → Thinking end → Tool(Read, file.go) → Tool(Write, file.go) → Result(success, 1500 tokens, 5000ms)
+- Captures output via bytes.Buffer (non-TTY, no spinner goroutine)
+- Strips ANSI escape codes via existing ansiRegex before comparison
+- Golden string verifies: model line, thinking-complete > line with 0s elapsed, tool > lines, result [OK] line with duration and tokens
+- Test fails with clear diff if output changes (got vs want format)
+- Files changed: internal/engine/display_test.go (modified)
+- **Learnings for future iterations:**
+  - Thinking start produces NO visible output — only FSM state change and spinner start. Don't expect it in golden output.
+  - formatThinkingComplete uses time.Since(thinkingStart) truncated to seconds — in fast tests this is always "0s"
+  - EventTool from Idle state: GoTo(StateToolActivity) fails (invalid transition) but ShowEvent falls back to fsm.Reset() — tool output still prints correctly
+  - Non-TTY display skips the `\r\033[2K` spinner line clearing (isTTY check) so golden output is clean sequential lines
+---
+
+## 2026-02-07 - T-010
+- Removed `clearThinkingState()` method from Display — it was dead code after the FSM refactor (no callers remained)
+- Verified no unused fields remain on Display struct: `isThinking`, `thinkingStart`, `lastTool` were all removed in T-004
+- Confirmed `isThinking` references in `internal/engine/pi/parser.go` are unrelated (Pi parser struct, not Display)
+- `go vet ./...` passes with no warnings
+- `go test ./...` passes (all existing and new tests)
+- `make build` succeeds
+- Files changed: internal/engine/display.go (modified — 6 lines deleted)
+- **Learnings for future iterations:**
+  - The FSM refactor is complete: all spinner state is now governed by `SpinnerFSM` via `fsm.GoTo()`, `fsm.Reset()`, `fsm.LastTool()`, `fsm.ThinkingElapsed()`
+  - Display struct's state fields are: `fsm *SpinnerFSM` (state machine) + spinner goroutine fields (`spinning`, `spinMsg`, `spinCtx`, `spinCancel`, `spinDone`)
+  - When removing dead code, always grep for the method name across the entire repo to confirm zero callers — field names may appear in other structs (e.g., Pi parser's `isThinking`)
+---
+
