@@ -65,7 +65,7 @@ func init() {
 	// New flags
 	runCmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "Show what would execute without running")
 	runCmd.Flags().StringVarP(&storyFlag, "story", "s", "", "Run specific story by ID (e.g., US-001)")
-	runCmd.Flags().StringVar(&runBaseFlag, "base", "", "Base branch for creating the PRD branch (default: current branch)")
+	runCmd.Flags().StringVar(&runBaseFlag, "base", "", "Base branch for creating the PRD branch (default: current branch, or HEAD when detached)")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -96,13 +96,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
 
-	baseBranch := strings.TrimSpace(runBaseFlag)
-	if baseBranch == "" {
-		var err error
-		baseBranch, err = compound.CurrentBranch()
-		if err != nil {
-			return fmt.Errorf("failed to determine current branch for --base: %w", err)
-		}
+	baseBranch, err := resolveRunBaseBranch(runBaseFlag, compound.CurrentBranchOptional)
+	if err != nil {
+		return err
 	}
 
 	// Create and run the loop
@@ -130,4 +126,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func resolveRunBaseBranch(baseFlag string, currentBranchFn func() (string, error)) (string, error) {
+	baseBranch := strings.TrimSpace(baseFlag)
+	if baseBranch != "" {
+		return baseBranch, nil
+	}
+
+	baseBranch, err := currentBranchFn()
+	if err != nil {
+		return "", fmt.Errorf("failed to determine current branch for --base: %w", err)
+	}
+	return baseBranch, nil
 }

@@ -29,7 +29,25 @@ func CreateBranch(branchName, baseBranch string) error {
 }
 
 // CurrentBranch returns the name of the current git branch.
+// Returns an error when HEAD is detached.
 func CurrentBranch() (string, error) {
+	branch, err := currentBranch()
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		return "", fmt.Errorf("not on a branch (possibly detached HEAD)")
+	}
+	return branch, nil
+}
+
+// CurrentBranchOptional returns the current branch name.
+// Returns an empty branch with nil error when HEAD is detached.
+func CurrentBranchOptional() (string, error) {
+	return currentBranch()
+}
+
+func currentBranch() (string, error) {
 	cmd := exec.Command("git", "branch", "--show-current")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -39,11 +57,7 @@ func CurrentBranch() (string, error) {
 		return "", fmt.Errorf("failed to get current branch: %w (stderr: %s)", err, stderr.String())
 	}
 
-	branch := strings.TrimSpace(stdout.String())
-	if branch == "" {
-		return "", fmt.Errorf("not on a branch (possibly detached HEAD)")
-	}
-	return branch, nil
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // PushBranch pushes the branch to the remote origin with upstream tracking.

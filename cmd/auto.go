@@ -51,7 +51,7 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "Skip PR creation at end")
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
-	autoCmd.Flags().StringVar(&autoBaseFlag, "base", "", "Base branch for new work branch and PR target (default: current branch)")
+	autoCmd.Flags().StringVar(&autoBaseFlag, "base", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
 	rootCmd.AddCommand(autoCmd)
 }
 

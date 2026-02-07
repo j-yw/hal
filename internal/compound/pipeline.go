@@ -20,20 +20,22 @@ var stateFileName = template.AutoStateFile
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
-	config       *AutoConfig
-	engine       engine.Engine
-	engineConfig *engine.EngineConfig
-	display      *engine.Display
-	dir          string
+	config          *AutoConfig
+	engine          engine.Engine
+	engineConfig    *engine.EngineConfig
+	display         *engine.Display
+	dir             string
+	currentBranchFn func() (string, error)
 }
 
 // NewPipeline creates a new pipeline instance.
 func NewPipeline(config *AutoConfig, eng engine.Engine, display *engine.Display, dir string) *Pipeline {
 	return &Pipeline{
-		config:  config,
-		engine:  eng,
-		display: display,
-		dir:     dir,
+		config:          config,
+		engine:          eng,
+		display:         display,
+		dir:             dir,
+		currentBranchFn: CurrentBranchOptional,
 	}
 }
 
@@ -182,7 +184,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 // Priority:
 //  1. Existing state.BaseBranch (for resumed runs)
 //  2. opts.BaseBranch override
-//  3. Current git branch (new runs, or resume before branch creation)
+//  3. Current git branch (empty when detached HEAD)
 func (p *Pipeline) initializeBaseBranch(state *PipelineState, opts RunOptions) error {
 	baseOverride := strings.TrimSpace(opts.BaseBranch)
 
@@ -199,7 +201,12 @@ func (p *Pipeline) initializeBaseBranch(state *PipelineState, opts RunOptions) e
 	}
 
 	if !opts.Resume || state.Step == StepAnalyze || state.Step == StepBranch {
-		base, err := CurrentBranch()
+		currentBranchFn := p.currentBranchFn
+		if currentBranchFn == nil {
+			currentBranchFn = CurrentBranchOptional
+		}
+
+		base, err := currentBranchFn()
 		if err != nil {
 			return fmt.Errorf("failed to determine current branch: %w", err)
 		}
@@ -280,18 +287,23 @@ func (p *Pipeline) runBranchStep(ctx context.Context, state *PipelineState, opts
 	if state.BranchName == "" {
 		return fmt.Errorf("no branch name set in state")
 	}
-	if state.BaseBranch == "" {
-		return fmt.Errorf("no base branch set in state (set --base or resume from analyze/branch)")
-	}
 
 	if opts.DryRun {
-		p.display.ShowInfo("   [dry-run] Would create branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
+		if state.BaseBranch != "" {
+			p.display.ShowInfo("   [dry-run] Would create branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
+		} else {
+			p.display.ShowInfo("   [dry-run] Would create branch: %s (from current HEAD)\n", state.BranchName)
+		}
 		state.Step = StepPRD
 		return nil
 	}
 
 	// Create and checkout the branch
-	p.display.ShowInfo("   Creating branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
+	if state.BaseBranch != "" {
+		p.display.ShowInfo("   Creating branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
+	} else {
+		p.display.ShowInfo("   Creating branch: %s (from current HEAD)\n", state.BranchName)
+	}
 	if err := CreateBranch(state.BranchName, state.BaseBranch); err != nil {
 		return fmt.Errorf("failed to create branch: %w", err)
 	}
