@@ -221,8 +221,11 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxErr == context.DeadlineExceeded {
+				return "", fmt.Errorf("prompt timed out after %s", timeout)
+			}
+			return "", fmt.Errorf("prompt canceled: %w", ctxErr)
 		}
 
 		// Tolerate non-zero exit if Claude still produced a response and no stderr.
