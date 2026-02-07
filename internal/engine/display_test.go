@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 	"testing"
@@ -44,4 +45,38 @@ func TestRenderAnimatedSpinnerText_Empty(t *testing.T) {
 	if rendered != "" {
 		t.Errorf("expected empty rendered text for empty input, got %q", rendered)
 	}
+}
+
+func TestStartSpinner_UpdatesMessageWhenAlreadySpinning(t *testing.T) {
+	var out bytes.Buffer
+	d := NewDisplay(&out)
+
+	d.StartSpinner("thinking...")
+	d.StartSpinner("run ls -la")
+
+	if !d.spinning {
+		t.Fatal("expected spinner to remain active")
+	}
+	if d.spinMsg != "run ls -la" {
+		t.Fatalf("expected spinner message to update, got %q", d.spinMsg)
+	}
+
+	d.StopSpinner()
+}
+
+func TestShowEvent_ToolKeepsSpinnerAndUpdatesMessage(t *testing.T) {
+	var out bytes.Buffer
+	d := NewDisplay(&out)
+
+	d.StartSpinner("thinking...")
+	d.ShowEvent(&Event{Type: EventTool, Tool: "run", Detail: "ls -la"})
+
+	if !d.spinning {
+		t.Fatal("expected spinner to stay active across tool event")
+	}
+	if d.spinMsg != "run ls -la" {
+		t.Fatalf("expected spinner message to be updated to tool text, got %q", d.spinMsg)
+	}
+
+	d.StopSpinner()
 }

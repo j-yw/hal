@@ -86,6 +86,8 @@ func NewDisplay(out io.Writer) *Display {
 func (d *Display) StartSpinner(msg string) {
 	d.spinMu.Lock()
 	if d.spinning {
+		// Spinner already running: just update the message in place.
+		d.spinMsg = msg
 		d.spinMu.Unlock()
 		return
 	}
@@ -116,16 +118,20 @@ func (d *Display) StartSpinner(msg string) {
 			select {
 			case <-d.spinCtx.Done():
 				// Clear the spinner line
+				d.mu.Lock()
 				fmt.Fprint(d.out, "\033[2K\r")
+				d.mu.Unlock()
 				return
 			case <-ticker.C:
+				d.mu.Lock()
 				// HAL eye on the loading line: static brackets, pulsing red iris.
 				accent := SpinnerGradient[frame%len(SpinnerGradient)]
 				dotStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
 				spinChar := bracketStyle.Render("[") + dotStyle.Render("●") + bracketStyle.Render("]")
 
 				// Build the display message and apply a subtle shimmer.
-				displayMsg := d.spinnerDisplayMessage(msg)
+				baseMsg := d.currentSpinnerMessage()
+				displayMsg := d.spinnerDisplayMessage(baseMsg)
 				msgText := renderAnimatedSpinnerText(displayMsg, frame)
 
 				line := fmt.Sprintf("   %s %s", spinChar, msgText)
@@ -137,6 +143,7 @@ func (d *Display) StartSpinner(msg string) {
 					// Move to start of line, clear, and reprint
 					fmt.Fprintf(d.out, "\r\033[2K%s", line)
 				}
+				d.mu.Unlock()
 
 				frame++
 			}
@@ -153,19 +160,23 @@ func (d *Display) isThinkingSpinnerActive() bool {
 	return active
 }
 
+func (d *Display) currentSpinnerMessage() string {
+	d.spinMu.Lock()
+	msg := d.spinMsg
+	d.spinMu.Unlock()
+	return msg
+}
+
 func (d *Display) clearThinkingState() {
 	d.isThinking = false
 	d.thinkingStart = time.Time{}
 }
 
+// spinnerDisplayMessage returns the message shown on the spinner line.
+// Caller must hold d.mu.
 func (d *Display) spinnerDisplayMessage(base string) string {
-	d.mu.Lock()
-	thinking := d.isThinking
-	thinkStart := d.thinkingStart
-	d.mu.Unlock()
-
-	if thinking && !thinkStart.IsZero() {
-		elapsed := time.Since(thinkStart).Truncate(time.Second)
+	if d.isThinking && !d.thinkingStart.IsZero() {
+		elapsed := time.Since(d.thinkingStart).Truncate(time.Second)
 		return fmt.Sprintf("%s %s", base, elapsed)
 	}
 
@@ -198,9 +209,9 @@ func (d *Display) ShowEvent(e *Event) {
 		return
 	}
 
-	// For thinking deltas, don't stop the spinner — let it keep
-	// showing elapsed time. Only stop for other event types.
-	if e.Type != EventThinking || e.Data.Message != "delta" {
+	// Keep spinner continuity when updating active activity text.
+	keepSpinner := e.Type == EventTool || (e.Type == EventThinking && e.Data.Message == "delta")
+	if !keepSpinner {
 		d.StopSpinner()
 	}
 
@@ -231,6 +242,11 @@ func (d *Display) ShowEvent(e *Event) {
 		detail := e.Detail
 		if detail != "" {
 			detail = " " + detail
+		}
+
+		if d.isTTY && d.isThinkingSpinnerActive() {
+			// Clear active spinner line before writing immutable tool history line.
+			fmt.Fprint(d.out, "\r\033[2K")
 		}
 
 		// Color-code based on tool type
