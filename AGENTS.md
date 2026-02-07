@@ -114,3 +114,5 @@
 ## Patterns from compound/tty-spinner-lifecycle-integration-tests (2026-02-07)
 
 - TTY lifecycle tests for `internal/engine/display.go` should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags, use `package engine`, and document PTY determinism constraints at the top of the file.
+- Use a PTY harness (`github.com/creack/pty`): open master/slave, build `Display` with the slave writer (so `isTTY` is true), and capture terminal output by reading the master in a dedicated goroutine.
+- PTY harness cleanup must be strict and idempotent: call `Display.StopSpinner()` before closing descriptors, treat `io.EOF`/`os.ErrClosed`/`syscall.EIO` as expected read-termination errors, and wait on a bounded `readDone` channel in `t.Cleanup`.

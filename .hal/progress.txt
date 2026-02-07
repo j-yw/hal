@@ -12,6 +12,7 @@
 - Tool dedup key is `e.Tool + e.Detail` (no space) — space is added later for display only.
 - ShowEvent lifecycle tests must call `d.StopSpinner()` between events to clean up spinner state for FSM assertions.
 - TTY spinner integration coverage should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags using `package engine`.
+- For TTY integration tests, use a PTY master/slave harness (`github.com/creack/pty`): pass the slave to `NewDisplay`, read the master in a goroutine, and treat `io.EOF`, `os.ErrClosed`, and `syscall.EIO` as expected shutdown errors.
 
 ---
 
@@ -171,5 +172,17 @@
   - Keep Display TTY integration tests behind the `integration` build tag so default unit runs stay fast and deterministic.
   - Use `package engine` for these tests because upcoming lifecycle assertions need access to Display internals (FSM/spinner state).
   - Put PTY determinism constraints in a top-level file comment so future additions follow bounded waits + normalized output patterns.
+---
+
+## 2026-02-07 19:11 +08 - T-002
+- Implemented a reusable PTY integration harness in `internal/engine/display_tty_integration_test.go` with `newDisplayTTYHarness`, concurrent master capture, and idempotent `Close()` cleanup.
+- Added `TestDisplayTTYHarness_CapturesLifecycleOutput` to verify the harness runs `NewDisplay` in real TTY mode and captures lifecycle output from `EventInit` + `EventTool`.
+- Added integration-only dependency `github.com/creack/pty` for PTY master/slave support.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run TestDisplayTTYHarness_CapturesLifecycleOutput`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `go.mod`, `go.sum`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - PTY capture goroutines can return `syscall.EIO` when descriptors close; treat it as expected teardown rather than test failure.
+  - Wrap PTY cleanup in `sync.Once` because tests may call harness `Close()` explicitly while also relying on `t.Cleanup`.
+  - Stop `Display` spinner before closing PTY descriptors to avoid teardown races.
 ---
 
