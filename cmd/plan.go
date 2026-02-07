@@ -125,7 +125,7 @@ func openEditorForInput() (string, error) {
 	}
 	if editor == "" {
 		// Try common editors
-		for _, e := range []string{"nano", "vim", "vi"} {
+		for _, e := range []string{"nvim", "nano", "vim", "vi"} {
 			if _, err := exec.LookPath(e); err == nil {
 				editor = e
 				break
