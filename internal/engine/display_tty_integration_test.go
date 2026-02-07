@@ -57,6 +57,11 @@ type lifecycleCheckpoints struct {
 	Interval       time.Duration
 }
 
+type spinnerRuntimeSnapshot struct {
+	active bool
+	done   chan struct{}
+}
+
 type displayTTYHarness struct {
 	t       *testing.T
 	display *Display
@@ -275,6 +280,10 @@ func emitCanonicalToolEvent(display *Display, tool, detail string) {
 	display.ShowEvent(&Event{Type: EventTool, Tool: tool, Detail: detail})
 }
 
+func emitCanonicalTextEvent(display *Display) {
+	display.ShowEvent(&Event{Type: EventText, Detail: "assistant response"})
+}
+
 func emitCanonicalResultEvent(display *Display, success bool, tokens int, durationMS float64) {
 	display.ShowEvent(&Event{
 		Type: EventResult,
@@ -420,6 +429,36 @@ func TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError(t *testing.T) {
 	assertMarkerOrder(t, terminal, "> Read README.md", "[!!]")
 }
 
+func TestDisplayTTYLifecycle_SpinnerContinuity_ThinkingToTool(t *testing.T) {
+	h := newDisplayTTYHarness(t)
+
+	emitCanonicalThinkingEvents(h.display, "integration-model")
+	beforeOutput := h.WaitForOutputContains("[●]", ptyWaitTimeout, ptyPollInterval)
+	beforeSpinner := waitForSpinnerRuntimeSnapshot(t, h.display, ptyWaitTimeout, ptyPollInterval)
+
+	emitCanonicalToolEvent(h.display, "Read", "README.md")
+	afterOutput := h.WaitForOutputContains("[●] Read README.md", ptyWaitTimeout, ptyPollInterval)
+	afterSpinner := waitForSpinnerRuntimeSnapshot(t, h.display, ptyWaitTimeout, ptyPollInterval)
+
+	assertSpinnerContinuity(t, "thinking->tool", beforeSpinner, afterSpinner)
+	assertHALBrandingContinuity(t, beforeOutput, afterOutput, "[●] Read README.md")
+}
+
+func TestDisplayTTYLifecycle_SpinnerContinuity_TextToTool(t *testing.T) {
+	h := newDisplayTTYHarness(t)
+
+	emitCanonicalTextEvent(h.display)
+	beforeOutput := h.WaitForOutputContains("[●]", ptyWaitTimeout, ptyPollInterval)
+	beforeSpinner := waitForSpinnerRuntimeSnapshot(t, h.display, ptyWaitTimeout, ptyPollInterval)
+
+	emitCanonicalToolEvent(h.display, "Read", "README.md")
+	afterOutput := h.WaitForOutputContains("[●] Read README.md", ptyWaitTimeout, ptyPollInterval)
+	afterSpinner := waitForSpinnerRuntimeSnapshot(t, h.display, ptyWaitTimeout, ptyPollInterval)
+
+	assertSpinnerContinuity(t, "text->tool", beforeSpinner, afterSpinner)
+	assertHALBrandingContinuity(t, beforeOutput, afterOutput, "[●] Read README.md")
+}
+
 func assertPhaseSnapshotContains(t *testing.T, snapshots map[lifecyclePhase]phaseOutputSnapshot, phase lifecyclePhase, marker string) {
 	t.Helper()
 
@@ -450,5 +489,74 @@ func assertMarkerOrder(t *testing.T, output, first, second string) {
 
 	if firstIndex >= secondIndex {
 		t.Fatalf("marker order invalid: %q (idx=%d) should appear before %q (idx=%d)\noutput: %q", first, firstIndex, second, secondIndex, output)
+	}
+}
+
+func waitForSpinnerRuntimeSnapshot(t *testing.T, display *Display, timeout, interval time.Duration) spinnerRuntimeSnapshot {
+	t.Helper()
+
+	if timeout <= 0 {
+		t.Fatalf("timeout must be > 0, got %s", timeout)
+	}
+	if interval <= 0 {
+		t.Fatalf("interval must be > 0, got %s", interval)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		snapshot := captureSpinnerRuntimeSnapshot(display)
+		if snapshot.active && snapshot.done != nil {
+			return snapshot
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for active spinner (interval %s)", timeout, interval)
+		}
+
+		time.Sleep(interval)
+	}
+}
+
+func captureSpinnerRuntimeSnapshot(display *Display) spinnerRuntimeSnapshot {
+	display.spinMu.Lock()
+	defer display.spinMu.Unlock()
+
+	return spinnerRuntimeSnapshot{
+		active: display.spinning,
+		done:   display.spinDone,
+	}
+}
+
+func assertSpinnerContinuity(t *testing.T, transition string, before, after spinnerRuntimeSnapshot) {
+	t.Helper()
+
+	if !before.active {
+		t.Fatalf("spinner inactive before %s transition", transition)
+	}
+	if !after.active {
+		t.Fatalf("spinner inactive after %s transition", transition)
+	}
+	if before.done == nil || after.done == nil {
+		t.Fatalf("spinner runtime channel missing across %s transition (before=%v after=%v)", transition, before.done, after.done)
+	}
+	if before.done != after.done {
+		t.Fatalf("spinner restarted across %s transition; expected same spinner runtime channel", transition)
+	}
+}
+
+func assertHALBrandingContinuity(t *testing.T, beforeOutput, afterOutput, transitionMarker string) {
+	t.Helper()
+
+	if !strings.Contains(beforeOutput, "[●]") {
+		t.Fatalf("pre-transition output missing HAL-eye branding: %q", beforeOutput)
+	}
+
+	transitionIndex := strings.Index(afterOutput, transitionMarker)
+	if transitionIndex < 0 {
+		t.Fatalf("post-transition output missing marker %q: %q", transitionMarker, afterOutput)
+	}
+
+	if !strings.Contains(afterOutput[:transitionIndex], "[●]") {
+		t.Fatalf("HAL-eye branding disappeared before transition marker %q\noutput: %q", transitionMarker, afterOutput)
 	}
 }

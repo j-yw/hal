@@ -16,6 +16,7 @@
 - PTY output assertions should use bounded polling with explicit timeout/interval and normalize terminal output (strip ANSI CSI + convert `\r` redraws to `\n`) before matching markers.
 - For TTY lifecycle flows, drive events through reusable canonical emit helpers (thinking/tool/terminal) and capture per-phase snapshots after checkpoint waits so assertions can target phase boundaries deterministically.
 - In PTY spinner assertions, use spinner-inclusive markers (for example `[●] Read README.md`) so waits prove animated spinner frames rendered, not just static tool history lines.
+- For PTY spinner continuity assertions (thinking→tool, text→tool), capture spinner runtime state under `spinMu` and compare `spinDone` channel identity before/after; unchanged channel means no spinner restart gap.
 - For PTY error-lifecycle assertions, use normalized terminal snapshots and compare marker indices (`> tool ...` before `[!!]`) to verify tool history prints before error output.
 
 ---
@@ -236,5 +237,17 @@
   - For error-path lifecycle tests, assert ordering on the terminal snapshot (not just the tool snapshot) so checks include the full accumulated PTY stream.
   - Use the immutable history marker (`> Read ...`) for ordering checks; spinner redraw markers can appear multiple times and are less stable for index-based assertions.
   - Assert both `[!!]` and the concrete error message to keep failures deterministic across style changes.
+---
+
+## 2026-02-07 19:31 +08 - T-007
+- Added `TestDisplayTTYLifecycle_SpinnerContinuity_ThinkingToTool` and `TestDisplayTTYLifecycle_SpinnerContinuity_TextToTool` in `internal/engine/display_tty_integration_test.go` to validate PTY spinner continuity across thinking→tool and text→tool transitions.
+- Added reusable continuity helpers: `waitForSpinnerRuntimeSnapshot`, `captureSpinnerRuntimeSnapshot`, `assertSpinnerContinuity`, and `assertHALBrandingContinuity`.
+- Added canonical `emitCanonicalTextEvent` helper to drive text-phase spinner activity before tool transition assertions.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_SpinnerContinuity_ThinkingToTool|TestDisplayTTYLifecycle_SpinnerContinuity_TextToTool|TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion|TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError'`, `go test ./...`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - To prove spinner continuity (no restart gap), compare `spinDone` channel identity before/after transition while holding `spinMu`.
+  - Pair internal continuity assertions with normalized output checks that include `[●]` markers to confirm HAL-eye branding stays visible through transition boundaries.
+  - A dedicated text emitter helper keeps text→tool transition tests deterministic and avoids repeating raw `EventText` setup in each case.
 ---
 
