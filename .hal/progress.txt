@@ -13,6 +13,7 @@
 - ShowEvent lifecycle tests must call `d.StopSpinner()` between events to clean up spinner state for FSM assertions.
 - TTY spinner integration coverage should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags using `package engine`.
 - For TTY integration tests, use a PTY master/slave harness (`github.com/creack/pty`): pass the slave to `NewDisplay`, read the master in a goroutine, and treat `io.EOF`, `os.ErrClosed`, and `syscall.EIO` as expected shutdown errors.
+- If `pty.Open()` succeeds but `NewDisplay(slave).isTTY` is false, close both PTY descriptors and `t.Skip` with an explicit unsupported-environment message to avoid flaky portability failures.
 - PTY output assertions should use bounded polling with explicit timeout/interval and normalize terminal output (strip ANSI CSI + convert `\r` redraws to `\n`) before matching markers.
 - For TTY lifecycle flows, drive events through reusable canonical emit helpers (thinking/tool/terminal) and capture per-phase snapshots after checkpoint waits so assertions can target phase boundaries deterministically.
 - In PTY spinner assertions, use spinner-inclusive markers (for example `[●] Read README.md`) so waits prove animated spinner frames rendered, not just static tool history lines.
@@ -262,5 +263,18 @@
   - Teardown regressions are best caught by pairing `display.fsm.State() == StateIdle` with spinner inactivity assertions; either signal alone can miss partial cleanup bugs.
   - Read FSM state under `display.mu` in tests to align with Display's split-lock discipline (`mu` for FSM/output, `spinMu` for spinner runtime fields).
   - Use `display.isThinkingSpinnerActive()` as the spinner-active indicator instead of reading spinner fields directly.
+---
+
+## 2026-02-07 19:39 +08 - T-009
+- Hardened PTY harness portability guardrails in `internal/engine/display_tty_integration_test.go`.
+- Added explicit skip messaging for unsupported PTY environments and a second skip path when `pty.Open()` succeeds but `NewDisplay(slave)` is not detected as TTY.
+- Added `closePTYDescriptor` helper and upgraded harness cleanup to report close failures, stop spinner before descriptor teardown, and assert spinner shutdown after cleanup.
+- Added `TestDisplayTTYHarness_Close_StopsSpinnerAndCaptureLoop` to verify cleanup is idempotent and capture goroutine teardown is deterministic.
+- Ran checks: `go test ./internal/engine/...`, `go test ./...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTY|TestDisplayLifecycleDriver|TestNormalizeTTYOutput'`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Portability guardrails should skip early with explicit context when PTY setup is unavailable or when the PTY-backed writer is not detected as TTY.
+  - Close PTY descriptors via a helper that tolerates `os.ErrClosed` so cleanup stays idempotent in explicit `Close()` + `t.Cleanup` paths.
+  - Cleanup assertions should verify both goroutine teardown (`readDone`) and spinner inactivity to catch partial shutdown regressions.
 ---
 

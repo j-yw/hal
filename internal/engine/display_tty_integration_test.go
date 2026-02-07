@@ -81,12 +81,23 @@ func newDisplayTTYHarness(t *testing.T) *displayTTYHarness {
 
 	master, slave, err := pty.Open()
 	if err != nil {
-		t.Skipf("PTY not supported in this environment: %v", err)
+		skipPTYUnsupported(t, "unable to open pseudo-terminal: %v", err)
+	}
+
+	display := NewDisplay(slave)
+	if !display.isTTY {
+		if closeErr := closePTYDescriptor(slave); closeErr != nil {
+			t.Logf("failed to close PTY slave during skip: %v", closeErr)
+		}
+		if closeErr := closePTYDescriptor(master); closeErr != nil {
+			t.Logf("failed to close PTY master during skip: %v", closeErr)
+		}
+		skipPTYUnsupported(t, "opened PTY but Display writer was not detected as TTY")
 	}
 
 	h := &displayTTYHarness{
 		t:        t,
-		display:  NewDisplay(slave),
+		display:  display,
 		master:   master,
 		slave:    slave,
 		readDone: make(chan struct{}),
@@ -99,6 +110,23 @@ func newDisplayTTYHarness(t *testing.T) *displayTTYHarness {
 	})
 
 	return h
+}
+
+func skipPTYUnsupported(t *testing.T, format string, args ...any) {
+	t.Helper()
+	t.Skipf("PTY integration unsupported in this environment: "+format, args...)
+}
+
+func closePTYDescriptor(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+
+	err := file.Close()
+	if err == nil || errors.Is(err, os.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 func (h *displayTTYHarness) captureOutput() {
@@ -128,8 +156,13 @@ func (h *displayTTYHarness) captureOutput() {
 func (h *displayTTYHarness) Close() {
 	h.closeOnce.Do(func() {
 		h.display.StopSpinner()
-		_ = h.slave.Close()
-		_ = h.master.Close()
+
+		if err := closePTYDescriptor(h.slave); err != nil {
+			h.t.Errorf("failed to close PTY slave: %v", err)
+		}
+		if err := closePTYDescriptor(h.master); err != nil {
+			h.t.Errorf("failed to close PTY master: %v", err)
+		}
 
 		select {
 		case <-h.readDone:
@@ -139,6 +172,9 @@ func (h *displayTTYHarness) Close() {
 
 		if err := h.ReadErr(); err != nil {
 			h.t.Errorf("PTY capture failed: %v", err)
+		}
+		if h.display.isThinkingSpinnerActive() {
+			h.t.Errorf("expected spinner to stop during PTY harness cleanup")
 		}
 	})
 }
@@ -352,6 +388,31 @@ func TestDisplayTTYHarness_CapturesLifecycleOutput(t *testing.T) {
 
 	h.display.StopSpinner()
 	h.Close()
+}
+
+func TestDisplayTTYHarness_Close_StopsSpinnerAndCaptureLoop(t *testing.T) {
+	h := newDisplayTTYHarness(t)
+
+	emitCanonicalTextEvent(h.display)
+	h.WaitForOutputContains("[●]", ptyWaitTimeout, ptyPollInterval)
+
+	h.Close()
+	h.Close() // idempotent by contract
+
+	if h.display.isThinkingSpinnerActive() {
+		t.Fatal("expected spinner to be inactive after harness Close")
+	}
+
+	select {
+	case <-h.readDone:
+		// capture goroutine terminated cleanly
+	default:
+		t.Fatal("expected PTY capture goroutine to terminate after Close")
+	}
+
+	if err := h.ReadErr(); err != nil {
+		t.Fatalf("expected no PTY capture errors after Close, got: %v", err)
+	}
 }
 
 func TestDisplayLifecycleDriver_DriveSuccessLifecycle(t *testing.T) {
