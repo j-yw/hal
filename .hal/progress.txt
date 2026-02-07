@@ -20,6 +20,7 @@
 - For PTY spinner continuity assertions (thinking→tool, text→tool), capture spinner runtime state under `spinMu` and compare `spinDone` channel identity before/after; unchanged channel means no spinner restart gap.
 - For PTY error-lifecycle assertions, use normalized terminal snapshots and compare marker indices (`> tool ...` before `[!!]`) to verify tool history prints before error output.
 - Terminal-event teardown assertions should check both `display.fsm.State() == StateIdle` and `!display.isThinkingSpinnerActive()` after completion/error markers to verify FSM reset and spinner shutdown together.
+- Integration-tagged engine tests are excluded from default `go test`; when engine constructor signatures change (for example `New(cfg *engine.EngineConfig)`), run `go test -tags=integration ./internal/engine/...` and update integration tests to pass `nil` for default config.
 
 ---
 
@@ -276,5 +277,16 @@
   - Portability guardrails should skip early with explicit context when PTY setup is unavailable or when the PTY-backed writer is not detected as TTY.
   - Close PTY descriptors via a helper that tolerates `os.ErrClosed` so cleanup stays idempotent in explicit `Close()` + `t.Cleanup` paths.
   - Cleanup assertions should verify both goroutine teardown (`readDone`) and spinner inactivity to catch partial shutdown regressions.
+---
+
+## 2026-02-07 19:41 +08 - T-010
+- Fixed integration-tagged Codex tests to match the current engine constructor contract by passing `nil` config to `codex.New(nil)` in all integration test cases.
+- Ran the verification matrix for engine suites: `go test ./internal/engine/...` and `go test -count=1 -tags=integration ./internal/engine/...` for 3 consecutive runs.
+- Confirmed project-level quality remains green with `make test`.
+- Files changed: `internal/engine/codex/integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Integration-tagged tests can silently drift when constructor signatures evolve because they are excluded from default test runs.
+  - For constructor migrations to `New(cfg *engine.EngineConfig)`, update integration tests to call `New(nil)` when defaults are intended.
+  - Use `-count=1` for repeated integration test runs to detect flakes instead of reusing cached results.
 ---
 

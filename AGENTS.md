@@ -123,3 +123,7 @@
 - For continuity assertions across spinner-active transitions (thinking→tool, text→tool), capture `Display` spinner runtime state under `spinMu` and compare `spinDone` channel identity before/after; unchanged channel proves the spinner goroutine was not restarted.
 - For error-path lifecycle assertions, validate output ordering on normalized terminal snapshots (for example `strings.Index` on `> Read ...` before `[!!]`) to prove tool history is emitted before terminal error output.
 - For terminal teardown assertions in PTY tests, verify both `d.fsm.State() == StateIdle` and `!d.isThinkingSpinnerActive()` after completion/error markers to ensure FSM reset and spinner shutdown are both enforced.
+
+## Patterns from compound/engine-integration-verification-matrix (2026-02-07)
+
+- Engine constructor signature changes can break only integration-tagged tests (hidden from default `go test`), so verification passes should always include `go test -tags=integration ./internal/engine/...` and integration tests should instantiate engines with the current `New(cfg *engine.EngineConfig)` contract (for defaults, pass `nil`).

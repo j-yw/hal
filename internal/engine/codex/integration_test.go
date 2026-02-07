@@ -61,7 +61,7 @@ func TestExecuteWithSimplePrompt(t *testing.T) {
 		t.Skip("codex CLI not found")
 	}
 
-	eng := New()
+	eng := New(nil)
 	eng.Timeout = 2 * time.Minute
 
 	ctx := context.Background()
@@ -94,7 +94,7 @@ func TestExecuteEventsDisplayCorrectly(t *testing.T) {
 		t.Skip("codex CLI not found")
 	}
 
-	eng := New()
+	eng := New(nil)
 	eng.Timeout = 2 * time.Minute
 
 	ctx := context.Background()
@@ -126,7 +126,7 @@ func TestResultReflectsSuccessFailure(t *testing.T) {
 		t.Skip("codex CLI not found")
 	}
 
-	eng := New()
+	eng := New(nil)
 	eng.Timeout = 2 * time.Minute
 
 	ctx := context.Background()
@@ -171,7 +171,7 @@ func TestPromptReturnsExpectedText(t *testing.T) {
 		t.Skip("codex CLI not found")
 	}
 
-	eng := New()
+	eng := New(nil)
 	eng.Timeout = 2 * time.Minute
 
 	ctx := context.Background()
@@ -198,7 +198,7 @@ func TestStreamPromptCollectsText(t *testing.T) {
 		t.Skip("codex CLI not found")
 	}
 
-	eng := New()
+	eng := New(nil)
 	eng.Timeout = 2 * time.Minute
 
 	ctx := context.Background()
@@ -228,7 +228,7 @@ func TestTimeoutBehavior(t *testing.T) {
 		t.Skip("codex CLI not found")
 	}
 
-	eng := New()
+	eng := New(nil)
 	eng.Timeout = 1 * time.Second // Very short timeout
 
 	ctx := context.Background()
