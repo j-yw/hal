@@ -16,6 +16,7 @@ var (
 	autoSkipPRFlag bool
 	autoReportFlag string
 	autoEngineFlag string
+	autoBaseFlag   string
 )
 
 var autoCmd = &cobra.Command{
@@ -39,7 +40,8 @@ Examples:
   hal auto --report report.md  # Use specific report file
   hal auto --dry-run           # Show what would happen without executing
   hal auto --resume            # Continue from last saved state
-  hal auto --skip-pr           # Skip PR creation at the end`,
+  hal auto --skip-pr           # Skip PR creation at the end
+  hal auto --base develop      # Use develop as the base branch`,
 	RunE: runAuto,
 }
 
@@ -49,6 +51,7 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "Skip PR creation at end")
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
+	autoCmd.Flags().StringVar(&autoBaseFlag, "base", "", "Base branch for new work branch and PR target (default: current branch)")
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -107,6 +110,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		DryRun:     autoDryRunFlag,
 		SkipPR:     autoSkipPRFlag,
 		ReportPath: autoReportFlag,
+		BaseBranch: autoBaseFlag,
 	}
 
 	// Run the pipeline

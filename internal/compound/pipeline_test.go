@@ -70,6 +70,7 @@ func TestStatePersistence(t *testing.T) {
 	// Create initial state
 	initialState := &PipelineState{
 		Step:       StepBranch,
+		BaseBranch: "main",
 		BranchName: "compound/test-feature",
 		ReportPath: "/tmp/test-report.md",
 		StartedAt:  time.Now(),
@@ -106,6 +107,9 @@ func TestStatePersistence(t *testing.T) {
 	}
 	if loadedState.BranchName != initialState.BranchName {
 		t.Errorf("BranchName mismatch: expected %s, got %s", initialState.BranchName, loadedState.BranchName)
+	}
+	if loadedState.BaseBranch != initialState.BaseBranch {
+		t.Errorf("BaseBranch mismatch: expected %s, got %s", initialState.BaseBranch, loadedState.BaseBranch)
 	}
 	if loadedState.ReportPath != initialState.ReportPath {
 		t.Errorf("ReportPath mismatch: expected %s, got %s", initialState.ReportPath, loadedState.ReportPath)
@@ -171,7 +175,8 @@ func TestDryRunMode(t *testing.T) {
 
 	ctx := context.Background()
 	opts := RunOptions{
-		DryRun: true,
+		DryRun:     true,
+		BaseBranch: "main",
 	}
 
 	// Run in dry-run mode
@@ -214,6 +219,7 @@ func TestDryRunModeWithPresetState(t *testing.T) {
 	// Save a state at the branch step
 	state := &PipelineState{
 		Step:       StepBranch,
+		BaseBranch: "main",
 		BranchName: "compound/test-feature",
 		ReportPath: "/tmp/test-report.md",
 		StartedAt:  time.Now(),
@@ -232,8 +238,9 @@ func TestDryRunModeWithPresetState(t *testing.T) {
 
 	ctx := context.Background()
 	opts := RunOptions{
-		Resume: true,
-		DryRun: true,
+		Resume:     true,
+		DryRun:     true,
+		BaseBranch: "main",
 	}
 
 	// Run in dry-run + resume mode
@@ -275,7 +282,7 @@ func TestMissingReportsGraceful(t *testing.T) {
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	ctx := context.Background()
-	opts := RunOptions{}
+	opts := RunOptions{BaseBranch: "main"}
 
 	err := pipeline.Run(ctx, opts)
 
@@ -308,7 +315,7 @@ func TestMissingReportsDirectory(t *testing.T) {
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	ctx := context.Background()
-	opts := RunOptions{}
+	opts := RunOptions{BaseBranch: "main"}
 
 	err := pipeline.Run(ctx, opts)
 
@@ -379,7 +386,7 @@ func TestStatePersistenceOnStepTransition(t *testing.T) {
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	ctx := context.Background()
-	opts := RunOptions{}
+	opts := RunOptions{BaseBranch: "main"}
 
 	// Run the pipeline - it will fail at some point (branch creation)
 	// but state should be saved
@@ -495,6 +502,7 @@ func TestPipelineWithSpecificReportPath(t *testing.T) {
 	ctx := context.Background()
 	opts := RunOptions{
 		ReportPath: customReportPath, // Specific report path
+		BaseBranch: "main",
 	}
 
 	// Run - will fail at branch step but should use custom report
@@ -538,7 +546,7 @@ func TestContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	opts := RunOptions{}
+	opts := RunOptions{BaseBranch: "main"}
 
 	err := pipeline.Run(ctx, opts)
 

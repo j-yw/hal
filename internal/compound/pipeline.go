@@ -108,6 +108,7 @@ type RunOptions struct {
 	DryRun     bool   // Show what would happen without executing
 	SkipPR     bool   // Skip PR creation at the end
 	ReportPath string // Specific report file to use (skips find latest)
+	BaseBranch string // Base branch for creating work branch / PR target
 }
 
 // Run executes the compound pipeline from the current state or from the beginning.
@@ -125,6 +126,13 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			Step:      StepAnalyze,
 			StartedAt: time.Now(),
 		}
+	}
+
+	if err := p.initializeBaseBranch(state, opts); err != nil {
+		return err
+	}
+	if state.BaseBranch != "" {
+		p.display.ShowInfo("   Base branch: %s\n", state.BaseBranch)
 	}
 
 	// Run steps in sequence, starting from current step
@@ -168,6 +176,37 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			return fmt.Errorf("step %s failed: %w", state.Step, err)
 		}
 	}
+}
+
+// initializeBaseBranch resolves and persists the base branch for this run.
+// Priority:
+//  1. Existing state.BaseBranch (for resumed runs)
+//  2. opts.BaseBranch override
+//  3. Current git branch (new runs, or resume before branch creation)
+func (p *Pipeline) initializeBaseBranch(state *PipelineState, opts RunOptions) error {
+	baseOverride := strings.TrimSpace(opts.BaseBranch)
+
+	if state.BaseBranch != "" {
+		if baseOverride != "" && baseOverride != state.BaseBranch {
+			p.display.ShowInfo("   Note: ignoring --base %q; resuming with saved base %q\n", baseOverride, state.BaseBranch)
+		}
+		return nil
+	}
+
+	if baseOverride != "" {
+		state.BaseBranch = baseOverride
+		return nil
+	}
+
+	if !opts.Resume || state.Step == StepAnalyze || state.Step == StepBranch {
+		base, err := CurrentBranch()
+		if err != nil {
+			return fmt.Errorf("failed to determine current branch: %w", err)
+		}
+		state.BaseBranch = base
+	}
+
+	return nil
 }
 
 // runAnalyzeStep finds and analyzes the report to identify the highest priority item.
@@ -241,16 +280,19 @@ func (p *Pipeline) runBranchStep(ctx context.Context, state *PipelineState, opts
 	if state.BranchName == "" {
 		return fmt.Errorf("no branch name set in state")
 	}
+	if state.BaseBranch == "" {
+		return fmt.Errorf("no base branch set in state (set --base or resume from analyze/branch)")
+	}
 
 	if opts.DryRun {
-		p.display.ShowInfo("   [dry-run] Would create branch: %s\n", state.BranchName)
+		p.display.ShowInfo("   [dry-run] Would create branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
 		state.Step = StepPRD
 		return nil
 	}
 
 	// Create and checkout the branch
-	p.display.ShowInfo("   Creating branch: %s\n", state.BranchName)
-	if err := CreateBranch(state.BranchName); err != nil {
+	p.display.ShowInfo("   Creating branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
+	if err := CreateBranch(state.BranchName, state.BaseBranch); err != nil {
 		return fmt.Errorf("failed to create branch: %w", err)
 	}
 
@@ -520,6 +562,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		Dir:           filepath.Join(p.dir, template.HalDir),
 		PRDFile:       template.AutoPRDFile,
 		ProgressFile:  template.ProgressFile,
+		BaseBranch:    state.BaseBranch,
 		MaxIterations: p.config.MaxIterations,
 		Engine:        p.engine.Name(),
 		EngineConfig:  p.engineConfig,
@@ -584,7 +627,11 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	if opts.DryRun {
-		p.display.ShowInfo("   [dry-run] Would push branch %s and create draft PR\n", state.BranchName)
+		if state.BaseBranch != "" {
+			p.display.ShowInfo("   [dry-run] Would push branch %s and create draft PR against %s\n", state.BranchName, state.BaseBranch)
+		} else {
+			p.display.ShowInfo("   [dry-run] Would push branch %s and create draft PR\n", state.BranchName)
+		}
 		state.Step = StepDone
 		return nil
 	}
@@ -611,7 +658,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	// Create draft PR
 	p.display.ShowInfo("   Creating draft PR...\n")
-	prURL, err := CreatePR(prTitle, prBody, "", state.BranchName)
+	prURL, err := CreatePR(prTitle, prBody, state.BaseBranch, state.BranchName)
 	if err != nil {
 		return fmt.Errorf("failed to create PR: %w", err)
 	}

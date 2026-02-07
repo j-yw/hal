@@ -7,13 +7,22 @@ import (
 	"strings"
 )
 
-// CreateBranch creates and checks out a new branch from current HEAD.
-func CreateBranch(branchName string) error {
-	cmd := exec.Command("git", "checkout", "-b", branchName)
+// CreateBranch creates and checks out a new branch from baseBranch.
+// If baseBranch is empty, git uses the current HEAD.
+func CreateBranch(branchName, baseBranch string) error {
+	args := []string{"checkout", "-b", branchName}
+	if baseBranch != "" {
+		args = append(args, baseBranch)
+	}
+
+	cmd := exec.Command("git", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if baseBranch != "" {
+			return fmt.Errorf("failed to create branch %q from %q: %w (stderr: %s)", branchName, baseBranch, err, stderr.String())
+		}
 		return fmt.Errorf("failed to create branch %q: %w (stderr: %s)", branchName, err, stderr.String())
 	}
 	return nil
