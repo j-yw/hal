@@ -14,6 +14,7 @@
 - TTY spinner integration coverage should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags using `package engine`.
 - For TTY integration tests, use a PTY master/slave harness (`github.com/creack/pty`): pass the slave to `NewDisplay`, read the master in a goroutine, and treat `io.EOF`, `os.ErrClosed`, and `syscall.EIO` as expected shutdown errors.
 - PTY output assertions should use bounded polling with explicit timeout/interval and normalize terminal output (strip ANSI CSI + convert `\r` redraws to `\n`) before matching markers.
+- For TTY lifecycle flows, drive events through reusable canonical emit helpers (thinking/tool/terminal) and capture per-phase snapshots after checkpoint waits so assertions can target phase boundaries deterministically.
 
 ---
 
@@ -198,5 +199,17 @@
   - PTY assertions are more stable when matching normalized output snapshots instead of raw immediate reads.
   - Timeout failures should include both normalized and raw captured output to debug control-sequence issues quickly.
   - Keep polling bounds explicit (`timeout`, `interval`) per assertion so integration tests remain deterministic and tuneable.
+---
+
+## 2026-02-07 19:20 +08 - T-004
+- Added reusable lifecycle helpers in `internal/engine/display_tty_integration_test.go`: canonical emitters for thinking (`EventInit` + thinking start/delta), tool (`EventTool`), and terminal events (`EventResult`/`EventError`).
+- Implemented `displayLifecycleDriver` with `DriveSuccessLifecycle` and `DriveErrorLifecycle`, plus checkpoint-based phase sync (`lifecycleCheckpoints`) and per-phase snapshot capture (`phaseOutputSnapshot`).
+- Added integration tests `TestDisplayLifecycleDriver_DriveSuccessLifecycle` and `TestDisplayLifecycleDriver_DriveErrorLifecycle` to verify checkpoint synchronization and phase snapshot availability for assertions.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestNormalizeTTYOutput_StripsANSIAndCarriageReturns|TestDisplayTTYHarness_CapturesLifecycleOutput|TestDisplayLifecycleDriver_DriveSuccessLifecycle|TestDisplayLifecycleDriver_DriveErrorLifecycle'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep lifecycle event sequencing in shared emit helpers so future TTY tests stay readable and avoid drift in event order.
+  - Capture output snapshots immediately after each checkpoint wait so phase assertions can compare normalized and raw output at stable boundaries.
+  - Put timeout/interval defaults inside checkpoint config (`withDefaults`) to keep callers concise without sacrificing bounded waits.
 ---
 

@@ -36,6 +36,27 @@ const (
 
 var ansiControlSequenceRegex = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
+type lifecyclePhase string
+
+const (
+	phaseThinking lifecyclePhase = "thinking"
+	phaseTool     lifecyclePhase = "tool"
+	phaseTerminal lifecyclePhase = "terminal"
+)
+
+type phaseOutputSnapshot struct {
+	Raw        string
+	Normalized string
+}
+
+type lifecycleCheckpoints struct {
+	ThinkingMarker string
+	ToolMarker     string
+	TerminalMarker string
+	Timeout        time.Duration
+	Interval       time.Duration
+}
+
 type displayTTYHarness struct {
 	t       *testing.T
 	display *Display
@@ -172,6 +193,103 @@ func (h *displayTTYHarness) WaitForOutputContains(marker string, timeout, interv
 	}
 }
 
+type displayLifecycleDriver struct {
+	h         *displayTTYHarness
+	snapshots map[lifecyclePhase]phaseOutputSnapshot
+}
+
+func newDisplayLifecycleDriver(h *displayTTYHarness) *displayLifecycleDriver {
+	return &displayLifecycleDriver{
+		h:         h,
+		snapshots: make(map[lifecyclePhase]phaseOutputSnapshot),
+	}
+}
+
+func (d *displayLifecycleDriver) DriveSuccessLifecycle(checkpoints lifecycleCheckpoints) map[lifecyclePhase]phaseOutputSnapshot {
+	cfg := checkpoints.withDefaults()
+
+	emitCanonicalThinkingEvents(d.h.display, "integration-model")
+	d.capturePhase(phaseThinking, cfg.ThinkingMarker, cfg)
+
+	emitCanonicalToolEvent(d.h.display, "Read", "README.md")
+	d.capturePhase(phaseTool, cfg.ToolMarker, cfg)
+
+	emitCanonicalResultEvent(d.h.display, true, 1500, 5000)
+	d.capturePhase(phaseTerminal, cfg.TerminalMarker, cfg)
+
+	return d.Snapshots()
+}
+
+func (d *displayLifecycleDriver) DriveErrorLifecycle(message string, checkpoints lifecycleCheckpoints) map[lifecyclePhase]phaseOutputSnapshot {
+	cfg := checkpoints.withDefaults()
+
+	emitCanonicalThinkingEvents(d.h.display, "integration-model")
+	d.capturePhase(phaseThinking, cfg.ThinkingMarker, cfg)
+
+	emitCanonicalToolEvent(d.h.display, "Read", "README.md")
+	d.capturePhase(phaseTool, cfg.ToolMarker, cfg)
+
+	emitCanonicalErrorEvent(d.h.display, message)
+	d.capturePhase(phaseTerminal, cfg.TerminalMarker, cfg)
+
+	return d.Snapshots()
+}
+
+func (d *displayLifecycleDriver) Snapshots() map[lifecyclePhase]phaseOutputSnapshot {
+	copied := make(map[lifecyclePhase]phaseOutputSnapshot, len(d.snapshots))
+	for phase, snapshot := range d.snapshots {
+		copied[phase] = snapshot
+	}
+	return copied
+}
+
+func (d *displayLifecycleDriver) capturePhase(phase lifecyclePhase, marker string, checkpoints lifecycleCheckpoints) {
+	if marker != "" {
+		d.h.WaitForOutputContains(marker, checkpoints.Timeout, checkpoints.Interval)
+	}
+
+	raw := d.h.Output()
+	d.snapshots[phase] = phaseOutputSnapshot{
+		Raw:        raw,
+		Normalized: normalizeTTYOutput(raw),
+	}
+}
+
+func (c lifecycleCheckpoints) withDefaults() lifecycleCheckpoints {
+	if c.Timeout <= 0 {
+		c.Timeout = ptyWaitTimeout
+	}
+	if c.Interval <= 0 {
+		c.Interval = ptyPollInterval
+	}
+	return c
+}
+
+func emitCanonicalThinkingEvents(display *Display, model string) {
+	display.ShowEvent(&Event{Type: EventInit, Data: EventData{Model: model}})
+	display.ShowEvent(&Event{Type: EventThinking, Data: EventData{Message: "start"}})
+	display.ShowEvent(&Event{Type: EventThinking, Data: EventData{Message: "delta"}})
+}
+
+func emitCanonicalToolEvent(display *Display, tool, detail string) {
+	display.ShowEvent(&Event{Type: EventTool, Tool: tool, Detail: detail})
+}
+
+func emitCanonicalResultEvent(display *Display, success bool, tokens int, durationMS float64) {
+	display.ShowEvent(&Event{
+		Type: EventResult,
+		Data: EventData{
+			Success:    success,
+			Tokens:     tokens,
+			DurationMs: durationMS,
+		},
+	})
+}
+
+func emitCanonicalErrorEvent(display *Display, message string) {
+	display.ShowEvent(&Event{Type: EventError, Data: EventData{Message: message}})
+}
+
 func isExpectedPTYReadError(err error) bool {
 	return errors.Is(err, io.EOF) ||
 		errors.Is(err, os.ErrClosed) ||
@@ -225,4 +343,53 @@ func TestDisplayTTYHarness_CapturesLifecycleOutput(t *testing.T) {
 
 	h.display.StopSpinner()
 	h.Close()
+}
+
+func TestDisplayLifecycleDriver_DriveSuccessLifecycle(t *testing.T) {
+	h := newDisplayTTYHarness(t)
+	driver := newDisplayLifecycleDriver(h)
+
+	snapshots := driver.DriveSuccessLifecycle(lifecycleCheckpoints{
+		ThinkingMarker: "model: integration-model",
+		ToolMarker:     "Read README.md",
+		TerminalMarker: "[OK]",
+		Timeout:        ptyWaitTimeout,
+		Interval:       ptyPollInterval,
+	})
+
+	assertPhaseSnapshotContains(t, snapshots, phaseThinking, "model: integration-model")
+	assertPhaseSnapshotContains(t, snapshots, phaseTool, "Read README.md")
+	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "[OK]")
+}
+
+func TestDisplayLifecycleDriver_DriveErrorLifecycle(t *testing.T) {
+	h := newDisplayTTYHarness(t)
+	driver := newDisplayLifecycleDriver(h)
+
+	snapshots := driver.DriveErrorLifecycle("integration failure", lifecycleCheckpoints{
+		ThinkingMarker: "model: integration-model",
+		ToolMarker:     "Read README.md",
+		TerminalMarker: "integration failure",
+		Timeout:        ptyWaitTimeout,
+		Interval:       ptyPollInterval,
+	})
+
+	assertPhaseSnapshotContains(t, snapshots, phaseThinking, "model: integration-model")
+	assertPhaseSnapshotContains(t, snapshots, phaseTool, "Read README.md")
+	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "integration failure")
+}
+
+func assertPhaseSnapshotContains(t *testing.T, snapshots map[lifecyclePhase]phaseOutputSnapshot, phase lifecyclePhase, marker string) {
+	t.Helper()
+
+	snapshot, ok := snapshots[phase]
+	if !ok {
+		t.Fatalf("missing snapshot for phase %q", phase)
+	}
+	if snapshot.Raw == "" {
+		t.Fatalf("snapshot for phase %q has empty raw output", phase)
+	}
+	if !strings.Contains(snapshot.Normalized, marker) {
+		t.Fatalf("snapshot for phase %q missing marker %q in normalized output: %q", phase, marker, snapshot.Normalized)
+	}
 }
