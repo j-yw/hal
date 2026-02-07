@@ -1,0 +1,179 @@
+{
+  "project": "spinner-state-machine-refactor",
+  "branchName": "compound/spinner-state-machine-refactor",
+  "description": "Refactor HAL CLI spinner/progress rendering from ad-hoc booleans into an explicit finite state machine with validated transitions and comprehensive tests.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Define SpinnerState type and transition table",
+      "description": "As a developer, I need a SpinnerState type with named constants and a transition validation function in internal/engine/spinner_state.go so that all spinner state changes are explicit and invalid transitions return errors.",
+      "acceptanceCriteria": [
+        "New file internal/engine/spinner_state.go defines SpinnerState type as an int with iota constants: StateIdle, StateThinking, StateToolActivity, StateCompletion, StateError",
+        "Transition(from, to SpinnerState) error function validates against explicit allow-list",
+        "Valid transitions: Idle→Thinking, Thinking→ToolActivity, Thinking→Completion, Thinking→Error, ToolActivity→Thinking, ToolActivity→Completion, ToolActivity→Error, ToolActivity→ToolActivity, Completion→Idle, Error→Idle, Idle→Idle",
+        "Invalid transitions return fmt.Errorf with descriptive message including state names",
+        "SpinnerState has a String() method returning the state name",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Implement SpinnerFSM struct with state, message, and timing",
+      "description": "As a developer, I need a SpinnerFSM struct in internal/engine/spinner_state.go that encapsulates current state, message, thinking start time, and last tool key so that Display can delegate all state tracking to this single type.",
+      "acceptanceCriteria": [
+        "SpinnerFSM struct holds: state SpinnerState, message string, thinkingStart time.Time, lastTool string",
+        "NewSpinnerFSM() returns FSM in StateIdle with zero-value fields",
+        "FSM.State() returns the current SpinnerState",
+        "FSM.GoTo(next SpinnerState, msg string) error calls Transition() and updates state + message; sets thinkingStart=time.Now() when entering StateThinking",
+        "FSM.Message() returns current message string",
+        "FSM.ThinkingElapsed() returns time.Since(thinkingStart) when in StateThinking, zero otherwise",
+        "FSM.SetLastTool(key string) and FSM.LastTool() string for dedup tracking",
+        "FSM.Reset() sets state to StateIdle and clears message, thinkingStart, lastTool",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Unit test every valid and invalid state transition",
+      "description": "As a developer, I need exhaustive table-driven tests in internal/engine/spinner_state_test.go verifying every valid transition succeeds and invalid transitions return errors.",
+      "acceptanceCriteria": [
+        "New file internal/engine/spinner_state_test.go exists",
+        "Table-driven test covers all 11 valid transitions from T-001 — each succeeds without error",
+        "Table-driven test covers at least 5 invalid transitions: Idle→Completion, Idle→Error, Completion→Thinking, Error→Thinking, Completion→ToolActivity — each returns non-nil error",
+        "Test verifies GoTo updates state and message correctly",
+        "Test verifies GoTo into StateThinking sets thinkingStart to a non-zero time",
+        "Test verifies Reset() returns state to StateIdle and clears message, thinkingStart, lastTool",
+        "Tests pass with go test ./internal/engine/...",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Wire SpinnerFSM into Display struct replacing boolean fields",
+      "description": "As a developer, I need to replace the isThinking, thinkingStart, and lastTool fields on Display with a single fsm *SpinnerFSM field, updating NewDisplay and helper methods to delegate to the FSM.",
+      "acceptanceCriteria": [
+        "Display struct replaces isThinking bool, thinkingStart time.Time, lastTool string with fsm *SpinnerFSM",
+        "NewDisplay initializes fsm via NewSpinnerFSM()",
+        "clearThinkingState() delegates to fsm: sets state to Idle if currently Thinking, clears thinkingStart",
+        "spinnerDisplayMessage() reads elapsed from fsm.ThinkingElapsed() instead of d.thinkingStart",
+        "spinning bool, spinMsg string, spinCtx, spinCancel, spinDone fields remain unchanged",
+        "Existing tests still pass with go test ./internal/engine/...",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Refactor ShowEvent for EventInit and EventThinking to use FSM",
+      "description": "As a developer, I need ShowEvent to drive FSM transitions for EventInit and EventThinking events so that the thinking lifecycle is state-machine-governed instead of boolean-flag-governed.",
+      "acceptanceCriteria": [
+        "EventInit triggers fsm.GoTo(StateThinking, msg) and starts spinner",
+        "EventThinking 'start' triggers fsm.GoTo(StateThinking, msg) with thinkingStart set automatically by FSM",
+        "EventThinking 'delta' updates spinner message without changing FSM state",
+        "EventThinking 'end' triggers fsm.GoTo(StateCompletion, '') then fsm.Reset(), prints thinking-complete line",
+        "Direct assignments to d.isThinking and d.thinkingStart are removed from these event handlers",
+        "Spinner stays active across thinking deltas (no stop/start)",
+        "Existing tests still pass with go test ./internal/engine/...",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Refactor ShowEvent for EventTool and EventText to use FSM",
+      "description": "As a developer, I need ShowEvent to drive FSM transitions for EventTool and EventText events so that tool-activity state is governed by the FSM.",
+      "acceptanceCriteria": [
+        "EventTool triggers fsm.GoTo(StateToolActivity, toolMsg) — spinner keeps running, message updates",
+        "Duplicate tool dedup uses fsm.LastTool() and fsm.SetLastTool() instead of d.lastTool",
+        "EventText triggers fsm.GoTo(StateToolActivity, workingMsg)",
+        "Spinner line clearing before tool history line output is preserved",
+        "Direct assignments to d.lastTool are removed",
+        "Existing TestShowEvent_ToolKeepsSpinnerAndUpdatesMessage still passes",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Refactor ShowEvent for EventResult and EventError to use FSM",
+      "description": "As a developer, I need ShowEvent to drive FSM transitions for EventResult and EventError events so that completion and error states are state-machine-governed.",
+      "acceptanceCriteria": [
+        "EventResult triggers fsm.GoTo(StateCompletion, '') then fsm.Reset(), stops spinner, prints result line",
+        "EventError triggers fsm.GoTo(StateError, errorMsg) then fsm.Reset(), stops spinner, prints error line",
+        "The keepSpinner logic at top of ShowEvent is replaced by FSM-driven decision: only stop spinner when next event is not EventTool or EventThinking delta",
+        "Direct calls to clearThinkingState() in these handlers are removed or replaced by FSM transitions",
+        "Existing tests still pass with go test ./internal/engine/...",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Add ShowEvent unit tests for full event lifecycle sequences",
+      "description": "As a developer, I need unit tests verifying ShowEvent drives the FSM correctly through realistic multi-event sequences so that lifecycle regressions are caught.",
+      "acceptanceCriteria": [
+        "Test: Init → Thinking start → Thinking delta → Tool → Tool → Thinking end → Result — verifies FSM state at each step via display.fsm.State()",
+        "Test: Init → Thinking start → Error — verifies error handling resets FSM to StateIdle",
+        "Test: Duplicate consecutive tool events are deduplicated via FSM lastTool",
+        "Test: Spinner message updates on Thinking→ToolActivity transition",
+        "All tests use bytes.Buffer writer (non-TTY) to avoid goroutine timing issues",
+        "Tests pass with go test ./internal/engine/...",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "title": "Add golden-output test for full lifecycle terminal output",
+      "description": "As a developer, I need a golden-output test capturing expected terminal output for a complete thinking→tool-activity→completion lifecycle so that visual regressions are caught automatically.",
+      "acceptanceCriteria": [
+        "New test TestShowEvent_GoldenLifecycle in display_test.go",
+        "Feeds event sequence: Init(model) → Thinking start → Thinking end → Tool(Read, file.go) → Tool(Write, file.go) → Result(success, 1500 tokens, 5000ms)",
+        "Captures output via bytes.Buffer (non-TTY, no spinner goroutine)",
+        "Strips ANSI escape codes before comparison",
+        "Golden string includes: model line, thinking-complete \u003e line, tool \u003e lines, result [OK] line with duration and tokens",
+        "Test fails with clear diff if output changes",
+        "Tests pass with go test ./internal/engine/...",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "title": "Remove dead code and verify full test suite",
+      "description": "As a developer, I need to clean up dead code from the old ad-hoc spinner control (unused fields, orphaned methods) and verify the entire project builds and passes tests.",
+      "acceptanceCriteria": [
+        "clearThinkingState() is removed if fully replaced by FSM, or reduced to a thin FSM wrapper if still referenced",
+        "No unused fields remain on Display struct (isThinking, thinkingStart, lastTool are all gone)",
+        "go vet ./... passes with no warnings",
+        "go test ./... passes (all existing and new tests)",
+        "make build succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}
