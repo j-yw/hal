@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -124,7 +125,7 @@ Return ONLY a JSON object (no markdown, no explanation):
 	var err error
 	if display != nil {
 		response, err = eng.StreamPrompt(ctx, prompt, display)
-		if err != nil {
+		if err != nil && shouldFallbackFromStream(err) {
 			// Some CLIs are less stable in streaming mode for very large prompts.
 			response, err = eng.Prompt(ctx, prompt)
 		}
@@ -178,6 +179,26 @@ Do not use markdown fences. Do not include explanation.`, description, response)
 	}
 
 	return questions, nil
+}
+
+func shouldFallbackFromStream(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "timed out") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "canceled") ||
+		strings.Contains(msg, "cancelled") {
+		return false
+	}
+
+	return true
 }
 
 func parseQuestionsResponse(response string) ([]Question, error) {
