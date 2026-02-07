@@ -218,13 +218,16 @@ func (d *Display) ShowEvent(e *Event) {
 
 	switch e.Type {
 	case EventInit:
-		d.clearThinkingState()
+		// Reset FSM to clean state, then transition to Thinking
+		d.fsm.Reset()
 		if e.Data.Model != "" && !d.modelShown {
 			modelText := StyleMuted.Render(fmt.Sprintf("   model: %s", e.Data.Model))
 			fmt.Fprintln(d.out, modelText)
 			d.modelShown = true
 		}
-		startSpinnerMsg = randomHalWord(HalThinkingWords)
+		msg := randomHalWord(HalThinkingWords)
+		_ = d.fsm.GoTo(StateThinking, msg)
+		startSpinnerMsg = d.fsm.Message()
 
 	case EventTool:
 		d.clearThinkingState()
@@ -304,7 +307,9 @@ func (d *Display) ShowEvent(e *Event) {
 			}
 		case "end":
 			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.fsm.thinkingStart))
-			d.clearThinkingState()
+			// Transition through Completion state, then reset to Idle
+			_ = d.fsm.GoTo(StateCompletion, "")
+			d.fsm.Reset()
 			// Keep tool/completion history lines on the angled marker.
 			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), thinkMsg)
 		}
