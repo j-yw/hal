@@ -206,9 +206,13 @@ func (d *Display) ShowEvent(e *Event) {
 		return
 	}
 
-	// Keep spinner continuity when updating active activity text.
-	keepSpinner := e.Type == EventTool || (e.Type == EventThinking && e.Data.Message == "delta")
-	if !keepSpinner {
+	// FSM-driven spinner continuity: keep spinner active when the incoming
+	// event will transition to a spinner-continuing state (ToolActivity or
+	// Thinking delta). Stop for terminal states (Completion, Error, Idle).
+	switch {
+	case e.Type == EventTool, e.Type == EventThinking && e.Data.Message == "delta":
+		// Spinner stays active — these events update message in-place.
+	default:
 		d.StopSpinner()
 	}
 
@@ -274,7 +278,11 @@ func (d *Display) ShowEvent(e *Event) {
 		startSpinnerMsg = toolMsg
 
 	case EventResult:
-		d.clearThinkingState()
+		// Transition through Completion state, then reset to Idle
+		if err := d.fsm.GoTo(StateCompletion, ""); err != nil {
+			d.fsm.Reset()
+		}
+		d.fsm.Reset()
 		duration := int(e.Data.DurationMs / 1000)
 		var statusBadge string
 		if e.Data.Success {
@@ -294,7 +302,11 @@ func (d *Display) ShowEvent(e *Event) {
 		fmt.Fprintln(d.out)
 
 	case EventError:
-		d.clearThinkingState()
+		// Transition through Error state, then reset to Idle
+		if err := d.fsm.GoTo(StateError, e.Data.Message); err != nil {
+			d.fsm.Reset()
+		}
+		d.fsm.Reset()
 		errorBadge := StyleError.Render("[!!]")
 		errorMsg := StyleError.Render(e.Data.Message)
 		fmt.Fprintf(d.out, "   %s %s\n", errorBadge, errorMsg)
