@@ -164,12 +164,6 @@ func (d *Display) currentSpinnerMessage() string {
 	return msg
 }
 
-func (d *Display) clearThinkingState() {
-	if d.fsm.State() == StateThinking {
-		d.fsm.Reset()
-	}
-}
-
 // spinnerDisplayMessage returns the message shown on the spinner line.
 // Caller must hold d.mu.
 func (d *Display) spinnerDisplayMessage(base string) string {
