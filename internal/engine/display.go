@@ -59,6 +59,10 @@ type Display struct {
 
 	// Model tracking — suppresses duplicate model lines after first EventInit
 	modelShown bool
+
+	// Thinking state — shows elapsed time while model reasons
+	thinkingStart time.Time
+	isThinking    bool
 }
 
 // NewDisplay creates a new display writer.
@@ -102,13 +106,9 @@ func (d *Display) StartSpinner(msg string) {
 		defer close(d.spinDone)
 
 		frame := 0
-		colorIdx := 0
 		first := true
 		ticker := time.NewTicker(80 * time.Millisecond) // HAL smooth breathing
 		defer ticker.Stop()
-
-		// Static bracket style (dim red)
-		bracketStyle := lipgloss.NewStyle().Foreground(SpinnerBracketColor)
 
 		for {
 			select {
@@ -117,18 +117,13 @@ func (d *Display) StartSpinner(msg string) {
 				fmt.Fprint(d.out, "\033[2K\r")
 				return
 			case <-ticker.C:
-				// Get current gradient color for the dot
-				color := SpinnerGradient[colorIdx%len(SpinnerGradient)]
-				dotStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+				// Keep the marker minimal and animate it only by color.
+				accent := SpinnerGradient[frame%len(SpinnerGradient)]
+				spinChar := lipgloss.NewStyle().Foreground(accent).Bold(true).Render(">")
 
-				// Render brackets static, dot pulsing
-				bracket := bracketStyle.Render("[")
-				dot := dotStyle.Render(SpinnerFrames[frame%len(SpinnerFrames)])
-				closeBracket := bracketStyle.Render("]")
-				spinChar := bracket + dot + closeBracket
-
-				// Render message with muted style
-				msgText := StyleMuted.Render(msg)
+				// Build the display message and apply a subtle shimmer.
+				displayMsg := d.spinnerDisplayMessage(msg)
+				msgText := renderAnimatedSpinnerText(displayMsg, frame)
 
 				line := fmt.Sprintf("   %s %s", spinChar, msgText)
 
@@ -141,10 +136,37 @@ func (d *Display) StartSpinner(msg string) {
 				}
 
 				frame++
-				colorIdx++
 			}
 		}
 	}()
+}
+
+// isThinkingSpinnerActive reports whether a spinner is currently active.
+// It synchronizes on spinMu internally and does not require d.mu.
+func (d *Display) isThinkingSpinnerActive() bool {
+	d.spinMu.Lock()
+	active := d.spinning
+	d.spinMu.Unlock()
+	return active
+}
+
+func (d *Display) clearThinkingState() {
+	d.isThinking = false
+	d.thinkingStart = time.Time{}
+}
+
+func (d *Display) spinnerDisplayMessage(base string) string {
+	d.mu.Lock()
+	thinking := d.isThinking
+	thinkStart := d.thinkingStart
+	d.mu.Unlock()
+
+	if thinking && !thinkStart.IsZero() {
+		elapsed := time.Since(thinkStart).Truncate(time.Second)
+		return fmt.Sprintf("%s %s", base, elapsed)
+	}
+
+	return base
 }
 
 // StopSpinner stops the loading spinner.
@@ -173,8 +195,11 @@ func (d *Display) ShowEvent(e *Event) {
 		return
 	}
 
-	// Stop any running spinner before showing new event
-	d.StopSpinner()
+	// For thinking deltas, don't stop the spinner — let it keep
+	// showing elapsed time. Only stop for other event types.
+	if e.Type != EventThinking || e.Data.Message != "delta" {
+		d.StopSpinner()
+	}
 
 	d.mu.Lock()
 
@@ -182,6 +207,7 @@ func (d *Display) ShowEvent(e *Event) {
 
 	switch e.Type {
 	case EventInit:
+		d.clearThinkingState()
 		if e.Data.Model != "" && !d.modelShown {
 			modelText := StyleMuted.Render(fmt.Sprintf("   model: %s", e.Data.Model))
 			fmt.Fprintln(d.out, modelText)
@@ -190,6 +216,7 @@ func (d *Display) ShowEvent(e *Event) {
 		startSpinnerMsg = randomHalWord(HalThinkingWords)
 
 	case EventTool:
+		d.clearThinkingState()
 		// Avoid duplicate consecutive tool messages
 		toolKey := e.Tool + e.Detail
 		if toolKey == d.lastTool {
@@ -222,6 +249,7 @@ func (d *Display) ShowEvent(e *Event) {
 		startSpinnerMsg = truncate(e.Tool+detail, GetTerminalWidth()/2)
 
 	case EventResult:
+		d.clearThinkingState()
 		duration := int(e.Data.DurationMs / 1000)
 		var statusBadge string
 		if e.Data.Success {
@@ -241,11 +269,35 @@ func (d *Display) ShowEvent(e *Event) {
 		fmt.Fprintln(d.out)
 
 	case EventError:
+		d.clearThinkingState()
 		errorBadge := StyleError.Render("[!!]")
 		errorMsg := StyleError.Render(e.Data.Message)
 		fmt.Fprintf(d.out, "   %s %s\n", errorBadge, errorMsg)
 
+	case EventThinking:
+		switch e.Data.Message {
+		case "start":
+			d.isThinking = true
+			d.thinkingStart = time.Now()
+			startSpinnerMsg = randomHalWord(HalThinkingWords)
+		case "delta":
+			// Keep thinking state active — the spinner already shows elapsed time.
+			// If spinner isn't running (e.g., first delta), start it.
+			if !d.isThinkingSpinnerActive() {
+				startSpinnerMsg = randomHalWord(HalThinkingWords)
+			}
+		case "end":
+			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.thinkingStart))
+			d.clearThinkingState()
+			// HAL eye at rest — same shape as the spinner dot, warm settled red
+			bracketStyle := lipgloss.NewStyle().Foreground(SpinnerBracketColor)
+			dotStyle := lipgloss.NewStyle().Foreground(ThinkingDoneColor).Bold(true)
+			thinkBadge := bracketStyle.Render("[") + dotStyle.Render("●") + bracketStyle.Render("]")
+			fmt.Fprintf(d.out, "   %s %s\n", thinkBadge, thinkMsg)
+		}
+
 	case EventText:
+		d.clearThinkingState()
 		// Text events are usually the final response, we don't show them inline
 		// But start a spinner to show we're still working
 		startSpinnerMsg = randomHalWord(HalWorkingWords)
@@ -430,6 +482,52 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+func formatThinkingComplete(start time.Time) string {
+	if start.IsZero() {
+		return "reasoning complete"
+	}
+
+	elapsed := time.Since(start).Truncate(time.Second)
+	if elapsed < 0 {
+		return "reasoning complete"
+	}
+
+	return fmt.Sprintf("reasoning complete %s", elapsed)
+}
+
+func renderAnimatedSpinnerText(msg string, frame int) string {
+	runes := []rune(msg)
+	if len(runes) == 0 {
+		return ""
+	}
+
+	highlightIdx := frame % len(runes)
+	glowStyle := lipgloss.NewStyle().Foreground(SpinnerTextGlowColor)
+	highlightStyle := lipgloss.NewStyle().Foreground(SpinnerTextHighlightColor).Bold(true)
+
+	var b strings.Builder
+	for i, r := range runes {
+		ch := string(r)
+		switch absInt(i - highlightIdx) {
+		case 0:
+			b.WriteString(highlightStyle.Render(ch))
+		case 1:
+			b.WriteString(glowStyle.Render(ch))
+		default:
+			b.WriteString(StyleMuted.Render(ch))
+		}
+	}
+
+	return b.String()
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // QuestionOption represents a selectable option for a question.

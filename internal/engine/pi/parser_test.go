@@ -391,6 +391,136 @@ func TestParser_ParseLine_IgnoredTypes(t *testing.T) {
 	}
 }
 
+// Thinking event tests
+
+func TestParser_ParseLine_ThinkingStart(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventThinking {
+		t.Errorf("expected Type=EventThinking, got %v", event.Type)
+	}
+	if event.Data.Message != "start" {
+		t.Errorf("expected Message=\"start\", got %q", event.Data.Message)
+	}
+	if !p.isThinking {
+		t.Error("expected parser.isThinking=true")
+	}
+}
+
+func TestParser_ParseLine_ThinkingDelta(t *testing.T) {
+	p := NewParser()
+	// First, start thinking
+	startLine := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}`
+	p.ParseLine([]byte(startLine))
+
+	deltaLine := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Let me analyze the codebase structure...","partial":{"role":"assistant","content":[]}}}`
+
+	event := p.ParseLine([]byte(deltaLine))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventThinking {
+		t.Errorf("expected Type=EventThinking, got %v", event.Type)
+	}
+	if event.Data.Message != "delta" {
+		t.Errorf("expected Message=\"delta\", got %q", event.Data.Message)
+	}
+}
+
+func TestParser_ParseLine_ThinkingDelta_Empty(t *testing.T) {
+	p := NewParser()
+	deltaLine := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"","partial":{"role":"assistant","content":[]}}}`
+
+	event := p.ParseLine([]byte(deltaLine))
+	if event != nil {
+		t.Errorf("expected nil for empty thinking delta, got %+v", event)
+	}
+}
+
+func TestParser_ParseLine_ThinkingDeltaWithoutStart(t *testing.T) {
+	p := NewParser()
+	deltaLine := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"orphan delta","partial":{"role":"assistant","content":[]}}}`
+
+	event := p.ParseLine([]byte(deltaLine))
+	if event != nil {
+		t.Errorf("expected nil for thinking delta without start, got %+v", event)
+	}
+}
+
+func TestParser_ParseLine_ThinkingEnd(t *testing.T) {
+	p := NewParser()
+	// Start thinking first
+	startLine := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}`
+	p.ParseLine([]byte(startLine))
+
+	endLine := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"I have analyzed the codebase.","partial":{"role":"assistant","content":[]}}}`
+
+	event := p.ParseLine([]byte(endLine))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventThinking {
+		t.Errorf("expected Type=EventThinking, got %v", event.Type)
+	}
+	if event.Data.Message != "end" {
+		t.Errorf("expected Message=\"end\", got %q", event.Data.Message)
+	}
+	if p.isThinking {
+		t.Error("expected parser.isThinking=false after thinking_end")
+	}
+}
+
+func TestParser_ParseLine_ThinkingEndWithoutStart(t *testing.T) {
+	p := NewParser()
+	endLine := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"orphan end","partial":{"role":"assistant","content":[]}}}`
+
+	event := p.ParseLine([]byte(endLine))
+	if event != nil {
+		t.Errorf("expected nil for thinking_end without start, got %+v", event)
+	}
+}
+
+func TestParser_ThinkingDoesNotCollectText(t *testing.T) {
+	p := NewParser()
+
+	// Full thinking lifecycle
+	p.ParseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}`))
+	p.ParseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"internal reasoning...","partial":{"role":"assistant","content":[]}}}`))
+	p.ParseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"internal reasoning complete","partial":{"role":"assistant","content":[]}}}`))
+
+	// Thinking should NOT be added to collected text (that's for assistant output only)
+	if p.CollectedText() != "" {
+		t.Errorf("expected empty collected text, got %q", p.CollectedText())
+	}
+}
+
+func TestParser_ThinkingClearedByToolCall(t *testing.T) {
+	p := NewParser()
+
+	// Start thinking
+	p.ParseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}`))
+	if !p.isThinking {
+		t.Fatal("expected isThinking=true after start")
+	}
+
+	// Tool call should clear thinking state
+	p.ParseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":0,"toolCall":{"type":"toolCall","id":"tool1","name":"read","arguments":{"path":"test.go"}}}}`))
+	if p.isThinking {
+		t.Error("expected isThinking=false after toolcall_end")
+	}
+
+	// A trailing thinking_end should be ignored once state has been cleared.
+	event := p.ParseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"done","partial":{"role":"assistant","content":[]}}}`))
+	if event != nil {
+		t.Errorf("expected nil for thinking_end after toolcall_end, got %+v", event)
+	}
+}
+
 // Helper function tests
 
 func TestTrimSpace(t *testing.T) {

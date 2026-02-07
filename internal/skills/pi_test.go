@@ -57,9 +57,17 @@ func TestPiLinkerLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not resolve symlink: %v", err)
 	}
-	wantResolved := halSkillsDir
-	if resolved != wantResolved {
-		t.Errorf("Resolved symlink = %q, want %q", resolved, wantResolved)
+
+	resolvedInfo, err := os.Stat(resolved)
+	if err != nil {
+		t.Fatalf("Could not stat resolved symlink target %q: %v", resolved, err)
+	}
+	wantInfo, err := os.Stat(halSkillsDir)
+	if err != nil {
+		t.Fatalf("Could not stat expected target %q: %v", halSkillsDir, err)
+	}
+	if !os.SameFile(resolvedInfo, wantInfo) {
+		t.Errorf("Resolved symlink target %q does not match expected directory %q", resolved, halSkillsDir)
 	}
 }
 

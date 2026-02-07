@@ -132,8 +132,14 @@ var SpinnerGradient = []lipgloss.Color{
 // SpinnerBracketColor is the static dim red for HAL eye brackets
 var SpinnerBracketColor = lipgloss.Color("#882222")
 
-// SpinnerFrames are HAL eye dots only (brackets rendered separately)
-var SpinnerFrames = []string{"·", "•", "●", "•", "·"}
+// ThinkingDoneColor is a warm settled red for the HAL eye after reasoning completes.
+// Brighter than the brackets but calmer than the peak pulse — the eye at rest.
+var ThinkingDoneColor = lipgloss.Color("#CC3333")
+
+// Spinner text shimmer colors. The highlight sweeps across loading text
+// while keeping the overall tone muted to avoid visual noise.
+var SpinnerTextGlowColor = lipgloss.Color("#8F6666")
+var SpinnerTextHighlightColor = lipgloss.Color("#B87777")
 
 // QuestionBox returns a styled box for Q&A.
 func QuestionBox() lipgloss.Style {
