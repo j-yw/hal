@@ -124,6 +124,10 @@ Return ONLY a JSON object (no markdown, no explanation):
 	var err error
 	if display != nil {
 		response, err = eng.StreamPrompt(ctx, prompt, display)
+		if err != nil {
+			// Some CLIs are less stable in streaming mode for very large prompts.
+			response, err = eng.Prompt(ctx, prompt)
+		}
 	} else {
 		response, err = eng.Prompt(ctx, prompt)
 	}
@@ -131,7 +135,49 @@ Return ONLY a JSON object (no markdown, no explanation):
 		return nil, err
 	}
 
-	return parseQuestionsResponse(response)
+	questions, parseErr := parseQuestionsResponse(response)
+	if parseErr == nil {
+		return questions, nil
+	}
+
+	// Retry once by asking the model to reformat/regenerate strict JSON.
+	repairPrompt := fmt.Sprintf(`The previous response did not match the required JSON schema.
+
+Feature request:
+%s
+
+Previous response:
+%s
+
+Generate 3-5 clarifying questions and return ONLY valid JSON in this exact shape:
+{
+  "questions": [
+    {
+      "number": 1,
+      "text": "Question text here?",
+      "options": [
+        {"letter": "A", "label": "Option A"},
+        {"letter": "B", "label": "Option B"},
+        {"letter": "C", "label": "Option C"},
+        {"letter": "D", "label": "Other (specify)"}
+      ]
+    }
+  ]
+}
+
+Do not use markdown fences. Do not include explanation.`, description, response)
+
+	repaired, repairErr := eng.Prompt(ctx, repairPrompt)
+	if repairErr != nil {
+		return nil, parseErr
+	}
+
+	questions, repairParseErr := parseQuestionsResponse(repaired)
+	if repairParseErr != nil {
+		return nil, parseErr
+	}
+
+	return questions, nil
 }
 
 func parseQuestionsResponse(response string) ([]Question, error) {
