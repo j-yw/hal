@@ -48,7 +48,7 @@ type Display struct {
 	spinCancel context.CancelFunc
 	spinDone   chan struct{}
 	spinMsg    string
-	lastTool   string
+	fsm        *SpinnerFSM
 	startTime  time.Time
 	loopStart  time.Time
 
@@ -59,10 +59,6 @@ type Display struct {
 
 	// Model tracking — suppresses duplicate model lines after first EventInit
 	modelShown bool
-
-	// Thinking state — shows elapsed time while model reasons
-	thinkingStart time.Time
-	isThinking    bool
 }
 
 // NewDisplay creates a new display writer.
@@ -75,6 +71,7 @@ func NewDisplay(out io.Writer) *Display {
 	return &Display{
 		out:       out,
 		isTTY:     isTTY,
+		fsm:       NewSpinnerFSM(),
 		startTime: now,
 		loopStart: now,
 	}
@@ -168,16 +165,16 @@ func (d *Display) currentSpinnerMessage() string {
 }
 
 func (d *Display) clearThinkingState() {
-	d.isThinking = false
-	d.thinkingStart = time.Time{}
+	if d.fsm.State() == StateThinking {
+		d.fsm.Reset()
+	}
 }
 
 // spinnerDisplayMessage returns the message shown on the spinner line.
 // Caller must hold d.mu.
 func (d *Display) spinnerDisplayMessage(base string) string {
-	if d.isThinking && !d.thinkingStart.IsZero() {
-		elapsed := time.Since(d.thinkingStart).Truncate(time.Second)
-		return fmt.Sprintf("%s %s", base, elapsed)
+	if elapsed := d.fsm.ThinkingElapsed(); elapsed > 0 {
+		return fmt.Sprintf("%s %s", base, elapsed.Truncate(time.Second))
 	}
 
 	return base
@@ -233,11 +230,11 @@ func (d *Display) ShowEvent(e *Event) {
 		d.clearThinkingState()
 		// Avoid duplicate consecutive tool messages
 		toolKey := e.Tool + e.Detail
-		if toolKey == d.lastTool {
+		if toolKey == d.fsm.LastTool() {
 			d.mu.Unlock()
 			return
 		}
-		d.lastTool = toolKey
+		d.fsm.SetLastTool(toolKey)
 
 		detail := e.Detail
 		if detail != "" {
@@ -296,9 +293,9 @@ func (d *Display) ShowEvent(e *Event) {
 	case EventThinking:
 		switch e.Data.Message {
 		case "start":
-			d.isThinking = true
-			d.thinkingStart = time.Now()
-			startSpinnerMsg = randomHalWord(HalThinkingWords)
+			d.fsm.Reset() // Ensure clean state before starting thinking
+			_ = d.fsm.GoTo(StateThinking, randomHalWord(HalThinkingWords))
+			startSpinnerMsg = d.fsm.Message()
 		case "delta":
 			// Keep thinking state active — the spinner already shows elapsed time.
 			// If spinner isn't running (e.g., first delta), start it.
@@ -306,7 +303,7 @@ func (d *Display) ShowEvent(e *Event) {
 				startSpinnerMsg = randomHalWord(HalThinkingWords)
 			}
 		case "end":
-			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.thinkingStart))
+			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.fsm.thinkingStart))
 			d.clearThinkingState()
 			// Keep tool/completion history lines on the angled marker.
 			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), thinkMsg)
@@ -368,7 +365,7 @@ func (d *Display) ShowIterationHeader(current, max int, story *StoryInfo) {
 	d.iterationCount = current
 	d.maxIterations = max
 	d.startTime = time.Now()
-	d.lastTool = "" // Reset for new iteration
+	d.fsm.Reset() // Reset for new iteration
 
 	barWidth := IterationBarWidth
 

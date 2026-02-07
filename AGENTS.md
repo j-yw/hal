@@ -94,3 +94,11 @@
 - When migrating legacy .hal state files, merge content into the new target with a separator if both have content, then delete the legacy file after a successful merge.
 - Treat orphaned legacy files via a dedicated cleanup command that supports --dry-run and uses a centralized orphanedFiles slice for extensibility.
 - Review context should load both markdown PRDs and JSON PRDs (prd.json, auto-prd.json) because JSON includes pass/fail completion status.
+
+## Patterns from main (2026-02-07)
+
+- Drive HAL progress UI from parsed engine lifecycle events (thinking/tool/completion) rather than raw output text heuristics.
+- Spinner behavior contract is strict: keep it active across loading-text to tool-activity transitions, include HAL-eye branding, and preserve completed thinking lines as quoted output.
+- Engine install commands are coupled with symlink creation and matching .gitignore exceptions; tests should assert symlink targets directly.
+- Standards injection is implemented as loader + prompt placeholder + CLI wiring, and user-facing paths should consistently use .hal/standards.
+- Release workflow conventions are repository-specific: use git-flow-style release/hotfix branches and v-prefixed tags, then keep docs aligned to that process.
