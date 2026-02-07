@@ -341,6 +341,19 @@ func TestParser_ParseLine_AgentEnd(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_AgentEnd_RecoversTextFromMessages(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"internal"},{"type":"text","text":"final answer"}]}]}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if got := p.CollectedText(); got != "final answer" {
+		t.Errorf("expected collected text %q, got %q", "final answer", got)
+	}
+}
+
 func TestParser_ParseLine_AgentEnd_WithFailure(t *testing.T) {
 	p := NewParser()
 
