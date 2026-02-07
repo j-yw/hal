@@ -230,7 +230,6 @@ func (d *Display) ShowEvent(e *Event) {
 		startSpinnerMsg = d.fsm.Message()
 
 	case EventTool:
-		d.clearThinkingState()
 		// Avoid duplicate consecutive tool messages
 		toolKey := e.Tool + e.Detail
 		if toolKey == d.fsm.LastTool() {
@@ -242,6 +241,13 @@ func (d *Display) ShowEvent(e *Event) {
 		detail := e.Detail
 		if detail != "" {
 			detail = " " + detail
+		}
+
+		// Transition FSM to ToolActivity state
+		toolMsg := truncate(e.Tool+detail, GetTerminalWidth()/2)
+		if err := d.fsm.GoTo(StateToolActivity, toolMsg); err != nil {
+			// Edge case: FSM in unexpected state (e.g., Idle) — reset and proceed
+			d.fsm.Reset()
 		}
 
 		if d.isTTY && d.isThinkingSpinnerActive() {
@@ -265,7 +271,7 @@ func (d *Display) ShowEvent(e *Event) {
 		fmt.Fprintf(d.out, "   %s %s\n", arrow, toolLine)
 
 		// Start spinner while tool executes
-		startSpinnerMsg = truncate(e.Tool+detail, GetTerminalWidth()/2)
+		startSpinnerMsg = toolMsg
 
 	case EventResult:
 		d.clearThinkingState()
@@ -315,10 +321,15 @@ func (d *Display) ShowEvent(e *Event) {
 		}
 
 	case EventText:
-		d.clearThinkingState()
+		// Transition FSM to ToolActivity state for working indicator
+		workingMsg := randomHalWord(HalWorkingWords)
+		if err := d.fsm.GoTo(StateToolActivity, workingMsg); err != nil {
+			// Edge case: FSM in unexpected state — reset and proceed
+			d.fsm.Reset()
+		}
 		// Text events are usually the final response, we don't show them inline
 		// But start a spinner to show we're still working
-		startSpinnerMsg = randomHalWord(HalWorkingWords)
+		startSpinnerMsg = workingMsg
 	}
 
 	d.mu.Unlock()
