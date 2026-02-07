@@ -305,3 +305,75 @@ func TestShowEvent_SpinnerMessageUpdatesOnTransition(t *testing.T) {
 
 	d.StopSpinner()
 }
+
+func TestShowEvent_GoldenLifecycle(t *testing.T) {
+	// Golden-output test: captures expected terminal output for a complete
+	// Init → Thinking start → Thinking end → Tool(Read) → Tool(Write) → Result lifecycle.
+	// Uses bytes.Buffer (non-TTY) so no spinner goroutine runs.
+	var out bytes.Buffer
+	d := NewDisplay(&out)
+
+	// 1. Init with model
+	d.ShowEvent(&Event{
+		Type: EventInit,
+		Data: EventData{Model: "claude-3"},
+	})
+	d.StopSpinner()
+
+	// 2. Thinking start (no visible output, just sets FSM)
+	d.ShowEvent(&Event{
+		Type: EventThinking,
+		Data: EventData{Message: "start"},
+	})
+	d.StopSpinner()
+
+	// 3. Thinking end — prints reasoning complete line
+	d.ShowEvent(&Event{
+		Type: EventThinking,
+		Data: EventData{Message: "end"},
+	})
+
+	// 4. Tool: Read file.go
+	d.ShowEvent(&Event{
+		Type:   EventTool,
+		Tool:   "Read",
+		Detail: "file.go",
+	})
+	d.StopSpinner()
+
+	// 5. Tool: Write file.go
+	d.ShowEvent(&Event{
+		Type:   EventTool,
+		Tool:   "Write",
+		Detail: "file.go",
+	})
+	d.StopSpinner()
+
+	// 6. Result: success, 1500 tokens, 5000ms
+	d.ShowEvent(&Event{
+		Type: EventResult,
+		Data: EventData{
+			Success:    true,
+			Tokens:     1500,
+			DurationMs: 5000,
+		},
+	})
+
+	// Strip ANSI escape codes for comparison
+	got := ansiRegex.ReplaceAllString(out.String(), "")
+
+	// Golden output: each line produced by ShowEvent in order.
+	// - Init prints model line
+	// - Thinking start/end prints reasoning complete with elapsed ~0s
+	// - Tool events print "> Tool detail" lines
+	// - Result prints "[OK] duration │ tokens" line
+	want := "   model: claude-3\n" +
+		"   > reasoning complete 0s\n" +
+		"   > Read file.go\n" +
+		"   > Write file.go\n" +
+		"   [OK] 5s │ 1.5k tokens\n"
+
+	if got != want {
+		t.Errorf("golden output mismatch.\n\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
