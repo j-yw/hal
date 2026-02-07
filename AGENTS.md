@@ -94,3 +94,36 @@
 - When migrating legacy .hal state files, merge content into the new target with a separator if both have content, then delete the legacy file after a successful merge.
 - Treat orphaned legacy files via a dedicated cleanup command that supports --dry-run and uses a centralized orphanedFiles slice for extensibility.
 - Review context should load both markdown PRDs and JSON PRDs (prd.json, auto-prd.json) because JSON includes pass/fail completion status.
+
+## Patterns from main (2026-02-07)
+
+- Drive HAL progress UI from parsed engine lifecycle events (thinking/tool/completion) rather than raw output text heuristics.
+- Spinner behavior contract is strict: keep it active across loading-text to tool-activity transitions, include HAL-eye branding, and preserve completed thinking lines as quoted output.
+- Engine install commands are coupled with symlink creation and matching .gitignore exceptions; tests should assert symlink targets directly.
+- Standards injection is implemented as loader + prompt placeholder + CLI wiring, and user-facing paths should consistently use .hal/standards.
+- Release workflow conventions are repository-specific: use git-flow-style release/hotfix branches and v-prefixed tags, then keep docs aligned to that process.
+
+## Patterns from compound/spinner-state-machine-refactor (2026-02-07)
+
+- In `internal/engine/display.go`, all logical spinner lifecycle changes should go through `d.fsm.GoTo(...)`/`d.fsm.Reset()`; do not reintroduce direct `isThinking`, `thinkingStart`, or `lastTool` fields on `Display`.
+- Canonical terminal-event teardown in this codebase is `GoTo(StateCompletion|StateError, ...)` followed by `Reset()`; keep this pattern for `EventThinking end`, `EventResult`, and `EventError` handlers.
+- Tool dedup is keyed as `e.Tool + e.Detail` (no inserted space); apply presentation spacing only when building display text, not in the dedup key.
+- Display lifecycle tests should use `bytes.Buffer` (non-TTY) and call `StopSpinner()` between events when asserting FSM state to avoid goroutine timing contamination.
+- `Display` keeps split locking (`mu` for output/FSM access, `spinMu` for spinner goroutine control); new state logic should remain under `mu` and not bypass this discipline.
+
+## Patterns from compound/tty-spinner-lifecycle-integration-tests (2026-02-07)
+
+- TTY lifecycle tests for `internal/engine/display.go` should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags, use `package engine`, and document PTY determinism constraints at the top of the file.
+- Use a PTY harness (`github.com/creack/pty`): open master/slave, build `Display` with the slave writer (so `isTTY` is true), and capture terminal output by reading the master in a dedicated goroutine.
+- PTY harness cleanup must be strict and idempotent: call `Display.StopSpinner()` before closing descriptors, treat `io.EOF`/`os.ErrClosed`/`syscall.EIO` as expected read-termination errors, and wait on a bounded `readDone` channel in `t.Cleanup`.
+- PTY integration harness setup should skip with a clear message on both `pty.Open()` failure and `!display.isTTY`; if `!display.isTTY`, close master/slave descriptors before skipping to avoid leaks on unsupported environments.
+- For deterministic assertions, poll with explicit timeout/interval parameters (e.g., `WaitForOutputContains`) and assert against normalized PTY output that strips ANSI CSI sequences and converts `\r` redraws to `\n`; timeout errors should include latest normalized and raw output snapshots.
+- Lifecycle integration tests should drive events through reusable helpers (`emitCanonicalThinkingEvents`, `emitCanonicalToolEvent`, terminal emitters) plus a phase driver that captures per-phase output snapshots after checkpoint waits, so later assertions can compare thinking/tool/terminal boundaries without re-implementing event sequencing.
+- For tool-phase spinner assertions, wait on spinner-inclusive markers like `[●] Read README.md` (not only `Read README.md`) so tests confirm animated PTY spinner frames rendered in addition to immutable tool history lines.
+- For continuity assertions across spinner-active transitions (thinking→tool, text→tool), capture `Display` spinner runtime state under `spinMu` and compare `spinDone` channel identity before/after; unchanged channel proves the spinner goroutine was not restarted.
+- For error-path lifecycle assertions, validate output ordering on normalized terminal snapshots (for example `strings.Index` on `> Read ...` before `[!!]`) to prove tool history is emitted before terminal error output.
+- For terminal teardown assertions in PTY tests, verify both `d.fsm.State() == StateIdle` and `!d.isThinkingSpinnerActive()` after completion/error markers to ensure FSM reset and spinner shutdown are both enforced.
+
+## Patterns from compound/engine-integration-verification-matrix (2026-02-07)
+
+- Engine constructor signature changes can break only integration-tagged tests (hidden from default `go test`), so verification passes should always include `go test -tags=integration ./internal/engine/...` and integration tests should instantiate engines with the current `New(cfg *engine.EngineConfig)` contract (for defaults, pass `nil`).
