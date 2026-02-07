@@ -380,6 +380,19 @@ func migrateTemplates(configDir string) error {
 		return err
 	}
 
+	// Update branch creation guidance to use the run base branch placeholder.
+	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), func(content string) string {
+		content = strings.Replace(content,
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.",
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.", 1)
+		content = strings.Replace(content,
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from current HEAD.",
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.", 1)
+		return content
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
