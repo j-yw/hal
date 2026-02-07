@@ -13,6 +13,7 @@
 - ShowEvent lifecycle tests must call `d.StopSpinner()` between events to clean up spinner state for FSM assertions.
 - TTY spinner integration coverage should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags using `package engine`.
 - For TTY integration tests, use a PTY master/slave harness (`github.com/creack/pty`): pass the slave to `NewDisplay`, read the master in a goroutine, and treat `io.EOF`, `os.ErrClosed`, and `syscall.EIO` as expected shutdown errors.
+- PTY output assertions should use bounded polling with explicit timeout/interval and normalize terminal output (strip ANSI CSI + convert `\r` redraws to `\n`) before matching markers.
 
 ---
 
@@ -184,5 +185,18 @@
   - PTY capture goroutines can return `syscall.EIO` when descriptors close; treat it as expected teardown rather than test failure.
   - Wrap PTY cleanup in `sync.Once` because tests may call harness `Close()` explicitly while also relying on `t.Cleanup`.
   - Stop `Display` spinner before closing PTY descriptors to avoid teardown races.
+---
+
+## 2026-02-07 19:15 +08 - T-003
+- Added `WaitForOutputContains(marker, timeout, interval)` to the PTY harness for bounded polling with explicit timing controls.
+- Added `normalizeTTYOutput()` and `ansiControlSequenceRegex` to strip ANSI CSI control codes and normalize carriage-return redraws (`\r`) before assertions.
+- Updated `TestDisplayTTYHarness_CapturesLifecycleOutput` to wait for normalized output markers instead of reading the PTY buffer immediately.
+- Added `TestNormalizeTTYOutput_StripsANSIAndCarriageReturns` to lock in normalization behavior.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestNormalizeTTYOutput_StripsANSIAndCarriageReturns|TestDisplayTTYHarness_CapturesLifecycleOutput'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - PTY assertions are more stable when matching normalized output snapshots instead of raw immediate reads.
+  - Timeout failures should include both normalized and raw captured output to debug control-sequence issues quickly.
+  - Keep polling bounds explicit (`timeout`, `interval`) per assertion so integration tests remain deterministic and tuneable.
 ---
 

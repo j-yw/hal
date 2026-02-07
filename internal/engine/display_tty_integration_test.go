@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,8 +28,13 @@ import (
 //   - Use bounded waits (no unbounded sleeps/loops).
 //   - Normalize terminal output before asserting.
 //   - Keep cleanup strict so spinner goroutines and PTY handles never leak.
+const (
+	ptyShutdownTimeout = 2 * time.Second
+	ptyWaitTimeout     = 2 * time.Second
+	ptyPollInterval    = 20 * time.Millisecond
+)
 
-const ptyShutdownTimeout = 2 * time.Second
+var ansiControlSequenceRegex = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 type displayTTYHarness struct {
 	t       *testing.T
@@ -123,10 +129,79 @@ func (h *displayTTYHarness) ReadErr() error {
 	return h.readErr
 }
 
+func (h *displayTTYHarness) WaitForOutputContains(marker string, timeout, interval time.Duration) string {
+	h.t.Helper()
+
+	if timeout <= 0 {
+		h.t.Fatalf("timeout must be > 0, got %s", timeout)
+	}
+	if interval <= 0 {
+		h.t.Fatalf("interval must be > 0, got %s", interval)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		raw := h.Output()
+		normalized := normalizeTTYOutput(raw)
+		if strings.Contains(normalized, marker) {
+			return normalized
+		}
+
+		if err := h.ReadErr(); err != nil {
+			h.t.Fatalf(
+				"PTY capture failed while waiting for marker %q: %v\nlatest normalized output:\n%s\nlatest raw output (escaped): %q",
+				marker,
+				err,
+				normalized,
+				raw,
+			)
+		}
+
+		if time.Now().After(deadline) {
+			h.t.Fatalf(
+				"timed out after %s waiting for marker %q (poll interval %s)\nlatest normalized output:\n%s\nlatest raw output (escaped): %q",
+				timeout,
+				marker,
+				interval,
+				normalized,
+				raw,
+			)
+		}
+
+		time.Sleep(interval)
+	}
+}
+
 func isExpectedPTYReadError(err error) bool {
 	return errors.Is(err, io.EOF) ||
 		errors.Is(err, os.ErrClosed) ||
 		errors.Is(err, syscall.EIO)
+}
+
+func normalizeTTYOutput(output string) string {
+	if output == "" {
+		return ""
+	}
+
+	normalized := ansiControlSequenceRegex.ReplaceAllString(output, "")
+	normalized = strings.ReplaceAll(normalized, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	return normalized
+}
+
+func TestNormalizeTTYOutput_StripsANSIAndCarriageReturns(t *testing.T) {
+	raw := "\x1b[2K\r   \x1b[31m[●]\x1b[0m processing...\r\x1b[2K   > Read README.md\n"
+	normalized := normalizeTTYOutput(raw)
+
+	if strings.Contains(normalized, "\x1b[") {
+		t.Fatalf("expected ANSI control sequences to be removed, got %q", normalized)
+	}
+	if strings.Contains(normalized, "\r") {
+		t.Fatalf("expected carriage returns to be normalized, got %q", normalized)
+	}
+	if !strings.Contains(normalized, "Read README.md") {
+		t.Fatalf("normalized output missing expected marker: %q", normalized)
+	}
 }
 
 func TestDisplayTTYHarness_CapturesLifecycleOutput(t *testing.T) {
@@ -138,17 +213,16 @@ func TestDisplayTTYHarness_CapturesLifecycleOutput(t *testing.T) {
 
 	h.display.ShowEvent(&Event{Type: EventInit, Data: EventData{Model: "integration-model"}})
 	h.display.ShowEvent(&Event{Type: EventTool, Tool: "Read", Detail: "README.md"})
+
+	normalized := h.WaitForOutputContains("Read README.md", ptyWaitTimeout, ptyPollInterval)
+
+	if !strings.Contains(normalized, "model: integration-model") {
+		t.Fatalf("captured output missing model line: %q", normalized)
+	}
+	if !strings.Contains(normalized, "Read README.md") {
+		t.Fatalf("captured output missing tool history line: %q", normalized)
+	}
+
 	h.display.StopSpinner()
 	h.Close()
-
-	output := h.Output()
-	if output == "" {
-		t.Fatal("expected captured PTY output, got empty string")
-	}
-	if !strings.Contains(output, "model: integration-model") {
-		t.Fatalf("captured output missing model line: %q", output)
-	}
-	if !strings.Contains(output, "Read README.md") {
-		t.Fatalf("captured output missing tool history line: %q", output)
-	}
 }
