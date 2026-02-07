@@ -110,6 +110,8 @@ func (d *Display) StartSpinner(msg string) {
 		ticker := time.NewTicker(80 * time.Millisecond) // HAL smooth breathing
 		defer ticker.Stop()
 
+		bracketStyle := lipgloss.NewStyle().Foreground(SpinnerBracketColor)
+
 		for {
 			select {
 			case <-d.spinCtx.Done():
@@ -117,9 +119,10 @@ func (d *Display) StartSpinner(msg string) {
 				fmt.Fprint(d.out, "\033[2K\r")
 				return
 			case <-ticker.C:
-				// Keep the marker minimal and animate it only by color.
+				// HAL eye on the loading line: static brackets, pulsing red iris.
 				accent := SpinnerGradient[frame%len(SpinnerGradient)]
-				spinChar := lipgloss.NewStyle().Foreground(accent).Bold(true).Render(">")
+				dotStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+				spinChar := bracketStyle.Render("[") + dotStyle.Render("●") + bracketStyle.Render("]")
 
 				// Build the display message and apply a subtle shimmer.
 				displayMsg := d.spinnerDisplayMessage(msg)
@@ -289,11 +292,8 @@ func (d *Display) ShowEvent(e *Event) {
 		case "end":
 			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.thinkingStart))
 			d.clearThinkingState()
-			// HAL eye at rest — same shape as the spinner dot, warm settled red
-			bracketStyle := lipgloss.NewStyle().Foreground(SpinnerBracketColor)
-			dotStyle := lipgloss.NewStyle().Foreground(ThinkingDoneColor).Bold(true)
-			thinkBadge := bracketStyle.Render("[") + dotStyle.Render("●") + bracketStyle.Render("]")
-			fmt.Fprintf(d.out, "   %s %s\n", thinkBadge, thinkMsg)
+			// Keep tool/completion history lines on the angled marker.
+			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), thinkMsg)
 		}
 
 	case EventText:
