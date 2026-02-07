@@ -15,6 +15,7 @@
 - For TTY integration tests, use a PTY master/slave harness (`github.com/creack/pty`): pass the slave to `NewDisplay`, read the master in a goroutine, and treat `io.EOF`, `os.ErrClosed`, and `syscall.EIO` as expected shutdown errors.
 - PTY output assertions should use bounded polling with explicit timeout/interval and normalize terminal output (strip ANSI CSI + convert `\r` redraws to `\n`) before matching markers.
 - For TTY lifecycle flows, drive events through reusable canonical emit helpers (thinking/tool/terminal) and capture per-phase snapshots after checkpoint waits so assertions can target phase boundaries deterministically.
+- In PTY spinner assertions, use spinner-inclusive markers (for example `[●] Read README.md`) so waits prove animated spinner frames rendered, not just static tool history lines.
 
 ---
 
@@ -211,5 +212,16 @@
   - Keep lifecycle event sequencing in shared emit helpers so future TTY tests stay readable and avoid drift in event order.
   - Capture output snapshots immediately after each checkpoint wait so phase assertions can compare normalized and raw output at stable boundaries.
   - Put timeout/interval defaults inside checkpoint config (`withDefaults`) to keep callers concise without sacrificing bounded waits.
+---
+
+## 2026-02-07 19:23 +08 - T-005
+- Added `TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion` in `internal/engine/display_tty_integration_test.go` to exercise Init + thinking start/delta + tool + result success in one PTY-backed flow.
+- Configured lifecycle checkpoints to wait for `[●]` in thinking, `[●] Read README.md` during tool activity, and `[OK]` at completion so spinner continuity and terminal success are both verified under bounded timeouts.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion|TestDisplayLifecycleDriver_DriveSuccessLifecycle|TestDisplayLifecycleDriver_DriveErrorLifecycle|TestDisplayTTYHarness_CapturesLifecycleOutput|TestNormalizeTTYOutput_StripsANSIAndCarriageReturns'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use spinner-inclusive tool checkpoints (`[●] Read ...`) instead of plain tool text markers so tests prove animated spinner frames rendered, not just immutable tool history output.
+  - Reusing `DriveSuccessLifecycle` keeps success-path coverage explicit (thinking start/delta → tool → result) while preserving deterministic checkpoint waits.
+  - Key terminal assertions off `[OK]` with bounded waits so failures surface immediately with normalized/raw capture context from the harness.
 ---
 

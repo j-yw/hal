@@ -379,6 +379,24 @@ func TestDisplayLifecycleDriver_DriveErrorLifecycle(t *testing.T) {
 	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "integration failure")
 }
 
+func TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion(t *testing.T) {
+	h := newDisplayTTYHarness(t)
+	driver := newDisplayLifecycleDriver(h)
+
+	snapshots := driver.DriveSuccessLifecycle(lifecycleCheckpoints{
+		ThinkingMarker: "[●]",
+		ToolMarker:     "[●] Read README.md",
+		TerminalMarker: "[OK]",
+		Timeout:        ptyWaitTimeout,
+		Interval:       ptyPollInterval,
+	})
+
+	assertPhaseSnapshotContains(t, snapshots, phaseThinking, "model: integration-model")
+	assertPhaseSnapshotContains(t, snapshots, phaseThinking, "[●]")
+	assertPhaseSnapshotContains(t, snapshots, phaseTool, "[●] Read README.md")
+	assertPhaseSnapshotContains(t, snapshots, phaseTerminal, "[OK]")
+}
+
 func assertPhaseSnapshotContains(t *testing.T, snapshots map[lifecyclePhase]phaseOutputSnapshot, phase lifecyclePhase, marker string) {
 	t.Helper()
 
