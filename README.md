@@ -373,6 +373,21 @@ make fmt         # Format code
 make lint        # Run golangci-lint (if installed)
 ```
 
+## Releases
+
+Hal release tags are standardized to **`vX.Y.Z`** (for example, `v0.1.7`).
+
+```bash
+# one-time per clone: ensure git-flow tags include "v" prefix
+git config gitflow.prefix.versiontag v
+
+# create and finish a release branch
+git flow release start 0.1.7
+git flow release finish -p 0.1.7
+```
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs tests and publishes artifacts via GoReleaser.
+
 ## License
 
 [MIT](LICENSE)
