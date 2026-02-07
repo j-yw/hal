@@ -66,6 +66,17 @@ func (e *Engine) BuildArgs() []string {
 	return args
 }
 
+func contextRunError(ctx context.Context, timeout time.Duration, operation string) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr == context.DeadlineExceeded {
+			return fmt.Errorf("%s timed out after %s", operation, timeout)
+		}
+		return fmt.Errorf("%s canceled: %w", operation, ctxErr)
+	}
+
+	return nil
+}
+
 // Execute runs the prompt using Claude Code CLI.
 func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {
 	timeout := e.Timeout
@@ -118,12 +129,12 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 	// Handle errors.
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if runErr := contextRunError(ctx, timeout, "execution"); runErr != nil {
 			return engine.Result{
 				Success:  false,
 				Output:   output,
 				Duration: duration,
-				Error:    fmt.Errorf("execution timed out after %s", timeout),
+				Error:    runErr,
 			}
 		}
 
@@ -221,11 +232,8 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			if ctxErr == context.DeadlineExceeded {
-				return "", fmt.Errorf("prompt timed out after %s", timeout)
-			}
-			return "", fmt.Errorf("prompt canceled: %w", ctxErr)
+		if runErr := contextRunError(ctx, timeout, "prompt"); runErr != nil {
+			return "", runErr
 		}
 
 		// Tolerate non-zero exit if Claude still produced a response and no stderr.
@@ -276,8 +284,8 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		if runErr := contextRunError(ctx, timeout, "prompt"); runErr != nil {
+			return "", runErr
 		}
 
 		// Some Claude CLI versions may exit non-zero after emitting a successful
