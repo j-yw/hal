@@ -27,6 +27,7 @@ type Config struct {
 	Dir           string               // Path to .hal directory
 	PRDFile       string               // PRD file name (default: template.PRDFile)
 	ProgressFile  string               // Progress file name (default: template.ProgressFile)
+	BaseBranch    string               // Base branch for creating PRD branch (injected into prompt)
 	MaxIterations int                  // Maximum iterations (0 = unlimited)
 	Engine        string               // Engine name (claude, codex, pi)
 	EngineConfig  *engine.EngineConfig // Optional per-engine config (model, provider)
@@ -242,10 +243,16 @@ func (r *Runner) loadPrompt() (string, error) {
 		return "", err
 	}
 
-	// Replace placeholders with actual filenames
+	// Replace placeholders with actual runtime values
 	prompt := string(data)
 	prompt = strings.Replace(prompt, "{{PRD_FILE}}", r.config.PRDFile, -1)
 	prompt = strings.Replace(prompt, "{{PROGRESS_FILE}}", r.config.ProgressFile, -1)
+
+	baseBranch := r.config.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "current HEAD"
+	}
+	prompt = strings.Replace(prompt, "{{BASE_BRANCH}}", baseBranch, -1)
 
 	// Inject project standards
 	standardsContent, err := standards.Load(r.config.Dir)

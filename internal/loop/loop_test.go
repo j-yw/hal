@@ -91,6 +91,7 @@ You are an autonomous coding agent.
 
 1. Read the PRD at ` + "`.hal/{{PRD_FILE}}`" + `
 2. Read ` + "`.hal/{{PROGRESS_FILE}}`" + `
+3. If needed, create the branch from ` + "`{{BASE_BRANCH}}`" + `
 `
 	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte(promptContent), 0644); err != nil {
 		t.Fatal(err)
@@ -119,6 +120,7 @@ You are an autonomous coding agent.
 			Dir:          halDir,
 			PRDFile:      "prd.json",
 			ProgressFile: "progress.txt",
+			BaseBranch:   "develop",
 			Logger:       &logBuf,
 		},
 	}
@@ -150,6 +152,12 @@ You are an autonomous coding agent.
 	}
 	if !strings.Contains(prompt, ".hal/progress.txt") {
 		t.Error("{{PROGRESS_FILE}} was not replaced")
+	}
+	if strings.Contains(prompt, "{{BASE_BRANCH}}") {
+		t.Error("{{BASE_BRANCH}} placeholder was not replaced")
+	}
+	if !strings.Contains(prompt, "develop") {
+		t.Error("base branch value was not injected")
 	}
 }
 
@@ -188,6 +196,37 @@ func TestLoadPrompt_NoStandardsGraceful(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "## Task") {
 		t.Error("rest of prompt is missing")
+	}
+}
+
+func TestLoadPrompt_BaseBranchFallback(t *testing.T) {
+	halDir := t.TempDir()
+
+	promptContent := "# Agent\n\nBase: {{BASE_BRANCH}}\n"
+	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte(promptContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf bytes.Buffer
+	r := &Runner{
+		config: Config{
+			Dir:          halDir,
+			PRDFile:      "prd.json",
+			ProgressFile: "progress.txt",
+			Logger:       &logBuf,
+		},
+	}
+
+	prompt, err := r.loadPrompt()
+	if err != nil {
+		t.Fatalf("loadPrompt() error: %v", err)
+	}
+
+	if strings.Contains(prompt, "{{BASE_BRANCH}}") {
+		t.Error("{{BASE_BRANCH}} placeholder was not replaced")
+	}
+	if !strings.Contains(prompt, "current HEAD") {
+		t.Error("expected fallback base branch text 'current HEAD'")
 	}
 }
 
