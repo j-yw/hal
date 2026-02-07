@@ -320,6 +320,20 @@ func (p *Parser) parseTurnEnd(raw map[string]interface{}) *engine.Event {
 }
 
 func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
+	// Fallback text recovery: some providers may not emit text_end events.
+	// In that case, extract text from the last assistant message in agent_end.
+	if messages, ok := raw["messages"].([]interface{}); ok {
+		if finalText := extractLastAssistantText(messages); finalText != "" {
+			collected := p.text.String()
+			if !strings.Contains(collected, finalText) {
+				if p.text.Len() > 0 {
+					p.text.WriteString("\n")
+				}
+				p.text.WriteString(finalText)
+			}
+		}
+	}
+
 	// agent_end is the final event. Emit a result.
 	success := !p.hasFailure
 
@@ -365,6 +379,44 @@ func (p *Parser) accumulateUsage(msg map[string]interface{}) {
 }
 
 // Helper functions
+
+func extractLastAssistantText(messages []interface{}) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg, ok := messages[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "assistant" {
+			continue
+		}
+
+		content, ok := msg["content"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		var b strings.Builder
+		for _, item := range content {
+			block, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if blockType, _ := block["type"].(string); blockType != "text" {
+				continue
+			}
+			if text, _ := block["text"].(string); text != "" {
+				b.WriteString(text)
+			}
+		}
+
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+
+	return ""
+}
 
 func trimSpace(b []byte) []byte {
 	start, end := 0, len(b)

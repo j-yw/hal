@@ -52,7 +52,8 @@ func (e *Engine) CLICommand() string {
 }
 
 // BuildArgs returns the CLI arguments for execution.
-func (e *Engine) BuildArgs(prompt string) []string {
+// Prompt content is piped via stdin to avoid argument-length issues.
+func (e *Engine) BuildArgs() []string {
 	args := []string{
 		"-p",
 		"--dangerously-skip-permissions",
@@ -62,8 +63,18 @@ func (e *Engine) BuildArgs(prompt string) []string {
 	if e.model != "" {
 		args = append(args, "--model", e.model)
 	}
-	args = append(args, prompt)
 	return args
+}
+
+func contextRunError(ctx context.Context, timeout time.Duration, operation string) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr == context.DeadlineExceeded {
+			return fmt.Errorf("%s timed out after %s", operation, timeout)
+		}
+		return fmt.Errorf("%s canceled: %w", operation, ctxErr)
+	}
+
+	return nil
 }
 
 // Execute runs the prompt using Claude Code CLI.
@@ -78,8 +89,8 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 	startTime := time.Now()
 
-	// Build command
-	args := e.BuildArgs(prompt)
+	// Build command. Prompt is piped via stdin.
+	args := e.BuildArgs()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 
 	// Detach from TTY to suppress interactive UI hints.
@@ -92,7 +103,8 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 	// 2. Create a new session (Setsid) to detach from controlling terminal
 	//
 	// This ensures clean, parseable output without interactive UI elements.
-	cmd.Stdin = nil
+	// Prompt is sent via stdin instead of argv.
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
 	setupProcessCleanup(cmd)
 
@@ -115,16 +127,30 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 	output := stdout.String()
 	duration := time.Since(startTime)
 
-	// Handle errors
+	// Handle errors.
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if runErr := contextRunError(ctx, timeout, "execution"); runErr != nil {
 			return engine.Result{
 				Success:  false,
 				Output:   output,
 				Duration: duration,
-				Error:    fmt.Errorf("execution timed out after %s", timeout),
+				Error:    runErr,
 			}
 		}
+
+		// Some Claude CLI versions may emit a successful result event but still
+		// return a non-zero exit code. Trust the structured stream result when present.
+		if hasResult, success := e.parseResultStatus(output); hasResult && success {
+			complete := strings.Contains(output, "<promise>COMPLETE</promise>")
+			return engine.Result{
+				Success:  true,
+				Complete: complete,
+				Output:   output,
+				Duration: duration,
+				Error:    nil,
+			}
+		}
+
 		return engine.Result{
 			Success:  false,
 			Output:   output,
@@ -146,19 +172,32 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 	}
 }
 
-// parseSuccess checks if the Claude JSON response indicates success.
-func (e *Engine) parseSuccess(output string) bool {
+// parseResultStatus checks the Claude stream for a terminal result event.
+func (e *Engine) parseResultStatus(output string) (hasResult bool, success bool) {
 	lines := strings.Split(output, "\n")
 	parser := NewParser()
 
+	hasResult = false
+	success = false
 	for _, line := range lines {
 		event := parser.ParseLine([]byte(line))
 		if event != nil && event.Type == engine.EventResult {
-			return event.Data.Success
+			hasResult = true
+			success = event.Data.Success
 		}
 	}
 
-	// If we can't parse, assume success if no error
+	return hasResult, success
+}
+
+// parseSuccess checks if the Claude JSON response indicates success.
+func (e *Engine) parseSuccess(output string) bool {
+	hasResult, success := e.parseResultStatus(output)
+	if hasResult {
+		return success
+	}
+
+	// If we can't parse a terminal result, keep legacy optimistic behavior.
 	return true
 }
 
@@ -173,7 +212,8 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Build command - similar to Execute but simpler output handling
+	// Build command - similar to Execute but simpler output handling.
+	// Prompt is piped via stdin.
 	args := []string{
 		"-p",
 		"--dangerously-skip-permissions",
@@ -181,9 +221,8 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 	if e.model != "" {
 		args = append(args, "--model", e.model)
 	}
-	args = append(args, prompt)
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
 	setupProcessCleanup(cmd)
 
@@ -193,9 +232,15 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		if runErr := contextRunError(ctx, timeout, "prompt"); runErr != nil {
+			return "", runErr
 		}
+
+		// Tolerate non-zero exit if Claude still produced a response and no stderr.
+		if strings.TrimSpace(stdout.String()) != "" && strings.TrimSpace(stderr.String()) == "" {
+			return stdout.String(), nil
+		}
+
 		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
 	}
 
@@ -214,10 +259,10 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Use same flags as Execute for streaming
-	args := e.BuildArgs(prompt)
+	// Use same flags as Execute for streaming. Prompt is piped via stdin.
+	args := e.BuildArgs()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
 	setupProcessCleanup(cmd)
 
@@ -239,9 +284,22 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		if runErr := contextRunError(ctx, timeout, "prompt"); runErr != nil {
+			return "", runErr
 		}
+
+		// Some Claude CLI versions may exit non-zero after emitting a successful
+		// stream result. If the stream result is success, treat this as success.
+		output := stdout.String()
+		if hasResult, success := e.parseResultStatus(output); hasResult && success {
+			if text := strings.TrimSpace(collector.Text()); text != "" {
+				return collector.Text(), nil
+			}
+			if recovered := collectAssistantTextFromStream(output); strings.TrimSpace(recovered) != "" {
+				return recovered, nil
+			}
+		}
+
 		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
 	}
 
@@ -334,6 +392,48 @@ func (h *textCollectingStreamHandler) Flush() {
 
 func (h *textCollectingStreamHandler) Text() string {
 	return h.text.String()
+}
+
+func collectAssistantTextFromStream(output string) string {
+	var text strings.Builder
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
+			continue
+		}
+		eventType, _ := raw["type"].(string)
+		if eventType != "assistant" {
+			continue
+		}
+
+		msg, ok := raw["message"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := msg["content"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, item := range content {
+			block, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if blockType, _ := block["type"].(string); blockType == "text" {
+				if t, _ := block["text"].(string); t != "" {
+					text.WriteString(t)
+				}
+			}
+		}
+	}
+
+	return text.String()
 }
 
 // streamHandler processes output line by line.
