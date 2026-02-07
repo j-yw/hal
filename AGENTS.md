@@ -102,3 +102,15 @@
 - Engine install commands are coupled with symlink creation and matching .gitignore exceptions; tests should assert symlink targets directly.
 - Standards injection is implemented as loader + prompt placeholder + CLI wiring, and user-facing paths should consistently use .hal/standards.
 - Release workflow conventions are repository-specific: use git-flow-style release/hotfix branches and v-prefixed tags, then keep docs aligned to that process.
+
+## Patterns from compound/spinner-state-machine-refactor (2026-02-07)
+
+- In `internal/engine/display.go`, all logical spinner lifecycle changes should go through `d.fsm.GoTo(...)`/`d.fsm.Reset()`; do not reintroduce direct `isThinking`, `thinkingStart`, or `lastTool` fields on `Display`.
+- Canonical terminal-event teardown in this codebase is `GoTo(StateCompletion|StateError, ...)` followed by `Reset()`; keep this pattern for `EventThinking end`, `EventResult`, and `EventError` handlers.
+- Tool dedup is keyed as `e.Tool + e.Detail` (no inserted space); apply presentation spacing only when building display text, not in the dedup key.
+- Display lifecycle tests should use `bytes.Buffer` (non-TTY) and call `StopSpinner()` between events when asserting FSM state to avoid goroutine timing contamination.
+- `Display` keeps split locking (`mu` for output/FSM access, `spinMu` for spinner goroutine control); new state logic should remain under `mu` and not bypass this discipline.
+
+## Patterns from compound/tty-spinner-lifecycle-integration-tests (2026-02-07)
+
+- TTY lifecycle tests for `internal/engine/display.go` should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags, use `package engine`, and document PTY determinism constraints at the top of the file.

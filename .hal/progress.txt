@@ -7,10 +7,11 @@
 - Event types are defined in `internal/engine/types.go` as string constants (EventInit, EventTool, etc.).
 - Existing display tests use `bytes.Buffer` (non-TTY) to avoid spinner goroutine timing issues.
 - `ShowIterationHeader` calls `fsm.Reset()` to clear state for new iterations.
-- `clearThinkingState()` is now dead code — no ShowEvent handler calls it. T-010 should remove it.
+- `clearThinkingState()` has been removed from Display; use `d.fsm.GoTo(...)` and `d.fsm.Reset()` for lifecycle transitions.
 - `d.fsm.thinkingStart` (unexported field) is accessible within the `engine` package — used by `formatThinkingComplete()` in thinking "end" handler.
 - Tool dedup key is `e.Tool + e.Detail` (no space) — space is added later for display only.
 - ShowEvent lifecycle tests must call `d.StopSpinner()` between events to clean up spinner state for FSM assertions.
+- TTY spinner integration coverage should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags using `package engine`.
 
 ---
 
@@ -158,5 +159,17 @@
   - The FSM refactor is complete: all spinner state is now governed by `SpinnerFSM` via `fsm.GoTo()`, `fsm.Reset()`, `fsm.LastTool()`, `fsm.ThinkingElapsed()`
   - Display struct's state fields are: `fsm *SpinnerFSM` (state machine) + spinner goroutine fields (`spinning`, `spinMsg`, `spinCtx`, `spinCancel`, `spinDone`)
   - When removing dead code, always grep for the method name across the entire repo to confirm zero callers — field names may appear in other structs (e.g., Pi parser's `isThinking`)
+---
+
+## 2026-02-07 19:06 +08 - T-001
+- Added integration-only scaffold file `internal/engine/display_tty_integration_test.go` for upcoming PTY spinner lifecycle coverage.
+- Included both integration build tags, `package engine`, and a top-level PTY scope + determinism constraints comment.
+- Added a placeholder scaffold test that is explicitly skipped until lifecycle assertions are implemented in later stories.
+- Ran checks: `go test ./internal/engine/...` and `go test -tags=integration ./internal/engine -run TestDisplayTTYIntegrationScaffold`.
+- Files changed: `internal/engine/display_tty_integration_test.go` (new), `.hal/progress.txt` (updated), `.hal/auto-prd.json` (updated)
+- **Learnings for future iterations:**
+  - Keep Display TTY integration tests behind the `integration` build tag so default unit runs stay fast and deterministic.
+  - Use `package engine` for these tests because upcoming lifecycle assertions need access to Display internals (FSM/spinner state).
+  - Put PTY determinism constraints in a top-level file comment so future additions follow bounded waits + normalized output patterns.
 ---
 
