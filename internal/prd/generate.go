@@ -169,12 +169,12 @@ Do not use markdown fences. Do not include explanation.`, description, response)
 
 	repaired, repairErr := eng.Prompt(ctx, repairPrompt)
 	if repairErr != nil {
-		return nil, parseErr
+		return nil, fmt.Errorf("failed to repair questions JSON after initial parse error (%v): %w", parseErr, repairErr)
 	}
 
 	questions, repairParseErr := parseQuestionsResponse(repaired)
 	if repairParseErr != nil {
-		return nil, parseErr
+		return nil, fmt.Errorf("failed to parse repaired questions response after initial parse error (%v): %w", parseErr, repairParseErr)
 	}
 
 	return questions, nil
