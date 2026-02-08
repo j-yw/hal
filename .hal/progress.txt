@@ -1,0 +1,292 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Display struct now delegates state tracking to `fsm *SpinnerFSM` — old fields `isThinking`, `thinkingStart`, `lastTool` are removed.
+- Display uses two mutexes: `mu` (general output) and `spinMu` (spinner state). FSM fields are guarded by `mu`.
+- Event types are defined in `internal/engine/types.go` as string constants (EventInit, EventTool, etc.).
+- Existing display tests use `bytes.Buffer` (non-TTY) to avoid spinner goroutine timing issues.
+- `ShowIterationHeader` calls `fsm.Reset()` to clear state for new iterations.
+- `clearThinkingState()` has been removed from Display; use `d.fsm.GoTo(...)` and `d.fsm.Reset()` for lifecycle transitions.
+- `d.fsm.thinkingStart` (unexported field) is accessible within the `engine` package — used by `formatThinkingComplete()` in thinking "end" handler.
+- Tool dedup key is `e.Tool + e.Detail` (no space) — space is added later for display only.
+- ShowEvent lifecycle tests must call `d.StopSpinner()` between events to clean up spinner state for FSM assertions.
+- TTY spinner integration coverage should live in `internal/engine/display_tty_integration_test.go` with both `//go:build integration` and `// +build integration` tags using `package engine`.
+- For TTY integration tests, use a PTY master/slave harness (`github.com/creack/pty`): pass the slave to `NewDisplay`, read the master in a goroutine, and treat `io.EOF`, `os.ErrClosed`, and `syscall.EIO` as expected shutdown errors.
+- If `pty.Open()` succeeds but `NewDisplay(slave).isTTY` is false, close both PTY descriptors and `t.Skip` with an explicit unsupported-environment message to avoid flaky portability failures.
+- PTY output assertions should use bounded polling with explicit timeout/interval and normalize terminal output (strip ANSI CSI + convert `\r` redraws to `\n`) before matching markers.
+- For TTY lifecycle flows, drive events through reusable canonical emit helpers (thinking/tool/terminal) and capture per-phase snapshots after checkpoint waits so assertions can target phase boundaries deterministically.
+- In PTY spinner assertions, use spinner-inclusive markers (for example `[●] Read README.md`) so waits prove animated spinner frames rendered, not just static tool history lines.
+- For PTY spinner continuity assertions (thinking→tool, text→tool), capture spinner runtime state under `spinMu` and compare `spinDone` channel identity before/after; unchanged channel means no spinner restart gap.
+- For PTY error-lifecycle assertions, use normalized terminal snapshots and compare marker indices (`> tool ...` before `[!!]`) to verify tool history prints before error output.
+- Terminal-event teardown assertions should check both `display.fsm.State() == StateIdle` and `!display.isThinkingSpinnerActive()` after completion/error markers to verify FSM reset and spinner shutdown together.
+- Integration-tagged engine tests are excluded from default `go test`; when engine constructor signatures change (for example `New(cfg *engine.EngineConfig)`), run `go test -tags=integration ./internal/engine/...` and update integration tests to pass `nil` for default config.
+
+---
+
+## 2026-02-07 - T-001
+- Implemented SpinnerState type with iota constants: StateIdle, StateThinking, StateToolActivity, StateCompletion, StateError
+- Implemented Transition(from, to) error function with explicit allow-list of 11 valid transitions
+- Added String() method for human-readable state names
+- Files changed: internal/engine/spinner_state.go (new)
+- **Learnings for future iterations:**
+  - The transition table includes Idle→Idle for idempotent resets and ToolActivity→ToolActivity for consecutive tool events
+  - Display struct has `lastTool string` that tracks tool dedup — this will move into SpinnerFSM in T-002
+  - `clearThinkingState()` zeroes both `isThinking` and `thinkingStart` — FSM equivalent is GoTo(StateIdle) or Reset()
+---
+
+## 2026-02-07 - T-002
+- Implemented SpinnerFSM struct with fields: state, message, thinkingStart, lastTool
+- NewSpinnerFSM() constructor returns FSM in StateIdle
+- State(), GoTo(), Message(), ThinkingElapsed(), SetLastTool(), LastTool(), Reset() methods
+- GoTo() validates transitions via Transition() and auto-sets thinkingStart on StateThinking entry
+- ThinkingElapsed() returns duration only when in StateThinking, zero otherwise
+- Reset() clears all fields back to zero values
+- Files changed: internal/engine/spinner_state.go (modified)
+- **Learnings for future iterations:**
+  - SpinnerFSM is intentionally not thread-safe — Display's `mu` mutex already guards access
+  - GoTo() only sets thinkingStart on StateThinking entry; other state transitions don't touch it
+  - Reset() is a hard reset (Idle + clear all) vs GoTo(StateIdle) which only changes state+message
+---
+
+## 2026-02-07 - T-003
+- Implemented exhaustive table-driven tests in internal/engine/spinner_state_test.go
+- TestTransition_ValidTransitions: covers all 11 valid transitions
+- TestTransition_InvalidTransitions: covers 11 invalid transitions (exceeding the minimum 5)
+- TestSpinnerState_String: covers all named states plus unknown state fallback
+- TestNewSpinnerFSM: verifies initial zero-value state
+- TestFSM_GoTo_UpdatesStateAndMessage: table-driven test for state/message updates and invalid transition rejection
+- TestFSM_GoTo_ThinkingSetsThinkingStart: verifies thinkingStart is set within time bounds on StateThinking entry
+- TestFSM_GoTo_NonThinkingDoesNotSetThinkingStart: verifies thinkingStart is preserved on non-Thinking transitions
+- TestFSM_ThinkingElapsed_ZeroWhenNotThinking: verifies zero duration in non-Thinking states
+- TestFSM_LastTool: verifies SetLastTool/LastTool pair
+- TestFSM_Reset: verifies all fields cleared (state, message, thinkingStart, lastTool)
+- Files changed: internal/engine/spinner_state_test.go (new)
+- **Learnings for future iterations:**
+  - Test file uses `package engine` (not `engine_test`) since it needs access to unexported fields (thinkingStart) for time assertions
+  - ThinkingElapsed() test needs state transitions first (Idle→Thinking→ToolActivity) to get the FSM into the right state for assertions
+---
+
+## 2026-02-07 - T-004
+- Replaced `isThinking bool`, `thinkingStart time.Time`, `lastTool string` on Display with single `fsm *SpinnerFSM` field
+- NewDisplay initializes fsm via NewSpinnerFSM()
+- clearThinkingState() delegates to fsm.Reset() when in StateThinking
+- spinnerDisplayMessage() reads elapsed from fsm.ThinkingElapsed() instead of d.thinkingStart
+- ShowEvent tool dedup uses fsm.LastTool() / fsm.SetLastTool() instead of d.lastTool
+- EventThinking "start" uses fsm.GoTo(StateThinking, msg) with auto-set thinkingStart
+- EventThinking "end" reads d.fsm.thinkingStart for formatThinkingComplete()
+- ShowIterationHeader calls fsm.Reset() instead of d.lastTool = ""
+- spinning, spinMsg, spinCtx, spinCancel, spinDone fields unchanged (spinner goroutine state)
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - clearThinkingState() uses fsm.Reset() (hard reset) rather than GoTo because Thinking→Idle is not a valid transition in the FSM table — Reset() bypasses transition validation
+  - d.fsm.thinkingStart is accessible as unexported field within the same package — no getter needed for formatThinkingComplete()
+  - EventThinking "start" does fsm.Reset() first to ensure clean state, then GoTo(StateThinking) — this handles edge cases where thinking restarts without proper end
+  - The keepSpinner logic at top of ShowEvent is unchanged — it still uses event type checks, not FSM state. T-007 will refactor this.
+---
+
+## 2026-02-07 - T-005
+- Refactored EventInit handler: replaced `clearThinkingState()` with `fsm.Reset()` + `fsm.GoTo(StateThinking, msg)`, spinner message driven from `fsm.Message()`
+- Refactored EventThinking "end": replaced `clearThinkingState()` with `fsm.GoTo(StateCompletion, "")` then `fsm.Reset()` — properly transitions through Completion state
+- EventThinking "start" and "delta" handlers were already FSM-driven from T-004, no changes needed
+- No direct boolean assignments (`d.isThinking`, `d.thinkingStart`) exist — all removed in T-004
+- Spinner stays active across thinking deltas via keepSpinner logic (unchanged)
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - EventInit uses `fsm.Reset()` before `GoTo(StateThinking)` because init can arrive from any FSM state (e.g., after an error) — Reset bypasses transition validation
+  - EventThinking "end" must read `d.fsm.thinkingStart` BEFORE transitioning to Completion, since GoTo doesn't clear timing fields but Reset does
+  - Only EventInit and EventThinking handlers were modified for T-005 — EventTool, EventResult, EventError, EventText still use `clearThinkingState()` and will be refactored in T-006/T-007
+---
+
+## 2026-02-07 - T-006
+- Refactored EventTool handler: replaced `clearThinkingState()` with `fsm.GoTo(StateToolActivity, toolMsg)` — FSM now governs tool-activity state
+- Refactored EventText handler: replaced `clearThinkingState()` with `fsm.GoTo(StateToolActivity, workingMsg)` — FSM now governs working state
+- Duplicate tool dedup already uses `fsm.LastTool()` / `fsm.SetLastTool()` from T-004 — no direct `d.lastTool` assignments exist
+- Spinner line clearing before tool history output preserved unchanged
+- Edge case handling: if FSM GoTo fails (unexpected state), falls back to `fsm.Reset()`
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - `toolMsg` must be constructed AFTER the `detail` space-prefix logic (`detail = " " + detail`) to avoid missing space in spinner messages (caught by TestShowEvent_ToolKeepsSpinnerAndUpdatesMessage)
+  - Dedup check should happen BEFORE FSM transition so duplicate tools don't change FSM state needlessly
+  - EventResult and EventError still use `clearThinkingState()` — T-007 will refactor these
+  - After T-006, only EventResult and EventError handlers still call `clearThinkingState()`
+---
+
+## 2026-02-07 - T-007
+- Refactored EventResult handler: replaced `clearThinkingState()` with `fsm.GoTo(StateCompletion, "")` then `fsm.Reset()` — proper FSM transitions through Completion→Idle
+- Refactored EventError handler: replaced `clearThinkingState()` with `fsm.GoTo(StateError, errorMsg)` then `fsm.Reset()` — proper FSM transitions through Error→Idle
+- Replaced keepSpinner logic with FSM-driven switch statement using descriptive comments about spinner-continuing vs terminal states
+- Both handlers use fallback `fsm.Reset()` if GoTo fails (unexpected FSM state)
+- `clearThinkingState()` is now completely unused in ShowEvent — only the function definition remains (T-010 cleanup target)
+- Files changed: internal/engine/display.go (modified)
+- **Learnings for future iterations:**
+  - EventResult/EventError use the same pattern as EventThinking "end": GoTo(terminal state) → Reset() — this is the canonical teardown pattern
+  - GoTo(StateCompletion/StateError) can fail if FSM is in Idle (e.g., result event arrives without prior thinking/tool) — always fall back to Reset()
+  - `clearThinkingState()` is now dead code — T-010 should remove it entirely since no ShowEvent handler calls it anymore
+  - The keepSpinner switch-statement approach is more extensible than the boolean expression — new event types can be added as additional cases
+---
+
+## 2026-02-07 - T-008
+- Added 4 new ShowEvent unit tests for full event lifecycle sequences in display_test.go
+- TestShowEvent_FullLifecycleSequence: Init → Thinking start → Thinking delta → Tool → Tool → Thinking end → Result — verifies FSM state at each step
+- TestShowEvent_ErrorResetsToIdle: Init → Thinking start → Error — verifies error handling resets FSM to StateIdle
+- TestShowEvent_DuplicateToolDedup: verifies duplicate consecutive tool events are deduplicated via FSM lastTool
+- TestShowEvent_SpinnerMessageUpdatesOnTransition: verifies spinner message updates on Thinking→ToolActivity transition
+- All tests use bytes.Buffer writer (non-TTY) to avoid goroutine timing issues
+- Files changed: internal/engine/display_test.go (modified)
+- **Learnings for future iterations:**
+  - Tool dedup key is `e.Tool + e.Detail` (no space separator) — the space is added later for display only (`detail = " " + detail`)
+  - ShowEvent must be followed by `d.StopSpinner()` in tests to clean up spinner state before the next event when checking FSM state between events
+  - EventThinking "delta" does NOT change FSM state — it only starts the spinner if not already running
+  - To test EventResult, the FSM needs to be in a valid source state (Thinking or ToolActivity) — use EventInit first to get there
+---
+
+## 2026-02-07 - T-009
+- Added TestShowEvent_GoldenLifecycle golden-output test in display_test.go
+- Feeds event sequence: Init(claude-3) → Thinking start → Thinking end → Tool(Read, file.go) → Tool(Write, file.go) → Result(success, 1500 tokens, 5000ms)
+- Captures output via bytes.Buffer (non-TTY, no spinner goroutine)
+- Strips ANSI escape codes via existing ansiRegex before comparison
+- Golden string verifies: model line, thinking-complete > line with 0s elapsed, tool > lines, result [OK] line with duration and tokens
+- Test fails with clear diff if output changes (got vs want format)
+- Files changed: internal/engine/display_test.go (modified)
+- **Learnings for future iterations:**
+  - Thinking start produces NO visible output — only FSM state change and spinner start. Don't expect it in golden output.
+  - formatThinkingComplete uses time.Since(thinkingStart) truncated to seconds — in fast tests this is always "0s"
+  - EventTool from Idle state: GoTo(StateToolActivity) fails (invalid transition) but ShowEvent falls back to fsm.Reset() — tool output still prints correctly
+  - Non-TTY display skips the `\r\033[2K` spinner line clearing (isTTY check) so golden output is clean sequential lines
+---
+
+## 2026-02-07 - T-010
+- Removed `clearThinkingState()` method from Display — it was dead code after the FSM refactor (no callers remained)
+- Verified no unused fields remain on Display struct: `isThinking`, `thinkingStart`, `lastTool` were all removed in T-004
+- Confirmed `isThinking` references in `internal/engine/pi/parser.go` are unrelated (Pi parser struct, not Display)
+- `go vet ./...` passes with no warnings
+- `go test ./...` passes (all existing and new tests)
+- `make build` succeeds
+- Files changed: internal/engine/display.go (modified — 6 lines deleted)
+- **Learnings for future iterations:**
+  - The FSM refactor is complete: all spinner state is now governed by `SpinnerFSM` via `fsm.GoTo()`, `fsm.Reset()`, `fsm.LastTool()`, `fsm.ThinkingElapsed()`
+  - Display struct's state fields are: `fsm *SpinnerFSM` (state machine) + spinner goroutine fields (`spinning`, `spinMsg`, `spinCtx`, `spinCancel`, `spinDone`)
+  - When removing dead code, always grep for the method name across the entire repo to confirm zero callers — field names may appear in other structs (e.g., Pi parser's `isThinking`)
+---
+
+## 2026-02-07 19:06 +08 - T-001
+- Added integration-only scaffold file `internal/engine/display_tty_integration_test.go` for upcoming PTY spinner lifecycle coverage.
+- Included both integration build tags, `package engine`, and a top-level PTY scope + determinism constraints comment.
+- Added a placeholder scaffold test that is explicitly skipped until lifecycle assertions are implemented in later stories.
+- Ran checks: `go test ./internal/engine/...` and `go test -tags=integration ./internal/engine -run TestDisplayTTYIntegrationScaffold`.
+- Files changed: `internal/engine/display_tty_integration_test.go` (new), `.hal/progress.txt` (updated), `.hal/auto-prd.json` (updated)
+- **Learnings for future iterations:**
+  - Keep Display TTY integration tests behind the `integration` build tag so default unit runs stay fast and deterministic.
+  - Use `package engine` for these tests because upcoming lifecycle assertions need access to Display internals (FSM/spinner state).
+  - Put PTY determinism constraints in a top-level file comment so future additions follow bounded waits + normalized output patterns.
+---
+
+## 2026-02-07 19:11 +08 - T-002
+- Implemented a reusable PTY integration harness in `internal/engine/display_tty_integration_test.go` with `newDisplayTTYHarness`, concurrent master capture, and idempotent `Close()` cleanup.
+- Added `TestDisplayTTYHarness_CapturesLifecycleOutput` to verify the harness runs `NewDisplay` in real TTY mode and captures lifecycle output from `EventInit` + `EventTool`.
+- Added integration-only dependency `github.com/creack/pty` for PTY master/slave support.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run TestDisplayTTYHarness_CapturesLifecycleOutput`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `go.mod`, `go.sum`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - PTY capture goroutines can return `syscall.EIO` when descriptors close; treat it as expected teardown rather than test failure.
+  - Wrap PTY cleanup in `sync.Once` because tests may call harness `Close()` explicitly while also relying on `t.Cleanup`.
+  - Stop `Display` spinner before closing PTY descriptors to avoid teardown races.
+---
+
+## 2026-02-07 19:15 +08 - T-003
+- Added `WaitForOutputContains(marker, timeout, interval)` to the PTY harness for bounded polling with explicit timing controls.
+- Added `normalizeTTYOutput()` and `ansiControlSequenceRegex` to strip ANSI CSI control codes and normalize carriage-return redraws (`\r`) before assertions.
+- Updated `TestDisplayTTYHarness_CapturesLifecycleOutput` to wait for normalized output markers instead of reading the PTY buffer immediately.
+- Added `TestNormalizeTTYOutput_StripsANSIAndCarriageReturns` to lock in normalization behavior.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestNormalizeTTYOutput_StripsANSIAndCarriageReturns|TestDisplayTTYHarness_CapturesLifecycleOutput'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - PTY assertions are more stable when matching normalized output snapshots instead of raw immediate reads.
+  - Timeout failures should include both normalized and raw captured output to debug control-sequence issues quickly.
+  - Keep polling bounds explicit (`timeout`, `interval`) per assertion so integration tests remain deterministic and tuneable.
+---
+
+## 2026-02-07 19:20 +08 - T-004
+- Added reusable lifecycle helpers in `internal/engine/display_tty_integration_test.go`: canonical emitters for thinking (`EventInit` + thinking start/delta), tool (`EventTool`), and terminal events (`EventResult`/`EventError`).
+- Implemented `displayLifecycleDriver` with `DriveSuccessLifecycle` and `DriveErrorLifecycle`, plus checkpoint-based phase sync (`lifecycleCheckpoints`) and per-phase snapshot capture (`phaseOutputSnapshot`).
+- Added integration tests `TestDisplayLifecycleDriver_DriveSuccessLifecycle` and `TestDisplayLifecycleDriver_DriveErrorLifecycle` to verify checkpoint synchronization and phase snapshot availability for assertions.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestNormalizeTTYOutput_StripsANSIAndCarriageReturns|TestDisplayTTYHarness_CapturesLifecycleOutput|TestDisplayLifecycleDriver_DriveSuccessLifecycle|TestDisplayLifecycleDriver_DriveErrorLifecycle'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep lifecycle event sequencing in shared emit helpers so future TTY tests stay readable and avoid drift in event order.
+  - Capture output snapshots immediately after each checkpoint wait so phase assertions can compare normalized and raw output at stable boundaries.
+  - Put timeout/interval defaults inside checkpoint config (`withDefaults`) to keep callers concise without sacrificing bounded waits.
+---
+
+## 2026-02-07 19:23 +08 - T-005
+- Added `TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion` in `internal/engine/display_tty_integration_test.go` to exercise Init + thinking start/delta + tool + result success in one PTY-backed flow.
+- Configured lifecycle checkpoints to wait for `[●]` in thinking, `[●] Read README.md` during tool activity, and `[OK]` at completion so spinner continuity and terminal success are both verified under bounded timeouts.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion|TestDisplayLifecycleDriver_DriveSuccessLifecycle|TestDisplayLifecycleDriver_DriveErrorLifecycle|TestDisplayTTYHarness_CapturesLifecycleOutput|TestNormalizeTTYOutput_StripsANSIAndCarriageReturns'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use spinner-inclusive tool checkpoints (`[●] Read ...`) instead of plain tool text markers so tests prove animated spinner frames rendered, not just immutable tool history output.
+  - Reusing `DriveSuccessLifecycle` keeps success-path coverage explicit (thinking start/delta → tool → result) while preserving deterministic checkpoint waits.
+  - Key terminal assertions off `[OK]` with bounded waits so failures surface immediately with normalized/raw capture context from the harness.
+---
+
+## 2026-02-07 19:26 +08 - T-006
+- Added `TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError` in `internal/engine/display_tty_integration_test.go` to exercise the full PTY-backed error flow: thinking start/delta → tool event → terminal error event.
+- Added `assertMarkerOrder` helper and used index-order assertions on normalized terminal output to verify the tool history line (`> Read README.md`) appears before the error badge (`[!!]`).
+- Added deterministic terminal checks for both error badge and error message content in the terminal phase snapshot.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError'`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - For error-path lifecycle tests, assert ordering on the terminal snapshot (not just the tool snapshot) so checks include the full accumulated PTY stream.
+  - Use the immutable history marker (`> Read ...`) for ordering checks; spinner redraw markers can appear multiple times and are less stable for index-based assertions.
+  - Assert both `[!!]` and the concrete error message to keep failures deterministic across style changes.
+---
+
+## 2026-02-07 19:31 +08 - T-007
+- Added `TestDisplayTTYLifecycle_SpinnerContinuity_ThinkingToTool` and `TestDisplayTTYLifecycle_SpinnerContinuity_TextToTool` in `internal/engine/display_tty_integration_test.go` to validate PTY spinner continuity across thinking→tool and text→tool transitions.
+- Added reusable continuity helpers: `waitForSpinnerRuntimeSnapshot`, `captureSpinnerRuntimeSnapshot`, `assertSpinnerContinuity`, and `assertHALBrandingContinuity`.
+- Added canonical `emitCanonicalTextEvent` helper to drive text-phase spinner activity before tool transition assertions.
+- Ran checks: `go test ./internal/engine/...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_SpinnerContinuity_ThinkingToTool|TestDisplayTTYLifecycle_SpinnerContinuity_TextToTool|TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion|TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError'`, `go test ./...`, `make test`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - To prove spinner continuity (no restart gap), compare `spinDone` channel identity before/after transition while holding `spinMu`.
+  - Pair internal continuity assertions with normalized output checks that include `[●]` markers to confirm HAL-eye branding stays visible through transition boundaries.
+  - A dedicated text emitter helper keeps text→tool transition tests deterministic and avoids repeating raw `EventText` setup in each case.
+---
+
+## 2026-02-07 19:35 +08 - T-008
+- Extended PTY lifecycle integration tests to assert teardown state after both completion and error terminal events.
+- Added `assertTerminalTeardownState` helper and invoked it from the success-path and error-path lifecycle tests.
+- The teardown helper checks FSM idle state and spinner shutdown using `display.isThinkingSpinnerActive()`.
+- Ran checks: `go test ./internal/engine/...`, `go test ./...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTYLifecycle_SuccessPath_ShowsSpinnerAndCompletion|TestDisplayTTYLifecycle_ErrorPath_ShowsToolBeforeError'`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Teardown regressions are best caught by pairing `display.fsm.State() == StateIdle` with spinner inactivity assertions; either signal alone can miss partial cleanup bugs.
+  - Read FSM state under `display.mu` in tests to align with Display's split-lock discipline (`mu` for FSM/output, `spinMu` for spinner runtime fields).
+  - Use `display.isThinkingSpinnerActive()` as the spinner-active indicator instead of reading spinner fields directly.
+---
+
+## 2026-02-07 19:39 +08 - T-009
+- Hardened PTY harness portability guardrails in `internal/engine/display_tty_integration_test.go`.
+- Added explicit skip messaging for unsupported PTY environments and a second skip path when `pty.Open()` succeeds but `NewDisplay(slave)` is not detected as TTY.
+- Added `closePTYDescriptor` helper and upgraded harness cleanup to report close failures, stop spinner before descriptor teardown, and assert spinner shutdown after cleanup.
+- Added `TestDisplayTTYHarness_Close_StopsSpinnerAndCaptureLoop` to verify cleanup is idempotent and capture goroutine teardown is deterministic.
+- Ran checks: `go test ./internal/engine/...`, `go test ./...`, `go test -tags=integration ./internal/engine -run 'TestDisplayTTY|TestDisplayLifecycleDriver|TestNormalizeTTYOutput'`.
+- Files changed: `internal/engine/display_tty_integration_test.go`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Portability guardrails should skip early with explicit context when PTY setup is unavailable or when the PTY-backed writer is not detected as TTY.
+  - Close PTY descriptors via a helper that tolerates `os.ErrClosed` so cleanup stays idempotent in explicit `Close()` + `t.Cleanup` paths.
+  - Cleanup assertions should verify both goroutine teardown (`readDone`) and spinner inactivity to catch partial shutdown regressions.
+---
+
+## 2026-02-07 19:41 +08 - T-010
+- Fixed integration-tagged Codex tests to match the current engine constructor contract by passing `nil` config to `codex.New(nil)` in all integration test cases.
+- Ran the verification matrix for engine suites: `go test ./internal/engine/...` and `go test -count=1 -tags=integration ./internal/engine/...` for 3 consecutive runs.
+- Confirmed project-level quality remains green with `make test`.
+- Files changed: `internal/engine/codex/integration_test.go`, `AGENTS.md`, `.hal/auto-prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Integration-tagged tests can silently drift when constructor signatures evolve because they are excluded from default test runs.
+  - For constructor migrations to `New(cfg *engine.EngineConfig)`, update integration tests to call `New(nil)` when defaults are intended.
+  - Use `-count=1` for repeated integration test runs to detect flakes instead of reusing cached results.
+---
+

@@ -1,0 +1,147 @@
+{
+  "project": "hal",
+  "branchName": "compound/tty-spinner-lifecycle-integration-tests",
+  "description": "Add integration-tagged PTY/TTY lifecycle tests for internal/engine Display spinner behavior, including continuity, teardown, and deterministic terminal-output assertions.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Create integration test scaffold for TTY spinner lifecycle",
+      "description": "As a developer, I need a dedicated integration-only test file scaffold so PTY spinner lifecycle tests stay isolated from default unit runs.",
+      "acceptanceCriteria": [
+        "internal/engine/display_tty_integration_test.go exists with both //go:build integration and // +build integration tags",
+        "The file contains a top-level comment describing PTY scope and determinism constraints",
+        "The test file uses package engine",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Implement PTY-backed Display integration harness",
+      "description": "As a developer, I need reusable PTY harness helpers so NewDisplay executes in true TTY mode and spinner animation paths are exercised.",
+      "acceptanceCriteria": [
+        "Helper opens a PTY master/slave pair and constructs Display using the PTY slave writer",
+        "Harness captures PTY master output concurrently while lifecycle events execute",
+        "Harness registers t.Cleanup to close PTY descriptors and stop any active spinner",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Add bounded synchronization and output-normalization utilities",
+      "description": "As a developer, I need deterministic wait and normalization helpers so TTY assertions are stable without unbounded sleeps.",
+      "acceptanceCriteria": [
+        "A bounded polling helper waits until captured output contains a marker using explicit timeout and interval parameters",
+        "An output normalization helper handles carriage returns and ANSI control sequences used by spinner redraws",
+        "Timeout failures include actionable debug context with the latest captured output",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Add reusable lifecycle event driver helpers",
+      "description": "As a developer, I need compact lifecycle driver helpers so completion and error integration tests remain readable and one-iteration maintainable.",
+      "acceptanceCriteria": [
+        "Helper functions emit canonical Display.ShowEvent sequences for thinking, tool, and terminal events",
+        "Drivers support synchronization checkpoints between lifecycle phases",
+        "Drivers expose captured output snapshots for per-phase assertions",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Add success-path TTY lifecycle integration test",
+      "description": "As a developer, I need an end-to-end thinking-to-tool-to-completion integration test so spinner lifecycle behavior is validated in real terminal mode.",
+      "acceptanceCriteria": [
+        "Integration test covers thinking start, thinking delta, tool event, and result success event",
+        "Assertions confirm HAL-eye spinner marker [●] appears during active spinner phases",
+        "Assertions confirm completion output appears before test timeout expires",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Add error-path TTY lifecycle integration test",
+      "description": "As a developer, I need an end-to-end thinking-to-tool-to-error integration test so terminal error teardown behavior is validated under spinner rendering.",
+      "acceptanceCriteria": [
+        "Integration test covers thinking start, thinking delta, tool event, and terminal error event",
+        "Assertions verify tool history output is emitted before error output using output index ordering",
+        "Assertions verify deterministic error badge or message content is present",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Validate spinner continuity across transition boundaries",
+      "description": "As a developer, I need explicit continuity assertions so spinner activity does not unintentionally restart or gap during thinking-to-tool and text-to-tool transitions.",
+      "acceptanceCriteria": [
+        "Test assertions verify continuity across thinking to tool transition in PTY mode",
+        "Test assertions verify continuity across text to tool transition in PTY mode",
+        "Assertions verify HAL-eye branding remains visible across transitions without unintended spinner-off gaps",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Assert terminal-event teardown resets FSM and spinner state",
+      "description": "As a developer, I need teardown-state assertions so completion and error terminal events always leave Display idle with spinner stopped.",
+      "acceptanceCriteria": [
+        "After completion terminal event, assertion checks d.fsm.State() equals StateIdle",
+        "After error terminal event, assertion checks d.fsm.State() equals StateIdle",
+        "Both paths assert spinner inactive after teardown using the Display spinner-active indicator",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "title": "Add integration guardrails for portability and deterministic cleanup",
+      "description": "As a developer, I need skip and cleanup guardrails so PTY integration tests fail clearly when unsupported and do not leak resources.",
+      "acceptanceCriteria": [
+        "Tests skip with a clear message when PTY setup is unsupported in the current environment",
+        "All polling and wait durations are defined by centralized bounded constants",
+        "Cleanup runs on all paths and closes PTY resources while stopping spinner goroutines",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "title": "Run verification matrix for engine unit and integration suites",
+      "description": "As a developer, I need a final verification task so new integration tests and existing engine tests remain green and repeatable.",
+      "acceptanceCriteria": [
+        "go test ./internal/engine/... completes successfully",
+        "go test -tags=integration ./internal/engine/... completes successfully",
+        "Integration-tagged engine tests pass across three consecutive runs without flakes",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

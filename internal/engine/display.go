@@ -48,7 +48,7 @@ type Display struct {
 	spinCancel context.CancelFunc
 	spinDone   chan struct{}
 	spinMsg    string
-	lastTool   string
+	fsm        *SpinnerFSM
 	startTime  time.Time
 	loopStart  time.Time
 
@@ -59,10 +59,6 @@ type Display struct {
 
 	// Model tracking — suppresses duplicate model lines after first EventInit
 	modelShown bool
-
-	// Thinking state — shows elapsed time while model reasons
-	thinkingStart time.Time
-	isThinking    bool
 }
 
 // NewDisplay creates a new display writer.
@@ -75,6 +71,7 @@ func NewDisplay(out io.Writer) *Display {
 	return &Display{
 		out:       out,
 		isTTY:     isTTY,
+		fsm:       NewSpinnerFSM(),
 		startTime: now,
 		loopStart: now,
 	}
@@ -167,17 +164,11 @@ func (d *Display) currentSpinnerMessage() string {
 	return msg
 }
 
-func (d *Display) clearThinkingState() {
-	d.isThinking = false
-	d.thinkingStart = time.Time{}
-}
-
 // spinnerDisplayMessage returns the message shown on the spinner line.
 // Caller must hold d.mu.
 func (d *Display) spinnerDisplayMessage(base string) string {
-	if d.isThinking && !d.thinkingStart.IsZero() {
-		elapsed := time.Since(d.thinkingStart).Truncate(time.Second)
-		return fmt.Sprintf("%s %s", base, elapsed)
+	if elapsed := d.fsm.ThinkingElapsed(); elapsed > 0 {
+		return fmt.Sprintf("%s %s", base, elapsed.Truncate(time.Second))
 	}
 
 	return base
@@ -209,9 +200,13 @@ func (d *Display) ShowEvent(e *Event) {
 		return
 	}
 
-	// Keep spinner continuity when updating active activity text.
-	keepSpinner := e.Type == EventTool || (e.Type == EventThinking && e.Data.Message == "delta")
-	if !keepSpinner {
+	// FSM-driven spinner continuity: keep spinner active when the incoming
+	// event will transition to a spinner-continuing state (ToolActivity or
+	// Thinking delta). Stop for terminal states (Completion, Error, Idle).
+	switch {
+	case e.Type == EventTool, e.Type == EventThinking && e.Data.Message == "delta":
+		// Spinner stays active — these events update message in-place.
+	default:
 		d.StopSpinner()
 	}
 
@@ -221,27 +216,36 @@ func (d *Display) ShowEvent(e *Event) {
 
 	switch e.Type {
 	case EventInit:
-		d.clearThinkingState()
+		// Reset FSM to clean state, then transition to Thinking
+		d.fsm.Reset()
 		if e.Data.Model != "" && !d.modelShown {
 			modelText := StyleMuted.Render(fmt.Sprintf("   model: %s", e.Data.Model))
 			fmt.Fprintln(d.out, modelText)
 			d.modelShown = true
 		}
-		startSpinnerMsg = randomHalWord(HalThinkingWords)
+		msg := randomHalWord(HalThinkingWords)
+		_ = d.fsm.GoTo(StateThinking, msg)
+		startSpinnerMsg = d.fsm.Message()
 
 	case EventTool:
-		d.clearThinkingState()
 		// Avoid duplicate consecutive tool messages
 		toolKey := e.Tool + e.Detail
-		if toolKey == d.lastTool {
+		if toolKey == d.fsm.LastTool() {
 			d.mu.Unlock()
 			return
 		}
-		d.lastTool = toolKey
+		d.fsm.SetLastTool(toolKey)
 
 		detail := e.Detail
 		if detail != "" {
 			detail = " " + detail
+		}
+
+		// Transition FSM to ToolActivity state
+		toolMsg := truncate(e.Tool+detail, GetTerminalWidth()/2)
+		if err := d.fsm.GoTo(StateToolActivity, toolMsg); err != nil {
+			// Edge case: FSM in unexpected state (e.g., Idle) — reset and proceed
+			d.fsm.Reset()
 		}
 
 		if d.isTTY && d.isThinkingSpinnerActive() {
@@ -265,10 +269,14 @@ func (d *Display) ShowEvent(e *Event) {
 		fmt.Fprintf(d.out, "   %s %s\n", arrow, toolLine)
 
 		// Start spinner while tool executes
-		startSpinnerMsg = truncate(e.Tool+detail, GetTerminalWidth()/2)
+		startSpinnerMsg = toolMsg
 
 	case EventResult:
-		d.clearThinkingState()
+		// Transition through Completion state, then reset to Idle
+		if err := d.fsm.GoTo(StateCompletion, ""); err != nil {
+			d.fsm.Reset()
+		}
+		d.fsm.Reset()
 		duration := int(e.Data.DurationMs / 1000)
 		var statusBadge string
 		if e.Data.Success {
@@ -288,7 +296,11 @@ func (d *Display) ShowEvent(e *Event) {
 		fmt.Fprintln(d.out)
 
 	case EventError:
-		d.clearThinkingState()
+		// Transition through Error state, then reset to Idle
+		if err := d.fsm.GoTo(StateError, e.Data.Message); err != nil {
+			d.fsm.Reset()
+		}
+		d.fsm.Reset()
 		errorBadge := StyleError.Render("[!!]")
 		errorMsg := StyleError.Render(e.Data.Message)
 		fmt.Fprintf(d.out, "   %s %s\n", errorBadge, errorMsg)
@@ -296,9 +308,9 @@ func (d *Display) ShowEvent(e *Event) {
 	case EventThinking:
 		switch e.Data.Message {
 		case "start":
-			d.isThinking = true
-			d.thinkingStart = time.Now()
-			startSpinnerMsg = randomHalWord(HalThinkingWords)
+			d.fsm.Reset() // Ensure clean state before starting thinking
+			_ = d.fsm.GoTo(StateThinking, randomHalWord(HalThinkingWords))
+			startSpinnerMsg = d.fsm.Message()
 		case "delta":
 			// Keep thinking state active — the spinner already shows elapsed time.
 			// If spinner isn't running (e.g., first delta), start it.
@@ -306,17 +318,24 @@ func (d *Display) ShowEvent(e *Event) {
 				startSpinnerMsg = randomHalWord(HalThinkingWords)
 			}
 		case "end":
-			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.thinkingStart))
-			d.clearThinkingState()
+			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.fsm.thinkingStart))
+			// Transition through Completion state, then reset to Idle
+			_ = d.fsm.GoTo(StateCompletion, "")
+			d.fsm.Reset()
 			// Keep tool/completion history lines on the angled marker.
 			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), thinkMsg)
 		}
 
 	case EventText:
-		d.clearThinkingState()
+		// Transition FSM to ToolActivity state for working indicator
+		workingMsg := randomHalWord(HalWorkingWords)
+		if err := d.fsm.GoTo(StateToolActivity, workingMsg); err != nil {
+			// Edge case: FSM in unexpected state — reset and proceed
+			d.fsm.Reset()
+		}
 		// Text events are usually the final response, we don't show them inline
 		// But start a spinner to show we're still working
-		startSpinnerMsg = randomHalWord(HalWorkingWords)
+		startSpinnerMsg = workingMsg
 	}
 
 	d.mu.Unlock()
@@ -368,7 +387,7 @@ func (d *Display) ShowIterationHeader(current, max int, story *StoryInfo) {
 	d.iterationCount = current
 	d.maxIterations = max
 	d.startTime = time.Now()
-	d.lastTool = "" // Reset for new iteration
+	d.fsm.Reset() // Reset for new iteration
 
 	barWidth := IterationBarWidth
 
