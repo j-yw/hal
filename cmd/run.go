@@ -96,9 +96,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
 
-	baseBranch, err := resolveRunBaseBranch(runBaseFlag, compound.CurrentBranchOptional)
-	if err != nil {
-		return err
+	baseBranch := strings.TrimSpace(runBaseFlag)
+	if baseBranch == "" {
+		// Best-effort: detached HEAD or git lookup errors fall back to empty,
+		// which downstream git commands interpret as current HEAD.
+		baseBranch, _ = compound.CurrentBranchOptional()
 	}
 
 	// Create and run the loop
@@ -126,17 +128,4 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func resolveRunBaseBranch(baseFlag string, currentBranchFn func() (string, error)) (string, error) {
-	baseBranch := strings.TrimSpace(baseFlag)
-	if baseBranch != "" {
-		return baseBranch, nil
-	}
-
-	baseBranch, err := currentBranchFn()
-	if err != nil {
-		return "", fmt.Errorf("failed to determine current branch for --base: %w", err)
-	}
-	return baseBranch, nil
 }
