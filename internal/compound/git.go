@@ -31,7 +31,13 @@ func CreateBranch(branchName, baseBranch string) error {
 // CurrentBranch returns the name of the current git branch.
 // Returns an error when HEAD is detached.
 func CurrentBranch() (string, error) {
-	branch, err := currentBranch()
+	return CurrentBranchInDir("")
+}
+
+// CurrentBranchInDir returns the current branch in the given directory.
+// Returns an error when HEAD is detached.
+func CurrentBranchInDir(dir string) (string, error) {
+	branch, err := currentBranchInDir(dir)
 	if err != nil {
 		return "", err
 	}
@@ -44,11 +50,20 @@ func CurrentBranch() (string, error) {
 // CurrentBranchOptional returns the current branch name.
 // Returns an empty branch with nil error when HEAD is detached.
 func CurrentBranchOptional() (string, error) {
-	return currentBranch()
+	return CurrentBranchOptionalInDir("")
 }
 
-func currentBranch() (string, error) {
+// CurrentBranchOptionalInDir returns the current branch in the given directory.
+// Returns an empty branch with nil error when HEAD is detached.
+func CurrentBranchOptionalInDir(dir string) (string, error) {
+	return currentBranchInDir(dir)
+}
+
+func currentBranchInDir(dir string) (string, error) {
 	cmd := exec.Command("git", "branch", "--show-current")
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -20,22 +20,20 @@ var stateFileName = template.AutoStateFile
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
-	config          *AutoConfig
-	engine          engine.Engine
-	engineConfig    *engine.EngineConfig
-	display         *engine.Display
-	dir             string
-	currentBranchFn func() (string, error)
+	config       *AutoConfig
+	engine       engine.Engine
+	engineConfig *engine.EngineConfig
+	display      *engine.Display
+	dir          string
 }
 
 // NewPipeline creates a new pipeline instance.
 func NewPipeline(config *AutoConfig, eng engine.Engine, display *engine.Display, dir string) *Pipeline {
 	return &Pipeline{
-		config:          config,
-		engine:          eng,
-		display:         display,
-		dir:             dir,
-		currentBranchFn: CurrentBranchOptional,
+		config:  config,
+		engine:  eng,
+		display: display,
+		dir:     dir,
 	}
 }
 
@@ -184,7 +182,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 // Priority:
 //  1. Existing state.BaseBranch (for resumed runs)
 //  2. opts.BaseBranch override
-//  3. Current git branch (empty when detached HEAD)
+//  3. Current git branch (best-effort; empty means current HEAD)
 func (p *Pipeline) initializeBaseBranch(state *PipelineState, opts RunOptions) error {
 	baseOverride := strings.TrimSpace(opts.BaseBranch)
 
@@ -201,16 +199,13 @@ func (p *Pipeline) initializeBaseBranch(state *PipelineState, opts RunOptions) e
 	}
 
 	if !opts.Resume || state.Step == StepAnalyze || state.Step == StepBranch {
-		currentBranchFn := p.currentBranchFn
-		if currentBranchFn == nil {
-			currentBranchFn = CurrentBranchOptional
-		}
-
-		base, err := currentBranchFn()
+		baseBranch, err := CurrentBranchOptionalInDir(p.dir)
 		if err != nil {
-			return fmt.Errorf("failed to determine current branch: %w", err)
+			p.display.ShowInfo("   Note: could not determine current branch; defaulting to current HEAD\n")
+			state.BaseBranch = ""
+		} else {
+			state.BaseBranch = strings.TrimSpace(baseBranch)
 		}
-		state.BaseBranch = base
 	}
 
 	return nil
