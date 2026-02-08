@@ -127,3 +127,11 @@
 ## Patterns from compound/engine-integration-verification-matrix (2026-02-07)
 
 - Engine constructor signature changes can break only integration-tagged tests (hidden from default `go test`), so verification passes should always include `go test -tags=integration ./internal/engine/...` and integration tests should instantiate engines with the current `New(cfg *engine.EngineConfig)` contract (for defaults, pass `nil`).
+
+## Patterns from compound/tty-spinner-lifecycle-integration-tests (2026-02-07)
+
+- In `internal/engine/display.go`, route spinner lifecycle transitions through `d.fsm.GoTo(...)` and `d.fsm.Reset()` only; terminal events should transition to `StateCompletion`/`StateError` and then reset.
+- Keep Display locking split: guard FSM/output logic with `mu`, and spinner goroutine runtime (`spinning`, `spinDone`) with `spinMu`; continuity assertions should snapshot `spinDone` under `spinMu`.
+- TTY lifecycle integration tests belong in `internal/engine/display_tty_integration_test.go` with both integration build tags and `package engine`, using a PTY master/slave harness (`pty.Open`) and `NewDisplay(slave)`.
+- For PTY assertions, normalize output (strip ANSI CSI and convert `\r` redraws to `\n`) and use bounded polling with explicit timeout/interval; include latest raw and normalized output in timeout failures.
+- Tool dedup identity is `e.Tool + e.Detail` (no inserted space); apply display-only spacing when rendering messages, not in the dedup key.
