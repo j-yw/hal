@@ -7,21 +7,63 @@ import (
 	"strings"
 )
 
-// CreateBranch creates and checks out a new branch from current HEAD.
-func CreateBranch(branchName string) error {
-	cmd := exec.Command("git", "checkout", "-b", branchName)
+// CreateBranch creates and checks out a new branch from baseBranch.
+// If baseBranch is empty, git uses the current HEAD.
+func CreateBranch(branchName, baseBranch string) error {
+	args := []string{"checkout", "-b", branchName}
+	if baseBranch != "" {
+		args = append(args, baseBranch)
+	}
+
+	cmd := exec.Command("git", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if baseBranch != "" {
+			return fmt.Errorf("failed to create branch %q from %q: %w (stderr: %s)", branchName, baseBranch, err, stderr.String())
+		}
 		return fmt.Errorf("failed to create branch %q: %w (stderr: %s)", branchName, err, stderr.String())
 	}
 	return nil
 }
 
 // CurrentBranch returns the name of the current git branch.
+// Returns an error when HEAD is detached.
 func CurrentBranch() (string, error) {
+	return CurrentBranchInDir("")
+}
+
+// CurrentBranchInDir returns the current branch in the given directory.
+// Returns an error when HEAD is detached.
+func CurrentBranchInDir(dir string) (string, error) {
+	branch, err := currentBranchInDir(dir)
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		return "", fmt.Errorf("not on a branch (possibly detached HEAD)")
+	}
+	return branch, nil
+}
+
+// CurrentBranchOptional returns the current branch name.
+// Returns an empty branch with nil error when HEAD is detached.
+func CurrentBranchOptional() (string, error) {
+	return CurrentBranchOptionalInDir("")
+}
+
+// CurrentBranchOptionalInDir returns the current branch in the given directory.
+// Returns an empty branch with nil error when HEAD is detached.
+func CurrentBranchOptionalInDir(dir string) (string, error) {
+	return currentBranchInDir(dir)
+}
+
+func currentBranchInDir(dir string) (string, error) {
 	cmd := exec.Command("git", "branch", "--show-current")
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -30,11 +72,7 @@ func CurrentBranch() (string, error) {
 		return "", fmt.Errorf("failed to get current branch: %w (stderr: %s)", err, stderr.String())
 	}
 
-	branch := strings.TrimSpace(stdout.String())
-	if branch == "" {
-		return "", fmt.Errorf("not on a branch (possibly detached HEAD)")
-	}
-	return branch, nil
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // PushBranch pushes the branch to the remote origin with upstream tracking.

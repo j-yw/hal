@@ -5,7 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
@@ -51,7 +53,13 @@ Or use 'hal plan' to interactively generate a PRD.`,
 }
 
 func init() {
+	addInitFlags(initCmd)
 	rootCmd.AddCommand(initCmd)
+}
+
+func addInitFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
+	cmd.Flags().Bool("dry-run", false, "Preview template refresh actions (only applies with --refresh-templates; other init steps still run)")
 }
 
 // ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
@@ -150,14 +158,25 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	return runInitWithWriters(cmd, args, os.Stdout, os.Stderr)
+}
+
+func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer) error {
 	configDir := template.HalDir
 	archiveDir := filepath.Join(configDir, "archive")
 	reportsDir := filepath.Join(configDir, "reports")
 	standardsDir := filepath.Join(configDir, template.StandardsDir)
 	projectDir := "."
 
+	// Read flags (cmd may be nil in tests)
+	var doRefresh, dryRun bool
+	if cmd != nil {
+		doRefresh, _ = cmd.Flags().GetBool("refresh-templates")
+		dryRun, _ = cmd.Flags().GetBool("dry-run")
+	}
+
 	// Auto-migrate .goralph/ to .hal/ if applicable
-	if _, err := migrateConfigDir(".goralph", configDir, os.Stdout); err != nil {
+	if _, err := migrateConfigDir(".goralph", configDir, out); err != nil {
 		return err
 	}
 
@@ -172,9 +191,21 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create standards directory: %w", err)
 	}
 
+	// Refresh templates if requested (backup & overwrite with latest embedded versions)
+	var refresh refreshSummary
+	if doRefresh {
+		var err error
+		refresh, err = refreshTemplates(configDir, dryRun, out)
+		if err != nil {
+			return fmt.Errorf("failed to refresh templates: %w", err)
+		}
+	}
+
 	// Create default files from templates only if they don't exist
+	defaults, defaultNames := sortedDefaultFiles()
 	var created, skipped []string
-	for filename, content := range template.DefaultFiles() {
+	for _, filename := range defaultNames {
+		content := defaults[filename]
 		filePath := filepath.Join(configDir, filename)
 		if _, err := os.Stat(filePath); err == nil {
 			skipped = append(skipped, filename)
@@ -203,7 +234,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Add .hal/ to project .gitignore
-	if err := ensureGitignore(projectDir, os.Stdout); err != nil {
+	if err := ensureGitignore(projectDir, out); err != nil {
 		return err
 	}
 
@@ -224,7 +255,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Install interactive commands (discover-standards, etc.) to .hal/commands/
 	if err := skills.InstallCommands(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to install commands: %v\n", err)
+		fmt.Fprintf(errOut, "warning: failed to install commands: %v\n", err)
 	}
 
 	// Create symlinks from engine command directories to .hal/commands/
@@ -232,35 +263,46 @@ func runInit(cmd *cobra.Command, args []string) error {
 		_ = err // Errors are logged as warnings in LinkAllCommands.
 	}
 
-	fmt.Println("Initialized .hal/")
-	fmt.Println()
+	fmt.Fprintln(out, "Initialized .hal/")
+	fmt.Fprintln(out)
 
 	if len(created) > 0 {
-		fmt.Println("Created:")
+		fmt.Fprintln(out, "Created:")
 		for _, f := range created {
-			fmt.Printf("  .hal/%s\n", f)
+			fmt.Fprintf(out, "  .hal/%s\n", f)
 		}
 	}
 
 	if len(skipped) > 0 {
-		fmt.Println("Already existed (preserved):")
+		fmt.Fprintln(out, "Already existed (preserved):")
 		for _, f := range skipped {
-			fmt.Printf("  .hal/%s\n", f)
+			fmt.Fprintf(out, "  .hal/%s\n", f)
 		}
 	}
 
-	if len(created) == 0 && len(skipped) > 0 {
-		fmt.Println()
-		fmt.Println("All files already exist. No changes made.")
+	refreshChanged := refresh.hasChanges()
+	if len(created) == 0 && len(skipped) > 0 && !refreshChanged && !(doRefresh && dryRun) {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "All files already exist. No changes made.")
 	} else {
-		fmt.Println()
-		fmt.Println("Next steps:")
-		fmt.Println("  1. Run: hal plan \"feature description\" to generate a PRD")
-		fmt.Println("  2. Or create .hal/prd.json manually")
-		fmt.Println("  3. Run: hal run")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Next steps:")
+		fmt.Fprintln(out, "  1. Run: hal plan \"feature description\" to generate a PRD")
+		fmt.Fprintln(out, "  2. Or create .hal/prd.json manually")
+		fmt.Fprintln(out, "  3. Run: hal run")
 	}
 
 	return nil
+}
+
+func sortedDefaultFiles() (map[string]string, []string) {
+	defaults := template.DefaultFiles()
+	names := make([]string, 0, len(defaults))
+	for filename := range defaults {
+		names = append(names, filename)
+	}
+	sort.Strings(names)
+	return defaults, names
 }
 
 // migrateConfigDir checks for a legacy oldDir and migrates it to newDir if applicable.
@@ -380,7 +422,110 @@ func migrateTemplates(configDir string) error {
 		return err
 	}
 
+	// Update branch creation guidance to use {{BASE_BRANCH}} and avoid implicit main.
+	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), func(content string) string {
+		canonical := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
+		variants := []string{
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.",
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from main.",
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from `main`.",
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from current HEAD.",
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.",
+		}
+		for _, old := range variants {
+			content = strings.ReplaceAll(content, old, canonical)
+		}
+		return content
+	}); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+type refreshSummary struct {
+	created   int
+	refreshed int
+	unchanged int
+}
+
+func (s refreshSummary) hasChanges() bool {
+	return s.created > 0 || s.refreshed > 0
+}
+
+var nowForRefresh = time.Now
+
+func nextBackupName(halDir, filename string) (string, error) {
+	timestamp := nowForRefresh().UTC().Format("20060102-150405.000000000")
+	for i := 0; i < 1000; i++ {
+		name := fmt.Sprintf("%s.%s.bak", filename, timestamp)
+		if i > 0 {
+			name = fmt.Sprintf("%s.%s.%d.bak", filename, timestamp, i)
+		}
+		backupPath := filepath.Join(halDir, name)
+		if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+			return name, nil
+		} else if err != nil {
+			return "", fmt.Errorf("failed to check backup %s: %w", name, err)
+		}
+	}
+	return "", fmt.Errorf("failed to generate unique backup name for %s", filename)
+}
+
+// refreshTemplates backs up and overwrites the 3 core templates
+// (prompt.md, progress.txt, config.yaml) with the latest embedded versions.
+// If dryRun is true, it reports what would happen without modifying files.
+// Output is written to w for testability (follows the migrateConfigDir pattern).
+func refreshTemplates(halDir string, dryRun bool, w io.Writer) (refreshSummary, error) {
+	var summary refreshSummary
+	prefix := ""
+	if dryRun {
+		prefix = "[dry-run] "
+	}
+
+	defaults, filenames := sortedDefaultFiles()
+
+	for _, filename := range filenames {
+		embedded := defaults[filename]
+		filePath := filepath.Join(halDir, filename)
+		existing, err := os.ReadFile(filePath)
+		if os.IsNotExist(err) {
+			if !dryRun {
+				if err := os.WriteFile(filePath, []byte(embedded), 0644); err != nil {
+					return summary, fmt.Errorf("failed to write %s: %w", filename, err)
+				}
+			}
+			summary.created++
+			fmt.Fprintf(w, "  %screated .hal/%s\n", prefix, filename)
+			continue
+		}
+		if err != nil {
+			return summary, fmt.Errorf("failed to read %s: %w", filename, err)
+		}
+		if string(existing) == embedded {
+			summary.unchanged++
+			fmt.Fprintf(w, "  %sunchanged .hal/%s\n", prefix, filename)
+			continue
+		}
+
+		// File differs — backup and overwrite.
+		backupName, err := nextBackupName(halDir, filename)
+		if err != nil {
+			return summary, err
+		}
+		if !dryRun {
+			backupPath := filepath.Join(halDir, backupName)
+			if err := os.WriteFile(backupPath, existing, 0644); err != nil {
+				return summary, fmt.Errorf("failed to backup %s: %w", filename, err)
+			}
+			if err := os.WriteFile(filePath, []byte(embedded), 0644); err != nil {
+				return summary, fmt.Errorf("failed to write %s: %w", filename, err)
+			}
+		}
+		summary.refreshed++
+		fmt.Fprintf(w, "  %srefreshed .hal/%s (backup: %s)\n", prefix, filename, backupName)
+	}
+	return summary, nil
 }
 
 func replaceFileContent(path string, transform func(string) string) error {
