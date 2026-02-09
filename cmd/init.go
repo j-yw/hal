@@ -52,6 +52,7 @@ Or use 'hal plan' to interactively generate a PRD.`,
 
 func init() {
 	initCmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
+	initCmd.Flags().Bool("dry-run", false, "Preview what --refresh-templates would do without modifying files")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -158,9 +159,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	projectDir := "."
 
 	// Read flags (cmd may be nil in tests)
-	var refreshTemplates bool
+	var refreshTemplates, dryRun bool
 	if cmd != nil {
 		refreshTemplates, _ = cmd.Flags().GetBool("refresh-templates")
+		dryRun, _ = cmd.Flags().GetBool("dry-run")
 	}
 
 	// Auto-migrate .goralph/ to .hal/ if applicable
@@ -181,7 +183,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Refresh templates if requested (backup & overwrite with latest embedded versions)
 	if refreshTemplates {
-		if err := refreshTemplateFiles(configDir, false, os.Stdout); err != nil {
+		if err := refreshTemplateFiles(configDir, dryRun, os.Stdout); err != nil {
 			return fmt.Errorf("failed to refresh templates: %w", err)
 		}
 	}
