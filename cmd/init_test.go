@@ -743,7 +743,7 @@ func TestInitDryRunCobra(t *testing.T) {
 	}
 }
 
-func TestInitDryRunDoesNotRunTemplateMigrations(t *testing.T) {
+func TestInitDryRunAffectsRefreshOnly(t *testing.T) {
 	origDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Failed to get working directory: %v", err)
@@ -789,8 +789,11 @@ func TestInitDryRunDoesNotRunTemplateMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read prompt.md after dry-run: %v", err)
 	}
-	if string(after) != legacyPrompt {
-		t.Fatalf("dry-run should not apply prompt migrations\nwant: %q\ngot:  %q", legacyPrompt, string(after))
+	if !strings.Contains(string(after), canonicalBranchLine) {
+		t.Fatalf("dry-run should still run init migrations and restore canonical prompt guidance")
+	}
+	if strings.Contains(string(after), legacyBranchLine) {
+		t.Fatalf("legacy branch guidance should have been migrated away")
 	}
 }
 

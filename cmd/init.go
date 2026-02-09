@@ -59,7 +59,7 @@ func init() {
 
 func addInitFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
-	cmd.Flags().Bool("dry-run", false, "Preview what --refresh-templates would do without modifying files")
+	cmd.Flags().Bool("dry-run", false, "Preview template refresh actions (only applies with --refresh-templates; other init steps still run)")
 }
 
 // ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
@@ -243,12 +243,9 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		return fmt.Errorf("failed to install skills: %w", err)
 	}
 
-	// Migrate stale templates (idempotent — safe to run every init).
-	// In --refresh-templates --dry-run mode we must not modify files.
-	if !(doRefresh && dryRun) {
-		if err := migrateTemplates(configDir); err != nil {
-			return fmt.Errorf("failed to migrate templates: %w", err)
-		}
+	// Migrate stale templates (idempotent — safe to run every init)
+	if err := migrateTemplates(configDir); err != nil {
+		return fmt.Errorf("failed to migrate templates: %w", err)
 	}
 
 	// Create symlinks for engine skill discovery
@@ -283,8 +280,8 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		}
 	}
 
-	refreshChanged := !dryRun && refresh.hasChanges()
-	if len(created) == 0 && len(skipped) > 0 && !refreshChanged {
+	refreshChanged := refresh.hasChanges()
+	if len(created) == 0 && len(skipped) > 0 && !refreshChanged && !(doRefresh && dryRun) {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "All files already exist. No changes made.")
 	} else {
