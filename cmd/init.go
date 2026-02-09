@@ -380,14 +380,19 @@ func migrateTemplates(configDir string) error {
 		return err
 	}
 
-	// Update branch creation guidance to use the run base branch placeholder.
+	// Update branch creation guidance to use {{BASE_BRANCH}} and avoid implicit main.
 	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), func(content string) string {
-		content = strings.Replace(content,
+		canonical := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
+		variants := []string{
 			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.", 1)
-		content = strings.Replace(content,
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from main.",
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from `main`.",
 			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from current HEAD.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.", 1)
+			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.",
+		}
+		for _, old := range variants {
+			content = strings.ReplaceAll(content, old, canonical)
+		}
 		return content
 	}); err != nil {
 		return err

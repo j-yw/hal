@@ -272,7 +272,7 @@ func TestRunInit(t *testing.T) {
 		}
 	})
 
-	t.Run("second run does not overwrite existing config", func(t *testing.T) {
+	t.Run("second run does not overwrite existing config and migrates prompt branch guidance", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
@@ -290,6 +290,18 @@ func TestRunInit(t *testing.T) {
 			t.Fatalf("Failed to write custom config: %v", err)
 		}
 
+		// Simulate legacy prompt branch guidance and ensure migration updates it.
+		promptPath := filepath.Join(dir, ".hal", template.PromptFile)
+		canonicalBranchLine := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
+		legacyBranchLine := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main."
+		legacyPrompt := strings.Replace(template.DefaultPrompt, canonicalBranchLine, legacyBranchLine, 1)
+		if legacyPrompt == template.DefaultPrompt {
+			t.Fatal("failed to construct legacy prompt fixture")
+		}
+		if err := os.WriteFile(promptPath, []byte(legacyPrompt), 0644); err != nil {
+			t.Fatalf("Failed to write legacy prompt: %v", err)
+		}
+
 		// Second run
 		if err := runInit(nil, nil); err != nil {
 			t.Fatalf("second runInit() error: %v", err)
@@ -302,6 +314,19 @@ func TestRunInit(t *testing.T) {
 		}
 		if string(data) != customContent {
 			t.Errorf("config.yaml was overwritten\ngot:  %q\nwant: %q", string(data), customContent)
+		}
+
+		// Verify prompt branch guidance is migrated away from implicit main.
+		promptData, err := os.ReadFile(promptPath)
+		if err != nil {
+			t.Fatalf("Failed to read prompt.md: %v", err)
+		}
+		gotPrompt := string(promptData)
+		if !strings.Contains(gotPrompt, canonicalBranchLine) {
+			t.Fatalf("prompt.md should contain canonical branch guidance\nwant contains: %q\ngot: %s", canonicalBranchLine, gotPrompt)
+		}
+		if strings.Contains(gotPrompt, legacyBranchLine) {
+			t.Fatalf("prompt.md should not keep legacy 'create from main' guidance\ngot: %s", gotPrompt)
 		}
 	})
 }
