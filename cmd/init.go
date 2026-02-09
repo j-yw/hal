@@ -51,6 +51,7 @@ Or use 'hal plan' to interactively generate a PRD.`,
 }
 
 func init() {
+	initCmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -156,6 +157,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	standardsDir := filepath.Join(configDir, template.StandardsDir)
 	projectDir := "."
 
+	// Read flags (cmd may be nil in tests)
+	var refreshTemplates bool
+	if cmd != nil {
+		refreshTemplates, _ = cmd.Flags().GetBool("refresh-templates")
+	}
+
 	// Auto-migrate .goralph/ to .hal/ if applicable
 	if _, err := migrateConfigDir(".goralph", configDir, os.Stdout); err != nil {
 		return err
@@ -170,6 +177,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	if err := os.MkdirAll(standardsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create standards directory: %w", err)
+	}
+
+	// Refresh templates if requested (backup & overwrite with latest embedded versions)
+	if refreshTemplates {
+		if err := refreshTemplateFiles(configDir, false, os.Stdout); err != nil {
+			return fmt.Errorf("failed to refresh templates: %w", err)
+		}
 	}
 
 	// Create default files from templates only if they don't exist
@@ -398,6 +412,47 @@ func migrateTemplates(configDir string) error {
 		return err
 	}
 
+	return nil
+}
+
+// refreshTemplateFiles backs up and overwrites the 3 core templates
+// (prompt.md, progress.txt, config.yaml) with the latest embedded versions.
+// If dryRun is true, it reports what would happen without modifying files.
+func refreshTemplateFiles(halDir string, dryRun bool, w io.Writer) error {
+	for filename, embedded := range template.DefaultFiles() {
+		filePath := filepath.Join(halDir, filename)
+		existing, err := os.ReadFile(filePath)
+		if os.IsNotExist(err) {
+			if !dryRun {
+				if err := os.WriteFile(filePath, []byte(embedded), 0644); err != nil {
+					return fmt.Errorf("failed to write %s: %w", filename, err)
+				}
+			}
+			fmt.Fprintf(w, "  created .hal/%s\n", filename)
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", filename, err)
+		}
+		if string(existing) == embedded {
+			fmt.Fprintf(w, "  unchanged .hal/%s\n", filename)
+			continue
+		}
+		// File differs — backup and overwrite
+		if !dryRun {
+			backupName := fmt.Sprintf("%s.bak", filename)
+			backupPath := filepath.Join(halDir, backupName)
+			if err := os.WriteFile(backupPath, existing, 0644); err != nil {
+				return fmt.Errorf("failed to backup %s: %w", filename, err)
+			}
+			if err := os.WriteFile(filePath, []byte(embedded), 0644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", filename, err)
+			}
+			fmt.Fprintf(w, "  refreshed .hal/%s (backup: %s)\n", filename, backupName)
+		} else {
+			fmt.Fprintf(w, "  [dry-run] refreshed .hal/%s\n", filename)
+		}
+	}
 	return nil
 }
 
