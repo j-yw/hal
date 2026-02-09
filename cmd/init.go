@@ -192,8 +192,11 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	}
 
 	// Refresh templates if requested (backup & overwrite with latest embedded versions)
+	var refresh refreshSummary
 	if doRefresh {
-		if err := refreshTemplates(configDir, dryRun, out); err != nil {
+		var err error
+		refresh, err = refreshTemplates(configDir, dryRun, out)
+		if err != nil {
 			return fmt.Errorf("failed to refresh templates: %w", err)
 		}
 	}
@@ -240,9 +243,12 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		return fmt.Errorf("failed to install skills: %w", err)
 	}
 
-	// Migrate stale templates (idempotent — safe to run every init)
-	if err := migrateTemplates(configDir); err != nil {
-		return fmt.Errorf("failed to migrate templates: %w", err)
+	// Migrate stale templates (idempotent — safe to run every init).
+	// In --refresh-templates --dry-run mode we must not modify files.
+	if !(doRefresh && dryRun) {
+		if err := migrateTemplates(configDir); err != nil {
+			return fmt.Errorf("failed to migrate templates: %w", err)
+		}
 	}
 
 	// Create symlinks for engine skill discovery
@@ -277,7 +283,8 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		}
 	}
 
-	if len(created) == 0 && len(skipped) > 0 {
+	refreshChanged := !dryRun && refresh.hasChanges()
+	if len(created) == 0 && len(skipped) > 0 && !refreshChanged {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "All files already exist. No changes made.")
 	} else {
@@ -439,11 +446,41 @@ func migrateTemplates(configDir string) error {
 	return nil
 }
 
+type refreshSummary struct {
+	created   int
+	refreshed int
+	unchanged int
+}
+
+func (s refreshSummary) hasChanges() bool {
+	return s.created > 0 || s.refreshed > 0
+}
+
+var nowForRefresh = time.Now
+
+func nextBackupName(halDir, filename string) (string, error) {
+	timestamp := nowForRefresh().UTC().Format("20060102-150405.000000000")
+	for i := 0; i < 1000; i++ {
+		name := fmt.Sprintf("%s.%s.bak", filename, timestamp)
+		if i > 0 {
+			name = fmt.Sprintf("%s.%s.%d.bak", filename, timestamp, i)
+		}
+		backupPath := filepath.Join(halDir, name)
+		if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+			return name, nil
+		} else if err != nil {
+			return "", fmt.Errorf("failed to check backup %s: %w", name, err)
+		}
+	}
+	return "", fmt.Errorf("failed to generate unique backup name for %s", filename)
+}
+
 // refreshTemplates backs up and overwrites the 3 core templates
 // (prompt.md, progress.txt, config.yaml) with the latest embedded versions.
 // If dryRun is true, it reports what would happen without modifying files.
 // Output is written to w for testability (follows the migrateConfigDir pattern).
-func refreshTemplates(halDir string, dryRun bool, w io.Writer) error {
+func refreshTemplates(halDir string, dryRun bool, w io.Writer) (refreshSummary, error) {
+	var summary refreshSummary
 	prefix := ""
 	if dryRun {
 		prefix = "[dry-run] "
@@ -458,34 +495,40 @@ func refreshTemplates(halDir string, dryRun bool, w io.Writer) error {
 		if os.IsNotExist(err) {
 			if !dryRun {
 				if err := os.WriteFile(filePath, []byte(embedded), 0644); err != nil {
-					return fmt.Errorf("failed to write %s: %w", filename, err)
+					return summary, fmt.Errorf("failed to write %s: %w", filename, err)
 				}
 			}
+			summary.created++
 			fmt.Fprintf(w, "  %screated .hal/%s\n", prefix, filename)
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("failed to read %s: %w", filename, err)
+			return summary, fmt.Errorf("failed to read %s: %w", filename, err)
 		}
 		if string(existing) == embedded {
+			summary.unchanged++
 			fmt.Fprintf(w, "  %sunchanged .hal/%s\n", prefix, filename)
 			continue
 		}
-		// File differs — backup and overwrite
-		timestamp := time.Now().Format("20060102-150405")
-		backupName := fmt.Sprintf("%s.%s.bak", filename, timestamp)
+
+		// File differs — backup and overwrite.
+		backupName, err := nextBackupName(halDir, filename)
+		if err != nil {
+			return summary, err
+		}
 		if !dryRun {
 			backupPath := filepath.Join(halDir, backupName)
 			if err := os.WriteFile(backupPath, existing, 0644); err != nil {
-				return fmt.Errorf("failed to backup %s: %w", filename, err)
+				return summary, fmt.Errorf("failed to backup %s: %w", filename, err)
 			}
 			if err := os.WriteFile(filePath, []byte(embedded), 0644); err != nil {
-				return fmt.Errorf("failed to write %s: %w", filename, err)
+				return summary, fmt.Errorf("failed to write %s: %w", filename, err)
 			}
 		}
+		summary.refreshed++
 		fmt.Fprintf(w, "  %srefreshed .hal/%s (backup: %s)\n", prefix, filename, backupName)
 	}
-	return nil
+	return summary, nil
 }
 
 func replaceFileContent(path string, transform func(string) string) error {

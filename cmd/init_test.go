@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -613,6 +614,9 @@ func TestInitRefreshTemplatesCobra(t *testing.T) {
 	}
 
 	output := stdout.String()
+	if strings.Contains(output, "All files already exist. No changes made.") {
+		t.Fatalf("output should not claim no changes when templates were refreshed, got: %s", output)
+	}
 
 	// Verify output contains refreshed entries in sorted filename order
 	for _, name := range sortedNames {
@@ -739,6 +743,57 @@ func TestInitDryRunCobra(t *testing.T) {
 	}
 }
 
+func TestInitDryRunDoesNotRunTemplateMigrations(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+
+	if err := runInit(nil, nil); err != nil {
+		t.Fatalf("initial runInit() error: %v", err)
+	}
+
+	promptPath := filepath.Join(dir, ".hal", template.PromptFile)
+	canonicalBranchLine := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
+	legacyBranchLine := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main."
+
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("Failed to read prompt.md: %v", err)
+	}
+	legacyPrompt := strings.Replace(string(promptData), canonicalBranchLine, legacyBranchLine, 1)
+	if legacyPrompt == string(promptData) {
+		t.Fatal("failed to construct legacy prompt fixture")
+	}
+	if err := os.WriteFile(promptPath, []byte(legacyPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write legacy prompt: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	testRoot := newInitTestRootCmd(&stdout, &stderr)
+	testRoot.SetArgs([]string{"init", "--refresh-templates", "--dry-run"})
+	if err := testRoot.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute() error: %v", err)
+	}
+	if stderr.Len() > 0 {
+		t.Fatalf("unexpected stderr output: %s", stderr.String())
+	}
+
+	after, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("Failed to read prompt.md after dry-run: %v", err)
+	}
+	if string(after) != legacyPrompt {
+		t.Fatalf("dry-run should not apply prompt migrations\nwant: %q\ngot:  %q", legacyPrompt, string(after))
+	}
+}
+
 func normalizeRefreshOutput(output string) string {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	for i, line := range lines {
@@ -793,7 +848,7 @@ func TestRefreshTemplatesDeterministic(t *testing.T) {
 				}
 
 				var buf bytes.Buffer
-				if err := refreshTemplates(halDir, dryRun, &buf); err != nil {
+				if _, err := refreshTemplates(halDir, dryRun, &buf); err != nil {
 					t.Fatalf("refreshTemplates() iteration %d error: %v", i, err)
 				}
 
@@ -808,6 +863,40 @@ func TestRefreshTemplatesDeterministic(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRefreshTemplatesBackupNameCollision(t *testing.T) {
+	halDir := filepath.Join(t.TempDir(), ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("failed to create halDir: %v", err)
+	}
+
+	defaults := template.DefaultFiles()
+	for filename := range defaults {
+		writeFile(t, halDir, filename, "custom content for "+filename)
+	}
+
+	fixed := time.Date(2026, time.February, 10, 1, 0, 0, 0, time.UTC)
+	origNow := nowForRefresh
+	nowForRefresh = func() time.Time { return fixed }
+	t.Cleanup(func() { nowForRefresh = origNow })
+
+	if _, err := refreshTemplates(halDir, false, &bytes.Buffer{}); err != nil {
+		t.Fatalf("first refreshTemplates() error: %v", err)
+	}
+
+	writeFile(t, halDir, template.ConfigFile, "second custom content")
+	if _, err := refreshTemplates(halDir, false, &bytes.Buffer{}); err != nil {
+		t.Fatalf("second refreshTemplates() error: %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(halDir, template.ConfigFile+".*.bak"))
+	if err != nil {
+		t.Fatalf("glob error: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 backups for %s, got %d: %v", template.ConfigFile, len(matches), matches)
 	}
 }
 
@@ -952,7 +1041,7 @@ func TestRefreshTemplates(t *testing.T) {
 			tt.setup(t, halDir)
 
 			var buf bytes.Buffer
-			err := refreshTemplates(halDir, tt.dryRun, &buf)
+			_, err := refreshTemplates(halDir, tt.dryRun, &buf)
 			if err != nil {
 				t.Fatalf("refreshTemplates() error: %v", err)
 			}
