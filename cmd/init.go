@@ -160,9 +160,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	projectDir := "."
 
 	// Read flags (cmd may be nil in tests)
-	var refreshTemplates, dryRun bool
+	var doRefresh, dryRun bool
 	if cmd != nil {
-		refreshTemplates, _ = cmd.Flags().GetBool("refresh-templates")
+		doRefresh, _ = cmd.Flags().GetBool("refresh-templates")
 		dryRun, _ = cmd.Flags().GetBool("dry-run")
 	}
 
@@ -183,8 +183,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Refresh templates if requested (backup & overwrite with latest embedded versions)
-	if refreshTemplates {
-		if err := refreshTemplateFiles(configDir, dryRun, os.Stdout); err != nil {
+	if doRefresh {
+		if err := refreshTemplates(configDir, dryRun, os.Stdout); err != nil {
 			return fmt.Errorf("failed to refresh templates: %w", err)
 		}
 	}
@@ -418,10 +418,11 @@ func migrateTemplates(configDir string) error {
 	return nil
 }
 
-// refreshTemplateFiles backs up and overwrites the 3 core templates
+// refreshTemplates backs up and overwrites the 3 core templates
 // (prompt.md, progress.txt, config.yaml) with the latest embedded versions.
 // If dryRun is true, it reports what would happen without modifying files.
-func refreshTemplateFiles(halDir string, dryRun bool, w io.Writer) error {
+// Output is written to w for testability (follows the migrateConfigDir pattern).
+func refreshTemplates(halDir string, dryRun bool, w io.Writer) error {
 	prefix := ""
 	if dryRun {
 		prefix = "[dry-run] "
