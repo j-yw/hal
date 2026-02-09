@@ -649,6 +649,99 @@ func TestInitRefreshTemplatesCobra(t *testing.T) {
 	}
 }
 
+func TestInitDryRunCobra(t *testing.T) {
+	// Save and restore working directory
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+
+	// Run init first so .hal/ exists with default files and infrastructure
+	if err := runInit(nil, nil); err != nil {
+		t.Fatalf("initial runInit() error: %v", err)
+	}
+
+	// Overwrite templates with custom content so dry-run has diffs to detect
+	halDir := filepath.Join(dir, ".hal")
+	sortedNames := []string{template.ConfigFile, template.ProgressFile, template.PromptFile}
+	for _, name := range sortedNames {
+		writeFile(t, halDir, name, "custom "+name)
+	}
+
+	// Capture stdout by redirecting os.Stdout to a pipe
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	// Execute through Cobra command tree with both flags
+	rootCmd.SetArgs([]string{"init", "--refresh-templates", "--dry-run"})
+	if err := rootCmd.Execute(); err != nil {
+		w.Close()
+		os.Stdout = oldStdout
+		t.Fatalf("rootCmd.Execute() error: %v", err)
+	}
+
+	w.Close()
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	os.Stdout = oldStdout
+	output := buf.String()
+
+	// Verify output contains [dry-run] prefix
+	if !strings.Contains(output, "[dry-run]") {
+		t.Fatalf("output should contain [dry-run], got: %s", output)
+	}
+
+	// Verify output lines appear in sorted filename order
+	for _, name := range sortedNames {
+		if !strings.Contains(output, name) {
+			t.Errorf("output should contain %q, got: %s", name, output)
+		}
+	}
+
+	// Verify sorted order: config.yaml before progress.txt before prompt.md (with [dry-run] prefix)
+	idxConfig := strings.Index(output, "[dry-run] refreshed .hal/"+template.ConfigFile)
+	idxProgress := strings.Index(output, "[dry-run] refreshed .hal/"+template.ProgressFile)
+	idxPrompt := strings.Index(output, "[dry-run] refreshed .hal/"+template.PromptFile)
+
+	if idxConfig < 0 || idxProgress < 0 || idxPrompt < 0 {
+		t.Fatalf("expected all 3 [dry-run] refreshed lines in output, got: %s", output)
+	}
+	if idxConfig >= idxProgress {
+		t.Errorf("config.yaml (%d) should appear before progress.txt (%d)", idxConfig, idxProgress)
+	}
+	if idxProgress >= idxPrompt {
+		t.Errorf("progress.txt (%d) should appear before prompt.md (%d)", idxProgress, idxPrompt)
+	}
+
+	// Verify no template files were modified (still have custom content)
+	for _, name := range sortedNames {
+		data, err := os.ReadFile(filepath.Join(halDir, name))
+		if err != nil {
+			t.Fatalf("expected %s to exist: %v", name, err)
+		}
+		if string(data) != "custom "+name {
+			t.Errorf("%s should NOT be modified in dry-run, got: %q", name, string(data))
+		}
+		// Verify no backup files were created
+		bakPattern := filepath.Join(halDir, name+".*.bak")
+		matches, _ := filepath.Glob(bakPattern)
+		if len(matches) > 0 {
+			t.Errorf("dry-run should not create backup files for %s: %v", name, matches)
+		}
+	}
+}
+
 func TestRefreshTemplatesDeterministic(t *testing.T) {
 	// Sorted order of template.DefaultFiles() keys
 	sortedNames := []string{template.ConfigFile, template.ProgressFile, template.PromptFile}
