@@ -191,8 +191,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create default files from templates only if they don't exist
+	defaults := template.DefaultFiles()
+	defaultNames := make([]string, 0, len(defaults))
+	for filename := range defaults {
+		defaultNames = append(defaultNames, filename)
+	}
+	sort.Strings(defaultNames)
+
 	var created, skipped []string
-	for filename, content := range template.DefaultFiles() {
+	for _, filename := range defaultNames {
+		content := defaults[filename]
 		filePath := filepath.Join(configDir, filename)
 		if _, err := os.Stat(filePath); err == nil {
 			skipped = append(skipped, filename)
