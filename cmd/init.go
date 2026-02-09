@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -428,7 +429,15 @@ func refreshTemplates(halDir string, dryRun bool, w io.Writer) error {
 		prefix = "[dry-run] "
 	}
 
-	for filename, embedded := range template.DefaultFiles() {
+	defaults := template.DefaultFiles()
+	filenames := make([]string, 0, len(defaults))
+	for filename := range defaults {
+		filenames = append(filenames, filename)
+	}
+	sort.Strings(filenames)
+
+	for _, filename := range filenames {
+		embedded := defaults[filename]
 		filePath := filepath.Join(halDir, filename)
 		existing, err := os.ReadFile(filePath)
 		if os.IsNotExist(err) {
