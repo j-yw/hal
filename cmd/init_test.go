@@ -562,6 +562,56 @@ func TestRunInitAddsGitignore(t *testing.T) {
 	})
 }
 
+func TestRefreshTemplatesDeterministic(t *testing.T) {
+	// Sorted order of template.DefaultFiles() keys
+	sortedNames := []string{template.ConfigFile, template.ProgressFile, template.PromptFile}
+
+	for _, dryRun := range []bool{false, true} {
+		label := "real"
+		if dryRun {
+			label = "dry-run"
+		}
+		t.Run(label, func(t *testing.T) {
+			var outputs []string
+			for i := 0; i < 3; i++ {
+				halDir := filepath.Join(t.TempDir(), ".hal")
+				if err := os.MkdirAll(halDir, 0755); err != nil {
+					t.Fatalf("failed to create halDir: %v", err)
+				}
+				// Pre-populate with custom content so refresh has something to diff
+				for _, name := range sortedNames {
+					writeFile(t, halDir, name, "custom "+name)
+				}
+
+				var buf bytes.Buffer
+				if err := refreshTemplates(halDir, dryRun, &buf); err != nil {
+					t.Fatalf("refreshTemplates() iteration %d error: %v", i, err)
+				}
+				outputs = append(outputs, buf.String())
+			}
+
+			// All 3 runs must produce identical output
+			for i := 1; i < len(outputs); i++ {
+				if outputs[i] != outputs[0] {
+					t.Errorf("output mismatch between run 0 and run %d:\nrun 0: %q\nrun %d: %q", i, outputs[0], i, outputs[i])
+				}
+			}
+
+			// Verify output lines appear in sorted filename order
+			output := outputs[0]
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			if len(lines) != len(sortedNames) {
+				t.Fatalf("expected %d output lines, got %d: %q", len(sortedNames), len(lines), output)
+			}
+			for i, name := range sortedNames {
+				if !strings.Contains(lines[i], name) {
+					t.Errorf("line %d should contain %q, got %q", i, name, lines[i])
+				}
+			}
+		})
+	}
+}
+
 func TestRefreshTemplates(t *testing.T) {
 	defaults := template.DefaultFiles()
 
