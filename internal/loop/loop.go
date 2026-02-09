@@ -250,7 +250,7 @@ func (r *Runner) loadPrompt() (string, error) {
 
 	baseBranch := r.config.BaseBranch
 	if baseBranch == "" {
-		baseBranch = "current HEAD"
+		baseBranch = "HEAD"
 	}
 	prompt = strings.Replace(prompt, "{{BASE_BRANCH}}", baseBranch, -1)
 

@@ -225,8 +225,8 @@ func TestLoadPrompt_BaseBranchFallback(t *testing.T) {
 	if strings.Contains(prompt, "{{BASE_BRANCH}}") {
 		t.Error("{{BASE_BRANCH}} placeholder was not replaced")
 	}
-	if !strings.Contains(prompt, "current HEAD") {
-		t.Error("expected fallback base branch text 'current HEAD'")
+	if !strings.Contains(prompt, "HEAD") {
+		t.Error("expected fallback base branch text 'HEAD'")
 	}
 }
 
