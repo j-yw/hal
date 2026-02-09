@@ -422,6 +422,11 @@ func migrateTemplates(configDir string) error {
 // (prompt.md, progress.txt, config.yaml) with the latest embedded versions.
 // If dryRun is true, it reports what would happen without modifying files.
 func refreshTemplateFiles(halDir string, dryRun bool, w io.Writer) error {
+	prefix := ""
+	if dryRun {
+		prefix = "[dry-run] "
+	}
+
 	for filename, embedded := range template.DefaultFiles() {
 		filePath := filepath.Join(halDir, filename)
 		existing, err := os.ReadFile(filePath)
@@ -431,14 +436,14 @@ func refreshTemplateFiles(halDir string, dryRun bool, w io.Writer) error {
 					return fmt.Errorf("failed to write %s: %w", filename, err)
 				}
 			}
-			fmt.Fprintf(w, "  created .hal/%s\n", filename)
+			fmt.Fprintf(w, "  %screated .hal/%s\n", prefix, filename)
 			continue
 		}
 		if err != nil {
 			return fmt.Errorf("failed to read %s: %w", filename, err)
 		}
 		if string(existing) == embedded {
-			fmt.Fprintf(w, "  unchanged .hal/%s\n", filename)
+			fmt.Fprintf(w, "  %sunchanged .hal/%s\n", prefix, filename)
 			continue
 		}
 		// File differs — backup and overwrite
@@ -452,10 +457,8 @@ func refreshTemplateFiles(halDir string, dryRun bool, w io.Writer) error {
 			if err := os.WriteFile(filePath, []byte(embedded), 0644); err != nil {
 				return fmt.Errorf("failed to write %s: %w", filename, err)
 			}
-			fmt.Fprintf(w, "  refreshed .hal/%s (backup: %s)\n", filename, backupName)
-		} else {
-			fmt.Fprintf(w, "  [dry-run] refreshed .hal/%s (backup: %s)\n", filename, backupName)
 		}
+		fmt.Fprintf(w, "  %srefreshed .hal/%s (backup: %s)\n", prefix, filename, backupName)
 	}
 	return nil
 }
