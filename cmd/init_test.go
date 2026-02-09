@@ -561,3 +561,154 @@ func TestRunInitAddsGitignore(t *testing.T) {
 		}
 	})
 }
+
+func TestRefreshTemplates(t *testing.T) {
+	defaults := template.DefaultFiles()
+
+	tests := []struct {
+		name    string
+		dryRun  bool
+		setup   func(t *testing.T, halDir string)
+		check   func(t *testing.T, halDir string, output string)
+	}{
+		{
+			name:   "creates templates when none exist",
+			dryRun: false,
+			setup:  func(t *testing.T, halDir string) { /* no files */ },
+			check: func(t *testing.T, halDir string, output string) {
+				for filename, embedded := range defaults {
+					// File should be created
+					data, err := os.ReadFile(filepath.Join(halDir, filename))
+					if err != nil {
+						t.Fatalf("expected %s to be created: %v", filename, err)
+					}
+					if string(data) != embedded {
+						t.Errorf("%s content mismatch", filename)
+					}
+					// Output should say "created"
+					if !strings.Contains(output, "created .hal/"+filename) {
+						t.Errorf("output should contain 'created .hal/%s', got: %s", filename, output)
+					}
+					// No backup files
+					bakPattern := filepath.Join(halDir, filename+".*.bak")
+					matches, _ := filepath.Glob(bakPattern)
+					if len(matches) > 0 {
+						t.Errorf("unexpected backup files for %s: %v", filename, matches)
+					}
+				}
+			},
+		},
+		{
+			name:   "creates backups when templates differ",
+			dryRun: false,
+			setup: func(t *testing.T, halDir string) {
+				for filename := range defaults {
+					writeFile(t, halDir, filename, "custom content for "+filename)
+				}
+			},
+			check: func(t *testing.T, halDir string, output string) {
+				for filename, embedded := range defaults {
+					// File should be overwritten with embedded content
+					data, err := os.ReadFile(filepath.Join(halDir, filename))
+					if err != nil {
+						t.Fatalf("expected %s to exist: %v", filename, err)
+					}
+					if string(data) != embedded {
+						t.Errorf("%s should contain embedded content after refresh", filename)
+					}
+					// Output should say "refreshed" with backup path
+					if !strings.Contains(output, "refreshed .hal/"+filename) {
+						t.Errorf("output should contain 'refreshed .hal/%s', got: %s", filename, output)
+					}
+					if !strings.Contains(output, "(backup:") {
+						t.Errorf("output should contain '(backup:', got: %s", output)
+					}
+					// Backup file should exist with old content
+					bakPattern := filepath.Join(halDir, filename+".*.bak")
+					matches, _ := filepath.Glob(bakPattern)
+					if len(matches) != 1 {
+						t.Fatalf("expected 1 backup for %s, got %d", filename, len(matches))
+					}
+					bakData, err := os.ReadFile(matches[0])
+					if err != nil {
+						t.Fatalf("failed to read backup: %v", err)
+					}
+					if string(bakData) != "custom content for "+filename {
+						t.Errorf("backup content mismatch for %s", filename)
+					}
+				}
+			},
+		},
+		{
+			name:   "unchanged when templates match embedded",
+			dryRun: false,
+			setup: func(t *testing.T, halDir string) {
+				for filename, embedded := range defaults {
+					writeFile(t, halDir, filename, embedded)
+				}
+			},
+			check: func(t *testing.T, halDir string, output string) {
+				for filename := range defaults {
+					if !strings.Contains(output, "unchanged .hal/"+filename) {
+						t.Errorf("output should contain 'unchanged .hal/%s', got: %s", filename, output)
+					}
+					// No backup files
+					bakPattern := filepath.Join(halDir, filename+".*.bak")
+					matches, _ := filepath.Glob(bakPattern)
+					if len(matches) > 0 {
+						t.Errorf("unexpected backup files for %s: %v", filename, matches)
+					}
+				}
+			},
+		},
+		{
+			name:   "dry-run does not write files",
+			dryRun: true,
+			setup: func(t *testing.T, halDir string) {
+				for filename := range defaults {
+					writeFile(t, halDir, filename, "custom content for "+filename)
+				}
+			},
+			check: func(t *testing.T, halDir string, output string) {
+				for filename := range defaults {
+					// Output should be prefixed with [dry-run]
+					if !strings.Contains(output, "[dry-run]") {
+						t.Errorf("output should contain '[dry-run]', got: %s", output)
+					}
+					// Files should NOT be overwritten
+					data, err := os.ReadFile(filepath.Join(halDir, filename))
+					if err != nil {
+						t.Fatalf("expected %s to exist: %v", filename, err)
+					}
+					if string(data) != "custom content for "+filename {
+						t.Errorf("%s should not be modified in dry-run mode", filename)
+					}
+					// No backup files should be created
+					bakPattern := filepath.Join(halDir, filename+".*.bak")
+					matches, _ := filepath.Glob(bakPattern)
+					if len(matches) > 0 {
+						t.Errorf("dry-run should not create backup files for %s: %v", filename, matches)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			halDir := filepath.Join(t.TempDir(), ".hal")
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("failed to create halDir: %v", err)
+			}
+			tt.setup(t, halDir)
+
+			var buf bytes.Buffer
+			err := refreshTemplates(halDir, tt.dryRun, &buf)
+			if err != nil {
+				t.Fatalf("refreshTemplates() error: %v", err)
+			}
+
+			tt.check(t, halDir, buf.String())
+		})
+	}
+}
