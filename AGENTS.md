@@ -94,3 +94,11 @@
 - When migrating legacy .hal state files, merge content into the new target with a separator if both have content, then delete the legacy file after a successful merge.
 - Treat orphaned legacy files via a dedicated cleanup command that supports --dry-run and uses a centralized orphanedFiles slice for extensibility.
 - Review context should load both markdown PRDs and JSON PRDs (prd.json, auto-prd.json) because JSON includes pass/fail completion status.
+
+## Patterns from hal/refresh-templates (2026-02-10)
+
+- runInit is invoked as runInit(nil, nil) in tests, so Cobra flag reads must be guarded with if cmd != nil before calling cmd.Flags().GetBool/GetString.
+- Use template.DefaultFiles() as the single source for core .hal template refresh targets instead of duplicating a filename list.
+- For cmd package behavior with side effects, extract a run<Feature> helper that accepts io.Writer (like refreshTemplates) and keep Cobra handlers focused on flag binding and delegation.
+- Template text migrations belong in migrateTemplates via replaceFileContent, normalizing multiple legacy prompt variants into one canonical guidance line.
+- In cmd tests, reuse shared helpers from archive_test.go (writeFile/writePRD) and validate timestamped backup artifacts with filepath.Glob(filename+".*.bak").
