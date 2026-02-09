@@ -53,9 +53,13 @@ Or use 'hal plan' to interactively generate a PRD.`,
 }
 
 func init() {
-	initCmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
-	initCmd.Flags().Bool("dry-run", false, "Preview what --refresh-templates would do without modifying files")
+	addInitFlags(initCmd)
 	rootCmd.AddCommand(initCmd)
+}
+
+func addInitFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
+	cmd.Flags().Bool("dry-run", false, "Preview what --refresh-templates would do without modifying files")
 }
 
 // ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
@@ -154,6 +158,10 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	return runInitWithWriters(cmd, args, os.Stdout, os.Stderr)
+}
+
+func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer) error {
 	configDir := template.HalDir
 	archiveDir := filepath.Join(configDir, "archive")
 	reportsDir := filepath.Join(configDir, "reports")
@@ -168,7 +176,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Auto-migrate .goralph/ to .hal/ if applicable
-	if _, err := migrateConfigDir(".goralph", configDir, os.Stdout); err != nil {
+	if _, err := migrateConfigDir(".goralph", configDir, out); err != nil {
 		return err
 	}
 
@@ -185,19 +193,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Refresh templates if requested (backup & overwrite with latest embedded versions)
 	if doRefresh {
-		if err := refreshTemplates(configDir, dryRun, os.Stdout); err != nil {
+		if err := refreshTemplates(configDir, dryRun, out); err != nil {
 			return fmt.Errorf("failed to refresh templates: %w", err)
 		}
 	}
 
 	// Create default files from templates only if they don't exist
-	defaults := template.DefaultFiles()
-	defaultNames := make([]string, 0, len(defaults))
-	for filename := range defaults {
-		defaultNames = append(defaultNames, filename)
-	}
-	sort.Strings(defaultNames)
-
+	defaults, defaultNames := sortedDefaultFiles()
 	var created, skipped []string
 	for _, filename := range defaultNames {
 		content := defaults[filename]
@@ -229,7 +231,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Add .hal/ to project .gitignore
-	if err := ensureGitignore(projectDir, os.Stdout); err != nil {
+	if err := ensureGitignore(projectDir, out); err != nil {
 		return err
 	}
 
@@ -250,7 +252,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Install interactive commands (discover-standards, etc.) to .hal/commands/
 	if err := skills.InstallCommands(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to install commands: %v\n", err)
+		fmt.Fprintf(errOut, "warning: failed to install commands: %v\n", err)
 	}
 
 	// Create symlinks from engine command directories to .hal/commands/
@@ -258,35 +260,45 @@ func runInit(cmd *cobra.Command, args []string) error {
 		_ = err // Errors are logged as warnings in LinkAllCommands.
 	}
 
-	fmt.Println("Initialized .hal/")
-	fmt.Println()
+	fmt.Fprintln(out, "Initialized .hal/")
+	fmt.Fprintln(out)
 
 	if len(created) > 0 {
-		fmt.Println("Created:")
+		fmt.Fprintln(out, "Created:")
 		for _, f := range created {
-			fmt.Printf("  .hal/%s\n", f)
+			fmt.Fprintf(out, "  .hal/%s\n", f)
 		}
 	}
 
 	if len(skipped) > 0 {
-		fmt.Println("Already existed (preserved):")
+		fmt.Fprintln(out, "Already existed (preserved):")
 		for _, f := range skipped {
-			fmt.Printf("  .hal/%s\n", f)
+			fmt.Fprintf(out, "  .hal/%s\n", f)
 		}
 	}
 
 	if len(created) == 0 && len(skipped) > 0 {
-		fmt.Println()
-		fmt.Println("All files already exist. No changes made.")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "All files already exist. No changes made.")
 	} else {
-		fmt.Println()
-		fmt.Println("Next steps:")
-		fmt.Println("  1. Run: hal plan \"feature description\" to generate a PRD")
-		fmt.Println("  2. Or create .hal/prd.json manually")
-		fmt.Println("  3. Run: hal run")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Next steps:")
+		fmt.Fprintln(out, "  1. Run: hal plan \"feature description\" to generate a PRD")
+		fmt.Fprintln(out, "  2. Or create .hal/prd.json manually")
+		fmt.Fprintln(out, "  3. Run: hal run")
 	}
 
 	return nil
+}
+
+func sortedDefaultFiles() (map[string]string, []string) {
+	defaults := template.DefaultFiles()
+	names := make([]string, 0, len(defaults))
+	for filename := range defaults {
+		names = append(names, filename)
+	}
+	sort.Strings(names)
+	return defaults, names
 }
 
 // migrateConfigDir checks for a legacy oldDir and migrates it to newDir if applicable.
@@ -437,12 +449,7 @@ func refreshTemplates(halDir string, dryRun bool, w io.Writer) error {
 		prefix = "[dry-run] "
 	}
 
-	defaults := template.DefaultFiles()
-	filenames := make([]string, 0, len(defaults))
-	for filename := range defaults {
-		filenames = append(filenames, filename)
-	}
-	sort.Strings(filenames)
+	defaults, filenames := sortedDefaultFiles()
 
 	for _, filename := range filenames {
 		embedded := defaults[filename]

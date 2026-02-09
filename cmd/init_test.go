@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/spf13/cobra"
 )
 
 func TestMigrateConfigDir(t *testing.T) {
@@ -562,6 +564,19 @@ func TestRunInitAddsGitignore(t *testing.T) {
 	})
 }
 
+func newInitTestRootCmd(out, errOut io.Writer) *cobra.Command {
+	root := &cobra.Command{Use: "hal"}
+	init := &cobra.Command{
+		Use: "init",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInitWithWriters(cmd, args, out, errOut)
+		},
+	}
+	addInitFlags(init)
+	root.AddCommand(init)
+	return root
+}
+
 func TestInitRefreshTemplatesCobra(t *testing.T) {
 	// Save and restore working directory
 	origDir, err := os.Getwd()
@@ -585,28 +600,19 @@ func TestInitRefreshTemplatesCobra(t *testing.T) {
 		writeFile(t, halDir, name, "custom "+name)
 	}
 
-	// Capture stdout by redirecting os.Stdout to a pipe
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("failed to create pipe: %v", err)
-	}
-	os.Stdout = w
-	t.Cleanup(func() { os.Stdout = oldStdout })
+	var stdout, stderr bytes.Buffer
 
-	// Execute through Cobra command tree
-	rootCmd.SetArgs([]string{"init", "--refresh-templates"})
-	if err := rootCmd.Execute(); err != nil {
-		w.Close()
-		os.Stdout = oldStdout
+	// Execute through isolated Cobra command tree
+	testRoot := newInitTestRootCmd(&stdout, &stderr)
+	testRoot.SetArgs([]string{"init", "--refresh-templates"})
+	if err := testRoot.Execute(); err != nil {
 		t.Fatalf("rootCmd.Execute() error: %v", err)
 	}
+	if stderr.Len() > 0 {
+		t.Fatalf("unexpected stderr output: %s", stderr.String())
+	}
 
-	w.Close()
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	os.Stdout = oldStdout
-	output := buf.String()
+	output := stdout.String()
 
 	// Verify output contains refreshed entries in sorted filename order
 	for _, name := range sortedNames {
@@ -674,28 +680,19 @@ func TestInitDryRunCobra(t *testing.T) {
 		writeFile(t, halDir, name, "custom "+name)
 	}
 
-	// Capture stdout by redirecting os.Stdout to a pipe
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("failed to create pipe: %v", err)
-	}
-	os.Stdout = w
-	t.Cleanup(func() { os.Stdout = oldStdout })
+	var stdout, stderr bytes.Buffer
 
-	// Execute through Cobra command tree with both flags
-	rootCmd.SetArgs([]string{"init", "--refresh-templates", "--dry-run"})
-	if err := rootCmd.Execute(); err != nil {
-		w.Close()
-		os.Stdout = oldStdout
+	// Execute through isolated Cobra command tree with both flags
+	testRoot := newInitTestRootCmd(&stdout, &stderr)
+	testRoot.SetArgs([]string{"init", "--refresh-templates", "--dry-run"})
+	if err := testRoot.Execute(); err != nil {
 		t.Fatalf("rootCmd.Execute() error: %v", err)
 	}
+	if stderr.Len() > 0 {
+		t.Fatalf("unexpected stderr output: %s", stderr.String())
+	}
 
-	w.Close()
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	os.Stdout = oldStdout
-	output := buf.String()
+	output := stdout.String()
 
 	// Verify output contains [dry-run] prefix
 	if !strings.Contains(output, "[dry-run]") {
@@ -742,6 +739,38 @@ func TestInitDryRunCobra(t *testing.T) {
 	}
 }
 
+func normalizeRefreshOutput(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i, line := range lines {
+		if idx := strings.Index(line, "(backup: "); idx >= 0 {
+			lines[i] = line[:idx] + "(backup: <redacted>)"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func assertRefreshLineOrder(t *testing.T, output string, sortedNames []string, dryRun bool) {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != len(sortedNames) {
+		t.Fatalf("expected %d output lines, got %d: %q", len(sortedNames), len(lines), output)
+	}
+
+	for i, name := range sortedNames {
+		expected := "refreshed .hal/" + name
+		if dryRun {
+			expected = "[dry-run] " + expected
+		}
+		if !strings.Contains(lines[i], expected) {
+			t.Fatalf("line %d should contain %q, got %q", i, expected, lines[i])
+		}
+		if !strings.Contains(lines[i], "(backup: ") {
+			t.Fatalf("refresh output should contain backup metadata, got %q", lines[i])
+		}
+	}
+}
+
 func TestRefreshTemplatesDeterministic(t *testing.T) {
 	// Sorted order of template.DefaultFiles() keys
 	sortedNames := []string{template.ConfigFile, template.ProgressFile, template.PromptFile}
@@ -752,7 +781,7 @@ func TestRefreshTemplatesDeterministic(t *testing.T) {
 			label = "dry-run"
 		}
 		t.Run(label, func(t *testing.T) {
-			var outputs []string
+			var normalizedOutputs []string
 			for i := 0; i < 3; i++ {
 				halDir := filepath.Join(t.TempDir(), ".hal")
 				if err := os.MkdirAll(halDir, 0755); err != nil {
@@ -767,25 +796,15 @@ func TestRefreshTemplatesDeterministic(t *testing.T) {
 				if err := refreshTemplates(halDir, dryRun, &buf); err != nil {
 					t.Fatalf("refreshTemplates() iteration %d error: %v", i, err)
 				}
-				outputs = append(outputs, buf.String())
+
+				output := buf.String()
+				assertRefreshLineOrder(t, output, sortedNames, dryRun)
+				normalizedOutputs = append(normalizedOutputs, normalizeRefreshOutput(output))
 			}
 
-			// All 3 runs must produce identical output
-			for i := 1; i < len(outputs); i++ {
-				if outputs[i] != outputs[0] {
-					t.Errorf("output mismatch between run 0 and run %d:\nrun 0: %q\nrun %d: %q", i, outputs[0], i, outputs[i])
-				}
-			}
-
-			// Verify output lines appear in sorted filename order
-			output := outputs[0]
-			lines := strings.Split(strings.TrimSpace(output), "\n")
-			if len(lines) != len(sortedNames) {
-				t.Fatalf("expected %d output lines, got %d: %q", len(sortedNames), len(lines), output)
-			}
-			for i, name := range sortedNames {
-				if !strings.Contains(lines[i], name) {
-					t.Errorf("line %d should contain %q, got %q", i, name, lines[i])
+			for i := 1; i < len(normalizedOutputs); i++ {
+				if normalizedOutputs[i] != normalizedOutputs[0] {
+					t.Fatalf("output mismatch between run 0 and run %d:\nrun 0: %q\nrun %d: %q", i, normalizedOutputs[0], i, normalizedOutputs[i])
 				}
 			}
 		})
@@ -796,10 +815,10 @@ func TestRefreshTemplates(t *testing.T) {
 	defaults := template.DefaultFiles()
 
 	tests := []struct {
-		name    string
-		dryRun  bool
-		setup   func(t *testing.T, halDir string)
-		check   func(t *testing.T, halDir string, output string)
+		name   string
+		dryRun bool
+		setup  func(t *testing.T, halDir string)
+		check  func(t *testing.T, halDir string, output string)
 	}{
 		{
 			name:   "creates templates when none exist",
