@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
@@ -441,8 +442,9 @@ func refreshTemplateFiles(halDir string, dryRun bool, w io.Writer) error {
 			continue
 		}
 		// File differs — backup and overwrite
+		timestamp := time.Now().Format("20060102-150405")
+		backupName := fmt.Sprintf("%s.%s.bak", filename, timestamp)
 		if !dryRun {
-			backupName := fmt.Sprintf("%s.bak", filename)
 			backupPath := filepath.Join(halDir, backupName)
 			if err := os.WriteFile(backupPath, existing, 0644); err != nil {
 				return fmt.Errorf("failed to backup %s: %w", filename, err)
@@ -452,7 +454,7 @@ func refreshTemplateFiles(halDir string, dryRun bool, w io.Writer) error {
 			}
 			fmt.Fprintf(w, "  refreshed .hal/%s (backup: %s)\n", filename, backupName)
 		} else {
-			fmt.Fprintf(w, "  [dry-run] refreshed .hal/%s\n", filename)
+			fmt.Fprintf(w, "  [dry-run] refreshed .hal/%s (backup: %s)\n", filename, backupName)
 		}
 	}
 	return nil
