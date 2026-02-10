@@ -3,9 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -71,6 +71,10 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
+	return runRunWithWriter(cmd, args, os.Stderr)
+}
+
+func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error {
 	// Parse iterations from positional arg (default: 10)
 	iterations := 10
 	if len(args) > 0 {
@@ -96,12 +100,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
 
-	baseBranch := strings.TrimSpace(runBaseFlag)
-	if baseBranch == "" {
-		// Best-effort: detached HEAD or git lookup errors fall back to empty,
-		// which downstream git commands interpret as current HEAD.
-		baseBranch, _ = compound.CurrentBranchOptional()
-	}
+	baseBranch := compound.ResolveBaseBranch(
+		runBaseFlag,
+		compound.CurrentBranchOptional,
+		func(format string, args ...any) {
+			fmt.Fprintf(errOut, format, args...)
+		},
+	)
 
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
