@@ -246,6 +246,24 @@ func (s *Store) TransitionAttempt(ctx context.Context, attemptID string, status 
 	return nil
 }
 
+func (s *Store) UpdateAttemptSandboxID(ctx context.Context, attemptID, sandboxID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE attempts SET sandbox_id = $1 WHERE id = $2`,
+		sandboxID, attemptID)
+	if err != nil {
+		return err
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return cloud.ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) ListStaleAttempts(ctx context.Context, cutoff time.Time) ([]*cloud.Attempt, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, attempt_number, worker_id, sandbox_id,

@@ -53,6 +53,10 @@ type Store interface {
 	// has expired before the given cutoff time.
 	ListStaleAttempts(ctx context.Context, cutoff time.Time) ([]*Attempt, error)
 
+	// UpdateAttemptSandboxID sets the sandbox_id on an existing attempt.
+	// Returns ErrNotFound if the attempt does not exist.
+	UpdateAttemptSandboxID(ctx context.Context, attemptID, sandboxID string) error
+
 	// GetAttempt returns the attempt with the given ID or ErrNotFound.
 	GetAttempt(ctx context.Context, attemptID string) (*Attempt, error)
 

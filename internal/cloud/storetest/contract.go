@@ -29,6 +29,7 @@ func Suite(t *testing.T, newStore NewStoreFunc) {
 	t.Run("ListOverdueRuns", func(t *testing.T) { testListOverdueRuns(t, newStore) })
 	t.Run("SetCancelIntent", func(t *testing.T) { testSetCancelIntent(t, newStore) })
 	t.Run("ClaimExcludesCanceled", func(t *testing.T) { testClaimExcludesCanceled(t, newStore) })
+	t.Run("UpdateAttemptSandboxID", func(t *testing.T) { testUpdateAttemptSandboxID(t, newStore) })
 }
 
 // --- helpers ---
@@ -559,5 +560,54 @@ func testClaimExcludesCanceled(t *testing.T, newStore NewStoreFunc) {
 	_, err = s.ClaimRun(ctx, "worker-2")
 	if !cloud.IsNotFound(err) {
 		t.Errorf("ClaimRun(only cancel-requested left): got %v, want ErrNotFound", err)
+	}
+}
+
+// testUpdateAttemptSandboxID verifies that UpdateAttemptSandboxID sets the
+// sandbox_id on an existing attempt and returns ErrNotFound for non-existent attempts.
+func testUpdateAttemptSandboxID(t *testing.T, newStore NewStoreFunc) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Setup: enqueue, claim, create attempt.
+	run := validRun("run-usid-001")
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+	if _, err := s.ClaimRun(ctx, "worker-1"); err != nil {
+		t.Fatalf("ClaimRun: %v", err)
+	}
+
+	att := validAttempt("att-usid-001", "run-usid-001", "worker-1", 1)
+	if err := s.CreateAttempt(ctx, att); err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	// Initially sandbox_id is nil.
+	got, err := s.GetAttempt(ctx, "att-usid-001")
+	if err != nil {
+		t.Fatalf("GetAttempt: %v", err)
+	}
+	if got.SandboxID != nil {
+		t.Errorf("initial SandboxID = %v, want nil", got.SandboxID)
+	}
+
+	// Update sandbox_id.
+	if err := s.UpdateAttemptSandboxID(ctx, "att-usid-001", "sandbox-xyz"); err != nil {
+		t.Fatalf("UpdateAttemptSandboxID: %v", err)
+	}
+
+	got, err = s.GetAttempt(ctx, "att-usid-001")
+	if err != nil {
+		t.Fatalf("GetAttempt(after update): %v", err)
+	}
+	if got.SandboxID == nil || *got.SandboxID != "sandbox-xyz" {
+		t.Errorf("SandboxID = %v, want %q", got.SandboxID, "sandbox-xyz")
+	}
+
+	// Non-existent attempt returns ErrNotFound.
+	err = s.UpdateAttemptSandboxID(ctx, "does-not-exist", "sandbox-abc")
+	if !cloud.IsNotFound(err) {
+		t.Errorf("UpdateAttemptSandboxID(non-existent): got %v, want ErrNotFound", err)
 	}
 }
