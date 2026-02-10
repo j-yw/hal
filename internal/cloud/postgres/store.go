@@ -34,7 +34,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 // validRunTransitions defines the allowed run status transitions.
 var validRunTransitions = map[cloud.RunStatus]map[cloud.RunStatus]bool{
 	cloud.RunStatusQueued:   {cloud.RunStatusClaimed: true, cloud.RunStatusCanceled: true},
-	cloud.RunStatusClaimed:  {cloud.RunStatusRunning: true, cloud.RunStatusFailed: true, cloud.RunStatusCanceled: true},
+	cloud.RunStatusClaimed:  {cloud.RunStatusQueued: true, cloud.RunStatusRunning: true, cloud.RunStatusFailed: true, cloud.RunStatusCanceled: true},
 	cloud.RunStatusRunning:  {cloud.RunStatusSucceeded: true, cloud.RunStatusFailed: true, cloud.RunStatusCanceled: true},
 	cloud.RunStatusRetrying: {cloud.RunStatusQueued: true, cloud.RunStatusCanceled: true},
 	cloud.RunStatusFailed:   {cloud.RunStatusRetrying: true},
