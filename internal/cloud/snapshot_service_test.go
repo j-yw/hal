@@ -22,8 +22,8 @@ type snapshotMockStore struct {
 	putSnapshotErr   error
 
 	// UpdateRunSnapshotRefs tracking
-	updateRefsCalls   []updateRefsCall
-	updateRefsErr     error
+	updateRefsCalls []updateRefsCall
+	updateRefsErr   error
 
 	// InsertEvent tracking
 	insertedEvents []*Event

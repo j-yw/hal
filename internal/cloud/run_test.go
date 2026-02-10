@@ -98,9 +98,9 @@ func validRun() Run {
 
 func TestRun_Validate(t *testing.T) {
 	tests := []struct {
-		name      string
-		modify    func(r *Run)
-		wantErr   string
+		name    string
+		modify  func(r *Run)
+		wantErr string
 	}{
 		{
 			name:   "valid run passes",

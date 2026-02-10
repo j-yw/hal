@@ -21,11 +21,13 @@ type cloudMockStore struct {
 	runsByID       map[string]*cloud.Run
 	activeAttempts map[string]*cloud.Attempt
 	events         map[string][]*cloud.Event
+	snapshots      map[string]*cloud.RunStateSnapshot // runID → latest snapshot
 	enqErr         error
 	getRErr        error
 	getAttemptErr  error
 	listEventsErr  error
 	setCancelErr   error
+	getSnapshotErr error
 }
 
 func newCloudMockStore() *cloudMockStore {
@@ -34,6 +36,7 @@ func newCloudMockStore() *cloudMockStore {
 		runsByID:       make(map[string]*cloud.Run),
 		activeAttempts: make(map[string]*cloud.Attempt),
 		events:         make(map[string][]*cloud.Event),
+		snapshots:      make(map[string]*cloud.RunStateSnapshot),
 	}
 }
 
@@ -133,8 +136,15 @@ func (s *cloudMockStore) PutSnapshot(_ context.Context, _ *cloud.RunStateSnapsho
 func (s *cloudMockStore) GetSnapshot(_ context.Context, _ string) (*cloud.RunStateSnapshot, error) {
 	return nil, nil
 }
-func (s *cloudMockStore) GetLatestSnapshot(_ context.Context, _ string) (*cloud.RunStateSnapshot, error) {
-	return nil, nil
+func (s *cloudMockStore) GetLatestSnapshot(_ context.Context, runID string) (*cloud.RunStateSnapshot, error) {
+	if s.getSnapshotErr != nil {
+		return nil, s.getSnapshotErr
+	}
+	snap, ok := s.snapshots[runID]
+	if !ok {
+		return nil, cloud.ErrNotFound
+	}
+	return snap, nil
 }
 func (s *cloudMockStore) UpdateRunSnapshotRefs(_ context.Context, _ string, _, _ *string, _ int) error {
 	return nil
@@ -643,13 +653,13 @@ func TestRunCloudStatus(t *testing.T) {
 				s := newCloudMockStore()
 				s.runsByID["run-001"] = validCloudRun("run-001")
 				s.activeAttempts["run-001"] = &cloud.Attempt{
-					ID:            "att-001",
-					RunID:         "run-001",
-					AttemptNumber: 1,
-					WorkerID:      "worker-1",
-					Status:        cloud.AttemptStatusActive,
-					StartedAt:     time.Now().UTC(),
-					HeartbeatAt:   time.Now().UTC().Add(-10 * time.Second),
+					ID:             "att-001",
+					RunID:          "run-001",
+					AttemptNumber:  1,
+					WorkerID:       "worker-1",
+					Status:         cloud.AttemptStatusActive,
+					StartedAt:      time.Now().UTC(),
+					HeartbeatAt:    time.Now().UTC().Add(-10 * time.Second),
 					LeaseExpiresAt: time.Now().UTC().Add(20 * time.Second),
 				}
 				return s
@@ -664,13 +674,13 @@ func TestRunCloudStatus(t *testing.T) {
 				s := newCloudMockStore()
 				s.runsByID["run-001"] = validCloudRun("run-001")
 				s.activeAttempts["run-001"] = &cloud.Attempt{
-					ID:            "att-001",
-					RunID:         "run-001",
-					AttemptNumber: 1,
-					WorkerID:      "worker-1",
-					Status:        cloud.AttemptStatusActive,
-					StartedAt:     time.Now().UTC(),
-					HeartbeatAt:   time.Now().UTC().Add(-5 * time.Second),
+					ID:             "att-001",
+					RunID:          "run-001",
+					AttemptNumber:  1,
+					WorkerID:       "worker-1",
+					Status:         cloud.AttemptStatusActive,
+					StartedAt:      time.Now().UTC(),
+					HeartbeatAt:    time.Now().UTC().Add(-5 * time.Second),
 					LeaseExpiresAt: time.Now().UTC().Add(25 * time.Second),
 				}
 				return s
@@ -789,9 +799,9 @@ func TestRunCloudStatus(t *testing.T) {
 			},
 		},
 		{
-			name:  "nil store factory returns error in human output",
-			runID: "run-001",
-			store: nil,
+			name:    "nil store factory returns error in human output",
+			runID:   "run-001",
+			store:   nil,
 			wantErr: "store not configured",
 		},
 		{
@@ -871,13 +881,13 @@ func TestRunCloudStatus(t *testing.T) {
 				s := newCloudMockStore()
 				s.runsByID["run-004"] = validCloudRun("run-004")
 				s.activeAttempts["run-004"] = &cloud.Attempt{
-					ID:            "att-004",
-					RunID:         "run-004",
-					AttemptNumber: 2,
-					WorkerID:      "worker-2",
-					Status:        cloud.AttemptStatusActive,
-					StartedAt:     time.Now().UTC(),
-					HeartbeatAt:   time.Now().UTC(),
+					ID:             "att-004",
+					RunID:          "run-004",
+					AttemptNumber:  2,
+					WorkerID:       "worker-2",
+					Status:         cloud.AttemptStatusActive,
+					StartedAt:      time.Now().UTC(),
+					HeartbeatAt:    time.Now().UTC(),
 					LeaseExpiresAt: time.Now().UTC().Add(30 * time.Second),
 				}
 				return s
@@ -1037,9 +1047,9 @@ func TestRunCloudLogs(t *testing.T) {
 			wantErr: "not found",
 		},
 		{
-			name:  "nil store factory returns error",
-			runID: "run-001",
-			store: nil,
+			name:    "nil store factory returns error",
+			runID:   "run-001",
+			store:   nil,
 			wantErr: "store not configured",
 		},
 		{
@@ -1080,8 +1090,8 @@ func TestRunCloudLogs(t *testing.T) {
 			notOutput:  []string{"ghp_", "sk-ant-"},
 		},
 		{
-			name:  "follow mode exits on terminal run status",
-			runID: "run-001",
+			name:   "follow mode exits on terminal run status",
+			runID:  "run-001",
 			follow: true,
 			store: func() *cloudMockStore {
 				s := newCloudMockStore()
@@ -1563,7 +1573,7 @@ func TestRunCloudRun(t *testing.T) {
 			name:   "dry-run lists files and total bytes in human output",
 			dryRun: true,
 			files: map[string]string{
-				"prd.json":    `{"project":"test"}`,
+				"prd.json":     `{"project":"test"}`,
 				"progress.txt": "## progress",
 			},
 			wantOutput: []string{"Dry run", ".hal/prd.json", ".hal/progress.txt", "Total:", "Bundle hash:"},
@@ -1573,7 +1583,7 @@ func TestRunCloudRun(t *testing.T) {
 			dryRun:     true,
 			jsonOutput: true,
 			files: map[string]string{
-				"prd.json":    `{"project":"test"}`,
+				"prd.json":     `{"project":"test"}`,
 				"progress.txt": "## progress",
 			},
 			checkJSON: func(t *testing.T, output string) {
@@ -1611,14 +1621,14 @@ func TestRunCloudRun(t *testing.T) {
 			},
 		},
 		{
-			name:   "successful run with human output",
-			repo:   "org/repo",
-			base:   "main",
-			engine: "claude",
+			name:     "successful run with human output",
+			repo:     "org/repo",
+			base:     "main",
+			engine:   "claude",
 			authProf: "profile-1",
-			scope:  "prd-123",
+			scope:    "prd-123",
 			files: map[string]string{
-				"prd.json":    `{"project":"test"}`,
+				"prd.json":     `{"project":"test"}`,
 				"progress.txt": "## progress",
 			},
 			store: func() *cloudMockStore {
@@ -1667,34 +1677,34 @@ func TestRunCloudRun(t *testing.T) {
 			},
 		},
 		{
-			name:   "no .hal directory returns error",
-			repo:   "org/repo",
-			base:   "main",
-			engine: "claude",
+			name:     "no .hal directory returns error",
+			repo:     "org/repo",
+			base:     "main",
+			engine:   "claude",
 			authProf: "profile-1",
-			scope:  "prd-123",
-			files:  nil, // no files = no .hal dir
-			wantErr: "failed to collect bundle files",
+			scope:    "prd-123",
+			files:    nil, // no files = no .hal dir
+			wantErr:  "failed to collect bundle files",
 		},
 		{
-			name:   "empty .hal directory with no allowlisted files returns error",
-			repo:   "org/repo",
-			base:   "main",
-			engine: "claude",
+			name:     "empty .hal directory with no allowlisted files returns error",
+			repo:     "org/repo",
+			base:     "main",
+			engine:   "claude",
 			authProf: "profile-1",
-			scope:  "prd-123",
+			scope:    "prd-123",
 			files: map[string]string{
 				"skills/foo.txt": "not allowlisted",
 			},
 			wantErr: "no allowlisted files found",
 		},
 		{
-			name:   "nil store factory returns configuration error",
-			repo:   "org/repo",
-			base:   "main",
-			engine: "claude",
+			name:     "nil store factory returns configuration error",
+			repo:     "org/repo",
+			base:     "main",
+			engine:   "claude",
 			authProf: "profile-1",
-			scope:  "prd-123",
+			scope:    "prd-123",
 			files: map[string]string{
 				"prd.json": `{"project":"test"}`,
 			},
@@ -1731,10 +1741,10 @@ func TestRunCloudRun(t *testing.T) {
 			name:   "denylisted files are excluded from bundle",
 			dryRun: true,
 			files: map[string]string{
-				"prd.json":          `{"project":"test"}`,
-				"archive/old.json":  "archived",
-				"reports/r1.txt":    "report",
-				"skills/s1.md":      "skill",
+				"prd.json":         `{"project":"test"}`,
+				"archive/old.json": "archived",
+				"reports/r1.txt":   "report",
+				"skills/s1.md":     "skill",
 			},
 			wantOutput: []string{".hal/prd.json"},
 		},
@@ -1825,13 +1835,13 @@ func TestCollectBundleFiles(t *testing.T) {
 		{
 			name: "collects allowlisted files only",
 			files: map[string]string{
-				"prd.json":          `{"project":"test"}`,
-				"auto-prd.json":     `{"auto":"test"}`,
-				"progress.txt":      "progress",
-				"prompt.md":         "prompt",
-				"config.yaml":       "config: true",
-				"skills/s1.md":      "skill content",
-				"archive/old.json":  "old archive",
+				"prd.json":         `{"project":"test"}`,
+				"auto-prd.json":    `{"auto":"test"}`,
+				"progress.txt":     "progress",
+				"prompt.md":        "prompt",
+				"config.yaml":      "config: true",
+				"skills/s1.md":     "skill content",
+				"archive/old.json": "old archive",
 			},
 			wantPaths: []string{
 				".hal/auto-prd.json",
@@ -1907,5 +1917,379 @@ func TestCollectBundleFiles(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- Tests for the cloud pull command ---
+
+// makeBundleSnapshot creates a RunStateSnapshot with compressed bundle files.
+func makeBundleSnapshot(t *testing.T, runID string, version int, files map[string]string) *cloud.RunStateSnapshot {
+	t.Helper()
+	var records []cloud.BundleManifestRecord
+	fileContents := make(map[string][]byte)
+	for name, content := range files {
+		r := cloud.NewBundleManifestRecord(name, []byte(content))
+		records = append(records, r)
+		fileContents[r.Path] = []byte(content)
+	}
+	compressed, err := compressBundleFiles(records, fileContents)
+	if err != nil {
+		t.Fatalf("failed to compress test bundle: %v", err)
+	}
+	manifest := cloud.NewBundleManifest(records)
+	return &cloud.RunStateSnapshot{
+		ID:              fmt.Sprintf("snap-%s-%d", runID, version),
+		RunID:           runID,
+		SnapshotKind:    cloud.SnapshotKindFinal,
+		Version:         version,
+		SHA256:          manifest.SHA256,
+		SizeBytes:       int64(len(compressed)),
+		ContentEncoding: "application/gzip",
+		ContentBlob:     compressed,
+		CreatedAt:       time.Now().UTC(),
+	}
+}
+
+func TestRunCloudPull(t *testing.T) {
+	tests := []struct {
+		name       string
+		runID      string
+		force      bool
+		jsonOutput bool
+		setupDir   func(t *testing.T, dir string)
+		store      func() *cloudMockStore
+		wantErr    string
+		wantOutput []string
+		checkJSON  func(t *testing.T, output string)
+		checkDir   func(t *testing.T, dir string)
+	}{
+		{
+			name:  "successful pull with human output",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 3, map[string]string{
+					".hal/prd.json":     `{"project":"test"}`,
+					".hal/progress.txt": "## done",
+				})
+				return s
+			},
+			wantOutput: []string{
+				"Snapshot restored successfully.",
+				"snapshot_version: 3",
+				"sha256:",
+				"files restored:",
+				".hal/prd.json",
+				".hal/progress.txt",
+			},
+			checkDir: func(t *testing.T, dir string) {
+				content, err := os.ReadFile(filepath.Join(dir, ".hal", "prd.json"))
+				if err != nil {
+					t.Fatalf("failed to read prd.json: %v", err)
+				}
+				if string(content) != `{"project":"test"}` {
+					t.Errorf("prd.json content = %q, want %q", string(content), `{"project":"test"}`)
+				}
+				content, err = os.ReadFile(filepath.Join(dir, ".hal", "progress.txt"))
+				if err != nil {
+					t.Fatalf("failed to read progress.txt: %v", err)
+				}
+				if string(content) != "## done" {
+					t.Errorf("progress.txt content = %q, want %q", string(content), "## done")
+				}
+			},
+		},
+		{
+			name:       "successful pull with JSON output",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 5, map[string]string{
+					".hal/prd.json": `{"project":"test"}`,
+				})
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudPullResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.RunID != "run-001" {
+					t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
+				}
+				if resp.SnapshotVersion != 5 {
+					t.Errorf("snapshot_version = %d, want 5", resp.SnapshotVersion)
+				}
+				if resp.SHA256 == "" {
+					t.Error("sha256 should not be empty")
+				}
+				if len(resp.FilesRestored) != 1 {
+					t.Errorf("files_restored length = %d, want 1", len(resp.FilesRestored))
+				}
+			},
+		},
+		{
+			name:  "unknown run_id returns not_found in human output",
+			runID: "non-existent",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+		},
+		{
+			name:       "unknown run_id returns not_found in JSON",
+			runID:      "non-existent",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "not_found" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "not_found")
+				}
+			},
+		},
+		{
+			name:  "no snapshot returns not_found error",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				// no snapshot added
+				return s
+			},
+			wantErr: "no snapshot found",
+		},
+		{
+			name:  "refuses overwrite when local files changed without --force",
+			runID: "run-001",
+			setupDir: func(t *testing.T, dir string) {
+				t.Helper()
+				halDir := filepath.Join(dir, ".hal")
+				os.MkdirAll(halDir, 0755)
+				os.WriteFile(filepath.Join(halDir, "prd.json"), []byte(`{"local":"changes"}`), 0644)
+			},
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 1, map[string]string{
+					".hal/prd.json": `{"project":"remote"}`,
+				})
+				return s
+			},
+			wantErr: "local files changed",
+		},
+		{
+			name:  "force overwrite when local files changed",
+			runID: "run-001",
+			force: true,
+			setupDir: func(t *testing.T, dir string) {
+				t.Helper()
+				halDir := filepath.Join(dir, ".hal")
+				os.MkdirAll(halDir, 0755)
+				os.WriteFile(filepath.Join(halDir, "prd.json"), []byte(`{"local":"changes"}`), 0644)
+			},
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 2, map[string]string{
+					".hal/prd.json": `{"project":"remote"}`,
+				})
+				return s
+			},
+			wantOutput: []string{"Snapshot restored successfully."},
+			checkDir: func(t *testing.T, dir string) {
+				content, err := os.ReadFile(filepath.Join(dir, ".hal", "prd.json"))
+				if err != nil {
+					t.Fatalf("failed to read prd.json: %v", err)
+				}
+				if string(content) != `{"project":"remote"}` {
+					t.Errorf("prd.json = %q, want %q", string(content), `{"project":"remote"}`)
+				}
+			},
+		},
+		{
+			name:       "nil store factory returns configuration error in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store:      nil,
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+		{
+			name:    "nil store factory returns error in human output",
+			runID:   "run-001",
+			store:   nil,
+			wantErr: "store not configured",
+		},
+		{
+			name:       "store factory error in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return nil // signals store factory error
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+		{
+			name:  "identical local files are overwritten without --force",
+			runID: "run-001",
+			setupDir: func(t *testing.T, dir string) {
+				t.Helper()
+				halDir := filepath.Join(dir, ".hal")
+				os.MkdirAll(halDir, 0755)
+				// Write the same content as the snapshot — no change detected.
+				os.WriteFile(filepath.Join(halDir, "prd.json"), []byte(`{"project":"test"}`), 0644)
+			},
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 1, map[string]string{
+					".hal/prd.json": `{"project":"test"}`,
+				})
+				return s
+			},
+			wantOutput: []string{"Snapshot restored successfully."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			if tt.setupDir != nil {
+				tt.setupDir(t, dir)
+			}
+
+			var storeFactory func() (cloud.Store, error)
+			if tt.store != nil {
+				mockStore := tt.store()
+				if mockStore == nil {
+					storeFactory = func() (cloud.Store, error) {
+						return nil, fmt.Errorf("store factory error")
+					}
+				} else {
+					storeFactory = func() (cloud.Store, error) {
+						return mockStore, nil
+					}
+				}
+			}
+
+			var out bytes.Buffer
+			err := runCloudPull(
+				tt.runID,
+				tt.force,
+				tt.jsonOutput,
+				storeFactory,
+				dir,
+				&out,
+			)
+
+			output := out.String()
+
+			// For JSON error cases, check JSON first then error.
+			if tt.checkJSON != nil && output != "" {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+
+			if tt.wantErr != "" {
+				if err == nil {
+					if !strings.Contains(output, tt.wantErr) {
+						t.Fatalf("expected error containing %q, got nil error and output %q", tt.wantErr, output)
+					}
+					return
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output, want) {
+					t.Errorf("output does not contain %q\noutput: %s", want, output)
+				}
+			}
+
+			if tt.checkJSON != nil {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+
+			if tt.checkDir != nil {
+				tt.checkDir(t, dir)
+			}
+		})
+	}
+}
+
+func TestDecompressBundleFiles(t *testing.T) {
+	// Create a compressed bundle and verify decompression roundtrip.
+	records := []cloud.BundleManifestRecord{
+		cloud.NewBundleManifestRecord(".hal/prd.json", []byte(`{"project":"test"}`)),
+		cloud.NewBundleManifestRecord(".hal/progress.txt", []byte("## progress")),
+	}
+	fileContents := map[string][]byte{
+		".hal/prd.json":     []byte(`{"project":"test"}`),
+		".hal/progress.txt": []byte("## progress"),
+	}
+
+	compressed, err := compressBundleFiles(records, fileContents)
+	if err != nil {
+		t.Fatalf("compressBundleFiles failed: %v", err)
+	}
+
+	files, err := decompressBundleFiles(compressed)
+	if err != nil {
+		t.Fatalf("decompressBundleFiles failed: %v", err)
+	}
+
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+
+	found := make(map[string]string)
+	for _, f := range files {
+		found[f.Path] = string(f.Content)
+	}
+
+	if found[".hal/prd.json"] != `{"project":"test"}` {
+		t.Errorf("prd.json = %q, want %q", found[".hal/prd.json"], `{"project":"test"}`)
+	}
+	if found[".hal/progress.txt"] != "## progress" {
+		t.Errorf("progress.txt = %q, want %q", found[".hal/progress.txt"], "## progress")
+	}
+}
+
+func TestDecompressBundleFiles_InvalidData(t *testing.T) {
+	_, err := decompressBundleFiles([]byte("not gzip data"))
+	if err == nil {
+		t.Fatal("expected error for invalid gzip data, got nil")
 	}
 }

@@ -21,8 +21,8 @@ type claimMockStore struct {
 	createErr error
 
 	// AcquireAuthLock behavior
-	locks    []*AuthProfileLock
-	lockErr  error
+	locks   []*AuthProfileLock
+	lockErr error
 
 	// TransitionRun tracking
 	transitionRunCalls []transitionRunCall

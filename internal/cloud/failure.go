@@ -6,10 +6,10 @@ package cloud
 type FailureCode string
 
 const (
-	FailureBootstrapFailed FailureCode = "bootstrap_failed"
-	FailureAuthInvalid     FailureCode = "auth_invalid"
-	FailurePolicyBlocked   FailureCode = "policy_blocked"
-	FailureStaleAttempt    FailureCode = "stale_attempt"
+	FailureBootstrapFailed         FailureCode = "bootstrap_failed"
+	FailureAuthInvalid             FailureCode = "auth_invalid"
+	FailurePolicyBlocked           FailureCode = "policy_blocked"
+	FailureStaleAttempt            FailureCode = "stale_attempt"
 	FailureRunTimeout              FailureCode = "run_timeout"
 	FailureNonRetryable            FailureCode = "non_retryable"
 	FailureAuthProfileIncompatible FailureCode = "auth_profile_incompatible"
@@ -17,10 +17,10 @@ const (
 
 // validFailureCodes is the exhaustive set of known failure codes.
 var validFailureCodes = map[FailureCode]bool{
-	FailureBootstrapFailed: true,
-	FailureAuthInvalid:     true,
-	FailurePolicyBlocked:   true,
-	FailureStaleAttempt:    true,
+	FailureBootstrapFailed:         true,
+	FailureAuthInvalid:             true,
+	FailurePolicyBlocked:           true,
+	FailureStaleAttempt:            true,
 	FailureRunTimeout:              true,
 	FailureNonRetryable:            true,
 	FailureAuthProfileIncompatible: true,
@@ -35,10 +35,10 @@ func (f FailureCode) IsValid() bool {
 // Retryable failures allow the scheduler to re-queue the run (up to max_attempts).
 // Terminal failures keep the run in a failed state permanently.
 var retryableCodes = map[FailureCode]bool{
-	FailureBootstrapFailed: true,  // transient infra issue, retry may succeed
-	FailureAuthInvalid:     false, // credentials are bad, retrying won't help
-	FailurePolicyBlocked:   false, // policy rejection is deterministic
-	FailureStaleAttempt:    true,  // lease expired, fresh attempt may succeed
+	FailureBootstrapFailed:         true,  // transient infra issue, retry may succeed
+	FailureAuthInvalid:             false, // credentials are bad, retrying won't help
+	FailurePolicyBlocked:           false, // policy rejection is deterministic
+	FailureStaleAttempt:            true,  // lease expired, fresh attempt may succeed
 	FailureRunTimeout:              false, // deadline exceeded, same work will timeout again
 	FailureNonRetryable:            false, // explicitly non-retryable
 	FailureAuthProfileIncompatible: false, // incompatible runtime, retrying won't help

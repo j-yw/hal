@@ -269,12 +269,12 @@ func TestSubmitService(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		setup     func(s *submitMockStore)
-		config    func(c *SubmitConfig)
-		modify    func(r *SubmitRequest)
-		wantErr   string
-		checkRun  func(t *testing.T, run *Run)
+		name     string
+		setup    func(s *submitMockStore)
+		config   func(c *SubmitConfig)
+		modify   func(r *SubmitRequest)
+		wantErr  string
+		checkRun func(t *testing.T, run *Run)
 	}{
 		{
 			name: "successful submit",

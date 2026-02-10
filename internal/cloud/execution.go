@@ -98,11 +98,11 @@ type ExecutionResult struct {
 
 // executionEventPayload is the JSON payload for execution lifecycle events.
 type executionEventPayload struct {
-	SandboxID   string `json:"sandbox_id"`
-	Mode        string `json:"mode"`
-	ExitCode    *int   `json:"exit_code,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Command     string `json:"command,omitempty"`
+	SandboxID string `json:"sandbox_id"`
+	Mode      string `json:"mode"`
+	ExitCode  *int   `json:"exit_code,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Command   string `json:"command,omitempty"`
 }
 
 // Execute runs Hal inside the sandbox with the selected execution mode. It

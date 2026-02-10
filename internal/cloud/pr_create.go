@@ -85,11 +85,11 @@ type PRCreator func(ctx context.Context, req *PRCreateRequest) (string, error)
 
 // prCreateEventPayload is the JSON payload for PR creation lifecycle events.
 type prCreateEventPayload struct {
-	RunID     string `json:"run_id"`
-	PRRef     string `json:"pr_ref,omitempty"`
-	Reused    bool   `json:"reused,omitempty"`
-	Error     string `json:"error,omitempty"`
-	IdempKey  string `json:"idempotency_key,omitempty"`
+	RunID    string `json:"run_id"`
+	PRRef    string `json:"pr_ref,omitempty"`
+	Reused   bool   `json:"reused,omitempty"`
+	Error    string `json:"error,omitempty"`
+	IdempKey string `json:"idempotency_key,omitempty"`
 }
 
 // sideEffectPRCreate is the side effect type for PR creation idempotency keys.

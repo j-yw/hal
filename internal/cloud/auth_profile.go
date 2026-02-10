@@ -40,20 +40,20 @@ func (s AuthProfileStatus) IsTerminal() bool {
 
 // AuthProfile represents a reusable auth profile record.
 type AuthProfile struct {
-	ID                 string            `json:"id"`
-	OwnerID            string            `json:"owner_id"`
-	Provider           string            `json:"provider"`
-	Mode               string            `json:"mode"`
-	SecretRef          *string           `json:"secret_ref,omitempty"`
-	Status             AuthProfileStatus `json:"status"`
-	MaxConcurrentRuns  int               `json:"max_concurrent_runs"`
-	RuntimeMetadataJSON *string          `json:"runtime_metadata_json,omitempty"`
-	LastValidatedAt    *time.Time        `json:"last_validated_at,omitempty"`
-	ExpiresAt          *time.Time        `json:"expires_at,omitempty"`
-	LastErrorCode      *string           `json:"last_error_code,omitempty"`
-	Version            int               `json:"version"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
+	ID                  string            `json:"id"`
+	OwnerID             string            `json:"owner_id"`
+	Provider            string            `json:"provider"`
+	Mode                string            `json:"mode"`
+	SecretRef           *string           `json:"secret_ref,omitempty"`
+	Status              AuthProfileStatus `json:"status"`
+	MaxConcurrentRuns   int               `json:"max_concurrent_runs"`
+	RuntimeMetadataJSON *string           `json:"runtime_metadata_json,omitempty"`
+	LastValidatedAt     *time.Time        `json:"last_validated_at,omitempty"`
+	ExpiresAt           *time.Time        `json:"expires_at,omitempty"`
+	LastErrorCode       *string           `json:"last_error_code,omitempty"`
+	Version             int               `json:"version"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
 // Validate checks that all required fields are set and the status is valid.

@@ -52,6 +52,12 @@ var (
 	cloudRunJSONFlag        bool
 )
 
+// Cloud pull flags.
+var (
+	cloudPullForceFlag bool
+	cloudPullJSONFlag  bool
+)
+
 var cloudCmd = &cobra.Command{
 	Use:   "cloud",
 	Short: "Cloud orchestration commands",
@@ -188,6 +194,26 @@ Output includes run_id, status, and bundle_hash.`,
 	},
 }
 
+var cloudPullCmd = &cobra.Command{
+	Use:   "pull <run-id>",
+	Short: "Pull final state from a completed run",
+	Long: `Download the latest final snapshot from a cloud run and restore allowlisted files under .hal/.
+
+Refuses to overwrite local files that have changed unless --force is provided.
+Prints the restored snapshot version and sha256.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runCloudPull(
+			args[0],
+			cloudPullForceFlag,
+			cloudPullJSONFlag,
+			cloudPullStoreFactory,
+			".",
+			os.Stdout,
+		)
+	},
+}
+
 func init() {
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitRepoFlag, "repo", "", "Repository (owner/repo)")
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitBaseFlag, "base", "", "Base branch name")
@@ -210,11 +236,15 @@ func init() {
 	cloudRunCmd.Flags().BoolVar(&cloudRunDryRunFlag, "dry-run", false, "Preview included files without submitting")
 	cloudRunCmd.Flags().BoolVar(&cloudRunJSONFlag, "json", false, "Output in JSON format")
 
+	cloudPullCmd.Flags().BoolVar(&cloudPullForceFlag, "force", false, "Overwrite local files even if changed")
+	cloudPullCmd.Flags().BoolVar(&cloudPullJSONFlag, "json", false, "Output in JSON format")
+
 	cloudCmd.AddCommand(cloudSubmitCmd)
 	cloudCmd.AddCommand(cloudStatusCmd)
 	cloudCmd.AddCommand(cloudLogsCmd)
 	cloudCmd.AddCommand(cloudCancelCmd)
 	cloudCmd.AddCommand(cloudRunCmd)
+	cloudCmd.AddCommand(cloudPullCmd)
 	rootCmd.AddCommand(cloudCmd)
 }
 
@@ -240,6 +270,9 @@ var (
 	cloudRunStoreFactory  func() (cloud.Store, error)
 	cloudRunConfigFactory func() cloud.SubmitConfig
 )
+
+// cloudPullStoreFactory is a package-level variable that tests can override.
+var cloudPullStoreFactory func() (cloud.Store, error)
 
 // cloudSubmitResponse is the JSON output for a successful submit.
 type cloudSubmitResponse struct {
@@ -452,11 +485,11 @@ func runCloudStatus(
 
 	if jsonOutput {
 		resp := cloudStatusResponse{
-			RunID:        run.ID,
-			Status:       string(run.Status),
-			AttemptCount: run.AttemptCount,
-			MaxAttempts:  run.MaxAttempts,
-			Engine:       run.Engine,
+			RunID:         run.ID,
+			Status:        string(run.Status),
+			AttemptCount:  run.AttemptCount,
+			MaxAttempts:   run.MaxAttempts,
+			Engine:        run.Engine,
 			AuthProfileID: run.AuthProfileID,
 		}
 		if currentAttempt != nil {
@@ -887,4 +920,179 @@ func writeDryRunOutput(out io.Writer, jsonOutput bool, records []cloud.BundleMan
 	fmt.Fprintf(out, "\nTotal: %d bytes\n", totalBytes)
 	fmt.Fprintf(out, "Bundle hash: %s\n", bundleHash)
 	return nil
+}
+
+// cloudPullResponse is the JSON output for a successful pull command.
+type cloudPullResponse struct {
+	RunID           string   `json:"run_id"`
+	SnapshotVersion int      `json:"snapshot_version"`
+	SHA256          string   `json:"sha256"`
+	FilesRestored   []string `json:"files_restored"`
+}
+
+// bundleFileRecord is a decompressed file from a snapshot bundle.
+type bundleFileRecord struct {
+	Path    string
+	Content []byte
+}
+
+// runCloudPull is the testable logic for the cloud pull command.
+func runCloudPull(
+	runID string,
+	force, jsonOutput bool,
+	storeFactory func() (cloud.Store, error),
+	baseDir string,
+	out io.Writer,
+) error {
+	if storeFactory == nil {
+		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
+	}
+
+	store, err := storeFactory()
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+	}
+
+	ctx := context.Background()
+
+	// Verify the run exists.
+	if _, err := store.GetRun(ctx, runID); err != nil {
+		if cloud.IsNotFound(err) {
+			if jsonOutput {
+				_ = writeJSON(out, cloudErrorResponse{
+					Error:     fmt.Sprintf("run %q not found", runID),
+					ErrorCode: "not_found",
+				})
+				return fmt.Errorf("run %q not found", runID)
+			}
+			return fmt.Errorf("run %q not found", runID)
+		}
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
+	}
+
+	// Get the latest snapshot.
+	snapshot, err := store.GetLatestSnapshot(ctx, runID)
+	if err != nil {
+		if cloud.IsNotFound(err) {
+			return writeCloudError(out, jsonOutput, fmt.Sprintf("no snapshot found for run %q", runID), "not_found")
+		}
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get snapshot: %v", err), "store_error")
+	}
+
+	// Decompress the bundle content.
+	files, err := decompressBundleFiles(snapshot.ContentBlob)
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to decompress snapshot: %v", err), "bundle_error")
+	}
+
+	// Check for local file changes unless --force.
+	if !force {
+		var changed []string
+		for _, f := range files {
+			if !cloud.IsBundlePathAllowed(f.Path) {
+				continue
+			}
+			targetPath := filepath.Join(baseDir, f.Path)
+			existing, err := os.ReadFile(targetPath)
+			if err != nil {
+				continue // file doesn't exist locally — safe to write
+			}
+			if !bytes.Equal(existing, f.Content) {
+				changed = append(changed, f.Path)
+			}
+		}
+		if len(changed) > 0 {
+			msg := fmt.Sprintf("local files changed, use --force to overwrite: %s", strings.Join(changed, ", "))
+			return writeCloudError(out, jsonOutput, msg, "local_changes")
+		}
+	}
+
+	// Write files to .hal/.
+	var restored []string
+	for _, f := range files {
+		if !cloud.IsBundlePathAllowed(f.Path) {
+			continue
+		}
+		targetPath := filepath.Join(baseDir, f.Path)
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to create directory for %s: %v", f.Path, err), "restore_error")
+		}
+		if err := os.WriteFile(targetPath, f.Content, 0644); err != nil {
+			return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to write %s: %v", f.Path, err), "restore_error")
+		}
+		restored = append(restored, f.Path)
+	}
+
+	if jsonOutput {
+		return writeJSON(out, cloudPullResponse{
+			RunID:           runID,
+			SnapshotVersion: snapshot.Version,
+			SHA256:          snapshot.SHA256,
+			FilesRestored:   restored,
+		})
+	}
+
+	fmt.Fprintf(out, "Snapshot restored successfully.\n")
+	fmt.Fprintf(out, "  snapshot_version: %d\n", snapshot.Version)
+	fmt.Fprintf(out, "  sha256:           %s\n", snapshot.SHA256)
+	fmt.Fprintf(out, "  files restored:   %d\n", len(restored))
+	for _, p := range restored {
+		fmt.Fprintf(out, "    %s\n", p)
+	}
+	return nil
+}
+
+// decompressBundleFiles decompresses a gzip bundle into file records.
+// The format matches compressBundleFiles: path\x00size\x00content for each file.
+func decompressBundleFiles(data []byte) ([]bundleFileRecord, error) {
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("gzip open: %w", err)
+	}
+	defer gr.Close()
+
+	decompressed, err := io.ReadAll(gr)
+	if err != nil {
+		return nil, fmt.Errorf("gzip read: %w", err)
+	}
+
+	var files []bundleFileRecord
+	pos := 0
+	for pos < len(decompressed) {
+		// Read path (terminated by \x00).
+		nullIdx := bytes.IndexByte(decompressed[pos:], 0x00)
+		if nullIdx < 0 {
+			return nil, fmt.Errorf("malformed bundle: missing path null terminator at offset %d", pos)
+		}
+		filePath := string(decompressed[pos : pos+nullIdx])
+		pos += nullIdx + 1
+
+		// Read size (terminated by \x00).
+		nullIdx = bytes.IndexByte(decompressed[pos:], 0x00)
+		if nullIdx < 0 {
+			return nil, fmt.Errorf("malformed bundle: missing size null terminator at offset %d", pos)
+		}
+		sizeStr := string(decompressed[pos : pos+nullIdx])
+		pos += nullIdx + 1
+
+		var size int
+		if _, err := fmt.Sscanf(sizeStr, "%d", &size); err != nil {
+			return nil, fmt.Errorf("malformed bundle: invalid size %q: %w", sizeStr, err)
+		}
+
+		if pos+size > len(decompressed) {
+			return nil, fmt.Errorf("malformed bundle: content overflows at offset %d (need %d bytes, have %d)", pos, size, len(decompressed)-pos)
+		}
+
+		content := make([]byte, size)
+		copy(content, decompressed[pos:pos+size])
+		pos += size
+
+		files = append(files, bundleFileRecord{
+			Path:    filePath,
+			Content: content,
+		})
+	}
+
+	return files, nil
 }

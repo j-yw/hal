@@ -62,12 +62,12 @@ func (r *writebackMockRunner) Health(_ context.Context) (*runner.HealthStatus, e
 // writebackMockStore extends mockStore for writeback tests.
 type writebackMockStore struct {
 	mockStore
-	insertedEvents    []*Event
-	insertEventErr    error
-	authProfile       *AuthProfile
-	getProfileErr     error
-	updateProfileErr  error
-	updatedProfile    *AuthProfile
+	insertedEvents     []*Event
+	insertEventErr     error
+	authProfile        *AuthProfile
+	getProfileErr      error
+	updateProfileErr   error
+	updatedProfile     *AuthProfile
 	updateProfileCalls int
 }
 

@@ -15,8 +15,8 @@ import (
 // Config holds the configuration for the auth middleware.
 type Config struct {
 	// JWT validation settings.
-	JWTSecret  string // HMAC-SHA256 secret for JWT validation
-	JWTIssuer  string // Required "iss" claim
+	JWTSecret   string // HMAC-SHA256 secret for JWT validation
+	JWTIssuer   string // Required "iss" claim
 	JWTAudience string // Required "aud" claim
 
 	// PAT validation settings.
