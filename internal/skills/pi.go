@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/template"
@@ -42,21 +43,56 @@ func (p *PiLinker) LinkCommands(projectDir string) error {
 		return err
 	}
 
+	targets := map[string]string{}
 	entries, err := os.ReadDir(halCommandsDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+		if !os.IsNotExist(err) {
+			return err
 		}
+	} else {
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			targets[entry.Name()] = filepath.Join("..", "..", template.HalDir, template.CommandsDir, entry.Name())
+		}
+	}
+
+	promptEntries, err := os.ReadDir(promptsDir)
+	if err != nil {
 		return err
 	}
 
-	for _, entry := range entries {
+	// Remove stale managed links for prompts that are no longer hal commands.
+	for _, entry := range promptEntries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		if _, ok := targets[entry.Name()]; ok {
 			continue
 		}
 
 		link := filepath.Join(promptsDir, entry.Name())
-		target := filepath.Join("..", "..", template.HalDir, template.CommandsDir, entry.Name())
+		managed, err := isManagedPiPromptLink(projectDir, link)
+		if err != nil {
+			return err
+		}
+		if managed {
+			if err := os.Remove(link); err != nil {
+				return err
+			}
+		}
+	}
+
+	names := make([]string, 0, len(targets))
+	for name := range targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		link := filepath.Join(promptsDir, name)
+		target := targets[name]
 
 		if info, err := os.Lstat(link); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 {

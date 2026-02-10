@@ -171,6 +171,104 @@ func TestPiLinkerLinkCommands(t *testing.T) {
 	}
 }
 
+func TestPiLinkerLinkCommands_PrunesStaleManagedLinks(t *testing.T) {
+	projectDir := t.TempDir()
+	halCommandsDir := filepath.Join(projectDir, ".hal", "commands")
+	if err := os.MkdirAll(halCommandsDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal/commands: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halCommandsDir, "discover-standards.md"), []byte("discover"), 0644); err != nil {
+		t.Fatalf("failed to write discover-standards.md: %v", err)
+	}
+
+	promptsDir := filepath.Join(projectDir, ".pi", "prompts")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("failed to create .pi/prompts: %v", err)
+	}
+
+	staleManaged := filepath.Join(promptsDir, "index-standards.md")
+	if err := os.Symlink(filepath.Join("..", "..", ".hal", "commands", "index-standards.md"), staleManaged); err != nil {
+		t.Fatalf("failed to create stale managed symlink: %v", err)
+	}
+
+	externalTarget := filepath.Join(projectDir, ".pi", "not-managed.md")
+	if err := os.MkdirAll(filepath.Dir(externalTarget), 0755); err != nil {
+		t.Fatalf("failed to create external target parent: %v", err)
+	}
+	if err := os.WriteFile(externalTarget, []byte("external"), 0644); err != nil {
+		t.Fatalf("failed to write external target: %v", err)
+	}
+	externalLink := filepath.Join(promptsDir, "external.md")
+	if err := os.Symlink(filepath.Join("..", "not-managed.md"), externalLink); err != nil {
+		t.Fatalf("failed to create external symlink: %v", err)
+	}
+
+	customPrompt := filepath.Join(promptsDir, "custom.md")
+	if err := os.WriteFile(customPrompt, []byte("custom"), 0644); err != nil {
+		t.Fatalf("failed to write custom prompt: %v", err)
+	}
+
+	linker := &PiLinker{}
+	if err := linker.LinkCommands(projectDir); err != nil {
+		t.Fatalf("LinkCommands() error = %v", err)
+	}
+
+	discoverLink := filepath.Join(promptsDir, "discover-standards.md")
+	if info, err := os.Lstat(discoverLink); err != nil {
+		t.Fatalf("expected discover prompt link: %v", err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("discover prompt should be a symlink")
+	}
+
+	if _, err := os.Lstat(staleManaged); !os.IsNotExist(err) {
+		t.Fatalf("stale managed prompt should be pruned")
+	}
+
+	if info, err := os.Lstat(externalLink); err != nil {
+		t.Fatalf("external symlink should be preserved: %v", err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("external prompt should remain a symlink")
+	}
+
+	if info, err := os.Lstat(customPrompt); err != nil {
+		t.Fatalf("custom prompt should be preserved: %v", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("custom prompt should remain a regular file")
+	}
+}
+
+func TestPiLinkerLinkCommands_PrunesManagedLinksWhenCommandsMissing(t *testing.T) {
+	projectDir := t.TempDir()
+
+	promptsDir := filepath.Join(projectDir, ".pi", "prompts")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("failed to create .pi/prompts: %v", err)
+	}
+
+	managed := filepath.Join(promptsDir, "discover-standards.md")
+	if err := os.Symlink(filepath.Join("..", "..", ".hal", "commands", "discover-standards.md"), managed); err != nil {
+		t.Fatalf("failed to create managed symlink: %v", err)
+	}
+
+	customPrompt := filepath.Join(promptsDir, "custom.md")
+	if err := os.WriteFile(customPrompt, []byte("custom"), 0644); err != nil {
+		t.Fatalf("failed to write custom prompt: %v", err)
+	}
+
+	linker := &PiLinker{}
+	if err := linker.LinkCommands(projectDir); err != nil {
+		t.Fatalf("LinkCommands() error = %v", err)
+	}
+
+	if _, err := os.Lstat(managed); !os.IsNotExist(err) {
+		t.Fatalf("managed prompt should be pruned when .hal/commands is missing")
+	}
+
+	if _, err := os.Stat(customPrompt); err != nil {
+		t.Fatalf("custom prompt should be preserved: %v", err)
+	}
+}
+
 func TestPiLinkerUnlink(t *testing.T) {
 	projectDir := t.TempDir()
 	halSkillsDir := filepath.Join(projectDir, ".hal", "skills", "prd")
