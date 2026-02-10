@@ -42,6 +42,11 @@ var (
 	cloudAuthValidateJSONFlag bool
 )
 
+// Cloud auth revoke flags.
+var (
+	cloudAuthRevokeJSONFlag bool
+)
+
 var cloudAuthCmd = &cobra.Command{
 	Use:   "auth",
 	Short: "Manage auth profiles",
@@ -51,7 +56,8 @@ Commands:
   link        Link an auth profile to a provider
   import      Import local auth artifacts into a profile
   status      Show auth profile readiness and lock status
-  validate    Run provider validation checks on a profile`,
+  validate    Run provider validation checks on a profile
+  revoke      Revoke an auth profile`,
 }
 
 var cloudAuthLinkCmd = &cobra.Command{
@@ -154,6 +160,25 @@ Use --json for machine-readable output.`,
 	},
 }
 
+var cloudAuthRevokeCmd = &cobra.Command{
+	Use:   "revoke <profile>",
+	Short: "Revoke an auth profile",
+	Long: `Revoke an auth profile for compromised or invalid credentials.
+
+Transitions the profile status to revoked and emits an audit event.
+Missing profile exits non-zero with error code not_found.
+Use --json for machine-readable output.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runCloudAuthRevoke(
+			args[0],
+			cloudAuthRevokeJSONFlag,
+			cloudAuthRevokeStoreFactory,
+			os.Stdout,
+		)
+	},
+}
+
 func init() {
 	cloudAuthLinkCmd.Flags().StringVar(&cloudAuthLinkProviderFlag, "provider", "", "Provider name (e.g., anthropic, openai)")
 	cloudAuthLinkCmd.Flags().StringVar(&cloudAuthLinkProfileFlag, "profile", "", "Auth profile ID")
@@ -173,10 +198,13 @@ func init() {
 
 	cloudAuthValidateCmd.Flags().BoolVar(&cloudAuthValidateJSONFlag, "json", false, "Output in JSON format")
 
+	cloudAuthRevokeCmd.Flags().BoolVar(&cloudAuthRevokeJSONFlag, "json", false, "Output in JSON format")
+
 	cloudAuthCmd.AddCommand(cloudAuthLinkCmd)
 	cloudAuthCmd.AddCommand(cloudAuthImportCmd)
 	cloudAuthCmd.AddCommand(cloudAuthStatusCmd)
 	cloudAuthCmd.AddCommand(cloudAuthValidateCmd)
+	cloudAuthCmd.AddCommand(cloudAuthRevokeCmd)
 	cloudCmd.AddCommand(cloudAuthCmd)
 }
 
@@ -549,6 +577,89 @@ func classifyAuthValidateError(err error) string {
 		return "auth_invalid"
 	case strings.Contains(msg, "runtime metadata") || strings.Contains(msg, "incompatible"):
 		return "auth_profile_incompatible"
+	case strings.Contains(msg, "failed to update"):
+		return "store_error"
+	default:
+		return "unknown_error"
+	}
+}
+
+// cloudAuthRevokeStoreFactory is a package-level variable that tests can override.
+var cloudAuthRevokeStoreFactory func() (cloud.Store, error)
+
+// cloudAuthRevokeResponse is the JSON output for a successful auth revoke.
+type cloudAuthRevokeResponse struct {
+	ProfileID string `json:"profile_id"`
+	Provider  string `json:"provider"`
+	Status    string `json:"status"`
+	RevokedAt string `json:"revoked_at"`
+}
+
+// runCloudAuthRevoke is the testable logic for the cloud auth revoke command.
+func runCloudAuthRevoke(
+	profileID string,
+	jsonOutput bool,
+	storeFactory func() (cloud.Store, error),
+	out io.Writer,
+) error {
+	if storeFactory == nil {
+		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
+	}
+
+	store, err := storeFactory()
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+	}
+
+	svc := cloud.NewAuthRevokeService(store, cloud.AuthRevokeConfig{})
+
+	req := &cloud.AuthRevokeRequest{
+		ProfileID: profileID,
+	}
+
+	ctx := context.Background()
+	result, err := svc.Revoke(ctx, req)
+	if err != nil {
+		code := classifyAuthRevokeError(err)
+		if jsonOutput {
+			_ = writeJSON(out, cloudErrorResponse{
+				Error:     err.Error(),
+				ErrorCode: code,
+			})
+			return fmt.Errorf("auth revoke failed: %w", err)
+		}
+		return fmt.Errorf("auth revoke failed: %w", err)
+	}
+
+	if jsonOutput {
+		return writeJSON(out, cloudAuthRevokeResponse{
+			ProfileID: result.ProfileID,
+			Provider:  result.Provider,
+			Status:    result.Status,
+			RevokedAt: result.RevokedAt.Format(time.RFC3339),
+		})
+	}
+
+	fmt.Fprintf(out, "Auth profile revoked.\n")
+	fmt.Fprintf(out, "  profile_id: %s\n", result.ProfileID)
+	fmt.Fprintf(out, "  provider:   %s\n", result.Provider)
+	fmt.Fprintf(out, "  status:     %s\n", result.Status)
+	fmt.Fprintf(out, "  revoked_at: %s\n", result.RevokedAt.Format(time.RFC3339))
+	return nil
+}
+
+// classifyAuthRevokeError maps service errors to machine-readable error codes.
+func classifyAuthRevokeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+
+	switch {
+	case strings.Contains(msg, "must not be empty") || strings.Contains(msg, "validation failed"):
+		return "validation_error"
+	case strings.Contains(msg, "not_found") || strings.Contains(msg, "not found"):
+		return "not_found"
 	case strings.Contains(msg, "failed to update"):
 		return "store_error"
 	default:
