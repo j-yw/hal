@@ -48,6 +48,14 @@ func (s *cloudMockStore) EnqueueRun(_ context.Context, run *cloud.Run) error {
 	return nil
 }
 
+func (s *cloudMockStore) CreateAuthProfile(_ context.Context, profile *cloud.AuthProfile) error {
+	if _, ok := s.profiles[profile.ID]; ok {
+		return cloud.ErrDuplicateKey
+	}
+	s.profiles[profile.ID] = profile
+	return nil
+}
+
 func (s *cloudMockStore) GetAuthProfile(_ context.Context, id string) (*cloud.AuthProfile, error) {
 	p, ok := s.profiles[id]
 	if !ok {

@@ -45,6 +45,7 @@ func (m *mockStore) GetIdempotencyKey(_ context.Context, _ string) (*Idempotency
 	return nil, nil
 }
 
+func (m *mockStore) CreateAuthProfile(_ context.Context, _ *AuthProfile) error { return nil }
 func (m *mockStore) GetAuthProfile(_ context.Context, _ string) (*AuthProfile, error) {
 	return nil, nil
 }
@@ -87,11 +88,11 @@ func TestStoreMethodCount(t *testing.T) {
 	//   Attempts:    CreateAttempt, HeartbeatAttempt, TransitionAttempt, UpdateAttemptSandboxID, ListStaleAttempts, GetAttempt, GetActiveAttemptByRun = 7
 	//   Events:      InsertEvent, ListEvents = 2
 	//   Idempotency: PutIdempotencyKey, GetIdempotencyKey = 2
-	//   AuthProfile: GetAuthProfile, UpdateAuthProfile = 2
+	//   AuthProfile: CreateAuthProfile, GetAuthProfile, UpdateAuthProfile = 3
 	//   AuthLocks:   AcquireAuthLock, RenewAuthLock, ReleaseAuthLock = 3
 	//   Snapshots:   PutSnapshot, GetSnapshot, GetLatestSnapshot = 3
-	//   Total: 26
-	const expectedMethods = 26
+	//   Total: 27
+	const expectedMethods = 27
 
 	// This is a documentation-only test. The mockStore above proves the
 	// interface compiles. If the method count changes, update this constant

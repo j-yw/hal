@@ -84,6 +84,10 @@ type Store interface {
 
 	// --- Auth Profiles ---
 
+	// CreateAuthProfile inserts a new auth profile. Returns ErrDuplicateKey
+	// if a profile with the same ID already exists.
+	CreateAuthProfile(ctx context.Context, profile *AuthProfile) error
+
 	// GetAuthProfile returns the auth profile with the given ID or ErrNotFound.
 	GetAuthProfile(ctx context.Context, profileID string) (*AuthProfile, error)
 

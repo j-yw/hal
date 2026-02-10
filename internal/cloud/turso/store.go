@@ -383,6 +383,28 @@ func (s *Store) GetIdempotencyKey(ctx context.Context, key string) (*cloud.Idemp
 
 // --- Auth Profiles ---
 
+func (s *Store) CreateAuthProfile(ctx context.Context, profile *cloud.AuthProfile) error {
+	if err := profile.Validate(); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO auth_profiles (id, owner_id, provider, mode, secret_ref, status,
+			max_concurrent_runs, runtime_metadata_json, last_validated_at, expires_at,
+			last_error_code, version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		profile.ID, profile.OwnerID, profile.Provider, profile.Mode, profile.SecretRef,
+		profile.Status, profile.MaxConcurrentRuns, profile.RuntimeMetadataJSON,
+		profile.LastValidatedAt, profile.ExpiresAt, profile.LastErrorCode,
+		profile.Version, profile.CreatedAt, profile.UpdatedAt)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return cloud.ErrDuplicateKey
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *Store) GetAuthProfile(ctx context.Context, profileID string) (*cloud.AuthProfile, error) {
 	var p cloud.AuthProfile
 	err := s.db.QueryRowContext(ctx, `
