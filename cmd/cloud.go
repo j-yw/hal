@@ -28,6 +28,11 @@ var (
 	cloudStatusJSONFlag bool
 )
 
+// Cloud logs flags.
+var (
+	cloudLogsFollowFlag bool
+)
+
 var cloudCmd = &cobra.Command{
 	Use:   "cloud",
 	Short: "Cloud orchestration commands",
@@ -91,6 +96,27 @@ Use --json for machine-readable output.`,
 	},
 }
 
+var cloudLogsCmd = &cobra.Command{
+	Use:   "logs <run-id>",
+	Short: "View run logs",
+	Long: `View historical and live run logs.
+
+Events are displayed ordered by ascending timestamp.
+Use --follow to stream new events until interrupted.
+
+Output never includes unredacted secret tokens.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runCloudLogs(
+			args[0],
+			cloudLogsFollowFlag,
+			cloudLogsStoreFactory,
+			os.Stdout,
+			cmd.Context(),
+		)
+	},
+}
+
 func init() {
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitRepoFlag, "repo", "", "Repository (owner/repo)")
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitBaseFlag, "base", "", "Base branch name")
@@ -101,8 +127,11 @@ func init() {
 
 	cloudStatusCmd.Flags().BoolVar(&cloudStatusJSONFlag, "json", false, "Output in JSON format")
 
+	cloudLogsCmd.Flags().BoolVar(&cloudLogsFollowFlag, "follow", false, "Stream new events until interrupted")
+
 	cloudCmd.AddCommand(cloudSubmitCmd)
 	cloudCmd.AddCommand(cloudStatusCmd)
+	cloudCmd.AddCommand(cloudLogsCmd)
 	rootCmd.AddCommand(cloudCmd)
 }
 
@@ -115,6 +144,9 @@ var (
 
 // cloudStatusStoreFactory is a package-level variable that tests can override.
 var cloudStatusStoreFactory func() (cloud.Store, error)
+
+// cloudLogsStoreFactory is a package-level variable that tests can override.
+var cloudLogsStoreFactory func() (cloud.Store, error)
 
 // cloudSubmitResponse is the JSON output for a successful submit.
 type cloudSubmitResponse struct {
@@ -381,4 +413,94 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
 	}
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// cloudLogsFollowPollInterval is the polling interval for --follow mode.
+// Package-level variable so tests can override it.
+var cloudLogsFollowPollInterval = 2 * time.Second
+
+// runCloudLogs is the testable logic for the cloud logs command.
+func runCloudLogs(
+	runID string,
+	follow bool,
+	storeFactory func() (cloud.Store, error),
+	out io.Writer,
+	ctx context.Context,
+) error {
+	if storeFactory == nil {
+		return writeCloudError(out, false, "store not configured", "configuration_error")
+	}
+
+	store, err := storeFactory()
+	if err != nil {
+		return writeCloudError(out, false, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+	}
+
+	// Verify the run exists.
+	run, err := store.GetRun(ctx, runID)
+	if err != nil {
+		if cloud.IsNotFound(err) {
+			return fmt.Errorf("run %q not found", runID)
+		}
+		return fmt.Errorf("failed to get run: %w", err)
+	}
+
+	// Fetch and print initial events.
+	events, err := store.ListEvents(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("failed to list events: %w", err)
+	}
+
+	seen := make(map[string]bool)
+	for _, e := range events {
+		formatEvent(out, e)
+		seen[e.ID] = true
+	}
+
+	if !follow {
+		return nil
+	}
+
+	// Follow mode: poll for new events until the run reaches a terminal state
+	// or context is canceled.
+	for {
+		if run.Status.IsTerminal() {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(cloudLogsFollowPollInterval):
+		}
+
+		// Re-fetch the run status to detect terminal state.
+		run, err = store.GetRun(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("failed to get run: %w", err)
+		}
+
+		events, err = store.ListEvents(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("failed to list events: %w", err)
+		}
+
+		for _, e := range events {
+			if seen[e.ID] {
+				continue
+			}
+			formatEvent(out, e)
+			seen[e.ID] = true
+		}
+	}
+}
+
+// formatEvent writes a single event line to the writer.
+func formatEvent(out io.Writer, e *cloud.Event) {
+	ts := e.CreatedAt.Format(time.RFC3339)
+	if e.PayloadJSON != nil && *e.PayloadJSON != "" {
+		fmt.Fprintf(out, "%s  %-24s  %s\n", ts, e.EventType, *e.PayloadJSON)
+	} else {
+		fmt.Fprintf(out, "%s  %-24s\n", ts, e.EventType)
+	}
 }

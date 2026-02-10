@@ -18,9 +18,11 @@ type cloudMockStore struct {
 	runs           []*cloud.Run
 	runsByID       map[string]*cloud.Run
 	activeAttempts map[string]*cloud.Attempt
+	events         map[string][]*cloud.Event
 	enqErr         error
 	getRErr        error
 	getAttemptErr  error
+	listEventsErr  error
 }
 
 func newCloudMockStore() *cloudMockStore {
@@ -28,6 +30,7 @@ func newCloudMockStore() *cloudMockStore {
 		profiles:       make(map[string]*cloud.AuthProfile),
 		runsByID:       make(map[string]*cloud.Run),
 		activeAttempts: make(map[string]*cloud.Attempt),
+		events:         make(map[string][]*cloud.Event),
 	}
 }
 
@@ -91,8 +94,11 @@ func (s *cloudMockStore) GetActiveAttemptByRun(_ context.Context, runID string) 
 	return a, nil
 }
 func (s *cloudMockStore) InsertEvent(_ context.Context, _ *cloud.Event) error { return nil }
-func (s *cloudMockStore) ListEvents(_ context.Context, _ string) ([]*cloud.Event, error) {
-	return nil, nil
+func (s *cloudMockStore) ListEvents(_ context.Context, runID string) ([]*cloud.Event, error) {
+	if s.listEventsErr != nil {
+		return nil, s.listEventsErr
+	}
+	return s.events[runID], nil
 }
 func (s *cloudMockStore) PutIdempotencyKey(_ context.Context, _ *cloud.IdempotencyKey) error {
 	return nil
@@ -958,6 +964,302 @@ func TestFormatDuration(t *testing.T) {
 			got := formatDuration(tt.d)
 			if got != tt.want {
 				t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunCloudLogs(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
+	payload := `{"message":"sandbox created"}`
+
+	tests := []struct {
+		name       string
+		runID      string
+		follow     bool
+		store      func() *cloudMockStore
+		wantErr    string
+		wantOutput []string
+		notOutput  []string
+	}{
+		{
+			name:  "returns events ordered by timestamp",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.events["run-001"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-001", EventType: "sandbox_created", PayloadJSON: &payload, CreatedAt: now},
+					{ID: "e2", RunID: "run-001", EventType: "bootstrap_started", CreatedAt: now.Add(time.Second)},
+					{ID: "e3", RunID: "run-001", EventType: "execution_started", CreatedAt: now.Add(2 * time.Second)},
+				}
+				return s
+			},
+			wantOutput: []string{
+				"sandbox_created",
+				"bootstrap_started",
+				"execution_started",
+				`{"message":"sandbox created"}`,
+				"2026-02-10T12:00:00Z",
+			},
+		},
+		{
+			name:  "empty events for existing run",
+			runID: "run-002",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-002")
+				run.Status = cloud.RunStatusQueued
+				s.runsByID["run-002"] = run
+				return s
+			},
+			wantOutput: []string{},
+		},
+		{
+			name:  "unknown run_id returns not_found error",
+			runID: "non-existent",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+		},
+		{
+			name:  "nil store factory returns error",
+			runID: "run-001",
+			store: nil,
+			wantErr: "store not configured",
+		},
+		{
+			name:  "store factory error returns error",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				return nil // signals store factory error
+			},
+			wantErr: "failed to connect to store",
+		},
+		{
+			name:  "list events error propagates",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.listEventsErr = fmt.Errorf("db error")
+				return s
+			},
+			wantErr: "failed to list events",
+		},
+		{
+			name:  "events with nil payload show only type",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.events["run-001"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-001", EventType: "teardown_done", CreatedAt: now},
+				}
+				return s
+			},
+			wantOutput: []string{"teardown_done", "2026-02-10T12:00:00Z"},
+		},
+		{
+			name:  "output does not include raw secret tokens",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				// Events are already redacted in the DB — the payload should not
+				// contain raw secrets. This test confirms the output layer does
+				// not re-introduce them.
+				redactedPayload := `{"token":"[REDACTED]"}`
+				s.events["run-001"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-001", EventType: "auth_materialized", PayloadJSON: &redactedPayload, Redacted: true, CreatedAt: now},
+				}
+				return s
+			},
+			wantOutput: []string{"[REDACTED]"},
+			notOutput:  []string{"ghp_", "sk-ant-"},
+		},
+		{
+			name:  "follow mode exits on terminal run status",
+			runID: "run-001",
+			follow: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-001")
+				run.Status = cloud.RunStatusSucceeded
+				s.runsByID["run-001"] = run
+				s.events["run-001"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-001", EventType: "run_succeeded", CreatedAt: now},
+				}
+				return s
+			},
+			wantOutput: []string{"run_succeeded"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var storeFactory func() (cloud.Store, error)
+			if tt.store != nil {
+				mockStore := tt.store()
+				if mockStore == nil {
+					storeFactory = func() (cloud.Store, error) {
+						return nil, fmt.Errorf("store factory error")
+					}
+				} else {
+					storeFactory = func() (cloud.Store, error) {
+						return mockStore, nil
+					}
+				}
+			}
+
+			var out bytes.Buffer
+			ctx := context.Background()
+			err := runCloudLogs(
+				tt.runID,
+				tt.follow,
+				storeFactory,
+				&out,
+				ctx,
+			)
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			output := out.String()
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output, want) {
+					t.Errorf("output %q does not contain %q", output, want)
+				}
+			}
+			for _, notWant := range tt.notOutput {
+				if strings.Contains(output, notWant) {
+					t.Errorf("output should not contain %q but does", notWant)
+				}
+			}
+		})
+	}
+}
+
+func TestRunCloudLogs_FollowWithContextCancel(t *testing.T) {
+	// Test that --follow mode respects context cancellation.
+	s := newCloudMockStore()
+	run := validCloudRun("run-001")
+	run.Status = cloud.RunStatusRunning
+	s.runsByID["run-001"] = run
+	s.events["run-001"] = []*cloud.Event{
+		{ID: "e1", RunID: "run-001", EventType: "execution_started", CreatedAt: time.Now().UTC()},
+	}
+
+	storeFactory := func() (cloud.Store, error) { return s, nil }
+
+	// Set a very short poll interval for the test.
+	origInterval := cloudLogsFollowPollInterval
+	cloudLogsFollowPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { cloudLogsFollowPollInterval = origInterval })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	err := runCloudLogs("run-001", true, storeFactory, &out, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "execution_started") {
+		t.Errorf("output should contain initial event, got %q", output)
+	}
+}
+
+func TestRunCloudLogs_FollowNewEvents(t *testing.T) {
+	// Test that --follow mode picks up new events.
+	s := newCloudMockStore()
+	run := validCloudRun("run-001")
+	run.Status = cloud.RunStatusRunning
+	s.runsByID["run-001"] = run
+	s.events["run-001"] = []*cloud.Event{
+		{ID: "e1", RunID: "run-001", EventType: "execution_started", CreatedAt: time.Now().UTC()},
+	}
+
+	storeFactory := func() (cloud.Store, error) { return s, nil }
+
+	origInterval := cloudLogsFollowPollInterval
+	cloudLogsFollowPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { cloudLogsFollowPollInterval = origInterval })
+
+	// After a short delay, add a new event and mark the run as succeeded.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		s.events["run-001"] = append(s.events["run-001"],
+			&cloud.Event{ID: "e2", RunID: "run-001", EventType: "run_succeeded", CreatedAt: time.Now().UTC()},
+		)
+		run.Status = cloud.RunStatusSucceeded
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	err := runCloudLogs("run-001", true, storeFactory, &out, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "execution_started") {
+		t.Errorf("output should contain initial event, got %q", output)
+	}
+	if !strings.Contains(output, "run_succeeded") {
+		t.Errorf("output should contain follow event, got %q", output)
+	}
+}
+
+func TestFormatEvent(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
+	payload := `{"key":"value"}`
+
+	tests := []struct {
+		name       string
+		event      *cloud.Event
+		wantOutput string
+	}{
+		{
+			name: "event with payload",
+			event: &cloud.Event{
+				ID: "e1", RunID: "run-001", EventType: "sandbox_created",
+				PayloadJSON: &payload, CreatedAt: now,
+			},
+			wantOutput: `2026-02-10T12:00:00Z  sandbox_created           {"key":"value"}` + "\n",
+		},
+		{
+			name: "event without payload",
+			event: &cloud.Event{
+				ID: "e2", RunID: "run-001", EventType: "teardown_done",
+				CreatedAt: now,
+			},
+			wantOutput: "2026-02-10T12:00:00Z  teardown_done           \n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			formatEvent(&out, tt.event)
+			if out.String() != tt.wantOutput {
+				t.Errorf("formatEvent output = %q, want %q", out.String(), tt.wantOutput)
 			}
 		})
 	}
