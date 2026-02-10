@@ -958,3 +958,321 @@ func TestRunCloudAuthStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestRunCloudAuthValidate(t *testing.T) {
+	tests := []struct {
+		name       string
+		profileID  string
+		jsonOutput bool
+		store      func() *cloudMockStore
+		wantErr    string
+		wantOutput []string
+		checkJSON  func(t *testing.T, output string)
+	}{
+		{
+			name:      "successful validate with human output",
+			profileID: "prof-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-001", "anthropic")
+				secret := "encrypted:test"
+				p.SecretRef = &secret
+				s.profiles["prof-001"] = p
+				return s
+			},
+			wantOutput: []string{
+				"Auth profile validated successfully.",
+				"profile_id:   prof-001",
+				"provider:     anthropic",
+				"status:       linked",
+				"validated_at:",
+			},
+		},
+		{
+			name:       "successful validate with JSON output",
+			profileID:  "prof-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-001", "anthropic")
+				secret := "encrypted:test"
+				p.SecretRef = &secret
+				s.profiles["prof-001"] = p
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudAuthValidateResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ProfileID != "prof-001" {
+					t.Errorf("profile_id = %q, want %q", resp.ProfileID, "prof-001")
+				}
+				if resp.Provider != "anthropic" {
+					t.Errorf("provider = %q, want %q", resp.Provider, "anthropic")
+				}
+				if resp.Status != "linked" {
+					t.Errorf("status = %q, want %q", resp.Status, "linked")
+				}
+				if resp.ValidatedAt == "" {
+					t.Error("validated_at should not be empty")
+				}
+			},
+		},
+		{
+			name:      "success updates last_validated_at and clears error in store",
+			profileID: "prof-002",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-002", "openai")
+				secret := "encrypted:test"
+				p.SecretRef = &secret
+				errCode := "auth_invalid"
+				p.LastErrorCode = &errCode
+				s.profiles["prof-002"] = p
+				return s
+			},
+			wantOutput: []string{
+				"Auth profile validated successfully.",
+				"prof-002",
+			},
+		},
+		{
+			name:      "missing profile exits non-zero with human output",
+			profileID: "no-such-profile",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "auth validate failed",
+		},
+		{
+			name:       "missing profile exits non-zero with not_found in JSON",
+			profileID:  "no-such-profile",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "auth validate failed",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "not_found" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "not_found")
+				}
+			},
+		},
+		{
+			name:       "revoked profile exits non-zero with auth_invalid in JSON",
+			profileID:  "prof-003",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-003", "anthropic")
+				secret := "encrypted:test"
+				p.SecretRef = &secret
+				p.Status = cloud.AuthProfileStatusRevoked
+				s.profiles["prof-003"] = p
+				return s
+			},
+			wantErr: "auth validate failed",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "auth_invalid" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "auth_invalid")
+				}
+			},
+		},
+		{
+			name:      "revoked profile exits non-zero with human output",
+			profileID: "prof-003",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-003", "anthropic")
+				secret := "encrypted:test"
+				p.SecretRef = &secret
+				p.Status = cloud.AuthProfileStatusRevoked
+				s.profiles["prof-003"] = p
+				return s
+			},
+			wantErr: "auth validate failed",
+		},
+		{
+			name:       "invalid runtime metadata exits with auth_profile_incompatible in JSON",
+			profileID:  "prof-004",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-004", "anthropic")
+				secret := "encrypted:test"
+				p.SecretRef = &secret
+				badJSON := "not json"
+				p.RuntimeMetadataJSON = &badJSON
+				s.profiles["prof-004"] = p
+				return s
+			},
+			wantErr: "auth validate failed",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "auth_profile_incompatible" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "auth_profile_incompatible")
+				}
+			},
+		},
+		{
+			name:       "no credentials exits with auth_invalid in JSON",
+			profileID:  "prof-005",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-005", "anthropic")
+				p.SecretRef = nil
+				s.profiles["prof-005"] = p
+				return s
+			},
+			wantErr: "auth validate failed",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "auth_invalid" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "auth_invalid")
+				}
+			},
+		},
+		{
+			name:       "nil store factory returns configuration error in JSON",
+			profileID:  "prof-001",
+			jsonOutput: true,
+			store:      nil,
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+		{
+			name:      "nil store factory returns error in human output",
+			profileID: "prof-001",
+			store:     nil,
+			wantErr:   "store not configured",
+		},
+		{
+			name:       "store factory error in JSON",
+			profileID:  "prof-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return nil // signals store factory error
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var storeFactory func() (cloud.Store, error)
+			if tt.store != nil {
+				mockStore := tt.store()
+				if mockStore == nil {
+					storeFactory = func() (cloud.Store, error) {
+						return nil, fmt.Errorf("store factory error")
+					}
+				} else {
+					storeFactory = func() (cloud.Store, error) {
+						return mockStore, nil
+					}
+				}
+			}
+
+			var out bytes.Buffer
+			err := runCloudAuthValidate(
+				tt.profileID,
+				tt.jsonOutput,
+				storeFactory,
+				&out,
+			)
+
+			output := out.String()
+
+			// For JSON error cases, check JSON first then error.
+			if tt.checkJSON != nil && output != "" {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+
+			if tt.wantErr != "" {
+				if err == nil {
+					if !strings.Contains(output, tt.wantErr) {
+						t.Fatalf("expected error containing %q, got nil error and output %q", tt.wantErr, output)
+					}
+					return
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output, want) {
+					t.Errorf("output does not contain %q\noutput: %s", want, output)
+				}
+			}
+
+			if tt.checkJSON != nil {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+		})
+	}
+}
+
+func TestClassifyAuthValidateError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{name: "nil error", err: nil, wantCode: ""},
+		{name: "validation error", err: fmt.Errorf("validation failed: profile must not be empty"), wantCode: "validation_error"},
+		{name: "not found with space", err: fmt.Errorf("failed to get auth profile: not found"), wantCode: "not_found"},
+		{name: "not_found with underscore", err: fmt.Errorf("failed to get auth profile: not_found"), wantCode: "not_found"},
+		{name: "revoked", err: fmt.Errorf("auth profile \"p1\" is revoked"), wantCode: "auth_invalid"},
+		{name: "no credentials", err: fmt.Errorf("auth profile \"p1\" has no linked credentials"), wantCode: "auth_invalid"},
+		{name: "runtime metadata parse failure", err: fmt.Errorf("failed to parse runtime metadata: invalid json"), wantCode: "auth_profile_incompatible"},
+		{name: "incompatible", err: fmt.Errorf("auth_profile_incompatible: OS mismatch"), wantCode: "auth_profile_incompatible"},
+		{name: "store update error", err: fmt.Errorf("failed to update auth profile: conflict"), wantCode: "store_error"},
+		{name: "unknown error", err: fmt.Errorf("something unexpected"), wantCode: "unknown_error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyAuthValidateError(tt.err)
+			if got != tt.wantCode {
+				t.Errorf("classifyAuthValidateError(%v) = %q, want %q", tt.err, got, tt.wantCode)
+			}
+		})
+	}
+}

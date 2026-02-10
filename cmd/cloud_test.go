@@ -133,7 +133,13 @@ func (s *cloudMockStore) PutIdempotencyKey(_ context.Context, _ *cloud.Idempoten
 func (s *cloudMockStore) GetIdempotencyKey(_ context.Context, _ string) (*cloud.IdempotencyKey, error) {
 	return nil, nil
 }
-func (s *cloudMockStore) UpdateAuthProfile(_ context.Context, _ *cloud.AuthProfile) error { return nil }
+func (s *cloudMockStore) UpdateAuthProfile(_ context.Context, profile *cloud.AuthProfile) error {
+	if _, ok := s.profiles[profile.ID]; !ok {
+		return cloud.ErrNotFound
+	}
+	s.profiles[profile.ID] = profile
+	return nil
+}
 func (s *cloudMockStore) AcquireAuthLock(_ context.Context, _ *cloud.AuthProfileLock) error {
 	return nil
 }
