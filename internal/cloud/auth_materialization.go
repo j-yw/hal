@@ -250,12 +250,15 @@ func (s *AuthMaterializationService) emitEvent(ctx context.Context, runID, attem
 		}
 	}
 
+	redacted, wasRedacted := redactPayload(payloadJSON)
+
 	event := &Event{
 		ID:          eventID,
 		RunID:       runID,
 		AttemptID:   &attemptID,
 		EventType:   eventType,
-		PayloadJSON: payloadJSON,
+		PayloadJSON: redacted,
+		Redacted:    wasRedacted,
 		CreatedAt:   now,
 	}
 	_ = s.store.InsertEvent(ctx, event)
