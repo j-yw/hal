@@ -42,6 +42,12 @@ func TestDomainErrors(t *testing.T) {
 			checker: IsInvalidTransition,
 			message: "invalid_transition",
 		},
+		{
+			name:    "ErrProfileRevoked matches IsProfileRevoked",
+			err:     ErrProfileRevoked,
+			checker: IsProfileRevoked,
+			message: "profile_revoked",
+		},
 	}
 
 	for _, tt := range tests {
@@ -68,6 +74,7 @@ func TestDomainErrorsNonMatch(t *testing.T) {
 		{"IsDuplicateKey rejects other", IsDuplicateKey},
 		{"IsLeaseExpired rejects other", IsLeaseExpired},
 		{"IsInvalidTransition rejects other", IsInvalidTransition},
+		{"IsProfileRevoked rejects other", IsProfileRevoked},
 	}
 
 	for _, tt := range tests {

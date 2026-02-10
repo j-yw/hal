@@ -20,6 +20,11 @@ var ErrLeaseExpired = fmt.Errorf("lease_expired")
 // the allowed state machine (e.g., queued → succeeded without claiming first).
 var ErrInvalidTransition = fmt.Errorf("invalid_transition")
 
+// ErrProfileRevoked is returned when an operation targets an auth profile
+// that has been revoked. Workers receiving this error should mark the
+// attempt as failed and release the auth lock.
+var ErrProfileRevoked = fmt.Errorf("profile_revoked")
+
 // IsNotFound reports whether err is the not_found domain error.
 func IsNotFound(err error) bool {
 	return err == ErrNotFound
@@ -38,4 +43,9 @@ func IsLeaseExpired(err error) bool {
 // IsInvalidTransition reports whether err is the invalid_transition domain error.
 func IsInvalidTransition(err error) bool {
 	return err == ErrInvalidTransition
+}
+
+// IsProfileRevoked reports whether err is the profile_revoked domain error.
+func IsProfileRevoked(err error) bool {
+	return err == ErrProfileRevoked
 }
