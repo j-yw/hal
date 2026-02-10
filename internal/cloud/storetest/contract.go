@@ -26,6 +26,7 @@ func Suite(t *testing.T, newStore NewStoreFunc) {
 	t.Run("OneActiveAttempt", func(t *testing.T) { testOneActiveAttempt(t, newStore) })
 	t.Run("HeartbeatRenew", func(t *testing.T) { testHeartbeatRenew(t, newStore) })
 	t.Run("TransitionGuards", func(t *testing.T) { testTransitionGuards(t, newStore) })
+	t.Run("ListOverdueRuns", func(t *testing.T) { testListOverdueRuns(t, newStore) })
 }
 
 // --- helpers ---
@@ -391,4 +392,84 @@ func testTransitionGuards(t *testing.T, newStore NewStoreFunc) {
 			t.Errorf("TransitionRun(non-existent): got %v, want ErrNotFound", err)
 		}
 	})
+}
+
+// testListOverdueRuns verifies that ListOverdueRuns returns non-terminal runs
+// whose deadline_at has passed and excludes terminal and no-deadline runs.
+func testListOverdueRuns(t *testing.T, newStore NewStoreFunc) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	pastDeadline := now.Add(-10 * time.Minute)
+	futureDeadline := now.Add(10 * time.Minute)
+
+	// Run with past deadline (overdue) — should be returned.
+	r1 := validRun("run-overdue-001")
+	r1.DeadlineAt = &pastDeadline
+	if err := s.EnqueueRun(ctx, r1); err != nil {
+		t.Fatalf("EnqueueRun(r1): %v", err)
+	}
+
+	// Run with future deadline — should NOT be returned.
+	r2 := validRun("run-overdue-002")
+	r2.DeadlineAt = &futureDeadline
+	if err := s.EnqueueRun(ctx, r2); err != nil {
+		t.Fatalf("EnqueueRun(r2): %v", err)
+	}
+
+	// Run with no deadline — should NOT be returned.
+	r3 := validRun("run-overdue-003")
+	r3.DeadlineAt = nil
+	if err := s.EnqueueRun(ctx, r3); err != nil {
+		t.Fatalf("EnqueueRun(r3): %v", err)
+	}
+
+	// Terminal run with past deadline — should NOT be returned.
+	r4 := validRun("run-overdue-004")
+	r4.DeadlineAt = &pastDeadline
+	if err := s.EnqueueRun(ctx, r4); err != nil {
+		t.Fatalf("EnqueueRun(r4): %v", err)
+	}
+	// Claim then transition to running then failed (terminal).
+	if _, err := s.ClaimRun(ctx, "worker-1"); err != nil {
+		t.Fatalf("ClaimRun(r4): %v", err)
+	}
+	// Need to identify which run was claimed — drain until r4 is claimed.
+	got4, err := s.GetRun(ctx, "run-overdue-004")
+	if err != nil {
+		t.Fatalf("GetRun(r4): %v", err)
+	}
+	if got4.Status == cloud.RunStatusClaimed {
+		_ = s.TransitionRun(ctx, "run-overdue-004", cloud.RunStatusClaimed, cloud.RunStatusRunning)
+		_ = s.TransitionRun(ctx, "run-overdue-004", cloud.RunStatusRunning, cloud.RunStatusFailed)
+	}
+
+	overdue, err := s.ListOverdueRuns(ctx, now)
+	if err != nil {
+		t.Fatalf("ListOverdueRuns: %v", err)
+	}
+
+	// At minimum, run-overdue-001 should be returned (the past-deadline queued run).
+	found := false
+	for _, r := range overdue {
+		if r.ID == "run-overdue-001" {
+			found = true
+		}
+		// Terminal runs should never appear.
+		if r.Status.IsTerminal() {
+			t.Errorf("ListOverdueRuns returned terminal run %s (status %s)", r.ID, r.Status)
+		}
+		// Future-deadline runs should not appear.
+		if r.ID == "run-overdue-002" {
+			t.Errorf("ListOverdueRuns returned future-deadline run %s", r.ID)
+		}
+		// No-deadline runs should not appear.
+		if r.ID == "run-overdue-003" {
+			t.Errorf("ListOverdueRuns returned no-deadline run %s", r.ID)
+		}
+	}
+	if !found {
+		t.Errorf("ListOverdueRuns did not return overdue run-overdue-001; got %d runs", len(overdue))
+	}
 }

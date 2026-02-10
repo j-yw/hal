@@ -16,6 +16,9 @@ func (m *mockStore) TransitionRun(_ context.Context, _ string, _, _ RunStatus) e
 	return nil
 }
 func (m *mockStore) GetRun(_ context.Context, _ string) (*Run, error) { return nil, nil }
+func (m *mockStore) ListOverdueRuns(_ context.Context, _ time.Time) ([]*Run, error) {
+	return nil, nil
+}
 
 func (m *mockStore) CreateAttempt(_ context.Context, _ *Attempt) error { return nil }
 func (m *mockStore) HeartbeatAttempt(_ context.Context, _ string, _, _ time.Time) error {
@@ -72,15 +75,15 @@ func TestStoreInterfaceSatisfied(t *testing.T) {
 // contract tests and adapters.
 func TestStoreMethodCount(t *testing.T) {
 	// Count methods by category:
-	//   Runs:        EnqueueRun, ClaimRun, TransitionRun, GetRun = 4
+	//   Runs:        EnqueueRun, ClaimRun, TransitionRun, GetRun, ListOverdueRuns = 5
 	//   Attempts:    CreateAttempt, HeartbeatAttempt, TransitionAttempt, ListStaleAttempts, GetAttempt = 5
 	//   Events:      InsertEvent, ListEvents = 2
 	//   Idempotency: PutIdempotencyKey, GetIdempotencyKey = 2
 	//   AuthProfile: GetAuthProfile, UpdateAuthProfile = 2
 	//   AuthLocks:   AcquireAuthLock, RenewAuthLock, ReleaseAuthLock = 3
 	//   Snapshots:   PutSnapshot, GetSnapshot, GetLatestSnapshot = 3
-	//   Total: 21
-	const expectedMethods = 21
+	//   Total: 22
+	const expectedMethods = 22
 
 	// This is a documentation-only test. The mockStore above proves the
 	// interface compiles. If the method count changes, update this constant

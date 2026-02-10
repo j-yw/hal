@@ -26,6 +26,10 @@ type Store interface {
 	// GetRun returns the run with the given ID or ErrNotFound.
 	GetRun(ctx context.Context, runID string) (*Run, error)
 
+	// ListOverdueRuns returns non-terminal runs whose deadline_at is earlier
+	// than the given time. Used by the timeout reconciler to detect overdue runs.
+	ListOverdueRuns(ctx context.Context, now time.Time) ([]*Run, error)
+
 	// --- Attempts ---
 
 	// CreateAttempt inserts a new active attempt for a run.

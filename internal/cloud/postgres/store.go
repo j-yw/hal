@@ -33,10 +33,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 // validRunTransitions defines the allowed run status transitions.
 var validRunTransitions = map[cloud.RunStatus]map[cloud.RunStatus]bool{
-	cloud.RunStatusQueued:   {cloud.RunStatusClaimed: true, cloud.RunStatusCanceled: true},
+	cloud.RunStatusQueued:   {cloud.RunStatusClaimed: true, cloud.RunStatusFailed: true, cloud.RunStatusCanceled: true},
 	cloud.RunStatusClaimed:  {cloud.RunStatusQueued: true, cloud.RunStatusRunning: true, cloud.RunStatusFailed: true, cloud.RunStatusCanceled: true},
 	cloud.RunStatusRunning:  {cloud.RunStatusSucceeded: true, cloud.RunStatusFailed: true, cloud.RunStatusCanceled: true},
-	cloud.RunStatusRetrying: {cloud.RunStatusQueued: true, cloud.RunStatusCanceled: true},
+	cloud.RunStatusRetrying: {cloud.RunStatusQueued: true, cloud.RunStatusFailed: true, cloud.RunStatusCanceled: true},
 	cloud.RunStatusFailed:   {cloud.RunStatusRetrying: true},
 }
 
@@ -134,6 +134,31 @@ func (s *Store) GetRun(ctx context.Context, runID string) (*cloud.Run, error) {
 		return nil, err
 	}
 	return run, nil
+}
+
+func (s *Store) ListOverdueRuns(ctx context.Context, now time.Time) ([]*cloud.Run, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, repo, base_branch, engine, auth_profile_id, scope_ref,
+			status, attempt_count, max_attempts, deadline_at, input_snapshot_id,
+			latest_snapshot_id, latest_snapshot_version, created_at, updated_at
+		FROM runs
+		WHERE deadline_at IS NOT NULL
+			AND deadline_at < $1
+			AND status NOT IN ('succeeded', 'failed', 'canceled')`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []*cloud.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
 }
 
 // --- Attempts ---
