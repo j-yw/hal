@@ -15,7 +15,7 @@ type EngineLinker interface {
 	// Link creates links/copies from .hal/skills/ to engine's skill directory.
 	Link(projectDir string, skills []string) error
 
-	// LinkCommands creates a link from .hal/commands/ to engine's commands directory.
+	// LinkCommands wires .hal/commands/ into the engine-specific prompt/command discovery path.
 	LinkCommands(projectDir string) error
 
 	// Unlink removes links/copies from engine's skill directory.

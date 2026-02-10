@@ -78,7 +78,7 @@ func InstallCommands(projectDir string) error {
 }
 
 // LinkAllCommands creates command links for all registered engines.
-// Each engine gets a symlink from its commands directory to .hal/commands/.
+// Engines may link a directory or individual files depending on harness behavior.
 func LinkAllCommands(projectDir string) error {
 	var lastErr error
 	for _, linker := range linkers {

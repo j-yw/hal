@@ -3,6 +3,8 @@ package skills
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // PiLinker creates symlinks for pi coding agent skill discovery.
@@ -22,23 +24,64 @@ func (p *PiLinker) SkillsDir() string {
 	return ".pi/skills"
 }
 
-// CommandsDir returns where pi looks for user-invocable commands.
+// CommandsDir returns where pi looks for prompt templates.
 func (p *PiLinker) CommandsDir() string {
-	return ".pi/commands/hal"
+	return ".pi/prompts"
 }
 
-// LinkCommands creates a symlink from .pi/commands/hal to .hal/commands/.
+// LinkCommands creates symlinks from .pi/prompts/*.md to .hal/commands/*.md.
+//
+// Pi discovers templates non-recursively from .pi/prompts/*.md, so we link
+// individual files instead of linking a subdirectory.
 func (p *PiLinker) LinkCommands(projectDir string) error {
-	link := filepath.Join(projectDir, p.CommandsDir())
-	target := filepath.Join("..", "..", ".hal", "commands")
+	promptsDir := filepath.Join(projectDir, p.CommandsDir())
+	halCommandsDir := filepath.Join(projectDir, template.HalDir, template.CommandsDir)
 
-	os.RemoveAll(link)
-
-	if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
 		return err
 	}
 
-	return os.Symlink(target, link)
+	entries, err := os.ReadDir(halCommandsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+
+		link := filepath.Join(promptsDir, entry.Name())
+		target := filepath.Join("..", "..", template.HalDir, template.CommandsDir, entry.Name())
+
+		if info, err := os.Lstat(link); err == nil {
+			if info.Mode()&os.ModeSymlink == 0 {
+				// Preserve user-managed prompt templates.
+				continue
+			}
+			existingTarget, err := os.Readlink(link)
+			if err == nil && existingTarget == target {
+				continue
+			}
+			if err := os.Remove(link); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+
+		if err := os.Symlink(target, link); err != nil {
+			return err
+		}
+	}
+
+	// Remove legacy location from older hal versions.
+	_ = os.RemoveAll(filepath.Join(projectDir, ".pi", "commands", "hal"))
+
+	return nil
 }
 
 // Link creates symlinks from .pi/skills/ to .hal/skills/.
@@ -50,7 +93,7 @@ func (p *PiLinker) Link(projectDir string, skills []string) error {
 
 	for _, skill := range skills {
 		// Use relative path for symlink (portable across machines)
-		target := filepath.Join("..", "..", ".hal", "skills", skill)
+		target := filepath.Join("..", "..", template.HalDir, "skills", skill)
 		link := filepath.Join(skillsDir, skill)
 
 		// Remove existing link/dir if present
@@ -73,8 +116,27 @@ func (p *PiLinker) Unlink(projectDir string) error {
 		os.RemoveAll(link)
 	}
 
-	// Remove commands symlink
-	os.RemoveAll(filepath.Join(projectDir, p.CommandsDir()))
+	promptsDir := filepath.Join(projectDir, p.CommandsDir())
+	for _, command := range CommandNames {
+		link := filepath.Join(promptsDir, command+".md")
+		info, err := os.Lstat(link)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+
+		target, err := os.Readlink(link)
+		if err != nil {
+			continue
+		}
+		resolvedTarget := filepath.Clean(filepath.Join(filepath.Dir(link), target))
+		expectedTarget := filepath.Clean(filepath.Join(projectDir, template.HalDir, template.CommandsDir, command+".md"))
+		if resolvedTarget == expectedTarget {
+			_ = os.Remove(link)
+		}
+	}
+
+	// Remove legacy location from older hal versions.
+	_ = os.RemoveAll(filepath.Join(projectDir, ".pi", "commands", "hal"))
 
 	return nil
 }

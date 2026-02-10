@@ -319,7 +319,7 @@ Standards and commands in `.hal/` are committed to git (not ignored), while runt
 Engine-specific symlinks are created during `hal init`:
 - `.claude/commands/hal` → `.hal/commands/`
 - `.claude/skills/*` → `.hal/skills/*`
-- `.pi/commands/hal` → `.hal/commands/`
+- `.pi/prompts/*.md` → `.hal/commands/*.md`
 - `.pi/skills/*` → `.hal/skills/*`
 - `~/.codex/commands/hal` → `.hal/commands/` (absolute)
 - `~/.codex/skills/*` → `.hal/skills/*` (absolute)
