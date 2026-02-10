@@ -184,6 +184,9 @@ func TestPiLinkerUnlink(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(halCommandsDir, "discover-standards.md"), []byte("discover"), 0644); err != nil {
 		t.Fatalf("failed to write discover-standards.md: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(halCommandsDir, "custom-command.md"), []byte("custom command"), 0644); err != nil {
+		t.Fatalf("failed to write custom-command.md: %v", err)
+	}
 
 	linker := &PiLinker{}
 
@@ -204,6 +207,10 @@ func TestPiLinkerUnlink(t *testing.T) {
 	if _, err := os.Lstat(commandLinkPath); err != nil {
 		t.Fatalf("command symlink should exist after LinkCommands: %v", err)
 	}
+	customCommandLinkPath := filepath.Join(projectDir, ".pi", "prompts", "custom-command.md")
+	if _, err := os.Lstat(customCommandLinkPath); err != nil {
+		t.Fatalf("custom command symlink should exist after LinkCommands: %v", err)
+	}
 
 	customPromptPath := filepath.Join(projectDir, ".pi", "prompts", "custom.md")
 	if err := os.WriteFile(customPromptPath, []byte("custom"), 0644); err != nil {
@@ -221,6 +228,9 @@ func TestPiLinkerUnlink(t *testing.T) {
 	}
 	if _, err := os.Lstat(commandLinkPath); !os.IsNotExist(err) {
 		t.Error("command symlink should have been removed after Unlink")
+	}
+	if _, err := os.Lstat(customCommandLinkPath); !os.IsNotExist(err) {
+		t.Error("custom command symlink should have been removed after Unlink")
 	}
 
 	// Verify user prompt file is preserved

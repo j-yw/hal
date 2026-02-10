@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -116,26 +117,56 @@ func (p *PiLinker) Unlink(projectDir string) error {
 	}
 
 	promptsDir := filepath.Join(projectDir, p.CommandsDir())
-	for _, command := range CommandNames {
-		link := filepath.Join(promptsDir, command+".md")
-		info, err := os.Lstat(link)
-		if err != nil || info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-
-		target, err := os.Readlink(link)
-		if err != nil {
-			continue
-		}
-		resolvedTarget := filepath.Clean(filepath.Join(filepath.Dir(link), target))
-		expectedTarget := filepath.Clean(filepath.Join(projectDir, template.HalDir, template.CommandsDir, command+".md"))
-		if resolvedTarget == expectedTarget {
+	entries, err := os.ReadDir(promptsDir)
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			link := filepath.Join(promptsDir, entry.Name())
+			managed, err := isManagedPiPromptLink(projectDir, link)
+			if err != nil || !managed {
+				continue
+			}
 			_ = os.Remove(link)
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
 	// Remove legacy location from older hal versions.
 	_ = os.RemoveAll(filepath.Join(projectDir, ".pi", "commands", "hal"))
 
 	return nil
+}
+
+func isManagedPiPromptLink(projectDir, link string) (bool, error) {
+	info, err := os.Lstat(link)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, nil
+	}
+
+	target, err := os.Readlink(link)
+	if err != nil {
+		return false, err
+	}
+	resolvedTarget := filepath.Clean(filepath.Join(filepath.Dir(link), target))
+	managedDir := filepath.Clean(filepath.Join(projectDir, template.HalDir, template.CommandsDir))
+	rel, err := filepath.Rel(managedDir, resolvedTarget)
+	if err != nil {
+		return false, nil
+	}
+	if rel == "." {
+		return true, nil
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false, nil
+	}
+	return true, nil
 }
