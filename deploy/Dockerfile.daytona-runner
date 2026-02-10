@@ -1,0 +1,15 @@
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY daytona-runner/package.json daytona-runner/package-lock.json* ./
+RUN npm ci --production=false
+COPY daytona-runner/ .
+RUN npm run build
+
+FROM node:20-alpine
+RUN apk add --no-cache wget
+WORKDIR /app
+COPY --from=builder /app/package.json /app/package-lock.json* ./
+RUN npm ci --production
+COPY --from=builder /app/dist ./dist
+EXPOSE 8090
+CMD ["node", "dist/index.js"]
