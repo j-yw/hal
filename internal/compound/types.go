@@ -16,6 +16,7 @@ type AnalysisResult struct {
 // This state is persisted to allow resumption from interruptions.
 type PipelineState struct {
 	Step              string          `json:"step"`
+	BaseBranch        string          `json:"baseBranch,omitempty"` // Empty means current HEAD (git default)
 	BranchName        string          `json:"branchName"`
 	ReportPath        string          `json:"reportPath"`
 	PRDPath           string          `json:"prdPath"`

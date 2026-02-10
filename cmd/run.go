@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"time"
@@ -23,8 +24,9 @@ var (
 	retryDelay time.Duration
 
 	// New flags
-	dryRunFlag bool
-	storyFlag  string
+	dryRunFlag  bool
+	storyFlag   string
+	runBaseFlag string
 )
 
 var runCmd = &cobra.Command{
@@ -46,6 +48,7 @@ Examples:
   hal run 1 -s US-001              # Run single specific story
   hal run -e codex                 # Use Codex engine
   hal run --dry-run                # Show what would execute
+  hal run --base develop           # Branch from develop when needed
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runRun,
@@ -62,11 +65,16 @@ func init() {
 	// New flags
 	runCmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "Show what would execute without running")
 	runCmd.Flags().StringVarP(&storyFlag, "story", "s", "", "Run specific story by ID (e.g., US-001)")
+	runCmd.Flags().StringVar(&runBaseFlag, "base", "", "Base branch for creating the PRD branch (default: current branch, or HEAD when detached)")
 
 	rootCmd.AddCommand(runCmd)
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
+	return runRunWithWriter(cmd, args, os.Stderr)
+}
+
+func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error {
 	// Parse iterations from positional arg (default: 10)
 	iterations := 10
 	if len(args) > 0 {
@@ -92,6 +100,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
 
+	baseBranch := compound.ResolveBaseBranch(
+		runBaseFlag,
+		compound.CurrentBranchOptional,
+		func(format string, args ...any) {
+			fmt.Fprintf(errOut, format, args...)
+		},
+	)
+
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
 		Dir:           halDir,
@@ -103,6 +119,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		MaxRetries:    maxRetries,
 		DryRun:        dryRunFlag,
 		StoryID:       storyFlag,
+		BaseBranch:    baseBranch,
 	})
 	if err != nil {
 		return err
