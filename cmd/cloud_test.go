@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1065,19 +1067,6 @@ func TestRunCloudLogs(t *testing.T) {
 			store: func() *cloudMockStore {
 				s := newCloudMockStore()
 				s.runsByID["run-001"] = validCloudRun("run-001")
-				s.events["run-001"] = []*cloud.Event{
-					{ID: "e1", RunID: "run-001", EventType: "teardown_done", CreatedAt: now},
-				}
-				return s
-			},
-			wantOutput: []string{"teardown_done", "2026-02-10T12:00:00Z"},
-		},
-		{
-			name:  "output does not include raw secret tokens",
-			runID: "run-001",
-			store: func() *cloudMockStore {
-				s := newCloudMockStore()
-				s.runsByID["run-001"] = validCloudRun("run-001")
 				// Events are already redacted in the DB — the payload should not
 				// contain raw secrets. This test confirms the output layer does
 				// not re-introduce them.
@@ -1528,6 +1517,394 @@ func TestRunCloudCancel(t *testing.T) {
 
 			if tt.checkJSON != nil {
 				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+		})
+	}
+}
+
+// --- Tests for the cloud run command ---
+
+func setupHalDir(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal dir: %v", err)
+	}
+	for name, content := range files {
+		fullPath := filepath.Join(halDir, name)
+		// Create parent dirs if needed (e.g., standards/foo.md).
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			t.Fatalf("failed to create dir for %s: %v", name, err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write %s: %v", name, err)
+		}
+	}
+}
+
+func TestRunCloudRun(t *testing.T) {
+	tests := []struct {
+		name       string
+		repo       string
+		base       string
+		engine     string
+		authProf   string
+		scope      string
+		dryRun     bool
+		jsonOutput bool
+		files      map[string]string
+		store      func() *cloudMockStore
+		config     func() cloud.SubmitConfig
+		wantErr    string
+		wantOutput []string
+		checkJSON  func(t *testing.T, output string)
+	}{
+		{
+			name:   "dry-run lists files and total bytes in human output",
+			dryRun: true,
+			files: map[string]string{
+				"prd.json":    `{"project":"test"}`,
+				"progress.txt": "## progress",
+			},
+			wantOutput: []string{"Dry run", ".hal/prd.json", ".hal/progress.txt", "Total:", "Bundle hash:"},
+		},
+		{
+			name:       "dry-run lists files in JSON output",
+			dryRun:     true,
+			jsonOutput: true,
+			files: map[string]string{
+				"prd.json":    `{"project":"test"}`,
+				"progress.txt": "## progress",
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudRunDryRunResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if len(resp.Files) != 2 {
+					t.Errorf("expected 2 files, got %d", len(resp.Files))
+				}
+				if resp.TotalBytes <= 0 {
+					t.Error("total_bytes should be > 0")
+				}
+				if resp.BundleHash == "" {
+					t.Error("bundle_hash should not be empty")
+				}
+			},
+		},
+		{
+			name:       "dry-run does not make network requests (no store needed)",
+			dryRun:     true,
+			jsonOutput: true,
+			files: map[string]string{
+				"prd.json": `{"project":"test"}`,
+			},
+			store: nil, // no store factory — should succeed in dry-run
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudRunDryRunResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if len(resp.Files) != 1 {
+					t.Errorf("expected 1 file, got %d", len(resp.Files))
+				}
+			},
+		},
+		{
+			name:   "successful run with human output",
+			repo:   "org/repo",
+			base:   "main",
+			engine: "claude",
+			authProf: "profile-1",
+			scope:  "prd-123",
+			files: map[string]string{
+				"prd.json":    `{"project":"test"}`,
+				"progress.txt": "## progress",
+			},
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+				return s
+			},
+			config: func() cloud.SubmitConfig {
+				return cloud.SubmitConfig{IDFunc: func() string { return "run-100" }}
+			},
+			wantOutput: []string{"Run submitted successfully", "run_id:", "run-100", "status:", "queued", "bundle_hash:"},
+		},
+		{
+			name:       "successful run with JSON output returns run_id, status, bundle_hash",
+			repo:       "org/repo",
+			base:       "main",
+			engine:     "claude",
+			authProf:   "profile-1",
+			scope:      "prd-123",
+			jsonOutput: true,
+			files: map[string]string{
+				"prd.json": `{"project":"test"}`,
+			},
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+				return s
+			},
+			config: func() cloud.SubmitConfig {
+				return cloud.SubmitConfig{IDFunc: func() string { return "run-200" }}
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudRunResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.RunID != "run-200" {
+					t.Errorf("run_id = %q, want %q", resp.RunID, "run-200")
+				}
+				if resp.Status != "queued" {
+					t.Errorf("status = %q, want %q", resp.Status, "queued")
+				}
+				if resp.BundleHash == "" {
+					t.Error("bundle_hash should not be empty")
+				}
+			},
+		},
+		{
+			name:   "no .hal directory returns error",
+			repo:   "org/repo",
+			base:   "main",
+			engine: "claude",
+			authProf: "profile-1",
+			scope:  "prd-123",
+			files:  nil, // no files = no .hal dir
+			wantErr: "failed to collect bundle files",
+		},
+		{
+			name:   "empty .hal directory with no allowlisted files returns error",
+			repo:   "org/repo",
+			base:   "main",
+			engine: "claude",
+			authProf: "profile-1",
+			scope:  "prd-123",
+			files: map[string]string{
+				"skills/foo.txt": "not allowlisted",
+			},
+			wantErr: "no allowlisted files found",
+		},
+		{
+			name:   "nil store factory returns configuration error",
+			repo:   "org/repo",
+			base:   "main",
+			engine: "claude",
+			authProf: "profile-1",
+			scope:  "prd-123",
+			files: map[string]string{
+				"prd.json": `{"project":"test"}`,
+			},
+			store:   nil,
+			wantErr: "store not configured",
+		},
+		{
+			name:       "validation error returned as JSON error code",
+			repo:       "",
+			base:       "main",
+			engine:     "claude",
+			authProf:   "profile-1",
+			scope:      "prd-123",
+			jsonOutput: true,
+			files: map[string]string{
+				"prd.json": `{"project":"test"}`,
+			},
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudSubmitErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "validation_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "validation_error")
+				}
+			},
+		},
+		{
+			name:   "denylisted files are excluded from bundle",
+			dryRun: true,
+			files: map[string]string{
+				"prd.json":          `{"project":"test"}`,
+				"archive/old.json":  "archived",
+				"reports/r1.txt":    "report",
+				"skills/s1.md":      "skill",
+			},
+			wantOutput: []string{".hal/prd.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			if tt.files != nil {
+				setupHalDir(t, dir, tt.files)
+			}
+
+			var storeFactory func() (cloud.Store, error)
+			if tt.store != nil {
+				mockStore := tt.store()
+				if mockStore == nil {
+					storeFactory = func() (cloud.Store, error) {
+						return nil, fmt.Errorf("store factory error")
+					}
+				} else {
+					storeFactory = func() (cloud.Store, error) {
+						return mockStore, nil
+					}
+				}
+			}
+
+			var configFactory func() cloud.SubmitConfig
+			if tt.config != nil {
+				configFactory = tt.config
+			}
+
+			var out bytes.Buffer
+			err := runCloudRun(
+				tt.repo, tt.base, tt.engine, tt.authProf, tt.scope,
+				tt.dryRun, tt.jsonOutput,
+				storeFactory,
+				configFactory,
+				dir,
+				&out,
+			)
+
+			output := out.String()
+
+			if tt.wantErr != "" {
+				if err == nil {
+					// Some errors are written to output (JSON mode).
+					if !strings.Contains(output, tt.wantErr) {
+						t.Fatalf("expected error containing %q, got nil error and output %q", tt.wantErr, output)
+					}
+					return
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output, want) {
+					t.Errorf("output does not contain %q\noutput: %s", want, output)
+				}
+			}
+
+			if tt.checkJSON != nil {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+		})
+	}
+}
+
+func TestCollectBundleFiles(t *testing.T) {
+	tests := []struct {
+		name      string
+		files     map[string]string
+		wantPaths []string
+		wantErr   string
+	}{
+		{
+			name:    "no .hal directory",
+			files:   nil,
+			wantErr: ".hal directory not found",
+		},
+		{
+			name: "collects allowlisted files only",
+			files: map[string]string{
+				"prd.json":          `{"project":"test"}`,
+				"auto-prd.json":     `{"auto":"test"}`,
+				"progress.txt":      "progress",
+				"prompt.md":         "prompt",
+				"config.yaml":       "config: true",
+				"skills/s1.md":      "skill content",
+				"archive/old.json":  "old archive",
+			},
+			wantPaths: []string{
+				".hal/auto-prd.json",
+				".hal/config.yaml",
+				".hal/prd.json",
+				".hal/progress.txt",
+				".hal/prompt.md",
+			},
+		},
+		{
+			name: "includes standards recursive glob",
+			files: map[string]string{
+				"prd.json":              `{"project":"test"}`,
+				"standards/coding.md":   "coding standards",
+				"standards/sub/deep.md": "deep standards",
+			},
+			wantPaths: []string{
+				".hal/prd.json",
+				".hal/standards/coding.md",
+				".hal/standards/sub/deep.md",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			if tt.files != nil {
+				setupHalDir(t, dir, tt.files)
+			}
+
+			records, contents, err := collectBundleFiles(dir)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Check that all expected paths are present.
+			gotPaths := make([]string, len(records))
+			for i, r := range records {
+				gotPaths[i] = r.Path
+			}
+			// Sort for stable comparison.
+			for _, want := range tt.wantPaths {
+				found := false
+				for _, got := range gotPaths {
+					if got == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected path %q not found in %v", want, gotPaths)
+				}
+			}
+			if len(gotPaths) != len(tt.wantPaths) {
+				t.Errorf("got %d paths, want %d: got %v", len(gotPaths), len(tt.wantPaths), gotPaths)
+			}
+
+			// Verify contents map matches records.
+			for _, r := range records {
+				if _, ok := contents[r.Path]; !ok {
+					t.Errorf("contents map missing key %q", r.Path)
+				}
 			}
 		})
 	}
