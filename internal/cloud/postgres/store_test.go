@@ -61,6 +61,51 @@ func newTestStore(t *testing.T) cloud.Store {
 	return s
 }
 
+// newTestStoreWithDB creates a fresh Store with isolated schema and also
+// returns the underlying *sql.DB for direct setup (e.g., inserting auth profiles).
+func newTestStoreWithDB(t *testing.T) (cloud.Store, *sql.DB) {
+	t.Helper()
+	dsn := testDSN(t)
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+
+	schema := fmt.Sprintf("test_%d_%d", time.Now().UnixNano(), os.Getpid())
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s", schema)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s", schema)); err != nil {
+		t.Fatalf("set search_path: %v", err)
+	}
+	t.Cleanup(func() {
+		db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
+	})
+
+	s := New(db)
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	return s, db
+}
+
+// insertAuthProfile inserts an auth profile directly via SQL for test setup.
+func insertAuthProfile(t *testing.T, db *sql.DB, id string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO auth_profiles (id, owner_id, provider, mode, status, max_concurrent_runs, version, created_at, updated_at)
+		VALUES ($1, 'owner-1', 'claude', 'api_key', 'linked', 1, 1, $2, $2)`,
+		id, now)
+	if err != nil {
+		t.Fatalf("insertAuthProfile(%s): %v", id, err)
+	}
+}
+
 // TestContractSuite runs the full adapter contract test suite against Postgres.
 func TestContractSuite(t *testing.T) {
 	storetest.Suite(t, newTestStore)
@@ -221,5 +266,250 @@ func TestClaimEmptyReturnsNotFound(t *testing.T) {
 	_, err := s.ClaimRun(ctx, "worker-1")
 	if !cloud.IsNotFound(err) {
 		t.Errorf("ClaimRun(empty store): got %v, want ErrNotFound", err)
+	}
+}
+
+// --- Focused auth lock lease tests ---
+
+func TestAcquireLockConflict(t *testing.T) {
+	s, db := newTestStoreWithDB(t)
+	ctx := context.Background()
+
+	// Setup: create auth profile and two runs.
+	insertAuthProfile(t, db, "auth-lock-001")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	run1 := &cloud.Run{
+		ID: "run-lock-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		AuthProfileID: "auth-lock-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	run2 := &cloud.Run{
+		ID: "run-lock-002", Repo: "r", BaseBranch: "main", Engine: "e",
+		AuthProfileID: "auth-lock-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.EnqueueRun(ctx, run1); err != nil {
+		t.Fatalf("EnqueueRun(1): %v", err)
+	}
+	if err := s.EnqueueRun(ctx, run2); err != nil {
+		t.Fatalf("EnqueueRun(2): %v", err)
+	}
+
+	// Acquire lock for run1 — should succeed.
+	lock1 := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-lock-001",
+		RunID:          "run-lock-001",
+		WorkerID:       "worker-1",
+		AcquiredAt:     now,
+		HeartbeatAt:    now,
+		LeaseExpiresAt: now.Add(30 * time.Second),
+	}
+	if err := s.AcquireAuthLock(ctx, lock1); err != nil {
+		t.Fatalf("AcquireAuthLock(first): %v", err)
+	}
+
+	// Acquire lock for run2 on the same auth profile — should conflict
+	// because the partial unique index allows only one active lock per (auth_profile_id, run_id)
+	// but more importantly, the same auth_profile_id + different run_id is allowed by the schema.
+	// However, two locks for the same (auth_profile_id, run_id) WHERE released_at IS NULL conflicts.
+	// So let's test same (auth_profile_id, run_id) duplicate.
+	lock1Dup := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-lock-001",
+		RunID:          "run-lock-001",
+		WorkerID:       "worker-2",
+		AcquiredAt:     now,
+		HeartbeatAt:    now,
+		LeaseExpiresAt: now.Add(30 * time.Second),
+	}
+	err := s.AcquireAuthLock(ctx, lock1Dup)
+	if !cloud.IsConflict(err) {
+		t.Errorf("AcquireAuthLock(duplicate): got %v, want ErrConflict", err)
+	}
+
+	// Acquiring a lock for a different run_id on the same profile should succeed.
+	lock2 := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-lock-001",
+		RunID:          "run-lock-002",
+		WorkerID:       "worker-2",
+		AcquiredAt:     now,
+		HeartbeatAt:    now,
+		LeaseExpiresAt: now.Add(30 * time.Second),
+	}
+	if err := s.AcquireAuthLock(ctx, lock2); err != nil {
+		t.Fatalf("AcquireAuthLock(different run): %v", err)
+	}
+}
+
+func TestRenewLockExpired(t *testing.T) {
+	s, db := newTestStoreWithDB(t)
+	ctx := context.Background()
+
+	insertAuthProfile(t, db, "auth-renew-001")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	run := &cloud.Run{
+		ID: "run-renew-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		AuthProfileID: "auth-renew-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+
+	// Acquire lock with a lease that expires in the past (already expired).
+	lock := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-renew-001",
+		RunID:          "run-renew-001",
+		WorkerID:       "worker-1",
+		AcquiredAt:     now.Add(-60 * time.Second),
+		HeartbeatAt:    now.Add(-60 * time.Second),
+		LeaseExpiresAt: now.Add(-30 * time.Second), // expired 30s ago
+	}
+	if err := s.AcquireAuthLock(ctx, lock); err != nil {
+		t.Fatalf("AcquireAuthLock: %v", err)
+	}
+
+	// Renew should fail with ErrLeaseExpired because lease_expires_at < NOW().
+	newHeartbeat := now
+	newLease := now.Add(30 * time.Second)
+	err := s.RenewAuthLock(ctx, "auth-renew-001", "run-renew-001", newHeartbeat, newLease)
+	if !cloud.IsLeaseExpired(err) {
+		t.Errorf("RenewAuthLock(expired): got %v, want ErrLeaseExpired", err)
+	}
+}
+
+func TestRenewLockSuccess(t *testing.T) {
+	s, db := newTestStoreWithDB(t)
+	ctx := context.Background()
+
+	insertAuthProfile(t, db, "auth-rs-001")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	run := &cloud.Run{
+		ID: "run-rs-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		AuthProfileID: "auth-rs-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+
+	// Acquire lock with valid future lease.
+	lock := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-rs-001",
+		RunID:          "run-rs-001",
+		WorkerID:       "worker-1",
+		AcquiredAt:     now,
+		HeartbeatAt:    now,
+		LeaseExpiresAt: now.Add(30 * time.Second),
+	}
+	if err := s.AcquireAuthLock(ctx, lock); err != nil {
+		t.Fatalf("AcquireAuthLock: %v", err)
+	}
+
+	// Renew should succeed.
+	newHeartbeat := now.Add(10 * time.Second)
+	newLease := now.Add(40 * time.Second)
+	if err := s.RenewAuthLock(ctx, "auth-rs-001", "run-rs-001", newHeartbeat, newLease); err != nil {
+		t.Fatalf("RenewAuthLock: %v", err)
+	}
+}
+
+func TestRenewLockNotFound(t *testing.T) {
+	s, db := newTestStoreWithDB(t)
+	ctx := context.Background()
+
+	insertAuthProfile(t, db, "auth-rnf-001")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Renew on non-existent lock returns ErrNotFound.
+	err := s.RenewAuthLock(ctx, "auth-rnf-001", "run-does-not-exist", now, now.Add(30*time.Second))
+	if !cloud.IsNotFound(err) {
+		t.Errorf("RenewAuthLock(non-existent): got %v, want ErrNotFound", err)
+	}
+}
+
+func TestStaleLockReclaim(t *testing.T) {
+	s, db := newTestStoreWithDB(t)
+	ctx := context.Background()
+
+	insertAuthProfile(t, db, "auth-stale-001")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	run1 := &cloud.Run{
+		ID: "run-stale-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		AuthProfileID: "auth-stale-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	run2 := &cloud.Run{
+		ID: "run-stale-002", Repo: "r", BaseBranch: "main", Engine: "e",
+		AuthProfileID: "auth-stale-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.EnqueueRun(ctx, run1); err != nil {
+		t.Fatalf("EnqueueRun(1): %v", err)
+	}
+	if err := s.EnqueueRun(ctx, run2); err != nil {
+		t.Fatalf("EnqueueRun(2): %v", err)
+	}
+
+	// Acquire stale lock for run1 (expired lease).
+	staleLock := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-stale-001",
+		RunID:          "run-stale-001",
+		WorkerID:       "worker-1",
+		AcquiredAt:     now.Add(-120 * time.Second),
+		HeartbeatAt:    now.Add(-120 * time.Second),
+		LeaseExpiresAt: now.Add(-60 * time.Second), // expired 60s ago
+	}
+	if err := s.AcquireAuthLock(ctx, staleLock); err != nil {
+		t.Fatalf("AcquireAuthLock(stale): %v", err)
+	}
+
+	// Release the stale lock (simulating reconciler cleanup).
+	releaseTime := now
+	if err := s.ReleaseAuthLock(ctx, "auth-stale-001", "run-stale-001", releaseTime); err != nil {
+		t.Fatalf("ReleaseAuthLock(stale): %v", err)
+	}
+
+	// After release, a new lock for the same auth profile from a different run should succeed.
+	newLock := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-stale-001",
+		RunID:          "run-stale-002",
+		WorkerID:       "worker-2",
+		AcquiredAt:     now,
+		HeartbeatAt:    now,
+		LeaseExpiresAt: now.Add(30 * time.Second),
+	}
+	if err := s.AcquireAuthLock(ctx, newLock); err != nil {
+		t.Fatalf("AcquireAuthLock(after release): %v", err)
+	}
+
+	// The original run1 can also re-acquire since the old lock was released.
+	reclaimLock := &cloud.AuthProfileLock{
+		AuthProfileID:  "auth-stale-001",
+		RunID:          "run-stale-001",
+		WorkerID:       "worker-3",
+		AcquiredAt:     now,
+		HeartbeatAt:    now,
+		LeaseExpiresAt: now.Add(30 * time.Second),
+	}
+	if err := s.AcquireAuthLock(ctx, reclaimLock); err != nil {
+		t.Fatalf("AcquireAuthLock(reclaim after release): %v", err)
+	}
+}
+
+func TestReleaseLockNotFound(t *testing.T) {
+	s, db := newTestStoreWithDB(t)
+	ctx := context.Background()
+
+	insertAuthProfile(t, db, "auth-relnf-001")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Release non-existent lock returns ErrNotFound.
+	err := s.ReleaseAuthLock(ctx, "auth-relnf-001", "run-does-not-exist", now)
+	if !cloud.IsNotFound(err) {
+		t.Errorf("ReleaseAuthLock(non-existent): got %v, want ErrNotFound", err)
 	}
 }
