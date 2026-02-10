@@ -10,8 +10,9 @@ const (
 	FailureAuthInvalid     FailureCode = "auth_invalid"
 	FailurePolicyBlocked   FailureCode = "policy_blocked"
 	FailureStaleAttempt    FailureCode = "stale_attempt"
-	FailureRunTimeout      FailureCode = "run_timeout"
-	FailureNonRetryable    FailureCode = "non_retryable"
+	FailureRunTimeout              FailureCode = "run_timeout"
+	FailureNonRetryable            FailureCode = "non_retryable"
+	FailureAuthProfileIncompatible FailureCode = "auth_profile_incompatible"
 )
 
 // validFailureCodes is the exhaustive set of known failure codes.
@@ -20,8 +21,9 @@ var validFailureCodes = map[FailureCode]bool{
 	FailureAuthInvalid:     true,
 	FailurePolicyBlocked:   true,
 	FailureStaleAttempt:    true,
-	FailureRunTimeout:      true,
-	FailureNonRetryable:    true,
+	FailureRunTimeout:              true,
+	FailureNonRetryable:            true,
+	FailureAuthProfileIncompatible: true,
 }
 
 // IsValid reports whether f is a known failure code.
@@ -37,8 +39,9 @@ var retryableCodes = map[FailureCode]bool{
 	FailureAuthInvalid:     false, // credentials are bad, retrying won't help
 	FailurePolicyBlocked:   false, // policy rejection is deterministic
 	FailureStaleAttempt:    true,  // lease expired, fresh attempt may succeed
-	FailureRunTimeout:      false, // deadline exceeded, same work will timeout again
-	FailureNonRetryable:    false, // explicitly non-retryable
+	FailureRunTimeout:              false, // deadline exceeded, same work will timeout again
+	FailureNonRetryable:            false, // explicitly non-retryable
+	FailureAuthProfileIncompatible: false, // incompatible runtime, retrying won't help
 }
 
 // ClassifyFailure returns whether the given failure code is retryable.

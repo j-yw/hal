@@ -14,6 +14,7 @@ func TestFailureCodeIsValid(t *testing.T) {
 		{name: "stale_attempt is valid", code: FailureStaleAttempt, valid: true},
 		{name: "run_timeout is valid", code: FailureRunTimeout, valid: true},
 		{name: "non_retryable is valid", code: FailureNonRetryable, valid: true},
+		{name: "auth_profile_incompatible is valid", code: FailureAuthProfileIncompatible, valid: true},
 		{name: "empty string is invalid", code: "", valid: false},
 		{name: "unknown code is invalid", code: "unknown_failure", valid: false},
 	}
@@ -61,6 +62,11 @@ func TestClassifyFailure(t *testing.T) {
 		{
 			name:      "non_retryable is terminal",
 			code:      FailureNonRetryable,
+			retryable: false,
+		},
+		{
+			name:      "auth_profile_incompatible is terminal",
+			code:      FailureAuthProfileIncompatible,
 			retryable: false,
 		},
 		{
