@@ -23,6 +23,7 @@ type cloudMockStore struct {
 	getRErr        error
 	getAttemptErr  error
 	listEventsErr  error
+	setCancelErr   error
 }
 
 func newCloudMockStore() *cloudMockStore {
@@ -68,7 +69,17 @@ func (s *cloudMockStore) GetRun(_ context.Context, id string) (*cloud.Run, error
 func (s *cloudMockStore) ListOverdueRuns(_ context.Context, _ time.Time) ([]*cloud.Run, error) {
 	return nil, nil
 }
-func (s *cloudMockStore) SetCancelIntent(_ context.Context, _ string) error       { return nil }
+func (s *cloudMockStore) SetCancelIntent(_ context.Context, runID string) error {
+	if s.setCancelErr != nil {
+		return s.setCancelErr
+	}
+	r, ok := s.runsByID[runID]
+	if !ok {
+		return cloud.ErrNotFound
+	}
+	r.CancelRequested = true
+	return nil
+}
 func (s *cloudMockStore) CreateAttempt(_ context.Context, _ *cloud.Attempt) error { return nil }
 func (s *cloudMockStore) HeartbeatAttempt(_ context.Context, _ string, _, _ time.Time) error {
 	return nil
@@ -1260,6 +1271,263 @@ func TestFormatEvent(t *testing.T) {
 			formatEvent(&out, tt.event)
 			if out.String() != tt.wantOutput {
 				t.Errorf("formatEvent output = %q, want %q", out.String(), tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestRunCloudCancel(t *testing.T) {
+	tests := []struct {
+		name       string
+		runID      string
+		jsonOutput bool
+		store      func() *cloudMockStore
+		wantErr    string
+		wantOutput []string
+		checkJSON  func(t *testing.T, output string)
+	}{
+		{
+			name:  "successful cancel with human output",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				return s
+			},
+			wantOutput: []string{
+				"Cancel requested.",
+				"run_id:",
+				"run-001",
+				"cancel_requested: true",
+				"status:",
+				"running",
+				"canceled_at:",
+				"pending",
+			},
+		},
+		{
+			name:       "successful cancel with JSON output",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudCancelResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.RunID != "run-001" {
+					t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
+				}
+				if !resp.CancelRequested {
+					t.Error("cancel_requested should be true")
+				}
+				if resp.Status != "running" {
+					t.Errorf("status = %q, want %q", resp.Status, "running")
+				}
+				// Run is not yet canceled by worker, so canceled_at should be nil.
+				if resp.CanceledAt != nil {
+					t.Errorf("canceled_at should be nil when status is not canceled, got %v", resp.CanceledAt)
+				}
+			},
+		},
+		{
+			name:       "cancel on already canceled run shows canceled_at",
+			runID:      "run-002",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-002")
+				run.Status = cloud.RunStatusCanceled
+				run.CancelRequested = true
+				s.runsByID["run-002"] = run
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudCancelResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.RunID != "run-002" {
+					t.Errorf("run_id = %q, want %q", resp.RunID, "run-002")
+				}
+				if resp.Status != "canceled" {
+					t.Errorf("status = %q, want %q", resp.Status, "canceled")
+				}
+				if resp.CanceledAt == nil {
+					t.Error("canceled_at should not be nil for canceled run")
+				}
+			},
+		},
+		{
+			name:  "unknown run_id returns error in human output",
+			runID: "non-existent",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+		},
+		{
+			name:       "unknown run_id returns not_found in JSON",
+			runID:      "non-existent",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "not_found" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "not_found")
+				}
+			},
+		},
+		{
+			name:       "nil store factory returns configuration error in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store:      nil,
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+		{
+			name:    "nil store factory returns error in human output",
+			runID:   "run-001",
+			store:   nil,
+			wantErr: "store not configured",
+		},
+		{
+			name:       "store factory error in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return nil // signals store factory error
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+		{
+			name:       "JSON output contains exactly required fields",
+			runID:      "run-003",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-003")
+				run.Status = cloud.RunStatusCanceled
+				run.CancelRequested = true
+				s.runsByID["run-003"] = run
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var raw map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &raw); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				requiredKeys := []string{
+					"run_id", "cancel_requested", "status", "canceled_at",
+				}
+				for _, key := range requiredKeys {
+					if _, ok := raw[key]; !ok {
+						t.Errorf("missing required JSON key %q", key)
+					}
+				}
+			},
+		},
+		{
+			name:  "cancel on already canceled run with human output shows timestamp",
+			runID: "run-004",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-004")
+				run.Status = cloud.RunStatusCanceled
+				run.CancelRequested = true
+				s.runsByID["run-004"] = run
+				return s
+			},
+			wantOutput: []string{
+				"Cancel requested.",
+				"run-004",
+				"cancel_requested: true",
+				"status:",
+				"canceled",
+				"canceled_at:",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var storeFactory func() (cloud.Store, error)
+			if tt.store != nil {
+				mockStore := tt.store()
+				if mockStore == nil {
+					storeFactory = func() (cloud.Store, error) {
+						return nil, fmt.Errorf("store factory error")
+					}
+				} else {
+					storeFactory = func() (cloud.Store, error) {
+						return mockStore, nil
+					}
+				}
+			}
+
+			var out bytes.Buffer
+			err := runCloudCancel(
+				tt.runID,
+				tt.jsonOutput,
+				storeFactory,
+				&out,
+			)
+
+			output := out.String()
+
+			// For JSON not_found case, check JSON first then error.
+			if tt.checkJSON != nil && output != "" {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output, want) {
+					t.Errorf("output %q does not contain %q", output, want)
+				}
+			}
+
+			if tt.checkJSON != nil {
+				tt.checkJSON(t, strings.TrimSpace(output))
 			}
 		})
 	}

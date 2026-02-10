@@ -33,6 +33,11 @@ var (
 	cloudLogsFollowFlag bool
 )
 
+// Cloud cancel flags.
+var (
+	cloudCancelJSONFlag bool
+)
+
 var cloudCmd = &cobra.Command{
 	Use:   "cloud",
 	Short: "Cloud orchestration commands",
@@ -117,6 +122,27 @@ Output never includes unredacted secret tokens.`,
 	},
 }
 
+var cloudCancelCmd = &cobra.Command{
+	Use:   "cancel <run-id>",
+	Short: "Cancel a running run",
+	Long: `Request cancellation of a cloud run.
+
+Sets the cancel intent on the run. Workers will observe the intent on the
+next heartbeat interval and terminate the active attempt.
+
+Output includes run_id, cancel_requested, status, and canceled_at.
+Use --json for machine-readable output.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runCloudCancel(
+			args[0],
+			cloudCancelJSONFlag,
+			cloudCancelStoreFactory,
+			os.Stdout,
+		)
+	},
+}
+
 func init() {
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitRepoFlag, "repo", "", "Repository (owner/repo)")
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitBaseFlag, "base", "", "Base branch name")
@@ -129,9 +155,12 @@ func init() {
 
 	cloudLogsCmd.Flags().BoolVar(&cloudLogsFollowFlag, "follow", false, "Stream new events until interrupted")
 
+	cloudCancelCmd.Flags().BoolVar(&cloudCancelJSONFlag, "json", false, "Output in JSON format")
+
 	cloudCmd.AddCommand(cloudSubmitCmd)
 	cloudCmd.AddCommand(cloudStatusCmd)
 	cloudCmd.AddCommand(cloudLogsCmd)
+	cloudCmd.AddCommand(cloudCancelCmd)
 	rootCmd.AddCommand(cloudCmd)
 }
 
@@ -147,6 +176,9 @@ var cloudStatusStoreFactory func() (cloud.Store, error)
 
 // cloudLogsStoreFactory is a package-level variable that tests can override.
 var cloudLogsStoreFactory func() (cloud.Store, error)
+
+// cloudCancelStoreFactory is a package-level variable that tests can override.
+var cloudCancelStoreFactory func() (cloud.Store, error)
 
 // cloudSubmitResponse is the JSON output for a successful submit.
 type cloudSubmitResponse struct {
@@ -503,4 +535,80 @@ func formatEvent(out io.Writer, e *cloud.Event) {
 	} else {
 		fmt.Fprintf(out, "%s  %-24s\n", ts, e.EventType)
 	}
+}
+
+// cloudCancelResponse is the JSON output for a successful cancel request.
+type cloudCancelResponse struct {
+	RunID           string  `json:"run_id"`
+	CancelRequested bool    `json:"cancel_requested"`
+	Status          string  `json:"status"`
+	CanceledAt      *string `json:"canceled_at"`
+}
+
+// runCloudCancel is the testable logic for the cloud cancel command.
+func runCloudCancel(
+	runID string,
+	jsonOutput bool,
+	storeFactory func() (cloud.Store, error),
+	out io.Writer,
+) error {
+	if storeFactory == nil {
+		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
+	}
+
+	store, err := storeFactory()
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+	}
+
+	ctx := context.Background()
+
+	// Set cancel intent.
+	svc := cloud.NewCancellationService(store, cloud.CancellationConfig{})
+	if err := svc.RequestCancel(ctx, runID); err != nil {
+		if cloud.IsNotFound(err) {
+			if jsonOutput {
+				_ = writeJSON(out, cloudErrorResponse{
+					Error:     fmt.Sprintf("run %q not found", runID),
+					ErrorCode: "not_found",
+				})
+				return fmt.Errorf("run %q not found", runID)
+			}
+			return fmt.Errorf("run %q not found", runID)
+		}
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to cancel run: %v", err), "store_error")
+	}
+
+	// Re-fetch the run to get current state after cancel intent was set.
+	run, err := store.GetRun(ctx, runID)
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
+	}
+
+	// Determine canceled_at: use UpdatedAt when the run has reached canceled status.
+	var canceledAt *string
+	if run.Status == cloud.RunStatusCanceled {
+		ts := run.UpdatedAt.Format(time.RFC3339)
+		canceledAt = &ts
+	}
+
+	if jsonOutput {
+		return writeJSON(out, cloudCancelResponse{
+			RunID:           run.ID,
+			CancelRequested: run.CancelRequested,
+			Status:          string(run.Status),
+			CanceledAt:      canceledAt,
+		})
+	}
+
+	fmt.Fprintf(out, "Cancel requested.\n")
+	fmt.Fprintf(out, "  run_id:           %s\n", run.ID)
+	fmt.Fprintf(out, "  cancel_requested: %v\n", run.CancelRequested)
+	fmt.Fprintf(out, "  status:           %s\n", run.Status)
+	if canceledAt != nil {
+		fmt.Fprintf(out, "  canceled_at:      %s\n", *canceledAt)
+	} else {
+		fmt.Fprintf(out, "  canceled_at:      pending\n")
+	}
+	return nil
 }
