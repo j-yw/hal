@@ -352,9 +352,34 @@ func testTransitionGuards(t *testing.T, newStore NewStoreFunc) {
 	})
 
 	t.Run("status_mismatch_returns_conflict", func(t *testing.T) {
-		setupClaimedRun("run-tg-005")
-		// Run is in claimed status, but we claim fromStatus is queued.
-		err := s.TransitionRun(ctx, "run-tg-005", cloud.RunStatusQueued, cloud.RunStatusRunning)
+		// Enqueue a fresh run. Claim all queued runs to ensure this specific
+		// run is claimed (earlier subtests may leave orphan queued runs).
+		run := validRun("run-tg-005")
+		if err := s.EnqueueRun(ctx, run); err != nil {
+			t.Fatalf("EnqueueRun: %v", err)
+		}
+		// Drain all queued runs to ensure run-tg-005 is claimed.
+		for {
+			_, err := s.ClaimRun(ctx, "worker-1")
+			if cloud.IsNotFound(err) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("ClaimRun(drain): %v", err)
+			}
+		}
+		// Verify run-tg-005 is now claimed.
+		got, err := s.GetRun(ctx, "run-tg-005")
+		if err != nil {
+			t.Fatalf("GetRun(run-tg-005): %v", err)
+		}
+		if got.Status != cloud.RunStatusClaimed {
+			t.Fatalf("run-tg-005 status = %q, want claimed", got.Status)
+		}
+		// Run is in claimed status, but we claim fromStatus is running.
+		// The transition running->succeeded IS valid, so this isolates
+		// the status-mismatch error from invalid-transition errors.
+		err = s.TransitionRun(ctx, "run-tg-005", cloud.RunStatusRunning, cloud.RunStatusSucceeded)
 		if !cloud.IsConflict(err) {
 			t.Errorf("TransitionRun(wrong fromStatus): got %v, want ErrConflict", err)
 		}
