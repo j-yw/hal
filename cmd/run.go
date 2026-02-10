@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"time"
@@ -70,6 +71,10 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
+	return runRunWithWriter(cmd, args, os.Stderr)
+}
+
+func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error {
 	// Parse iterations from positional arg (default: 10)
 	iterations := 10
 	if len(args) > 0 {
@@ -99,7 +104,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		runBaseFlag,
 		compound.CurrentBranchOptional,
 		func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, format, args...)
+			fmt.Fprintf(errOut, format, args...)
 		},
 	)
 
