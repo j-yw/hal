@@ -23,6 +23,11 @@ var (
 	cloudSubmitJSONFlag        bool
 )
 
+// Cloud status flags.
+var (
+	cloudStatusJSONFlag bool
+)
+
 var cloudCmd = &cobra.Command{
 	Use:   "cloud",
 	Short: "Cloud orchestration commands",
@@ -67,6 +72,25 @@ Use --json for machine-readable output with error codes on failures.`,
 	},
 }
 
+var cloudStatusCmd = &cobra.Command{
+	Use:   "status <run-id>",
+	Short: "Check run status",
+	Long: `Check the status and health of a cloud run.
+
+Human-readable output includes run_id, status, attempt_count, max_attempts,
+current_attempt, last_heartbeat_age, and deadline_at.
+Use --json for machine-readable output.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runCloudStatus(
+			args[0],
+			cloudStatusJSONFlag,
+			cloudStatusStoreFactory,
+			os.Stdout,
+		)
+	},
+}
+
 func init() {
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitRepoFlag, "repo", "", "Repository (owner/repo)")
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitBaseFlag, "base", "", "Base branch name")
@@ -75,7 +99,10 @@ func init() {
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitScopeFlag, "scope", "", "Scope reference")
 	cloudSubmitCmd.Flags().BoolVar(&cloudSubmitJSONFlag, "json", false, "Output in JSON format")
 
+	cloudStatusCmd.Flags().BoolVar(&cloudStatusJSONFlag, "json", false, "Output in JSON format")
+
 	cloudCmd.AddCommand(cloudSubmitCmd)
+	cloudCmd.AddCommand(cloudStatusCmd)
 	rootCmd.AddCommand(cloudCmd)
 }
 
@@ -85,6 +112,9 @@ var (
 	cloudSubmitStoreFactory  func() (cloud.Store, error)
 	cloudSubmitConfigFactory func() cloud.SubmitConfig
 )
+
+// cloudStatusStoreFactory is a package-level variable that tests can override.
+var cloudStatusStoreFactory func() (cloud.Store, error)
 
 // cloudSubmitResponse is the JSON output for a successful submit.
 type cloudSubmitResponse struct {
@@ -220,4 +250,135 @@ func writeJSON(out io.Writer, v interface{}) error {
 	}
 	_, err = fmt.Fprintf(out, "%s\n", data)
 	return err
+}
+
+// writeCloudError handles writing an error in the appropriate format for cloud commands.
+func writeCloudError(out io.Writer, jsonOutput bool, msg, code string) error {
+	if jsonOutput {
+		return writeJSON(out, cloudErrorResponse{
+			Error:     msg,
+			ErrorCode: code,
+		})
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+// cloudErrorResponse is the JSON output for a cloud command error.
+type cloudErrorResponse struct {
+	Error     string `json:"error"`
+	ErrorCode string `json:"error_code"`
+}
+
+// cloudStatusResponse is the JSON output for a successful status query.
+type cloudStatusResponse struct {
+	RunID                   string  `json:"run_id"`
+	Status                  string  `json:"status"`
+	AttemptCount            int     `json:"attempt_count"`
+	MaxAttempts             int     `json:"max_attempts"`
+	CurrentAttempt          *int    `json:"current_attempt"`
+	LastHeartbeatAgeSeconds *int64  `json:"last_heartbeat_age_seconds"`
+	DeadlineAt              *string `json:"deadline_at"`
+	Engine                  string  `json:"engine"`
+	AuthProfileID           string  `json:"auth_profile_id"`
+}
+
+// runCloudStatus is the testable logic for the cloud status command.
+func runCloudStatus(
+	runID string,
+	jsonOutput bool,
+	storeFactory func() (cloud.Store, error),
+	out io.Writer,
+) error {
+	if storeFactory == nil {
+		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
+	}
+
+	store, err := storeFactory()
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+	}
+
+	ctx := context.Background()
+	run, err := store.GetRun(ctx, runID)
+	if err != nil {
+		if cloud.IsNotFound(err) {
+			if jsonOutput {
+				_ = writeJSON(out, cloudErrorResponse{
+					Error:     fmt.Sprintf("run %q not found", runID),
+					ErrorCode: "not_found",
+				})
+				return fmt.Errorf("run %q not found", runID)
+			}
+			return fmt.Errorf("run %q not found", runID)
+		}
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
+	}
+
+	// Try to get active attempt for heartbeat info.
+	var currentAttempt *int
+	var lastHeartbeatAge *time.Duration
+	attempt, err := store.GetActiveAttemptByRun(ctx, runID)
+	if err == nil {
+		ca := attempt.AttemptNumber
+		currentAttempt = &ca
+		age := time.Since(attempt.HeartbeatAt)
+		lastHeartbeatAge = &age
+	}
+
+	if jsonOutput {
+		resp := cloudStatusResponse{
+			RunID:        run.ID,
+			Status:       string(run.Status),
+			AttemptCount: run.AttemptCount,
+			MaxAttempts:  run.MaxAttempts,
+			Engine:       run.Engine,
+			AuthProfileID: run.AuthProfileID,
+		}
+		if currentAttempt != nil {
+			resp.CurrentAttempt = currentAttempt
+		}
+		if lastHeartbeatAge != nil {
+			secs := int64(lastHeartbeatAge.Seconds())
+			resp.LastHeartbeatAgeSeconds = &secs
+		}
+		if run.DeadlineAt != nil {
+			d := run.DeadlineAt.Format(time.RFC3339)
+			resp.DeadlineAt = &d
+		}
+		return writeJSON(out, resp)
+	}
+
+	// Human-readable output.
+	fmt.Fprintf(out, "Run status:\n")
+	fmt.Fprintf(out, "  run_id:          %s\n", run.ID)
+	fmt.Fprintf(out, "  status:          %s\n", run.Status)
+	fmt.Fprintf(out, "  attempt_count:   %d\n", run.AttemptCount)
+	fmt.Fprintf(out, "  max_attempts:    %d\n", run.MaxAttempts)
+	if currentAttempt != nil {
+		fmt.Fprintf(out, "  current_attempt: %d\n", *currentAttempt)
+	} else {
+		fmt.Fprintf(out, "  current_attempt: none\n")
+	}
+	if lastHeartbeatAge != nil {
+		fmt.Fprintf(out, "  last_heartbeat:  %s ago\n", formatDuration(*lastHeartbeatAge))
+	} else {
+		fmt.Fprintf(out, "  last_heartbeat:  n/a\n")
+	}
+	if run.DeadlineAt != nil {
+		fmt.Fprintf(out, "  deadline_at:     %s\n", run.DeadlineAt.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(out, "  deadline_at:     none\n")
+	}
+	return nil
+}
+
+// formatDuration formats a duration in a human-friendly way.
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }

@@ -12,16 +12,22 @@ import (
 	"github.com/jywlabs/hal/internal/cloud"
 )
 
-// cloudMockStore is a minimal mock store for cloud submit tests.
+// cloudMockStore is a minimal mock store for cloud CLI tests.
 type cloudMockStore struct {
-	profiles map[string]*cloud.AuthProfile
-	runs     []*cloud.Run
-	enqErr   error
+	profiles       map[string]*cloud.AuthProfile
+	runs           []*cloud.Run
+	runsByID       map[string]*cloud.Run
+	activeAttempts map[string]*cloud.Attempt
+	enqErr         error
+	getRErr        error
+	getAttemptErr  error
 }
 
 func newCloudMockStore() *cloudMockStore {
 	return &cloudMockStore{
-		profiles: make(map[string]*cloud.AuthProfile),
+		profiles:       make(map[string]*cloud.AuthProfile),
+		runsByID:       make(map[string]*cloud.Run),
+		activeAttempts: make(map[string]*cloud.Attempt),
 	}
 }
 
@@ -46,7 +52,16 @@ func (s *cloudMockStore) ClaimRun(_ context.Context, _ string) (*cloud.Run, erro
 func (s *cloudMockStore) TransitionRun(_ context.Context, _ string, _, _ cloud.RunStatus) error {
 	return nil
 }
-func (s *cloudMockStore) GetRun(_ context.Context, _ string) (*cloud.Run, error) { return nil, nil }
+func (s *cloudMockStore) GetRun(_ context.Context, id string) (*cloud.Run, error) {
+	if s.getRErr != nil {
+		return nil, s.getRErr
+	}
+	r, ok := s.runsByID[id]
+	if !ok {
+		return nil, cloud.ErrNotFound
+	}
+	return r, nil
+}
 func (s *cloudMockStore) ListOverdueRuns(_ context.Context, _ time.Time) ([]*cloud.Run, error) {
 	return nil, nil
 }
@@ -64,6 +79,16 @@ func (s *cloudMockStore) ListStaleAttempts(_ context.Context, _ time.Time) ([]*c
 }
 func (s *cloudMockStore) GetAttempt(_ context.Context, _ string) (*cloud.Attempt, error) {
 	return nil, nil
+}
+func (s *cloudMockStore) GetActiveAttemptByRun(_ context.Context, runID string) (*cloud.Attempt, error) {
+	if s.getAttemptErr != nil {
+		return nil, s.getAttemptErr
+	}
+	a, ok := s.activeAttempts[runID]
+	if !ok {
+		return nil, cloud.ErrNotFound
+	}
+	return a, nil
 }
 func (s *cloudMockStore) InsertEvent(_ context.Context, _ *cloud.Event) error { return nil }
 func (s *cloudMockStore) ListEvents(_ context.Context, _ string) ([]*cloud.Event, error) {
@@ -560,5 +585,380 @@ func TestWriteJSON(t *testing.T) {
 	}
 	if resp.RunID != "run-001" {
 		t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
+	}
+}
+
+func validCloudRun(id string) *cloud.Run {
+	now := time.Now().UTC().Truncate(time.Second)
+	deadline := now.Add(time.Hour)
+	return &cloud.Run{
+		ID:            id,
+		Repo:          "org/repo",
+		BaseBranch:    "main",
+		Engine:        "claude",
+		AuthProfileID: "profile-1",
+		ScopeRef:      "prd-123",
+		Status:        cloud.RunStatusRunning,
+		AttemptCount:  1,
+		MaxAttempts:   3,
+		DeadlineAt:    &deadline,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+}
+
+func TestRunCloudStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		runID      string
+		jsonOutput bool
+		store      func() *cloudMockStore
+		wantErr    string
+		wantOutput []string
+		checkJSON  func(t *testing.T, output string)
+	}{
+		{
+			name:  "successful status with human output and active attempt",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.activeAttempts["run-001"] = &cloud.Attempt{
+					ID:            "att-001",
+					RunID:         "run-001",
+					AttemptNumber: 1,
+					WorkerID:      "worker-1",
+					Status:        cloud.AttemptStatusActive,
+					StartedAt:     time.Now().UTC(),
+					HeartbeatAt:   time.Now().UTC().Add(-10 * time.Second),
+					LeaseExpiresAt: time.Now().UTC().Add(20 * time.Second),
+				}
+				return s
+			},
+			wantOutput: []string{"Run status:", "run_id:", "run-001", "status:", "running", "attempt_count:", "1", "max_attempts:", "3", "current_attempt:", "1", "last_heartbeat:", "ago", "deadline_at:"},
+		},
+		{
+			name:       "successful status with JSON output and active attempt",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.activeAttempts["run-001"] = &cloud.Attempt{
+					ID:            "att-001",
+					RunID:         "run-001",
+					AttemptNumber: 1,
+					WorkerID:      "worker-1",
+					Status:        cloud.AttemptStatusActive,
+					StartedAt:     time.Now().UTC(),
+					HeartbeatAt:   time.Now().UTC().Add(-5 * time.Second),
+					LeaseExpiresAt: time.Now().UTC().Add(25 * time.Second),
+				}
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudStatusResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.RunID != "run-001" {
+					t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
+				}
+				if resp.Status != "running" {
+					t.Errorf("status = %q, want %q", resp.Status, "running")
+				}
+				if resp.AttemptCount != 1 {
+					t.Errorf("attempt_count = %d, want 1", resp.AttemptCount)
+				}
+				if resp.MaxAttempts != 3 {
+					t.Errorf("max_attempts = %d, want 3", resp.MaxAttempts)
+				}
+				if resp.CurrentAttempt == nil || *resp.CurrentAttempt != 1 {
+					t.Errorf("current_attempt = %v, want 1", resp.CurrentAttempt)
+				}
+				if resp.LastHeartbeatAgeSeconds == nil {
+					t.Error("last_heartbeat_age_seconds should not be nil")
+				}
+				if resp.DeadlineAt == nil || *resp.DeadlineAt == "" {
+					t.Error("deadline_at should not be nil or empty")
+				}
+				if resp.Engine != "claude" {
+					t.Errorf("engine = %q, want %q", resp.Engine, "claude")
+				}
+				if resp.AuthProfileID != "profile-1" {
+					t.Errorf("auth_profile_id = %q, want %q", resp.AuthProfileID, "profile-1")
+				}
+			},
+		},
+		{
+			name:  "status with no active attempt shows none",
+			runID: "run-002",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-002")
+				run.Status = cloud.RunStatusQueued
+				run.AttemptCount = 0
+				s.runsByID["run-002"] = run
+				return s
+			},
+			wantOutput: []string{"current_attempt: none", "last_heartbeat:  n/a"},
+		},
+		{
+			name:       "JSON status with no active attempt has null fields",
+			runID:      "run-002",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-002")
+				run.Status = cloud.RunStatusQueued
+				run.AttemptCount = 0
+				s.runsByID["run-002"] = run
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudStatusResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.CurrentAttempt != nil {
+					t.Errorf("current_attempt should be nil, got %v", resp.CurrentAttempt)
+				}
+				if resp.LastHeartbeatAgeSeconds != nil {
+					t.Errorf("last_heartbeat_age_seconds should be nil, got %v", resp.LastHeartbeatAgeSeconds)
+				}
+			},
+		},
+		{
+			name:  "unknown run_id returns error in human output",
+			runID: "non-existent",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+		},
+		{
+			name:       "unknown run_id returns not_found in JSON",
+			runID:      "non-existent",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "not_found" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "not_found")
+				}
+			},
+		},
+		{
+			name:       "nil store factory returns configuration error in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store:      nil,
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+		{
+			name:  "nil store factory returns error in human output",
+			runID: "run-001",
+			store: nil,
+			wantErr: "store not configured",
+		},
+		{
+			name:       "store factory error in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return nil // signals store factory error
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+			},
+		},
+		{
+			name:       "store error on GetRun in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.getRErr = fmt.Errorf("db connection failed")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "store_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "store_error")
+				}
+			},
+		},
+		{
+			name:  "run with no deadline shows none",
+			runID: "run-003",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-003")
+				run.DeadlineAt = nil
+				s.runsByID["run-003"] = run
+				return s
+			},
+			wantOutput: []string{"deadline_at:     none"},
+		},
+		{
+			name:       "JSON output with no deadline has null deadline_at",
+			runID:      "run-003",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-003")
+				run.DeadlineAt = nil
+				s.runsByID["run-003"] = run
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudStatusResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.DeadlineAt != nil {
+					t.Errorf("deadline_at should be nil, got %v", resp.DeadlineAt)
+				}
+			},
+		},
+		{
+			name:       "JSON output contains exactly required fields",
+			runID:      "run-004",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-004"] = validCloudRun("run-004")
+				s.activeAttempts["run-004"] = &cloud.Attempt{
+					ID:            "att-004",
+					RunID:         "run-004",
+					AttemptNumber: 2,
+					WorkerID:      "worker-2",
+					Status:        cloud.AttemptStatusActive,
+					StartedAt:     time.Now().UTC(),
+					HeartbeatAt:   time.Now().UTC(),
+					LeaseExpiresAt: time.Now().UTC().Add(30 * time.Second),
+				}
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				// Verify the required fields exist in JSON by unmarshaling to a map.
+				var raw map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &raw); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				requiredKeys := []string{
+					"run_id", "status", "attempt_count", "max_attempts",
+					"current_attempt", "last_heartbeat_age_seconds",
+					"deadline_at", "engine", "auth_profile_id",
+				}
+				for _, key := range requiredKeys {
+					if _, ok := raw[key]; !ok {
+						t.Errorf("missing required JSON key %q", key)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var storeFactory func() (cloud.Store, error)
+			if tt.store != nil {
+				mockStore := tt.store()
+				if mockStore == nil {
+					storeFactory = func() (cloud.Store, error) {
+						return nil, fmt.Errorf("store factory error")
+					}
+				} else {
+					storeFactory = func() (cloud.Store, error) {
+						return mockStore, nil
+					}
+				}
+			}
+
+			var out bytes.Buffer
+			err := runCloudStatus(
+				tt.runID,
+				tt.jsonOutput,
+				storeFactory,
+				&out,
+			)
+
+			output := out.String()
+
+			// For JSON not_found case, we check JSON first then error.
+			if tt.checkJSON != nil && output != "" {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output, want) {
+					t.Errorf("output %q does not contain %q", output, want)
+				}
+			}
+
+			if tt.checkJSON != nil {
+				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+		})
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{name: "seconds", d: 30 * time.Second, want: "30s"},
+		{name: "minutes and seconds", d: 2*time.Minute + 15*time.Second, want: "2m15s"},
+		{name: "hours and minutes", d: 3*time.Hour + 42*time.Minute, want: "3h42m"},
+		{name: "zero", d: 0, want: "0s"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatDuration(tt.d)
+			if got != tt.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
 	}
 }

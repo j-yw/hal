@@ -60,6 +60,10 @@ type Store interface {
 	// GetAttempt returns the attempt with the given ID or ErrNotFound.
 	GetAttempt(ctx context.Context, attemptID string) (*Attempt, error)
 
+	// GetActiveAttemptByRun returns the active attempt for a run or
+	// ErrNotFound if no active attempt exists.
+	GetActiveAttemptByRun(ctx context.Context, runID string) (*Attempt, error)
+
 	// --- Events ---
 
 	// InsertEvent appends an event to the run timeline. Events are immutable

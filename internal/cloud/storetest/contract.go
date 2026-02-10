@@ -31,6 +31,7 @@ func Suite(t *testing.T, newStore NewStoreFunc) {
 	t.Run("ClaimExcludesCanceled", func(t *testing.T) { testClaimExcludesCanceled(t, newStore) })
 	t.Run("UpdateAttemptSandboxID", func(t *testing.T) { testUpdateAttemptSandboxID(t, newStore) })
 	t.Run("UpdateRunSnapshotRefs", func(t *testing.T) { testUpdateRunSnapshotRefs(t, newStore) })
+	t.Run("GetActiveAttemptByRun", func(t *testing.T) { testGetActiveAttemptByRun(t, newStore) })
 }
 
 // --- helpers ---
@@ -665,5 +666,58 @@ func testUpdateRunSnapshotRefs(t *testing.T, newStore NewStoreFunc) {
 	err = s.UpdateRunSnapshotRefs(ctx, "does-not-exist", &inputID, &latestID, 1)
 	if !cloud.IsNotFound(err) {
 		t.Errorf("UpdateRunSnapshotRefs(non-existent): got %v, want ErrNotFound", err)
+	}
+}
+
+func testGetActiveAttemptByRun(t *testing.T, newStore NewStoreFunc) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	run := validRun("run-gaa-001")
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+
+	// No active attempt returns ErrNotFound.
+	_, err := s.GetActiveAttemptByRun(ctx, "run-gaa-001")
+	if !cloud.IsNotFound(err) {
+		t.Errorf("GetActiveAttemptByRun(no attempt): got %v, want ErrNotFound", err)
+	}
+
+	// Claim run to transition to claimed, then create an active attempt.
+	claimed, err := s.ClaimRun(ctx, "worker-1")
+	if err != nil {
+		t.Fatalf("ClaimRun: %v", err)
+	}
+
+	att := validAttempt("att-gaa-001", claimed.ID, "worker-1", 1)
+	if err := s.CreateAttempt(ctx, att); err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	// Active attempt is returned.
+	got, err := s.GetActiveAttemptByRun(ctx, "run-gaa-001")
+	if err != nil {
+		t.Fatalf("GetActiveAttemptByRun: %v", err)
+	}
+	if got.ID != "att-gaa-001" {
+		t.Errorf("attempt ID = %q, want %q", got.ID, "att-gaa-001")
+	}
+
+	// After terminating the attempt, no active attempt exists.
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.TransitionAttempt(ctx, "att-gaa-001", cloud.AttemptStatusFailed, now, nil, nil); err != nil {
+		t.Fatalf("TransitionAttempt: %v", err)
+	}
+
+	_, err = s.GetActiveAttemptByRun(ctx, "run-gaa-001")
+	if !cloud.IsNotFound(err) {
+		t.Errorf("GetActiveAttemptByRun(after terminate): got %v, want ErrNotFound", err)
+	}
+
+	// Non-existent run returns ErrNotFound.
+	_, err = s.GetActiveAttemptByRun(ctx, "does-not-exist")
+	if !cloud.IsNotFound(err) {
+		t.Errorf("GetActiveAttemptByRun(non-existent run): got %v, want ErrNotFound", err)
 	}
 }

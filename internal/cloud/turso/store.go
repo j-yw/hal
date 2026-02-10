@@ -301,6 +301,22 @@ func (s *Store) GetAttempt(ctx context.Context, attemptID string) (*cloud.Attemp
 	return a, nil
 }
 
+func (s *Store) GetActiveAttemptByRun(ctx context.Context, runID string) (*cloud.Attempt, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, run_id, attempt_number, worker_id, sandbox_id,
+			status, started_at, heartbeat_at, lease_expires_at, ended_at, error_code, error_message
+		FROM attempts WHERE run_id = ? AND status = 'active'`, runID)
+
+	a, err := scanAttemptFromRow(row)
+	if err == sql.ErrNoRows {
+		return nil, cloud.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
 // --- Events ---
 
 func (s *Store) InsertEvent(ctx context.Context, event *cloud.Event) error {
