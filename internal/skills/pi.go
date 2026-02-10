@@ -58,15 +58,14 @@ func (p *PiLinker) LinkCommands(projectDir string) error {
 		target := filepath.Join("..", "..", template.HalDir, template.CommandsDir, entry.Name())
 
 		if info, err := os.Lstat(link); err == nil {
-			if info.Mode()&os.ModeSymlink == 0 {
-				// Preserve user-managed prompt templates.
-				continue
+			if info.Mode()&os.ModeSymlink != 0 {
+				existingTarget, err := os.Readlink(link)
+				if err == nil && existingTarget == target {
+					continue
+				}
 			}
-			existingTarget, err := os.Readlink(link)
-			if err == nil && existingTarget == target {
-				continue
-			}
-			if err := os.Remove(link); err != nil {
+			// Managed command prompt names are hal-owned; replace stale files/symlinks.
+			if err := os.RemoveAll(link); err != nil {
 				return err
 			}
 		} else if !os.IsNotExist(err) {

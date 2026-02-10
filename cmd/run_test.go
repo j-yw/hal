@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,8 +65,30 @@ func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 	maxRetries = 1
 	retryDelay = 10 * time.Millisecond
 
+	stderrFile, err := os.CreateTemp(t.TempDir(), "run-stderr-*.log")
+	if err != nil {
+		t.Fatalf("create temp stderr file: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = stderrFile
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = stderrFile.Close()
+	})
+
 	if err := runRun(nil, nil); err != nil {
 		t.Fatalf("runRun should succeed without git repo in dry-run mode, got: %v", err)
+	}
+
+	if _, err := stderrFile.Seek(0, 0); err != nil {
+		t.Fatalf("seek stderr file: %v", err)
+	}
+	stderrBytes, err := io.ReadAll(stderrFile)
+	if err != nil {
+		t.Fatalf("read stderr file: %v", err)
+	}
+	if !strings.Contains(string(stderrBytes), "defaulting to current HEAD") {
+		t.Fatalf("expected base branch fallback warning, got: %q", string(stderrBytes))
 	}
 }
 

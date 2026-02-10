@@ -118,6 +118,13 @@ func TestPiLinkerLinkCommands(t *testing.T) {
 		t.Fatalf("failed to write custom prompt: %v", err)
 	}
 
+	// Simulate stale managed prompt materialized as a regular file
+	// (e.g., from a symlink checkout fallback).
+	staleManagedPrompt := filepath.Join(promptsDir, "discover-standards.md")
+	if err := os.WriteFile(staleManagedPrompt, []byte("stale"), 0644); err != nil {
+		t.Fatalf("failed to write stale managed prompt: %v", err)
+	}
+
 	legacyCommandsDir := filepath.Join(projectDir, ".pi", "commands")
 	if err := os.MkdirAll(legacyCommandsDir, 0755); err != nil {
 		t.Fatalf("failed to create .pi/commands: %v", err)
@@ -152,6 +159,11 @@ func TestPiLinkerLinkCommands(t *testing.T) {
 
 	if _, err := os.Stat(customPrompt); err != nil {
 		t.Fatalf("custom prompt should be preserved: %v", err)
+	}
+	if info, err := os.Lstat(customPrompt); err != nil {
+		t.Fatalf("failed to stat custom prompt: %v", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("custom prompt should not be replaced with symlink")
 	}
 
 	if _, err := os.Lstat(legacyLink); !os.IsNotExist(err) {
