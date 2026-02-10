@@ -56,6 +56,7 @@ type Run struct {
 	AttemptCount          int        `json:"attempt_count"`
 	MaxAttempts           int        `json:"max_attempts"`
 	DeadlineAt            *time.Time `json:"deadline_at,omitempty"`
+	CancelRequested       bool       `json:"cancel_requested"`
 	InputSnapshotID       *string    `json:"input_snapshot_id,omitempty"`
 	LatestSnapshotID      *string    `json:"latest_snapshot_id,omitempty"`
 	LatestSnapshotVersion int        `json:"latest_snapshot_version"`
@@ -104,6 +105,7 @@ const RunsSchema = `CREATE TABLE IF NOT EXISTS runs (
     attempt_count           INTEGER NOT NULL DEFAULT 0,
     max_attempts            INTEGER NOT NULL DEFAULT 3,
     deadline_at             TIMESTAMP,
+    cancel_requested        INTEGER NOT NULL DEFAULT 0,
     input_snapshot_id       TEXT,
     latest_snapshot_id      TEXT,
     latest_snapshot_version INTEGER NOT NULL DEFAULT 0,

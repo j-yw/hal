@@ -27,6 +27,8 @@ func Suite(t *testing.T, newStore NewStoreFunc) {
 	t.Run("HeartbeatRenew", func(t *testing.T) { testHeartbeatRenew(t, newStore) })
 	t.Run("TransitionGuards", func(t *testing.T) { testTransitionGuards(t, newStore) })
 	t.Run("ListOverdueRuns", func(t *testing.T) { testListOverdueRuns(t, newStore) })
+	t.Run("SetCancelIntent", func(t *testing.T) { testSetCancelIntent(t, newStore) })
+	t.Run("ClaimExcludesCanceled", func(t *testing.T) { testClaimExcludesCanceled(t, newStore) })
 }
 
 // --- helpers ---
@@ -471,5 +473,91 @@ func testListOverdueRuns(t *testing.T, newStore NewStoreFunc) {
 	}
 	if !found {
 		t.Errorf("ListOverdueRuns did not return overdue run-overdue-001; got %d runs", len(overdue))
+	}
+}
+
+// testSetCancelIntent verifies that SetCancelIntent sets the cancel flag and
+// is idempotent. It also verifies ErrNotFound for non-existent runs.
+func testSetCancelIntent(t *testing.T, newStore NewStoreFunc) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Setup: enqueue a run.
+	run := validRun("run-cancel-001")
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+
+	// Initially cancel_requested is false.
+	got, err := s.GetRun(ctx, "run-cancel-001")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.CancelRequested {
+		t.Error("initial CancelRequested = true, want false")
+	}
+
+	// Set cancel intent.
+	if err := s.SetCancelIntent(ctx, "run-cancel-001"); err != nil {
+		t.Fatalf("SetCancelIntent: %v", err)
+	}
+
+	got, err = s.GetRun(ctx, "run-cancel-001")
+	if err != nil {
+		t.Fatalf("GetRun(after cancel): %v", err)
+	}
+	if !got.CancelRequested {
+		t.Error("CancelRequested = false after SetCancelIntent, want true")
+	}
+
+	// Idempotent — second call succeeds.
+	if err := s.SetCancelIntent(ctx, "run-cancel-001"); err != nil {
+		t.Fatalf("SetCancelIntent(idempotent): %v", err)
+	}
+
+	// Non-existent run returns ErrNotFound.
+	err = s.SetCancelIntent(ctx, "does-not-exist")
+	if !cloud.IsNotFound(err) {
+		t.Errorf("SetCancelIntent(non-existent): got %v, want ErrNotFound", err)
+	}
+}
+
+// testClaimExcludesCanceled verifies that ClaimRun skips runs with
+// cancel_requested=true, enforcing the claim exclusion rule.
+func testClaimExcludesCanceled(t *testing.T, newStore NewStoreFunc) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Enqueue two runs.
+	run1 := validRun("run-excl-001")
+	run1.CreatedAt = time.Now().UTC().Add(-2 * time.Second).Truncate(time.Second)
+	run2 := validRun("run-excl-002")
+	run2.CreatedAt = time.Now().UTC().Add(-1 * time.Second).Truncate(time.Second)
+
+	if err := s.EnqueueRun(ctx, run1); err != nil {
+		t.Fatalf("EnqueueRun(run1): %v", err)
+	}
+	if err := s.EnqueueRun(ctx, run2); err != nil {
+		t.Fatalf("EnqueueRun(run2): %v", err)
+	}
+
+	// Mark run1 (oldest) as cancel_requested.
+	if err := s.SetCancelIntent(ctx, "run-excl-001"); err != nil {
+		t.Fatalf("SetCancelIntent: %v", err)
+	}
+
+	// Claim should skip run1 and pick run2.
+	claimed, err := s.ClaimRun(ctx, "worker-1")
+	if err != nil {
+		t.Fatalf("ClaimRun: %v", err)
+	}
+	if claimed.ID != "run-excl-002" {
+		t.Errorf("claimed ID %q, want run-excl-002 (skipped cancel-requested run1)", claimed.ID)
+	}
+
+	// No more non-canceled queued runs — claim returns ErrNotFound.
+	_, err = s.ClaimRun(ctx, "worker-2")
+	if !cloud.IsNotFound(err) {
+		t.Errorf("ClaimRun(only cancel-requested left): got %v, want ErrNotFound", err)
 	}
 }

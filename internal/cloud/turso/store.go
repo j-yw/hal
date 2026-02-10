@@ -48,12 +48,12 @@ func (s *Store) EnqueueRun(ctx context.Context, run *cloud.Run) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO runs (id, repo, base_branch, engine, auth_profile_id, scope_ref,
-			status, attempt_count, max_attempts, deadline_at, input_snapshot_id,
-			latest_snapshot_id, latest_snapshot_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			status, attempt_count, max_attempts, deadline_at, cancel_requested,
+			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID, run.Repo, run.BaseBranch, run.Engine, run.AuthProfileID, run.ScopeRef,
-		run.Status, run.AttemptCount, run.MaxAttempts, run.DeadlineAt, run.InputSnapshotID,
-		run.LatestSnapshotID, run.LatestSnapshotVersion, run.CreatedAt, run.UpdatedAt,
+		run.Status, run.AttemptCount, run.MaxAttempts, run.DeadlineAt, run.CancelRequested,
+		run.InputSnapshotID, run.LatestSnapshotID, run.LatestSnapshotVersion, run.CreatedAt, run.UpdatedAt,
 	)
 	return err
 }
@@ -61,19 +61,20 @@ func (s *Store) EnqueueRun(ctx context.Context, run *cloud.Run) error {
 func (s *Store) ClaimRun(ctx context.Context, workerID string) (*cloud.Run, error) {
 	// SQLite/Turso does not support FOR UPDATE SKIP LOCKED. Instead, we rely
 	// on SQLite's single-writer lock: the UPDATE with a subquery atomically
-	// selects and transitions the oldest queued run to claimed.
+	// selects and transitions the oldest queued run to claimed. Runs with
+	// cancel_requested are excluded so canceled intent is enforced before claim.
 	now := time.Now().UTC()
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE runs SET status = 'claimed', updated_at = ?
 		WHERE id = (
 			SELECT id FROM runs
-			WHERE status = 'queued'
+			WHERE status = 'queued' AND cancel_requested = 0
 			ORDER BY created_at ASC
 			LIMIT 1
 		)
 		RETURNING id, repo, base_branch, engine, auth_profile_id, scope_ref,
-			status, attempt_count, max_attempts, deadline_at, input_snapshot_id,
-			latest_snapshot_id, latest_snapshot_version, created_at, updated_at`,
+			status, attempt_count, max_attempts, deadline_at, cancel_requested,
+			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at`,
 		now)
 
 	run, err := scanRun(row)
@@ -120,8 +121,8 @@ func (s *Store) TransitionRun(ctx context.Context, runID string, fromStatus, toS
 func (s *Store) GetRun(ctx context.Context, runID string) (*cloud.Run, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, repo, base_branch, engine, auth_profile_id, scope_ref,
-			status, attempt_count, max_attempts, deadline_at, input_snapshot_id,
-			latest_snapshot_id, latest_snapshot_version, created_at, updated_at
+			status, attempt_count, max_attempts, deadline_at, cancel_requested,
+			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at
 		FROM runs WHERE id = ?`, runID)
 
 	run, err := scanRun(row)
@@ -137,8 +138,8 @@ func (s *Store) GetRun(ctx context.Context, runID string) (*cloud.Run, error) {
 func (s *Store) ListOverdueRuns(ctx context.Context, now time.Time) ([]*cloud.Run, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, repo, base_branch, engine, auth_profile_id, scope_ref,
-			status, attempt_count, max_attempts, deadline_at, input_snapshot_id,
-			latest_snapshot_id, latest_snapshot_version, created_at, updated_at
+			status, attempt_count, max_attempts, deadline_at, cancel_requested,
+			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at
 		FROM runs
 		WHERE deadline_at IS NOT NULL
 			AND deadline_at < ?
@@ -157,6 +158,24 @@ func (s *Store) ListOverdueRuns(ctx context.Context, now time.Time) ([]*cloud.Ru
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
+}
+
+func (s *Store) SetCancelIntent(ctx context.Context, runID string) error {
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE runs SET cancel_requested = 1, updated_at = ?
+		WHERE id = ?`, now, runID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return cloud.ErrNotFound
+	}
+	return nil
 }
 
 // --- Attempts ---
@@ -504,8 +523,8 @@ func scanRun(row rowScanner) (*cloud.Run, error) {
 	var r cloud.Run
 	err := row.Scan(
 		&r.ID, &r.Repo, &r.BaseBranch, &r.Engine, &r.AuthProfileID, &r.ScopeRef,
-		&r.Status, &r.AttemptCount, &r.MaxAttempts, &r.DeadlineAt, &r.InputSnapshotID,
-		&r.LatestSnapshotID, &r.LatestSnapshotVersion, &r.CreatedAt, &r.UpdatedAt,
+		&r.Status, &r.AttemptCount, &r.MaxAttempts, &r.DeadlineAt, &r.CancelRequested,
+		&r.InputSnapshotID, &r.LatestSnapshotID, &r.LatestSnapshotVersion, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err

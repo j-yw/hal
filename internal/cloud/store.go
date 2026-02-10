@@ -30,6 +30,11 @@ type Store interface {
 	// than the given time. Used by the timeout reconciler to detect overdue runs.
 	ListOverdueRuns(ctx context.Context, now time.Time) ([]*Run, error)
 
+	// SetCancelIntent sets the cancel_requested flag on a run. Returns
+	// ErrNotFound if the run does not exist. Idempotent — setting cancel on
+	// an already-canceled or already cancel-requested run is a no-op success.
+	SetCancelIntent(ctx context.Context, runID string) error
+
 	// --- Attempts ---
 
 	// CreateAttempt inserts a new active attempt for a run.

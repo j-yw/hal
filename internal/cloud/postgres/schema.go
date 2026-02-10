@@ -15,6 +15,7 @@ const runsSchema = `CREATE TABLE IF NOT EXISTS runs (
     attempt_count           INTEGER NOT NULL DEFAULT 0,
     max_attempts            INTEGER NOT NULL DEFAULT 3,
     deadline_at             TIMESTAMPTZ,
+    cancel_requested        BOOLEAN NOT NULL DEFAULT FALSE,
     input_snapshot_id       TEXT,
     latest_snapshot_id      TEXT,
     latest_snapshot_version INTEGER NOT NULL DEFAULT 0,

@@ -229,6 +229,25 @@ func TestEvaluateRetry(t *testing.T) {
 			},
 		},
 		{
+			name:        "canceled run is skipped by retry scheduler",
+			runID:       "run-1",
+			failureCode: FailureBootstrapFailed,
+			setup: func(s *retryMockStore) {
+				r := failedRun("run-1", 1, 3)
+				r.Status = RunStatusCanceled
+				s.runs["run-1"] = r
+			},
+			check: func(t *testing.T, result *RetryResult, s *retryMockStore) {
+				t.Helper()
+				if result.Retried {
+					t.Error("expected Retried=false for canceled run")
+				}
+				if len(s.transitionRunCalls) != 0 {
+					t.Errorf("expected no TransitionRun calls, got %d", len(s.transitionRunCalls))
+				}
+			},
+		},
+		{
 			name:        "empty runID returns error",
 			runID:       "",
 			failureCode: FailureBootstrapFailed,

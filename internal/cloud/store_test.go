@@ -10,8 +10,8 @@ import (
 // and can be satisfied without adapter-specific imports.
 type mockStore struct{}
 
-func (m *mockStore) EnqueueRun(_ context.Context, _ *Run) error                  { return nil }
-func (m *mockStore) ClaimRun(_ context.Context, _ string) (*Run, error)           { return nil, nil }
+func (m *mockStore) EnqueueRun(_ context.Context, _ *Run) error         { return nil }
+func (m *mockStore) ClaimRun(_ context.Context, _ string) (*Run, error) { return nil, nil }
 func (m *mockStore) TransitionRun(_ context.Context, _ string, _, _ RunStatus) error {
 	return nil
 }
@@ -19,6 +19,7 @@ func (m *mockStore) GetRun(_ context.Context, _ string) (*Run, error) { return n
 func (m *mockStore) ListOverdueRuns(_ context.Context, _ time.Time) ([]*Run, error) {
 	return nil, nil
 }
+func (m *mockStore) SetCancelIntent(_ context.Context, _ string) error { return nil }
 
 func (m *mockStore) CreateAttempt(_ context.Context, _ *Attempt) error { return nil }
 func (m *mockStore) HeartbeatAttempt(_ context.Context, _ string, _, _ time.Time) error {
@@ -32,10 +33,10 @@ func (m *mockStore) ListStaleAttempts(_ context.Context, _ time.Time) ([]*Attemp
 }
 func (m *mockStore) GetAttempt(_ context.Context, _ string) (*Attempt, error) { return nil, nil }
 
-func (m *mockStore) InsertEvent(_ context.Context, _ *Event) error              { return nil }
-func (m *mockStore) ListEvents(_ context.Context, _ string) ([]*Event, error)   { return nil, nil }
+func (m *mockStore) InsertEvent(_ context.Context, _ *Event) error            { return nil }
+func (m *mockStore) ListEvents(_ context.Context, _ string) ([]*Event, error) { return nil, nil }
 
-func (m *mockStore) PutIdempotencyKey(_ context.Context, _ *IdempotencyKey) error       { return nil }
+func (m *mockStore) PutIdempotencyKey(_ context.Context, _ *IdempotencyKey) error { return nil }
 func (m *mockStore) GetIdempotencyKey(_ context.Context, _ string) (*IdempotencyKey, error) {
 	return nil, nil
 }
@@ -75,15 +76,15 @@ func TestStoreInterfaceSatisfied(t *testing.T) {
 // contract tests and adapters.
 func TestStoreMethodCount(t *testing.T) {
 	// Count methods by category:
-	//   Runs:        EnqueueRun, ClaimRun, TransitionRun, GetRun, ListOverdueRuns = 5
+	//   Runs:        EnqueueRun, ClaimRun, TransitionRun, GetRun, ListOverdueRuns, SetCancelIntent = 6
 	//   Attempts:    CreateAttempt, HeartbeatAttempt, TransitionAttempt, ListStaleAttempts, GetAttempt = 5
 	//   Events:      InsertEvent, ListEvents = 2
 	//   Idempotency: PutIdempotencyKey, GetIdempotencyKey = 2
 	//   AuthProfile: GetAuthProfile, UpdateAuthProfile = 2
 	//   AuthLocks:   AcquireAuthLock, RenewAuthLock, ReleaseAuthLock = 3
 	//   Snapshots:   PutSnapshot, GetSnapshot, GetLatestSnapshot = 3
-	//   Total: 22
-	const expectedMethods = 22
+	//   Total: 23
+	const expectedMethods = 23
 
 	// This is a documentation-only test. The mockStore above proves the
 	// interface compiles. If the method count changes, update this constant
