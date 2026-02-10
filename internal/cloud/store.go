@@ -112,6 +112,10 @@ type Store interface {
 	// if no active lock exists for the given profile and run.
 	ReleaseAuthLock(ctx context.Context, authProfileID, runID string, releasedAt time.Time) error
 
+	// GetActiveAuthLock returns the active (unreleased) lock for the given
+	// auth profile, or ErrNotFound if no active lock exists.
+	GetActiveAuthLock(ctx context.Context, authProfileID string) (*AuthProfileLock, error)
+
 	// --- Snapshots ---
 
 	// PutSnapshot stores a run state snapshot. Returns ErrConflict if a

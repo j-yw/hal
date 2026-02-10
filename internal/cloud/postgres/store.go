@@ -519,6 +519,26 @@ func (s *Store) ReleaseAuthLock(ctx context.Context, authProfileID, runID string
 	return nil
 }
 
+func (s *Store) GetActiveAuthLock(ctx context.Context, authProfileID string) (*cloud.AuthProfileLock, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT auth_profile_id, run_id, worker_id, acquired_at, heartbeat_at, lease_expires_at, released_at
+		FROM auth_profile_locks
+		WHERE auth_profile_id = $1 AND released_at IS NULL
+		LIMIT 1`, authProfileID)
+
+	var lock cloud.AuthProfileLock
+	if err := row.Scan(
+		&lock.AuthProfileID, &lock.RunID, &lock.WorkerID,
+		&lock.AcquiredAt, &lock.HeartbeatAt, &lock.LeaseExpiresAt, &lock.ReleasedAt,
+	); err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return nil, cloud.ErrNotFound
+		}
+		return nil, err
+	}
+	return &lock, nil
+}
+
 // --- Snapshots ---
 
 func (s *Store) PutSnapshot(ctx context.Context, snap *cloud.RunStateSnapshot) error {

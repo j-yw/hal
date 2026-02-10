@@ -58,6 +58,9 @@ func (m *mockStore) RenewAuthLock(_ context.Context, _, _ string, _, _ time.Time
 func (m *mockStore) ReleaseAuthLock(_ context.Context, _, _ string, _ time.Time) error {
 	return nil
 }
+func (m *mockStore) GetActiveAuthLock(_ context.Context, _ string) (*AuthProfileLock, error) {
+	return nil, nil
+}
 
 func (m *mockStore) PutSnapshot(_ context.Context, _ *RunStateSnapshot) error { return nil }
 func (m *mockStore) GetSnapshot(_ context.Context, _ string) (*RunStateSnapshot, error) {
@@ -89,10 +92,10 @@ func TestStoreMethodCount(t *testing.T) {
 	//   Events:      InsertEvent, ListEvents = 2
 	//   Idempotency: PutIdempotencyKey, GetIdempotencyKey = 2
 	//   AuthProfile: CreateAuthProfile, GetAuthProfile, UpdateAuthProfile = 3
-	//   AuthLocks:   AcquireAuthLock, RenewAuthLock, ReleaseAuthLock = 3
+	//   AuthLocks:   AcquireAuthLock, RenewAuthLock, ReleaseAuthLock, GetActiveAuthLock = 4
 	//   Snapshots:   PutSnapshot, GetSnapshot, GetLatestSnapshot = 3
-	//   Total: 27
-	const expectedMethods = 27
+	//   Total: 28
+	const expectedMethods = 28
 
 	// This is a documentation-only test. The mockStore above proves the
 	// interface compiles. If the method count changes, update this constant

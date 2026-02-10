@@ -22,12 +22,14 @@ type cloudMockStore struct {
 	activeAttempts map[string]*cloud.Attempt
 	events         map[string][]*cloud.Event
 	snapshots      map[string]*cloud.RunStateSnapshot // runID → latest snapshot
+	locks          map[string]*cloud.AuthProfileLock  // authProfileID → active lock
 	enqErr         error
 	getRErr        error
 	getAttemptErr  error
 	listEventsErr  error
 	setCancelErr   error
 	getSnapshotErr error
+	getAuthLockErr error
 }
 
 func newCloudMockStore() *cloudMockStore {
@@ -37,6 +39,7 @@ func newCloudMockStore() *cloudMockStore {
 		activeAttempts: make(map[string]*cloud.Attempt),
 		events:         make(map[string][]*cloud.Event),
 		snapshots:      make(map[string]*cloud.RunStateSnapshot),
+		locks:          make(map[string]*cloud.AuthProfileLock),
 	}
 }
 
@@ -139,6 +142,16 @@ func (s *cloudMockStore) RenewAuthLock(_ context.Context, _, _ string, _, _ time
 }
 func (s *cloudMockStore) ReleaseAuthLock(_ context.Context, _, _ string, _ time.Time) error {
 	return nil
+}
+func (s *cloudMockStore) GetActiveAuthLock(_ context.Context, authProfileID string) (*cloud.AuthProfileLock, error) {
+	if s.getAuthLockErr != nil {
+		return nil, s.getAuthLockErr
+	}
+	lock, ok := s.locks[authProfileID]
+	if !ok {
+		return nil, cloud.ErrNotFound
+	}
+	return lock, nil
 }
 func (s *cloudMockStore) PutSnapshot(_ context.Context, _ *cloud.RunStateSnapshot) error { return nil }
 func (s *cloudMockStore) GetSnapshot(_ context.Context, _ string) (*cloud.RunStateSnapshot, error) {

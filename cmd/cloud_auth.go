@@ -32,6 +32,11 @@ var (
 	cloudAuthImportJSONFlag     bool
 )
 
+// Cloud auth status flags.
+var (
+	cloudAuthStatusJSONFlag bool
+)
+
 var cloudAuthCmd = &cobra.Command{
 	Use:   "auth",
 	Short: "Manage auth profiles",
@@ -39,7 +44,8 @@ var cloudAuthCmd = &cobra.Command{
 
 Commands:
   link        Link an auth profile to a provider
-  import      Import local auth artifacts into a profile`,
+  import      Import local auth artifacts into a profile
+  status      Show auth profile readiness and lock status`,
 }
 
 var cloudAuthLinkCmd = &cobra.Command{
@@ -104,6 +110,24 @@ Use --json for machine-readable output.`,
 	},
 }
 
+var cloudAuthStatusCmd = &cobra.Command{
+	Use:   "status <profile>",
+	Short: "Show auth profile readiness and lock status",
+	Long: `Show provider, profile state, lock owner, lock expiry, and compatibility summary.
+
+Missing profile exits non-zero with error code not_found.
+Use --json for machine-readable output.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runCloudAuthStatus(
+			args[0],
+			cloudAuthStatusJSONFlag,
+			cloudAuthStatusStoreFactory,
+			os.Stdout,
+		)
+	},
+}
+
 func init() {
 	cloudAuthLinkCmd.Flags().StringVar(&cloudAuthLinkProviderFlag, "provider", "", "Provider name (e.g., anthropic, openai)")
 	cloudAuthLinkCmd.Flags().StringVar(&cloudAuthLinkProfileFlag, "profile", "", "Auth profile ID")
@@ -119,8 +143,11 @@ func init() {
 	cloudAuthImportCmd.Flags().StringVar(&cloudAuthImportModeFlag, "mode", "", "Auth mode")
 	cloudAuthImportCmd.Flags().BoolVar(&cloudAuthImportJSONFlag, "json", false, "Output in JSON format")
 
+	cloudAuthStatusCmd.Flags().BoolVar(&cloudAuthStatusJSONFlag, "json", false, "Output in JSON format")
+
 	cloudAuthCmd.AddCommand(cloudAuthLinkCmd)
 	cloudAuthCmd.AddCommand(cloudAuthImportCmd)
+	cloudAuthCmd.AddCommand(cloudAuthStatusCmd)
 	cloudCmd.AddCommand(cloudAuthCmd)
 }
 
@@ -294,4 +321,121 @@ func classifyAuthImportError(err error) string {
 	default:
 		return "unknown_error"
 	}
+}
+
+// cloudAuthStatusStoreFactory is a package-level variable that tests can override.
+var cloudAuthStatusStoreFactory func() (cloud.Store, error)
+
+// cloudAuthStatusResponse is the JSON output for a successful auth status query.
+type cloudAuthStatusResponse struct {
+	ProfileID          string  `json:"profile_id"`
+	Provider           string  `json:"provider"`
+	Status             string  `json:"status"`
+	LockOwnerRunID     *string `json:"lock_owner_run_id"`
+	LockLeaseExpiresAt *string `json:"lock_lease_expires_at"`
+	RuntimeMetadata    *string `json:"runtime_metadata"`
+	LastValidatedAt    *string `json:"last_validated_at"`
+	ExpiresAt          *string `json:"expires_at"`
+	LastErrorCode      *string `json:"last_error_code"`
+}
+
+// runCloudAuthStatus is the testable logic for the cloud auth status command.
+func runCloudAuthStatus(
+	profileID string,
+	jsonOutput bool,
+	storeFactory func() (cloud.Store, error),
+	out io.Writer,
+) error {
+	if storeFactory == nil {
+		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
+	}
+
+	store, err := storeFactory()
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+	}
+
+	ctx := context.Background()
+	profile, err := store.GetAuthProfile(ctx, profileID)
+	if err != nil {
+		if cloud.IsNotFound(err) {
+			if jsonOutput {
+				_ = writeJSON(out, cloudErrorResponse{
+					Error:     fmt.Sprintf("profile %q not found", profileID),
+					ErrorCode: "not_found",
+				})
+				return fmt.Errorf("profile %q not found", profileID)
+			}
+			return fmt.Errorf("profile %q not found", profileID)
+		}
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get profile: %v", err), "store_error")
+	}
+
+	// Try to get active lock for the profile.
+	var lockOwnerRunID *string
+	var lockLeaseExpiresAt *string
+	lock, err := store.GetActiveAuthLock(ctx, profileID)
+	if err == nil {
+		lockOwnerRunID = &lock.RunID
+		ts := lock.LeaseExpiresAt.Format(time.RFC3339)
+		lockLeaseExpiresAt = &ts
+	}
+
+	if jsonOutput {
+		resp := cloudAuthStatusResponse{
+			ProfileID:          profile.ID,
+			Provider:           profile.Provider,
+			Status:             string(profile.Status),
+			LockOwnerRunID:     lockOwnerRunID,
+			LockLeaseExpiresAt: lockLeaseExpiresAt,
+			RuntimeMetadata:    profile.RuntimeMetadataJSON,
+			LastErrorCode:      profile.LastErrorCode,
+		}
+		if profile.LastValidatedAt != nil {
+			ts := profile.LastValidatedAt.Format(time.RFC3339)
+			resp.LastValidatedAt = &ts
+		}
+		if profile.ExpiresAt != nil {
+			ts := profile.ExpiresAt.Format(time.RFC3339)
+			resp.ExpiresAt = &ts
+		}
+		return writeJSON(out, resp)
+	}
+
+	// Human-readable output.
+	fmt.Fprintf(out, "Auth profile status:\n")
+	fmt.Fprintf(out, "  profile_id:       %s\n", profile.ID)
+	fmt.Fprintf(out, "  provider:         %s\n", profile.Provider)
+	fmt.Fprintf(out, "  status:           %s\n", profile.Status)
+	if lockOwnerRunID != nil {
+		fmt.Fprintf(out, "  lock_owner:       %s\n", *lockOwnerRunID)
+	} else {
+		fmt.Fprintf(out, "  lock_owner:       none\n")
+	}
+	if lockLeaseExpiresAt != nil {
+		fmt.Fprintf(out, "  lock_expires:     %s\n", *lockLeaseExpiresAt)
+	} else {
+		fmt.Fprintf(out, "  lock_expires:     n/a\n")
+	}
+	if profile.RuntimeMetadataJSON != nil {
+		fmt.Fprintf(out, "  runtime_metadata: %s\n", *profile.RuntimeMetadataJSON)
+	} else {
+		fmt.Fprintf(out, "  runtime_metadata: none\n")
+	}
+	if profile.LastValidatedAt != nil {
+		fmt.Fprintf(out, "  last_validated:   %s\n", profile.LastValidatedAt.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(out, "  last_validated:   never\n")
+	}
+	if profile.ExpiresAt != nil {
+		fmt.Fprintf(out, "  expires_at:       %s\n", profile.ExpiresAt.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(out, "  expires_at:       none\n")
+	}
+	if profile.LastErrorCode != nil {
+		fmt.Fprintf(out, "  last_error_code:  %s\n", *profile.LastErrorCode)
+	} else {
+		fmt.Fprintf(out, "  last_error_code:  none\n")
+	}
+	return nil
 }
