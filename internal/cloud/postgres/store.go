@@ -530,6 +530,25 @@ func (s *Store) GetLatestSnapshot(ctx context.Context, runID string) (*cloud.Run
 	return &snap, nil
 }
 
+func (s *Store) UpdateRunSnapshotRefs(ctx context.Context, runID string, inputSnapshotID, latestSnapshotID *string, latestSnapshotVersion int) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE runs SET input_snapshot_id = $1, latest_snapshot_id = $2,
+			latest_snapshot_version = $3, updated_at = NOW()
+		WHERE id = $4`,
+		inputSnapshotID, latestSnapshotID, latestSnapshotVersion, runID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return cloud.ErrNotFound
+	}
+	return nil
+}
+
 // --- scan helpers ---
 
 type rowScanner interface {

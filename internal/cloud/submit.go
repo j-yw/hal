@@ -175,3 +175,68 @@ func (s *SubmitService) Submit(ctx context.Context, req *SubmitRequest) (*Run, e
 
 	return run, nil
 }
+
+// BundlePayload contains the bundle content and manifest for submit-with-bundle.
+type BundlePayload struct {
+	Manifest BundleManifest `json:"manifest"`
+	Content  []byte         `json:"content"`
+}
+
+// SubmitWithBundle validates a request and bundle, enqueues a run, stores the
+// bundle as an input snapshot (kind=input, version=1), and sets the run's
+// input_snapshot_id and latest_snapshot_id to the stored snapshot.
+func (s *SubmitService) SubmitWithBundle(ctx context.Context, req *SubmitRequest, bundle *BundlePayload) (*Run, error) {
+	// 1. Validate the bundle manifest.
+	if bundle == nil {
+		return nil, fmt.Errorf("bundle must not be nil")
+	}
+	if err := bundle.Manifest.Validate(); err != nil {
+		return nil, fmt.Errorf("bundle validation failed: %w", err)
+	}
+
+	// 2. Verify the manifest hash matches recomputed hash.
+	if err := bundle.Manifest.VerifyHash(); err != nil {
+		return nil, ErrBundleHashMismatch
+	}
+
+	// 3. Submit the run (validates request, auth profile, etc.).
+	run, err := s.Submit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Generate snapshot ID.
+	snapshotID := ""
+	if s.config.IDFunc != nil {
+		snapshotID = s.config.IDFunc()
+	}
+
+	// 5. Store the input snapshot.
+	now := time.Now().UTC().Truncate(time.Second)
+	snapshot := &RunStateSnapshot{
+		ID:              snapshotID,
+		RunID:           run.ID,
+		SnapshotKind:    SnapshotKindInput,
+		Version:         1,
+		SHA256:          bundle.Manifest.SHA256,
+		SizeBytes:       int64(len(bundle.Content)),
+		ContentEncoding: "application/gzip",
+		ContentBlob:     bundle.Content,
+		CreatedAt:       now,
+	}
+
+	if err := s.store.PutSnapshot(ctx, snapshot); err != nil {
+		return nil, fmt.Errorf("failed to store input snapshot: %w", err)
+	}
+
+	// 6. Update run's snapshot references.
+	if err := s.store.UpdateRunSnapshotRefs(ctx, run.ID, &snapshot.ID, &snapshot.ID, 1); err != nil {
+		return nil, fmt.Errorf("failed to update run snapshot refs: %w", err)
+	}
+
+	run.InputSnapshotID = &snapshot.ID
+	run.LatestSnapshotID = &snapshot.ID
+	run.LatestSnapshotVersion = 1
+
+	return run, nil
+}

@@ -48,6 +48,12 @@ func TestDomainErrors(t *testing.T) {
 			checker: IsProfileRevoked,
 			message: "profile_revoked",
 		},
+		{
+			name:    "ErrBundleHashMismatch matches IsBundleHashMismatch",
+			err:     ErrBundleHashMismatch,
+			checker: IsBundleHashMismatch,
+			message: "bundle_hash_mismatch",
+		},
 	}
 
 	for _, tt := range tests {
@@ -75,6 +81,7 @@ func TestDomainErrorsNonMatch(t *testing.T) {
 		{"IsLeaseExpired rejects other", IsLeaseExpired},
 		{"IsInvalidTransition rejects other", IsInvalidTransition},
 		{"IsProfileRevoked rejects other", IsProfileRevoked},
+		{"IsBundleHashMismatch rejects other", IsBundleHashMismatch},
 	}
 
 	for _, tt := range tests {

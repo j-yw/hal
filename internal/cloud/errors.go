@@ -25,6 +25,10 @@ var ErrInvalidTransition = fmt.Errorf("invalid_transition")
 // attempt as failed and release the auth lock.
 var ErrProfileRevoked = fmt.Errorf("profile_revoked")
 
+// ErrBundleHashMismatch is returned when a submitted bundle's manifest hash
+// does not match the recomputed hash of its records.
+var ErrBundleHashMismatch = fmt.Errorf("bundle_hash_mismatch")
+
 // IsNotFound reports whether err is the not_found domain error.
 func IsNotFound(err error) bool {
 	return err == ErrNotFound
@@ -48,4 +52,9 @@ func IsInvalidTransition(err error) bool {
 // IsProfileRevoked reports whether err is the profile_revoked domain error.
 func IsProfileRevoked(err error) bool {
 	return err == ErrProfileRevoked
+}
+
+// IsBundleHashMismatch reports whether err is the bundle_hash_mismatch domain error.
+func IsBundleHashMismatch(err error) bool {
+	return err == ErrBundleHashMismatch
 }

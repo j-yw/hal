@@ -116,4 +116,9 @@ type Store interface {
 	// GetLatestSnapshot returns the most recent snapshot for a run (by version
 	// descending) or ErrNotFound if no snapshots exist.
 	GetLatestSnapshot(ctx context.Context, runID string) (*RunStateSnapshot, error)
+
+	// UpdateRunSnapshotRefs updates the snapshot reference fields on a run:
+	// input_snapshot_id, latest_snapshot_id, and latest_snapshot_version.
+	// Returns ErrNotFound if the run does not exist.
+	UpdateRunSnapshotRefs(ctx context.Context, runID string, inputSnapshotID, latestSnapshotID *string, latestSnapshotVersion int) error
 }

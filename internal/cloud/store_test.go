@@ -62,6 +62,9 @@ func (m *mockStore) GetSnapshot(_ context.Context, _ string) (*RunStateSnapshot,
 func (m *mockStore) GetLatestSnapshot(_ context.Context, _ string) (*RunStateSnapshot, error) {
 	return nil, nil
 }
+func (m *mockStore) UpdateRunSnapshotRefs(_ context.Context, _ string, _, _ *string, _ int) error {
+	return nil
+}
 
 // TestStoreInterfaceSatisfied proves that a concrete type can satisfy the
 // Store interface using only cloud package types — no adapter imports needed.
@@ -77,15 +80,15 @@ func TestStoreInterfaceSatisfied(t *testing.T) {
 // contract tests and adapters.
 func TestStoreMethodCount(t *testing.T) {
 	// Count methods by category:
-	//   Runs:        EnqueueRun, ClaimRun, TransitionRun, GetRun, ListOverdueRuns, SetCancelIntent = 6
+	//   Runs:        EnqueueRun, ClaimRun, TransitionRun, GetRun, ListOverdueRuns, SetCancelIntent, UpdateRunSnapshotRefs = 7
 	//   Attempts:    CreateAttempt, HeartbeatAttempt, TransitionAttempt, UpdateAttemptSandboxID, ListStaleAttempts, GetAttempt = 6
 	//   Events:      InsertEvent, ListEvents = 2
 	//   Idempotency: PutIdempotencyKey, GetIdempotencyKey = 2
 	//   AuthProfile: GetAuthProfile, UpdateAuthProfile = 2
 	//   AuthLocks:   AcquireAuthLock, RenewAuthLock, ReleaseAuthLock = 3
 	//   Snapshots:   PutSnapshot, GetSnapshot, GetLatestSnapshot = 3
-	//   Total: 24
-	const expectedMethods = 24
+	//   Total: 25
+	const expectedMethods = 25
 
 	// This is a documentation-only test. The mockStore above proves the
 	// interface compiles. If the method count changes, update this constant

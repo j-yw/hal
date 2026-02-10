@@ -30,6 +30,7 @@ func Suite(t *testing.T, newStore NewStoreFunc) {
 	t.Run("SetCancelIntent", func(t *testing.T) { testSetCancelIntent(t, newStore) })
 	t.Run("ClaimExcludesCanceled", func(t *testing.T) { testClaimExcludesCanceled(t, newStore) })
 	t.Run("UpdateAttemptSandboxID", func(t *testing.T) { testUpdateAttemptSandboxID(t, newStore) })
+	t.Run("UpdateRunSnapshotRefs", func(t *testing.T) { testUpdateRunSnapshotRefs(t, newStore) })
 }
 
 // --- helpers ---
@@ -609,5 +610,60 @@ func testUpdateAttemptSandboxID(t *testing.T, newStore NewStoreFunc) {
 	err = s.UpdateAttemptSandboxID(ctx, "does-not-exist", "sandbox-abc")
 	if !cloud.IsNotFound(err) {
 		t.Errorf("UpdateAttemptSandboxID(non-existent): got %v, want ErrNotFound", err)
+	}
+}
+
+// testUpdateRunSnapshotRefs verifies that UpdateRunSnapshotRefs sets snapshot
+// reference fields on a run and returns ErrNotFound for non-existent runs.
+func testUpdateRunSnapshotRefs(t *testing.T, newStore NewStoreFunc) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Setup: enqueue a run.
+	run := validRun("run-snap-001")
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+
+	// Initially snapshot refs are nil/0.
+	got, err := s.GetRun(ctx, "run-snap-001")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.InputSnapshotID != nil {
+		t.Errorf("initial InputSnapshotID = %v, want nil", got.InputSnapshotID)
+	}
+	if got.LatestSnapshotID != nil {
+		t.Errorf("initial LatestSnapshotID = %v, want nil", got.LatestSnapshotID)
+	}
+	if got.LatestSnapshotVersion != 0 {
+		t.Errorf("initial LatestSnapshotVersion = %d, want 0", got.LatestSnapshotVersion)
+	}
+
+	// Update snapshot refs.
+	inputID := "snap-input-001"
+	latestID := "snap-input-001"
+	if err := s.UpdateRunSnapshotRefs(ctx, "run-snap-001", &inputID, &latestID, 1); err != nil {
+		t.Fatalf("UpdateRunSnapshotRefs: %v", err)
+	}
+
+	got, err = s.GetRun(ctx, "run-snap-001")
+	if err != nil {
+		t.Fatalf("GetRun(after update): %v", err)
+	}
+	if got.InputSnapshotID == nil || *got.InputSnapshotID != "snap-input-001" {
+		t.Errorf("InputSnapshotID = %v, want %q", got.InputSnapshotID, "snap-input-001")
+	}
+	if got.LatestSnapshotID == nil || *got.LatestSnapshotID != "snap-input-001" {
+		t.Errorf("LatestSnapshotID = %v, want %q", got.LatestSnapshotID, "snap-input-001")
+	}
+	if got.LatestSnapshotVersion != 1 {
+		t.Errorf("LatestSnapshotVersion = %d, want 1", got.LatestSnapshotVersion)
+	}
+
+	// Non-existent run returns ErrNotFound.
+	err = s.UpdateRunSnapshotRefs(ctx, "does-not-exist", &inputID, &latestID, 1)
+	if !cloud.IsNotFound(err) {
+		t.Errorf("UpdateRunSnapshotRefs(non-existent): got %v, want ErrNotFound", err)
 	}
 }
