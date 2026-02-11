@@ -46,6 +46,7 @@
 - Lifecycle logs scenarios should seed events via `h.Store.InsertEvent` after `run --cloud`; submit-only harness flows do not emit timeline events automatically
 - Auto/review lifecycle scenarios should assert `workflowKind` via `cloudLifecycleWorkflowFixtures` and `status --json`, then run one downstream checkpoint (`logs` or `pull`) to lock command-chain behavior
 - Lifecycle pull scenarios should derive `--artifacts` from `cloud.WorkflowArtifactGroups(run.WorkflowKind)` and delete target files before pull so tests verify real restoration, not pre-existing files
+- Cancel lifecycle scenarios should use a harness-store `SetCancelIntent` override that marks non-terminal runs as `canceled` immediately, keeping `cancel -> status` assertions deterministic without worker background loops
 
 ---
 ## 2026-02-11 - US-001
@@ -593,4 +594,14 @@
   - Review scenarios can reuse the same fixture-driven structure as auto scenarios; only workflow command fixture and seeded event type need to change
   - Keep downstream checkpoint assertions (`logs --json`) focused on required fixture keys plus one workflow-specific payload check for deterministic coverage
   - Store-backed persistence assertions via `h.Store.GetRun` remain the simplest proof that workflow kind is preserved end-to-end
+---
+## 2026-02-12 01:54 +08 - T-011
+- Added cancel-path lifecycle integration scenario in `cmd/cloud_lifecycle_cancel_scenario_integration_test.go` covering `hal cloud setup` → `hal run --cloud` → `hal cloud cancel` → `hal cloud status` for both human and `--json` modes
+- Added deterministic cancel propagation to the lifecycle harness store by overriding `SetCancelIntent` to mark non-terminal runs as `canceled` immediately, enabling terminal-state assertions without a worker loop
+- Asserted cancel/status consistency (`status=canceled`) in both output modes and verified persisted run state is terminal with `cancel_requested=true`
+- Files changed: cmd/cloud_lifecycle_cancel_scenario_integration_test.go, cmd/cloud_lifecycle_harness_integration_test.go, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - In workerless lifecycle integration harnesses, cancellation tests need a `SetCancelIntent` override that transitions run state to `canceled`; otherwise the flow stalls in non-terminal states
+  - Assert cancel/status consistency per output mode (human and JSON) by comparing the same `status` field from both commands to catch contract drift early
+  - Reusing shared checkpoint fixtures for cancel/status keeps required JSON-key assertions aligned during camelCase migration
 ---

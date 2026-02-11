@@ -236,6 +236,24 @@ func (s *cloudLifecycleHarnessStore) EnqueueRun(ctx context.Context, run *cloud.
 	return nil
 }
 
+func (s *cloudLifecycleHarnessStore) SetCancelIntent(ctx context.Context, runID string) error {
+	if err := s.cloudMockStore.SetCancelIntent(ctx, runID); err != nil {
+		return err
+	}
+
+	run, ok := s.runsByID[runID]
+	if !ok {
+		return cloud.ErrNotFound
+	}
+
+	if !run.Status.IsTerminal() {
+		run.Status = cloud.RunStatusCanceled
+		run.UpdatedAt = time.Now().UTC()
+	}
+
+	return nil
+}
+
 func (s *cloudLifecycleHarnessStore) InsertEvent(_ context.Context, event *cloud.Event) error {
 	if event == nil {
 		return nil
