@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,9 +48,9 @@ func TestNewStoreFactory_SyncOnce(t *testing.T) {
 
 func TestNewStoreFactory_ValidationError(t *testing.T) {
 	tests := []struct {
-		name      string
-		getenv    func(string) string
-		wantErr   string
+		name    string
+		getenv  func(string) string
+		wantErr string
 	}{
 		{
 			name:    "turso missing url",
@@ -159,6 +161,42 @@ func TestDefaultStoreFactory_ResetIsolation(t *testing.T) {
 	ResetDefaultStoreForTest(t)
 }
 
+func TestDefaultStoreFactory_LoadsDotenv(t *testing.T) {
+	ResetDefaultStoreForTest(t)
+	t.Cleanup(func() {
+		ResetDefaultStoreForTest(t)
+	})
+
+	dir := t.TempDir()
+	envContent := strings.Join([]string{
+		EnvDBAdapter + "=" + AdapterPostgres,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(envContent), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(cwd)
+	})
+
+	unsetEnvForTest(t, EnvDBAdapter, EnvPostgresDSN, EnvTursoURL, EnvTursoAuthToken)
+
+	_, err = DefaultStoreFactory()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), EnvPostgresDSN) {
+		t.Fatalf("expected postgres validation error, got %q", err.Error())
+	}
+}
+
 func TestNewStoreFactory_ErrorWrapsOpenStore(t *testing.T) {
 	factory := newStoreFactory(func() Config {
 		return Config{
@@ -175,4 +213,32 @@ func TestNewStoreFactory_ErrorWrapsOpenStore(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "open store:") {
 		t.Errorf("expected error to start with %q, got %q", "open store:", err.Error())
 	}
+}
+
+func unsetEnvForTest(t *testing.T, keys ...string) {
+	t.Helper()
+
+	prior := make(map[string]*string, len(keys))
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			saved := value
+			prior[key] = &saved
+		} else {
+			prior[key] = nil
+		}
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		for _, key := range keys {
+			value := prior[key]
+			if value == nil {
+				_ = os.Unsetenv(key)
+				continue
+			}
+			_ = os.Setenv(key, *value)
+		}
+	})
 }

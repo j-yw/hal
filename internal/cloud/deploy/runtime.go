@@ -3,10 +3,13 @@ package deploy
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 
+	"github.com/joho/godotenv"
 	"github.com/jywlabs/hal/internal/cloud"
 )
 
@@ -23,6 +26,12 @@ var (
 // cached store or error.
 func DefaultStoreFactory() (cloud.Store, error) {
 	defaultOnce.Do(func() {
+		// Load .env if present so cloud/auth commands can run from .env-only setups.
+		if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+			// Keep dotenv parse/load issues non-fatal and fall back to process env.
+			fmt.Fprintf(os.Stderr, "Warning: failed to load .env file: %v\n", err)
+		}
+
 		cfg := LoadConfigFromEnv()
 		if err := cfg.ValidateStore(); err != nil {
 			defaultErr = fmt.Errorf("validate store config: %w", err)
