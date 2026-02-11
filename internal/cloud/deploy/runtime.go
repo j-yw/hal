@@ -37,3 +37,32 @@ func DefaultStoreFactory() (cloud.Store, error) {
 	})
 	return defaultStore, defaultErr
 }
+
+// newStoreFactory creates a store factory closure with its own sync.Once,
+// using the provided config loader. This allows tests to create isolated
+// factory instances with custom getenv functions.
+func newStoreFactory(loadConfig func() Config) func() (cloud.Store, error) {
+	var (
+		store cloud.Store
+		db    *sql.DB
+		err   error
+		once  sync.Once
+	)
+	_ = db // retained for future close/cleanup needs
+	return func() (cloud.Store, error) {
+		once.Do(func() {
+			cfg := loadConfig()
+			if valErr := cfg.ValidateStore(); valErr != nil {
+				err = fmt.Errorf("validate store config: %w", valErr)
+				return
+			}
+			var openErr error
+			store, db, openErr = OpenStore(context.Background(), cfg)
+			if openErr != nil {
+				err = fmt.Errorf("open store: %w", openErr)
+				return
+			}
+		})
+		return store, err
+	}
+}
