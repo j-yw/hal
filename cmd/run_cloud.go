@@ -81,14 +81,8 @@ func runHalRunCloud(
 
 	// 1. Validate flag combinations.
 	if err := ValidateCloudFlags(flags); err != nil {
-		if jsonOutput {
-			fe := err.(*CloudFlagError)
-			return writeJSON(out, runCloudRunErrorResponse{
-				Error:     fe.Message,
-				ErrorCode: fe.Code,
-			})
-		}
-		return err
+		fe := err.(*CloudFlagError)
+		return writeRunCloudError(out, jsonOutput, fe.Message, fe.Code)
 	}
 
 	// 2. Resolve cloud config.
@@ -252,6 +246,8 @@ func writeRunCloudTerminal(out io.Writer, jsonOutput bool, run *cloud.Run) error
 }
 
 // writeRunCloudError writes an error in the appropriate format for hal run --cloud.
+// In human mode, writes structured error fields to output for deterministic parsing,
+// then returns a Go error to signal non-zero exit.
 func writeRunCloudError(out io.Writer, jsonOutput bool, msg, code string) error {
 	if jsonOutput {
 		return writeJSON(out, runCloudRunErrorResponse{
@@ -259,5 +255,8 @@ func writeRunCloudError(out io.Writer, jsonOutput bool, msg, code string) error 
 			ErrorCode: code,
 		})
 	}
+	fmt.Fprintf(out, "Error: %s\n", msg)
+	fmt.Fprintf(out, "  error: %s\n", msg)
+	fmt.Fprintf(out, "  error_code: %s\n", code)
 	return fmt.Errorf("%s", msg)
 }

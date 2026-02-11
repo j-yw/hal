@@ -259,6 +259,11 @@ func TestRunHalRunCloud_DetachWaitConflict(t *testing.T) {
 	if !strings.Contains(err.Error(), "--detach and --wait cannot be used together") {
 		t.Errorf("error = %q, want to contain --detach/--wait conflict message", err.Error())
 	}
+	// Human output must include structured error fields.
+	output := out.String()
+	if !strings.Contains(output, "error_code: invalid_flag_combination") {
+		t.Errorf("human output missing error_code field\noutput: %s", output)
+	}
 }
 
 func TestRunHalRunCloud_DetachWaitConflict_JSON(t *testing.T) {
@@ -320,6 +325,11 @@ func TestRunHalRunCloud_NilStoreFactory_Human(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "store not configured") {
 		t.Errorf("error = %q, want to contain 'store not configured'", err.Error())
+	}
+	// Human output must include structured error fields.
+	output := out.String()
+	if !strings.Contains(output, "error_code: configuration_error") {
+		t.Errorf("human output missing error_code field\noutput: %s", output)
 	}
 }
 
@@ -469,6 +479,11 @@ func TestRunHalRunCloud_MissingHalDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), ".hal/ not found") {
 		t.Errorf("error = %q, want to contain '.hal/ not found'", err.Error())
+	}
+	// Human output must include structured error fields.
+	output := out.String()
+	if !strings.Contains(output, "error_code: prerequisite_error") {
+		t.Errorf("human output missing error_code field\noutput: %s", output)
 	}
 }
 
@@ -623,5 +638,254 @@ func TestExecuteRunCloud_ReturnsFalseWhenNilFlags(t *testing.T) {
 	}
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// --- Output contract verification tests ---
+
+func TestRunHalRunCloud_HumanOutputContract_DetachSuccess(t *testing.T) {
+	dir := t.TempDir()
+	setupHalDir(t, dir, map[string]string{
+		"prd.json":     `{"project":"test"}`,
+		"progress.txt": "## progress",
+	})
+
+	store := newCloudMockStore()
+	store.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+
+	flags := &CloudFlags{
+		Cloud:            true,
+		Detach:           true,
+		CloudRepo:        "org/repo",
+		CloudBase:        "main",
+		CloudAuthProfile: "profile-1",
+		CloudAuthScope:   "prd-123",
+	}
+
+	var out bytes.Buffer
+	err := runHalRunCloud(
+		flags,
+		dir+"/.hal",
+		dir,
+		func() (cloud.Store, error) { return store, nil },
+		func() cloud.SubmitConfig {
+			return cloud.SubmitConfig{IDFunc: func() string { return "contract-detach" }}
+		},
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	// AC1: human output includes run ID after submission.
+	if !strings.Contains(output, "contract-detach") {
+		t.Errorf("output missing run ID\noutput: %s", output)
+	}
+	// AC1: human output includes status.
+	if !strings.Contains(output, "status:") {
+		t.Errorf("output missing status field\noutput: %s", output)
+	}
+	// AC1: human output includes one next-step hint command.
+	if !strings.Contains(output, "Next: hal cloud status") {
+		t.Errorf("output missing next-step hint\noutput: %s", output)
+	}
+}
+
+func TestRunHalRunCloud_HumanOutputContract_WaitCompletion(t *testing.T) {
+	dir := t.TempDir()
+	setupHalDir(t, dir, map[string]string{
+		"prd.json": `{"project":"test"}`,
+	})
+
+	store := newCloudMockStore()
+	store.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+	runID := "contract-wait"
+	store.runsByID[runID] = &cloud.Run{
+		ID:            runID,
+		Repo:          "org/repo",
+		BaseBranch:    "main",
+		WorkflowKind:  cloud.WorkflowKindRun,
+		Engine:        "claude",
+		AuthProfileID: "profile-1",
+		ScopeRef:      "prd-123",
+		Status:        cloud.RunStatusSucceeded,
+		AttemptCount:  1,
+		MaxAttempts:   3,
+	}
+
+	flags := &CloudFlags{
+		Cloud:            true,
+		Wait:             true,
+		CloudRepo:        "org/repo",
+		CloudBase:        "main",
+		CloudAuthProfile: "profile-1",
+		CloudAuthScope:   "prd-123",
+	}
+
+	origInterval := runCloudPollInterval
+	runCloudPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { runCloudPollInterval = origInterval })
+
+	var out bytes.Buffer
+	err := runHalRunCloud(
+		flags,
+		dir+"/.hal",
+		dir,
+		func() (cloud.Store, error) { return store, nil },
+		func() cloud.SubmitConfig {
+			return cloud.SubmitConfig{IDFunc: func() string { return runID }}
+		},
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	// AC1: run ID after submission.
+	if !strings.Contains(output, runID) {
+		t.Errorf("output missing run ID\noutput: %s", output)
+	}
+	// AC1: terminal status at completion.
+	if !strings.Contains(output, "succeeded") {
+		t.Errorf("output missing terminal status\noutput: %s", output)
+	}
+	// AC1: one next-step hint command.
+	if !strings.Contains(output, "Next: hal cloud logs") {
+		t.Errorf("output missing next-step hint\noutput: %s", output)
+	}
+}
+
+func TestRunHalRunCloud_HumanOutputContract_PrerequisiteFailure(t *testing.T) {
+	flags := &CloudFlags{
+		Cloud:            true,
+		Detach:           true,
+		CloudRepo:        "org/repo",
+		CloudBase:        "main",
+		CloudAuthProfile: "profile-1",
+		CloudAuthScope:   "prd-123",
+	}
+
+	var out bytes.Buffer
+	err := runHalRunCloud(
+		flags,
+		"/nonexistent/.hal",
+		"/nonexistent",
+		nil,
+		nil,
+		&out,
+	)
+	// AC3: prerequisite failure returns non-zero exit (Go error).
+	if err == nil {
+		t.Fatal("expected error for prerequisite failure, got nil")
+	}
+
+	output := out.String()
+	// AC3: human output includes deterministic error code field.
+	if !strings.Contains(output, "error_code: prerequisite_error") {
+		t.Errorf("human output missing error_code field\noutput: %s", output)
+	}
+	// AC3: human output includes error message field.
+	if !strings.Contains(output, "error:") {
+		t.Errorf("human output missing error message field\noutput: %s", output)
+	}
+}
+
+func TestRunHalRunCloud_JSONOutputContract_ErrorFields(t *testing.T) {
+	flags := &CloudFlags{
+		Cloud:            true,
+		Detach:           true,
+		JSON:             true,
+		CloudRepo:        "org/repo",
+		CloudBase:        "main",
+		CloudAuthProfile: "profile-1",
+		CloudAuthScope:   "prd-123",
+	}
+
+	var out bytes.Buffer
+	err := runHalRunCloud(
+		flags,
+		"/nonexistent/.hal",
+		"/nonexistent",
+		nil,
+		nil,
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error (JSON mode): %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &raw); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	// AC3: JSON output has error and error_code fields.
+	for _, key := range []string{"error", "error_code"} {
+		v, ok := raw[key]
+		if !ok {
+			t.Errorf("missing required JSON key %q", key)
+			continue
+		}
+		if s, ok := v.(string); !ok || s == "" {
+			t.Errorf("JSON key %q must be a non-empty string, got %v", key, v)
+		}
+	}
+}
+
+func TestRunHalRunCloud_JSONOutputContract_SuccessFields(t *testing.T) {
+	dir := t.TempDir()
+	setupHalDir(t, dir, map[string]string{
+		"prd.json": `{"project":"test"}`,
+	})
+
+	store := newCloudMockStore()
+	store.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+
+	flags := &CloudFlags{
+		Cloud:            true,
+		Detach:           true,
+		JSON:             true,
+		CloudRepo:        "org/repo",
+		CloudBase:        "main",
+		CloudAuthProfile: "profile-1",
+		CloudAuthScope:   "prd-123",
+	}
+
+	var out bytes.Buffer
+	err := runHalRunCloud(
+		flags,
+		dir+"/.hal",
+		dir,
+		func() (cloud.Store, error) { return store, nil },
+		func() cloud.SubmitConfig {
+			return cloud.SubmitConfig{IDFunc: func() string { return "contract-json" }}
+		},
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &raw); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	// AC2: JSON output has required fields runId, workflowKind, status.
+	for _, key := range []string{"runId", "workflowKind", "status"} {
+		v, ok := raw[key]
+		if !ok {
+			t.Errorf("missing required JSON key %q", key)
+			continue
+		}
+		if s, ok := v.(string); !ok || s == "" {
+			t.Errorf("JSON key %q must be a non-empty string, got %v", key, v)
+		}
+	}
+	// Verify no error fields in success response.
+	for _, key := range []string{"error", "error_code"} {
+		if _, ok := raw[key]; ok {
+			t.Errorf("success response should not contain %q", key)
+		}
 	}
 }

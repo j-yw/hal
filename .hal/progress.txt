@@ -30,6 +30,8 @@
 - `mapAuthProfileStatus()` maps internal AuthProfileStatus to user-facing states: pending_link→missing, linked/invalid/revoked pass through. Use this for any user-facing profile status display
 - Auth commands (status, validate, revoke) use camelCase JSON fields (profileId, validatedAt, lastValidatedAt, revokedAt) — normalize all auth command JSON to camelCase when updating
 - Auth revoke handles missing/already-revoked as non-fatal exit 0 with deterministic status strings (missing, already_revoked) — use pre-check GetAuthProfile at command layer before calling service
+- `writeRunCloudError` writes structured error fields (error, error_code) in human mode AND returns a Go error for non-zero exit — all error paths should go through this for consistent output contract
+- Output contract for hal run --cloud: success uses `runCloudRunResponse{runId, workflowKind, status}`; errors use `runCloudRunErrorResponse{error, error_code}` — both human and JSON modes include these fields
 
 ---
 ## 2026-02-11 - US-001
@@ -378,4 +380,18 @@
   - The `already_revoked` status string is distinct from `revoked` — `already_revoked` signals no-op, `revoked` signals a fresh transition
   - The "subsequent auth status reports revoked" AC can be tested by calling `runCloudAuthStatus` directly in a `checkStore` callback — no integration test needed
   - All auth command JSON responses should use camelCase field names (profileId, revokedAt, validatedAt, lastValidatedAt) — normalize when updating any auth command
+---
+## 2026-02-11 - US-019
+- Normalized hal run --cloud output contract for deterministic human and JSON error output
+- Updated `writeRunCloudError` to write structured error fields (error, error_code) to human output before returning Go error for non-zero exit
+- Unified flag validation error path through `writeRunCloudError` instead of direct CloudFlagError return — ensures consistent structured output
+- Added 5 new contract verification tests: human detach success, human wait completion, human prerequisite failure, JSON error fields, JSON success fields
+- Updated 3 existing human error tests (DetachWaitConflict, NilStoreFactory, MissingHalDir) to verify `error_code` field in human output
+- Total: 19 tests for hal run --cloud covering success (detach/wait, human/JSON), errors (6 codes), output contract (5 contract tests), and guard behavior
+- Files changed: cmd/run_cloud.go, cmd/run_cloud_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - `writeRunCloudError` in human mode now writes structured fields AND returns a Go error — human output has both `error:` and `error_code:` lines, while the Go error signals non-zero exit to Cobra
+  - The flag validation path (ValidateCloudFlags) was previously inconsistent: JSON mode used `writeJSON` directly but human mode just returned the raw error. Routing both through `writeRunCloudError` normalizes the output contract
+  - For US-022 (secret redaction), the `writeRunCloudError` and `writeRunCloudSuccess` functions are the two chokepoints — redaction should be applied in these functions
+  - Output contract tests should verify both structural fields (error_code present) and content (specific error code values) — structure tests catch missing fields, content tests catch wrong values
 ---
