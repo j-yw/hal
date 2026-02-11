@@ -38,6 +38,7 @@ var (
 // Cloud logs flags.
 var (
 	cloudLogsFollowFlag bool
+	cloudLogsJSONFlag   bool
 )
 
 // Cloud cancel flags.
@@ -141,6 +142,7 @@ Output never includes unredacted secret tokens.`,
 		return runCloudLogs(
 			args[0],
 			cloudLogsFollowFlag,
+			cloudLogsJSONFlag,
 			cloudLogsStoreFactory,
 			os.Stdout,
 			cmd.Context(),
@@ -232,6 +234,7 @@ func init() {
 	cloudStatusCmd.Flags().BoolVar(&cloudStatusJSONFlag, "json", false, "Output in JSON format")
 
 	cloudLogsCmd.Flags().BoolVar(&cloudLogsFollowFlag, "follow", false, "Stream new events until interrupted")
+	cloudLogsCmd.Flags().BoolVar(&cloudLogsJSONFlag, "json", false, "Output in JSON format")
 
 	cloudCancelCmd.Flags().BoolVar(&cloudCancelJSONFlag, "json", false, "Output in JSON format")
 
@@ -604,45 +607,81 @@ func formatDuration(d time.Duration) string {
 // Package-level variable so tests can override it.
 var cloudLogsFollowPollInterval = 2 * time.Second
 
+// cloudLogsResponse is the JSON output for a successful logs query.
+type cloudLogsResponse struct {
+	RunID  string              `json:"run_id"`
+	Status string              `json:"status"`
+	Events []cloudLogsEventJSON `json:"events"`
+}
+
+// cloudLogsEventJSON is a single event in the JSON logs response.
+type cloudLogsEventJSON struct {
+	ID          string  `json:"id"`
+	EventType   string  `json:"event_type"`
+	PayloadJSON *string `json:"payload_json,omitempty"`
+	Redacted    bool    `json:"redacted"`
+	CreatedAt   string  `json:"created_at"`
+}
+
 // runCloudLogs is the testable logic for the cloud logs command.
 func runCloudLogs(
 	runID string,
 	follow bool,
+	jsonOutput bool,
 	storeFactory func() (cloud.Store, error),
 	out io.Writer,
 	ctx context.Context,
 ) error {
 	if storeFactory == nil {
-		return writeCloudError(out, false, "store not configured", "configuration_error")
+		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
 	}
 
 	store, err := storeFactory()
 	if err != nil {
-		return writeCloudError(out, false, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
 	}
 
 	// Verify the run exists.
 	run, err := store.GetRun(ctx, runID)
 	if err != nil {
 		if cloud.IsNotFound(err) {
+			if jsonOutput {
+				_ = writeJSON(out, cloudErrorResponse{
+					Error:     fmt.Sprintf("run %q not found", runID),
+					ErrorCode: "run_not_found",
+				})
+			}
 			return fmt.Errorf("run %q not found", runID)
 		}
-		return fmt.Errorf("failed to get run: %w", err)
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
 	}
 
 	// Fetch and print initial events.
 	events, err := store.ListEvents(ctx, runID)
 	if err != nil {
-		return fmt.Errorf("failed to list events: %w", err)
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to list events: %v", err), "store_error")
 	}
 
 	seen := make(map[string]bool)
+	var collected []cloudLogsEventJSON
 	for _, e := range events {
-		formatEvent(out, e)
+		if !jsonOutput {
+			formatEvent(out, e)
+		}
+		if jsonOutput {
+			collected = append(collected, eventToJSON(e))
+		}
 		seen[e.ID] = true
 	}
 
 	if !follow {
+		if jsonOutput {
+			return writeJSON(out, cloudLogsResponse{
+				RunID:  run.ID,
+				Status: string(run.Status),
+				Events: ensureEventSlice(collected),
+			})
+		}
 		return nil
 	}
 
@@ -650,11 +689,25 @@ func runCloudLogs(
 	// or context is canceled.
 	for {
 		if run.Status.IsTerminal() {
+			if jsonOutput {
+				return writeJSON(out, cloudLogsResponse{
+					RunID:  run.ID,
+					Status: string(run.Status),
+					Events: ensureEventSlice(collected),
+				})
+			}
 			return nil
 		}
 
 		select {
 		case <-ctx.Done():
+			if jsonOutput {
+				return writeJSON(out, cloudLogsResponse{
+					RunID:  run.ID,
+					Status: string(run.Status),
+					Events: ensureEventSlice(collected),
+				})
+			}
 			return nil
 		case <-time.After(cloudLogsFollowPollInterval):
 		}
@@ -662,22 +715,46 @@ func runCloudLogs(
 		// Re-fetch the run status to detect terminal state.
 		run, err = store.GetRun(ctx, runID)
 		if err != nil {
-			return fmt.Errorf("failed to get run: %w", err)
+			return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
 		}
 
 		events, err = store.ListEvents(ctx, runID)
 		if err != nil {
-			return fmt.Errorf("failed to list events: %w", err)
+			return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to list events: %v", err), "store_error")
 		}
 
 		for _, e := range events {
 			if seen[e.ID] {
 				continue
 			}
-			formatEvent(out, e)
+			if !jsonOutput {
+				formatEvent(out, e)
+			}
+			if jsonOutput {
+				collected = append(collected, eventToJSON(e))
+			}
 			seen[e.ID] = true
 		}
 	}
+}
+
+// eventToJSON converts a cloud Event to a JSON-serializable struct.
+func eventToJSON(e *cloud.Event) cloudLogsEventJSON {
+	return cloudLogsEventJSON{
+		ID:          e.ID,
+		EventType:   e.EventType,
+		PayloadJSON: e.PayloadJSON,
+		Redacted:    e.Redacted,
+		CreatedAt:   e.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+// ensureEventSlice returns a non-nil slice so JSON marshals as [] not null.
+func ensureEventSlice(events []cloudLogsEventJSON) []cloudLogsEventJSON {
+	if events == nil {
+		return make([]cloudLogsEventJSON, 0)
+	}
+	return events
 }
 
 // formatEvent writes a single event line to the writer.

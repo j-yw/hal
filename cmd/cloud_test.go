@@ -1221,6 +1221,7 @@ func TestRunCloudLogs(t *testing.T) {
 			err := runCloudLogs(
 				tt.runID,
 				tt.follow,
+				false,
 				storeFactory,
 				&out,
 				ctx,
@@ -1276,7 +1277,7 @@ func TestRunCloudLogs_FollowWithContextCancel(t *testing.T) {
 	defer cancel()
 
 	var out bytes.Buffer
-	err := runCloudLogs("run-001", true, storeFactory, &out, ctx)
+	err := runCloudLogs("run-001", true, false, storeFactory, &out, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1316,7 +1317,7 @@ func TestRunCloudLogs_FollowNewEvents(t *testing.T) {
 	defer cancel()
 
 	var out bytes.Buffer
-	err := runCloudLogs("run-001", true, storeFactory, &out, ctx)
+	err := runCloudLogs("run-001", true, false, storeFactory, &out, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1365,6 +1366,366 @@ func TestFormatEvent(t *testing.T) {
 				t.Errorf("formatEvent output = %q, want %q", out.String(), tt.wantOutput)
 			}
 		})
+	}
+}
+
+func TestRunCloudLogs_JSON(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
+	payload := `{"message":"sandbox created"}`
+
+	tests := []struct {
+		name      string
+		runID     string
+		follow    bool
+		store     func() *cloudMockStore
+		wantErr   string
+		checkJSON func(t *testing.T, output string)
+	}{
+		{
+			name:  "returns valid JSON with events",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.events["run-001"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-001", EventType: "sandbox_created", PayloadJSON: &payload, CreatedAt: now},
+					{ID: "e2", RunID: "run-001", EventType: "bootstrap_started", CreatedAt: now.Add(time.Second)},
+				}
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudLogsResponse
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				if resp.RunID != "run-001" {
+					t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
+				}
+				if resp.Status != "running" {
+					t.Errorf("status = %q, want %q", resp.Status, "running")
+				}
+				if len(resp.Events) != 2 {
+					t.Fatalf("events count = %d, want 2", len(resp.Events))
+				}
+				if resp.Events[0].EventType != "sandbox_created" {
+					t.Errorf("events[0].event_type = %q, want %q", resp.Events[0].EventType, "sandbox_created")
+				}
+				if resp.Events[0].PayloadJSON == nil || *resp.Events[0].PayloadJSON != payload {
+					t.Errorf("events[0].payload_json = %v, want %q", resp.Events[0].PayloadJSON, payload)
+				}
+				if resp.Events[1].EventType != "bootstrap_started" {
+					t.Errorf("events[1].event_type = %q, want %q", resp.Events[1].EventType, "bootstrap_started")
+				}
+				if resp.Events[1].PayloadJSON != nil {
+					t.Errorf("events[1].payload_json = %v, want nil", resp.Events[1].PayloadJSON)
+				}
+			},
+		},
+		{
+			name:  "empty events returns valid JSON with empty array",
+			runID: "run-002",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-002")
+				run.Status = cloud.RunStatusQueued
+				s.runsByID["run-002"] = run
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudLogsResponse
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				if resp.RunID != "run-002" {
+					t.Errorf("run_id = %q, want %q", resp.RunID, "run-002")
+				}
+				if resp.Status != "queued" {
+					t.Errorf("status = %q, want %q", resp.Status, "queued")
+				}
+				// Must be [] not null.
+				if !strings.Contains(output, `"events": []`) {
+					t.Errorf("expected empty events array [], got %s", output)
+				}
+			},
+		},
+		{
+			name:  "unknown run_id returns JSON error",
+			runID: "non-existent",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantErr: "not found",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				if resp.ErrorCode != "run_not_found" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "run_not_found")
+				}
+				if !strings.Contains(resp.Error, "non-existent") {
+					t.Errorf("error should contain run ID, got %q", resp.Error)
+				}
+			},
+		},
+		{
+			name:  "nil store factory returns JSON error",
+			runID: "run-001",
+			store: nil,
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+				if !strings.Contains(resp.Error, "store not configured") {
+					t.Errorf("error = %q, want to contain %q", resp.Error, "store not configured")
+				}
+			},
+		},
+		{
+			name:  "store factory error returns JSON error",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				return nil // signals store factory error
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				if resp.ErrorCode != "configuration_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
+				}
+				if !strings.Contains(resp.Error, "failed to connect to store") {
+					t.Errorf("error = %q, want to contain %q", resp.Error, "failed to connect to store")
+				}
+			},
+		},
+		{
+			name:  "list events error returns JSON error",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.listEventsErr = fmt.Errorf("db error")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				if resp.ErrorCode != "store_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "store_error")
+				}
+				if !strings.Contains(resp.Error, "failed to list events") {
+					t.Errorf("error = %q, want to contain %q", resp.Error, "failed to list events")
+				}
+			},
+		},
+		{
+			name:  "JSON output has no plain-text lines",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.events["run-001"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-001", EventType: "sandbox_created", PayloadJSON: &payload, CreatedAt: now},
+				}
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				// The entire output should be a single valid JSON document.
+				trimmed := strings.TrimSpace(output)
+				if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+					t.Errorf("output should be a JSON object, got %q", trimmed)
+				}
+				var resp cloudLogsResponse
+				if err := json.Unmarshal([]byte(trimmed), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v", err)
+				}
+			},
+		},
+		{
+			name:  "JSON response includes required fields",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.events["run-001"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-001", EventType: "execution_started", Redacted: true, CreatedAt: now},
+				}
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var raw map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &raw); err != nil {
+					t.Fatalf("not valid JSON: %v", err)
+				}
+				for _, key := range []string{"run_id", "status", "events"} {
+					if _, ok := raw[key]; !ok {
+						t.Errorf("JSON output missing required field %q", key)
+					}
+				}
+				// Check event fields.
+				var resp cloudLogsResponse
+				json.Unmarshal([]byte(strings.TrimSpace(output)), &resp)
+				if len(resp.Events) != 1 {
+					t.Fatalf("expected 1 event, got %d", len(resp.Events))
+				}
+				ev := resp.Events[0]
+				if ev.ID != "e1" {
+					t.Errorf("event id = %q, want %q", ev.ID, "e1")
+				}
+				if ev.EventType != "execution_started" {
+					t.Errorf("event_type = %q, want %q", ev.EventType, "execution_started")
+				}
+				if !ev.Redacted {
+					t.Errorf("redacted = false, want true")
+				}
+				if ev.CreatedAt != "2026-02-10T12:00:00Z" {
+					t.Errorf("created_at = %q, want %q", ev.CreatedAt, "2026-02-10T12:00:00Z")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var storeFactory func() (cloud.Store, error)
+			if tt.store != nil {
+				mockStore := tt.store()
+				if mockStore == nil {
+					storeFactory = func() (cloud.Store, error) {
+						return nil, fmt.Errorf("store factory error")
+					}
+				} else {
+					storeFactory = func() (cloud.Store, error) {
+						return mockStore, nil
+					}
+				}
+			}
+
+			var out bytes.Buffer
+			ctx := context.Background()
+			err := runCloudLogs(
+				tt.runID,
+				tt.follow,
+				true, // jsonOutput
+				storeFactory,
+				&out,
+				ctx,
+			)
+
+			if tt.checkJSON != nil {
+				tt.checkJSON(t, out.String())
+			}
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunCloudLogs_FollowJSON(t *testing.T) {
+	// Test that --follow mode with --json collects events and outputs valid JSON at completion.
+	s := newCloudMockStore()
+	run := validCloudRun("run-001")
+	run.Status = cloud.RunStatusRunning
+	s.runsByID["run-001"] = run
+	s.events["run-001"] = []*cloud.Event{
+		{ID: "e1", RunID: "run-001", EventType: "execution_started", CreatedAt: time.Now().UTC()},
+	}
+
+	storeFactory := func() (cloud.Store, error) { return s, nil }
+
+	origInterval := cloudLogsFollowPollInterval
+	cloudLogsFollowPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { cloudLogsFollowPollInterval = origInterval })
+
+	// After a short delay, add a new event and mark the run as succeeded.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		s.events["run-001"] = append(s.events["run-001"],
+			&cloud.Event{ID: "e2", RunID: "run-001", EventType: "run_succeeded", CreatedAt: time.Now().UTC()},
+		)
+		run.Status = cloud.RunStatusSucceeded
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	err := runCloudLogs("run-001", true, true, storeFactory, &out, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Output should be valid JSON with both events collected.
+	var resp cloudLogsResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out.String())
+	}
+	if resp.RunID != "run-001" {
+		t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
+	}
+	if resp.Status != "succeeded" {
+		t.Errorf("status = %q, want %q", resp.Status, "succeeded")
+	}
+	if len(resp.Events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(resp.Events))
+	}
+}
+
+func TestRunCloudLogs_FollowJSONContextCancel(t *testing.T) {
+	// Test that --follow with --json still outputs valid JSON on context cancellation.
+	s := newCloudMockStore()
+	run := validCloudRun("run-001")
+	run.Status = cloud.RunStatusRunning
+	s.runsByID["run-001"] = run
+	s.events["run-001"] = []*cloud.Event{
+		{ID: "e1", RunID: "run-001", EventType: "execution_started", CreatedAt: time.Now().UTC()},
+	}
+
+	storeFactory := func() (cloud.Store, error) { return s, nil }
+
+	origInterval := cloudLogsFollowPollInterval
+	cloudLogsFollowPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { cloudLogsFollowPollInterval = origInterval })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	err := runCloudLogs("run-001", true, true, storeFactory, &out, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Even on context cancellation, JSON output should be valid.
+	var resp cloudLogsResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("output is not valid JSON on context cancel: %v\noutput: %s", err, out.String())
+	}
+	if resp.RunID != "run-001" {
+		t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
+	}
+	if len(resp.Events) < 1 {
+		t.Errorf("expected at least 1 event, got %d", len(resp.Events))
 	}
 }
 

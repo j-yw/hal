@@ -21,6 +21,8 @@
 - Wait/detach behavior: --detach overrides to no-wait, --wait overrides to wait, otherwise use resolved.Wait from config.Resolve()
 - pollRunUntilTerminal() polls store.GetRun until IsTerminal(); uses runCloudPollInterval variable for test override
 - JSON response uses camelCase field names (runId, workflowKind, status) matching the PRD contract
+- writeCloudError(out, jsonOutput, msg, code) in JSON mode writes JSON to output and returns nil — test JSON error cases by checking output content, not Go error return
+- Cloud logs JSON uses cloudLogsResponse{run_id, status, events[]} — follow mode collects all events and emits single JSON document at terminal/cancel
 
 ---
 ## 2026-02-11 - US-001
@@ -253,4 +255,23 @@
   - When AC specifies a deterministic error code like `run_not_found`, verify the exact code string in the implementation — generic codes like `not_found` may not satisfy the contract
   - Always check if fields mentioned in acceptance criteria (workflow kind, timestamps) are actually present in both human and JSON output modes
   - The status command's tests in `cloud_test.go` (TestRunCloudStatus) are alongside tests for other cloud commands — consider moving to a dedicated `cloud_status_test.go` file for consistency with other commands like `cloud_list_test.go`
+---
+## 2026-02-11 - US-014
+- Implemented `--json` support for `hal cloud logs` command, completing the missing acceptance criteria
+- Added `cloudLogsJSONFlag` variable and `--json` flag registration on `cloudLogsCmd`
+- Updated `runCloudLogs` signature to accept `jsonOutput bool` parameter
+- Added `cloudLogsResponse` and `cloudLogsEventJSON` JSON response types with fields: `run_id`, `status`, `events[]` (each with `id`, `event_type`, `payload_json`, `redacted`, `created_at`)
+- JSON mode: non-follow outputs single JSON document with all events; follow mode collects events and outputs JSON on terminal status or context cancellation
+- JSON errors use `writeCloudError` with proper error codes: `configuration_error`, `store_error`, `run_not_found`
+- Added `eventToJSON` and `ensureEventSlice` helpers (empty events marshal as `[]` not `null`)
+- Updated 3 existing test calls to pass new `jsonOutput` parameter
+- Added `TestRunCloudLogs_JSON` with 8 table-driven tests: valid JSON output, empty events array, unknown run_id JSON error, nil store factory JSON error, store factory error JSON error, list events error JSON error, no plain-text lines in JSON, required fields verification
+- Added `TestRunCloudLogs_FollowJSON` — follow mode collects new events and outputs valid JSON at terminal status
+- Added `TestRunCloudLogs_FollowJSONContextCancel` — follow mode outputs valid JSON even on context cancellation
+- Files changed: cmd/cloud.go, cmd/cloud_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - `writeCloudError` in JSON mode writes the error JSON to output and returns `nil` (not a Go error) — tests should check JSON output content, not `wantErr`, for JSON error cases
+  - For follow mode with JSON, collecting events into a slice and emitting a single JSON document at the end (terminal status or context cancel) is cleaner than JSONL streaming — ensures the output is always a single valid JSON document
+  - `ensureEventSlice` prevents `null` JSON for empty arrays — use `make([]T, 0)` or this helper whenever the contract requires `[]` not `null`
+  - The `runCloudLogs` function already existed with plain-text output — the story was incomplete only because `--json` support was missing and the flag wasn't registered
 ---
