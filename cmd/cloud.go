@@ -258,6 +258,8 @@ func writeJSON(out io.Writer, v interface{}) error {
 
 // writeCloudError handles writing an error in the appropriate format for cloud commands.
 func writeCloudError(out io.Writer, jsonOutput bool, msg, code string) error {
+	msg = cloud.Redact(msg)
+
 	if jsonOutput {
 		return writeJSON(out, cloudErrorResponse{
 			Error:     msg,
@@ -309,14 +311,15 @@ func runCloudStatus(
 	run, err := store.GetRun(ctx, runID)
 	if err != nil {
 		if cloud.IsNotFound(err) {
+			redactedRunID := cloud.Redact(runID)
 			if jsonOutput {
 				_ = writeJSON(out, cloudErrorResponse{
-					Error:     fmt.Sprintf("run %q not found", runID),
+					Error:     fmt.Sprintf("run %q not found", redactedRunID),
 					ErrorCode: "run_not_found",
 				})
-				return fmt.Errorf("run %q not found", runID)
+				return fmt.Errorf("run %q not found", redactedRunID)
 			}
-			return fmt.Errorf("run %q not found", runID)
+			return fmt.Errorf("run %q not found", redactedRunID)
 		}
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
 	}
@@ -334,13 +337,13 @@ func runCloudStatus(
 
 	if jsonOutput {
 		resp := cloudStatusResponse{
-			RunID:         run.ID,
-			WorkflowKind:  string(run.WorkflowKind),
-			Status:        string(run.Status),
+			RunID:         cloud.Redact(run.ID),
+			WorkflowKind:  cloud.Redact(string(run.WorkflowKind)),
+			Status:        cloud.Redact(string(run.Status)),
 			AttemptCount:  run.AttemptCount,
 			MaxAttempts:   run.MaxAttempts,
-			Engine:        run.Engine,
-			AuthProfileID: run.AuthProfileID,
+			Engine:        cloud.Redact(run.Engine),
+			AuthProfileID: cloud.Redact(run.AuthProfileID),
 			CreatedAt:     run.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:     run.UpdatedAt.Format(time.RFC3339),
 		}
@@ -360,9 +363,9 @@ func runCloudStatus(
 
 	// Human-readable output.
 	fmt.Fprintf(out, "Run status:\n")
-	fmt.Fprintf(out, "  run_id:          %s\n", run.ID)
-	fmt.Fprintf(out, "  workflow_kind:   %s\n", run.WorkflowKind)
-	fmt.Fprintf(out, "  status:          %s\n", run.Status)
+	fmt.Fprintf(out, "  run_id:          %s\n", cloud.Redact(run.ID))
+	fmt.Fprintf(out, "  workflow_kind:   %s\n", cloud.Redact(string(run.WorkflowKind)))
+	fmt.Fprintf(out, "  status:          %s\n", cloud.Redact(string(run.Status)))
 	fmt.Fprintf(out, "  attempt_count:   %d\n", run.AttemptCount)
 	fmt.Fprintf(out, "  max_attempts:    %d\n", run.MaxAttempts)
 	if currentAttempt != nil {
@@ -438,13 +441,14 @@ func runCloudLogs(
 	run, err := store.GetRun(ctx, runID)
 	if err != nil {
 		if cloud.IsNotFound(err) {
+			redactedRunID := cloud.Redact(runID)
 			if jsonOutput {
 				_ = writeJSON(out, cloudErrorResponse{
-					Error:     fmt.Sprintf("run %q not found", runID),
+					Error:     fmt.Sprintf("run %q not found", redactedRunID),
 					ErrorCode: "run_not_found",
 				})
 			}
-			return fmt.Errorf("run %q not found", runID)
+			return fmt.Errorf("run %q not found", redactedRunID)
 		}
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
 	}
@@ -470,8 +474,8 @@ func runCloudLogs(
 	if !follow {
 		if jsonOutput {
 			return writeJSON(out, cloudLogsResponse{
-				RunID:  run.ID,
-				Status: string(run.Status),
+				RunID:  cloud.Redact(run.ID),
+				Status: cloud.Redact(string(run.Status)),
 				Events: ensureEventSlice(collected),
 			})
 		}
@@ -484,8 +488,8 @@ func runCloudLogs(
 		if run.Status.IsTerminal() {
 			if jsonOutput {
 				return writeJSON(out, cloudLogsResponse{
-					RunID:  run.ID,
-					Status: string(run.Status),
+					RunID:  cloud.Redact(run.ID),
+					Status: cloud.Redact(string(run.Status)),
 					Events: ensureEventSlice(collected),
 				})
 			}
@@ -496,8 +500,8 @@ func runCloudLogs(
 		case <-ctx.Done():
 			if jsonOutput {
 				return writeJSON(out, cloudLogsResponse{
-					RunID:  run.ID,
-					Status: string(run.Status),
+					RunID:  cloud.Redact(run.ID),
+					Status: cloud.Redact(string(run.Status)),
 					Events: ensureEventSlice(collected),
 				})
 			}
@@ -533,10 +537,16 @@ func runCloudLogs(
 
 // eventToJSON converts a cloud Event to a JSON-serializable struct.
 func eventToJSON(e *cloud.Event) cloudLogsEventJSON {
+	var payloadJSON *string
+	if e.PayloadJSON != nil {
+		redactedPayload := cloud.Redact(*e.PayloadJSON)
+		payloadJSON = &redactedPayload
+	}
+
 	return cloudLogsEventJSON{
-		ID:          e.ID,
-		EventType:   e.EventType,
-		PayloadJSON: e.PayloadJSON,
+		ID:          cloud.Redact(e.ID),
+		EventType:   cloud.Redact(e.EventType),
+		PayloadJSON: payloadJSON,
 		Redacted:    e.Redacted,
 		CreatedAt:   e.CreatedAt.Format(time.RFC3339),
 	}
@@ -553,10 +563,11 @@ func ensureEventSlice(events []cloudLogsEventJSON) []cloudLogsEventJSON {
 // formatEvent writes a single event line to the writer.
 func formatEvent(out io.Writer, e *cloud.Event) {
 	ts := e.CreatedAt.Format(time.RFC3339)
+	eventType := cloud.Redact(e.EventType)
 	if e.PayloadJSON != nil && *e.PayloadJSON != "" {
-		fmt.Fprintf(out, "%s  %-24s  %s\n", ts, e.EventType, *e.PayloadJSON)
+		fmt.Fprintf(out, "%s  %-24s  %s\n", ts, eventType, cloud.Redact(*e.PayloadJSON))
 	} else {
-		fmt.Fprintf(out, "%s  %-24s\n", ts, e.EventType)
+		fmt.Fprintf(out, "%s  %-24s\n", ts, eventType)
 	}
 }
 
@@ -592,33 +603,36 @@ func runCloudCancel(
 	run, err := store.GetRun(ctx, runID)
 	if err != nil {
 		if cloud.IsNotFound(err) {
+			redactedRunID := cloud.Redact(runID)
 			if jsonOutput {
 				_ = writeJSON(out, cloudErrorResponse{
-					Error:     fmt.Sprintf("run %q not found", runID),
+					Error:     fmt.Sprintf("run %q not found", redactedRunID),
 					ErrorCode: "not_found",
 				})
-				return fmt.Errorf("run %q not found", runID)
+				return fmt.Errorf("run %q not found", redactedRunID)
 			}
-			return fmt.Errorf("run %q not found", runID)
+			return fmt.Errorf("run %q not found", redactedRunID)
 		}
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
 	}
 
 	if run.Status.IsTerminal() {
 		ts := run.UpdatedAt.Format(time.RFC3339)
+		runID := cloud.Redact(run.ID)
+		terminalStatus := cloud.Redact(string(run.Status))
 		if jsonOutput {
 			return writeJSON(out, cloudCancelResponse{
-				RunID:           run.ID,
+				RunID:           runID,
 				CancelRequested: run.CancelRequested,
 				Status:          "already_terminal",
-				TerminalStatus:  string(run.Status),
+				TerminalStatus:  terminalStatus,
 				CanceledAt:      &ts,
 			})
 		}
 		fmt.Fprintf(out, "Run is already terminal.\n")
-		fmt.Fprintf(out, "  run_id:           %s\n", run.ID)
+		fmt.Fprintf(out, "  run_id:           %s\n", runID)
 		fmt.Fprintf(out, "  status:           already_terminal\n")
-		fmt.Fprintf(out, "  terminal_status:  %s\n", run.Status)
+		fmt.Fprintf(out, "  terminal_status:  %s\n", terminalStatus)
 		fmt.Fprintf(out, "  canceled_at:      %s\n", ts)
 		return nil
 	}
@@ -637,16 +651,16 @@ func runCloudCancel(
 
 	if jsonOutput {
 		return writeJSON(out, cloudCancelResponse{
-			RunID:           run.ID,
+			RunID:           cloud.Redact(run.ID),
 			CancelRequested: run.CancelRequested,
-			Status:          string(run.Status),
+			Status:          cloud.Redact(string(run.Status)),
 		})
 	}
 
 	fmt.Fprintf(out, "Cancel requested.\n")
-	fmt.Fprintf(out, "  run_id:           %s\n", run.ID)
+	fmt.Fprintf(out, "  run_id:           %s\n", cloud.Redact(run.ID))
 	fmt.Fprintf(out, "  cancel_requested: %v\n", run.CancelRequested)
-	fmt.Fprintf(out, "  status:           %s\n", run.Status)
+	fmt.Fprintf(out, "  status:           %s\n", cloud.Redact(string(run.Status)))
 	fmt.Fprintf(out, "  canceled_at:      pending\n")
 	return nil
 }
@@ -775,14 +789,15 @@ func runCloudPull(
 	// Verify the run exists.
 	if _, err := store.GetRun(ctx, runID); err != nil {
 		if cloud.IsNotFound(err) {
+			redactedRunID := cloud.Redact(runID)
 			if jsonOutput {
 				_ = writeJSON(out, cloudErrorResponse{
-					Error:     fmt.Sprintf("run %q not found", runID),
+					Error:     fmt.Sprintf("run %q not found", redactedRunID),
 					ErrorCode: "not_found",
 				})
-				return fmt.Errorf("run %q not found", runID)
+				return fmt.Errorf("run %q not found", redactedRunID)
 			}
-			return fmt.Errorf("run %q not found", runID)
+			return fmt.Errorf("run %q not found", redactedRunID)
 		}
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
 	}
@@ -848,12 +863,17 @@ func runCloudPull(
 	}
 
 	if jsonOutput {
+		redactedRestored := make([]string, 0, len(restored))
+		for _, path := range restored {
+			redactedRestored = append(redactedRestored, cloud.Redact(path))
+		}
+
 		resp := cloudPullResponse{
-			RunID:           runID,
+			RunID:           cloud.Redact(runID),
 			SnapshotVersion: snapshot.Version,
-			SHA256:          snapshot.SHA256,
-			Artifacts:       string(artifactGroup),
-			FilesRestored:   restored,
+			SHA256:          cloud.Redact(snapshot.SHA256),
+			Artifacts:       cloud.Redact(string(artifactGroup)),
+			FilesRestored:   redactedRestored,
 		}
 		if resp.FilesRestored == nil {
 			resp.FilesRestored = make([]string, 0)
@@ -863,10 +883,10 @@ func runCloudPull(
 
 	fmt.Fprintf(out, "Snapshot restored successfully.\n")
 	fmt.Fprintf(out, "  snapshot_version: %d\n", snapshot.Version)
-	fmt.Fprintf(out, "  sha256:           %s\n", snapshot.SHA256)
+	fmt.Fprintf(out, "  sha256:           %s\n", cloud.Redact(snapshot.SHA256))
 	fmt.Fprintf(out, "  files restored:   %d\n", len(restored))
 	for _, p := range restored {
-		fmt.Fprintf(out, "    %s\n", p)
+		fmt.Fprintf(out, "    %s\n", cloud.Redact(p))
 	}
 	return nil
 }

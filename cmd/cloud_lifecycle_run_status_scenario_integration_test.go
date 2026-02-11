@@ -31,6 +31,10 @@ var cloudLifecycleJSONLegacyAliases = map[string]string{
 	cloudLifecycleJSONKeySnapshotVersion:      "snapshot_version",
 	cloudLifecycleJSONKeyFilesRestored:        "files_restored",
 	cloudLifecycleJSONKeyErrorCode:            "error_code",
+	cloudLifecycleJSONKeyProfileID:            "profile_id",
+	cloudLifecycleJSONKeyValidatedAt:          "validated_at",
+	cloudLifecycleJSONKeyLastValidatedAt:      "last_validated_at",
+	cloudLifecycleJSONKeyRevokedAt:            "revoked_at",
 }
 
 func TestCloudLifecycleScenario_SetupRunStatus(t *testing.T) {

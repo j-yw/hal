@@ -47,6 +47,10 @@ const (
 	cloudLifecycleJSONKeyFilesRestored        = "filesRestored"
 	cloudLifecycleJSONKeyError                = "error"
 	cloudLifecycleJSONKeyErrorCode            = "errorCode"
+	cloudLifecycleJSONKeyProfileID            = "profileId"
+	cloudLifecycleJSONKeyValidatedAt          = "validatedAt"
+	cloudLifecycleJSONKeyLastValidatedAt      = "lastValidatedAt"
+	cloudLifecycleJSONKeyRevokedAt            = "revokedAt"
 )
 
 var cloudLifecycleJSONContractKeys = []string{
@@ -72,6 +76,10 @@ var cloudLifecycleJSONContractKeys = []string{
 	cloudLifecycleJSONKeyFilesRestored,
 	cloudLifecycleJSONKeyError,
 	cloudLifecycleJSONKeyErrorCode,
+	cloudLifecycleJSONKeyProfileID,
+	cloudLifecycleJSONKeyValidatedAt,
+	cloudLifecycleJSONKeyLastValidatedAt,
+	cloudLifecycleJSONKeyRevokedAt,
 }
 
 type cloudLifecycleCheckpointFixture struct {

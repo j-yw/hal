@@ -184,8 +184,8 @@ func runHalReviewCloud(
 	// 7. Wait mode: poll until terminal status.
 	if !jsonOutput {
 		fmt.Fprintf(out, "Review run submitted.\n")
-		fmt.Fprintf(out, "  run_id: %s\n", run.ID)
-		fmt.Fprintf(out, "  status: %s\n", run.Status)
+		fmt.Fprintf(out, "  run_id: %s\n", cloud.Redact(run.ID))
+		fmt.Fprintf(out, "  status: %s\n", cloud.Redact(string(run.Status)))
 		fmt.Fprintf(out, "Waiting for completion...\n")
 	}
 
@@ -219,42 +219,52 @@ func pollReviewRunUntilTerminal(ctx context.Context, store cloud.Store, runID st
 
 // writeReviewCloudSuccess writes the submission result (used in detach mode).
 func writeReviewCloudSuccess(out io.Writer, jsonOutput bool, run *cloud.Run) error {
+	runID := cloud.Redact(run.ID)
+	workflowKind := cloud.Redact(string(run.WorkflowKind))
+	status := cloud.Redact(string(run.Status))
+
 	if jsonOutput {
 		return writeJSON(out, reviewCloudResponse{
-			RunID:        run.ID,
-			WorkflowKind: string(run.WorkflowKind),
-			Status:       string(run.Status),
+			RunID:        runID,
+			WorkflowKind: workflowKind,
+			Status:       status,
 		})
 	}
 
 	fmt.Fprintf(out, "Review run submitted.\n")
-	fmt.Fprintf(out, "  run_id: %s\n", run.ID)
-	fmt.Fprintf(out, "  status: %s\n", run.Status)
-	fmt.Fprintf(out, "\nNext: hal cloud status %s\n", run.ID)
+	fmt.Fprintf(out, "  run_id: %s\n", runID)
+	fmt.Fprintf(out, "  status: %s\n", status)
+	fmt.Fprintf(out, "\nNext: hal cloud status %s\n", runID)
 	return nil
 }
 
 // writeReviewCloudTerminal writes the final result after a run reaches terminal status.
 func writeReviewCloudTerminal(out io.Writer, jsonOutput bool, run *cloud.Run) error {
+	runID := cloud.Redact(run.ID)
+	workflowKind := cloud.Redact(string(run.WorkflowKind))
+	status := cloud.Redact(string(run.Status))
+
 	if jsonOutput {
 		return writeJSON(out, reviewCloudResponse{
-			RunID:        run.ID,
-			WorkflowKind: string(run.WorkflowKind),
-			Status:       string(run.Status),
+			RunID:        runID,
+			WorkflowKind: workflowKind,
+			Status:       status,
 		})
 	}
 
 	fmt.Fprintf(out, "Review run complete.\n")
-	fmt.Fprintf(out, "  run_id: %s\n", run.ID)
-	fmt.Fprintf(out, "  status: %s\n", run.Status)
+	fmt.Fprintf(out, "  run_id: %s\n", runID)
+	fmt.Fprintf(out, "  status: %s\n", status)
 	fmt.Fprintf(out, "\nArtifacts available: state, reports\n")
-	fmt.Fprintf(out, "Next: hal cloud pull %s\n", run.ID)
-	fmt.Fprintf(out, "       hal cloud logs %s\n", run.ID)
+	fmt.Fprintf(out, "Next: hal cloud pull %s\n", runID)
+	fmt.Fprintf(out, "       hal cloud logs %s\n", runID)
 	return nil
 }
 
 // writeReviewCloudError writes an error in the appropriate format for hal review --cloud.
 func writeReviewCloudError(out io.Writer, jsonOutput bool, msg, code string) error {
+	msg = cloud.Redact(msg)
+
 	if jsonOutput {
 		return writeJSON(out, reviewCloudErrorResponse{
 			Error:     msg,

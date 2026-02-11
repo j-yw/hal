@@ -47,6 +47,8 @@
 - Auto/review lifecycle scenarios should assert `workflowKind` via `cloudLifecycleWorkflowFixtures` and `status --json`, then run one downstream checkpoint (`logs` or `pull`) to lock command-chain behavior
 - Lifecycle pull scenarios should derive `--artifacts` from `cloud.WorkflowArtifactGroups(run.WorkflowKind)` and delete target files before pull so tests verify real restoration, not pre-existing files
 - Cancel lifecycle scenarios should use a harness-store `SetCancelIntent` override that marks non-terminal runs as `canceled` immediately, keeping `cancel -> status` assertions deterministic without worker background loops
+- For lifecycle security assertions, seed secret-bearing values into run IDs and log payloads, then validate both human and JSON outputs through shared helpers (`assertLifecycleOutputRedacted`, `assertLifecycleJSONOutputRedacted`) so redaction checks stay consistent.
+- Auth JSON contract checks in integration tests should assert required camelCase keys (`profileId`, `validatedAt`, `revokedAt`) and explicitly fail on snake_case aliases once a command is migrated.
 
 ---
 ## 2026-02-11 - US-001
@@ -604,4 +606,14 @@
   - In workerless lifecycle integration harnesses, cancellation tests need a `SetCancelIntent` override that transitions run state to `canceled`; otherwise the flow stalls in non-terminal states
   - Assert cancel/status consistency per output mode (human and JSON) by comparing the same `status` field from both commands to catch contract drift early
   - Reusing shared checkpoint fixtures for cancel/status keeps required JSON-key assertions aligned during camelCase migration
+---
+## 2026-02-12 02:09 +08 - T-012
+- Enforced lifecycle security assertions with shared redaction helpers and added integration coverage for secret redaction across workflow commands (`run`/`auto`/`review`) and cloud lifecycle commands (`status`/`logs`/`cancel`/`pull`) in both human and `--json` modes
+- Added integration checks for auth JSON contract casing (`profileId`, `validatedAt`, `revokedAt`) and ensured migrated auth responses reject snake_case aliases
+- Applied `cloud.Redact()` across additional cloud/auth output paths (auto/review cloud outputs, cloud status/logs/cancel/pull outputs, and auth link/status/validate/revoke outputs) so security assertions pass end-to-end
+- Files changed: cmd/auto_cloud.go, cmd/review_cloud.go, cmd/cloud.go, cmd/cloud_auth.go, cmd/cloud_lifecycle_fixtures_integration_test.go, cmd/cloud_lifecycle_run_status_scenario_integration_test.go, cmd/cloud_lifecycle_security_assertions_integration_test.go, cmd/cloud_lifecycle_security_scenario_integration_test.go, AGENTS.md, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Shared redaction assertions are easiest to keep deterministic by seeding known secret patterns into run IDs/log payloads and checking both human and JSON outputs through one helper pair
+  - Keep lifecycle JSON key assertions migration-safe with canonical camelCase keys plus explicit legacy aliases, but enforce strict camelCase for auth commands that are already migrated
+  - Redaction chokepoints should cover command-level success, error, and terminal outputs; otherwise integration tests will miss leak paths that unit tests on single functions may not hit
 ---

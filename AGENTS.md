@@ -136,3 +136,5 @@
 - Baseline lifecycle scenarios should run `setup -> run --cloud -> status` in one harness flow, assert both human and JSON outputs at run/status checkpoints, and confirm persistence by reading the run back from harness store (`GetRun`).
 - For shared lifecycle JSON key assertions during output-contract migrations, check canonical camelCase keys with explicit snake_case fallback aliases rather than hardcoding one casing per scenario.
 - Pull lifecycle scenarios should derive `--artifacts` from `cloud.WorkflowArtifactGroups(run.WorkflowKind)` and delete target files before `cloud pull` so tests verify actual restoration instead of pre-existing local files.
+- For lifecycle security coverage, seed secret-bearing values (for example in run IDs or log payloads) and assert redaction through shared helpers (`assertLifecycleOutputRedacted`, `assertLifecycleJSONOutputRedacted`) in both human and `--json` command paths.
+- Keep auth JSON contract checks explicit in integration tests by asserting required camelCase keys (`profileId`, `validatedAt`, `revokedAt`) and rejecting snake_case aliases for commands that already migrated.

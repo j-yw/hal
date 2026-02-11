@@ -269,29 +269,35 @@ func runCloudAuthLink(
 	result, err := svc.Link(ctx, req)
 	if err != nil {
 		code := classifyAuthLinkError(err)
+		redactedErr := cloud.Redact(err.Error())
 		if jsonOutput {
 			return writeJSON(out, cloudErrorResponse{
-				Error:     err.Error(),
+				Error:     redactedErr,
 				ErrorCode: code,
 			})
 		}
-		return fmt.Errorf("auth link failed: %w", err)
+		return fmt.Errorf("auth link failed: %s", redactedErr)
 	}
+
+	profileID := cloud.Redact(result.ProfileID)
+	providerValue := cloud.Redact(result.Provider)
+	statusValue := cloud.Redact(result.Status)
+	linkedAt := result.LinkedAt.Format(time.RFC3339)
 
 	if jsonOutput {
 		return writeJSON(out, cloudAuthLinkResponse{
-			ProfileID: result.ProfileID,
-			Provider:  result.Provider,
-			Status:    result.Status,
-			LinkedAt:  result.LinkedAt.Format(time.RFC3339),
+			ProfileID: profileID,
+			Provider:  providerValue,
+			Status:    statusValue,
+			LinkedAt:  linkedAt,
 		})
 	}
 
 	fmt.Fprintf(out, "Auth profile linked successfully.\n")
-	fmt.Fprintf(out, "  profile_id: %s\n", result.ProfileID)
-	fmt.Fprintf(out, "  provider:   %s\n", result.Provider)
-	fmt.Fprintf(out, "  status:     %s\n", result.Status)
-	fmt.Fprintf(out, "  linked_at:  %s\n", result.LinkedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "  profile_id: %s\n", profileID)
+	fmt.Fprintf(out, "  provider:   %s\n", providerValue)
+	fmt.Fprintf(out, "  status:     %s\n", statusValue)
+	fmt.Fprintf(out, "  linked_at:  %s\n", linkedAt)
 	return nil
 }
 
@@ -465,26 +471,28 @@ func runCloudAuthStatus(
 	profile, err := store.GetAuthProfile(ctx, profileID)
 	if err != nil {
 		if cloud.IsNotFound(err) {
+			redactedProfileID := cloud.Redact(profileID)
 			// Missing profile is a reportable state, not an error.
 			if jsonOutput {
 				return writeJSON(out, cloudAuthStatusResponse{
-					ProfileID: profileID,
+					ProfileID: redactedProfileID,
 					Status:    "missing",
 				})
 			}
 			fmt.Fprintf(out, "Auth profile status:\n")
-			fmt.Fprintf(out, "  profileId: %s\n", profileID)
+			fmt.Fprintf(out, "  profileId: %s\n", redactedProfileID)
 			fmt.Fprintf(out, "  status:    missing\n")
 			return nil
 		}
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get profile: %v", err), "store_error")
 	}
 
-	status := mapAuthProfileStatus(profile.Status)
+	status := cloud.Redact(mapAuthProfileStatus(profile.Status))
+	profileValue := cloud.Redact(profile.ID)
 
 	if jsonOutput {
 		resp := cloudAuthStatusResponse{
-			ProfileID: profile.ID,
+			ProfileID: profileValue,
 			Status:    status,
 		}
 		if profile.LastValidatedAt != nil {
@@ -496,7 +504,7 @@ func runCloudAuthStatus(
 
 	// Human-readable output.
 	fmt.Fprintf(out, "Auth profile status:\n")
-	fmt.Fprintf(out, "  profileId: %s\n", profile.ID)
+	fmt.Fprintf(out, "  profileId: %s\n", profileValue)
 	fmt.Fprintf(out, "  status:    %s\n", status)
 	if profile.LastValidatedAt != nil {
 		fmt.Fprintf(out, "  lastValidatedAt: %s\n", profile.LastValidatedAt.Format(time.RFC3339))
@@ -540,28 +548,33 @@ func runCloudAuthValidate(
 	result, err := svc.Validate(ctx, req)
 	if err != nil {
 		code := classifyAuthValidateError(err)
+		redactedErr := cloud.Redact(err.Error())
 		if jsonOutput {
 			_ = writeJSON(out, cloudErrorResponse{
-				Error:     err.Error(),
+				Error:     redactedErr,
 				ErrorCode: code,
 			})
-			return fmt.Errorf("auth validate failed: %w", err)
+			return fmt.Errorf("auth validate failed: %s", redactedErr)
 		}
-		return fmt.Errorf("auth validate failed: %w", err)
+		return fmt.Errorf("auth validate failed: %s", redactedErr)
 	}
+
+	profileValue := cloud.Redact(result.ProfileID)
+	statusValue := cloud.Redact(result.Status)
+	validatedAt := result.ValidatedAt.Format(time.RFC3339)
 
 	if jsonOutput {
 		return writeJSON(out, cloudAuthValidateResponse{
-			ProfileID:   result.ProfileID,
-			Status:      result.Status,
-			ValidatedAt: result.ValidatedAt.Format(time.RFC3339),
+			ProfileID:   profileValue,
+			Status:      statusValue,
+			ValidatedAt: validatedAt,
 		})
 	}
 
 	fmt.Fprintf(out, "Auth profile validated successfully.\n")
-	fmt.Fprintf(out, "  profileId:    %s\n", result.ProfileID)
-	fmt.Fprintf(out, "  status:       %s\n", result.Status)
-	fmt.Fprintf(out, "  validatedAt:  %s\n", result.ValidatedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "  profileId:    %s\n", profileValue)
+	fmt.Fprintf(out, "  status:       %s\n", statusValue)
+	fmt.Fprintf(out, "  validatedAt:  %s\n", validatedAt)
 	return nil
 }
 
@@ -619,39 +632,42 @@ func runCloudAuthRevoke(
 	profile, err := store.GetAuthProfile(ctx, profileID)
 	if err != nil {
 		if cloud.IsNotFound(err) {
+			redactedProfileID := cloud.Redact(profileID)
 			// Missing profile is non-fatal — deterministic output contract.
 			if jsonOutput {
 				return writeJSON(out, cloudAuthRevokeResponse{
-					ProfileID: profileID,
+					ProfileID: redactedProfileID,
 					Status:    "missing",
 				})
 			}
 			fmt.Fprintf(out, "Auth profile not found.\n")
-			fmt.Fprintf(out, "  profileId: %s\n", profileID)
+			fmt.Fprintf(out, "  profileId: %s\n", redactedProfileID)
 			fmt.Fprintf(out, "  status:    missing\n")
 			return nil
 		}
 		code := classifyAuthRevokeError(err)
+		redactedErr := cloud.Redact(err.Error())
 		if jsonOutput {
 			_ = writeJSON(out, cloudErrorResponse{
-				Error:     err.Error(),
+				Error:     redactedErr,
 				ErrorCode: code,
 			})
-			return fmt.Errorf("auth revoke failed: %w", err)
+			return fmt.Errorf("auth revoke failed: %s", redactedErr)
 		}
-		return fmt.Errorf("auth revoke failed: %w", err)
+		return fmt.Errorf("auth revoke failed: %s", redactedErr)
 	}
 
 	// Already-revoked is non-fatal — deterministic output contract.
 	if profile.Status == cloud.AuthProfileStatusRevoked {
+		redactedProfileID := cloud.Redact(profile.ID)
 		if jsonOutput {
 			return writeJSON(out, cloudAuthRevokeResponse{
-				ProfileID: profile.ID,
+				ProfileID: redactedProfileID,
 				Status:    "already_revoked",
 			})
 		}
 		fmt.Fprintf(out, "Auth profile already revoked.\n")
-		fmt.Fprintf(out, "  profileId: %s\n", profile.ID)
+		fmt.Fprintf(out, "  profileId: %s\n", redactedProfileID)
 		fmt.Fprintf(out, "  status:    already_revoked\n")
 		return nil
 	}
@@ -665,28 +681,33 @@ func runCloudAuthRevoke(
 	result, err := svc.Revoke(ctx, req)
 	if err != nil {
 		code := classifyAuthRevokeError(err)
+		redactedErr := cloud.Redact(err.Error())
 		if jsonOutput {
 			_ = writeJSON(out, cloudErrorResponse{
-				Error:     err.Error(),
+				Error:     redactedErr,
 				ErrorCode: code,
 			})
-			return fmt.Errorf("auth revoke failed: %w", err)
+			return fmt.Errorf("auth revoke failed: %s", redactedErr)
 		}
-		return fmt.Errorf("auth revoke failed: %w", err)
+		return fmt.Errorf("auth revoke failed: %s", redactedErr)
 	}
+
+	profileValue := cloud.Redact(result.ProfileID)
+	statusValue := cloud.Redact(result.Status)
+	revokedAt := result.RevokedAt.Format(time.RFC3339)
 
 	if jsonOutput {
 		return writeJSON(out, cloudAuthRevokeResponse{
-			ProfileID: result.ProfileID,
-			Status:    result.Status,
-			RevokedAt: result.RevokedAt.Format(time.RFC3339),
+			ProfileID: profileValue,
+			Status:    statusValue,
+			RevokedAt: revokedAt,
 		})
 	}
 
 	fmt.Fprintf(out, "Auth profile revoked.\n")
-	fmt.Fprintf(out, "  profileId:  %s\n", result.ProfileID)
-	fmt.Fprintf(out, "  status:     %s\n", result.Status)
-	fmt.Fprintf(out, "  revokedAt:  %s\n", result.RevokedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "  profileId:  %s\n", profileValue)
+	fmt.Fprintf(out, "  status:     %s\n", statusValue)
+	fmt.Fprintf(out, "  revokedAt:  %s\n", revokedAt)
 	return nil
 }
 
