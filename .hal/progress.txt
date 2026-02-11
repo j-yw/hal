@@ -40,6 +40,7 @@
 - Lifecycle integration tests should centralize checkpoint fixtures (`setup`/`run`/`status`/`logs`/`pull`/`cancel`) with `RequiresRunID`, `SupportsJSON`, and `RequiredJSONKeys`, plus shared camelCase JSON key constants and workflowKind expectations for `run`/`auto`/`review`
 - Lifecycle integration harnesses should snapshot and restore package-level cloud factory globals and poll intervals during teardown to prevent cross-test state leakage
 - For lifecycle integration scenarios, extend `cloudMockStore` in a harness-specific wrapper so `EnqueueRun`, `PutSnapshot`, and `UpdateRunSnapshotRefs` persist run/snapshot state for downstream `status`/`pull` assertions
+- Lifecycle command integration helpers should dispatch to existing `run<Command>` functions (not Cobra root execution), substitute `<run-id>` placeholders, and use `io.MultiWriter` so tests can inject stdout while still getting captured output for assertions
 
 ---
 ## 2026-02-11 - US-001
@@ -515,4 +516,14 @@
   - Integration harnesses that mutate package-level factories should always snapshot originals and restore them in teardown; otherwise cross-test leakage will make lifecycle scenarios flaky
   - A harness-specific wrapper around `cloudMockStore` is the easiest way to emulate run/snapshot persistence needed by `status` and `pull` without introducing real database/network dependencies
   - Keep harness-provided submit ID generation deterministic (prefix + counter) so future scenario assertions can be stable across `run`/`auto`/`review`
+---
+## 2026-02-12 01:19 +08 - T-004
+- Added lifecycle command execution helper in `cmd/cloud_lifecycle_runner_integration_test.go` with `cloudLifecycleCommandRunner` + `cloudLifecycleCommandInvocation` to run `setup/run/auto/review/status/logs/pull/cancel` through existing `run<Command>` helpers
+- Helper now supports configurable args, `<run-id>` placeholder substitution, injected stdin/stdout streams, and automatic output capture (`cloudLifecycleCommandResult{Output, Err}`) for assertions
+- Added integration tests covering: injected IO execution (`cloud setup --profile`), captured error/output behavior (`run --cloud --detach --wait` conflict), and same-flow human+JSON command execution (`cloud status` run twice with and without `--json`)
+- Files changed: cmd/cloud_lifecycle_runner_integration_test.go, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - For lifecycle integration tests, run command logic via testable `run<Command>` helpers instead of Cobra root execution to keep IO fully injectable and deterministic
+  - Use `io.MultiWriter` in command helpers so tests can mirror output to custom writers while still returning a captured output string for assertions
+  - Default workflow helper behavior should force detach when neither `--detach` nor `--wait` is provided in harness tests, because the in-memory lifecycle harness has no worker loop to advance queued runs automatically
 ---

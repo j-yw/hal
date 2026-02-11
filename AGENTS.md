@@ -129,3 +129,4 @@
 - Define workflow-kind expectations for `run`, `auto`, and `review` in shared fixtures so scenario tests can assert persisted `workflowKind` consistently.
 - Integration harnesses that override package-level cloud factories (`runCloudStoreFactory`, `autoCloudStoreFactory`, etc.) should snapshot originals and restore them in teardown to avoid cross-test global state leakage.
 - For lifecycle harness stores, extend `cloudMockStore` with overrides for `EnqueueRun`, `PutSnapshot`, and `UpdateRunSnapshotRefs` so submitted runs/snapshots are queryable by downstream `status`/`pull` commands without external services.
+- Lifecycle command runners in integration tests should dispatch directly to testable `run<Command>` helpers (instead of Cobra root execution), substitute `<run-id>` placeholders, and capture output with `io.MultiWriter` so assertions can use both injected writers and returned output text.
