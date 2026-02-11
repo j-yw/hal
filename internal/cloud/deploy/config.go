@@ -62,6 +62,27 @@ func LoadConfigFromEnv() Config {
 	return LoadConfig(os.Getenv)
 }
 
+// ValidateStore checks that database-related fields are set for the selected adapter.
+// Unlike Validate, it does NOT check RunnerURL or RunnerServiceToken.
+func (c Config) ValidateStore() error {
+	switch c.DBAdapter {
+	case AdapterTurso:
+		if c.TursoURL == "" {
+			return fmt.Errorf("%s is required when %s is %q", EnvTursoURL, EnvDBAdapter, AdapterTurso)
+		}
+		if c.TursoAuthToken == "" {
+			return fmt.Errorf("%s is required when %s is %q", EnvTursoAuthToken, EnvDBAdapter, AdapterTurso)
+		}
+	case AdapterPostgres:
+		if c.PostgresDSN == "" {
+			return fmt.Errorf("%s is required when %s is %q", EnvPostgresDSN, EnvDBAdapter, AdapterPostgres)
+		}
+	default:
+		return fmt.Errorf("%s must be %q or %q, got %q", EnvDBAdapter, AdapterTurso, AdapterPostgres, c.DBAdapter)
+	}
+	return nil
+}
+
 // Validate checks that all required fields are set for the selected adapter.
 // Returns an error describing the first missing required variable.
 func (c Config) Validate() error {

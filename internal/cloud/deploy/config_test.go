@@ -45,6 +45,100 @@ func TestLoadConfig_AllFields(t *testing.T) {
 	}
 }
 
+func TestConfigValidateStore(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr string
+	}{
+		{
+			name: "valid turso store config",
+			config: Config{
+				DBAdapter:      AdapterTurso,
+				TursoURL:       "libsql://db.example.com",
+				TursoAuthToken: "token123",
+			},
+			wantErr: "",
+		},
+		{
+			name: "valid postgres store config",
+			config: Config{
+				DBAdapter:   AdapterPostgres,
+				PostgresDSN: "postgres://localhost:5432/hal",
+			},
+			wantErr: "",
+		},
+		{
+			name: "turso missing url",
+			config: Config{
+				DBAdapter:      AdapterTurso,
+				TursoAuthToken: "token123",
+			},
+			wantErr: "HAL_CLOUD_TURSO_URL is required",
+		},
+		{
+			name: "turso missing token",
+			config: Config{
+				DBAdapter: AdapterTurso,
+				TursoURL:  "libsql://db.example.com",
+			},
+			wantErr: "HAL_CLOUD_TURSO_AUTH_TOKEN is required",
+		},
+		{
+			name: "postgres missing dsn",
+			config: Config{
+				DBAdapter: AdapterPostgres,
+			},
+			wantErr: "HAL_CLOUD_POSTGRES_DSN is required",
+		},
+		{
+			name: "invalid adapter",
+			config: Config{
+				DBAdapter: "mysql",
+			},
+			wantErr: "must be",
+		},
+		{
+			name: "does not check runner url",
+			config: Config{
+				DBAdapter:      AdapterTurso,
+				TursoURL:       "libsql://db.example.com",
+				TursoAuthToken: "token123",
+				RunnerURL:      "", // empty runner URL should not cause error
+			},
+			wantErr: "",
+		},
+		{
+			name: "does not check runner service token",
+			config: Config{
+				DBAdapter:          AdapterTurso,
+				TursoURL:           "libsql://db.example.com",
+				TursoAuthToken:     "token123",
+				RunnerServiceToken: "", // empty service token should not cause error
+			},
+			wantErr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.ValidateStore()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string
