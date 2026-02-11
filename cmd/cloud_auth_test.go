@@ -772,6 +772,182 @@ func TestClassifyAuthImportError(t *testing.T) {
 	}
 }
 
+// --- Auth import secret redaction security tests ---
+
+func TestRunCloudAuthImport_Redact_HumanError(t *testing.T) {
+	// Inject a secret into an error message and verify it's redacted in human error output.
+	secret := "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+
+	var out bytes.Buffer
+	err := writeAuthImportError(&out, false, fmt.Sprintf("store connection failed: auth=%s", secret), "configuration_error")
+	if err == nil {
+		t.Fatal("expected non-nil error from human error output")
+	}
+
+	// In human mode, the error message is returned as a Go error.
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "eyJhbGciOiJIUzI1NiI") {
+		t.Errorf("human error contains unredacted JWT\nerror: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "[REDACTED]") {
+		t.Errorf("human error does not contain [REDACTED] placeholder\nerror: %s", errMsg)
+	}
+}
+
+func TestRunCloudAuthImport_Redact_JSONError(t *testing.T) {
+	// Inject a secret into an error message and verify JSON output is valid and redacted.
+	secret := "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+
+	var out bytes.Buffer
+	err := writeAuthImportError(&out, true, fmt.Sprintf("auth failed with token %s", secret), "configuration_error")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify output is valid JSON.
+	var resp cloudErrorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, secret) {
+		t.Errorf("JSON error output contains unredacted GitHub PAT\noutput: %s", output)
+	}
+	if !strings.Contains(resp.Error, "[REDACTED]") {
+		t.Errorf("JSON error field does not contain [REDACTED] placeholder\nerror: %s", resp.Error)
+	}
+}
+
+func TestRunCloudAuthImport_Redact_HumanSuccess(t *testing.T) {
+	// Inject a secret into result fields and verify it's redacted in human output.
+	secret := stripeLikeSecret()
+	result := &cloud.AuthImportResult{
+		ProfileID:  "prof-with-secret-" + secret,
+		Provider:   "anthropic",
+		Status:     "linked",
+		ImportedAt: time.Now().UTC(),
+	}
+
+	var out bytes.Buffer
+	err := writeAuthImportSuccess(&out, false, result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, secret) {
+		t.Errorf("human success output contains unredacted Stripe key\noutput: %s", output)
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Errorf("human success output does not contain [REDACTED] placeholder\noutput: %s", output)
+	}
+}
+
+func TestRunCloudAuthImport_Redact_JSONSuccess(t *testing.T) {
+	// Inject a secret into result fields and verify JSON output is valid and redacted.
+	secret := "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+	result := &cloud.AuthImportResult{
+		ProfileID:  "prof-with-pat-" + secret,
+		Provider:   "anthropic",
+		Status:     "linked",
+		ImportedAt: time.Now().UTC(),
+	}
+
+	var out bytes.Buffer
+	err := writeAuthImportSuccess(&out, true, result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify output is valid JSON.
+	var resp cloudAuthImportResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, secret) {
+		t.Errorf("JSON success output contains unredacted PAT\noutput: %s", output)
+	}
+	if !strings.Contains(resp.ProfileID, "[REDACTED]") {
+		t.Errorf("JSON profile_id field does not contain [REDACTED] placeholder\nprofile_id: %s", resp.ProfileID)
+	}
+}
+
+func TestRunCloudAuthImport_Redact_MultipleSecrets(t *testing.T) {
+	// Multiple secrets in a single error message should all be redacted.
+	secret1 := "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+	secret2 := "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+	msg := fmt.Sprintf("connection: %s, token: %s", secret1, secret2)
+
+	var out bytes.Buffer
+	err := writeAuthImportError(&out, false, msg, "configuration_error")
+	if err == nil {
+		t.Fatal("expected non-nil error from human error output")
+	}
+
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "eyJhbGciOiJIUzI1NiI") {
+		t.Errorf("error contains unredacted JWT\nerror: %s", errMsg)
+	}
+	if strings.Contains(errMsg, secret2) {
+		t.Errorf("error contains unredacted GitHub PAT\nerror: %s", errMsg)
+	}
+}
+
+func TestRunCloudAuthImport_Redact_NoFalsePositive(t *testing.T) {
+	// Normal output without secrets should not contain [REDACTED].
+	result := &cloud.AuthImportResult{
+		ProfileID:  "prof-normal-001",
+		Provider:   "anthropic",
+		Status:     "linked",
+		ImportedAt: time.Now().UTC(),
+	}
+
+	var out bytes.Buffer
+	err := writeAuthImportSuccess(&out, false, result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "[REDACTED]") {
+		t.Errorf("normal output should not contain [REDACTED]\noutput: %s", output)
+	}
+	if !strings.Contains(output, "prof-normal-001") {
+		t.Errorf("output should contain profile ID\noutput: %s", output)
+	}
+}
+
+func TestRunCloudAuthImport_Redact_JSONNoFalsePositive(t *testing.T) {
+	// Normal JSON output without secrets should not contain [REDACTED].
+	result := &cloud.AuthImportResult{
+		ProfileID:  "prof-normal-002",
+		Provider:   "openai",
+		Status:     "linked",
+		ImportedAt: time.Now().UTC(),
+	}
+
+	var out bytes.Buffer
+	err := writeAuthImportSuccess(&out, true, result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp cloudAuthImportResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	if strings.Contains(out.String(), "[REDACTED]") {
+		t.Errorf("normal JSON output should not contain [REDACTED]\noutput: %s", out.String())
+	}
+	if resp.ProfileID != "prof-normal-002" {
+		t.Errorf("profile_id = %q, want %q", resp.ProfileID, "prof-normal-002")
+	}
+}
+
 func TestRunCloudAuthStatus(t *testing.T) {
 	now := time.Now().UTC()
 

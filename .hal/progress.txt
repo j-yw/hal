@@ -32,7 +32,8 @@
 - Auth revoke handles missing/already-revoked as non-fatal exit 0 with deterministic status strings (missing, already_revoked) — use pre-check GetAuthProfile at command layer before calling service
 - `writeRunCloudError` writes structured error fields (error, error_code) in human mode AND returns a Go error for non-zero exit — all error paths should go through this for consistent output contract
 - Output contract for hal run --cloud: success uses `runCloudRunResponse{runId, workflowKind, status}`; errors use `runCloudRunErrorResponse{error, error_code}` — both human and JSON modes include these fields
-- Use `cloud.Redact()` in all output chokepoint functions (writeRunCloudError, writeRunCloudSuccess, writeRunCloudTerminal) to redact secrets — safe no-op on clean strings, replaces secrets with [REDACTED]
+- Use `cloud.Redact()` in all output chokepoint functions (writeRunCloudError, writeRunCloudSuccess, writeRunCloudTerminal, writeAuthImportError, writeAuthImportSuccess) to redact secrets — safe no-op on clean strings, replaces secrets with [REDACTED]
+- For auth import redaction, `writeAuthImportError` and `writeAuthImportSuccess` are the two output chokepoints — follow same pattern as hal run --cloud output functions
 
 ---
 ## 2026-02-11 - US-001
@@ -410,4 +411,18 @@
   - Don't forget intermediate output: the wait-mode prints run_id and status BEFORE the terminal output functions, requiring separate redaction
   - For US-024 (auth import redaction), follow the same pattern: apply `cloud.Redact()` in the auth import output functions
   - Security tests should test all output functions independently (error, success, terminal) plus cross-cutting cases (multiple secrets, no false positives)
+---
+## 2026-02-12 - US-024
+- Implemented secret redaction in hal cloud auth import output for both human and JSON modes
+- Extracted `writeAuthImportError` and `writeAuthImportSuccess` output chokepoint functions from inline code in `runCloudAuthImport`
+- Applied `cloud.Redact()` in both chokepoint functions: error messages and success result fields (profileID, provider, status) are redacted before output
+- JSON output remains valid after redaction — secrets are replaced inline with `[REDACTED]`
+- 8 security tests: human error redaction, JSON error redaction (valid JSON verification), human success redaction, JSON success redaction, multiple secrets in one message, no false positives (human), no false positives (JSON)
+- All existing 22 auth import tests continue to pass (no behavioral change for non-secret values)
+- Files changed: cmd/cloud_auth.go, cmd/cloud_auth_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - The chokepoint pattern from hal run --cloud (writeRunCloudError/writeRunCloudSuccess/writeRunCloudTerminal) works equally well for auth import — extract dedicated output functions and apply redaction there
+  - In human error mode, `writeAuthImportError` returns a Go error (for non-zero exit) — security tests should check the error string, not the output buffer, for redaction verification
+  - `cloud.Redact()` is safe to call on any string — no false positives on normal profile IDs, provider names, or status values
+  - When testing redaction in human error mode, remember that the error goes into the returned Go error, not the io.Writer
 ---

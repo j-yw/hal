@@ -338,12 +338,12 @@ func runCloudAuthImport(
 	out io.Writer,
 ) error {
 	if storeFactory == nil {
-		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
+		return writeAuthImportError(out, jsonOutput, "store not configured", "configuration_error")
 	}
 
 	store, err := storeFactory()
 	if err != nil {
-		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
+		return writeAuthImportError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
 	}
 
 	svc := cloud.NewAuthImportService(store, cloud.AuthImportConfig{
@@ -362,29 +362,46 @@ func runCloudAuthImport(
 	result, err := svc.Import(ctx, req)
 	if err != nil {
 		code := classifyAuthImportError(err)
-		if jsonOutput {
-			return writeJSON(out, cloudErrorResponse{
-				Error:     err.Error(),
-				ErrorCode: code,
-			})
-		}
-		return fmt.Errorf("auth import failed: %w", err)
+		return writeAuthImportError(out, jsonOutput, err.Error(), code)
 	}
+
+	return writeAuthImportSuccess(out, jsonOutput, result)
+}
+
+// writeAuthImportError writes a redacted error in the appropriate format for auth import.
+func writeAuthImportError(out io.Writer, jsonOutput bool, msg, code string) error {
+	msg = cloud.Redact(msg)
+
+	if jsonOutput {
+		return writeJSON(out, cloudErrorResponse{
+			Error:     msg,
+			ErrorCode: code,
+		})
+	}
+	return fmt.Errorf("auth import failed: %s", msg)
+}
+
+// writeAuthImportSuccess writes a redacted success response for auth import.
+func writeAuthImportSuccess(out io.Writer, jsonOutput bool, result *cloud.AuthImportResult) error {
+	profileID := cloud.Redact(result.ProfileID)
+	provider := cloud.Redact(result.Provider)
+	status := cloud.Redact(result.Status)
+	importedAt := result.ImportedAt.Format(time.RFC3339)
 
 	if jsonOutput {
 		return writeJSON(out, cloudAuthImportResponse{
-			ProfileID:  result.ProfileID,
-			Provider:   result.Provider,
-			Status:     result.Status,
-			ImportedAt: result.ImportedAt.Format(time.RFC3339),
+			ProfileID:  profileID,
+			Provider:   provider,
+			Status:     status,
+			ImportedAt: importedAt,
 		})
 	}
 
 	fmt.Fprintf(out, "Auth profile imported successfully.\n")
-	fmt.Fprintf(out, "  profile_id:  %s\n", result.ProfileID)
-	fmt.Fprintf(out, "  provider:    %s\n", result.Provider)
-	fmt.Fprintf(out, "  status:      %s\n", result.Status)
-	fmt.Fprintf(out, "  imported_at: %s\n", result.ImportedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "  profile_id:  %s\n", profileID)
+	fmt.Fprintf(out, "  provider:    %s\n", provider)
+	fmt.Fprintf(out, "  status:      %s\n", status)
+	fmt.Fprintf(out, "  imported_at: %s\n", importedAt)
 	return nil
 }
 
