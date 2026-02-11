@@ -34,6 +34,8 @@
 - Output contract for hal run --cloud: success uses `runCloudRunResponse{runId, workflowKind, status}`; errors use `runCloudRunErrorResponse{error, error_code}` — both human and JSON modes include these fields
 - Use `cloud.Redact()` in all output chokepoint functions (writeRunCloudError, writeRunCloudSuccess, writeRunCloudTerminal, writeAuthImportError, writeAuthImportSuccess) to redact secrets — safe no-op on clean strings, replaces secrets with [REDACTED]
 - For auth import redaction, `writeAuthImportError` and `writeAuthImportSuccess` are the two output chokepoints — follow same pattern as hal run --cloud output functions
+- `cloudCmd` uses `Args: cobra.NoArgs` — unknown subcommands are rejected as extra args, producing non-zero exit without custom error handling
+- Supported cloud subcommands: setup, doctor, list, status, logs, cancel, pull, auth — legacy commands (submit, run, smoke, env, runs) are removed; `cloud_removed_test.go` locks this list
 
 ---
 ## 2026-02-11 - US-001
@@ -425,4 +427,39 @@
   - In human error mode, `writeAuthImportError` returns a Go error (for non-zero exit) — security tests should check the error string, not the output buffer, for redaction verification
   - `cloud.Redact()` is safe to call on any string — no false positives on normal profile IDs, provider names, or status values
   - When testing redaction in human error mode, remember that the error goes into the returned Go error, not the io.Writer
+---
+## 2026-02-12 - US-023
+- Added integration conformance test suite in `cmd/cloud_conformance_test.go` with 9 test functions and 27 subtests
+- Tests exercise all three workflows (run, auto, review) against deterministic mocked backend responses
+- `TestCloudWorkflowOutputConformance_JSON_Detach` — JSON parseability and required fields (runId, workflowKind, status) for detach mode
+- `TestCloudWorkflowOutputConformance_JSON_Wait` — JSON parseability and required fields after terminal status in wait mode
+- `TestCloudWorkflowOutputConformance_Human_Detach` — human-mode summaries include run ID, status, and next-step hint (hal cloud status)
+- `TestCloudWorkflowOutputConformance_Human_WaitTerminal` — human-mode terminal summaries include run ID, terminal status, and per-workflow next-step hints (run→logs, auto/review→pull+logs)
+- `TestCloudWorkflowOutputConformance_PrerequisiteFailure_JSON` — missing .hal prerequisite failure returns deterministic error fields (error, error_code=prerequisite_error)
+- `TestCloudWorkflowOutputConformance_PrerequisiteFailure_Human` — human-mode prerequisite failures return non-nil error referencing .hal
+- `TestCloudWorkflowOutputConformance_ConfigError_JSON` — nil store factory produces configuration_error across all workflows
+- `TestCloudWorkflowOutputConformance_FlagConflict_JSON` — --detach/--wait conflict produces invalid_flag_combination across all workflows
+- `TestCloudWorkflowOutputConformance_WorkflowKindConsistency` — workflowKind matches across detach and wait modes for all three workflows
+- Files changed: cmd/cloud_conformance_test.go (new)
+- **Learnings for future iterations:**
+  - Cross-workflow conformance tests should use `map[string]interface{}` for JSON unmarshaling (not typed structs) to test the raw contract without relying on implementation types
+  - The three workflow kinds differ in terminal next-step hints: run→logs only, auto/review→pull+logs (because auto/review produce both state and report artifacts)
+  - auto and review `writeAutoCloudError`/`writeReviewCloudError` in human mode return `fmt.Errorf` directly (no structured output), while run's `writeRunCloudError` writes structured fields AND returns error — conformance tests must handle this asymmetry
+  - Poll interval overrides for wait-mode tests must save/restore all three workflow intervals (runCloudPollInterval, autoCloudPollInterval, reviewCloudPollInterval)
+---
+## 2026-02-12 - US-004
+- Removed legacy cloud command aliases (submit, run, smoke, env, runs namespace) after unified replacements were rolled out
+- Fixed `cloudCmd.Long` description to avoid false-positive match on "runs" in help text test — changed "runs" to "workflows"/"executions" in description
+- Fixed `cloud_removed_test.go` snapshot tests that were failing:
+  - `TestCloudCommandTree_HelpDoesNotListRemovedCommands` — refactored to check subcommand listing separately from Long description, avoiding false positive on English word "runs" in description text
+  - `TestCloudRemovedCommands_UnknownCommandBehavior` — rewired to use `rootCmd` with `SetArgs(["cloud", name])` instead of copying `cloudCmd` which lost the `Args: cobra.NoArgs` enforcement for unknown subcommands
+- Removed `cloud_deploy_test.go` (contained tests for removed `runCloudSmoke`/`runCloudEnv` functions)
+- `cloud_deploy.go` reduced to a 4-line placeholder comment noting the removal
+- All removed commands: submit, run (cloud-scoped), smoke, env, runs (namespace) — replaced by hal cloud setup, doctor, list, status, logs, cancel, pull, auth
+- Files changed: cmd/cloud.go, cmd/cloud_deploy.go, cmd/cloud_deploy_test.go (deleted), cmd/cloud_removed_test.go, cmd/cloud_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - When testing that removed commands don't appear in help text, check subcommand names specifically — matching raw text for short words like "runs" can false-positive on English prose in descriptions
+  - Cobra's `Execute()` on a shallow copy of a child command traverses to the root, so unknown subcommand tests must use `rootCmd.SetArgs(["cloud", "<name>"])` to properly test the full command tree
+  - The `cloudCmd` uses `Args: cobra.NoArgs` which rejects any args passed after `cloud` — this is what makes unknown subcommands fail with non-zero exit, not a custom RunE check
+  - Always reset rootCmd state after test (`SetArgs(nil)`, `SetOut(nil)`, `SilenceUsage = false`) to avoid polluting other tests
 ---
