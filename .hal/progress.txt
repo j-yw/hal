@@ -28,6 +28,7 @@
 - `decompressBundleFiles` expects gzip-compressed `path\x00size\x00content` frame format matching `compressBundleFiles`
 - Pull local-change detection uses `bytes.Equal` on file content — identical files pass silently, only truly changed files trigger the `--force` requirement
 - `mapAuthProfileStatus()` maps internal AuthProfileStatus to user-facing states: pending_link→missing, linked/invalid/revoked pass through. Use this for any user-facing profile status display
+- Auth commands (status, validate) use camelCase JSON fields (profileId, validatedAt, lastValidatedAt) — normalize all auth command JSON to camelCase when updating
 
 ---
 ## 2026-02-11 - US-001
@@ -344,4 +345,19 @@
   - `mapAuthProfileStatus` is the canonical mapping from internal AuthProfileStatus to user-facing status strings — use this when other commands need to display profile status
   - The AC required camelCase JSON fields (`profileId`, `lastValidatedAt`) — this differs from other auth commands that still use snake_case — future stories (US-018) may normalize the naming convention
   - `pending_link` is an internal-only status that users see as `missing` — this simplifies the user mental model to 4 states: missing/linked/invalid/revoked
+---
+## 2026-02-11 - US-027
+- Normalized `hal cloud auth validate` JSON output to use camelCase field names matching AC contract
+- Changed `cloudAuthValidateResponse` JSON tags from `profile_id`/`validated_at` to `profileId`/`validatedAt`
+- Removed `Provider` field from JSON response — AC only requires `profileId`, `status`, `validatedAt`
+- Updated human output labels to camelCase: `profileId:`, `status:`, `validatedAt:`
+- Updated existing tests to match new camelCase field names and removed `provider` assertions
+- Added 4 new test cases: required AC field verification (profileId/status/validatedAt presence, snake_case absence), invalid-credential JSON outcome, invalid-credential human outcome
+- Total: 15 table-driven tests for `TestRunCloudAuthValidate` + 10 for `TestClassifyAuthValidateError`
+- Files changed: cmd/cloud_auth.go, cmd/cloud_auth_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - The auth validate AC required camelCase JSON fields (`profileId`, `validatedAt`) — this normalizes with the auth status command (US-025) which already uses camelCase
+  - When an AC specifies specific JSON field names, always verify the exact casing — camelCase vs snake_case matters for the output contract
+  - The auth validate command's `AuthValidateService.Validate()` updates `LastErrorCode` and `LastValidatedAt` but does NOT change the profile `Status` field — status transitions are handled by separate commands (link, revoke)
+  - The existing `runCloudAuthValidate` and tests were pre-implemented but with wrong JSON field casing — the story was incomplete because the output contract didn't match the AC
 ---

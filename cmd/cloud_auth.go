@@ -492,10 +492,9 @@ var cloudAuthValidateStoreFactory func() (cloud.Store, error)
 
 // cloudAuthValidateResponse is the JSON output for a successful auth validate.
 type cloudAuthValidateResponse struct {
-	ProfileID   string `json:"profile_id"`
-	Provider    string `json:"provider"`
+	ProfileID   string `json:"profileId"`
 	Status      string `json:"status"`
-	ValidatedAt string `json:"validated_at"`
+	ValidatedAt string `json:"validatedAt"`
 }
 
 // runCloudAuthValidate is the testable logic for the cloud auth validate command.
@@ -537,17 +536,15 @@ func runCloudAuthValidate(
 	if jsonOutput {
 		return writeJSON(out, cloudAuthValidateResponse{
 			ProfileID:   result.ProfileID,
-			Provider:    result.Provider,
 			Status:      result.Status,
 			ValidatedAt: result.ValidatedAt.Format(time.RFC3339),
 		})
 	}
 
 	fmt.Fprintf(out, "Auth profile validated successfully.\n")
-	fmt.Fprintf(out, "  profile_id:   %s\n", result.ProfileID)
-	fmt.Fprintf(out, "  provider:     %s\n", result.Provider)
+	fmt.Fprintf(out, "  profileId:    %s\n", result.ProfileID)
 	fmt.Fprintf(out, "  status:       %s\n", result.Status)
-	fmt.Fprintf(out, "  validated_at: %s\n", result.ValidatedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "  validatedAt:  %s\n", result.ValidatedAt.Format(time.RFC3339))
 	return nil
 }
 

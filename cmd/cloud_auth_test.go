@@ -1150,10 +1150,9 @@ func TestRunCloudAuthValidate(t *testing.T) {
 			},
 			wantOutput: []string{
 				"Auth profile validated successfully.",
-				"profile_id:   prof-001",
-				"provider:     anthropic",
+				"profileId:    prof-001",
 				"status:       linked",
-				"validated_at:",
+				"validatedAt:",
 			},
 		},
 		{
@@ -1174,16 +1173,20 @@ func TestRunCloudAuthValidate(t *testing.T) {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
 				if resp.ProfileID != "prof-001" {
-					t.Errorf("profile_id = %q, want %q", resp.ProfileID, "prof-001")
-				}
-				if resp.Provider != "anthropic" {
-					t.Errorf("provider = %q, want %q", resp.Provider, "anthropic")
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-001")
 				}
 				if resp.Status != "linked" {
 					t.Errorf("status = %q, want %q", resp.Status, "linked")
 				}
 				if resp.ValidatedAt == "" {
-					t.Error("validated_at should not be empty")
+					t.Error("validatedAt should not be empty")
+				}
+				// Verify camelCase JSON field names.
+				if !strings.Contains(output, `"profileId"`) {
+					t.Error("JSON should use camelCase profileId field")
+				}
+				if !strings.Contains(output, `"validatedAt"`) {
+					t.Error("JSON should use camelCase validatedAt field")
 				}
 			},
 		},
@@ -1353,6 +1356,74 @@ func TestRunCloudAuthValidate(t *testing.T) {
 					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
 				}
 			},
+		},
+		{
+			name:       "JSON response contains all required AC fields: profileId, status, validatedAt",
+			profileID:  "prof-required",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-required", "anthropic")
+				secret := "encrypted:test"
+				p.SecretRef = &secret
+				s.profiles["prof-required"] = p
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var raw map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &raw); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				for _, field := range []string{"profileId", "status", "validatedAt"} {
+					if _, ok := raw[field]; !ok {
+						t.Errorf("JSON response missing required field %q", field)
+					}
+				}
+				// Verify no snake_case variants.
+				for _, bad := range []string{"profile_id", "validated_at"} {
+					if _, ok := raw[bad]; ok {
+						t.Errorf("JSON response should not contain snake_case field %q", bad)
+					}
+				}
+			},
+		},
+		{
+			name:       "invalid-credential outcome returns auth_invalid with updated status in JSON",
+			profileID:  "prof-invalid-cred",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-invalid-cred", "anthropic")
+				// No secret ref = no credentials = invalid
+				p.SecretRef = nil
+				s.profiles["prof-invalid-cred"] = p
+				return s
+			},
+			wantErr: "auth validate failed",
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "auth_invalid" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "auth_invalid")
+				}
+				if resp.Error == "" {
+					t.Error("error message should not be empty")
+				}
+			},
+		},
+		{
+			name:      "invalid-credential outcome returns non-zero exit in human output",
+			profileID: "prof-invalid-cred-human",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-invalid-cred-human", "anthropic")
+				p.SecretRef = nil
+				s.profiles["prof-invalid-cred-human"] = p
+				return s
+			},
+			wantErr: "auth validate failed",
 		},
 	}
 
