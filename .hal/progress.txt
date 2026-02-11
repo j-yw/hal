@@ -24,6 +24,9 @@
 - writeCloudError(out, jsonOutput, msg, code) in JSON mode writes JSON to output and returns nil — test JSON error cases by checking output content, not Go error return
 - Cloud logs JSON uses cloudLogsResponse{run_id, status, events[]} — follow mode collects all events and emits single JSON document at terminal/cancel
 - Cloud cancel pre-checks run.Status.IsTerminal() before RequestCancel — terminal runs get `already_terminal` status with `terminal_status` field; non-terminal runs proceed with cancel intent
+- Cloud pull uses `MatchesArtifactPatterns` (not `IsBundlePathAllowed`) for artifact-group-based filtering — reports are valid pull artifacts despite being excluded from uploads
+- `decompressBundleFiles` expects gzip-compressed `path\x00size\x00content` frame format matching `compressBundleFiles`
+- Pull local-change detection uses `bytes.Equal` on file content — identical files pass silently, only truly changed files trigger the `--force` requirement
 
 ---
 ## 2026-02-11 - US-001
@@ -290,4 +293,38 @@
   - `TerminalStatus` uses `omitempty` so it's absent from JSON for non-terminal cancel responses — tests should verify both presence (terminal) and absence (non-terminal)
   - The `runCloudCancel` function was already fully implemented except for the `already_terminal` AC — the story was incomplete because terminal runs were treated identically to non-terminal runs
   - When refactoring control flow (moving not-found check from RequestCancel to GetRun pre-check), existing error tests may break if they rely on the error coming from a specific code path — verify error codes match
+---
+## 2026-02-11 - US-016
+- Implemented `hal cloud pull <run-id>` command with `--artifacts state|reports|all` deterministic artifact selection
+- Added `cloudPullArtifactsFlag` and `--artifacts` flag (default: "all") to `cloudPullCmd`
+- Added `Artifacts` field to `cloudPullResponse` JSON struct for machine-readable output
+- Replaced `cloud.IsBundlePathAllowed` with `cloud.MatchesArtifactPatterns` for artifact-group-based file filtering
+- Added `ArtifactGroupPatterns(group)` and `MatchesArtifactPatterns(path, patterns)` to internal/cloud/artifact_group.go
+- Artifact group validation rejects invalid values with deterministic `invalid_flag` error code
+- Pull is safe by default: detects local file changes and refuses to overwrite unless `--force` is used
+- Empty `files_restored` marshals as `[]` not `null` in JSON output
+- 18 table-driven tests for `TestRunCloudPull` covering: human/JSON success, run not found, no snapshot, local change detection with/without --force, nil/error store factory, identical files, artifact filtering (state/reports/all), invalid flag, empty reports
+- Additional `TestDecompressBundleFiles` and `TestDecompressBundleFiles_InvalidData` roundtrip tests
+- Files changed: cmd/cloud.go, cmd/cloud_test.go, internal/cloud/artifact_group.go, internal/cloud/artifact_group_test.go
+- **Learnings for future iterations:**
+  - The pull command was partially pre-implemented but lacked `--artifacts` flag support and artifact-group-based filtering — the diff was adding artifact group integration to the existing skeleton
+  - `cloud.MatchesArtifactPatterns` handles recursive globs (patterns ending with `/**`) by checking `strings.HasPrefix` — this is simpler than path.Match for the `.hal/reports/**` pattern
+  - `ArtifactGroupAll` is resolved by combining state + reports patterns at query time — it's never persisted as a concrete group in metadata
+  - For pull, reports are valid artifacts even though they're excluded from uploads (BundleDenylist) — pull uses artifact group patterns, not the upload allowlist
+---
+## 2026-02-11 - US-017
+- Implemented hal cloud auth import credential validation with configurable backend validator
+- Added `CredentialValidator` function field to `AuthImportConfig` — called before profile persistence, returns "invalid credentials" error on failure
+- Added `invalid_credentials` error code to `classifyAuthImportError` in cmd/cloud_auth.go
+- Added `cloudAuthImportCredentialValidator` package-level variable for test override
+- Updated `runCloudAuthImport` signature to accept `credentialValidator` parameter
+- Added 6 new service-level tests in `TestAuthImportService_CredentialValidation`: validator success, validator failure, no-persist on failure, correct provider/source passthrough, nil validator (backward compat), request validation before credential validation
+- Added 4 new command-level tests in `TestRunCloudAuthImport`: human/JSON success with validator, human/JSON invalid_credentials error code, no-persist verification, provider/source passthrough
+- Added `invalid_credentials` case to `TestClassifyAuthImportError`
+- Files changed: internal/cloud/auth_import.go, internal/cloud/auth_import_test.go, cmd/cloud_auth.go, cmd/cloud_auth_test.go
+- **Learnings for future iterations:**
+  - The `CredentialValidator` is injected via `AuthImportConfig` at the service layer, keeping the service testable without requiring real backend calls
+  - Credential validation runs AFTER request validation (Validate()) but BEFORE any store operations — this ensures field-level errors are caught first, and invalid credentials never create a profile
+  - The `invalid_credentials` error code is the deterministic code for this path — matches the AC requirement and is distinct from `validation_error` (field-level) and `auth_invalid` (post-import validate check)
+  - The `cloudAuthImportCredentialValidator` package-level variable follows the same factory/injectable pattern as `cloudAuthImportStoreFactory` — override in tests, nil in production (or set in init())
 ---

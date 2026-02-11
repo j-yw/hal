@@ -118,6 +118,7 @@ Use --json for machine-readable output.`,
 			cloudAuthImportModeFlag,
 			cloudAuthImportJSONFlag,
 			cloudAuthImportStoreFactory,
+			cloudAuthImportCredentialValidator,
 			os.Stdout,
 		)
 	},
@@ -316,6 +317,10 @@ func classifyAuthLinkError(err error) string {
 // cloudAuthImportStoreFactory is a package-level variable that tests can override.
 var cloudAuthImportStoreFactory func() (cloud.Store, error)
 
+// cloudAuthImportCredentialValidator is a package-level variable for credential validation.
+// Tests can override this to inject mock validation behavior.
+var cloudAuthImportCredentialValidator func(ctx context.Context, provider, source string) error
+
 // cloudAuthImportResponse is the JSON output for a successful auth import.
 type cloudAuthImportResponse struct {
 	ProfileID  string `json:"profile_id"`
@@ -329,6 +334,7 @@ func runCloudAuthImport(
 	provider, profile, source, owner, mode string,
 	jsonOutput bool,
 	storeFactory func() (cloud.Store, error),
+	credentialValidator func(ctx context.Context, provider, source string) error,
 	out io.Writer,
 ) error {
 	if storeFactory == nil {
@@ -340,7 +346,9 @@ func runCloudAuthImport(
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
 	}
 
-	svc := cloud.NewAuthImportService(store, cloud.AuthImportConfig{})
+	svc := cloud.NewAuthImportService(store, cloud.AuthImportConfig{
+		CredentialValidator: credentialValidator,
+	})
 
 	req := &cloud.AuthImportRequest{
 		Provider:  provider,
@@ -390,6 +398,8 @@ func classifyAuthImportError(err error) string {
 	switch {
 	case strings.Contains(msg, "must not be empty") || strings.Contains(msg, "validation failed"):
 		return "validation_error"
+	case strings.Contains(msg, "invalid credentials"):
+		return "invalid_credentials"
 	case strings.Contains(msg, "already exists"):
 		return "duplicate_profile"
 	case strings.Contains(msg, "failed to create"):

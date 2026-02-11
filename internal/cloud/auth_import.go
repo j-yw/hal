@@ -34,6 +34,11 @@ func (r *AuthImportRequest) Validate() error {
 type AuthImportConfig struct {
 	// IDFunc generates unique IDs. If nil, a default is used.
 	IDFunc func() string
+
+	// CredentialValidator validates supplied credentials with the configured backend.
+	// If nil, no backend validation is performed.
+	// Returns nil on success, or an error if credentials are invalid.
+	CredentialValidator func(ctx context.Context, provider, source string) error
 }
 
 // AuthImportService handles importing local auth artifacts into a profile.
@@ -66,6 +71,13 @@ type authImportAuditPayload struct {
 func (s *AuthImportService) Import(ctx context.Context, req *AuthImportRequest) (*AuthImportResult, error) {
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	// Validate credentials with the configured backend before persisting.
+	if s.config.CredentialValidator != nil {
+		if err := s.config.CredentialValidator(ctx, req.Provider, req.Source); err != nil {
+			return nil, fmt.Errorf("invalid credentials: %w", err)
+		}
 	}
 
 	now := time.Now().UTC()

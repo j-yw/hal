@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -257,6 +258,157 @@ func TestAuthImportService_Import(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.check != nil {
+				tt.check(t, result, store)
+			}
+		})
+	}
+}
+
+func TestAuthImportService_CredentialValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		req       *AuthImportRequest
+		validator func(ctx context.Context, provider, source string) error
+		wantErr   string
+		check     func(t *testing.T, result *AuthImportResult, store *authImportMockStore)
+	}{
+		{
+			name: "import succeeds when validator returns nil",
+			req: &AuthImportRequest{
+				Provider:  "anthropic",
+				ProfileID: "prof-valid",
+				Source:    "/home/user/.config/anthropic/auth.json",
+			},
+			validator: func(_ context.Context, _, _ string) error {
+				return nil
+			},
+			check: func(t *testing.T, result *AuthImportResult, store *authImportMockStore) {
+				t.Helper()
+				if result.ProfileID != "prof-valid" {
+					t.Errorf("profile_id = %q, want %q", result.ProfileID, "prof-valid")
+				}
+				if result.Status != "linked" {
+					t.Errorf("status = %q, want %q", result.Status, "linked")
+				}
+				if _, ok := store.profiles["prof-valid"]; !ok {
+					t.Fatal("profile should be persisted after successful validation")
+				}
+			},
+		},
+		{
+			name: "import fails when validator returns error",
+			req: &AuthImportRequest{
+				Provider:  "anthropic",
+				ProfileID: "prof-bad",
+				Source:    "/home/user/.config/anthropic/bad-auth.json",
+			},
+			validator: func(_ context.Context, _, _ string) error {
+				return fmt.Errorf("backend rejected credentials: unauthorized")
+			},
+			wantErr: "invalid credentials",
+		},
+		{
+			name: "invalid credentials does not persist profile",
+			req: &AuthImportRequest{
+				Provider:  "anthropic",
+				ProfileID: "prof-no-persist",
+				Source:    "/home/user/.config/anthropic/bad-auth.json",
+			},
+			validator: func(_ context.Context, _, _ string) error {
+				return fmt.Errorf("invalid API key")
+			},
+			wantErr: "invalid credentials",
+			check: func(t *testing.T, _ *AuthImportResult, store *authImportMockStore) {
+				t.Helper()
+				if _, ok := store.profiles["prof-no-persist"]; ok {
+					t.Fatal("profile should not be persisted after failed validation")
+				}
+			},
+		},
+		{
+			name: "validator receives correct provider and source",
+			req: &AuthImportRequest{
+				Provider:  "openai",
+				ProfileID: "prof-openai",
+				Source:    "/custom/path/to/key.json",
+			},
+			validator: func(_ context.Context, provider, source string) error {
+				if provider != "openai" {
+					return fmt.Errorf("unexpected provider: %s", provider)
+				}
+				if source != "/custom/path/to/key.json" {
+					return fmt.Errorf("unexpected source: %s", source)
+				}
+				return nil
+			},
+			check: func(t *testing.T, result *AuthImportResult, _ *authImportMockStore) {
+				t.Helper()
+				if result.Provider != "openai" {
+					t.Errorf("provider = %q, want %q", result.Provider, "openai")
+				}
+			},
+		},
+		{
+			name: "import succeeds without validator (nil validator)",
+			req: &AuthImportRequest{
+				Provider:  "anthropic",
+				ProfileID: "prof-no-validator",
+				Source:    "/home/user/creds",
+			},
+			validator: nil,
+			check: func(t *testing.T, result *AuthImportResult, store *authImportMockStore) {
+				t.Helper()
+				if result.Status != "linked" {
+					t.Errorf("status = %q, want %q", result.Status, "linked")
+				}
+				if _, ok := store.profiles["prof-no-validator"]; !ok {
+					t.Fatal("profile should be persisted without validator")
+				}
+			},
+		},
+		{
+			name: "validation runs before request validation passes through",
+			req: &AuthImportRequest{
+				Provider:  "",
+				ProfileID: "prof-x",
+				Source:    "/some/path",
+			},
+			validator: func(_ context.Context, _, _ string) error {
+				t.Fatal("validator should not be called if request validation fails")
+				return nil
+			},
+			wantErr: "provider must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newAuthImportMockStore()
+			svc := NewAuthImportService(store, AuthImportConfig{
+				CredentialValidator: tt.validator,
+			})
+
+			result, err := svc.Import(context.Background(), tt.req)
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				// Run check even for error cases (e.g., verify profile not persisted).
+				if tt.check != nil {
+					tt.check(t, result, store)
 				}
 				return
 			}

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -314,17 +315,18 @@ func TestClassifyAuthLinkError(t *testing.T) {
 
 func TestRunCloudAuthImport(t *testing.T) {
 	tests := []struct {
-		name       string
-		provider   string
-		profile    string
-		source     string
-		owner      string
-		mode       string
-		jsonOutput bool
-		store      func() *cloudMockStore
-		wantErr    string
-		wantOutput []string
-		checkJSON  func(t *testing.T, output string)
+		name                string
+		provider            string
+		profile             string
+		source              string
+		owner               string
+		mode                string
+		jsonOutput          bool
+		store               func() *cloudMockStore
+		credentialValidator func(ctx context.Context, provider, source string) error
+		wantErr             string
+		wantOutput          []string
+		checkJSON           func(t *testing.T, output string)
 	}{
 		{
 			name:     "successful import with human output",
@@ -563,6 +565,124 @@ func TestRunCloudAuthImport(t *testing.T) {
 				"openai",
 			},
 		},
+		{
+			name:     "successful import with credential validator in human output",
+			provider: "anthropic",
+			profile:  "prof-validated",
+			source:   "/home/user/.config/anthropic/auth.json",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			credentialValidator: func(_ context.Context, _, _ string) error {
+				return nil // credentials are valid
+			},
+			wantOutput: []string{
+				"Auth profile imported successfully.",
+				"profile_id:  prof-validated",
+				"provider:    anthropic",
+				"status:      linked",
+				"imported_at:",
+			},
+		},
+		{
+			name:       "successful import with credential validator in JSON output",
+			provider:   "anthropic",
+			profile:    "prof-validated-json",
+			source:     "/home/user/.config/anthropic/auth.json",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			credentialValidator: func(_ context.Context, _, _ string) error {
+				return nil // credentials are valid
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudAuthImportResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ProfileID != "prof-validated-json" {
+					t.Errorf("profile_id = %q, want %q", resp.ProfileID, "prof-validated-json")
+				}
+				if resp.Status != "linked" {
+					t.Errorf("status = %q, want %q", resp.Status, "linked")
+				}
+			},
+		},
+		{
+			name:     "invalid credentials returns non-zero exit in human output",
+			provider: "anthropic",
+			profile:  "prof-bad-creds",
+			source:   "/home/user/.config/anthropic/bad-auth.json",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			credentialValidator: func(_ context.Context, _, _ string) error {
+				return fmt.Errorf("backend rejected credentials: unauthorized")
+			},
+			wantErr: "invalid credentials",
+		},
+		{
+			name:       "invalid credentials returns invalid_credentials error code in JSON",
+			provider:   "anthropic",
+			profile:    "prof-bad-creds",
+			source:     "/home/user/.config/anthropic/bad-auth.json",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			credentialValidator: func(_ context.Context, _, _ string) error {
+				return fmt.Errorf("backend rejected credentials: unauthorized")
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "invalid_credentials" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "invalid_credentials")
+				}
+				if !strings.Contains(resp.Error, "invalid credentials") {
+					t.Errorf("error message %q should contain %q", resp.Error, "invalid credentials")
+				}
+			},
+		},
+		{
+			name:     "invalid credentials does not persist profile",
+			provider: "anthropic",
+			profile:  "prof-should-not-exist",
+			source:   "/home/user/.config/anthropic/bad-auth.json",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			credentialValidator: func(_ context.Context, _, _ string) error {
+				return fmt.Errorf("invalid API key")
+			},
+			wantErr: "invalid credentials",
+		},
+		{
+			name:     "credential validator receives correct provider and source",
+			provider: "openai",
+			profile:  "prof-openai",
+			source:   "/custom/path/to/key.json",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			credentialValidator: func(_ context.Context, provider, source string) error {
+				if provider != "openai" {
+					return fmt.Errorf("unexpected provider: %s", provider)
+				}
+				if source != "/custom/path/to/key.json" {
+					return fmt.Errorf("unexpected source: %s", source)
+				}
+				return nil
+			},
+			wantOutput: []string{
+				"Auth profile imported successfully.",
+				"prof-openai",
+				"openai",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -586,6 +706,7 @@ func TestRunCloudAuthImport(t *testing.T) {
 				tt.provider, tt.profile, tt.source, tt.owner, tt.mode,
 				tt.jsonOutput,
 				storeFactory,
+				tt.credentialValidator,
 				&out,
 			)
 
@@ -635,6 +756,7 @@ func TestClassifyAuthImportError(t *testing.T) {
 		{name: "nil error", err: nil, wantCode: ""},
 		{name: "validation error", err: fmt.Errorf("validation failed: provider must not be empty"), wantCode: "validation_error"},
 		{name: "must not be empty", err: fmt.Errorf("source must not be empty"), wantCode: "validation_error"},
+		{name: "invalid credentials", err: fmt.Errorf("invalid credentials: backend rejected"), wantCode: "invalid_credentials"},
 		{name: "already exists", err: fmt.Errorf("auth profile \"p1\" already exists"), wantCode: "duplicate_profile"},
 		{name: "failed to create", err: fmt.Errorf("failed to create auth profile: db error"), wantCode: "store_error"},
 		{name: "unknown error", err: fmt.Errorf("something unexpected"), wantCode: "unknown_error"},
