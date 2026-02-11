@@ -16,6 +16,11 @@
 - buildHalCommand(kind, mode) dispatches worker commands by WorkflowKind: run→"hal run", auto→"hal auto --mode <mode>", review→"hal review" — mode only applies to auto
 - ListRuns(ctx, limit) is the Store method for listing runs — ordered by updated_at DESC with LIMIT; use cloudListStoreFactory for test injection
 - Cloud list command follows the same pattern as status/cancel: separate file (cloud_list.go), testable runCloudList function, factory variable, init() wiring
+- For `hal run --cloud`, use executeRunCloud() as an early return guard in runRunWithWriter; returns (handled bool, err) so the local flow continues when --cloud is unset
+- runHalRunCloud() is the testable function for hal run --cloud — accepts CloudFlags, halDir, baseDir, storeFactory, configFactory, and io.Writer
+- Wait/detach behavior: --detach overrides to no-wait, --wait overrides to wait, otherwise use resolved.Wait from config.Resolve()
+- pollRunUntilTerminal() polls store.GetRun until IsTerminal(); uses runCloudPollInterval variable for test override
+- JSON response uses camelCase field names (runId, workflowKind, status) matching the PRD contract
 
 ---
 ## 2026-02-11 - US-001
@@ -176,4 +181,25 @@
   - Separate cloud subcommands into their own files (cloud_list.go, cloud_setup.go, cloud_doctor.go) with init() for flag registration and cloudCmd.AddCommand
   - JSON empty arrays: `make([]T, 0)` marshals as `[]` not `null` — important for API contracts
   - Postgres uses `$1` placeholders, Turso uses `?` — both share identical scanRun + query structure otherwise
+---
+## 2026-02-11 - US-009
+- Implemented `hal run --cloud` cloud execution path for submitting and tracking cloud runs
+- Created `cmd/run_cloud.go` with `runHalRunCloud` testable function and `executeRunCloud` guard function
+- Registers shared cloud flags on `runCmd` via `RegisterCloudFlags(runCmd)` in init()
+- Uses `config.Resolve()` for full 6-tier precedence cloud config resolution
+- Collects .hal bundle files via existing `collectBundleFiles` and submits via `SubmitWithBundle` with `workflowKind=run`
+- Wait/detach behavior: `--detach` overrides to no-wait, `--wait` overrides to wait, otherwise uses `resolved.Wait` from cloud config
+- Wait mode polls `store.GetRun` via `pollRunUntilTerminal` until status `IsTerminal()`; uses `runCloudPollInterval` variable for test override
+- Human output includes run ID, status, and next-step hints (`hal cloud status <id>` on detach, `hal cloud logs <id>` on completion)
+- JSON output returns `{runId, workflowKind, status}` for success; `{error, error_code}` for failures
+- Error codes include: `invalid_flag_combination`, `configuration_error`, `prerequisite_error`, `bundle_error`, `validation_error`, and all `classifySubmitError` codes
+- Intercepted in `runRunWithWriter` via `executeRunCloud()` early return guard — returns `(true, err)` when `--cloud` is set
+- Created `cmd/run_cloud_test.go` with 16 tests covering: detach success (human+JSON), wait success (human+JSON), detach/wait conflict (human+JSON), nil store factory (human+JSON), store factory error (JSON), submit validation error (JSON), missing .hal dir, JSON required fields, workflowKind=run verification, prerequisite failure (JSON), executeRunCloud guard (false when no-cloud, false when nil flags)
+- Files changed: cmd/run.go, cmd/run_cloud.go (new), cmd/run_cloud_test.go (new), .hal/prd.json
+- **Learnings for future iterations:**
+  - The `executeRunCloud` early return guard pattern (`handled, err := executeRunCloud(cmd, out); if handled { return err }`) cleanly separates cloud and local paths without restructuring the existing command
+  - For `hal auto --cloud` and `hal review --cloud` (US-010, US-011), follow the same pattern: create `auto_cloud.go` and `review_cloud.go` with `executeAutoCloud`/`executeReviewCloud` guards
+  - `runCloudPollInterval` package-level variable enables fast test polling (10ms) without affecting production (2s default) — same pattern as `cloudLogsFollowPollInterval`
+  - Cloud flag factories (runCloudStoreFactory, runCloudConfigFactory) are separate from cloudRunStoreFactory to keep hal run --cloud wiring independent from hal cloud run
+  - The JSON response uses camelCase (`runId`, `workflowKind`) to match the acceptance criteria contract — verify consistency across US-010/011/019
 ---

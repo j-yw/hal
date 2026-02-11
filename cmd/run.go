@@ -75,6 +75,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 }
 
 func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error {
+	// Check for --cloud flag: intercept and run cloud path.
+	if handled, err := executeRunCloud(cmd, os.Stdout); handled {
+		return err
+	}
+
 	// Parse iterations from positional arg (default: 10)
 	iterations := 10
 	if len(args) > 0 {
