@@ -16,6 +16,7 @@
 - `make lint`: run `golangci-lint` if installed.
 - `make run ARGS='--help'`: build and run with arguments.
 - Integration tests: `go test -tags=integration ./internal/engine/codex/...` (requires the Codex CLI).
+- Cloud lifecycle integration suite: `make test-integration-cloud-lifecycle` (runs `go test -tags=integration -v -run '^TestCloudLifecycle' ./cmd`).
 
 ## Coding Style & Naming Conventions
 - Go 1.25+ module; keep packages focused and files small.
@@ -138,3 +139,4 @@
 - Pull lifecycle scenarios should derive `--artifacts` from `cloud.WorkflowArtifactGroups(run.WorkflowKind)` and delete target files before `cloud pull` so tests verify actual restoration instead of pre-existing local files.
 - For lifecycle security coverage, seed secret-bearing values (for example in run IDs or log payloads) and assert redaction through shared helpers (`assertLifecycleOutputRedacted`, `assertLifecycleJSONOutputRedacted`) in both human and `--json` command paths.
 - Keep auth JSON contract checks explicit in integration tests by asserting required camelCase keys (`profileId`, `validatedAt`, `revokedAt`) and rejecting snake_case aliases for commands that already migrated.
+- Keep the lifecycle integration invocation centralized in `make test-integration-cloud-lifecycle` and have CI pull-request checks call that target directly to prevent command drift.

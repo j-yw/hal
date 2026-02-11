@@ -26,6 +26,10 @@ jobs:
       - name: Run tests
         run: go test -v ./...
 
+      - name: Run cloud lifecycle integration suite
+        if: github.event_name == 'pull_request'
+        run: make test-integration-cloud-lifecycle
+
   goreleaser-check:
     runs-on: ubuntu-latest
     steps:

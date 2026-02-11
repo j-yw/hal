@@ -9,7 +9,7 @@ LDFLAGS := -ldflags "-X github.com/jywlabs/hal/cmd.Version=$(VERSION) -X github.
 GOCACHE ?= /tmp/hal-gocache
 export GOCACHE
 
-.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check
+.PHONY: all build install uninstall clean test test-integration-cloud-lifecycle vet fmt lint run help release-dry-run release-check
 
 ## Default target
 all: build
@@ -44,6 +44,11 @@ clean:
 test:
 	@echo "==> Running tests..."
 	@go test -v ./...
+
+## Run cloud lifecycle integration suite
+test-integration-cloud-lifecycle:
+	@echo "==> Running cloud lifecycle integration tests..."
+	@go test -tags=integration -v -run '^TestCloudLifecycle' ./cmd
 
 ## Run go vet
 vet:
@@ -88,6 +93,7 @@ help:
 	@echo "  make uninstall        Remove from ~/.local/bin"
 	@echo "  make clean            Remove build artifacts"
 	@echo "  make test             Run tests"
+	@echo "  make test-integration-cloud-lifecycle  Run cloud lifecycle integration tests"
 	@echo "  make vet              Run go vet"
 	@echo "  make fmt              Format code"
 	@echo "  make lint             Run golangci-lint"

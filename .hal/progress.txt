@@ -49,6 +49,7 @@
 - Cancel lifecycle scenarios should use a harness-store `SetCancelIntent` override that marks non-terminal runs as `canceled` immediately, keeping `cancel -> status` assertions deterministic without worker background loops
 - For lifecycle security assertions, seed secret-bearing values into run IDs and log payloads, then validate both human and JSON outputs through shared helpers (`assertLifecycleOutputRedacted`, `assertLifecycleJSONOutputRedacted`) so redaction checks stay consistent.
 - Auth JSON contract checks in integration tests should assert required camelCase keys (`profileId`, `validatedAt`, `revokedAt`) and explicitly fail on snake_case aliases once a command is migrated.
+- Keep cloud lifecycle integration invocation centralized in `make test-integration-cloud-lifecycle`; CI pull-request checks should call this make target to keep local/CI commands in sync.
 
 ---
 ## 2026-02-11 - US-001
@@ -616,4 +617,14 @@
   - Shared redaction assertions are easiest to keep deterministic by seeding known secret patterns into run IDs/log payloads and checking both human and JSON outputs through one helper pair
   - Keep lifecycle JSON key assertions migration-safe with canonical camelCase keys plus explicit legacy aliases, but enforce strict camelCase for auth commands that are already migrated
   - Redaction chokepoints should cover command-level success, error, and terminal outputs; otherwise integration tests will miss leak paths that unit tests on single functions may not hit
+---
+## 2026-02-12 02:13 +08 - T-013
+- Wired cloud lifecycle integration checks into CI pull requests by adding a dedicated CI step that runs `make test-integration-cloud-lifecycle`
+- Added a reusable Makefile target for lifecycle integration (`test-integration-cloud-lifecycle`) and documented both the make target and exact `go test -tags=integration -v -run '^TestCloudLifecycle' ./cmd` command in README
+- Updated repository guidance to keep the lifecycle integration command centralized and reused by CI
+- Files changed: .github/workflows/ci.yml, Makefile, README.md, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Keep integration suite invocations in a single make target and call that target from CI to prevent local-vs-CI command drift
+  - For PR-only integration gating, use a CI step-level `if: github.event_name == 'pull_request'` guard inside the existing test job
+  - Document both the make target and the raw `go test` command so maintainers can run the same checks even without make aliases
 ---

@@ -365,12 +365,19 @@ hal run -e pi
 ## Development
 
 ```bash
-make build       # Build binary with version metadata
-make install     # Install to ~/.local/bin
-make test        # Run tests
-make vet         # Run go vet
-make fmt         # Format code
-make lint        # Run golangci-lint (if installed)
+make build                            # Build binary with version metadata
+make install                          # Install to ~/.local/bin
+make test                             # Run tests
+make test-integration-cloud-lifecycle # Run cloud lifecycle integration suite
+make vet                              # Run go vet
+make fmt                              # Format code
+make lint                             # Run golangci-lint (if installed)
+```
+
+Cloud lifecycle integration suite (same command used by CI on pull requests):
+
+```bash
+go test -tags=integration -v -run '^TestCloudLifecycle' ./cmd
 ```
 
 ## Releases
