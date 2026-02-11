@@ -56,6 +56,11 @@ func init() {
 }
 
 func runAuto(cmd *cobra.Command, args []string) error {
+	// Check for --cloud flag: intercept and run cloud path.
+	if handled, err := executeAutoCloud(cmd, os.Stdout); handled {
+		return err
+	}
+
 	ctx := context.Background()
 	dir := "."
 

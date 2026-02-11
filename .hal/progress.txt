@@ -203,3 +203,22 @@
   - Cloud flag factories (runCloudStoreFactory, runCloudConfigFactory) are separate from cloudRunStoreFactory to keep hal run --cloud wiring independent from hal cloud run
   - The JSON response uses camelCase (`runId`, `workflowKind`) to match the acceptance criteria contract — verify consistency across US-010/011/019
 ---
+## 2026-02-11 - US-010
+- Implemented `hal auto --cloud` cloud execution path for submitting and tracking auto cloud runs
+- Created `cmd/auto_cloud.go` with `runHalAutoCloud` testable function and `executeAutoCloud` guard function
+- Registers shared cloud flags on `autoCmd` via `RegisterCloudFlags(autoCmd)` in init()
+- Uses `config.Resolve()` for full 6-tier precedence cloud config resolution with `workflowKind=auto`
+- Collects .hal bundle files via existing `collectBundleFiles` and submits via `SubmitWithBundle` with `workflowKind=auto`
+- Wait/detach behavior reuses same pattern as hal run --cloud: `--detach` overrides to no-wait, `--wait` overrides to wait, otherwise uses `resolved.Wait`
+- Completion summary references report and state artifact availability: "Artifacts available: state, reports" with `hal cloud pull` and `hal cloud logs` hints
+- Human output includes run ID, status, and next-step hints
+- JSON output returns `{runId, workflowKind, status}` matching the contract
+- Intercepted in `runAuto` via `executeAutoCloud()` early return guard
+- Created `cmd/auto_cloud_test.go` with 16 tests covering: detach success (human+JSON), wait success (human+JSON), detach/wait conflict (human+JSON), nil store factory (human+JSON), store factory error (JSON), missing .hal dir, JSON required fields, workflowKind=auto verification, prerequisite failure (JSON), executeAutoCloud guard (false when no-cloud, false when nil flags), completion summary references artifacts
+- Files changed: cmd/auto.go, cmd/auto_cloud.go (new), cmd/auto_cloud_test.go (new), .hal/prd.json
+- **Learnings for future iterations:**
+  - The `executeAutoCloud` guard follows the exact same pattern as `executeRunCloud` — for US-011 (hal review --cloud), follow the same pattern with `review_cloud.go` and `executeReviewCloud`
+  - Auto/review completion summaries should reference "Artifacts available: state, reports" since auto/review workflows produce both state and report artifacts (unlike run which only produces state)
+  - Each workflow cloud file (run_cloud.go, auto_cloud.go) has its own factory variables (autoCloudStoreFactory, autoCloudConfigFactory, autoCloudPollInterval) to keep wiring independent
+  - The cloud guard intercepts at the very top of the command handler before any local initialization — this avoids engine creation, config loading, and display setup when running in cloud mode
+---
