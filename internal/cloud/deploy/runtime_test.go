@@ -1,10 +1,16 @@
 package deploy
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jywlabs/hal/internal/cloud"
 )
 
 func TestNewStoreFactory_SyncOnce(t *testing.T) {
@@ -215,6 +221,70 @@ func TestNewStoreFactory_ErrorWrapsOpenStore(t *testing.T) {
 	}
 }
 
+func TestNewStoreFactory_OpenStoreUsesDeadline(t *testing.T) {
+	prevOpenStoreFn := openStoreFn
+	t.Cleanup(func() {
+		openStoreFn = prevOpenStoreFn
+	})
+
+	var receivedCtx context.Context
+	openStoreFn = func(ctx context.Context, _ Config) (cloud.Store, *sql.DB, error) {
+		receivedCtx = ctx
+		return nil, nil, errors.New("boom")
+	}
+
+	factory := newStoreFactory(func() Config {
+		return Config{
+			DBAdapter:   AdapterPostgres,
+			PostgresDSN: "postgres://db.example.com:5432/hal",
+		}
+	})
+
+	_, err := factory()
+	if err == nil {
+		t.Fatal("expected error from open store, got nil")
+	}
+	if receivedCtx == nil {
+		t.Fatal("expected open store context to be captured")
+	}
+
+	assertInitDeadline(t, receivedCtx)
+}
+
+func TestDefaultStoreFactory_OpenStoreUsesDeadline(t *testing.T) {
+	ResetDefaultStoreForTest(t)
+	t.Cleanup(func() {
+		ResetDefaultStoreForTest(t)
+	})
+
+	prevOpenStoreFn := openStoreFn
+	t.Cleanup(func() {
+		openStoreFn = prevOpenStoreFn
+	})
+
+	var receivedCtx context.Context
+	openStoreFn = func(ctx context.Context, _ Config) (cloud.Store, *sql.DB, error) {
+		receivedCtx = ctx
+		return nil, nil, errors.New("boom")
+	}
+
+	t.Setenv(EnvDBAdapter, AdapterPostgres)
+	t.Setenv(EnvPostgresDSN, "postgres://db.example.com:5432/hal")
+
+	_, err := DefaultStoreFactory()
+	if err == nil {
+		t.Fatal("expected error from open store, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "open store:") {
+		t.Fatalf("expected open store error prefix, got %q", err.Error())
+	}
+	if receivedCtx == nil {
+		t.Fatal("expected open store context to be captured")
+	}
+
+	assertInitDeadline(t, receivedCtx)
+}
+
 func unsetEnvForTest(t *testing.T, keys ...string) {
 	t.Helper()
 
@@ -241,4 +311,21 @@ func unsetEnvForTest(t *testing.T, keys ...string) {
 			_ = os.Setenv(key, *value)
 		}
 	})
+}
+
+func assertInitDeadline(t *testing.T, ctx context.Context) {
+	t.Helper()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected initialization context to include a deadline")
+	}
+
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		t.Fatalf("expected positive deadline remaining, got %s", remaining)
+	}
+	if remaining > defaultStoreInitTimeout {
+		t.Fatalf("expected remaining deadline <= %s, got %s", defaultStoreInitTimeout, remaining)
+	}
 }

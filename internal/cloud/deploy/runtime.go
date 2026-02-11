@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/jywlabs/hal/internal/cloud"
@@ -18,7 +19,13 @@ var (
 	defaultDB    *sql.DB
 	defaultErr   error
 	defaultOnce  sync.Once
+
+	// openStoreFn allows tests to stub OpenStore and inspect initialization
+	// context behavior without making real DB connections.
+	openStoreFn = OpenStore
 )
+
+const defaultStoreInitTimeout = 10 * time.Second
 
 // DefaultStoreFactory loads config from environment variables, validates the
 // store configuration, and opens the database connection. It uses sync.Once
@@ -37,7 +44,7 @@ func DefaultStoreFactory() (cloud.Store, error) {
 			defaultErr = fmt.Errorf("validate store config: %w", err)
 			return
 		}
-		store, db, err := OpenStore(context.Background(), cfg)
+		store, db, err := openStoreWithTimeout(cfg)
 		if err != nil {
 			defaultErr = fmt.Errorf("open store: %w", err)
 			return
@@ -90,7 +97,7 @@ func newStoreFactory(loadConfig func() Config) func() (cloud.Store, error) {
 				return
 			}
 			var openErr error
-			store, db, openErr = OpenStore(context.Background(), cfg)
+			store, db, openErr = openStoreWithTimeout(cfg)
 			if openErr != nil {
 				err = fmt.Errorf("open store: %w", openErr)
 				return
@@ -98,4 +105,10 @@ func newStoreFactory(loadConfig func() Config) func() (cloud.Store, error) {
 		})
 		return store, err
 	}
+}
+
+func openStoreWithTimeout(cfg Config) (cloud.Store, *sql.DB, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultStoreInitTimeout)
+	defer cancel()
+	return openStoreFn(ctx, cfg)
 }
