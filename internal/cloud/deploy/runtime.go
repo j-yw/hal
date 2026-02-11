@@ -53,6 +53,9 @@ func CloseDefaultStore() error {
 // in isolation.
 func ResetDefaultStoreForTest(t *testing.T) {
 	t.Helper()
+	if err := CloseDefaultStore(); err != nil {
+		t.Fatalf("close default store: %v", err)
+	}
 	defaultOnce = sync.Once{}
 	defaultStore = nil
 	defaultDB = nil
