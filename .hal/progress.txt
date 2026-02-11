@@ -463,3 +463,21 @@
   - The `cloudCmd` uses `Args: cobra.NoArgs` which rejects any args passed after `cloud` — this is what makes unknown subcommands fail with non-zero exit, not a custom RunE check
   - Always reset rootCmd state after test (`SetArgs(nil)`, `SetOut(nil)`, `SilenceUsage = false`) to avoid polluting other tests
 ---
+## 2026-02-12 - US-018
+- Created comprehensive help snapshot tests in `cmd/cloud_help_test.go` with 8 test functions and 28+ subtests
+- `TestCloudHelp_ListsOnlySupportedCommands` — verifies exact count (8) and presence of setup, doctor, list, status, logs, cancel, pull, auth
+- `TestCloudHelp_RemovedCommandsAbsentFromHelpText` — renders actual help output and checks Available Commands section for absence of submit, run, smoke, env
+- `TestCloudHelp_LongDescriptionListsSupportedCommands` — verifies cloudCmd.Long lists all 8 supported commands as entries
+- `TestWorkflowCommands_SharedCloudFlags` — verifies run, auto, review all register the 11 shared cloud flags
+- `TestWorkflowCommands_CloudFlagUsageInHelp` — verifies all cloud flags appear in UsageString() for each workflow command
+- `TestWorkflowCommands_CloudFlagConsistency` — compares flag defaults and usage descriptions across run vs auto and run vs review
+- `TestCloudHelp_CommandTreeSnapshot` — locks the exact command tree with name→short description mapping
+- `TestCloudHelp_CloudFlagDocSnapshot` — locks exact flag definitions (name, usage, default) for all 11 cloud flags
+- All help text was already correct — no production code changes needed, only snapshot tests
+- Files changed: cmd/cloud_help_test.go (new), .hal/prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Help text snapshot tests should test at multiple levels: registered subcommand names, rendered help output, Long description, flag definitions, and flag consistency across commands
+  - Use `CloudFlagNames()` as the single source of truth for which flags to verify — avoids hardcoding the flag list in multiple places
+  - When checking rendered help for removed commands, parse the "Available Commands:" section specifically instead of full-text matching — avoids false positives from Long descriptions containing common English words
+  - The command tree and help text were already correct from previous stories (US-004 removed legacy commands, US-021 defined shared flag contract) — US-018 is purely a test-locking story
+---
