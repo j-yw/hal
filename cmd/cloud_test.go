@@ -191,6 +191,45 @@ func linkedCloudProfile(id, provider string) *cloud.AuthProfile {
 	}
 }
 
+func TestCloudDefaultFactoriesIncludeSubmitConfig(t *testing.T) {
+	if cloudSubmitStoreFactory == nil {
+		t.Fatal("cloudSubmitStoreFactory should be initialized")
+	}
+	if cloudSubmitConfigFactory == nil {
+		t.Fatal("cloudSubmitConfigFactory should be initialized")
+	}
+	if cloudRunStoreFactory == nil {
+		t.Fatal("cloudRunStoreFactory should be initialized")
+	}
+	if cloudRunConfigFactory == nil {
+		t.Fatal("cloudRunConfigFactory should be initialized")
+	}
+
+	submitCfg := cloudSubmitConfigFactory()
+	if submitCfg.IDFunc == nil {
+		t.Fatal("cloudSubmitConfigFactory must provide IDFunc")
+	}
+	submitID := submitCfg.IDFunc()
+	if submitID == "" {
+		t.Fatal("cloudSubmitConfigFactory IDFunc returned empty ID")
+	}
+	if !strings.HasPrefix(submitID, "run-") {
+		t.Fatalf("submit ID = %q, want run- prefix", submitID)
+	}
+
+	runCfg := cloudRunConfigFactory()
+	if runCfg.IDFunc == nil {
+		t.Fatal("cloudRunConfigFactory must provide IDFunc")
+	}
+	runID := runCfg.IDFunc()
+	if runID == "" {
+		t.Fatal("cloudRunConfigFactory IDFunc returned empty ID")
+	}
+	if !strings.HasPrefix(runID, "run-") {
+		t.Fatalf("run ID = %q, want run- prefix", runID)
+	}
+}
+
 func TestRunCloudSubmit(t *testing.T) {
 	tests := []struct {
 		name       string

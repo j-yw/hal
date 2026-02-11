@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -279,6 +281,9 @@ func init() {
 	if cloudSubmitStoreFactory == nil {
 		cloudSubmitStoreFactory = deploy.DefaultStoreFactory
 	}
+	if cloudSubmitConfigFactory == nil {
+		cloudSubmitConfigFactory = defaultCloudSubmitConfig
+	}
 	if cloudStatusStoreFactory == nil {
 		cloudStatusStoreFactory = deploy.DefaultStoreFactory
 	}
@@ -291,9 +296,26 @@ func init() {
 	if cloudRunStoreFactory == nil {
 		cloudRunStoreFactory = deploy.DefaultStoreFactory
 	}
+	if cloudRunConfigFactory == nil {
+		cloudRunConfigFactory = defaultCloudSubmitConfig
+	}
 	if cloudPullStoreFactory == nil {
 		cloudPullStoreFactory = deploy.DefaultStoreFactory
 	}
+}
+
+func defaultCloudSubmitConfig() cloud.SubmitConfig {
+	return cloud.SubmitConfig{
+		IDFunc: defaultCloudRunID,
+	}
+}
+
+func defaultCloudRunID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("run-%d", time.Now().UTC().UnixNano())
+	}
+	return "run-" + hex.EncodeToString(raw[:])
 }
 
 // cloudSubmitResponse is the JSON output for a successful submit.
