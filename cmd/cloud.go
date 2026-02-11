@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/cloud"
+	"github.com/jywlabs/hal/internal/cloud/deploy"
 	"github.com/spf13/cobra"
 )
 
@@ -273,6 +274,27 @@ var (
 
 // cloudPullStoreFactory is a package-level variable that tests can override.
 var cloudPullStoreFactory func() (cloud.Store, error)
+
+func init() {
+	if cloudSubmitStoreFactory == nil {
+		cloudSubmitStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudStatusStoreFactory == nil {
+		cloudStatusStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudLogsStoreFactory == nil {
+		cloudLogsStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudCancelStoreFactory == nil {
+		cloudCancelStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudRunStoreFactory == nil {
+		cloudRunStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudPullStoreFactory == nil {
+		cloudPullStoreFactory = deploy.DefaultStoreFactory
+	}
+}
 
 // cloudSubmitResponse is the JSON output for a successful submit.
 type cloudSubmitResponse struct {
