@@ -36,6 +36,7 @@
 - For auth import redaction, `writeAuthImportError` and `writeAuthImportSuccess` are the two output chokepoints — follow same pattern as hal run --cloud output functions
 - `cloudCmd` uses `Args: cobra.NoArgs` — unknown subcommands are rejected as extra args, producing non-zero exit without custom error handling
 - Supported cloud subcommands: setup, doctor, list, status, logs, cancel, pull, auth — legacy commands (submit, run, smoke, env, runs) are removed; `cloud_removed_test.go` locks this list
+- Cloud lifecycle integration scaffolding belongs in a `//go:build integration` test file under `cmd/`; keep the canonical command flow as shared table data (`setup → run → auto → review → status → logs → pull → cancel`) for reuse across scenario tests
 
 ---
 ## 2026-02-11 - US-001
@@ -480,4 +481,14 @@
   - Use `CloudFlagNames()` as the single source of truth for which flags to verify — avoids hardcoding the flag list in multiple places
   - When checking rendered help for removed commands, parse the "Available Commands:" section specifically instead of full-text matching — avoids false positives from Long descriptions containing common English words
   - The command tree and help text were already correct from previous stories (US-004 removed legacy commands, US-021 defined shared flag contract) — US-018 is purely a test-locking story
+---
+## 2026-02-12 00:56 +08 - T-001
+- Added an integration-only scaffold test file at `cmd/cloud_lifecycle_integration_test.go` with explicit lifecycle suite metadata (package name/path + integration build tag)
+- Defined shared lifecycle command surface table entries for `setup`, `run`, `auto`, `review`, `status`, `logs`, `pull`, and `cancel` so future scenarios can reuse one canonical sequence
+- Added scaffold validation tests to lock metadata and command ordering
+- Files changed: cmd/cloud_lifecycle_integration_test.go, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Keep lifecycle integration suite wiring in an integration-tagged file (`//go:build integration`) so command-level integration scaffolding stays isolated from default unit test runs
+  - Centralizing lifecycle command flow as shared table data avoids drift when multiple scenario tests need the same command progression
+  - Include reusable placeholders (for example `<run-id>`) directly in the command surface definitions to keep downstream scenario helpers consistent
 ---

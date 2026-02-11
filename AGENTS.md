@@ -110,3 +110,17 @@
 - For code that uses sync.Once, create isolated factories with newStoreFactory(func() Config { return LoadConfig(customGetenv) }) in tests to avoid package-level once-state leakage.
 - In cloud deploy CLI paths, call godotenv.Load() before LoadConfig(getenv); ignore os.ErrNotExist and warn (non-fatal) on other dotenv errors.
 - Construct Turso DSNs with parse-modify-stringify (url.Parse -> Query().Set("authToken") -> String()) and validate in tests by reparsing URL/query instead of raw string matching.
+
+## Patterns from hal/unified-cloud-ux (2026-02-12)
+
+- Use `RegisterCloudFlags(cmd)` and `ValidateCloudFlags(flags)` on every cloud-capable workflow command to keep flag semantics and `--detach/--wait` conflict handling consistent.
+- Always resolve cloud runtime settings through `config.Resolve(ResolveInput{...})` with the fixed precedence chain: CLI > process env > .env (non-overriding) > `.hal/cloud.yaml` > inferred defaults > hard defaults.
+- Keep Cobra handlers thin and delegate to testable helpers (`run<Command>` functions) that accept `io.Writer` plus injectable store/config factories to avoid hard-coupled network/database behavior in tests.
+- Model cloud enums as typed strings with a validation map and `IsValid()` (e.g., workflow kind, artifact group), and centralize defaults in constructors like `NewArtifactMetadata(kind)`.
+- Route all cloud/auth output through redaction-aware chokepoints (`cloud.Redact()` wrappers) and keep JSON contracts stable with camelCase field names.
+
+## Patterns from compound/cloud-lifecycle-e2e-integration-tests (2026-02-12)
+
+- Keep cloud lifecycle suite scaffolding in a dedicated `//go:build integration` file under `cmd/` so integration metadata and shared fixtures are excluded from default unit-test runs.
+- Define the lifecycle command flow once as shared table data (`setup`, `run`, `auto`, `review`, `status`, `logs`, `pull`, `cancel`) and reuse it across scenario tests to prevent command-surface drift.
+- Use explicit placeholders like `<run-id>` in shared command args so scenario helpers can substitute IDs consistently across status/logs/pull/cancel assertions.

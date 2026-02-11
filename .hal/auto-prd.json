@@ -1,0 +1,188 @@
+{
+  "project": "hal",
+  "branchName": "compound/cloud-lifecycle-e2e-integration-tests",
+  "description": "End-to-end integration coverage for unified cloud lifecycle commands, workflow-kind persistence, artifacts, redaction, and CI gating.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Map integration test entrypoints and lifecycle command surface",
+      "description": "As a developer, I need a clear map of integration test package entrypoints and cloud lifecycle command handlers so that new end-to-end tests are added in the correct location with the correct build tags.",
+      "acceptanceCriteria": [
+        "A single integration test scaffold file identifies the target package/path and required integration build tag for the lifecycle suite.",
+        "The lifecycle command sequence (setup, run, auto, review, status, logs, pull, cancel) is enumerated as test constants or table entries for reuse.",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Create shared lifecycle fixtures and contract key definitions",
+      "description": "As a developer, I need shared fixture definitions for workflow states, workflow kinds, artifact groups, and expected response keys so that all scenarios assert against one source of truth.",
+      "acceptanceCriteria": [
+        "Shared fixture definitions exist for lifecycle checkpoints used by setup/run/status/logs/pull/cancel scenarios.",
+        "Expected JSON response keys are defined in camelCase constants for test assertions.",
+        "Fixture definitions include workflowKind expectations for run, auto, and review.",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Implement ephemeral cloud integration harness",
+      "description": "As a developer, I need an isolated harness that provisions temporary workspace, store, and runtime dependencies so that lifecycle integration tests run deterministically without external services.",
+      "acceptanceCriteria": [
+        "Harness creates a unique temp directory and isolated state per test invocation.",
+        "Harness wires test-double or ephemeral store/runtime factories with no external network dependency.",
+        "Harness exposes setup and teardown helpers used by integration scenarios.",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Add reusable cloud command execution helper",
+      "description": "As a developer, I need a reusable command runner with injectable stdin/stdout so that lifecycle scenarios can execute cloud-capable commands consistently in tests.",
+      "acceptanceCriteria": [
+        "A helper executes target commands with configurable args and injected input/output streams.",
+        "Helper returns captured human-readable output and command errors for assertions.",
+        "Helper supports running the same command in --json mode within the same test flow.",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Add JSON decode and deterministic normalization utilities",
+      "description": "As a developer, I need shared output utilities that decode JSON and normalize nondeterministic fields so that lifecycle assertions stay stable across runs.",
+      "acceptanceCriteria": [
+        "Utility decodes --json command output into assertion-friendly structures.",
+        "Utility normalizes only configured nondeterministic fields (for example timestamps or generated IDs).",
+        "Normalization is applied through a shared helper used by at least one scenario test.",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Implement baseline lifecycle scenario: setup -\u003e run --cloud -\u003e status",
+      "description": "As a user, I need the baseline cloud lifecycle flow to work end-to-end so that setup and cloud run create a workflow visible through status.",
+      "acceptanceCriteria": [
+        "Integration test executes hal cloud setup, hal run --cloud, and hal cloud status successfully in one scenario.",
+        "Scenario asserts persisted workflow state exists after run and is queryable by status.",
+        "Scenario validates both human output and --json output at run and status checkpoints.",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Add lifecycle logs scenario assertions",
+      "description": "As a user, I need cloud logs retrieval to work after workflow execution so that I can inspect workflow output from the lifecycle interface.",
+      "acceptanceCriteria": [
+        "Integration test executes hal cloud logs for a workflow created in the harness.",
+        "Logs assertions validate expected contract keys in human and --json outputs.",
+        "Scenario verifies logs command references the targeted workflow identifier.",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Add lifecycle pull scenario with artifact file checks",
+      "description": "As a user, I need cloud artifact pull to succeed so that produced files and artifact metadata are available locally after workflow completion.",
+      "acceptanceCriteria": [
+        "Integration test executes hal cloud pull for a completed workflow.",
+        "Scenario asserts artifact group metadata matches expected workflow-kind context.",
+        "Scenario asserts pulled artifact files exist at expected output paths.",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "title": "Implement auto --cloud lifecycle scenario",
+      "description": "As a developer, I need an auto workflow lifecycle scenario so that unified cloud behavior is validated for autonomous execution paths.",
+      "acceptanceCriteria": [
+        "Integration test executes hal auto --cloud and then queries lifecycle state via status.",
+        "Scenario asserts persisted workflowKind equals auto in store-backed state and --json response.",
+        "Scenario executes and asserts one downstream command after status (logs or pull).",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "title": "Implement review --cloud lifecycle scenario",
+      "description": "As a developer, I need a review workflow lifecycle scenario so that unified cloud behavior is validated for review command execution.",
+      "acceptanceCriteria": [
+        "Integration test executes hal review --cloud and then queries lifecycle state via status.",
+        "Scenario asserts persisted workflowKind equals review in store-backed state and --json response.",
+        "Scenario validates one additional lifecycle checkpoint beyond status (logs or pull).",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-011",
+      "title": "Implement cancel-path lifecycle scenario",
+      "description": "As a user, I need hal cloud cancel to move active workflows into a terminal canceled state so that cancellation behavior is reliable and observable.",
+      "acceptanceCriteria": [
+        "Integration test starts a cancellable workflow and executes hal cloud cancel.",
+        "Post-cancel status assertion verifies the workflow reaches the expected terminal canceled state.",
+        "Scenario validates cancel/status consistency in both human and --json outputs.",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-012",
+      "title": "Enforce suite-wide redaction and camelCase JSON contract assertions",
+      "description": "As a security-conscious user, I need lifecycle tests to enforce redaction and stable JSON field naming so that cloud/auth outputs remain safe and backward compatible.",
+      "acceptanceCriteria": [
+        "Shared assertions verify secret-bearing values are redacted in human-readable outputs for covered lifecycle commands.",
+        "Shared assertions verify secret-bearing values are redacted in --json outputs for covered lifecycle commands.",
+        "JSON contract assertions check expected camelCase keys for cloud/auth responses used in the suite.",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-013",
+      "title": "Wire lifecycle integration suite into CI and local reproducibility docs",
+      "description": "As a maintainer, I need pull requests to run lifecycle integration tests automatically and document local execution so that regressions are caught before merge.",
+      "acceptanceCriteria": [
+        "CI pull-request workflow runs the cloud lifecycle integration test target.",
+        "CI configuration fails the job when lifecycle integration tests fail.",
+        "Repository docs or make target instructions include the exact command to run the lifecycle suite locally.",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
