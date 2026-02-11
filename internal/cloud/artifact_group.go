@@ -1,6 +1,9 @@
 package cloud
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ArtifactGroup identifies a category of cloud run artifacts for pull selection.
 type ArtifactGroup string
@@ -156,4 +159,24 @@ func (m *ArtifactMetadata) SelectPatterns(group ArtifactGroup) ([]ArtifactPathPa
 		}
 	}
 	return selected, nil
+}
+
+// MatchesArtifactPatterns reports whether the given file path matches any of the
+// provided artifact path patterns. Patterns ending with /** match the directory
+// and all descendants; otherwise they are exact matches. Paths are normalized
+// before comparison.
+func MatchesArtifactPatterns(filePath string, patterns []ArtifactPathPattern) bool {
+	normalized := NormalizeBundlePath(filePath)
+	for _, p := range patterns {
+		pattern := NormalizeBundlePath(p.Path)
+		if strings.HasSuffix(pattern, "/**") {
+			prefix := strings.TrimSuffix(pattern, "/**")
+			if normalized == prefix || strings.HasPrefix(normalized, prefix+"/") {
+				return true
+			}
+		} else if normalized == pattern {
+			return true
+		}
+	}
+	return false
 }

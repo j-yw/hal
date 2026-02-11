@@ -2509,6 +2509,7 @@ func TestRunCloudPull(t *testing.T) {
 		runID      string
 		force      bool
 		jsonOutput bool
+		artifacts  string // defaults to "all" if empty
 		setupDir   func(t *testing.T, dir string)
 		store      func() *cloudMockStore
 		wantErr    string
@@ -2727,6 +2728,186 @@ func TestRunCloudPull(t *testing.T) {
 			},
 			wantOutput: []string{"Snapshot restored successfully."},
 		},
+		{
+			name:      "artifacts=state pulls only state files",
+			runID:     "run-001",
+			artifacts: "state",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 2, map[string]string{
+					".hal/prd.json":            `{"project":"test"}`,
+					".hal/progress.txt":        "## done",
+					".hal/reports/review.html": "<html>report</html>",
+				})
+				return s
+			},
+			wantOutput: []string{
+				"Snapshot restored successfully.",
+				".hal/prd.json",
+				".hal/progress.txt",
+			},
+			checkDir: func(t *testing.T, dir string) {
+				// State files should be restored.
+				if _, err := os.Stat(filepath.Join(dir, ".hal", "prd.json")); err != nil {
+					t.Errorf("expected prd.json to exist: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, ".hal", "progress.txt")); err != nil {
+					t.Errorf("expected progress.txt to exist: %v", err)
+				}
+				// Report files should NOT be restored.
+				if _, err := os.Stat(filepath.Join(dir, ".hal", "reports", "review.html")); err == nil {
+					t.Error("expected reports/review.html to NOT exist with --artifacts=state")
+				}
+			},
+		},
+		{
+			name:      "artifacts=reports pulls only report files",
+			runID:     "run-001",
+			artifacts: "reports",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 2, map[string]string{
+					".hal/prd.json":            `{"project":"test"}`,
+					".hal/progress.txt":        "## done",
+					".hal/reports/review.html": "<html>report</html>",
+				})
+				return s
+			},
+			wantOutput: []string{
+				"Snapshot restored successfully.",
+				".hal/reports/review.html",
+			},
+			checkDir: func(t *testing.T, dir string) {
+				// Report files should be restored.
+				content, err := os.ReadFile(filepath.Join(dir, ".hal", "reports", "review.html"))
+				if err != nil {
+					t.Fatalf("expected reports/review.html to exist: %v", err)
+				}
+				if string(content) != "<html>report</html>" {
+					t.Errorf("reports/review.html = %q, want %q", string(content), "<html>report</html>")
+				}
+				// State files should NOT be restored.
+				if _, err := os.Stat(filepath.Join(dir, ".hal", "prd.json")); err == nil {
+					t.Error("expected prd.json to NOT exist with --artifacts=reports")
+				}
+			},
+		},
+		{
+			name:      "artifacts=all pulls both state and reports",
+			runID:     "run-001",
+			artifacts: "all",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 2, map[string]string{
+					".hal/prd.json":            `{"project":"test"}`,
+					".hal/reports/review.html": "<html>report</html>",
+				})
+				return s
+			},
+			wantOutput: []string{
+				"Snapshot restored successfully.",
+				".hal/prd.json",
+				".hal/reports/review.html",
+			},
+			checkDir: func(t *testing.T, dir string) {
+				if _, err := os.Stat(filepath.Join(dir, ".hal", "prd.json")); err != nil {
+					t.Errorf("expected prd.json to exist: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, ".hal", "reports", "review.html")); err != nil {
+					t.Errorf("expected reports/review.html to exist: %v", err)
+				}
+			},
+		},
+		{
+			name:       "artifacts=state JSON includes artifacts field",
+			runID:      "run-001",
+			artifacts:  "state",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 1, map[string]string{
+					".hal/prd.json":            `{"project":"test"}`,
+					".hal/reports/review.html": "<html>report</html>",
+				})
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudPullResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.Artifacts != "state" {
+					t.Errorf("artifacts = %q, want %q", resp.Artifacts, "state")
+				}
+				// Should only include state files.
+				for _, f := range resp.FilesRestored {
+					if strings.HasPrefix(f, ".hal/reports/") {
+						t.Errorf("unexpected report file in state pull: %s", f)
+					}
+				}
+			},
+		},
+		{
+			name:      "invalid artifacts flag returns error",
+			runID:     "run-001",
+			artifacts: "invalid",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				return s
+			},
+			wantErr: "invalid --artifacts value",
+		},
+		{
+			name:       "invalid artifacts flag returns error in JSON",
+			runID:      "run-001",
+			artifacts:  "invalid",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "invalid_flag" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "invalid_flag")
+				}
+			},
+		},
+		{
+			name:       "artifacts=reports with no report files returns empty files_restored",
+			runID:      "run-001",
+			artifacts:  "reports",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 1, map[string]string{
+					".hal/prd.json": `{"project":"test"}`,
+				})
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudPullResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.FilesRestored == nil {
+					t.Error("files_restored should be [] not null")
+				}
+				if len(resp.FilesRestored) != 0 {
+					t.Errorf("files_restored length = %d, want 0", len(resp.FilesRestored))
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2751,11 +2932,17 @@ func TestRunCloudPull(t *testing.T) {
 				}
 			}
 
+			artifacts := tt.artifacts
+			if artifacts == "" {
+				artifacts = "all"
+			}
+
 			var out bytes.Buffer
 			err := runCloudPull(
 				tt.runID,
 				tt.force,
 				tt.jsonOutput,
+				artifacts,
 				storeFactory,
 				dir,
 				&out,

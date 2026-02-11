@@ -463,3 +463,87 @@ func TestReportPatternsExcludedFromBundleAllowlist(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchesArtifactPatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		filePath string
+		patterns []ArtifactPathPattern
+		want     bool
+	}{
+		{
+			name:     "exact match state file",
+			filePath: ".hal/prd.json",
+			patterns: statePatterns,
+			want:     true,
+		},
+		{
+			name:     "exact match progress file",
+			filePath: ".hal/progress.txt",
+			patterns: statePatterns,
+			want:     true,
+		},
+		{
+			name:     "glob match standards subdir",
+			filePath: ".hal/standards/coding.md",
+			patterns: statePatterns,
+			want:     true,
+		},
+		{
+			name:     "report file not in state patterns",
+			filePath: ".hal/reports/review.html",
+			patterns: statePatterns,
+			want:     false,
+		},
+		{
+			name:     "report file matches report patterns",
+			filePath: ".hal/reports/review.html",
+			patterns: reportPatterns,
+			want:     true,
+		},
+		{
+			name:     "nested report file matches report patterns",
+			filePath: ".hal/reports/2026/jan/review.html",
+			patterns: reportPatterns,
+			want:     true,
+		},
+		{
+			name:     "state file not in report patterns",
+			filePath: ".hal/prd.json",
+			patterns: reportPatterns,
+			want:     false,
+		},
+		{
+			name:     "unknown file matches no patterns",
+			filePath: ".hal/unknown.txt",
+			patterns: statePatterns,
+			want:     false,
+		},
+		{
+			name:     "empty patterns matches nothing",
+			filePath: ".hal/prd.json",
+			patterns: nil,
+			want:     false,
+		},
+		{
+			name:     "all patterns match state file",
+			filePath: ".hal/prd.json",
+			patterns: append(statePatterns, reportPatterns...),
+			want:     true,
+		},
+		{
+			name:     "all patterns match report file",
+			filePath: ".hal/reports/review.html",
+			patterns: append(statePatterns, reportPatterns...),
+			want:     true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchesArtifactPatterns(tt.filePath, tt.patterns)
+			if got != tt.want {
+				t.Errorf("MatchesArtifactPatterns(%q) = %v, want %v", tt.filePath, got, tt.want)
+			}
+		})
+	}
+}

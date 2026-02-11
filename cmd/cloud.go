@@ -59,8 +59,9 @@ var (
 
 // Cloud pull flags.
 var (
-	cloudPullForceFlag bool
-	cloudPullJSONFlag  bool
+	cloudPullForceFlag     bool
+	cloudPullJSONFlag      bool
+	cloudPullArtifactsFlag string
 )
 
 var cloudCmd = &cobra.Command{
@@ -207,6 +208,11 @@ var cloudPullCmd = &cobra.Command{
 	Short: "Pull final state from a completed run",
 	Long: `Download the latest final snapshot from a cloud run and restore allowlisted files under .hal/.
 
+Use --artifacts to select which artifact group to pull:
+  state    - continuation state files (prd.json, progress.txt, etc.)
+  reports  - output reports (.hal/reports/**)
+  all      - both state and reports (default)
+
 Refuses to overwrite local files that have changed unless --force is provided.
 Prints the restored snapshot version and sha256.`,
 	Args: cobra.ExactArgs(1),
@@ -215,6 +221,7 @@ Prints the restored snapshot version and sha256.`,
 			args[0],
 			cloudPullForceFlag,
 			cloudPullJSONFlag,
+			cloudPullArtifactsFlag,
 			cloudPullStoreFactory,
 			".",
 			os.Stdout,
@@ -248,6 +255,7 @@ func init() {
 
 	cloudPullCmd.Flags().BoolVar(&cloudPullForceFlag, "force", false, "Overwrite local files even if changed")
 	cloudPullCmd.Flags().BoolVar(&cloudPullJSONFlag, "json", false, "Output in JSON format")
+	cloudPullCmd.Flags().StringVar(&cloudPullArtifactsFlag, "artifacts", "all", "Artifact group to pull: state, reports, or all")
 
 	cloudCmd.AddCommand(cloudSubmitCmd)
 	cloudCmd.AddCommand(cloudStatusCmd)
@@ -1079,6 +1087,7 @@ type cloudPullResponse struct {
 	RunID           string   `json:"run_id"`
 	SnapshotVersion int      `json:"snapshot_version"`
 	SHA256          string   `json:"sha256"`
+	Artifacts       string   `json:"artifacts"`
 	FilesRestored   []string `json:"files_restored"`
 }
 
@@ -1092,12 +1101,26 @@ type bundleFileRecord struct {
 func runCloudPull(
 	runID string,
 	force, jsonOutput bool,
+	artifactsFlag string,
 	storeFactory func() (cloud.Store, error),
 	baseDir string,
 	out io.Writer,
 ) error {
 	if storeFactory == nil {
 		return writeCloudError(out, jsonOutput, "store not configured", "configuration_error")
+	}
+
+	// Validate --artifacts flag.
+	artifactGroup := cloud.ArtifactGroup(artifactsFlag)
+	if !artifactGroup.IsValid() {
+		msg := fmt.Sprintf("invalid --artifacts value %q; allowed values: state, reports, all", artifactsFlag)
+		return writeCloudError(out, jsonOutput, msg, "invalid_flag")
+	}
+
+	// Get artifact patterns for the selected group.
+	patterns, err := cloud.ArtifactGroupPatterns(artifactGroup)
+	if err != nil {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to resolve artifact patterns: %v", err), "invalid_flag")
 	}
 
 	store, err := storeFactory()
@@ -1137,11 +1160,18 @@ func runCloudPull(
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to decompress snapshot: %v", err), "bundle_error")
 	}
 
+	// Filter files by artifact patterns. Unlike uploads (which use BundleAllowlist),
+	// pull uses artifact group patterns to determine which files are pullable.
+	// Reports are excluded from uploads but are valid pull artifacts.
+	isAllowed := func(path string) bool {
+		return cloud.MatchesArtifactPatterns(path, patterns)
+	}
+
 	// Check for local file changes unless --force.
 	if !force {
 		var changed []string
 		for _, f := range files {
-			if !cloud.IsBundlePathAllowed(f.Path) {
+			if !isAllowed(f.Path) {
 				continue
 			}
 			targetPath := filepath.Join(baseDir, f.Path)
@@ -1162,7 +1192,7 @@ func runCloudPull(
 	// Write files to .hal/.
 	var restored []string
 	for _, f := range files {
-		if !cloud.IsBundlePathAllowed(f.Path) {
+		if !isAllowed(f.Path) {
 			continue
 		}
 		targetPath := filepath.Join(baseDir, f.Path)
@@ -1176,12 +1206,17 @@ func runCloudPull(
 	}
 
 	if jsonOutput {
-		return writeJSON(out, cloudPullResponse{
+		resp := cloudPullResponse{
 			RunID:           runID,
 			SnapshotVersion: snapshot.Version,
 			SHA256:          snapshot.SHA256,
+			Artifacts:       string(artifactGroup),
 			FilesRestored:   restored,
-		})
+		}
+		if resp.FilesRestored == nil {
+			resp.FilesRestored = make([]string, 0)
+		}
+		return writeJSON(out, resp)
 	}
 
 	fmt.Fprintf(out, "Snapshot restored successfully.\n")
