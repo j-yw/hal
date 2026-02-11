@@ -889,3 +889,229 @@ func TestRunHalRunCloud_JSONOutputContract_SuccessFields(t *testing.T) {
 		}
 	}
 }
+
+// --- Secret redaction security tests ---
+
+func stripeLikeSecret() string {
+	return strings.Join([]string{"sk", "live", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"}, "_")
+}
+
+// sampleSecrets returns a set of secret values used to verify redaction.
+// Each secret matches one of the default redaction rules in internal/cloud/redact.go.
+func sampleSecrets() []string {
+	return []string{
+		"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		"ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+		"github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+		stripeLikeSecret(),
+	}
+}
+
+// assertNoSecrets checks that none of the sample secrets appear in output.
+func assertNoSecrets(t *testing.T, output string) {
+	t.Helper()
+	for _, secret := range sampleSecrets() {
+		if strings.Contains(output, secret) {
+			t.Errorf("output contains unredacted secret: %s\noutput: %s", secret[:20]+"...", output)
+		}
+	}
+}
+
+func TestRunHalRunCloud_Redact_HumanError(t *testing.T) {
+	// Inject a secret into an error message and verify it's redacted in human output.
+	secret := "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+
+	var out bytes.Buffer
+	_ = writeRunCloudError(&out, false, fmt.Sprintf("store connection failed: auth=%s", secret), "configuration_error")
+
+	output := out.String()
+	if strings.Contains(output, "eyJhbGciOiJIUzI1NiI") {
+		t.Errorf("human error output contains unredacted JWT\noutput: %s", output)
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Errorf("human error output does not contain [REDACTED] placeholder\noutput: %s", output)
+	}
+	assertNoSecrets(t, output)
+}
+
+func TestRunHalRunCloud_Redact_JSONError(t *testing.T) {
+	// Inject a secret into an error message and verify JSON output is valid and redacted.
+	secret := "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+
+	var out bytes.Buffer
+	err := writeRunCloudError(&out, true, fmt.Sprintf("auth failed with token %s", secret), "configuration_error")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify output is valid JSON.
+	var resp runCloudRunErrorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, secret) {
+		t.Errorf("JSON error output contains unredacted GitHub PAT\noutput: %s", output)
+	}
+	if !strings.Contains(resp.Error, "[REDACTED]") {
+		t.Errorf("JSON error field does not contain [REDACTED] placeholder\nerror: %s", resp.Error)
+	}
+	assertNoSecrets(t, output)
+}
+
+func TestRunHalRunCloud_Redact_HumanSuccess(t *testing.T) {
+	// Inject a secret into run fields and verify it's redacted in human output.
+	secret := stripeLikeSecret()
+	run := &cloud.Run{
+		ID:           "run-with-secret-" + secret,
+		WorkflowKind: cloud.WorkflowKindRun,
+		Status:       cloud.RunStatusQueued,
+	}
+
+	var out bytes.Buffer
+	err := writeRunCloudSuccess(&out, false, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, secret) {
+		t.Errorf("human success output contains unredacted Stripe key\noutput: %s", output)
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Errorf("human success output does not contain [REDACTED] placeholder\noutput: %s", output)
+	}
+	assertNoSecrets(t, output)
+}
+
+func TestRunHalRunCloud_Redact_JSONSuccess(t *testing.T) {
+	// Inject a secret into run fields and verify JSON output is valid and redacted.
+	secret := "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+	run := &cloud.Run{
+		ID:           "run-with-pat-" + secret,
+		WorkflowKind: cloud.WorkflowKindRun,
+		Status:       cloud.RunStatusQueued,
+	}
+
+	var out bytes.Buffer
+	err := writeRunCloudSuccess(&out, true, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify output is valid JSON.
+	var resp runCloudRunResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, secret) {
+		t.Errorf("JSON success output contains unredacted PAT\noutput: %s", output)
+	}
+	if !strings.Contains(resp.RunID, "[REDACTED]") {
+		t.Errorf("JSON runId field does not contain [REDACTED] placeholder\nrunId: %s", resp.RunID)
+	}
+	assertNoSecrets(t, output)
+}
+
+func TestRunHalRunCloud_Redact_HumanTerminal(t *testing.T) {
+	// Inject a secret into terminal run output and verify it's redacted.
+	secret := "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+	run := &cloud.Run{
+		ID:           "run-terminal-" + secret,
+		WorkflowKind: cloud.WorkflowKindRun,
+		Status:       cloud.RunStatusSucceeded,
+	}
+
+	var out bytes.Buffer
+	err := writeRunCloudTerminal(&out, false, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "eyJhbGciOiJIUzI1NiI") {
+		t.Errorf("human terminal output contains unredacted JWT\noutput: %s", output)
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Errorf("human terminal output does not contain [REDACTED] placeholder\noutput: %s", output)
+	}
+	assertNoSecrets(t, output)
+}
+
+func TestRunHalRunCloud_Redact_JSONTerminal(t *testing.T) {
+	// Inject a secret into terminal run output and verify JSON is valid and redacted.
+	secret := "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+	run := &cloud.Run{
+		ID:           "run-terminal-" + secret,
+		WorkflowKind: cloud.WorkflowKindRun,
+		Status:       cloud.RunStatusFailed,
+	}
+
+	var out bytes.Buffer
+	err := writeRunCloudTerminal(&out, true, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify output is valid JSON.
+	var resp runCloudRunResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, secret) {
+		t.Errorf("JSON terminal output contains unredacted GitHub PAT\noutput: %s", output)
+	}
+	assertNoSecrets(t, output)
+}
+
+func TestRunHalRunCloud_Redact_MultipleSecretsInError(t *testing.T) {
+	// Inject multiple secrets into a single error message and verify all are redacted.
+	msg := fmt.Sprintf(
+		"failed: token=%s key=%s",
+		"ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+		stripeLikeSecret(),
+	)
+
+	// Test human output.
+	var humanOut bytes.Buffer
+	_ = writeRunCloudError(&humanOut, false, msg, "configuration_error")
+	assertNoSecrets(t, humanOut.String())
+
+	// Test JSON output.
+	var jsonOut bytes.Buffer
+	_ = writeRunCloudError(&jsonOut, true, msg, "configuration_error")
+
+	var resp runCloudRunErrorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut.String())), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	assertNoSecrets(t, jsonOut.String())
+}
+
+func TestRunHalRunCloud_Redact_NoFalsePositive(t *testing.T) {
+	// Verify that normal (non-secret) output is not altered by redaction.
+	run := &cloud.Run{
+		ID:           "run-normal-abc123",
+		WorkflowKind: cloud.WorkflowKindRun,
+		Status:       cloud.RunStatusQueued,
+	}
+
+	var out bytes.Buffer
+	err := writeRunCloudSuccess(&out, false, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "run-normal-abc123") {
+		t.Errorf("normal run ID was incorrectly modified\noutput: %s", output)
+	}
+	if strings.Contains(output, "[REDACTED]") {
+		t.Errorf("normal output should not contain [REDACTED]\noutput: %s", output)
+	}
+}

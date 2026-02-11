@@ -32,6 +32,7 @@
 - Auth revoke handles missing/already-revoked as non-fatal exit 0 with deterministic status strings (missing, already_revoked) — use pre-check GetAuthProfile at command layer before calling service
 - `writeRunCloudError` writes structured error fields (error, error_code) in human mode AND returns a Go error for non-zero exit — all error paths should go through this for consistent output contract
 - Output contract for hal run --cloud: success uses `runCloudRunResponse{runId, workflowKind, status}`; errors use `runCloudRunErrorResponse{error, error_code}` — both human and JSON modes include these fields
+- Use `cloud.Redact()` in all output chokepoint functions (writeRunCloudError, writeRunCloudSuccess, writeRunCloudTerminal) to redact secrets — safe no-op on clean strings, replaces secrets with [REDACTED]
 
 ---
 ## 2026-02-11 - US-001
@@ -394,4 +395,19 @@
   - The flag validation path (ValidateCloudFlags) was previously inconsistent: JSON mode used `writeJSON` directly but human mode just returned the raw error. Routing both through `writeRunCloudError` normalizes the output contract
   - For US-022 (secret redaction), the `writeRunCloudError` and `writeRunCloudSuccess` functions are the two chokepoints — redaction should be applied in these functions
   - Output contract tests should verify both structural fields (error_code present) and content (specific error code values) — structure tests catch missing fields, content tests catch wrong values
+---
+## 2026-02-11 - US-022
+- Implemented secret redaction in hal run --cloud output for both human and JSON modes
+- Applied `cloud.Redact()` in all three output chokepoints: `writeRunCloudError`, `writeRunCloudSuccess`, `writeRunCloudTerminal`
+- Also redacted intermediate wait-mode output (run_id and status printed before polling)
+- Redaction covers run fields (ID, Status, WorkflowKind) and error messages
+- JSON output remains valid after redaction — secrets are replaced inline with `[REDACTED]`
+- 8 security tests: human error, JSON error, human success, JSON success, human terminal, JSON terminal, multiple secrets in one message, no false positives on normal output
+- Files changed: cmd/run_cloud.go, cmd/run_cloud_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - The three output functions (`writeRunCloudError`, `writeRunCloudSuccess`, `writeRunCloudTerminal`) are the chokepoints for all hal run --cloud output — applying redaction here catches all paths
+  - `cloud.Redact()` is safe to call on any string — it returns the input unchanged if no secrets are detected (no false positives on normal run IDs/statuses)
+  - Don't forget intermediate output: the wait-mode prints run_id and status BEFORE the terminal output functions, requiring separate redaction
+  - For US-024 (auth import redaction), follow the same pattern: apply `cloud.Redact()` in the auth import output functions
+  - Security tests should test all output functions independently (error, success, terminal) plus cross-cutting cases (multiple secrets, no false positives)
 ---

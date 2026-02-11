@@ -178,8 +178,8 @@ func runHalRunCloud(
 	// 7. Wait mode: poll until terminal status.
 	if !jsonOutput {
 		fmt.Fprintf(out, "Run submitted.\n")
-		fmt.Fprintf(out, "  run_id: %s\n", run.ID)
-		fmt.Fprintf(out, "  status: %s\n", run.Status)
+		fmt.Fprintf(out, "  run_id: %s\n", cloud.Redact(run.ID))
+		fmt.Fprintf(out, "  status: %s\n", cloud.Redact(string(run.Status)))
 		fmt.Fprintf(out, "Waiting for completion...\n")
 	}
 
@@ -213,35 +213,45 @@ func pollRunUntilTerminal(ctx context.Context, store cloud.Store, runID string, 
 
 // writeRunCloudSuccess writes the submission result (used in detach mode).
 func writeRunCloudSuccess(out io.Writer, jsonOutput bool, run *cloud.Run) error {
+	// Redact secrets from run fields that may contain user-supplied values.
+	runID := cloud.Redact(run.ID)
+	status := cloud.Redact(string(run.Status))
+	workflowKind := cloud.Redact(string(run.WorkflowKind))
+
 	if jsonOutput {
 		return writeJSON(out, runCloudRunResponse{
-			RunID:        run.ID,
-			WorkflowKind: string(run.WorkflowKind),
-			Status:       string(run.Status),
+			RunID:        runID,
+			WorkflowKind: workflowKind,
+			Status:       status,
 		})
 	}
 
 	fmt.Fprintf(out, "Run submitted.\n")
-	fmt.Fprintf(out, "  run_id: %s\n", run.ID)
-	fmt.Fprintf(out, "  status: %s\n", run.Status)
-	fmt.Fprintf(out, "\nNext: hal cloud status %s\n", run.ID)
+	fmt.Fprintf(out, "  run_id: %s\n", runID)
+	fmt.Fprintf(out, "  status: %s\n", status)
+	fmt.Fprintf(out, "\nNext: hal cloud status %s\n", runID)
 	return nil
 }
 
 // writeRunCloudTerminal writes the final result after a run reaches terminal status.
 func writeRunCloudTerminal(out io.Writer, jsonOutput bool, run *cloud.Run) error {
+	// Redact secrets from run fields that may contain user-supplied values.
+	runID := cloud.Redact(run.ID)
+	status := cloud.Redact(string(run.Status))
+	workflowKind := cloud.Redact(string(run.WorkflowKind))
+
 	if jsonOutput {
 		return writeJSON(out, runCloudRunResponse{
-			RunID:        run.ID,
-			WorkflowKind: string(run.WorkflowKind),
-			Status:       string(run.Status),
+			RunID:        runID,
+			WorkflowKind: workflowKind,
+			Status:       status,
 		})
 	}
 
 	fmt.Fprintf(out, "Run complete.\n")
-	fmt.Fprintf(out, "  run_id: %s\n", run.ID)
-	fmt.Fprintf(out, "  status: %s\n", run.Status)
-	fmt.Fprintf(out, "\nNext: hal cloud logs %s\n", run.ID)
+	fmt.Fprintf(out, "  run_id: %s\n", runID)
+	fmt.Fprintf(out, "  status: %s\n", status)
+	fmt.Fprintf(out, "\nNext: hal cloud logs %s\n", runID)
 	return nil
 }
 
@@ -249,6 +259,9 @@ func writeRunCloudTerminal(out io.Writer, jsonOutput bool, run *cloud.Run) error
 // In human mode, writes structured error fields to output for deterministic parsing,
 // then returns a Go error to signal non-zero exit.
 func writeRunCloudError(out io.Writer, jsonOutput bool, msg, code string) error {
+	// Redact secrets from error messages that may contain user-supplied values.
+	msg = cloud.Redact(msg)
+
 	if jsonOutput {
 		return writeJSON(out, runCloudRunErrorResponse{
 			Error:     msg,
