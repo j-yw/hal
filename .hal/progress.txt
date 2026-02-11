@@ -7,6 +7,10 @@
 - ArtifactGroup (state/reports/all) follows the same typed string enum pattern as WorkflowKind and RunStatus — use NewArtifactMetadata(kind) to build per-workflow metadata
 - BundleAllowlist is for input uploads; artifact groups are for output pull — they overlap but are distinct concerns (auto-state.json is output-only)
 - WorkflowArtifactGroups maps workflow kinds to their default artifact groups: run→[state], auto/review→[state,reports]
+- Use config.Resolve(ResolveInput{...}) to compose cloud runtime config from CLI/env/.env/YAML/inferred/hard defaults with deterministic precedence
+- ResolvedConfig is the same shape for all workflow kinds (run/auto/review) — only WorkflowKind field differs
+- When CloudEnabled=false, resolver returns hard defaults without loading cloud tiers — verifiable via golden tests
+- Load() wraps os.ReadFile error with fmt.Errorf %w — use errors.Is(err, os.ErrNotExist) not os.IsNotExist for wrapped errors
 
 ---
 ## 2026-02-11 - US-001
@@ -78,4 +82,22 @@
   - The `config.Profile` struct fields use `omitempty` YAML tags, so empty strings are cleanly omitted from the written file — no need for special nil handling except for `*bool` Wait field
   - `marshalCloudConfig` + `config.Parse` roundtrip validates that the written YAML is correctly parseable
   - The `cloudCmd.AddCommand(cloudSetupCmd)` registration in a separate file's `init()` follows the same pattern as `cloud_auth.go` — Cobra handles cross-file init ordering
+---
+## 2026-02-11 - US-005
+- Implemented shared cloud precedence resolver with deterministic 6-tier precedence: CLI > process env > .env (non-overriding) > .hal/cloud.yaml > inferred defaults > hard defaults
+- Created `config.Resolve(ResolveInput{...})` function returning `ResolvedConfig` — same shape for run, auto, review
+- ResolveInput accepts CLIFlags, ProfileName, HalDir, WorkflowKind, CloudEnabled, Getenv, DotenvPath, InferredDefaults
+- CLIFlags struct mirrors Profile fields for explicit CLI flag values; InferredDefaults for git-derived values
+- Hard defaults: mode=until_complete, engine=claude, base=main, pullPolicy=all, wait=true
+- Wait field uses *bool at CLI/YAML levels, string at env level, with parseBool supporting true/1/yes
+- Missing cloud.yaml handled via errors.Is(os.ErrNotExist) — not os.IsNotExist — because Load() wraps with %w
+- godotenv.Load() used for .env tier (non-overriding existing process env vars)
+- 20 test functions covering: golden disabled-mode tests (3 workflow kinds), hard defaults, CLI overrides all, env overrides yaml, yaml overrides defaults, inferred defaults fallback, inferred overridden by yaml, named profile selection, missing/empty halDir, wait precedence (8 sub-tests), dotenv loading, process env over dotenv, missing dotenv, invalid yaml error propagation, same shape for all kinds, partial CLI override, nil getenv fallback, parseBool (11 sub-tests)
+- Files changed: internal/cloud/config/resolve.go (new), internal/cloud/config/resolve_test.go (new), .hal/prd.json
+- **Learnings for future iterations:**
+  - Load() wraps os.ReadFile error with `fmt.Errorf("failed to read %s: %w", path, err)` — the %w means errors.Is(err, os.ErrNotExist) works but os.IsNotExist(err) does NOT because it only checks the outermost error
+  - godotenv.Load() is non-overriding by design — it only sets env vars that are not already present in the process environment
+  - The resolver's Getenv function injection pattern enables full test isolation without modifying real process env (except for the dotenv integration tests which test real env interaction)
+  - Golden tests for disabled cloud mode are the most important: they verify the architectural invariant that local execution is completely isolated from cloud config tiers
+  - The same ResolvedConfig shape for all workflow kinds simplifies downstream consumers — they only need to check WorkflowKind for dispatch differences
 ---
