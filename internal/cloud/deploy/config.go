@@ -13,6 +13,9 @@ const (
 	AdapterPostgres = "postgres"
 )
 
+// KnownAdapters lists all supported adapter names.
+var KnownAdapters = []string{AdapterTurso, AdapterPostgres}
+
 // Environment variable keys used by hal-cloud services.
 const (
 	EnvDBAdapter          = "HAL_CLOUD_DB_ADAPTER"
