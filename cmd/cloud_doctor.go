@@ -54,7 +54,7 @@ type httpDoer interface {
 // doctorCheckResult represents the result of a single diagnostic check.
 type doctorCheckResult struct {
 	Name     string `json:"name"`
-	Status   string `json:"status"`   // "pass", "fail", "warn"
+	Status   string `json:"status"` // "pass", "fail", "warn"
 	Message  string `json:"message"`
 	NextStep string `json:"next_step,omitempty"`
 }

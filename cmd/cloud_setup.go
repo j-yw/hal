@@ -181,7 +181,7 @@ func loadExistingCloudConfig(path string) *config.CloudConfig {
 
 // yamlCloudConfig is the YAML serialization target for cloud config.
 type yamlCloudConfig struct {
-	DefaultProfile string                    `yaml:"defaultProfile"`
+	DefaultProfile string                     `yaml:"defaultProfile"`
 	Profiles       map[string]*config.Profile `yaml:"profiles"`
 }
 

@@ -23,6 +23,7 @@
 - JSON response uses camelCase field names (runId, workflowKind, status) matching the PRD contract
 - writeCloudError(out, jsonOutput, msg, code) in JSON mode writes JSON to output and returns nil — test JSON error cases by checking output content, not Go error return
 - Cloud logs JSON uses cloudLogsResponse{run_id, status, events[]} — follow mode collects all events and emits single JSON document at terminal/cancel
+- Cloud cancel pre-checks run.Status.IsTerminal() before RequestCancel — terminal runs get `already_terminal` status with `terminal_status` field; non-terminal runs proceed with cancel intent
 
 ---
 ## 2026-02-11 - US-001
@@ -274,4 +275,19 @@
   - For follow mode with JSON, collecting events into a slice and emitting a single JSON document at the end (terminal status or context cancel) is cleaner than JSONL streaming — ensures the output is always a single valid JSON document
   - `ensureEventSlice` prevents `null` JSON for empty arrays — use `make([]T, 0)` or this helper whenever the contract requires `[]` not `null`
   - The `runCloudLogs` function already existed with plain-text output — the story was incomplete only because `--json` support was missing and the flag wasn't registered
+---
+## 2026-02-11 - US-015
+- Completed `hal cloud cancel` command by implementing `already_terminal` behavior for already-completed runs
+- Pre-checks run status before calling RequestCancel — if run.Status.IsTerminal(), returns exit code 0 with `already_terminal` status and the terminal status value
+- Added `TerminalStatus` field to `cloudCancelResponse` JSON struct (omitempty — only present for terminal runs)
+- Human output for terminal runs: "Run is already terminal." with `status: already_terminal`, `terminal_status: <actual>`, `canceled_at: <timestamp>`
+- Human output for non-terminal runs: "Cancel requested." with `cancel_requested: true`, `status: <current>`, `canceled_at: pending`
+- Not-found error path moved from CancellationService.RequestCancel to the pre-check GetRun call
+- Updated 5 existing tests and added 6 new tests: already_terminal JSON for canceled/succeeded/failed, required JSON fields for terminal and non-terminal, human output for succeeded terminal
+- Files changed: cmd/cloud.go, cmd/cloud_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - The cancel command's `already_terminal` pattern is: pre-check with GetRun, early return if terminal, then proceed with RequestCancel for non-terminal — this avoids setting cancel intent on already-done runs
+  - `TerminalStatus` uses `omitempty` so it's absent from JSON for non-terminal cancel responses — tests should verify both presence (terminal) and absence (non-terminal)
+  - The `runCloudCancel` function was already fully implemented except for the `already_terminal` AC — the story was incomplete because terminal runs were treated identically to non-terminal runs
+  - When refactoring control flow (moving not-found check from RequestCancel to GetRun pre-check), existing error tests may break if they rely on the error coming from a specific code path — verify error codes match
 ---

@@ -21,13 +21,13 @@ import (
 
 // Cloud submit flags.
 var (
-	cloudSubmitRepoFlag          string
-	cloudSubmitBaseFlag          string
-	cloudSubmitEngineFlag        string
-	cloudSubmitAuthProfileFlag   string
-	cloudSubmitScopeFlag         string
-	cloudSubmitWorkflowKindFlag  string
-	cloudSubmitJSONFlag          bool
+	cloudSubmitRepoFlag         string
+	cloudSubmitBaseFlag         string
+	cloudSubmitEngineFlag       string
+	cloudSubmitAuthProfileFlag  string
+	cloudSubmitScopeFlag        string
+	cloudSubmitWorkflowKindFlag string
+	cloudSubmitJSONFlag         bool
 )
 
 // Cloud status flags.
@@ -609,8 +609,8 @@ var cloudLogsFollowPollInterval = 2 * time.Second
 
 // cloudLogsResponse is the JSON output for a successful logs query.
 type cloudLogsResponse struct {
-	RunID  string              `json:"run_id"`
-	Status string              `json:"status"`
+	RunID  string               `json:"run_id"`
+	Status string               `json:"status"`
 	Events []cloudLogsEventJSON `json:"events"`
 }
 
@@ -772,6 +772,7 @@ type cloudCancelResponse struct {
 	RunID           string  `json:"run_id"`
 	CancelRequested bool    `json:"cancel_requested"`
 	Status          string  `json:"status"`
+	TerminalStatus  string  `json:"terminal_status,omitempty"`
 	CanceledAt      *string `json:"canceled_at"`
 }
 
@@ -793,9 +794,10 @@ func runCloudCancel(
 
 	ctx := context.Background()
 
-	// Set cancel intent.
-	svc := cloud.NewCancellationService(store, cloud.CancellationConfig{})
-	if err := svc.RequestCancel(ctx, runID); err != nil {
+	// Pre-check: if the run is already in a terminal state, return success
+	// with already_terminal status and the terminal status value.
+	run, err := store.GetRun(ctx, runID)
+	if err != nil {
 		if cloud.IsNotFound(err) {
 			if jsonOutput {
 				_ = writeJSON(out, cloudErrorResponse{
@@ -806,20 +808,38 @@ func runCloudCancel(
 			}
 			return fmt.Errorf("run %q not found", runID)
 		}
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
+	}
+
+	if run.Status.IsTerminal() {
+		ts := run.UpdatedAt.Format(time.RFC3339)
+		if jsonOutput {
+			return writeJSON(out, cloudCancelResponse{
+				RunID:           run.ID,
+				CancelRequested: run.CancelRequested,
+				Status:          "already_terminal",
+				TerminalStatus:  string(run.Status),
+				CanceledAt:      &ts,
+			})
+		}
+		fmt.Fprintf(out, "Run is already terminal.\n")
+		fmt.Fprintf(out, "  run_id:           %s\n", run.ID)
+		fmt.Fprintf(out, "  status:           already_terminal\n")
+		fmt.Fprintf(out, "  terminal_status:  %s\n", run.Status)
+		fmt.Fprintf(out, "  canceled_at:      %s\n", ts)
+		return nil
+	}
+
+	// Set cancel intent on non-terminal run.
+	svc := cloud.NewCancellationService(store, cloud.CancellationConfig{})
+	if err := svc.RequestCancel(ctx, runID); err != nil {
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to cancel run: %v", err), "store_error")
 	}
 
 	// Re-fetch the run to get current state after cancel intent was set.
-	run, err := store.GetRun(ctx, runID)
+	run, err = store.GetRun(ctx, runID)
 	if err != nil {
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get run: %v", err), "store_error")
-	}
-
-	// Determine canceled_at: use UpdatedAt when the run has reached canceled status.
-	var canceledAt *string
-	if run.Status == cloud.RunStatusCanceled {
-		ts := run.UpdatedAt.Format(time.RFC3339)
-		canceledAt = &ts
 	}
 
 	if jsonOutput {
@@ -827,7 +847,6 @@ func runCloudCancel(
 			RunID:           run.ID,
 			CancelRequested: run.CancelRequested,
 			Status:          string(run.Status),
-			CanceledAt:      canceledAt,
 		})
 	}
 
@@ -835,11 +854,7 @@ func runCloudCancel(
 	fmt.Fprintf(out, "  run_id:           %s\n", run.ID)
 	fmt.Fprintf(out, "  cancel_requested: %v\n", run.CancelRequested)
 	fmt.Fprintf(out, "  status:           %s\n", run.Status)
-	if canceledAt != nil {
-		fmt.Fprintf(out, "  canceled_at:      %s\n", *canceledAt)
-	} else {
-		fmt.Fprintf(out, "  canceled_at:      pending\n")
-	}
+	fmt.Fprintf(out, "  canceled_at:      pending\n")
 	return nil
 }
 

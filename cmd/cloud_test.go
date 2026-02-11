@@ -1788,7 +1788,7 @@ func TestRunCloudCancel(t *testing.T) {
 			},
 		},
 		{
-			name:       "cancel on already canceled run shows canceled_at",
+			name:       "cancel on already canceled run returns already_terminal JSON",
 			runID:      "run-002",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
@@ -1807,11 +1807,62 @@ func TestRunCloudCancel(t *testing.T) {
 				if resp.RunID != "run-002" {
 					t.Errorf("run_id = %q, want %q", resp.RunID, "run-002")
 				}
-				if resp.Status != "canceled" {
-					t.Errorf("status = %q, want %q", resp.Status, "canceled")
+				if resp.Status != "already_terminal" {
+					t.Errorf("status = %q, want %q", resp.Status, "already_terminal")
+				}
+				if resp.TerminalStatus != "canceled" {
+					t.Errorf("terminal_status = %q, want %q", resp.TerminalStatus, "canceled")
 				}
 				if resp.CanceledAt == nil {
-					t.Error("canceled_at should not be nil for canceled run")
+					t.Error("canceled_at should not be nil for terminal run")
+				}
+			},
+		},
+		{
+			name:       "cancel on succeeded run returns already_terminal JSON",
+			runID:      "run-005",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-005")
+				run.Status = cloud.RunStatusSucceeded
+				s.runsByID["run-005"] = run
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudCancelResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.Status != "already_terminal" {
+					t.Errorf("status = %q, want %q", resp.Status, "already_terminal")
+				}
+				if resp.TerminalStatus != "succeeded" {
+					t.Errorf("terminal_status = %q, want %q", resp.TerminalStatus, "succeeded")
+				}
+			},
+		},
+		{
+			name:       "cancel on failed run returns already_terminal JSON",
+			runID:      "run-006",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-006")
+				run.Status = cloud.RunStatusFailed
+				s.runsByID["run-006"] = run
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudCancelResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.Status != "already_terminal" {
+					t.Errorf("status = %q, want %q", resp.Status, "already_terminal")
+				}
+				if resp.TerminalStatus != "failed" {
+					t.Errorf("terminal_status = %q, want %q", resp.TerminalStatus, "failed")
 				}
 			},
 		},
@@ -1880,7 +1931,7 @@ func TestRunCloudCancel(t *testing.T) {
 			},
 		},
 		{
-			name:       "JSON output contains exactly required fields",
+			name:       "JSON output contains required fields for terminal cancel",
 			runID:      "run-003",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
@@ -1897,7 +1948,7 @@ func TestRunCloudCancel(t *testing.T) {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
 				requiredKeys := []string{
-					"run_id", "cancel_requested", "status", "canceled_at",
+					"run_id", "cancel_requested", "status", "terminal_status", "canceled_at",
 				}
 				for _, key := range requiredKeys {
 					if _, ok := raw[key]; !ok {
@@ -1907,7 +1958,35 @@ func TestRunCloudCancel(t *testing.T) {
 			},
 		},
 		{
-			name:  "cancel on already canceled run with human output shows timestamp",
+			name:       "JSON output contains required fields for non-terminal cancel",
+			runID:      "run-007",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-007"] = validCloudRun("run-007")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var raw map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &raw); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				requiredKeys := []string{
+					"run_id", "cancel_requested", "status",
+				}
+				for _, key := range requiredKeys {
+					if _, ok := raw[key]; !ok {
+						t.Errorf("missing required JSON key %q", key)
+					}
+				}
+				// terminal_status should not be present for non-terminal runs
+				if _, ok := raw["terminal_status"]; ok {
+					t.Error("terminal_status should not be present for non-terminal cancel")
+				}
+			},
+		},
+		{
+			name:  "cancel on already canceled run with human output shows already_terminal",
 			runID: "run-004",
 			store: func() *cloudMockStore {
 				s := newCloudMockStore()
@@ -1918,12 +1997,32 @@ func TestRunCloudCancel(t *testing.T) {
 				return s
 			},
 			wantOutput: []string{
-				"Cancel requested.",
+				"Run is already terminal.",
 				"run-004",
-				"cancel_requested: true",
 				"status:",
+				"already_terminal",
+				"terminal_status:",
 				"canceled",
 				"canceled_at:",
+			},
+		},
+		{
+			name:  "cancel on succeeded run with human output shows already_terminal",
+			runID: "run-008",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				run := validCloudRun("run-008")
+				run.Status = cloud.RunStatusSucceeded
+				s.runsByID["run-008"] = run
+				return s
+			},
+			wantOutput: []string{
+				"Run is already terminal.",
+				"run-008",
+				"status:",
+				"already_terminal",
+				"terminal_status:",
+				"succeeded",
 			},
 		},
 	}

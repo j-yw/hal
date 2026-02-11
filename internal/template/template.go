@@ -18,15 +18,15 @@ const HalDir = ".hal"
 
 // File name constants for consistent usage across the codebase.
 const (
-	PRDFile       = "prd.json"      // Manual flow (plan, convert, validate, run)
-	AutoPRDFile   = "auto-prd.json" // Auto flow (auto, explode)
-	PromptFile    = "prompt.md"
-	ProgressFile  = "progress.txt"    // Unified progress for both flows
-	AutoStateFile = "auto-state.json" // Auto flow pipeline state
+	PRDFile         = "prd.json"      // Manual flow (plan, convert, validate, run)
+	AutoPRDFile     = "auto-prd.json" // Auto flow (auto, explode)
+	PromptFile      = "prompt.md"
+	ProgressFile    = "progress.txt"    // Unified progress for both flows
+	AutoStateFile   = "auto-state.json" // Auto flow pipeline state
 	ConfigFile      = "config.yaml"
 	CloudConfigFile = "cloud.yaml" // Non-secret cloud profile config
 	StandardsDir    = "standards"  // Project standards directory
-	CommandsDir   = "commands"  // Agent commands directory
+	CommandsDir     = "commands"   // Agent commands directory
 )
 
 // DefaultFiles returns the default files to create in .hal/
