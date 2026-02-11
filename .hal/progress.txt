@@ -44,6 +44,7 @@
 - For lifecycle `--json` assertions, decode with shared helpers and normalize only explicitly listed nondeterministic keys (run IDs/timestamps) so stable contract fields remain directly assertable
 - Lifecycle scenario tests should assert both human and `--json` checkpoints in one flow and verify persisted runs directly through the harness store (`GetRun`) to prove store-backed state visibility
 - Lifecycle logs scenarios should seed events via `h.Store.InsertEvent` after `run --cloud`; submit-only harness flows do not emit timeline events automatically
+- Lifecycle pull scenarios should derive `--artifacts` from `cloud.WorkflowArtifactGroups(run.WorkflowKind)` and delete target files before pull so tests verify real restoration, not pre-existing files
 
 ---
 ## 2026-02-11 - US-001
@@ -561,4 +562,14 @@
   - `run --cloud` submission in the lifecycle harness does not emit timeline events by itself; seed events via `h.Store.InsertEvent` before asserting `cloud logs`
   - For logs JSON assertions, keep using shared checkpoint fixtures for top-level contract keys, then add focused event-object checks (`id`, `event_type`/`eventType`, `payload_json`, `created_at`) in scenario tests
   - Embedding `runId` in seeded event payloads makes it straightforward to assert that human logs output is tied to the targeted workflow identifier
+---
+## 2026-02-12 01:44 +08 - T-008
+- Added lifecycle pull integration scenario test in `cmd/cloud_lifecycle_pull_scenario_integration_test.go` covering `hal cloud setup` → `hal run --cloud` → `hal cloud pull` in one harness flow
+- Simulated a completed workflow by marking the submitted run terminal, derived expected artifact groups from `cloud.WorkflowArtifactGroups(run.WorkflowKind)`, and asserted pull JSON `artifacts` aligns with workflow-kind context
+- Verified artifact restoration by deleting `.hal/prd.json` and `.hal/progress.txt` before pull, then asserting both human output paths and restored file contents after pull
+- Files changed: cmd/cloud_lifecycle_pull_scenario_integration_test.go, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Pull scenarios should remove target files before running `cloud pull`; otherwise existence checks can pass on pre-existing files and miss restore regressions
+  - `cloud.WorkflowArtifactGroups(run.WorkflowKind)` is the right source for expected artifact-group assertions in lifecycle tests
+  - For pull JSON assertions, parse `filesRestored` using canonical+legacy key candidates to stay resilient during camelCase migration
 ---
