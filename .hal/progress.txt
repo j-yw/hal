@@ -28,7 +28,8 @@
 - `decompressBundleFiles` expects gzip-compressed `path\x00size\x00content` frame format matching `compressBundleFiles`
 - Pull local-change detection uses `bytes.Equal` on file content — identical files pass silently, only truly changed files trigger the `--force` requirement
 - `mapAuthProfileStatus()` maps internal AuthProfileStatus to user-facing states: pending_link→missing, linked/invalid/revoked pass through. Use this for any user-facing profile status display
-- Auth commands (status, validate) use camelCase JSON fields (profileId, validatedAt, lastValidatedAt) — normalize all auth command JSON to camelCase when updating
+- Auth commands (status, validate, revoke) use camelCase JSON fields (profileId, validatedAt, lastValidatedAt, revokedAt) — normalize all auth command JSON to camelCase when updating
+- Auth revoke handles missing/already-revoked as non-fatal exit 0 with deterministic status strings (missing, already_revoked) — use pre-check GetAuthProfile at command layer before calling service
 
 ---
 ## 2026-02-11 - US-001
@@ -360,4 +361,21 @@
   - When an AC specifies specific JSON field names, always verify the exact casing — camelCase vs snake_case matters for the output contract
   - The auth validate command's `AuthValidateService.Validate()` updates `LastErrorCode` and `LastValidatedAt` but does NOT change the profile `Status` field — status transitions are handled by separate commands (link, revoke)
   - The existing `runCloudAuthValidate` and tests were pre-implemented but with wrong JSON field casing — the story was incomplete because the output contract didn't match the AC
+---
+## 2026-02-11 - US-026
+- Implemented deterministic `hal cloud auth revoke` state transitions with non-fatal edge-state handling
+- Missing profile now returns non-fatal output (`status: missing`, exit 0) instead of a Go error — matches auth status command pattern
+- Already-revoked profile returns non-fatal output (`status: already_revoked`, exit 0) instead of processing through service layer
+- Invalid profile → revoked transition works through existing service layer (no pre-status check blocks it)
+- Linked profile → revoked transition is the standard success path
+- Normalized JSON to camelCase (`profileId`, `revokedAt`) matching auth status/validate commands
+- Removed `provider` from JSON response — not required by AC and normalizes with other auth command responses
+- Pre-check pattern: GetAuthProfile before service call to handle missing/already-revoked at command layer
+- Rewrote `TestRunCloudAuthRevoke` with 15 tests: linked revoke (human+JSON), invalid→revoked (human+JSON), missing non-fatal (human+JSON), already-revoked non-fatal (human+JSON), nil store factory (human+JSON), store factory error (JSON), store status update verification, camelCase JSON field verification, subsequent auth status reports revoked
+- Files changed: cmd/cloud_auth.go, cmd/cloud_auth_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - Non-fatal edge states (missing, already-revoked) should be handled at the command layer with pre-checks before calling the service — the service itself can remain simpler by not needing to distinguish these cases
+  - The `already_revoked` status string is distinct from `revoked` — `already_revoked` signals no-op, `revoked` signals a fresh transition
+  - The "subsequent auth status reports revoked" AC can be tested by calling `runCloudAuthStatus` directly in a `checkStore` callback — no integration test needed
+  - All auth command JSON responses should use camelCase field names (profileId, revokedAt, validatedAt, lastValidatedAt) — normalize when updating any auth command
 ---

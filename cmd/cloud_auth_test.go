@@ -1525,9 +1525,10 @@ func TestRunCloudAuthRevoke(t *testing.T) {
 		wantErr    string
 		wantOutput []string
 		checkJSON  func(t *testing.T, output string)
+		checkStore func(t *testing.T, s *cloudMockStore)
 	}{
 		{
-			name:      "successful revoke with human output",
+			name:      "linked profile revoke with human output",
 			profileID: "prof-001",
 			store: func() *cloudMockStore {
 				s := newCloudMockStore()
@@ -1536,14 +1537,13 @@ func TestRunCloudAuthRevoke(t *testing.T) {
 			},
 			wantOutput: []string{
 				"Auth profile revoked.",
-				"profile_id: prof-001",
-				"provider:   anthropic",
+				"profileId:  prof-001",
 				"status:     revoked",
-				"revoked_at:",
+				"revokedAt:",
 			},
 		},
 		{
-			name:       "successful revoke with JSON output",
+			name:       "linked profile revoke with JSON output",
 			profileID:  "prof-001",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
@@ -1557,42 +1557,135 @@ func TestRunCloudAuthRevoke(t *testing.T) {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
 				if resp.ProfileID != "prof-001" {
-					t.Errorf("profile_id = %q, want %q", resp.ProfileID, "prof-001")
-				}
-				if resp.Provider != "anthropic" {
-					t.Errorf("provider = %q, want %q", resp.Provider, "anthropic")
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-001")
 				}
 				if resp.Status != "revoked" {
 					t.Errorf("status = %q, want %q", resp.Status, "revoked")
 				}
 				if resp.RevokedAt == "" {
-					t.Error("revoked_at should not be empty")
+					t.Error("revokedAt should not be empty")
 				}
 			},
 		},
 		{
-			name:      "missing profile exits non-zero with human output",
+			name:      "invalid profile revoke transitions to revoked with human output",
+			profileID: "prof-invalid",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-invalid", "anthropic")
+				p.Status = cloud.AuthProfileStatusInvalid
+				s.profiles["prof-invalid"] = p
+				return s
+			},
+			wantOutput: []string{
+				"Auth profile revoked.",
+				"profileId:  prof-invalid",
+				"status:     revoked",
+				"revokedAt:",
+			},
+		},
+		{
+			name:       "invalid profile revoke transitions to revoked with JSON output",
+			profileID:  "prof-invalid",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-invalid", "anthropic")
+				p.Status = cloud.AuthProfileStatusInvalid
+				s.profiles["prof-invalid"] = p
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudAuthRevokeResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ProfileID != "prof-invalid" {
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-invalid")
+				}
+				if resp.Status != "revoked" {
+					t.Errorf("status = %q, want %q", resp.Status, "revoked")
+				}
+				if resp.RevokedAt == "" {
+					t.Error("revokedAt should not be empty")
+				}
+			},
+		},
+		{
+			name:      "missing profile returns non-fatal missing status in human output",
 			profileID: "no-such-profile",
 			store: func() *cloudMockStore {
 				return newCloudMockStore()
 			},
-			wantErr: "auth revoke failed",
+			wantOutput: []string{
+				"Auth profile not found.",
+				"profileId: no-such-profile",
+				"status:    missing",
+			},
 		},
 		{
-			name:       "missing profile exits non-zero with not_found in JSON",
+			name:       "missing profile returns non-fatal missing status in JSON",
 			profileID:  "no-such-profile",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
 				return newCloudMockStore()
 			},
-			wantErr: "auth revoke failed",
 			checkJSON: func(t *testing.T, output string) {
-				var resp cloudErrorResponse
+				var resp cloudAuthRevokeResponse
 				if err := json.Unmarshal([]byte(output), &resp); err != nil {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
-				if resp.ErrorCode != "not_found" {
-					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "not_found")
+				if resp.ProfileID != "no-such-profile" {
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "no-such-profile")
+				}
+				if resp.Status != "missing" {
+					t.Errorf("status = %q, want %q", resp.Status, "missing")
+				}
+				if resp.RevokedAt != "" {
+					t.Errorf("revokedAt should be empty for missing profile, got %q", resp.RevokedAt)
+				}
+			},
+		},
+		{
+			name:      "already-revoked profile returns non-fatal already_revoked in human output",
+			profileID: "prof-revoked",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-revoked", "anthropic")
+				p.Status = cloud.AuthProfileStatusRevoked
+				s.profiles["prof-revoked"] = p
+				return s
+			},
+			wantOutput: []string{
+				"Auth profile already revoked.",
+				"profileId: prof-revoked",
+				"status:    already_revoked",
+			},
+		},
+		{
+			name:       "already-revoked profile returns non-fatal already_revoked in JSON",
+			profileID:  "prof-revoked",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-revoked", "anthropic")
+				p.Status = cloud.AuthProfileStatusRevoked
+				s.profiles["prof-revoked"] = p
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudAuthRevokeResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ProfileID != "prof-revoked" {
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-revoked")
+				}
+				if resp.Status != "already_revoked" {
+					t.Errorf("status = %q, want %q", resp.Status, "already_revoked")
+				}
+				if resp.RevokedAt != "" {
+					t.Errorf("revokedAt should be empty for already-revoked, got %q", resp.RevokedAt)
 				}
 			},
 		},
@@ -1635,21 +1728,6 @@ func TestRunCloudAuthRevoke(t *testing.T) {
 			},
 		},
 		{
-			name:      "emits audit event with provider and profile ID",
-			profileID: "prof-002",
-			store: func() *cloudMockStore {
-				s := newCloudMockStore()
-				s.profiles["prof-002"] = linkedCloudProfile("prof-002", "openai")
-				return s
-			},
-			wantOutput: []string{
-				"Auth profile revoked.",
-				"prof-002",
-				"openai",
-				"revoked",
-			},
-		},
-		{
 			name:      "revoke updates profile status in store",
 			profileID: "prof-003",
 			store: func() *cloudMockStore {
@@ -1661,14 +1739,75 @@ func TestRunCloudAuthRevoke(t *testing.T) {
 				"Auth profile revoked.",
 				"status:     revoked",
 			},
+			checkStore: func(t *testing.T, s *cloudMockStore) {
+				t.Helper()
+				p := s.profiles["prof-003"]
+				if p.Status != cloud.AuthProfileStatusRevoked {
+					t.Errorf("stored status = %q, want %q", p.Status, cloud.AuthProfileStatusRevoked)
+				}
+			},
+		},
+		{
+			name:       "JSON response uses camelCase field names",
+			profileID:  "prof-camel",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.profiles["prof-camel"] = linkedCloudProfile("prof-camel", "anthropic")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var raw map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &raw); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				for _, field := range []string{"profileId", "status", "revokedAt"} {
+					if _, ok := raw[field]; !ok {
+						t.Errorf("JSON response missing required camelCase field %q", field)
+					}
+				}
+				// Verify snake_case fields are absent.
+				for _, field := range []string{"profile_id", "revoked_at", "provider"} {
+					if _, ok := raw[field]; ok {
+						t.Errorf("JSON response should not contain snake_case field %q", field)
+					}
+				}
+			},
+		},
+		{
+			name:      "subsequent auth status reports revoked after successful revoke",
+			profileID: "prof-status-check",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.profiles["prof-status-check"] = linkedCloudProfile("prof-status-check", "anthropic")
+				return s
+			},
+			wantOutput: []string{
+				"Auth profile revoked.",
+			},
+			checkStore: func(t *testing.T, s *cloudMockStore) {
+				t.Helper()
+				// Verify that auth status would report revoked.
+				var statusOut bytes.Buffer
+				storeFactory := func() (cloud.Store, error) { return s, nil }
+				err := runCloudAuthStatus("prof-status-check", false, storeFactory, &statusOut)
+				if err != nil {
+					t.Fatalf("auth status after revoke failed: %v", err)
+				}
+				output := statusOut.String()
+				if !strings.Contains(output, "status:    revoked") {
+					t.Errorf("auth status should report revoked, got: %s", output)
+				}
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var storeFactory func() (cloud.Store, error)
+			var mockStore *cloudMockStore
 			if tt.store != nil {
-				mockStore := tt.store()
+				mockStore = tt.store()
 				if mockStore == nil {
 					storeFactory = func() (cloud.Store, error) {
 						return nil, fmt.Errorf("store factory error")
@@ -1720,6 +1859,10 @@ func TestRunCloudAuthRevoke(t *testing.T) {
 
 			if tt.checkJSON != nil {
 				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+
+			if tt.checkStore != nil && mockStore != nil {
+				tt.checkStore(t, mockStore)
 			}
 		})
 	}

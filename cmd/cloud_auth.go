@@ -576,10 +576,9 @@ var cloudAuthRevokeStoreFactory func() (cloud.Store, error)
 
 // cloudAuthRevokeResponse is the JSON output for a successful auth revoke.
 type cloudAuthRevokeResponse struct {
-	ProfileID string `json:"profile_id"`
-	Provider  string `json:"provider"`
+	ProfileID string `json:"profileId"`
 	Status    string `json:"status"`
-	RevokedAt string `json:"revoked_at"`
+	RevokedAt string `json:"revokedAt"`
 }
 
 // runCloudAuthRevoke is the testable logic for the cloud auth revoke command.
@@ -598,13 +597,54 @@ func runCloudAuthRevoke(
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to connect to store: %v", err), "configuration_error")
 	}
 
+	// Pre-check: handle missing profile as non-fatal.
+	ctx := context.Background()
+	profile, err := store.GetAuthProfile(ctx, profileID)
+	if err != nil {
+		if cloud.IsNotFound(err) {
+			// Missing profile is non-fatal — deterministic output contract.
+			if jsonOutput {
+				return writeJSON(out, cloudAuthRevokeResponse{
+					ProfileID: profileID,
+					Status:    "missing",
+				})
+			}
+			fmt.Fprintf(out, "Auth profile not found.\n")
+			fmt.Fprintf(out, "  profileId: %s\n", profileID)
+			fmt.Fprintf(out, "  status:    missing\n")
+			return nil
+		}
+		code := classifyAuthRevokeError(err)
+		if jsonOutput {
+			_ = writeJSON(out, cloudErrorResponse{
+				Error:     err.Error(),
+				ErrorCode: code,
+			})
+			return fmt.Errorf("auth revoke failed: %w", err)
+		}
+		return fmt.Errorf("auth revoke failed: %w", err)
+	}
+
+	// Already-revoked is non-fatal — deterministic output contract.
+	if profile.Status == cloud.AuthProfileStatusRevoked {
+		if jsonOutput {
+			return writeJSON(out, cloudAuthRevokeResponse{
+				ProfileID: profile.ID,
+				Status:    "already_revoked",
+			})
+		}
+		fmt.Fprintf(out, "Auth profile already revoked.\n")
+		fmt.Fprintf(out, "  profileId: %s\n", profile.ID)
+		fmt.Fprintf(out, "  status:    already_revoked\n")
+		return nil
+	}
+
 	svc := cloud.NewAuthRevokeService(store, cloud.AuthRevokeConfig{})
 
 	req := &cloud.AuthRevokeRequest{
 		ProfileID: profileID,
 	}
 
-	ctx := context.Background()
 	result, err := svc.Revoke(ctx, req)
 	if err != nil {
 		code := classifyAuthRevokeError(err)
@@ -621,17 +661,15 @@ func runCloudAuthRevoke(
 	if jsonOutput {
 		return writeJSON(out, cloudAuthRevokeResponse{
 			ProfileID: result.ProfileID,
-			Provider:  result.Provider,
 			Status:    result.Status,
 			RevokedAt: result.RevokedAt.Format(time.RFC3339),
 		})
 	}
 
 	fmt.Fprintf(out, "Auth profile revoked.\n")
-	fmt.Fprintf(out, "  profile_id: %s\n", result.ProfileID)
-	fmt.Fprintf(out, "  provider:   %s\n", result.Provider)
+	fmt.Fprintf(out, "  profileId:  %s\n", result.ProfileID)
 	fmt.Fprintf(out, "  status:     %s\n", result.Status)
-	fmt.Fprintf(out, "  revoked_at: %s\n", result.RevokedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "  revokedAt:  %s\n", result.RevokedAt.Format(time.RFC3339))
 	return nil
 }
 
