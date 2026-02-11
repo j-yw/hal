@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"testing"
 
 	"github.com/jywlabs/hal/internal/cloud"
 )
@@ -45,6 +46,17 @@ func CloseDefaultStore() error {
 		return defaultDB.Close()
 	}
 	return nil
+}
+
+// ResetDefaultStoreForTest resets the package-level sync.Once and cached
+// store/DB/error so that multiple tests can exercise DefaultStoreFactory
+// in isolation.
+func ResetDefaultStoreForTest(t *testing.T) {
+	t.Helper()
+	defaultOnce = sync.Once{}
+	defaultStore = nil
+	defaultDB = nil
+	defaultErr = nil
 }
 
 // newStoreFactory creates a store factory closure with its own sync.Once,
