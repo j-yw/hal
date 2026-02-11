@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/cloud"
+	"github.com/jywlabs/hal/internal/cloud/deploy"
 	"github.com/spf13/cobra"
 )
 
@@ -206,6 +207,24 @@ func init() {
 	cloudAuthCmd.AddCommand(cloudAuthValidateCmd)
 	cloudAuthCmd.AddCommand(cloudAuthRevokeCmd)
 	cloudCmd.AddCommand(cloudAuthCmd)
+}
+
+func init() {
+	if cloudAuthLinkStoreFactory == nil {
+		cloudAuthLinkStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudAuthImportStoreFactory == nil {
+		cloudAuthImportStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudAuthStatusStoreFactory == nil {
+		cloudAuthStatusStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudAuthValidateStoreFactory == nil {
+		cloudAuthValidateStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudAuthRevokeStoreFactory == nil {
+		cloudAuthRevokeStoreFactory = deploy.DefaultStoreFactory
+	}
 }
 
 // cloudAuthLinkStoreFactory is a package-level variable that tests can override.
