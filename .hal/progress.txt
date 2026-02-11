@@ -37,6 +37,7 @@
 - `cloudCmd` uses `Args: cobra.NoArgs` — unknown subcommands are rejected as extra args, producing non-zero exit without custom error handling
 - Supported cloud subcommands: setup, doctor, list, status, logs, cancel, pull, auth — legacy commands (submit, run, smoke, env, runs) are removed; `cloud_removed_test.go` locks this list
 - Cloud lifecycle integration scaffolding belongs in a `//go:build integration` test file under `cmd/`; keep the canonical command flow as shared table data (`setup → run → auto → review → status → logs → pull → cancel`) for reuse across scenario tests
+- Lifecycle integration tests should centralize checkpoint fixtures (`setup`/`run`/`status`/`logs`/`pull`/`cancel`) with `RequiresRunID`, `SupportsJSON`, and `RequiredJSONKeys`, plus shared camelCase JSON key constants and workflowKind expectations for `run`/`auto`/`review`
 
 ---
 ## 2026-02-11 - US-001
@@ -491,4 +492,14 @@
   - Keep lifecycle integration suite wiring in an integration-tagged file (`//go:build integration`) so command-level integration scaffolding stays isolated from default unit test runs
   - Centralizing lifecycle command flow as shared table data avoids drift when multiple scenario tests need the same command progression
   - Include reusable placeholders (for example `<run-id>`) directly in the command surface definitions to keep downstream scenario helpers consistent
+---
+## 2026-02-12 01:02 +08 - T-002
+- Added shared lifecycle fixture definitions in `cmd/cloud_lifecycle_fixtures_integration_test.go` for `setup`, `run`, `status`, `logs`, `pull`, and `cancel` checkpoints
+- Added canonical camelCase JSON contract key constants and a shared key registry for lifecycle integration assertions
+- Added workflowKind expectation fixtures for `run`, `auto`, and `review`, plus validation tests to keep fixture drift detectable
+- Files changed: cmd/cloud_lifecycle_fixtures_integration_test.go, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Keep lifecycle scenario assertions driven by fixture tables instead of hardcoding expectations per test; this makes later scenario additions easier to maintain
+  - Validate shared JSON key constants with a camelCase-format test to catch accidental snake_case key drift early
+  - Keep workflow-kind expectations as explicit fixtures (`run`/`auto`/`review`) so status/logs/pull/cancel scenarios can assert command-to-kind consistency without duplicating logic
 ---

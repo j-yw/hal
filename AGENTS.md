@@ -124,3 +124,6 @@
 - Keep cloud lifecycle suite scaffolding in a dedicated `//go:build integration` file under `cmd/` so integration metadata and shared fixtures are excluded from default unit-test runs.
 - Define the lifecycle command flow once as shared table data (`setup`, `run`, `auto`, `review`, `status`, `logs`, `pull`, `cancel`) and reuse it across scenario tests to prevent command-surface drift.
 - Use explicit placeholders like `<run-id>` in shared command args so scenario helpers can substitute IDs consistently across status/logs/pull/cancel assertions.
+- Centralize lifecycle checkpoint fixtures (`setup`/`run`/`status`/`logs`/`pull`/`cancel`) in one integration helper table with `RequiresRunID`, `SupportsJSON`, and `RequiredJSONKeys` so scenario tests assert one contract source of truth.
+- Keep lifecycle JSON contract keys as shared camelCase constants (e.g., `runId`, `workflowKind`, `filesRestored`) and validate key format in tests to prevent snake_case drift.
+- Define workflow-kind expectations for `run`, `auto`, and `review` in shared fixtures so scenario tests can assert persisted `workflowKind` consistently.
