@@ -67,10 +67,11 @@ func (s *executionMockStore) InsertEvent(_ context.Context, event *Event) error 
 
 func validExecutionRequest() *ExecutionRequest {
 	return &ExecutionRequest{
-		SandboxID: "sandbox-001",
-		AttemptID: "att-001",
-		RunID:     "run-001",
-		Mode:      ExecutionModeUntilComplete,
+		SandboxID:    "sandbox-001",
+		AttemptID:    "att-001",
+		RunID:        "run-001",
+		WorkflowKind: WorkflowKindAuto,
+		Mode:         ExecutionModeUntilComplete,
 	}
 }
 
@@ -113,8 +114,8 @@ func TestExecute(t *testing.T) {
 		if call.SandboxID != "sandbox-001" {
 			t.Errorf("sandboxID = %q, want %q", call.SandboxID, "sandbox-001")
 		}
-		if !strings.Contains(call.Command, "until-complete") {
-			t.Errorf("command = %q, want to contain 'until-complete'", call.Command)
+		if call.Command != "hal auto --mode until-complete" {
+			t.Errorf("command = %q, want %q", call.Command, "hal auto --mode until-complete")
 		}
 		if call.WorkDir != "/workspace" {
 			t.Errorf("workDir = %q, want %q", call.WorkDir, "/workspace")
@@ -139,7 +140,7 @@ func TestExecute(t *testing.T) {
 			t.Errorf("event[0] attempt_id = %v, want %q", evt0.AttemptID, "att-001")
 		}
 
-		// Verify started payload includes mode.
+		// Verify started payload includes mode and workflow_kind.
 		if evt0.PayloadJSON != nil {
 			var payload executionEventPayload
 			if err := json.Unmarshal([]byte(*evt0.PayloadJSON), &payload); err != nil {
@@ -147,6 +148,9 @@ func TestExecute(t *testing.T) {
 			}
 			if payload.Mode != "until_complete" {
 				t.Errorf("event[0] payload mode = %q, want %q", payload.Mode, "until_complete")
+			}
+			if payload.WorkflowKind != "auto" {
+				t.Errorf("event[0] payload workflow_kind = %q, want %q", payload.WorkflowKind, "auto")
 			}
 			if payload.SandboxID != "sandbox-001" {
 				t.Errorf("event[0] payload sandbox_id = %q, want %q", payload.SandboxID, "sandbox-001")
@@ -209,8 +213,8 @@ func TestExecute(t *testing.T) {
 		if len(mockRunner.execCalls) != 1 {
 			t.Fatalf("execCalls = %d, want 1", len(mockRunner.execCalls))
 		}
-		if !strings.Contains(mockRunner.execCalls[0].Command, "bounded-batch") {
-			t.Errorf("command = %q, want to contain 'bounded-batch'", mockRunner.execCalls[0].Command)
+		if mockRunner.execCalls[0].Command != "hal auto --mode bounded-batch" {
+			t.Errorf("command = %q, want %q", mockRunner.execCalls[0].Command, "hal auto --mode bounded-batch")
 		}
 
 		// Verify started event payload has bounded_batch mode.
@@ -424,6 +428,16 @@ func TestExecutionRequestValidation(t *testing.T) {
 			wantErr: "runID must not be empty",
 		},
 		{
+			name:    "invalid_workflowKind",
+			modify:  func(r *ExecutionRequest) { r.WorkflowKind = "bad_kind" },
+			wantErr: `workflowKind "bad_kind" is not valid`,
+		},
+		{
+			name:    "empty_workflowKind",
+			modify:  func(r *ExecutionRequest) { r.WorkflowKind = "" },
+			wantErr: `workflowKind "" is not valid`,
+		},
+		{
 			name:    "invalid_mode",
 			modify:  func(r *ExecutionRequest) { r.Mode = "bad_mode" },
 			wantErr: `mode "bad_mode" is not valid`,
@@ -509,18 +523,129 @@ func TestExecutionIDFunc(t *testing.T) {
 
 func TestBuildHalCommand(t *testing.T) {
 	tests := []struct {
+		name    string
+		kind    WorkflowKind
 		mode    ExecutionMode
 		wantCmd string
 	}{
-		{ExecutionModeUntilComplete, "hal auto --mode until-complete"},
-		{ExecutionModeBoundedBatch, "hal auto --mode bounded-batch"},
+		{
+			name:    "run_dispatches_hal_run",
+			kind:    WorkflowKindRun,
+			mode:    ExecutionModeUntilComplete,
+			wantCmd: "hal run",
+		},
+		{
+			name:    "run_ignores_mode",
+			kind:    WorkflowKindRun,
+			mode:    ExecutionModeBoundedBatch,
+			wantCmd: "hal run",
+		},
+		{
+			name:    "auto_until_complete",
+			kind:    WorkflowKindAuto,
+			mode:    ExecutionModeUntilComplete,
+			wantCmd: "hal auto --mode until-complete",
+		},
+		{
+			name:    "auto_bounded_batch",
+			kind:    WorkflowKindAuto,
+			mode:    ExecutionModeBoundedBatch,
+			wantCmd: "hal auto --mode bounded-batch",
+		},
+		{
+			name:    "review_dispatches_hal_review",
+			kind:    WorkflowKindReview,
+			mode:    ExecutionModeUntilComplete,
+			wantCmd: "hal review",
+		},
+		{
+			name:    "review_ignores_mode",
+			kind:    WorkflowKindReview,
+			mode:    ExecutionModeBoundedBatch,
+			wantCmd: "hal review",
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(string(tt.mode), func(t *testing.T) {
-			got := buildHalCommand(tt.mode)
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildHalCommand(tt.kind, tt.mode)
 			if got != tt.wantCmd {
-				t.Errorf("buildHalCommand(%q) = %q, want %q", tt.mode, got, tt.wantCmd)
+				t.Errorf("buildHalCommand(%q, %q) = %q, want %q", tt.kind, tt.mode, got, tt.wantCmd)
+			}
+		})
+	}
+}
+
+// TestWorkflowKindDispatchExactArgv verifies the exact argv mapping required
+// by the acceptance criteria: run→"hal run", auto→"hal auto", review→"hal review".
+// Mode flags do not alter the dispatch base command.
+func TestWorkflowKindDispatchExactArgv(t *testing.T) {
+	tests := []struct {
+		kind       WorkflowKind
+		wantPrefix string
+	}{
+		{WorkflowKindRun, "hal run"},
+		{WorkflowKindAuto, "hal auto"},
+		{WorkflowKindReview, "hal review"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.kind), func(t *testing.T) {
+			store := &executionMockStore{}
+			mockRunner := &executionMockRunner{
+				execResult: &runner.ExecResult{ExitCode: 0},
+			}
+			svc := NewExecutionService(store, mockRunner, ExecutionConfig{})
+
+			req := validExecutionRequest()
+			req.WorkflowKind = tt.kind
+			_, err := svc.Execute(context.Background(), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(mockRunner.execCalls) != 1 {
+				t.Fatalf("execCalls = %d, want 1", len(mockRunner.execCalls))
+			}
+			cmd := mockRunner.execCalls[0].Command
+			if !strings.HasPrefix(cmd, tt.wantPrefix) {
+				t.Errorf("command = %q, want prefix %q", cmd, tt.wantPrefix)
+			}
+
+			// Verify events include workflow_kind for observability.
+			for i, evt := range store.insertedEvents {
+				if evt.PayloadJSON == nil {
+					t.Errorf("event[%d] payload is nil", i)
+					continue
+				}
+				var payload executionEventPayload
+				if err := json.Unmarshal([]byte(*evt.PayloadJSON), &payload); err != nil {
+					t.Fatalf("event[%d] payload unmarshal: %v", i, err)
+				}
+				if payload.WorkflowKind != string(tt.kind) {
+					t.Errorf("event[%d] workflow_kind = %q, want %q", i, payload.WorkflowKind, tt.kind)
+				}
+			}
+		})
+	}
+}
+
+// TestModeDoesNotAlterDispatch verifies that mode flags only affect auto
+// workflow commands, not run or review.
+func TestModeDoesNotAlterDispatch(t *testing.T) {
+	modes := []ExecutionMode{ExecutionModeUntilComplete, ExecutionModeBoundedBatch}
+
+	for _, mode := range modes {
+		t.Run("run_mode_"+string(mode), func(t *testing.T) {
+			cmd := buildHalCommand(WorkflowKindRun, mode)
+			if cmd != "hal run" {
+				t.Errorf("buildHalCommand(run, %q) = %q, want %q", mode, cmd, "hal run")
+			}
+		})
+		t.Run("review_mode_"+string(mode), func(t *testing.T) {
+			cmd := buildHalCommand(WorkflowKindReview, mode)
+			if cmd != "hal review" {
+				t.Errorf("buildHalCommand(review, %q) = %q, want %q", mode, cmd, "hal review")
 			}
 		})
 	}

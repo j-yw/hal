@@ -65,6 +65,9 @@ type ExecutionRequest struct {
 	AttemptID string
 	// RunID is the current run (for event correlation).
 	RunID string
+	// WorkflowKind determines the command dispatched: run→"hal run",
+	// auto→"hal auto", review→"hal review".
+	WorkflowKind WorkflowKind
 	// Mode is the execution mode (until_complete or bounded_batch).
 	Mode ExecutionMode
 }
@@ -79,6 +82,9 @@ func (r *ExecutionRequest) Validate() error {
 	}
 	if r.RunID == "" {
 		return fmt.Errorf("runID must not be empty")
+	}
+	if !r.WorkflowKind.IsValid() {
+		return fmt.Errorf("workflowKind %q is not valid", r.WorkflowKind)
 	}
 	if !r.Mode.IsValid() {
 		return fmt.Errorf("mode %q is not valid", r.Mode)
@@ -98,11 +104,12 @@ type ExecutionResult struct {
 
 // executionEventPayload is the JSON payload for execution lifecycle events.
 type executionEventPayload struct {
-	SandboxID string `json:"sandbox_id"`
-	Mode      string `json:"mode"`
-	ExitCode  *int   `json:"exit_code,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Command   string `json:"command,omitempty"`
+	SandboxID    string `json:"sandbox_id"`
+	WorkflowKind string `json:"workflow_kind"`
+	Mode         string `json:"mode"`
+	ExitCode     *int   `json:"exit_code,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Command      string `json:"command,omitempty"`
 }
 
 // Execute runs Hal inside the sandbox with the selected execution mode. It
@@ -116,14 +123,15 @@ func (s *ExecutionService) Execute(ctx context.Context, req *ExecutionRequest) (
 
 	now := time.Now().UTC().Truncate(time.Second)
 
-	// Build the Hal command based on execution mode.
-	cmd := buildHalCommand(req.Mode)
+	// Build the Hal command based on workflow kind and execution mode.
+	cmd := buildHalCommand(req.WorkflowKind, req.Mode)
 
 	// Step 1: Emit execution_started event.
 	startPayload := &executionEventPayload{
-		SandboxID: req.SandboxID,
-		Mode:      string(req.Mode),
-		Command:   cmd,
+		SandboxID:    req.SandboxID,
+		WorkflowKind: string(req.WorkflowKind),
+		Mode:         string(req.Mode),
+		Command:      cmd,
 	}
 	s.emitEvent(ctx, req.RunID, req.AttemptID, "execution_started", startPayload, now)
 
@@ -135,9 +143,10 @@ func (s *ExecutionService) Execute(ctx context.Context, req *ExecutionRequest) (
 	if err != nil {
 		// Runner API error (not a non-zero exit code).
 		errPayload := &executionEventPayload{
-			SandboxID: req.SandboxID,
-			Mode:      string(req.Mode),
-			Error:     err.Error(),
+			SandboxID:    req.SandboxID,
+			WorkflowKind: string(req.WorkflowKind),
+			Mode:         string(req.Mode),
+			Error:        err.Error(),
 		}
 		s.emitEvent(ctx, req.RunID, req.AttemptID, "execution_finished", errPayload, now)
 		return nil, fmt.Errorf("execution failed: %w", err)
@@ -145,9 +154,10 @@ func (s *ExecutionService) Execute(ctx context.Context, req *ExecutionRequest) (
 
 	// Step 3: Emit execution_finished event with exit code.
 	finishPayload := &executionEventPayload{
-		SandboxID: req.SandboxID,
-		Mode:      string(req.Mode),
-		ExitCode:  &execResult.ExitCode,
+		SandboxID:    req.SandboxID,
+		WorkflowKind: string(req.WorkflowKind),
+		Mode:         string(req.Mode),
+		ExitCode:     &execResult.ExitCode,
 	}
 	if execResult.ExitCode != 0 {
 		output := execResult.Stderr
@@ -165,13 +175,29 @@ func (s *ExecutionService) Execute(ctx context.Context, req *ExecutionRequest) (
 	}, nil
 }
 
-// buildHalCommand constructs the Hal CLI command for the given execution mode.
-func buildHalCommand(mode ExecutionMode) string {
-	switch mode {
-	case ExecutionModeUntilComplete:
-		return "hal auto --mode until-complete"
-	case ExecutionModeBoundedBatch:
-		return "hal auto --mode bounded-batch"
+// buildHalCommand constructs the Hal CLI command based on workflow kind and
+// execution mode. Dispatch maps workflow kinds to their exact CLI command:
+//
+//	run    → "hal run"
+//	auto   → "hal auto --mode <mode>"
+//	review → "hal review"
+//
+// Mode flags are only applied to auto workflows.
+func buildHalCommand(kind WorkflowKind, mode ExecutionMode) string {
+	switch kind {
+	case WorkflowKindRun:
+		return "hal run"
+	case WorkflowKindReview:
+		return "hal review"
+	case WorkflowKindAuto:
+		switch mode {
+		case ExecutionModeUntilComplete:
+			return "hal auto --mode until-complete"
+		case ExecutionModeBoundedBatch:
+			return "hal auto --mode bounded-batch"
+		default:
+			return "hal auto"
+		}
 	default:
 		return "hal auto"
 	}

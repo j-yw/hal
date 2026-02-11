@@ -13,6 +13,7 @@
 - ResolvedConfig is the same shape for all workflow kinds (run/auto/review) — only WorkflowKind field differs
 - When CloudEnabled=false, resolver returns hard defaults without loading cloud tiers — verifiable via golden tests
 - Load() wraps os.ReadFile error with fmt.Errorf %w — use errors.Is(err, os.ErrNotExist) not os.IsNotExist for wrapped errors
+- buildHalCommand(kind, mode) dispatches worker commands by WorkflowKind: run→"hal run", auto→"hal auto --mode <mode>", review→"hal review" — mode only applies to auto
 
 ---
 ## 2026-02-11 - US-001
@@ -136,4 +137,23 @@
   - `config.Resolve()` with `CloudEnabled: true` runs the full 6-tier precedence chain, which is exactly what doctor needs to validate
   - `http.NoBody` is the idiomatic way to create a mock response body that's already "closed" — avoids nil body panics in tests
   - Treat 4xx responses as "reachable" — the endpoint is responding, authentication failures are a different concern from connectivity
+---
+## 2026-02-11 - US-012
+- Enforced workflow-kind worker dispatch in ExecutionService
+- Added `WorkflowKind` field to `ExecutionRequest` as a required field with validation
+- Updated `buildHalCommand` to dispatch based on `WorkflowKind`: run→"hal run", auto→"hal auto --mode <mode>", review→"hal review"
+- Mode flags only apply to auto workflows; run and review ignore mode
+- Added `workflow_kind` to `executionEventPayload` for observability in execution_started and execution_finished events
+- Updated `validExecutionRequest()` to include `WorkflowKind: WorkflowKindAuto`
+- Added `TestWorkflowKindDispatchExactArgv` — tests exact argv mapping for all 3 kinds and verifies events include workflow_kind
+- Added `TestModeDoesNotAlterDispatch` — verifies mode flags don't alter run/review dispatch
+- Updated `TestBuildHalCommand` — 6 cases covering all kind×mode combinations with exact string assertions
+- Added workflowKind validation tests (invalid and empty) to `TestExecutionRequestValidation`
+- Updated existing test assertions from `strings.Contains` to exact command equality
+- Files changed: internal/cloud/execution.go, internal/cloud/execution_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - `buildHalCommand` now takes `(WorkflowKind, ExecutionMode)` instead of just `ExecutionMode` — callers must provide both
+  - Mode flags are only meaningful for auto workflows; run and review are simple dispatch commands
+  - The `executionEventPayload` includes `workflow_kind` for all events — use this for log/event filtering and observability
+  - When adding new fields to `ExecutionRequest`, update `validExecutionRequest()` in execution_test.go AND check other test files that use it (e.g., redact_pipeline_test.go)
 ---
