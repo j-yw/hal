@@ -250,7 +250,7 @@ func detectSecrets(data []byte) ValidationErrors {
 	return errs
 }
 
-// walkSecrets recursively checks map keys for secret-bearing names.
+// walkSecrets recursively checks map keys and string values for secret-bearing content.
 func walkSecrets(prefix string, m map[string]interface{}, errs *ValidationErrors) {
 	for key, val := range m {
 		path := key
@@ -266,9 +266,21 @@ func walkSecrets(prefix string, m map[string]interface{}, errs *ValidationErrors
 			})
 		}
 
-		// Recurse into nested maps.
-		if nested, ok := val.(map[string]interface{}); ok {
-			walkSecrets(path, nested, errs)
+		switch v := val.(type) {
+		case map[string]interface{}:
+			// Recurse into nested maps.
+			walkSecrets(path, v, errs)
+		case string:
+			// Check string values for secret-bearing URL query parameters.
+			if u, err := url.Parse(v); err == nil && u.Scheme != "" && u.Host != "" {
+				if containsSecretQuery(u) {
+					*errs = append(*errs, &ValidationError{
+						Field:       path,
+						Rule:        "secret_in_url",
+						Remediation: fmt.Sprintf("value of %q contains a URL with secret-bearing query parameters (authToken, token, password, secret); use environment variables for secrets", key),
+					})
+				}
+			}
 		}
 	}
 }

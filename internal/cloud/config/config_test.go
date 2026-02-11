@@ -631,6 +631,162 @@ profiles:
 	}
 }
 
+func TestParse_SecretValueInNonEndpointField(t *testing.T) {
+	tests := []struct {
+		name      string
+		yaml      string
+		wantField string
+		wantRule  string
+	}{
+		{
+			name: "scope field with authToken query param",
+			yaml: `
+profiles:
+  default:
+    scope: "https://api.example.com/scope?authToken=secret123"
+`,
+			wantField: "profiles.default.scope",
+			wantRule:  "secret_in_url",
+		},
+		{
+			name: "repo field with token query param",
+			yaml: `
+profiles:
+  default:
+    repo: "https://api.example.com/repo?token=abc"
+`,
+			wantField: "profiles.default.repo",
+			wantRule:  "secret_in_url",
+		},
+		{
+			name: "top-level unknown field with secret query param",
+			yaml: `
+callback: "https://example.com/hook?password=hunter2"
+profiles: {}
+`,
+			wantField: "callback",
+			wantRule:  "secret_in_url",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.yaml))
+			if err == nil {
+				t.Fatal("expected secret value rejection error")
+			}
+			verrs, ok := err.(ValidationErrors)
+			if !ok {
+				t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+			}
+			found := false
+			for _, e := range verrs {
+				if e.Field == tt.wantField && e.Rule == tt.wantRule {
+					found = true
+					if !strings.Contains(e.Remediation, "environment variables") {
+						t.Errorf("Remediation should suggest environment variables: %q", e.Remediation)
+					}
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected %s error for %q, got: %v", tt.wantRule, tt.wantField, verrs)
+			}
+		})
+	}
+}
+
+func TestParse_SecretDetectionFailsFastBeforeValidation(t *testing.T) {
+	// Secret detection must fail before structural validation.
+	// This YAML has both a secret field AND an invalid mode — the secret
+	// should be caught first by detectSecrets, before Validate runs.
+	data := []byte(`
+token: "my-secret"
+profiles:
+  default:
+    mode: invalid_mode
+`)
+	_, err := Parse(data)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	verrs, ok := err.(ValidationErrors)
+	if !ok {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	// All errors should be secret_field — not invalid_value from Validate().
+	for _, e := range verrs {
+		if e.Rule == "invalid_value" {
+			t.Errorf("Validate() ran before secret detection completed; got rule %q for %q", e.Rule, e.Field)
+		}
+	}
+	// Must have at least one secret_field error.
+	found := false
+	for _, e := range verrs {
+		if e.Rule == "secret_field" && e.Field == "token" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected secret_field error for 'token', got: %v", verrs)
+	}
+}
+
+func TestParse_SecretValueSafeStringsAllowed(t *testing.T) {
+	// Non-URL strings and URLs without secret params should pass.
+	data := []byte(`
+profiles:
+  default:
+    scope: "prd-001"
+    repo: "org/myrepo"
+    base: "main"
+    engine: "claude"
+    authProfile: "ap-123"
+    endpoint: "https://cloud.example.com?region=us-east"
+`)
+	_, err := Parse(data)
+	if err != nil {
+		t.Fatalf("unexpected error for safe values: %v", err)
+	}
+}
+
+func TestValidationError_ErrorFormatWithSecretRule(t *testing.T) {
+	e := &ValidationError{
+		Field:       "profiles.prod.token",
+		Rule:        "secret_field",
+		Remediation: `field "token" looks like a secret and must not be stored in cloud.yaml; use environment variables or a secrets manager instead`,
+	}
+	got := e.Error()
+	if !strings.Contains(got, "profiles.prod.token") {
+		t.Errorf("missing field path in error: %q", got)
+	}
+	if !strings.Contains(got, "secret_field") {
+		t.Errorf("missing rule in error: %q", got)
+	}
+	if !strings.Contains(got, "environment variables") {
+		t.Errorf("missing remediation guidance in error: %q", got)
+	}
+}
+
+func TestValidationError_ErrorFormatWithSecretInURL(t *testing.T) {
+	e := &ValidationError{
+		Field:       "profiles.default.scope",
+		Rule:        "secret_in_url",
+		Remediation: `value of "scope" contains a URL with secret-bearing query parameters (authToken, token, password, secret); use environment variables for secrets`,
+	}
+	got := e.Error()
+	if !strings.Contains(got, "profiles.default.scope") {
+		t.Errorf("missing field path in error: %q", got)
+	}
+	if !strings.Contains(got, "secret_in_url") {
+		t.Errorf("missing rule in error: %q", got)
+	}
+	if !strings.Contains(got, "environment variables") {
+		t.Errorf("missing remediation guidance in error: %q", got)
+	}
+}
+
 func boolPtr(b bool) *bool {
 	return &b
 }
