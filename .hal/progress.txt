@@ -4,6 +4,9 @@
 - ValidationErrors type implements error interface and collects multiple field-level failures with path/rule/remediation
 - Secret detection walks raw YAML map recursively; also checks URL query params for secret-bearing parameter names
 - Profile.Wait uses *bool (pointer) to distinguish omitted from explicit false — follows the pointer-yaml-defaults pattern from AGENTS.md
+- ArtifactGroup (state/reports/all) follows the same typed string enum pattern as WorkflowKind and RunStatus — use NewArtifactMetadata(kind) to build per-workflow metadata
+- BundleAllowlist is for input uploads; artifact groups are for output pull — they overlap but are distinct concerns (auto-state.json is output-only)
+- WorkflowArtifactGroups maps workflow kinds to their default artifact groups: run→[state], auto/review→[state,reports]
 
 ---
 ## 2026-02-11 - US-001
@@ -30,4 +33,19 @@
   - When adding a new required field to Run, update all test helpers that construct Run structs (validRun, claimedRun, failedRun, etc.) across all packages
   - Store implementations need scanRun helper updates for any new column — both postgres and turso share the same pattern
   - The cmd package has its own mock store and test helpers separate from internal/cloud tests — both must be updated
+---
+## 2026-02-11 - US-003
+- Defined artifact-group metadata for deterministic pull behavior
+- Created ArtifactGroup type (state/reports/all) with IsValid() validation following same typed enum pattern
+- Created ArtifactPathPattern and ArtifactMetadata types for persisted artifact classification
+- Implemented WorkflowArtifactGroups and WorkflowDefaultArtifactPatterns for per-workflow defaults
+- State patterns cover all BundleAllowlist paths plus auto-state.json; report patterns cover .hal/reports/**
+- ArtifactMetadata.SelectPatterns(group) enables deterministic --artifacts state|reports|all selection
+- NewArtifactMetadata(kind) builds metadata from workflow kind defaults
+- Files changed: internal/cloud/artifact_group.go (new), internal/cloud/artifact_group_test.go (new)
+- **Learnings for future iterations:**
+  - BundleAllowlist (input uploads) and artifact state patterns (output pull) overlap but serve different concerns — auto-state.json is only output, not input
+  - ArtifactMetadata.Validate rejects ArtifactGroupAll as a concrete group — it's a query-time selector, not a persistable classification
+  - Tests should verify patterns align with BundleAllowlist (state ⊇ allowlist) and BundleDenylist (reports ⊂ denylist) to catch drift
+  - Following the project's typed string enum pattern (map + IsValid()) keeps artifact groups consistent with WorkflowKind and RunStatus
 ---
