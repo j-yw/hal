@@ -38,6 +38,15 @@ func DefaultStoreFactory() (cloud.Store, error) {
 	return defaultStore, defaultErr
 }
 
+// CloseDefaultStore closes the cached database connection held by
+// DefaultStoreFactory. It returns nil if no connection has been opened.
+func CloseDefaultStore() error {
+	if defaultDB != nil {
+		return defaultDB.Close()
+	}
+	return nil
+}
+
 // newStoreFactory creates a store factory closure with its own sync.Once,
 // using the provided config loader. This allows tests to create isolated
 // factory instances with custom getenv functions.
