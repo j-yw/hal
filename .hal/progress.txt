@@ -8,6 +8,7 @@
 - BundleAllowlist is for input uploads; artifact groups are for output pull — they overlap but are distinct concerns (auto-state.json is output-only)
 - WorkflowArtifactGroups maps workflow kinds to their default artifact groups: run→[state], auto/review→[state,reports]
 - Use RegisterCloudFlags(cmd) from cmd/cloud_flags.go to add the shared cloud flag set to any workflow command; ValidateCloudFlags(f) checks --detach/--wait conflict
+- Doctor command uses httpDoer interface for testable HTTP calls — inject mockHTTPClient in tests to avoid real network requests
 - Use config.Resolve(ResolveInput{...}) to compose cloud runtime config from CLI/env/.env/YAML/inferred/hard defaults with deterministic precedence
 - ResolvedConfig is the same shape for all workflow kinds (run/auto/review) — only WorkflowKind field differs
 - When CloudEnabled=false, resolver returns hard defaults without loading cloud tiers — verifiable via golden tests
@@ -115,4 +116,24 @@
   - CloudFlagError implements the error interface and supports errors.As for programmatic code inspection — use this pattern for deterministic error codes in CLI output
   - CloudFlagNames() is the single source of truth for the flag set — use it in help text snapshot tests (US-018)
   - The flags are independent per command: each RegisterCloudFlags call creates a new CloudFlags struct so run/auto/review don't share state
+---
+## 2026-02-11 - US-008
+- Implemented `hal cloud doctor` diagnostic command with 3 explicit checks: profile resolution, endpoint reachability, auth profile validity
+- Created `cmd/cloud_doctor.go` with `runCloudDoctor` testable function following the extract-for-test pattern
+- Uses `httpDoer` interface for injectable HTTP client — enables mock-based endpoint reachability tests without real network calls
+- Leverages `config.Load()` for profile validation and `config.Resolve()` for full precedence chain verification
+- Blocking failures include category-specific next-step guidance: config → "hal cloud setup", auth → "hal cloud auth link", connectivity → "verify endpoint and rerun hal cloud doctor"
+- Non-zero exit on blocking failures (returns error), zero exit on all-pass
+- Supports `--json` with valid JSON output containing `overall`, `checks` array with `name`, `status`, `message`, `next_step` fields
+- Supports `--profile` flag to diagnose a specific profile
+- Endpoint 4xx is treated as "reachable" (the endpoint is up, auth may just be needed); 5xx is a failure
+- Created `cmd/cloud_doctor_test.go` with 20 tests: 15 table-driven integration tests + 5 unit tests for individual check functions
+- Tests cover: all-pass, missing config, invalid config, unknown profile, no endpoint, unreachable endpoint, server errors, no auth profile, JSON validity, non-zero exit, next-step guidance per category, 4xx pass behavior
+- Files changed: cmd/cloud_doctor.go (new), cmd/cloud_doctor_test.go (new), .hal/prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - The `httpDoer` interface pattern (wrapping `Do(req)`) is the minimal abstraction needed for testable HTTP clients — prefer this over mocking the entire http.Client
+  - Doctor doesn't need the store (deploy.DefaultStoreFactory) — it validates the user-facing config layer only, not the server infrastructure
+  - `config.Resolve()` with `CloudEnabled: true` runs the full 6-tier precedence chain, which is exactly what doctor needs to validate
+  - `http.NoBody` is the idiomatic way to create a mock response body that's already "closed" — avoids nil body panics in tests
+  - Treat 4xx responses as "reachable" — the endpoint is responding, authentication failures are a different concern from connectivity
 ---
