@@ -23,8 +23,9 @@ const (
 	PromptFile    = "prompt.md"
 	ProgressFile  = "progress.txt"    // Unified progress for both flows
 	AutoStateFile = "auto-state.json" // Auto flow pipeline state
-	ConfigFile    = "config.yaml"
-	StandardsDir  = "standards" // Project standards directory
+	ConfigFile      = "config.yaml"
+	CloudConfigFile = "cloud.yaml" // Non-secret cloud profile config
+	StandardsDir    = "standards"  // Project standards directory
 	CommandsDir   = "commands"  // Agent commands directory
 )
 
