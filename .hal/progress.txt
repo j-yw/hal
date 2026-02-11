@@ -43,6 +43,7 @@
 - Lifecycle command integration helpers should dispatch to existing `run<Command>` functions (not Cobra root execution), substitute `<run-id>` placeholders, and use `io.MultiWriter` so tests can inject stdout while still getting captured output for assertions
 - For lifecycle `--json` assertions, decode with shared helpers and normalize only explicitly listed nondeterministic keys (run IDs/timestamps) so stable contract fields remain directly assertable
 - Lifecycle scenario tests should assert both human and `--json` checkpoints in one flow and verify persisted runs directly through the harness store (`GetRun`) to prove store-backed state visibility
+- Lifecycle logs scenarios should seed events via `h.Store.InsertEvent` after `run --cloud`; submit-only harness flows do not emit timeline events automatically
 
 ---
 ## 2026-02-11 - US-001
@@ -550,4 +551,14 @@
   - Baseline lifecycle scenarios should verify both presentation layers (human and JSON) for each checkpoint command to catch contract drift early
   - Use checkpoint fixtures (`cloudLifecycleCheckpointFixtures`) as the source of required JSON keys, then resolve canonical key aliases when commands still emit legacy snake_case fields
   - Parse `run_id` from human output and cross-check against harness store state to assert end-to-end command output aligns with persisted data
+---
+## 2026-02-12 01:34 +08 - T-007
+- Added lifecycle logs integration scenario test in `cmd/cloud_lifecycle_logs_scenario_integration_test.go` covering `hal cloud setup` → `hal run --cloud` → `hal cloud logs` in one harness flow
+- Seeded deterministic timeline events through the harness store and asserted logs output in both human and `--json` modes
+- Validated logs checkpoint JSON contract keys via shared fixtures and verified the logs output references the targeted `run_id`
+- Files changed: cmd/cloud_lifecycle_logs_scenario_integration_test.go, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - `run --cloud` submission in the lifecycle harness does not emit timeline events by itself; seed events via `h.Store.InsertEvent` before asserting `cloud logs`
+  - For logs JSON assertions, keep using shared checkpoint fixtures for top-level contract keys, then add focused event-object checks (`id`, `event_type`/`eventType`, `payload_json`, `created_at`) in scenario tests
+  - Embedding `runId` in seeded event payloads makes it straightforward to assert that human logs output is tied to the targeted workflow identifier
 ---
