@@ -584,3 +584,13 @@
   - A single seeded event after `status` is enough to validate the required downstream `logs` checkpoint without introducing worker-loop dependencies in the harness
   - Reusing `cloudLifecycleCheckpointFixtures` keeps `status` and `logs` key assertions aligned with the shared lifecycle contract
 ---
+## 2026-02-12 01:49 +08 - T-010
+- Added lifecycle review scenario integration test in `cmd/cloud_lifecycle_review_scenario_integration_test.go` covering `hal cloud setup` → `hal review --cloud` → `hal cloud status` with a downstream `hal cloud logs` checkpoint in one harness flow
+- Asserted `workflowKind=review` in review `--json` output, status `--json` output, and persisted store-backed run state via `h.Store.GetRun`
+- Seeded and validated review-specific logs output (`review_checkpoint`) in `hal cloud logs --json` to lock the post-status command chain
+- Files changed: cmd/cloud_lifecycle_review_scenario_integration_test.go, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Review scenarios can reuse the same fixture-driven structure as auto scenarios; only workflow command fixture and seeded event type need to change
+  - Keep downstream checkpoint assertions (`logs --json`) focused on required fixture keys plus one workflow-specific payload check for deterministic coverage
+  - Store-backed persistence assertions via `h.Store.GetRun` remain the simplest proof that workflow kind is preserved end-to-end
+---
