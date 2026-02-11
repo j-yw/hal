@@ -62,3 +62,20 @@
   - The fail-fast test (TestParse_SecretDetectionFailsFastBeforeValidation) is important: it verifies the architectural guarantee that secrets are rejected before any structural validation runs
   - When adding new secret detection patterns, add them to both the key-name list (secretFieldNames) and the query-param list (containsSecretQuery) as appropriate
 ---
+## 2026-02-11 - US-007
+- Implemented guided `hal cloud setup` command for interactive cloud profile configuration
+- Created `cmd/cloud_setup.go` with `runCloudSetup` testable function following the extract-for-test pattern
+- Uses `promptField` helper (bufio.Reader + io.Writer) for each profile field with default value support
+- Loads existing cloud.yaml, preserves unrelated profiles, updates only the selected profile
+- Validates config via `config.Validate()` before writing — rejects invalid modes/pull policies
+- Output prints profile name, endpoint, and mode after successful write
+- Created `cmd/cloud_setup_test.go` with 8 table-driven tests covering: new config creation, custom profile names, profile preservation on re-run, profile updates, validation errors, non-secret-only writes, hal dir creation, and output contract
+- Also tests `promptField`, `marshalCloudConfig`, and `loadExistingCloudConfig` functions
+- Files changed: cmd/cloud_setup.go (new), cmd/cloud_setup_test.go (new), .hal/prd.json
+- **Learnings for future iterations:**
+  - Cloud setup commands should follow the same testable extraction pattern as archive: `runCloudSetup(halDir, profileFlag, in, out)` with io.Reader/io.Writer for stdin/stdout capture in tests
+  - When testing interactive prompts, count the exact number of prompts (fields) to provide the right number of newline-terminated inputs — off-by-one causes values to shift into wrong fields
+  - The `config.Profile` struct fields use `omitempty` YAML tags, so empty strings are cleanly omitted from the written file — no need for special nil handling except for `*bool` Wait field
+  - `marshalCloudConfig` + `config.Parse` roundtrip validates that the written YAML is correctly parseable
+  - The `cloudCmd.AddCommand(cloudSetupCmd)` registration in a separate file's `init()` follows the same pattern as `cloud_auth.go` — Cobra handles cross-file init ordering
+---
