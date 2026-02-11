@@ -1,0 +1,607 @@
+{
+  "project": "Hal Cloud Daytona Sandbox Orchestration v1",
+  "branchName": "hal/cloud-daytona-sandbox-orchestration-v1",
+  "description": "Terminal-first cloud orchestration for running hal workloads in Daytona sandboxes with durable run state, adapter parity, auth profile lifecycle management, lease-based concurrency control, idempotent GitHub side effects, and strict secret redaction.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Create runs table schema",
+      "description": "As a platform engineer, I want durable run records so orchestration can recover after restarts.",
+      "acceptanceCriteria": [
+        "Add a runs table with columns id, repo, base_branch, engine, auth_profile_id, scope_ref, status, attempt_count, max_attempts, deadline_at, created_at, and updated_at.",
+        "Restrict runs.status to exactly queued, claimed, running, retrying, succeeded, failed, or canceled.",
+        "Create a queue index on (status, created_at).",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Create attempts table schema",
+      "description": "As a platform engineer, I want attempt-level state so heartbeat and retry behavior is explicit.",
+      "acceptanceCriteria": [
+        "Add an attempts table with columns id, run_id, attempt_number, worker_id, sandbox_id, status, started_at, heartbeat_at, lease_expires_at, ended_at, error_code, and error_message.",
+        "Enforce at most one active attempt row per run_id.",
+        "Create indexes on (run_id), (status), and (lease_expires_at).",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Create events table schema",
+      "description": "As an operator, I want durable run timelines so status and logs commands can read authoritative history.",
+      "acceptanceCriteria": [
+        "Add an events table with columns id, run_id, attempt_id, event_type, payload_json, redacted, and created_at.",
+        "Ensure normal application write paths append new events and do not update or delete existing events.",
+        "Create an index on (run_id, created_at).",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Create idempotency keys table schema",
+      "description": "As a platform engineer, I want persisted idempotency keys so retries cannot duplicate external side effects.",
+      "acceptanceCriteria": [
+        "Add an idempotency_keys table with columns key, run_id, side_effect_type, result_ref, and created_at.",
+        "Enforce a unique constraint on idempotency_keys.key.",
+        "Return a deterministic duplicate_key domain error on duplicate key insert attempts.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Create auth profiles table schema",
+      "description": "As an operator, I want reusable auth profiles so credentials are linked once and reused by workers.",
+      "acceptanceCriteria": [
+        "Add an auth_profiles table with columns id, owner_id, provider, mode, secret_ref, status, max_concurrent_runs, runtime_metadata_json, last_validated_at, expires_at, last_error_code, version, created_at, and updated_at.",
+        "Restrict auth_profiles.status to exactly pending_link, linked, invalid, or revoked.",
+        "Enforce max_concurrent_runs \u003e= 1.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Create auth profile locks table schema",
+      "description": "As a platform engineer, I want lease-based locks so shared subscription sessions are concurrency-safe.",
+      "acceptanceCriteria": [
+        "Add an auth_profile_locks table with columns auth_profile_id, run_id, worker_id, acquired_at, heartbeat_at, lease_expires_at, and released_at.",
+        "Create an index on (auth_profile_id, lease_expires_at).",
+        "Enforce no duplicate active lock row for the same (auth_profile_id, run_id).",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Define Store interface and domain error types",
+      "description": "As a backend engineer, I want a single persistence contract so orchestration logic is adapter-agnostic.",
+      "acceptanceCriteria": [
+        "Define Store methods for enqueue, claim, transition, attempt heartbeat, event append/read, idempotency put/get, auth profile read/update, and auth lock acquire/renew/release.",
+        "Define shared domain errors: not_found, conflict, duplicate_key, lease_expired, and invalid_transition.",
+        "Compile the service layer without adapter-specific imports.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Add adapter contract test suite skeleton",
+      "description": "As a platform engineer, I want adapter-neutral tests so correctness rules are defined once.",
+      "acceptanceCriteria": [
+        "Add contract tests for enqueue, atomic claim, one-active-attempt invariant, heartbeat renewal, and transition guards.",
+        "Add a parallel claim test that asserts exactly one winner per run.",
+        "Support adapter factory injection through newStoreForTest.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Implement Postgres run, attempt, and event operations",
+      "description": "As a backend engineer, I want Postgres support for core orchestration paths.",
+      "acceptanceCriteria": [
+        "Implement Postgres methods for run enqueue, claim, transition, and attempt/event writes.",
+        "Use atomic claim SQL that is safe under concurrent workers.",
+        "Pass contract tests for Postgres run, attempt, and event scenarios.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Implement Postgres auth and idempotency operations",
+      "description": "As a backend engineer, I want Postgres support for auth lock and side-effect safety paths.",
+      "acceptanceCriteria": [
+        "Implement Postgres methods for idempotency put/get and auth lock acquire/renew/release.",
+        "Implement Postgres auth profile metadata and status update methods.",
+        "Pass contract tests for Postgres auth and idempotency scenarios.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Implement Turso run, attempt, and event operations",
+      "description": "As a backend engineer, I want Turso support for core orchestration paths.",
+      "acceptanceCriteria": [
+        "Implement Turso methods for run enqueue, claim, transition, and attempt/event writes.",
+        "Match contract claim semantics under contention.",
+        "Pass contract tests for Turso run, attempt, and event scenarios.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Implement Turso auth and idempotency operations",
+      "description": "As a backend engineer, I want Turso support for auth lock and side-effect safety paths.",
+      "acceptanceCriteria": [
+        "Implement Turso methods for idempotency put/get and auth lock acquire/renew/release.",
+        "Implement Turso auth profile metadata and status update methods.",
+        "Pass contract tests for Turso auth and idempotency scenarios.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Build adapter parity benchmark harness",
+      "description": "As a platform owner, I want comparable adapter metrics so default DB choice is evidence-based.",
+      "acceptanceCriteria": [
+        "Run benchmark scenarios claim_contention, heartbeat_renewal, retry_requeue, cancel_path, and auth_lock_contention for both adapters.",
+        "Emit JSON results with fixed keys: scenario, adapter, runs, errors, claim_p95_ms, heartbeat_p95_ms, duplicate_claims, and lock_overcommit_violations.",
+        "Generate a report artifact for each adapter run.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Implement submit validation and enqueue path",
+      "description": "As an operator, I want invalid runs rejected before queueing.",
+      "acceptanceCriteria": [
+        "Validate required fields repo, base_branch, engine, auth_profile_id, and scope_ref.",
+        "Reject profiles not in linked status and reject engine/provider mismatches.",
+        "Enforce provider policy allow/deny before creating a queued run.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Implement atomic claim and auth lock acquisition transaction",
+      "description": "As a worker, I want ownership acquisition to be all-or-nothing.",
+      "acceptanceCriteria": [
+        "Use one transaction to transition one eligible run to claimed and create an attempt row.",
+        "Acquire the auth lock lease in the same transaction.",
+        "Rollback run claim and attempt creation if lock acquisition fails.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Implement attempt and auth lock heartbeat renewals",
+      "description": "As a worker, I want lease renewals so healthy attempts are not reclaimed.",
+      "acceptanceCriteria": [
+        "Update attempts.heartbeat_at and extend attempts.lease_expires_at on heartbeat.",
+        "Update auth_profile_locks.heartbeat_at and extend auth_profile_locks.lease_expires_at on heartbeat.",
+        "Emit a lease_lost terminal event and stop worker execution when lease renewal fails.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Implement stale-attempt reconciler",
+      "description": "As an operator, I want stale attempts detected and closed automatically.",
+      "acceptanceCriteria": [
+        "Scan active attempts where lease_expires_at is earlier than now.",
+        "Mark stale attempts terminal with error_code set to stale_attempt.",
+        "Release auth lock leases associated with stale attempts.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Implement retry scheduler with exponential backoff",
+      "description": "As an operator, I want deterministic retry transitions for retryable failures.",
+      "acceptanceCriteria": [
+        "Support configurable max_attempts and exponential backoff in retry policy.",
+        "Transition retry-eligible runs through failed to retrying to queued.",
+        "Keep runs that exceed max_attempts in terminal failed state.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-019",
+      "title": "Implement Daytona sandbox provisioning",
+      "description": "As a worker, I want deterministic sandbox creation so each attempt has isolated runtime.",
+      "acceptanceCriteria": [
+        "Provision a Daytona sandbox from configured template or image.",
+        "Persist sandbox_id on the attempt row.",
+        "Emit sandbox_created and sandbox_ready events.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-020",
+      "title": "Implement sandbox teardown on all terminal paths",
+      "description": "As a worker, I want teardown to always run on terminal paths.",
+      "acceptanceCriteria": [
+        "Emit teardown_started before calling sandbox teardown.",
+        "Run teardown on success, failure, cancel, and timeout paths.",
+        "Emit teardown_done after teardown completes.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-021",
+      "title": "Implement worker bootstrap setup steps",
+      "description": "As a worker, I want deterministic environment setup before Hal execution.",
+      "acceptanceCriteria": [
+        "Run required binary checks before repository clone.",
+        "Clone or fetch the repository and checkout the target branch.",
+        "Run hal init only when the .hal directory is missing.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-022",
+      "title": "Implement Hal execution runner modes",
+      "description": "As a worker, I want a controlled execution step so run mode is explicit.",
+      "acceptanceCriteria": [
+        "Support execution modes until_complete and bounded_batch.",
+        "Persist execution start and finish events including the selected mode.",
+        "Capture command exit status for failure classification input.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-023",
+      "title": "Implement failure classifier and retry mapping",
+      "description": "As an operator, I want consistent failure codes for retry decisions.",
+      "acceptanceCriteria": [
+        "Define classifier codes bootstrap_failed, auth_invalid, policy_blocked, stale_attempt, run_timeout, and non_retryable.",
+        "Map provider, preflight, bootstrap, and runtime failures to classifier codes.",
+        "Determine retry eligibility using classifier code mapping only.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-024",
+      "title": "Implement hard-timeout reconciliation",
+      "description": "As an operator, I want overdue runs terminated automatically.",
+      "acceptanceCriteria": [
+        "Set deadline_at during submit using default or policy values.",
+        "Mark runs beyond deadline as failed with error_code run_timeout.",
+        "Emit a run_timeout event on timeout transition.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 24,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-025",
+      "title": "Implement secure auth materialization and cleanup",
+      "description": "As a platform engineer, I want worker credential materialization to be secure by default.",
+      "acceptanceCriteria": [
+        "Materialize auth artifacts from secret_ref only during runtime.",
+        "Create auth directories with mode 0700 and files with mode 0600.",
+        "Remove materialized auth files in teardown.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 25,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-026",
+      "title": "Implement provider preflight and compatibility validation",
+      "description": "As a platform engineer, I want headless validation before Hal execution.",
+      "acceptanceCriteria": [
+        "Run provider-specific non-interactive preflight command before execution.",
+        "Validate runtime metadata compatibility for OS, architecture, and CLI major/minor version.",
+        "Fail with auth_profile_incompatible when metadata validation fails.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 26,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-027",
+      "title": "Implement credential writeback with optimistic versioning",
+      "description": "As a platform engineer, I want refreshed credentials persisted safely.",
+      "acceptanceCriteria": [
+        "Detect changed auth artifacts and write back encrypted secret data through the Auth Broker.",
+        "Require optimistic version checks using auth_profiles.version on writeback.",
+        "On success, update last_validated_at and expires_at and clear last_error_code.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 27,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-028",
+      "title": "Implement deterministic secret redaction rule engine",
+      "description": "As an operator, I want deterministic masking so secret handling is testable.",
+      "acceptanceCriteria": [
+        "Implement rules for bearer tokens, GitHub PATs, device codes, session cookies, and API keys.",
+        "Add fixture-based unit tests per rule with expected masked output assertions.",
+        "Use exactly [REDACTED] as the mask token.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 28,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-029",
+      "title": "Apply redaction to persisted and streamed logs",
+      "description": "As an operator, I want every log path redacted before visibility.",
+      "acceptanceCriteria": [
+        "Apply redaction before writing bootstrap, preflight, runtime, and error events.",
+        "Apply the same redaction engine before streaming logs to CLI output.",
+        "Verify via integration tests that no raw fixture secret appears in DB rows or CLI streams.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 29,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-030",
+      "title": "Implement idempotent PR creation side effect",
+      "description": "As an operator, I want retries to reuse PR creation results.",
+      "acceptanceCriteria": [
+        "Generate a deterministic idempotency key for PR create actions.",
+        "Return stored PR reference without external create call when key already exists.",
+        "Verify in retry tests that exactly one external PR create call occurs.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 30,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-031",
+      "title": "Implement idempotent PR update and comment side effects",
+      "description": "As an operator, I want retries to avoid duplicate PR follow-up actions.",
+      "acceptanceCriteria": [
+        "Generate deterministic idempotency keys for PR update and comment actions.",
+        "Return stored result without duplicate external call when key already exists.",
+        "Verify in retry tests that no duplicate comment or update side effect occurs.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 31,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-032",
+      "title": "Add hal-cloud submit command",
+      "description": "As an operator, I want a clear submit command response for automation and human use.",
+      "acceptanceCriteria": [
+        "Support flags --repo, --base, --engine, --auth-profile, and --scope.",
+        "Default output includes run_id, status, engine, auth_profile, and submitted_at.",
+        "Return machine-readable error codes in --json output for validation failures.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 32,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-033",
+      "title": "Add hal-cloud status command",
+      "description": "As an operator, I want quick visibility into run progress and health.",
+      "acceptanceCriteria": [
+        "Output run_id, status, attempt_count, max_attempts, current_attempt, last_heartbeat_age, and deadline_at.",
+        "Keep --json output keys stable and documented.",
+        "Return non-zero exit with not_found error code for unknown run IDs.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 33,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-034",
+      "title": "Add hal-cloud logs command",
+      "description": "As an operator, I want historical and live run logs from terminal.",
+      "acceptanceCriteria": [
+        "Return logs \u003crun-id\u003e events ordered by ascending timestamp.",
+        "Stream new events with logs \u003crun-id\u003e --follow until interrupted.",
+        "Guarantee output contains no unredacted fixture secret tokens.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 34,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-035",
+      "title": "Add hal-cloud cancel command",
+      "description": "As an operator, I want safe cancellation semantics.",
+      "acceptanceCriteria": [
+        "Set cancel intent and return current cancel state for cancel \u003crun-id\u003e.",
+        "Ensure active workers observe cancel intent within one heartbeat interval.",
+        "Exclude canceled runs from future claims and retries.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 35,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-036",
+      "title": "Add hal-cloud auth link command",
+      "description": "As an operator, I want interactive profile linking outside worker sandboxes.",
+      "acceptanceCriteria": [
+        "Start provider link flow from operator environment via auth link --provider --profile.",
+        "Store an encrypted secret reference on successful link.",
+        "Transition profile status to linked only after validation succeeds.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 36,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-037",
+      "title": "Add hal-cloud auth import command",
+      "description": "As an operator, I want to import local authenticated artifacts when interactive link is unavailable.",
+      "acceptanceCriteria": [
+        "Read local auth artifacts from auth import --provider --profile --source.",
+        "Encrypt imported artifacts and store them as secret reference.",
+        "Record an audit event with profile ID and provider during import.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-038",
+      "title": "Add hal-cloud auth status command",
+      "description": "As an operator, I want profile readiness visibility.",
+      "acceptanceCriteria": [
+        "Show provider, profile state, lock owner, lock expiry, and compatibility summary for auth status \u003cprofile\u003e.",
+        "Return non-zero exit with not_found error code when profile is missing.",
+        "Keep --json output keys stable and documented.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-039",
+      "title": "Add hal-cloud auth validate command",
+      "description": "As an operator, I want explicit profile validation before submit.",
+      "acceptanceCriteria": [
+        "Run provider validation checks with auth validate \u003cprofile\u003e.",
+        "Update last_validated_at on success and last_error_code on failure.",
+        "Return non-zero exit with auth_invalid or auth_profile_incompatible on validation failure.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-040",
+      "title": "Add hal-cloud auth revoke command",
+      "description": "As an operator, I want fast profile revocation for compromised credentials.",
+      "acceptanceCriteria": [
+        "Transition profile status to revoked and emit an audit event on auth revoke \u003cprofile\u003e.",
+        "Reject revoked profiles in submit validation.",
+        "Block lock lease renewals tied to revoked profiles.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

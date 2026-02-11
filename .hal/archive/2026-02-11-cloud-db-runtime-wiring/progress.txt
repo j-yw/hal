@@ -1,0 +1,213 @@
+## Codebase Patterns
+- Blank imports for database drivers go in `internal/cloud/deploy/drivers.go` — centralized driver registration
+- `store_factory.go` uses `sql.Open("libsql", ...)` and `sql.Open("pgx", ...)` which depend on driver init() registration
+- The deploy package uses `LoadConfig(getenv)` pattern for testability — pass `os.Getenv` in production, custom func in tests
+- Use `git -c commit.gpgsign=false commit` when GPG signing may not be available
+- `DefaultStoreFactory` in `runtime.go` is the composition root — matches `func() (cloud.Store, error)` signature used by all cloud command factory vars
+- Cloud command store factory vars (e.g., `cloudSubmitStoreFactory`) use if-nil guard in `init()` to allow test overrides
+- `godotenv.Load()` in `runCloudEnv` loads `.env` before config validation — ignore `os.ErrNotExist`, warn on other errors
+- Use `newStoreFactory(func() Config { return LoadConfig(customGetenv) })` to create testable factory instances with isolated `sync.Once` — avoids package-level state in tests
+
+---
+
+## 2026-02-11 - US-001
+- Implemented: Created `internal/cloud/deploy/drivers.go` with blank imports for `github.com/tursodatabase/libsql-client-go/libsql` and `github.com/jackc/pgx/v5/stdlib`
+- Files changed: `internal/cloud/deploy/drivers.go` (new), `go.mod`, `go.sum`
+- **Learnings for future iterations:**
+  - `pgx/v5` was already in go.mod but `pgx/v5/stdlib` (the database/sql driver adapter) was not blank-imported anywhere
+  - `libsql-client-go` was not in go.mod at all — `go mod tidy` pulled it in along with transitive deps (antlr4, websocket)
+  - The existing `store_factory_test.go` tests already exercise both drivers via `OpenStore` calls that fail at ping (not driver registration), confirming drivers register correctly
+---
+
+## 2026-02-11 - US-002
+- Implemented: Added `ValidateStore()` method to `Config` in `internal/cloud/deploy/config.go`
+- `ValidateStore` checks only database-related fields (adapter, TursoURL/TursoAuthToken for turso, PostgresDSN for postgres) — does NOT check RunnerURL or RunnerServiceToken
+- Files changed: `internal/cloud/deploy/config.go`, `internal/cloud/deploy/config_test.go`
+- **Learnings for future iterations:**
+  - `ValidateStore()` replicates the adapter-specific switch from `Validate()` but omits the runner checks — keep both in sync if new adapters are added
+  - Table-driven tests with explicit "does not check runner" cases serve as regression guards for the method's scope boundary
+  - The existing `Validate()` tests were not modified — they continue to verify the full validation including runner fields
+---
+
+## 2026-02-11 - US-003
+- Implemented: Extracted `buildTursoDSN` function in `internal/cloud/deploy/store_factory.go` that uses `net/url.Parse` and `url.Values` to construct the Turso DSN
+- Auth token is set via `q.Set("authToken", authToken)` instead of string concatenation, properly escaping special characters
+- Existing query parameters in the URL are preserved via `u.Query()` which reads them first
+- Files changed: `internal/cloud/deploy/store_factory.go`, `internal/cloud/deploy/store_factory_test.go`
+- **Learnings for future iterations:**
+  - `buildTursoDSN` is an exported-from-package-scope helper (lowercase) — testable within the package but not part of the public API
+  - `url.Values.Encode()` handles percent-encoding of special characters (`+`, `/`, `=`, `&`) automatically
+  - Parse-then-reconstruct pattern (`url.Parse` → modify `Query()` → `u.String()`) is the idiomatic Go way to safely build URLs with query params
+  - Tests parse the DSN back with `url.Parse` and use `Query().Get()` to verify the decoded value, rather than matching raw strings
+---
+
+## 2026-02-11 - US-004
+- Implemented: Created `internal/cloud/deploy/runtime.go` with `DefaultStoreFactory() (cloud.Store, error)`
+- Uses `sync.Once` to ensure `LoadConfigFromEnv`, `ValidateStore`, and `OpenStore` run exactly once
+- Returns cached store on subsequent calls; wraps underlying errors from `ValidateStore` or `OpenStore`
+- Stores `*sql.DB` internally in package-level var for connection lifecycle management
+- Files changed: `internal/cloud/deploy/runtime.go` (new)
+- **Learnings for future iterations:**
+  - The cloud command factory signature is `func() (cloud.Store, error)` — `DefaultStoreFactory` matches this directly
+  - `OpenStore` returns `(cloud.Store, *sql.DB, error)` — the runtime keeps `*sql.DB` in a package-level var; callers only see `cloud.Store`
+  - `sync.Once` captures the first error permanently — if init fails, all subsequent calls get the same error (this is intentional for fail-fast behavior)
+  - The `defaultDB` var is retained for future close/cleanup needs but not currently exposed
+---
+
+## 2026-02-11 - US-006
+- Implemented: Added `init()` block in `cmd/cloud.go` that wires `deploy.DefaultStoreFactory` for all 6 cloud command store factory vars when nil
+- The if-nil guard pattern preserves test override capability — tests that set factory vars before init() runs will keep their mocks
+- `cloudSubmitConfigFactory` and `cloudRunConfigFactory` intentionally left nil (no default config factory needed)
+- Files changed: `cmd/cloud.go`
+- **Learnings for future iterations:**
+  - Go allows multiple `init()` functions in the same file — the flag-registration init() and the factory-wiring init() coexist
+  - The if-nil guard works because Go init order within a package is deterministic: test files can set vars in `init()` before the production `init()` runs (test file init runs first if it appears first alphabetically), but more reliably tests set vars in `TestMain` or individual test setup
+  - Existing tests pass nil factory explicitly in their calls to `runCloudSubmit(...)` etc., so they bypass the package-level vars entirely — the init() wiring doesn't affect tests
+---
+
+## 2026-02-11 - US-007
+- Implemented: Added `init()` block in `cmd/cloud_auth.go` that wires `deploy.DefaultStoreFactory` for all 5 auth command store factory vars when nil
+- The if-nil guard pattern preserves test override capability — identical to the pattern in `cmd/cloud.go`
+- Added `deploy` import to `cmd/cloud_auth.go`
+- Files changed: `cmd/cloud_auth.go`
+- **Learnings for future iterations:**
+  - The auth command file (`cloud_auth.go`) follows the exact same factory wiring pattern as `cloud.go` — when adding new command files with store factories, replicate this `init()` block pattern
+  - Auth command tests pass nil factory explicitly in `runCloudAuth*()` calls, so the init() wiring doesn't interfere with test isolation
+  - The 5 auth factory vars are: `cloudAuthLinkStoreFactory`, `cloudAuthImportStoreFactory`, `cloudAuthStatusStoreFactory`, `cloudAuthValidateStoreFactory`, `cloudAuthRevokeStoreFactory`
+---
+
+## 2026-02-11 - US-008
+- Implemented: Added `godotenv.Load()` call in `runCloudEnv` in `cmd/cloud_deploy.go` before `LoadConfig`
+- Uses `errors.Is(err, os.ErrNotExist)` to silently ignore missing `.env` file — other errors produce a warning but don't fail
+- Added `github.com/joho/godotenv v1.5.1` dependency to `go.mod`
+- Files changed: `cmd/cloud_deploy.go`, `go.mod`, `go.sum`
+- **Learnings for future iterations:**
+  - `godotenv.Load()` reads `.env` from the current working directory and sets vars in the process environment — `os.Getenv` picks them up automatically
+  - `godotenv.Load()` wraps `os.Open` errors, so `errors.Is(err, os.ErrNotExist)` works for detecting missing files
+  - The `getenv` parameter in `runCloudEnv` remains for testability — tests pass a custom func that doesn't depend on the real env, and the `godotenv.Load()` call is a no-op in test temp dirs with no `.env` file
+  - Non-fatal warning for other `.env` errors (e.g., parse errors) avoids breaking the command when the file has issues
+---
+
+## 2026-02-11 - US-009
+- Implemented: Added `HAL_CLOUD_RUNNER_URL=https://your-runner-service.example.com` to `deploy/.env.example`
+- All 6 env var keys from `internal/cloud/deploy/config.go` constants are now present in the file
+- `DAYTONA_API_KEY` and `DAYTONA_SERVER_URL` remain in the file
+- Each variable has a descriptive comment
+- Files changed: `deploy/.env.example`
+- **Learnings for future iterations:**
+  - The `.env.example` file should mirror the `Env*` constants in `config.go` — when adding new config fields, update both
+  - Postgres DSN is commented out by default since turso is the default adapter — this is intentional
+  - Runner URL was the only missing key; the runner service token was already present
+---
+
+## 2026-02-11 - US-005
+- Implemented: Created `internal/cloud/deploy/runtime_test.go` with unit tests for the runtime composition root
+- Added `newStoreFactory` helper to `runtime.go` that creates isolated factory closures with their own `sync.Once`, accepting a custom config loader for testability
+- Tests verify: sync.Once caching (same result on multiple calls, config loader called once), validation error paths (turso missing url/token, postgres missing DSN), error wrapping for both `ValidateStore` and `OpenStore` failures
+- Files changed: `internal/cloud/deploy/runtime.go`, `internal/cloud/deploy/runtime_test.go` (new)
+- **Learnings for future iterations:**
+  - Package-level `sync.Once` in `DefaultStoreFactory` can't be reset between tests — use `newStoreFactory` to create isolated factory instances with their own `sync.Once`
+  - `newStoreFactory` accepts `func() Config` (not `func(string) string`) so tests compose it with `LoadConfig(customGetenv)` for full control
+  - The `OpenStore` path exercises the database driver (libsql/pgx) even in unit tests since it tries to connect — tests use nonexistent hosts that fail at ping, not at driver registration
+  - Error wrapping prefix distinguishes which step failed: `"validate store config:"` vs `"open store:"` — tests assert on these prefixes
+---
+
+## 2026-02-11 - US-010
+- Verified: All targeted verification checks pass with exit code 0
+- `go test ./internal/cloud/deploy/...` — all 22 tests pass (config, runtime, smoke, store_factory, health)
+- `go test ./cmd -run 'TestRunCloud|TestRunCloudAuth|TestRunCloudEnv'` — all cloud/auth/env tests pass (submit, status, logs, cancel, run, pull, auth link/import/status/validate/revoke, env, smoke)
+- `go build ./...` — clean build, no errors
+- `go vet ./...` — clean vet, no warnings
+- No code changes required — this was a verification-only story
+- **Learnings for future iterations:**
+  - Verification stories are useful as a final gate to confirm all prior stories integrate correctly
+  - The deploy package tests exercise both driver registration (via OpenStore) and config validation independently
+  - The cmd tests use mock store factories (nil or custom), so they verify command wiring without needing real databases
+---
+
+## 2026-02-11 - T-002, T-003, T-004
+- Implemented: Extracted `validateAdapter()` unexported method on `Config` in `internal/cloud/deploy/config.go`
+- `validateAdapter` contains the adapter switch block (turso: TursoURL+TursoAuthToken, postgres: PostgresDSN, default: error)
+- `ValidateStore()` now delegates to `validateAdapter()` and returns its result directly (no inline switch)
+- `Validate()` now calls `validateAdapter()` first, returns early on error, then checks runner fields (no inline switch)
+- Error messages are identical to the original — all 22 existing tests pass unchanged
+- Files changed: `internal/cloud/deploy/config.go`
+- **Learnings for future iterations:**
+  - T-002, T-003, T-004 are effectively one atomic refactoring — extracting a method from callers naturally includes making them delegate to it
+  - The `validateAdapter` method is unexported (lowercase) so it's internal to the package — parity tests (T-005) will need to test it indirectly through the exported methods or be in the same package
+  - When refactoring duplicated switch blocks, verify the error format strings are byte-identical between the original and the extracted method
+---
+
+## 2026-02-11 - T-001
+- Implemented: Added `KnownAdapters` exported variable (`[]string`) to `internal/cloud/deploy/config.go`
+- Contains `AdapterTurso` and `AdapterPostgres` in that order
+- No existing functions or constants modified
+- Files changed: `internal/cloud/deploy/config.go`
+- **Learnings for future iterations:**
+  - `KnownAdapters` is a `var` (not `const`) because Go doesn't support const slices — future stories (T-005) will use it as the single source of truth for parity tests
+  - Placing it immediately after the adapter constants keeps the relationship obvious
+---
+
+## 2026-02-11 - T-005
+- Implemented: Created `internal/cloud/deploy/parity_test.go` with `TestAdapterValidationParity`
+- Test has 4 subtests: known adapters accepted by validateAdapter, unknown adapter rejected by validateAdapter, known adapters don't produce "unsupported adapter" from OpenStore, unknown adapter produces "unsupported adapter" from OpenStore
+- Uses `KnownAdapters` as the single source of truth — if a new adapter is added to the slice but not handled in OpenStore or validateAdapter, the test fails automatically
+- Files changed: `internal/cloud/deploy/parity_test.go` (new)
+- **Learnings for future iterations:**
+  - Parity tests for KnownAdapters vs OpenStore work by checking error messages: known adapters may fail for connection reasons but must NOT return "unsupported adapter"
+  - `validateAdapter` is unexported but accessible from `parity_test.go` since it's in the same package (`deploy`)
+  - Providing all adapter-specific fields (TursoURL, TursoAuthToken, PostgresDSN) in every test Config avoids false negatives from missing-field validation errors
+---
+
+## 2026-02-11 - T-006
+- Implemented: Added `CloseDefaultStore() error` function to `internal/cloud/deploy/runtime.go`
+- Returns `defaultDB.Close()` error if `defaultDB` is non-nil, otherwise returns nil (safe no-op)
+- Placed between `DefaultStoreFactory` and `newStoreFactory` for logical grouping
+- Files changed: `internal/cloud/deploy/runtime.go`
+- **Learnings for future iterations:**
+  - `CloseDefaultStore` is intentionally simple — it doesn't reset the `sync.Once` or cached vars, so calling `DefaultStoreFactory` after close returns the stale cached store (this is by design; `ResetDefaultStoreForTest` in T-007 handles the reset case)
+  - The function checks `defaultDB != nil` rather than `defaultStore != nil` because `defaultDB` is the resource that needs cleanup — `defaultStore` is just an interface wrapper
+---
+
+## 2026-02-11 - T-007
+- Implemented: Added `ResetDefaultStoreForTest(t *testing.T)` function to `internal/cloud/deploy/runtime.go`
+- Calls `t.Helper()`, resets `defaultOnce` to zero `sync.Once{}`, and sets `defaultStore`, `defaultDB`, `defaultErr` to nil
+- Placed between `CloseDefaultStore` and `newStoreFactory` for logical grouping
+- Files changed: `internal/cloud/deploy/runtime.go`
+- **Learnings for future iterations:**
+  - Importing `testing` in non-test Go files is acceptable when the function is explicitly a test helper — precedent exists in `internal/cloud/storetest/contract.go`
+  - `sync.Once{}` (zero value) effectively resets the once gate — the next `Do` call will execute its function
+  - `ResetDefaultStoreForTest` complements `CloseDefaultStore`: close handles resource cleanup, reset handles state isolation for tests
+---
+
+## 2026-02-11 - T-008
+- Implemented: Created `internal/cloud/deploy/drivers_test.go` with `TestDriversRegistered`
+- Test calls `sql.Drivers()` and asserts both `libsql` and `pgx` are present in the returned slice
+- Uses `slices.Contains` for clean assertion — iterates over expected driver names
+- Files changed: `internal/cloud/deploy/drivers_test.go` (new)
+- **Learnings for future iterations:**
+  - `sql.Drivers()` returns all registered driver names from `database/sql` — blank imports in `drivers.go` trigger `init()` which calls `sql.Register`
+  - The `slices` package (Go 1.21+) provides `Contains` for clean slice membership checks
+  - This test is a safety net: if someone removes a blank import from `drivers.go`, the test immediately fails with a clear message
+---
+
+## 2026-02-11 - T-009
+- Implemented: Added `TestDefaultStoreFactory_ResetIsolation` test in `internal/cloud/deploy/runtime_test.go`
+- Test has 2 phases: phase 1 sets env with missing TursoURL (validation error), phase 2 resets and provides all fields (OpenStore error)
+- Different error prefixes ("validate store config:" vs "open store:") prove DefaultStoreFactory re-triggered initialization after ResetDefaultStoreForTest
+- Uses `t.Setenv` to control environment variables (auto-restored after test)
+- Existing `TestNewStoreFactory_*` tests remain unchanged — all 23 tests pass
+- Files changed: `internal/cloud/deploy/runtime_test.go`
+- **Learnings for future iterations:**
+  - `t.Setenv` is the idiomatic way to test code that reads `os.Getenv` — it sets the env var and automatically restores the original value on test cleanup
+  - Testing `DefaultStoreFactory` (package-level sync.Once) requires `ResetDefaultStoreForTest` bookends: reset before the test starts and after it ends to avoid polluting other tests
+  - Proving re-initialization works by changing from a validation-failing config to a validation-passing (but connection-failing) config gives two distinct error prefixes as evidence
+---
+
+## 2026-02-11 - T-010
+- Verified: All integration checks pass
+- `make test` — all tests pass (exit code 0), including 23 deploy tests
+- `make vet` — clean, no warnings
+- `config.go` has exactly one `switch c.DBAdapter` block (in `validateAdapter`), no duplicates
+- No code changes required — verification-only story
+---

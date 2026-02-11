@@ -1,0 +1,111 @@
+{
+  "project": "Hal Refresh Templates",
+  "branchName": "hal/refresh-templates",
+  "description": "Add --refresh-templates and --dry-run flags to hal init that backup and overwrite the 3 core templates (prompt.md, progress.txt, config.yaml) with the latest embedded versions, with detailed per-file status output.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Register --refresh-templates flag on init command",
+      "description": "As a developer, I want a --refresh-templates flag on hal init so that I can explicitly opt in to overwriting my existing templates with the latest embedded versions.",
+      "acceptanceCriteria": [
+        "initCmd registers a --refresh-templates bool flag defaulting to false",
+        "Running hal init without --refresh-templates preserves existing behavior (no template overwrite)",
+        "Running hal init --refresh-templates triggers template refresh logic",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Register --dry-run flag on init command",
+      "description": "As a developer, I want a --dry-run flag on hal init so that I can preview what --refresh-templates would do without modifying any files.",
+      "acceptanceCriteria": [
+        "initCmd registers a --dry-run bool flag defaulting to false",
+        "The --dry-run flag is accessible from the runInit handler",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Implement core refresh logic with timestamped backup",
+      "description": "As a developer, I want hal init --refresh-templates to create a timestamped .bak of each existing template before overwriting it so that I can recover my customizations if needed.",
+      "acceptanceCriteria": [
+        "For each of the 3 templates (prompt.md, progress.txt, config.yaml): if the file exists and differs from the embedded version, a backup is created as \u003cfilename\u003e.YYYYMMDD-HHMMSS.bak in the same directory",
+        "After backup, the file is overwritten with the latest embedded content from internal/template",
+        "If a template file does not exist, it is created without a backup",
+        "If a template file already matches the embedded version, no backup is created and no write occurs",
+        "migrateTemplates() still runs after refresh for compatibility",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Implement dry-run mode for refresh",
+      "description": "As a developer, I want --dry-run to preview refresh actions without writing any files so that I can see what would change before committing to it.",
+      "acceptanceCriteria": [
+        "When --refresh-templates --dry-run is passed, no files are written or backed up",
+        "Output lines are prefixed with [dry-run] to indicate preview mode",
+        "Dry-run output shows the same per-file status as a real run (created/refreshed/unchanged)",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Add detailed per-file status output",
+      "description": "As a developer, I want to see per-file status lines when refreshing templates so that I know exactly which files were created, refreshed (with backup path), or left unchanged.",
+      "acceptanceCriteria": [
+        "Each template file produces one status line: 'created .hal/\u003cfile\u003e', 'refreshed .hal/\u003cfile\u003e (backup: \u003cfile\u003e.YYYYMMDD-HHMMSS.bak)', or 'unchanged .hal/\u003cfile\u003e'",
+        "In dry-run mode, each line is prefixed with [dry-run]",
+        "Output is written to io.Writer (not hardcoded to os.Stdout) for testability",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Extract refreshTemplates into testable function",
+      "description": "As a developer, I want the refresh logic extracted into a standalone function that accepts io.Writer, halDir, and dryRun parameters so that it can be unit tested without Cobra dependencies.",
+      "acceptanceCriteria": [
+        "A function refreshTemplates(halDir string, dryRun bool, w io.Writer) error exists in cmd/init.go",
+        "The function handles all 3 templates using template.DefaultFiles() and the backup/write/status logic",
+        "runInit delegates to this function when --refresh-templates is set",
+        "The function follows the migrateConfigDir pattern of accepting io.Writer for output capture",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Add tests for refresh templates functionality",
+      "description": "As a developer, I want tests covering refresh behavior so that regressions are caught early.",
+      "acceptanceCriteria": [
+        "Test: refreshing when no templates exist creates them without backups",
+        "Test: refreshing when templates differ creates timestamped .bak files and overwrites",
+        "Test: refreshing when templates already match embedded versions produces 'unchanged' status",
+        "Test: dry-run mode produces [dry-run] prefixed output and does not write any files",
+        "Tests use t.TempDir() and bytes.Buffer for isolation",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

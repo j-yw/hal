@@ -1,0 +1,1073 @@
+## Codebase Patterns
+- Deployment infrastructure lives in `internal/cloud/deploy/` — Config, store factory, health handler, and smoke checks
+- `deploy.LoadConfig(getenv)` accepts a `func(string) string` for testability — pass `os.Getenv` in production, inject map-based lookups in tests
+- `deploy.Config.Validate()` enforces adapter-specific required env vars — Turso needs URL+token, Postgres needs DSN, both need runner URL+service token
+- Docker Compose and Dockerfiles live in `deploy/` — control-plane, worker, and daytona-runner as separate services
+- Smoke check uses `deploy.RunSmoke()` returning `SmokeReport` with per-service results — CLI exits non-zero on any unhealthy service
+- New cloud domain types live in `internal/cloud/` — each table gets its own file (e.g., `run.go`, `attempt.go`)
+- SQL schema DDL is exported as package-level `const` strings (e.g., `RunsSchema`, `RunsQueueIndex`)
+- Domain structs use `*time.Time` and `*string` for nullable DB columns
+- Status enums are `type XStatus string` with `IsValid()` and `IsTerminal()` methods
+- Validation follows `func (x *X) Validate() error` pattern checking required fields and enum validity
+- Tests use table-driven `modify func(r *Run)` pattern for validation edge cases
+- Partial unique indexes (WHERE clause) enforce at-most-one-active invariants
+- Foreign key references use `REFERENCES <table>(id)` inline in column definition
+- Immutability enforced via BEFORE UPDATE/DELETE triggers with `RAISE(ABORT, ...)`
+- Events table has no status enum — event_type is a free-form TEXT column (not an enum)
+- Idempotency keys use `TEXT PRIMARY KEY` on `key` column for unique constraint (no separate UNIQUE index needed)
+- Domain errors are package-level `var Err*` sentinels with companion `Is*()` helper functions
+- Use inline `CHECK (col >= 1)` in DDL for numeric lower-bound constraints (e.g., max_concurrent_runs)
+- Lock tables use `released_at IS NULL` partial unique index for active-lock uniqueness (no status enum needed)
+- FailureCode is a pure domain enum (no DB schema) — ClassifyFailure() maps codes to retryable/terminal; unknown codes fail safe to non-retryable
+- Snapshot-style tables use SnapshotKind enum with IsValid() only (no IsTerminal()) — immutable records don't have lifecycle transitions
+- BLOB columns for binary data; UNIQUE INDEX on composite keys as separate DDL constants (not inline table constraints)
+- HTTP auth middleware lives in `internal/cloud/authmw/` — Config struct holds JWTSecret/Issuer/Audience and PATAllowlist; Middleware() returns `func(http.Handler) http.Handler`
+- Auth middleware uses standard library only (crypto/hmac, encoding/base64) — no external JWT dependencies
+- Context keys use unexported `type contextKey int` to prevent collisions; ClaimsFromContext() and IdentityFromContext() for access
+- Store interface in `internal/cloud/store.go` is the single persistence contract — service layer must not import adapter packages
+- Service-layer components (e.g., SubmitService, ClaimService) accept Store interface + Config struct in constructor; use IDFunc for testable ID generation
+- ClaimService uses compensating rollback (TransitionRun claimed→queued, TransitionAttempt→failed) instead of DB transactions for all-or-nothing semantics
+- Both adapters' validRunTransitions include `claimed→queued` for rollback support
+- Domain errors are sentinel `var Err*` in `errors.go` with `Is*()` helpers; ErrDuplicateKey lives in `idempotency_key.go` (pre-existing)
+- Store methods accept `context.Context` first, domain structs by pointer for writes, return by pointer for reads
+- Contract tests live in `internal/cloud/storetest/` — adapters call `storetest.Suite(t, factory)` to validate correctness
+- Contract test `NewStoreFunc` factory takes `*testing.T` for test-scoped resource management (cleanup, temp dirs)
+- Postgres adapter lives in `internal/cloud/postgres/` — one `store.go` (full Store impl), one `schema.go` (Postgres-specific DDL)
+- Postgres DDL uses TIMESTAMPTZ (not TIMESTAMP), BOOLEAN (not INTEGER), BYTEA (not BLOB), and NOW() (not CURRENT_TIMESTAMP)
+- Postgres immutability uses `CREATE OR REPLACE RULE ... DO INSTEAD NOTHING` instead of SQLite's BEFORE triggers with RAISE
+- ClaimRun uses `FOR UPDATE SKIP LOCKED` in a subquery inside UPDATE ... RETURNING for atomic one-winner semantics
+- Postgres adapter `isUniqueViolation` matches error code "23505" or "duplicate key" via strings.Contains (no driver import)
+- Integration tests use per-test Postgres schemas (`CREATE SCHEMA test_<nanos>_<pid>`) for isolation, with CASCADE drop on cleanup
+- Adapter tests are tagged `//go:build integration` and require `HAL_TEST_POSTGRES_DSN` env var
+- Turso adapter lives in `internal/cloud/turso/` — reuses domain DDL from `internal/cloud/` (no adapter-specific DDL)
+- Turso `ClaimRun` uses `UPDATE...WHERE id=(SELECT...LIMIT 1) RETURNING` — WAL single-writer lock ensures atomicity
+- Turso tests use `modernc.org/sqlite` (pure Go, no CGO) with file-based databases and DSN-level PRAGMAs
+- Turso `isUniqueViolation` matches `UNIQUE constraint failed` (vs Postgres `23505`)
+- Turso `TransitionRun` checks DB status before state machine to give ErrConflict priority over ErrInvalidTransition
+- Service-layer lease-loss handling: on ErrLeaseExpired, emit event + mark attempt terminal, then return ErrLeaseExpired (ignore side-effect errors)
+- Reconciler/batch-processing services return result structs with counts + per-item error slices for partial-failure reporting
+- Attempt struct doesn't carry auth_profile_id — reconciler must GetRun to resolve it for lock release
+- RetryService.EvaluateRetry accepts FailureCode as explicit param from caller — avoids needing ListAttemptsByRun store method
+- Shared test types (transitionRunCall, transitionAttemptCall) are defined once in claim_test.go — other test files in the same package reuse them
+- TimeoutService follows ReconcilerService pattern: ListOverdueRuns → per-run transition + event emission with partial-failure reporting
+- validRunTransitions now include `queued→failed` and `retrying→failed` for timeout enforcement — any future status-affecting reconciler should check/update the transition map
+- ListOverdueRuns filters by `deadline_at IS NOT NULL AND deadline_at < ? AND status NOT IN (terminal statuses)` — mirrors ListStaleAttempts filtering pattern
+- Adding a column to Run requires updating 7 places: run.go (struct+DDL), postgres/schema.go, both adapter scanRun, all SELECT/INSERT/RETURNING queries, and Store method count
+- CancellationService: RequestCancel sets flag, CheckAndCancel reads flag + terminates attempt/run + releases lock — worker calls CheckAndCancel every heartbeat
+- HeartbeatService checks auth profile revocation status between attempt heartbeat and lock renew — revoked profile emits profile_revoked event, marks attempt failed, releases lock, returns ErrProfileRevoked
+- Claim exclusion enforced at SQL level (`WHERE cancel_requested = FALSE/0`) — no service-layer filtering needed
+- Shared test types (releaseAuthLockCall) defined once in reconciler_test.go — other test files in same package reuse them
+- Runner interface lives in `internal/cloud/runner/` — worker code depends only on the interface, never imports Daytona SDK
+- Runner HTTP client uses httptest.NewServer for tests — no external test dependencies needed
+- Daytona runner service (TypeScript) lives in `daytona-runner/` — uses Hono framework, @daytonaio/sdk, vitest for tests
+- Runner service API must match Go client contract: POST /sandboxes (201), DELETE /sandboxes/{id} (204), GET /health (200), error responses use `{error, error_code}` JSON format
+- Service token auth middleware validates X-Service-Token header — returns 401 with error_code "unauthorized" on failure
+- Daytona SDK: `daytona.create({image, envVars})` → Sandbox, `sandbox.delete()` for destroy, `sandbox.info()` for status
+- Daytona SDK exec: `sandbox.process.executeCommand(cmd, cwd?, timeout?)` → `{exitCode, result}` — no separate stderr in SDK
+- Daytona SDK logs: `sandbox.process.getSessionCommandLogs(sessionId, cmdId, onLogs?)` — callback overload for streaming, string overload for batch
+- ProvisionService and TeardownService depend on both Store (persistence) and Runner (sandbox API) interfaces — follows same constructor pattern as other services but with dual dependencies
+- TeardownService.Teardown takes sandboxID as explicit param (not looked up) — caller has it from provision result or attempt record
+- Adding a Store method requires updating 5 places: store.go (interface), store_test.go (mockStore + method count), postgres/store.go, turso/store.go, storetest/contract.go
+- Event payloads use `sandboxEventPayload` struct with json.Marshal — emitEvent is best-effort (errors ignored) consistent with other services
+- ExecutionService: non-zero exit codes are data (not errors) — ExitCode is captured in ExecutionResult for downstream failure classification via ClassifyFailure()
+- ExecutionMode enum (until_complete, bounded_batch) uses underscores internally but buildHalCommand maps to CLI hyphen args (until-complete, bounded-batch)
+- AuthMaterializationService: Materialize is no-op when secret_ref is nil/empty; Cleanup follows TeardownService always-emit-done pattern
+- Shell single-quote escaping: use `'\''` pattern (end quote, literal escaped quote, start quote) for safe secret injection
+- PreflightService validates runtime_metadata_json compatibility (OS, arch, CLI version) before provider-specific preflight command — compatibility check runs before exec
+- New FailureCode values must be added in 3 places: validFailureCodes map, retryableCodes map, and the const block (meta-tests catch map drift)
+- WritebackService detects changed auth artifacts by reading from sandbox and comparing with original secret_ref — uses UpdateAuthProfile optimistic version check
+- Writeback follows dual Store+Runner dependency pattern; reads credentials via Runner.Exec (cat), updates via Store.UpdateAuthProfile with version check
+- Redaction rules use capture groups for prefix preservation and non-capturing groups `(?:...)` for in-pattern alternation — mixing these up breaks the applyRule prefix logic
+- Event redaction uses `redactPayload()` from `redact_pipeline.go` — call after JSON marshal, before InsertEvent; sets `event.Redacted = true` only when secrets are detected
+- `RedactingLogReader` wraps `io.ReadCloser` for streaming log redaction — drop-in replacement for `runner.StreamLogs()` consumers
+- Idempotent side effects use `<side_effect_type>:<run_id>` key format with GetIdempotencyKey/PutIdempotencyKey — check-before-do-then-store pattern; PRCreator/PRUpdater/PRCommenter function types decouple from external API
+- All three PR side effect services (create, update, comment) live in separate files but share the prSideEffectEventPayload struct; void side effects (update) still store result_ref for auditability
+- BundleAllowlist and BundleDenylist are package-level `var` slices (not const) — patterns ending with `/**` match recursively via `matchBundlePattern`
+- ComputeBundleHash sorts records by normalized path before hashing — each record contributes `path\x00sha256\n` to the SHA-256 digest
+- NormalizeBundlePath converts backslashes to forward slashes and applies path.Clean for cross-platform determinism
+- IsBundlePathAllowed checks denylist first (deny takes priority), then allowlist — paths matching neither are denied
+- SubmitWithBundle validates bundle first, then delegates to Submit, then stores input snapshot and updates run refs — bundle validation errors happen before run creation
+- UpdateRunSnapshotRefs is the Store method for updating input_snapshot_id, latest_snapshot_id, and latest_snapshot_version on a run — adding a Store method requires updating 5 places: store.go, store_test.go, postgres/store.go, turso/store.go, storetest/contract.go
+- ErrBundleHashMismatch is a domain error sentinel for hash verification failures — follows the same pattern as other domain errors
+- Cloud CLI commands live in `cmd/cloud.go` — `cloudCmd` parent with subcommands (submit, status, logs, etc.) registered via init()
+- CLI commands use factory injection (`storeFactory`, `configFactory`) for testable dependency injection — tests override factories to inject mock stores
+- `classifySubmitError` maps SubmitService error messages to machine-readable error codes via string matching on known patterns
+- JSON output uses `cloudSubmitResponse` / `cloudSubmitErrorResponse` structs — `writeJSON` shared helper for indented JSON output
+- CLI mock stores in `cmd/cloud_test.go` implement the full `cloud.Store` interface with no-op stubs (unlike `internal/cloud` which uses `mockStore` embedding)
+- Adding a Store method requires updating 6 places: store.go, store_test.go (mock+count), postgres/store.go, turso/store.go, storetest/contract.go, cmd/cloud_test.go (cloudMockStore)
+- Cloud CLI error commands use `writeCloudError` for consistent error output formatting (JSON or human); `cloudErrorResponse` is the reusable error struct
+- Cloud CLI `--follow` commands use `cloudLogsFollowPollInterval` (package-level var) for testable poll intervals — tests override it to 10ms for fast feedback
+- `formatEvent` is the shared event line formatter: `<timestamp>  <event_type>  [payload]` — reuse for future event-display commands
+- Cancel command uses `CancellationService.RequestCancel` (sets flag) then `store.GetRun` (reads state) — two-step pattern for commands that mutate then report
+- Cloud CLI mock `SetCancelIntent` should update `runsByID[runID].CancelRequested = true` for realistic cancel tests (not a no-op stub)
+- `runCloudRun` follows the testable extraction pattern: accepts `baseDir`, `storeFactory`, `configFactory`, and `io.Writer` — `baseDir` enables temp-dir testing without chdir
+- `collectBundleFiles` walks `.hal/` directory, applies `cloud.IsBundlePathAllowed` for allowlist/denylist filtering, returns records + contents map
+- `compressBundleFiles` uses gzip with simple framing (path\x00length\x00content) — the format matches what `SubmitWithBundle` expects via `BundlePayload.Content`
+- Dry-run mode (`--dry-run`) returns early before store/network calls — tests verify nil storeFactory succeeds in dry-run
+- `cloudRunResponse` struct contains `run_id`, `status`, `bundle_hash` — distinct from `cloudSubmitResponse` which includes `engine` and `auth_profile` instead of `bundle_hash`
+- `decompressBundleFiles` is the inverse of `compressBundleFiles` — reads gzip, parses path\x00size\x00content framing, returns `[]bundleFileRecord`
+- Pull command local-change detection compares file bytes (not hash) for simplicity — checks all allowlisted files before writing any, refuses as a batch with `local_changes` error code
+- Domain error sentinels use underscore format (e.g., `ErrNotFound` prints `"not_found"`) — error classifiers should match both `not_found` and `not found` patterns
+- Auth validate follows service-layer mutation pattern: get profile → check conditions → update fields → emit audit event, with failure setting `last_error_code` before returning error
+- Mock store `snapshots` map is keyed by runID (not snapshotID) to match `GetLatestSnapshot` access pattern
+- Adding a Store method requires updating 7 places: store.go (interface), store_test.go (mock+count), postgres/store.go, turso/store.go, storetest/contract.go, cmd/cloud_test.go (cloudMockStore), and any service test mocks
+- Cloud auth CLI commands live in `cmd/cloud_auth.go` — `cloudAuthCmd` parent with subcommands registered via init(); follows same factory injection pattern as other cloud commands
+- AuthLinkService follows dual-purpose pattern: creates profile (store write) + emits audit event (best-effort side effect) — audit event failure does not fail the link operation
+- Auth import and auth link share the same service pattern: validate → encrypt secret → create profile → emit audit event — `classifyAuth*Error` functions are identical and could be consolidated
+- Adding a Store method requires updating 7 places: store.go (interface), store_test.go (mock+count), postgres/store.go, turso/store.go, storetest/contract.go, cmd/cloud_test.go (cloudMockStore), and any service test mocks
+- `cloudMockStore` in `cmd/cloud_test.go` has a `locks` map (`authProfileID → *AuthProfileLock`) for auth lock tests — mirrors the `profiles`, `runsByID`, etc. pattern
+- Benchmark harness lives in `internal/cloud/storetest/benchmark.go` — uses `func() cloud.Store` factory and `setupAuthProfile func(id string)` callback for adapter-specific setup
+- BenchmarkResult JSON contract: exactly 8 keys (scenario, adapter, runs, errors, claim_p95_ms, heartbeat_p95_ms, duplicate_claims, lock_overcommit_violations)
+---
+
+## 2026-02-10 - US-001
+- Implemented Run domain model with RunStatus enum (queued, claimed, running, retrying, succeeded, failed, canceled)
+- Added Run.Validate() for required field and status checks
+- Added RunsSchema DDL with CHECK constraint on status and RunsQueueIndex on (status, created_at)
+- Files changed: internal/cloud/run.go, internal/cloud/run_test.go
+- **Learnings for future iterations:**
+  - The project uses Go 1.25+ with no database driver dependencies yet — schema is pure DDL strings for now
+  - Follow the `validRun()` helper pattern for test fixtures — create a valid instance then modify one field per test case
+  - Status enums need both IsValid() (for validation) and IsTerminal() (for lifecycle logic)
+  - Use `*string` / `*time.Time` for nullable columns to distinguish zero-value from NULL
+---
+
+## 2026-02-10 - US-002
+- Implemented Attempt domain model with AttemptStatus enum (active, succeeded, failed, canceled)
+- Added Attempt.Validate() for required field and status checks
+- Added AttemptsSchema DDL with FK to runs, CHECK constraint on status
+- Added indexes on run_id, status, lease_expires_at
+- Added partial unique index (AttemptsOneActiveIndex) enforcing at most one active attempt per run_id
+- Files changed: internal/cloud/attempt.go, internal/cloud/attempt_test.go
+- **Learnings for future iterations:**
+  - Use `CREATE UNIQUE INDEX ... ON table (col) WHERE condition` for at-most-one-active invariants
+  - The `validAttempt()` test helper follows same pattern as `validRun()` — create valid instance, modify one field per test case
+  - Attempt statuses are simpler than run statuses (active vs queued/claimed/running) since attempts track execution, not scheduling
+---
+
+## 2026-02-10 - US-003
+- Implemented Event domain model for durable, append-only run timeline events
+- Added EventsSchema DDL with FKs to runs(id) and attempts(id)
+- Added EventsRunIDCreatedAtIndex on (run_id, created_at) for timeline queries
+- Added EventsPreventUpdate and EventsPreventDelete triggers enforcing immutability at DB level
+- Event.Validate() checks id, run_id, event_type — no status enum needed for events
+- Files changed: internal/cloud/event.go, internal/cloud/event_test.go
+- **Learnings for future iterations:**
+  - Use BEFORE UPDATE/DELETE triggers with RAISE(ABORT) for append-only tables — works across SQLite/Turso and Postgres
+  - Not all domain types need status enums — events use free-form event_type TEXT since event types will grow with the system
+  - The `redacted` column uses INTEGER (0/1) for SQLite compatibility rather than BOOLEAN
+  - attempt_id is nullable on events since some events (e.g., run-level transitions) happen outside an attempt context
+---
+
+## 2026-02-10 - US-004
+- Implemented IdempotencyKey domain model with Validate() for required fields (key, run_id, side_effect_type)
+- Added IdempotencyKeysSchema DDL with TEXT PRIMARY KEY on key column (enforces unique constraint)
+- Added ErrDuplicateKey sentinel error and IsDuplicateKey() helper for deterministic duplicate detection
+- FK reference to runs(id) on run_id column; result_ref is nullable (*string)
+- Files changed: internal/cloud/idempotency_key.go, internal/cloud/idempotency_key_test.go
+- **Learnings for future iterations:**
+  - Not all tables need indexes beyond the primary key — idempotency_keys lookups are by key (PK) which is already indexed
+  - Domain errors should be sentinel `var` (not const) so callers can use `==` comparison via helper functions
+  - Tables that don't have a lifecycle (no status transitions) don't need status enums or IsTerminal()
+  - The `key` column uses TEXT PRIMARY KEY which simultaneously satisfies the unique constraint requirement
+---
+
+## 2026-02-10 - US-005
+- Implemented AuthProfile domain model with AuthProfileStatus enum (pending_link, linked, invalid, revoked)
+- Added AuthProfile.Validate() for required fields (id, owner_id, provider, mode) and max_concurrent_runs >= 1 enforcement
+- Added AuthProfilesSchema DDL with CHECK constraints on status and max_concurrent_runs
+- AuthProfile has 5 nullable optional fields: secret_ref, runtime_metadata_json, last_validated_at, expires_at, last_error_code
+- Only `revoked` is terminal — `invalid` is non-terminal since profiles can be re-validated
+- Files changed: internal/cloud/auth_profile.go, internal/cloud/auth_profile_test.go
+- **Learnings for future iterations:**
+  - Auth profiles don't reference other tables (no FK) — they are top-level entities referenced by runs
+  - `version` column enables optimistic concurrency control for credential writeback (US-034)
+  - Use inline CHECK constraints in DDL for numeric bounds rather than separate constraint names
+  - `invalid` status is intentionally non-terminal to allow re-validation after credential refresh
+---
+
+## 2026-02-10 - US-006
+- Implemented AuthProfileLock domain model for lease-based auth profile concurrency control
+- Added AuthProfileLocksSchema DDL with FKs to auth_profiles(id) and runs(id)
+- Added AuthProfileLocksLeaseIndex on (auth_profile_id, lease_expires_at) for lease queries
+- Added AuthProfileLocksOneActiveIndex partial unique index on (auth_profile_id, run_id) WHERE released_at IS NULL — prevents duplicate active locks
+- AuthProfileLock.Validate() checks auth_profile_id, run_id, worker_id; released_at is nullable (*time.Time)
+- Files changed: internal/cloud/auth_profile_lock.go, internal/cloud/auth_profile_lock_test.go
+- **Learnings for future iterations:**
+  - Lock tables don't have a status enum — the released_at NULL/non-NULL distinction tracks active vs released state
+  - Partial unique indexes with WHERE released_at IS NULL enforce active-lock uniqueness while allowing historical released rows
+  - Lock tables don't need a separate id PK — they use composite key semantics via the partial unique index
+  - The auth_profile_locks table has no primary key column — it relies on composite indexes for uniqueness
+---
+
+## 2026-02-10 - US-007
+- Implemented RunStateSnapshot domain model with SnapshotKind enum (input, checkpoint, final)
+- Added RunStateSnapshot.Validate() for required fields (id, run_id, snapshot_kind, version >= 1, sha256, content_encoding) and size_bytes >= 0
+- Added RunStateSnapshotsSchema DDL with FKs to runs(id) and attempts(id), CHECK constraints on snapshot_kind and version
+- Added RunStateSnapshotsRunVersionUniqueIndex enforcing unique (run_id, version) constraint
+- Added RunStateSnapshotsRunIDCreatedAtIndex on (run_id, created_at) for timeline queries
+- content_blob uses BLOB type for binary snapshot data; attempt_id is nullable (*string)
+- Files changed: internal/cloud/run_state_snapshot.go, internal/cloud/run_state_snapshot_test.go
+- **Learnings for future iterations:**
+  - SnapshotKind uses IsValid() but not IsTerminal() — snapshots don't have lifecycle transitions, they are immutable records
+  - content_blob is BLOB NOT NULL in DDL — snapshots always carry data (empty content would have size_bytes=0 but still have a blob)
+  - version starts at 1 (not 0) matching the runs.latest_snapshot_version which defaults to 0 (meaning no snapshots yet)
+  - UNIQUE INDEX on (run_id, version) is a separate index rather than a table-level constraint for consistency with other tables' index patterns
+---
+
+## 2026-02-10 - US-008
+- Defined Store interface in `internal/cloud/store.go` with 21 methods covering all persistence operations
+- Defined shared domain errors in `internal/cloud/errors.go`: ErrNotFound, ErrConflict, ErrLeaseExpired, ErrInvalidTransition (ErrDuplicateKey already existed in idempotency_key.go)
+- Each error has a companion `Is*()` helper function for sentinel matching
+- Store interface methods grouped by domain: Runs (4), Attempts (5), Events (2), Idempotency (2), AuthProfiles (2), AuthLocks (3), Snapshots (3)
+- mockStore in store_test.go proves the interface compiles without adapter-specific imports
+- Files changed: internal/cloud/errors.go, internal/cloud/errors_test.go, internal/cloud/store.go, internal/cloud/store_test.go
+- **Learnings for future iterations:**
+  - Domain errors follow sentinel `var` pattern with `Is*()` helpers — same as the existing ErrDuplicateKey in idempotency_key.go
+  - Store interface uses `context.Context` as first param on every method — standard Go convention for cancellable operations
+  - Interface methods accept domain structs by pointer for writes (*Run, *Attempt, etc.) and return by pointer for reads
+  - ClaimRun takes only workerID (not runID) — the store picks the oldest eligible queued run atomically
+  - ListStaleAttempts takes a time.Time cutoff rather than reading clock internally, making it testable with deterministic time
+  - UpdateAuthProfile uses optimistic concurrency via version field on AuthProfile struct
+---
+
+## 2026-02-10 - US-009
+- Implemented adapter contract test suite in `internal/cloud/storetest/contract.go`
+- Suite exports `Suite(t, NewStoreFunc)` for adapter factory injection
+- Contract tests cover: Enqueue, AtomicClaim, ParallelClaim (10 goroutines, 1 winner), OneActiveAttempt invariant, HeartbeatRenew, and TransitionGuards
+- TransitionGuards tests valid transitions (claimed->running, running->succeeded, running->failed), invalid transitions (queued->succeeded returns ErrInvalidTransition), status mismatch (returns ErrConflict), and non-existent run (returns ErrNotFound)
+- Files changed: internal/cloud/storetest/contract.go (new file)
+- **Learnings for future iterations:**
+  - Contract test package lives in `storetest/` subpackage so adapters (postgres, turso) can import it without circular deps
+  - `NewStoreFunc` factory receives `*testing.T` so adapters can use `t.TempDir()` or `t.Cleanup()` for test-scoped resources
+  - Parallel claim test uses `sync/atomic.Int32` counters (not mutex) — simpler for counting winners vs not-found
+  - Contract tests create domain structs directly (not via store) for setup — adapters must handle `EnqueueRun` first since attempts FK to runs
+  - Time values are truncated to seconds (`Truncate(time.Second)`) for DB round-trip fidelity across adapters
+---
+
+## 2026-02-10 - US-010
+- Implemented Postgres adapter in `internal/cloud/postgres/` with full cloud.Store interface implementation
+- `schema.go`: Postgres-specific DDL (TIMESTAMPTZ, BOOLEAN, BYTEA, NOW(), rules instead of triggers)
+- `store.go`: All 21 Store methods implemented — EnqueueRun, ClaimRun (FOR UPDATE SKIP LOCKED), TransitionRun, GetRun, plus attempts, events, idempotency, auth profiles, auth locks, and snapshots
+- `store_test.go`: Integration-tagged tests with contract suite wiring plus 4 focused enqueue/claim tests (TestEnqueueAndGet, TestClaimPicksOldest, TestClaimOneWinnerParallel, TestClaimEmptyReturnsNotFound)
+- ClaimRun uses `UPDATE ... WHERE id = (SELECT id FROM runs WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING ...` for atomic one-winner claim
+- validRunTransitions map defines the allowed state machine transitions
+- Test isolation via per-test Postgres schemas (CREATE SCHEMA test_<nanos>_<pid>, dropped CASCADE on cleanup)
+- Added pgx/v5 dependency for Postgres driver
+- Files changed: internal/cloud/postgres/schema.go (new), internal/cloud/postgres/store.go (new), internal/cloud/postgres/store_test.go (new), go.mod, go.sum
+- **Learnings for future iterations:**
+  - Postgres DDL differs from SQLite in several ways: TIMESTAMPTZ vs TIMESTAMP, BOOLEAN vs INTEGER, BYTEA vs BLOB, NOW() vs CURRENT_TIMESTAMP
+  - SQLite triggers (BEFORE UPDATE/DELETE with RAISE) must be replaced by Postgres rules (DO INSTEAD NOTHING) for immutability
+  - FOR UPDATE SKIP LOCKED in a subquery inside UPDATE...RETURNING is the idiomatic Postgres pattern for one-winner claim
+  - Per-test schema creation provides strong isolation without needing Docker or separate databases
+  - isUniqueViolation uses string matching on "23505" to avoid importing driver-specific error types into the adapter
+  - The full Store interface must be implemented even when the story focuses on a subset — contract tests exercise all methods
+  - Auth lock tests need auth profiles for FK constraints — use `insertAuthProfile` helper with raw SQL since Store has no CreateAuthProfile method
+  - `newTestStoreWithDB` returns both `cloud.Store` and `*sql.DB` for test setup that needs direct SQL access
+---
+
+## 2026-02-10 - US-011
+- Implemented focused Postgres integration tests for auth lock acquire, renew, and release operations
+- Added `newTestStoreWithDB` helper returning both Store and `*sql.DB` for FK setup
+- Added `insertAuthProfile` helper for direct auth profile insertion via SQL
+- Tests: TestAcquireLockConflict (duplicate active lock conflict + different run_id allowed), TestRenewLockExpired (expired lease returns ErrLeaseExpired), TestRenewLockSuccess (valid renew), TestRenewLockNotFound (non-existent lock), TestStaleLockReclaim (release stale lock then re-acquire), TestReleaseLockNotFound (non-existent release)
+- Files changed: internal/cloud/postgres/store_test.go
+- **Learnings for future iterations:**
+  - Auth lock tests require auth profiles in DB due to FK constraints — Store interface lacks CreateAuthProfile, so use raw SQL via `insertAuthProfile` helper
+  - The `newTestStoreWithDB` pattern exposes `*sql.DB` alongside Store for setup that the interface doesn't cover (seeding reference data)
+  - Partial unique index `WHERE released_at IS NULL` allows multiple historical (released) locks but only one active lock per (auth_profile_id, run_id)
+  - RenewAuthLock's `lease_expires_at > NOW()` check means tests need to set lease_expires_at in the past to trigger ErrLeaseExpired
+  - Stale-lock reclaim flow: release expired lock → re-acquire for same or different run succeeds
+- Turso adapter lives in `internal/cloud/turso/` — reuses domain DDL from `internal/cloud/` package (no Turso-specific DDL needed)
+- SQLite/Turso `ClaimRun` uses `UPDATE...WHERE id=(SELECT...LIMIT 1) RETURNING` — WAL single-writer lock guarantees atomicity
+- Turso `isUniqueViolation` matches `UNIQUE constraint failed` (vs Postgres `23505`/`duplicate key`)
+- SQLite parameter placeholders use `?` (vs Postgres `$1, $2, ...`)
+- SQLite `RenewAuthLock` uses explicit `time.Now().UTC()` for lease comparison (vs Postgres `NOW()` in SQL)
+- Turso `TransitionRun` checks DB status first, then state machine — ErrConflict (mismatch) takes priority over ErrInvalidTransition
+- Test PRAGMAs (journal_mode, foreign_keys, busy_timeout) must be set per-connection via DSN params for connection pool compatibility
+- Contract test `setupClaimedRun` relies on `ClaimRun` which picks oldest queued — earlier subtests may leave orphan queued runs
+---
+
+## 2026-02-10 - US-012
+- Implemented Turso adapter in `internal/cloud/turso/` with full cloud.Store interface implementation
+- `schema.go`: Reuses domain DDL constants from `internal/cloud/` (SQLite-compatible TIMESTAMP, INTEGER, BLOB, CURRENT_TIMESTAMP, triggers)
+- `store.go`: All 21 Store methods with SQLite-compatible SQL (? placeholders, no FOR UPDATE SKIP LOCKED)
+- `store_test.go`: Contract suite wiring + 4 focused enqueue/claim tests (TestEnqueueAndGet, TestClaimPicksOldest, TestClaimOneWinnerParallel, TestClaimEmptyReturnsNotFound)
+- Uses `modernc.org/sqlite` (pure Go, no CGO) for test isolation with file-based databases
+- File-based SQLite databases needed for concurrent goroutine tests (`:memory:` creates separate DB per connection)
+- PRAGMAs set via DSN `_pragma=...` parameters for pool-wide application
+- Fixed contract test `status_mismatch_returns_conflict` to drain orphan queued runs and use valid transition for status-mismatch isolation
+- Files changed: internal/cloud/turso/schema.go (new), internal/cloud/turso/store.go (new), internal/cloud/turso/store_test.go (new), internal/cloud/storetest/contract.go, go.mod, go.sum
+- **Learnings for future iterations:**
+  - SQLite `:memory:` databases create separate DB per connection — use file-based for concurrent tests
+  - `modernc.org/sqlite` DSN supports `_pragma=name(value)` for per-connection PRAGMA configuration
+  - `PRAGMA busy_timeout=5000` prevents SQLITE_BUSY errors in concurrent write tests
+  - Turso adapter can reuse domain DDL directly — no adapter-specific DDL file needed (unlike Postgres which needs TIMESTAMPTZ, BOOLEAN, BYTEA, etc.)
+  - Contract test `testTransitionGuards` shares one store across subtests — orphan queued runs from prior subtests affect `ClaimRun` behavior
+  - `TransitionRun` should check actual DB status before state machine validation to distinguish ErrConflict from ErrInvalidTransition
+---
+
+## 2026-02-10 - US-013
+- Added 6 focused auth lock tests to Turso adapter: TestAcquireLockConflict, TestRenewLockExpired, TestRenewLockSuccess, TestRenewLockNotFound, TestStaleLockReclaim, TestReleaseLockNotFound
+- Tests verify: duplicate active lock conflict (same auth_profile_id + run_id), different run_id allowed, expired lease returns ErrLeaseExpired on renew, successful renew with valid lease, non-existent lock returns ErrNotFound, stale lock release + re-acquire flow
+- Files changed: internal/cloud/turso/store_test.go
+- **Learnings for future iterations:**
+  - Turso auth lock tests are structurally identical to Postgres — the RenewAuthLock implementation uses `time.Now().UTC()` for lease comparison (vs Postgres `NOW()` in SQL) but the test patterns are the same
+  - The `newTestStoreWithDB` + `insertAuthProfile` helpers (already added in US-012) are reusable for any test needing FK-referenced auth profiles
+  - Turso adapter already had all 3 auth lock methods implemented since US-012 — US-013 only needed focused tests
+---
+
+## 2026-02-10 - US-031
+- Implemented FailureCode type with 6 codes: bootstrap_failed, auth_invalid, policy_blocked, stale_attempt, run_timeout, non_retryable
+- Added IsValid() method and validFailureCodes map following existing enum patterns
+- Added ClassifyFailure() pure function mapping each code to retryable (true) or terminal (false)
+- Retryable: bootstrap_failed, stale_attempt (transient infra issues)
+- Terminal: auth_invalid, policy_blocked, run_timeout, non_retryable (deterministic failures)
+- Unknown codes default to non-retryable (fail-safe)
+- Files changed: internal/cloud/failure.go (new), internal/cloud/failure_test.go (new)
+- **Learnings for future iterations:**
+  - FailureCode follows `type XStatus string` pattern with `IsValid()` but no `IsTerminal()` — retryability is via ClassifyFailure() not a method, since it's a classification decision not a lifecycle property
+  - Two consistency meta-tests (TestAllValidCodesAreClassified, TestRetryableCodesAreAllValid) ensure the validFailureCodes and retryableCodes maps stay in sync — add these for any dual-map pattern
+  - The failure codes align with attempt.error_code (TEXT column) — FailureCode values can be stored directly
+  - US-031 has no DB schema or Store changes — it's a pure domain logic module consumed by retry scheduler (US-020) and reconciler (US-019)
+---
+
+## 2026-02-10 - US-015
+- Implemented control-plane operator auth middleware in `internal/cloud/authmw/`
+- `authmw.go`: Config-driven middleware supporting bearer JWT (HS256) and PAT validation
+- JWT validation: HMAC-SHA256 signature verification, issuer/audience claim checks, expiration enforcement
+- PAT validation: O(1) allowlist lookup via map, empty strings filtered from allowlist
+- Token resolution order: extract bearer → try JWT → try PAT → reject 401
+- Context propagation: ClaimsFromContext() for JWT claims, IdentityFromContext() for identity (sub claim or pat:<truncated>)
+- Error response: HTTP 401 with JSON `{"error": "...", "error_code": "unauthorized"}`
+- `authmw_test.go`: 22 tests covering missing header, empty bearer, non-bearer scheme, valid JWT, expired JWT, wrong issuer/audience/secret, unsupported algorithm, valid/invalid PAT, JWT-over-PAT precedence, PAT fallback, case-insensitive Bearer, no-config reject, empty PAT filter, malformed JWTs (5 subtests), JWT without exp, response content-type, context helpers, extractBearerToken (8 subtests), truncateToken (4 subtests)
+- Files changed: internal/cloud/authmw/authmw.go (new), internal/cloud/authmw/authmw_test.go (new)
+- **Learnings for future iterations:**
+  - No external JWT library needed — HMAC-SHA256 validation is ~30 lines with crypto/hmac + encoding/base64
+  - base64url decoding needs padding normalization (add "==" or "=" based on len%4) since JWT segments use raw base64url
+  - Bearer prefix matching must be case-insensitive per RFC 6750 — use strings.EqualFold on first 7 chars
+  - Context keys should be unexported typed constants (type contextKey int) to prevent cross-package collisions
+  - Middleware() returns func(http.Handler) http.Handler — compatible with any router's middleware chaining (chi, standard mux, etc.)
+  - PAT identity uses "pat:" prefix with truncated token (first 8 chars) for safe logging without exposing the full token
+---
+
+## 2026-02-10 - US-016
+- Implemented SubmitService in `internal/cloud/submit.go` with validation, auth profile checks, engine/provider compatibility, and provider policy enforcement
+- SubmitRequest.Validate() checks all 5 required fields (repo, base_branch, engine, auth_profile_id, scope_ref)
+- ProviderPolicy with AllowList/DenyList support (AllowList evaluated first)
+- EngineProviderMap for engine/provider compatibility checking (empty map = allow all, unmapped engine = allow all)
+- SubmitConfig with DefaultMaxAttempts, DefaultTimeout, ProviderPolicy, EngineProviders, and IDFunc
+- Submit flow: validate fields → fetch auth profile → check linked status → check engine/provider compat → apply provider policy → enqueue run
+- 25 tests covering: request validation (6), provider policy (6), engine/provider map (5), submit service integration (12), defaults (1)
+- Files changed: internal/cloud/submit.go (new), internal/cloud/submit_test.go (new)
+- **Learnings for future iterations:**
+  - Service layer tests use embedded `submitMockStore` that extends `mockStore` with overridden methods — avoids reimplementing all 21 Store methods
+  - SubmitService is the first service-layer component — it depends only on cloud.Store interface, no adapter imports
+  - Provider policy uses slice-based AllowList/DenyList (not maps) since the lists are typically small and configured at startup
+  - EngineProviderMap uses `map[string]map[string]bool` for O(1) compatibility lookups
+  - Time values truncated to seconds with `Truncate(time.Second)` for DB round-trip fidelity
+---
+
+## 2026-02-10 - US-017
+- Implemented ClaimService in `internal/cloud/claim.go` with all-or-nothing ClaimAndLock operation
+- ClaimAndLock orchestrates: ClaimRun → CreateAttempt → AcquireAuthLock with compensating rollback on failure
+- ClaimResult struct returns Run, Attempt, and AuthProfileLock on success
+- ClaimConfig with LeaseDuration (default 30s) and IDFunc for testable ID generation
+- Rollback on lock failure: marks attempt as failed (error_code=lock_acquisition_failed) then transitions run back to queued
+- Rollback on attempt failure: transitions run back to queued
+- Added `claimed → queued` transition to both Postgres and Turso adapter validRunTransitions maps for rollback support
+- 11 tests covering: success, empty workerID, no eligible run, store error, attempt failure rollback, lock failure rollback, attempt number increment, shared lease expiry, IDFunc, custom lease duration, defaults
+- Files changed: internal/cloud/claim.go (new), internal/cloud/claim_test.go (new), internal/cloud/postgres/store.go, internal/cloud/turso/store.go
+- **Learnings for future iterations:**
+  - Service-layer rollback uses compensating operations (TransitionRun, TransitionAttempt) rather than DB transactions — keeps the Store interface simple and adapter-agnostic
+  - The `claimed → queued` transition was not in the original state machine — rollback requirements expand the transition map
+  - ClaimResult bundles Run + Attempt + Lock together since all three are needed downstream by the worker loop
+  - Mock store pattern: embed mockStore and override only the methods needed (ClaimRun, CreateAttempt, AcquireAuthLock, TransitionRun, TransitionAttempt)
+  - Attempt number derives from `run.AttemptCount + 1` — the run's attempt count is the authoritative source, not a separate sequence
+  - Rollback errors are deliberately ignored (`_ = s.store.TransitionRun(...)`) — if rollback itself fails, the original error is still the most useful to the caller
+---
+
+## 2026-02-10 - US-018
+- Implemented HeartbeatService in `internal/cloud/heartbeat.go` with Renew method for dual lease renewal
+- Renew atomically extends both attempt lease (HeartbeatAttempt) and auth lock lease (RenewAuthLock)
+- Lease-loss handling: if either renewal returns ErrLeaseExpired, emits `lease_lost` event and marks attempt as failed with error_code `lease_lost`
+- HeartbeatConfig with LeaseDuration (default 30s) and IDFunc for testable event ID generation
+- Side-effect errors (InsertEvent, TransitionAttempt) are deliberately ignored in lease-lost path — caller receives the authoritative ErrLeaseExpired
+- 11 tests covering: successful renewal, empty params (3), attempt lease expired, auth lock lease expired, non-lease errors (2), IDFunc event ID, defaults, custom lease duration
+- Files changed: internal/cloud/heartbeat.go (new), internal/cloud/heartbeat_test.go (new)
+- **Learnings for future iterations:**
+  - HeartbeatService follows same mock pattern as ClaimService — embed mockStore and override only the methods under test
+  - The `transitionAttemptCall` type was already defined in claim_test.go — reuse it in heartbeat_test.go since both are in the same package
+  - Lease-lost terminal path deliberately ignores side-effect errors (event insert, attempt transition) — the original ErrLeaseExpired is the authoritative error for the caller
+  - HeartbeatService.Renew requires attemptID, authProfileID, and runID as explicit params rather than looking them up — caller (worker loop) already has these from ClaimResult
+  - Non-lease errors from HeartbeatAttempt/RenewAuthLock (e.g., database unavailable) propagate without emitting lease_lost — only ErrLeaseExpired triggers terminal handling
+---
+
+## 2026-02-10 - US-019
+- Implemented ReconcilerService in `internal/cloud/reconciler.go` with Reconcile method for stale-attempt detection and cleanup
+- Reconcile scans active attempts with expired leases via ListStaleAttempts(cutoff), then for each: marks attempt failed (error_code=stale_attempt), emits stale_attempt event, releases auth lock
+- ReconcileResult struct returns Reconciled count and per-attempt Errors for partial-failure reporting
+- Auth lock release tolerates ErrNotFound (lock may already be released) — other errors are collected
+- Reconciler looks up run via GetRun to get auth_profile_id for lock release (attempts don't store auth_profile_id)
+- 11 tests covering: no stale attempts, single/multiple reconciliation, list failure, transition/event/getrun/lock-release errors, partial success, ErrNotFound tolerance, IDFunc
+- Files changed: internal/cloud/reconciler.go (new), internal/cloud/reconciler_test.go (new)
+- **Learnings for future iterations:**
+  - ReconcilerService needs GetRun to resolve auth_profile_id from run since Attempt struct doesn't carry it — consider adding auth_profile_id to Attempt if this becomes a common lookup pattern
+  - Reconciler uses best-effort per-attempt: errors on one attempt don't block processing of others — ReconcileResult.Errors collects failures
+  - ErrNotFound on ReleaseAuthLock is expected (lock may have been released by worker before reconciler runs) — treat as success
+  - The reconciler reuses transitionAttemptCall type from claim_test.go since both files are in the same package
+  - FailureStaleAttempt constant from failure.go is reused as the error_code string — keeps failure codes consistent across reconciler and classifier
+---
+
+## 2026-02-10 - US-020
+- Implemented RetryService in `internal/cloud/retry.go` with configurable exponential backoff retry scheduler
+- RetryConfig with BaseDelay (default 30s), MaxDelay (default 30m), and IDFunc for testable event ID generation
+- EvaluateRetry accepts runID + FailureCode, checks: run is failed, failure code is retryable (via ClassifyFailure), attempt budget remaining
+- Eligible runs transition failed → retrying → queued (two-step transition using existing state machine)
+- Exponential backoff formula: min(baseDelay * 2^(attempts-1), maxDelay) — returned as BackoffDelay in RetryResult
+- Best-effort retry_scheduled event emission between transitions (failure does not block retry)
+- RetryResult struct returns Retried (bool) and BackoffDelay (time.Duration)
+- 25 tests covering: retryable/non-retryable failure codes (6), max attempts exhausted, non-failed status, empty runID, run not found, transition errors (2), event failure tolerance, unknown codes, IDFunc, exponential backoff (5), defaults, custom config
+- Files changed: internal/cloud/retry.go (new), internal/cloud/retry_test.go (new)
+- **Learnings for future iterations:**
+  - EvaluateRetry accepts FailureCode as explicit param (not looked up from events/attempts) since the caller (reconciler/worker) already knows it — avoids needing a ListAttemptsByRun store method
+  - The transitionRunCall type is shared across claim_test.go and retry_test.go (same package) — don't redeclare it
+  - RetryService follows same mock pattern as ReconcilerService/HeartbeatService — embed mockStore, override only needed methods
+  - Two-step transition (failed→retrying→queued) uses TransitionRun twice — if second fails, run is left in retrying state for a future reconciliation pass
+  - computeBackoff is a pure function on attemptCount — no time dependency, fully deterministic and testable
+---
+
+## 2026-02-10 - US-021
+- Implemented TimeoutService in `internal/cloud/timeout.go` with EnforceTimeouts method for hard-timeout enforcement
+- Added ListOverdueRuns method to Store interface (store.go) and both adapters (postgres/store.go, turso/store.go)
+- ListOverdueRuns queries non-terminal runs where deadline_at < now — excludes succeeded, failed, canceled statuses
+- Added queued→failed and retrying→failed transitions to both adapters' validRunTransitions maps
+- TimeoutResult struct returns TimedOut count and per-run Errors for partial-failure reporting
+- timeoutRun uses run's current status as fromStatus for the TransitionRun call
+- Added ListOverdueRuns contract test in storetest/contract.go covering overdue/future/nil/terminal deadline cases
+- Updated Store method count from 21 to 22 in store_test.go
+- 11 unit tests: no overdue, single/multiple overdue, queued/retrying overdue, list failure, transition/event errors, partial success, IDFunc, nil IDFunc
+- Submit already sets deadline_at via SubmitConfig.DefaultTimeout (1h default) — no changes needed
+- Files changed: internal/cloud/timeout.go (new), internal/cloud/timeout_test.go (new), internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/storetest/contract.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go
+- **Learnings for future iterations:**
+  - Adding a Store method requires updating 4 places: store.go (interface), store_test.go (mockStore + method count), postgres/store.go, turso/store.go, and optionally storetest/contract.go
+  - Timeout enforcement needs state machine transitions from ANY non-terminal status to failed — check validRunTransitions and add missing entries
+  - ListOverdueRuns excludes terminal statuses via `NOT IN` clause rather than checking only active statuses — simpler and forward-compatible if new non-terminal statuses are added
+  - TimeoutService follows ReconcilerService's partial-failure pattern (result struct with count + error slice) since it's also a batch reconciliation operation
+  - FailureRunTimeout was already defined in failure.go (US-031) — the timeout service uses it implicitly through the event type string "run_timeout"
+---
+
+## 2026-02-10 - US-022
+- Implemented CancellationService in `internal/cloud/cancellation.go` with RequestCancel and CheckAndCancel methods
+- Added `cancel_requested` column to Run struct and DDL (INTEGER in SQLite, BOOLEAN in Postgres)
+- Added `SetCancelIntent` Store method to set cancel_requested flag (idempotent)
+- Updated ClaimRun in both adapters to exclude runs with cancel_requested=true from claim selection
+- CheckAndCancel: reads run, checks cancel_requested, marks attempt canceled, transitions run to canceled, emits cancel_propagated event, releases auth lock
+- Added explicit "canceled run is skipped by retry scheduler" test — EvaluateRetry only acts on RunStatusFailed
+- Updated scanRun in both adapters to include CancelRequested in column list
+- Added SetCancelIntent and ClaimExcludesCanceled contract tests to storetest/contract.go
+- 15 unit tests in cancellation_test.go covering: RequestCancel (4), CheckAndCancel (11) including cancel propagation, no-op, validation, error handling, lock release tolerance, IDFunc, cancel from claimed status
+- Files changed: internal/cloud/cancellation.go (new), internal/cloud/cancellation_test.go (new), internal/cloud/run.go, internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/postgres/schema.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go, internal/cloud/storetest/contract.go, internal/cloud/retry_test.go
+- **Learnings for future iterations:**
+  - Adding a column to Run requires updating 7 places: run.go (struct+DDL), postgres/schema.go (Postgres DDL), both adapter scanRun functions, all SELECT/INSERT/RETURNING SQL queries, and Store method count
+  - SQLite uses INTEGER (0/1) for booleans, Postgres uses BOOLEAN — ClaimRun WHERE clause needs `cancel_requested = 0` (Turso) vs `cancel_requested = FALSE` (Postgres)
+  - Reuse shared test types across test files in the same package (e.g., releaseAuthLockCall from reconciler_test.go) — don't redeclare
+  - CancellationService follows the same mock pattern as HeartbeatService/ReconcilerService — embed mockStore, override methods under test
+  - Claim exclusion is enforced at the SQL level (WHERE clause in ClaimRun) for atomicity — no service-layer filtering needed
+  - Retry scheduler inherently skips canceled runs because EvaluateRetry checks `run.Status != RunStatusFailed` — canceled is not failed
+---
+
+## 2026-02-10 - US-023
+- Implemented revoked-profile renewal denial in HeartbeatService.Renew
+- Added ErrProfileRevoked sentinel error and IsProfileRevoked() helper to errors.go
+- HeartbeatService.Renew now checks auth profile status via GetAuthProfile after attempt heartbeat — revoked profiles trigger emitProfileRevokedAndTerminate
+- emitProfileRevokedAndTerminate emits profile_revoked event, marks attempt failed (error_code=profile_revoked), and releases auth lock (best-effort, tolerate ErrNotFound)
+- Side-effect errors (event insert, attempt transition, lock release) deliberately ignored — caller receives authoritative ErrProfileRevoked
+- 6 new test cases added to TestHeartbeatRenew: revoked profile terminates, revoked event uses IDFunc, GetAuthProfile error propagation, linked profile passes, invalid profile does not trigger revocation
+- TestRevokeDuringRunIntegration: multi-step integration test simulating revoke-during-run (successful renew → profile revoked between cycles → next renew fails with profile_revoked, attempt terminated, lock released)
+- Files changed: internal/cloud/errors.go, internal/cloud/errors_test.go, internal/cloud/heartbeat.go, internal/cloud/heartbeat_test.go
+- **Learnings for future iterations:**
+  - Revocation check is at the service layer (HeartbeatService), not the adapter/Store — avoids modifying Store interface or adapter SQL for a domain-level policy check
+  - The revocation check happens between attempt heartbeat (step 1) and auth lock renew (step 3) — attempt lease is renewed first to prevent stale-attempt reconciler from racing
+  - emitProfileRevokedAndTerminate follows emitLeaseLostAndTerminate pattern but additionally releases the auth lock (lease_lost doesn't release because the lock lease is already expired)
+  - heartbeatMockStore now needs GetAuthProfile (returns linked profile by default) and ReleaseAuthLock overrides — existing tests remain unaffected because the default returns linked status
+  - Only AuthProfileStatusRevoked triggers denial — invalid, pending_link, and linked profiles all pass through to normal renewal
+---
+
+## 2026-02-10 - US-024
+- Implemented Daytona runner API client abstraction in `internal/cloud/runner/`
+- `runner.go`: Runner interface with 5 methods (CreateSandbox, Exec, StreamLogs, DestroySandbox, Health) and domain types (CreateSandboxRequest, Sandbox, ExecRequest, ExecResult, HealthStatus)
+- `client.go`: HTTP Client implementing Runner interface — communicates with Daytona runner service via REST API
+- Client sends X-Service-Token header on every request; Content-Type: application/json on all requests
+- API endpoints: POST /sandboxes, POST /sandboxes/{id}/exec, GET /sandboxes/{id}/logs, DELETE /sandboxes/{id}, GET /health
+- StreamLogs returns io.ReadCloser for streaming consumption — caller responsible for closing
+- Error responses parsed from JSON apiError struct with HTTP status code in error message
+- Compile-time interface compliance check: `var _ Runner = (*Client)(nil)`
+- 22 tests: NewClient validation (4), header checks (2), CreateSandbox (4), Exec (4), StreamLogs (3), DestroySandbox (3), Health (3), context cancellation (1), interface compliance (1)
+- Files changed: internal/cloud/runner/runner.go (new), internal/cloud/runner/client.go (new), internal/cloud/runner/runner_test.go (new)
+- **Learnings for future iterations:**
+  - Runner interface lives in `internal/cloud/runner/` sub-package (like authmw, postgres, turso) — worker code imports the interface, not the client implementation
+  - httptest.NewServer is the standard pattern for testing HTTP clients — no external dependencies needed
+  - StreamLogs uses checkStatusNoClose to avoid closing resp.Body before returning it — separate helper from checkStatus to make ownership clear
+  - ExecResult carries exit code as data (not error) — non-zero exit is a valid result, not an HTTP error
+  - ClientConfig uses optional *http.Client with nil-default to 30s timeout — test clients use httptest server URLs directly
+  - The runner package has no imports from Daytona SDK or any other cloud sub-packages — pure interface + HTTP client
+---
+
+## 2026-02-10 - US-025
+- Implemented Daytona runner service in TypeScript using Hono framework and @daytonaio/sdk
+- `daytona-runner/src/middleware.ts`: Service token auth middleware validating X-Service-Token header, returns 401 with error_code "unauthorized"
+- `daytona-runner/src/routes.ts`: POST /sandboxes (create via daytona.create, returns 201 with {id, status, created_at}), DELETE /sandboxes/:id (destroy via sandbox.delete, returns 204), GET /health (returns {ok, version})
+- `daytona-runner/src/index.ts`: Server entrypoint with env var config (HAL_CLOUD_RUNNER_SERVICE_TOKEN, DAYTONA_API_KEY, DAYTONA_SERVER_URL), wires auth middleware on all routes except /health
+- Error responses use Go-compatible JSON format: `{error: string, error_code: string}`
+- 13 tests (4 middleware + 9 routes): auth rejection (3), auth pass-through (1), create sandbox (4), destroy sandbox (3), health check (1)
+- Added `node_modules/` to .gitignore
+- Files changed: daytona-runner/package.json (new), daytona-runner/tsconfig.json (new), daytona-runner/src/index.ts (new), daytona-runner/src/middleware.ts (new), daytona-runner/src/routes.ts (new), daytona-runner/src/middleware.test.ts (new), daytona-runner/src/routes.test.ts (new), .gitignore
+- **Learnings for future iterations:**
+  - The Go client (internal/cloud/runner/client.go) defines the exact API contract — the TS runner service must match status codes (201 for create, 204 for destroy, 200 for health) and JSON shapes exactly
+  - Daytona SDK uses `daytona.create({image, envVars})` for creation and `sandbox.delete()` for destruction — the `get()` method retrieves existing sandboxes by ID
+  - Hono framework provides clean request/response handling with `c.json()` for JSON responses and `c.body(null, 204)` for no-content responses
+  - Service token auth is a simple header check middleware — no JWT complexity needed for internal service-to-service auth
+  - The runner service should NOT apply auth to the /health endpoint (health checks must work without tokens)
+  - Mock Daytona SDK in tests by creating mock objects matching the interface shape — no need to import actual SDK in tests
+  - Vitest with Hono's built-in `app.request()` method provides clean test ergonomics without needing a running server
+---
+
+## 2026-02-10 - US-026
+- Implemented POST /sandboxes/:id/exec endpoint using Daytona SDK `sandbox.process.executeCommand(command, cwd, timeout)`
+- Implemented GET /sandboxes/:id/logs endpoint using Hono's `stream()` helper and Daytona SDK `sandbox.process.getSessionCommandLogs` with streaming callback
+- Exec endpoint: validates `command` required field, returns `{exit_code, stdout, stderr}` (200), handles not-found (404) and SDK errors (500)
+- Logs endpoint: accepts optional `session_id` and `command_id` query params (default to "default"), streams ordered output chunks, falls back to single-string fetch if streaming callback fails
+- Added ExecBody and ExecResponse TypeScript interfaces matching Go runner.ExecRequest and runner.ExecResult
+- Updated mockSandbox to include `process` property with `executeCommand` and `getSessionCommandLogs` mocks
+- 12 new tests: exec (7 — success, work_dir/timeout passthrough, non-zero exit code, missing command, not-found, SDK error, null result), logs (5 — streaming, not-found, SDK error, custom query params, default params)
+- Files changed: daytona-runner/src/routes.ts, daytona-runner/src/routes.test.ts
+- **Learnings for future iterations:**
+  - Daytona SDK `executeCommand` returns `{ exitCode, result }` — `result` is stdout, there is no separate stderr field in the SDK response, so the runner returns empty string for stderr
+  - Hono's `stream()` from `hono/streaming` creates a TransformStream and auto-closes on callback completion — use `s.write(chunk)` for each output chunk
+  - Non-zero exit codes are returned as data (HTTP 200), not as errors — matches Go client ExecResult contract where ExitCode is data, not failure
+  - The `getSessionCommandLogs` overload with callback `(chunk) => void` is for streaming; without callback it returns `Promise<string>` — the endpoint tries streaming first and falls back to string fetch
+  - Mock sandbox objects need `process` property with SDK-matching method signatures — update mockSandbox when adding new SDK-dependent endpoints
+---
+
+## 2026-02-10 - US-027
+- Implemented ProvisionService in `internal/cloud/provision.go` with Provision method for deterministic sandbox creation
+- Added UpdateAttemptSandboxID to Store interface and both adapters (Postgres, Turso) for persisting sandbox_id on attempt rows
+- ProvisionService.Provision orchestrates: CreateSandbox (runner API) → UpdateAttemptSandboxID (store) → emit sandbox_created event → emit sandbox_ready event
+- ProvisionConfig holds Image, EnvVars, and IDFunc — Image and EnvVars are passed through to runner.CreateSandboxRequest
+- ProvisionResult returns SandboxID and Status from the created sandbox
+- Event payloads use sandboxEventPayload struct with sandbox_id, image (on created), and status (on ready) — serialized to JSON via PayloadJSON field
+- Event emission is best-effort (errors ignored) — sandbox provisioning succeeds even if event insertion fails
+- Added UpdateAttemptSandboxID contract test to storetest/contract.go verifying update and ErrNotFound behavior
+- Updated Store method count from 23 to 24 in store_test.go
+- 9 unit tests: successful provision, empty params (2), runner failure, sandbox_id persist failure, persist not_found, event failure tolerance, nil IDFunc, config env_vars passthrough, defaults
+- Files changed: internal/cloud/provision.go (new), internal/cloud/provision_test.go (new), internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/storetest/contract.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go
+- **Learnings for future iterations:**
+  - ProvisionService is the first service to depend on both Store AND Runner interfaces — it follows same constructor pattern but with dual dependencies
+  - Adding a Store method now requires updating 5 places: store.go, store_test.go (mock + method count), postgres/store.go, turso/store.go, storetest/contract.go
+  - Event payloads use a struct + json.Marshal rather than raw string formatting — enables structured payload access in future log/event consumers
+  - Runner API errors propagate as hard failures (no retry within provisioning) — the retry scheduler at the run level handles retryable failures
+  - Mock runners in tests implement the full runner.Runner interface — provisionMockRunner and captureRunner patterns enable both error simulation and request inspection
+---
+
+## 2026-02-10 - US-028
+- Implemented TeardownService in `internal/cloud/teardown.go` with Teardown method for sandbox destruction on terminal paths
+- Teardown emits teardown_started event before runner API call and teardown_done event after completion
+- teardown_done event payload includes error field when runner DestroySandbox fails — preserves destroy failure context for debugging
+- Event emission is best-effort (errors ignored) — consistent with ProvisionService pattern
+- TeardownService follows same dual-dependency pattern as ProvisionService (Store + Runner interfaces)
+- 10 tests covering: successful teardown, empty params (3), runner destroy failure with error in done event, event failure tolerance, nil IDFunc, success terminal path, failure terminal path, defaults
+- Files changed: internal/cloud/teardown.go (new), internal/cloud/teardown_test.go (new)
+- **Learnings for future iterations:**
+  - TeardownService mirrors ProvisionService structure — dual Store+Runner dependency, same emitEvent helper pattern, same IDFunc convention
+  - teardown_done event ALWAYS emits (even on destroy failure) — the error field in the payload captures the failure reason for post-mortem analysis
+  - Teardown takes sandboxID as an explicit parameter (not looked up from attempt) since the caller already has it from ProvisionResult or attempt record
+  - teardownEventPayload is separate from sandboxEventPayload — teardown has an error field that sandbox lifecycle events don't need
+  - Both provision and teardown mock runners implement the full runner.Runner interface — each test file defines its own mock to keep test packages self-contained
+---
+
+## 2026-02-10 - US-029
+- Implemented BootstrapService in `internal/cloud/bootstrap.go` with Bootstrap method for deterministic sandbox environment setup
+- Bootstrap orchestrates two sequential steps: git clone (with --branch and --single-branch) then hal init (in /workspace working directory)
+- BootstrapRequest struct with Validate() enforces all 5 required fields: Repo, Branch, SandboxID, AttemptID, RunID
+- Events emitted: bootstrap_started (before clone), bootstrap_failed (on clone or init failure), bootstrap_completed (on success)
+- bootstrap_failed payload includes step (clone/init), error message, and optional exit_code for debugging
+- Clone and init failures both stop the attempt — init is never called if clone fails
+- Error output prefers stderr over stdout; falls back to stdout when stderr is empty
+- Event emission is best-effort (errors ignored) — consistent with Provision/Teardown pattern
+- bootstrapMockRunner uses map[string] matching on command substrings for flexible Exec simulation
+- 18 tests covering: successful bootstrap, clone exec error, clone non-zero exit, init exec error, init non-zero exit, stderr/stdout preference, event failure tolerance, nil IDFunc, defaults, request validation (6), IDFunc custom IDs, clone failure stops attempt
+- Files changed: internal/cloud/bootstrap.go (new), internal/cloud/bootstrap_test.go (new)
+- **Learnings for future iterations:**
+  - BootstrapService follows dual Store+Runner dependency pattern but only uses Runner.Exec (not CreateSandbox/DestroySandbox) — Exec is the workhorse for sandbox command execution
+  - bootstrapMockRunner uses map-based command matching (`strings.Contains`) instead of ordered result slices — more readable for tests with multiple sequential commands
+  - bootstrapEventPayload has more fields than sandbox/teardown payloads (step, exit_code) because bootstrap failures need granular diagnosis context
+  - Clone uses `--single-branch` flag to minimize network transfer — only fetches the target branch
+  - The `filterEventsByType` test helper filters events by type from a slice — useful for assertions when multiple event types are emitted
+  - No Store interface changes needed — BootstrapService only uses InsertEvent (existing)
+---
+
+## 2026-02-10 - US-030
+- Implemented ExecutionService in `internal/cloud/execution.go` with Execute method for controlled Hal execution
+- Added ExecutionMode enum with two modes: until_complete and bounded_batch, with IsValid() method
+- ExecutionRequest struct with Validate() enforces required fields (SandboxID, AttemptID, RunID) and valid mode
+- ExecutionResult struct captures ExitCode, Output (stdout), and ErrorOutput (stderr) for failure classification input
+- Events emitted: execution_started (before command, includes mode and command), execution_finished (after completion, includes exit_code and error on failure/runner-error)
+- Non-zero exit codes are returned as data (not errors) — consistent with runner.ExecResult contract where ExitCode is data
+- Runner API errors (sandbox unreachable, etc.) return error AND emit execution_finished event with error payload (no exit_code)
+- buildHalCommand maps ExecutionMode to CLI commands: until_complete → `hal auto --mode until-complete`, bounded_batch → `hal auto --mode bounded-batch`
+- executionEventPayload includes sandbox_id, mode, exit_code, error, and command fields
+- 22 tests: Execute (8 — success until_complete, success bounded_batch, nonzero exit, stderr fallback, runner error, event failure tolerance, nil IDFunc, defaults), RequestValidation (6), ModeIsValid (4), IDFunc (1), BuildHalCommand (2), RunnerExecErrorEmitsFinished (1)
+- Files changed: internal/cloud/execution.go (new), internal/cloud/execution_test.go (new)
+- **Learnings for future iterations:**
+  - ExecutionService follows same dual Store+Runner dependency pattern as Bootstrap/Provision/Teardown — uses only Runner.Exec and Store.InsertEvent
+  - Non-zero exit codes are data, not errors — the caller (worker loop) uses the exit code for failure classification via ClassifyFailure()
+  - execution_finished event is ALWAYS emitted (even on runner API failure) to ensure the timeline is complete — the error field captures failure context
+  - ExecutionMode uses underscore in enum values (until_complete) but hyphen in CLI args (until-complete) — buildHalCommand handles the mapping
+  - No Store interface changes needed — ExecutionService only uses InsertEvent (existing), consistent with BootstrapService
+  - The filterEventsByType test helper from bootstrap_test.go is reusable since both files are in the same package
+---
+
+## 2026-02-10 - US-032
+- Implemented AuthMaterializationService in `internal/cloud/auth_materialization.go` with Materialize and Cleanup methods
+- Materialize: fetches auth profile → checks secret_ref → creates auth dir (0700) → writes credentials file (0600) → emits events
+- Cleanup: removes auth directory via `rm -rf` during teardown path → emits auth_cleanup_started and auth_cleanup_done events
+- AuthMaterializationConfig with AuthDir (default "/home/user/.auth") and IDFunc for testable event generation
+- MaterializeRequest struct with Validate() enforces required fields (AuthProfileID, SandboxID, AttemptID, RunID)
+- No-op when profile.SecretRef is nil or empty — no events emitted, no sandbox commands executed
+- Shell single-quote escaping via escapeShellSingleQuote() for safe secret content injection
+- Events: auth_materialize_started, auth_materialize_completed, auth_materialize_failed, auth_cleanup_started, auth_cleanup_done
+- Cleanup done event includes error payload when rm fails (consistent with TeardownService pattern)
+- 28 tests covering: Materialize (14 — success, no-op nil/empty secret, profile error, mkdir error/nonzero, write error/nonzero, event tolerance, nil IDFunc, custom dir, quote escaping, defaults), RequestValidation (5), Cleanup (9 — success, exec error, nonzero exit, empty params, event tolerance, nil IDFunc, custom dir), EscapeShellSingleQuote (4), IDFunc (1)
+- No Store interface changes needed — only uses GetAuthProfile and InsertEvent (both existing)
+- Files changed: internal/cloud/auth_materialization.go (new), internal/cloud/auth_materialization_test.go (new)
+- **Learnings for future iterations:**
+  - AuthMaterializationService follows dual Store+Runner dependency pattern but only uses Runner.Exec (like BootstrapService) + Store.GetAuthProfile and Store.InsertEvent
+  - Materialization is a no-op when secret_ref is nil/empty — no events, no exec calls, zero side effects
+  - Shell escaping for single quotes uses the standard `'\''` replacement pattern (end quote, escaped quote, start quote)
+  - The Cleanup method follows TeardownService's always-emit-done pattern — auth_cleanup_done includes error field on failure
+  - authMatMockStore needs GetAuthProfile override (returns linked profile by default) in addition to InsertEvent — same pattern as heartbeatMockStore
+  - No Store interface changes needed when the service only reads data and writes events — check existing methods before adding new ones
+---
+
+## 2026-02-10 - US-033
+- Implemented PreflightService in `internal/cloud/preflight.go` with Preflight method for provider preflight and compatibility checks
+- Added FailureAuthProfileIncompatible failure code to `failure.go` (terminal, non-retryable) with updates to validFailureCodes and retryableCodes maps
+- PreflightRequest struct with Validate() enforces required fields (AuthProfileID, SandboxID, AttemptID, RunID) + optional sandbox runtime fields (SandboxOS, SandboxArch, SandboxCLIVersion)
+- RuntimeMetadata struct for JSON deserialization of auth_profiles.runtime_metadata_json (os, arch, cli_version)
+- Compatibility check validates OS (case-insensitive), architecture (case-insensitive), and CLI major/minor version against profile metadata
+- parseMajorMinor extracts major.minor components for version comparison; only checks major+minor, ignores patch
+- Empty metadata fields or empty sandbox fields skip that specific check — graceful degradation when runtime info is unavailable
+- PreflightConfig.ProviderCommands maps provider names to non-interactive preflight shell commands; empty map = skip command execution
+- Preflight flow: validate → get auth profile → emit preflight_started → check compatibility → execute provider command → emit preflight_completed
+- Compatibility check runs BEFORE provider command execution — incompatible runtime stops early without running commands
+- Events: preflight_started, preflight_failed (with error_code and step), preflight_completed
+- preflight_failed event includes error_code field set to auth_profile_incompatible for metadata mismatches
+- 22 tests in TestPreflight: success with/without command, no metadata, OS/arch/version mismatches, multiple mismatches, case-insensitive matching, empty fields skip, malformed JSON, profile error, exec error/nonzero exit, stderr fallback, event tolerance, nil IDFunc, compatibility-before-command ordering, empty metadata string, defaults
+- 5 TestPreflightRequestValidation cases, 12 TestCheckCompatibility cases, 4 TestParseMajorMinor cases, 1 TestPreflightIDFunc
+- Updated failure_test.go with auth_profile_incompatible validity and classification tests
+- No Store interface changes needed — only uses GetAuthProfile and InsertEvent (existing)
+- Files changed: internal/cloud/preflight.go (new), internal/cloud/preflight_test.go (new), internal/cloud/failure.go, internal/cloud/failure_test.go
+- **Learnings for future iterations:**
+  - PreflightService follows dual Store+Runner dependency pattern but only uses Runner.Exec + Store.GetAuthProfile and Store.InsertEvent — same as AuthMaterialization and Bootstrap services
+  - Adding a new FailureCode requires 3 updates: const block, validFailureCodes map, retryableCodes map — the TestAllValidCodesAreClassified and TestRetryableCodesAreAllValid meta-tests catch any drift
+  - Compatibility checking uses strings.EqualFold for OS/arch (case-insensitive) but exact string match for version components — version numbers shouldn't have case variance
+  - parseMajorMinor uses strings.SplitN(version, ".", 3) — the third component (patch) is intentionally ignored for compatibility since patch versions should be backward-compatible
+  - PreflightConfig.ProviderCommands defaults to an empty initialized map (not nil) — prevents nil-map panics on lookup
+  - The preflight_failed event payload includes both error (human-readable) and error_code (machine-readable) fields — error_code is set only for incompatibility failures, not for command execution failures
+  - preflightMockRunner follows the same map-based command matching pattern as authMatMockRunner and bootstrapMockRunner
+---
+
+## 2026-02-10 - US-034
+- Implemented WritebackService in `internal/cloud/writeback.go` with Writeback method for credential writeback with version checks
+- WritebackRequest struct with Validate() enforces required fields (AuthProfileID, SandboxID, AttemptID, RunID)
+- WritebackResult struct returns Changed (bool) and Written (bool) for downstream decision-making
+- Writeback flow: get auth profile → skip if no secret_ref → emit writeback_started → read credentials from sandbox via `cat` → compare with original → if changed, update via UpdateAuthProfile with optimistic version check → emit writeback_completed
+- Successful writeback updates: SecretRef (new value), LastValidatedAt (now), ExpiresAt (now + CredentialsTTL), LastErrorCode (cleared to nil)
+- Version conflict on UpdateAuthProfile emits writeback_failed with error_code=version_conflict
+- WritebackConfig with AuthDir (default /home/user/.auth), CredentialsTTL (default 24h), and IDFunc for testable event generation
+- Events: writeback_started, writeback_completed (with changed/written fields), writeback_failed (with error and optional error_code)
+- No-op when profile.SecretRef is nil or empty — no events, no exec calls
+- 24 tests: Writeback (19 — success with change, no change, nil/empty secret no-op, profile error, read exec error, read nonzero exit, stderr fallback, version conflict, profile not found on update, generic update error, event tolerance, nil IDFunc, custom IDFunc, custom auth dir, custom TTL, clears last_error_code, defaults, version check passthrough), RequestValidation (5)
+- No Store interface changes needed — only uses GetAuthProfile, UpdateAuthProfile, and InsertEvent (all existing)
+- Files changed: internal/cloud/writeback.go (new), internal/cloud/writeback_test.go (new)
+- **Learnings for future iterations:**
+  - WritebackService follows dual Store+Runner dependency pattern but is the first service to use UpdateAuthProfile — optimistic version check is enforced at the adapter level (WHERE version = ?)
+  - Writeback reads credentials via `cat <credFile>` — the output (stdout) is the current secret content, compared with the profile's stored secret_ref
+  - Unchanged credentials still emit writeback_started and writeback_completed events (with changed=false, written=false) for audit completeness
+  - Version conflict returns ErrConflict from UpdateAuthProfile — the writeback_failed event includes error_code=version_conflict for machine-readable failure classification
+  - CredentialsTTL defaults to 24h — this sets ExpiresAt on the updated profile, giving downstream systems a window before re-validation is needed
+  - No new Store methods needed — WritebackService composes existing GetAuthProfile, UpdateAuthProfile, and InsertEvent; this is the ideal pattern for new services
+  - writebackMockStore captures the updated profile via deep copy for assertion — important because the caller modifies the profile struct in place before calling UpdateAuthProfile
+---
+
+## 2026-02-10 - US-035
+- Implemented deterministic redaction rule engine in `internal/cloud/redact.go` with Redact(), RedactBytes(), RedactMultiline(), ContainsSecret(), RedactWith(), and DefaultRedactionRules()
+- 9 default redaction rules: bearer_token, github_pat_fine_grained, github_pat_classic, device_code, session_cookie, api_key_param, x_api_key_header, authorization_basic, sk_live_key
+- All rules use compiled `*regexp.Regexp` with deterministic replacement format `[REDACTED]`
+- Rules with capture groups preserve prefixes (e.g., "Bearer " stays, token is replaced) via `applyRule` helper
+- RedactionRule struct exported for extensibility — `RedactWith()` accepts custom rule sets
+- DefaultRedactionRules() returns a copy to prevent mutation of package-level defaults
+- 55 fixture-based tests covering: bearer tokens (4), GitHub PATs (7), device codes (3), session cookies (5), API keys (6), Basic auth (2), Stripe keys (4), no false positives (5), multiple secrets (1), prefix preservation (6), bytes/multiline (2), custom rules (1), copy safety (1), placeholder format (1), rule completeness (1)
+- Files changed: internal/cloud/redact.go (new), internal/cloud/redact_test.go (new)
+- **Learnings for future iterations:**
+  - Redaction rules with capture groups use `FindStringSubmatchIndex` in `ReplaceAllStringFunc` to calculate prefix length — the capture group represents the prefix to preserve
+  - Non-capturing groups `(?:...)` must be used for alternation within token patterns (e.g., Stripe `(?:live|test)`) to avoid interfering with the prefix-preservation logic
+  - Session cookie values can contain URL-encoded characters (`%`, `:`, `=`) — character classes need to be broader than typical base64/hex patterns
+  - API key patterns in JSON require handling both `key=value` and `key": "value"` formats — use alternation in the separator part of the capture group
+  - The `api[-_]key` pattern correctly requires an explicit separator to avoid false positives on unrelated strings containing "apikey" as a substring
+  - No Store, Runner, or other dependency changes needed — redaction is a pure utility module consumed by persistence and streaming pipelines (US-036)
+  - RedactMultiline is a convenience wrapper that applies Redact to each line independently — useful for log streams
+---
+
+## 2026-02-10 - US-036
+- Integrated redaction into persistence pipeline: all 7 services with emitEvent methods (execution, bootstrap, provision, teardown, preflight, auth_materialization, writeback) now redact PayloadJSON before insertion
+- Created `redactPayload()` shared helper in `redact_pipeline.go` — applies `ContainsSecret` check then `Redact` to payload strings, returns redacted string and `wasRedacted` flag
+- Services set `event.Redacted = true` only when secrets are actually detected and masked — no-secret payloads remain `Redacted=false`
+- Created `RedactingLogReader` in `redact_pipeline.go` — wraps `io.ReadCloser` from `runner.StreamLogs` and applies line-by-line redaction via `bufio.Scanner` before exposing to CLI
+- RedactingLogReader supports small read buffers by internally buffering redacted line output
+- Integration tests cover all 7 event-emitting services: bootstrap (bearer token), execution (GitHub PAT), preflight (X-Api-Key/Stripe), teardown (bearer token), writeback (GitHub PAT), auth_materialization (bearer token)
+- Additional tests: `redactPayload` unit tests (5), `RedactingLogReader` unit tests (6), `TestRedactionPreservesPayloadStructure` (valid JSON after redaction), `TestNoSecretEventsAreNotMarkedRedacted`
+- Services that emit events without payloads (heartbeat, reconciler, cancellation, timeout) have nil PayloadJSON — `redactPayload(nil)` is a no-op, no changes needed
+- No Store interface or DDL changes needed — `event.Redacted` field and `redacted` column already existed from US-003
+- Files changed: internal/cloud/redact_pipeline.go (new), internal/cloud/redact_pipeline_test.go (new), internal/cloud/execution.go, internal/cloud/bootstrap.go, internal/cloud/provision.go, internal/cloud/teardown.go, internal/cloud/preflight.go, internal/cloud/auth_materialization.go, internal/cloud/writeback.go
+- **Learnings for future iterations:**
+  - The `redactPayload` helper is the single point of contact between the redaction engine and the event persistence pipeline — adding new redaction rules in `redact.go` automatically applies to all events
+  - RedactingLogReader wraps io.ReadCloser for streaming redaction — caller uses it as drop-in replacement for `runner.StreamLogs()` return value
+  - Services that don't carry payloads (heartbeat, reconciler, cancellation, timeout) need no changes — `redactPayload(nil)` returns nil, false
+  - The `Redacted` field on Event was pre-existing infrastructure from US-003 — US-036 only needed to set it correctly
+  - `ContainsSecret` check before `Redact` avoids the cost of regex replacement when no secrets are present — also ensures `wasRedacted=false` for clean payloads
+---
+
+## 2026-02-10 - US-037
+- Implemented PRCreateService in `internal/cloud/pr_create.go` with idempotent CreatePR method
+- Deterministic idempotency key format: `pr_create:<run_id>` — same run always produces the same key
+- CreatePR flow: check existing key → (if exists) return stored PR ref without external call → (if not) emit pr_create_started → call external PRCreator → store idempotency key → emit pr_create_completed
+- PRCreator is a function type `func(ctx, req) (string, error)` injected by the caller — keeps the service decoupled from GitHub API specifics
+- Race condition handling: if PutIdempotencyKey returns ErrDuplicateKey (concurrent attempt stored it), re-reads the key and returns stored result
+- Events: pr_create_started, pr_create_completed, pr_create_failed, pr_create_reused (when key already existed)
+- PRCreateResult returns PRRef (string) and Created (bool) — Created=false for reused keys
+- Event emission is best-effort (errors ignored) — consistent with all other services
+- 16 tests: request validation (7), successful creation, existing key reuse, retry exactly-one-call, nil creator, creator failure, get/put key errors, duplicate key race, race get failure, event failure tolerance, IDFunc, nil IDFunc, nil result_ref, idempotency key format, determinism
+- No Store interface changes needed — uses existing GetIdempotencyKey, PutIdempotencyKey, and InsertEvent methods
+- Files changed: internal/cloud/pr_create.go (new), internal/cloud/pr_create_test.go (new)
+- **Learnings for future iterations:**
+  - PRCreateService is the first service to use the idempotency key infrastructure (PutIdempotencyKey, GetIdempotencyKey) — the pattern is: check key → do work → store key
+  - PRCreator function type decouples the service from external API implementations — caller injects the actual GitHub/GitLab/etc. client logic
+  - Idempotency key format `<side_effect_type>:<run_id>` ensures uniqueness per run per side effect — future side effects (US-038) should follow the same pattern
+  - Race condition on PutIdempotencyKey (ErrDuplicateKey) is recoverable — re-read the key and return the stored result as if it was reused
+  - The sideEffectPRCreate constant should be used consistently for both key generation and IdempotencyKey.SideEffectType field
+  - No Runner dependency needed — PRCreateService only depends on Store; the external PR creation is delegated via the PRCreator function
+---
+
+## 2026-02-10 - US-038
+- Implemented PRUpdateService in `internal/cloud/pr_side_effects.go` with idempotent UpdatePR method using `pr_update:<run_id>` deterministic key
+- Implemented PRCommentService in `internal/cloud/pr_side_effects.go` with idempotent CommentPR method using `pr_comment:<run_id>` deterministic key
+- PRUpdater function type `func(ctx, req) error` — update has no return reference (void side effect), just confirms it was done
+- PRCommenter function type `func(ctx, req) (string, error)` — returns comment reference (URL/ID) like PRCreator
+- PRUpdateResult has `Updated bool`; PRCommentResult has `CommentRef string` and `Created bool`
+- Both services follow exact same check-before-do-then-store idempotency pattern as PRCreateService
+- PRCommentService handles race condition (ErrDuplicateKey on Put) with re-read fallback; PRUpdateService returns Updated=false on race
+- Shared `prSideEffectEventPayload` struct with CommentRef field for comment-specific payloads
+- Events: pr_update_started/completed/failed/reused, pr_comment_started/completed/failed/reused
+- All events go through `redactPayload()` for secret masking before persistence
+- 30 tests total: PRUpdateRequestValidation (5), UpdatePR (11 — success, reuse, retry no-duplicate, nil updater, failure, get/put errors, race, event tolerance, IDFunc, nil IDFunc), PRCommentRequestValidation (6), CommentPR (13 — success, reuse, retry no-duplicate, nil commenter, failure, get/put errors, race, race-get failure, event tolerance, IDFunc, nil IDFunc, nil result_ref), idempotency key format + determinism (4)
+- No Store interface changes needed — uses existing GetIdempotencyKey, PutIdempotencyKey, and InsertEvent methods
+- Files changed: internal/cloud/pr_side_effects.go (new), internal/cloud/pr_side_effects_test.go (new)
+- **Learnings for future iterations:**
+  - PR side effect services (update, comment) follow identical idempotency pattern as PRCreateService — the `<side_effect_type>:<run_id>` key format is the reusable pattern for all idempotent side effects
+  - PRUpdateService uses a simpler race handling path than PRCreate/PRComment — since update has no result reference, a duplicate key on Put just returns Updated=false without needing to re-read the key
+  - Shared prSideEffectEventPayload avoids duplicating payload structs for update and comment — add new fields (e.g., CommentRef) as optional/omitempty
+  - PRCommenter returns a string reference (like PRCreator) but PRUpdater returns void — void side effects don't need result_ref stored in the idempotency key (though we store PRRef for auditability)
+  - No new Store methods, Runner dependencies, or DDL changes needed — all three PR side effect services (create, update, comment) compose existing Store methods only
+---
+
+## 2026-02-10 - US-039
+- Implemented BundleManifest and BundleManifestRecord domain types in `internal/cloud/bundle_manifest.go`
+- Defined BundleAllowlist with exactly: .hal/prd.json, .hal/auto-prd.json, .hal/progress.txt, .hal/prompt.md, .hal/config.yaml, .hal/standards/**
+- Defined BundleDenylist with: .hal/archive/**, .hal/reports/**, .hal/skills/**, .hal/commands/**, .pi/**, .claude/**, ~/.codex/**
+- Implemented ComputeBundleHash: deterministic SHA-256 over sorted path+content records with normalized paths (path\x00sha256\n per record)
+- Implemented NormalizeBundlePath for cross-platform path normalization (backslash→forward slash, path.Clean)
+- Implemented IsBundlePathAllowed with denylist-first, allowlist-second evaluation and /** recursive glob support
+- Helper functions: ComputeFileSHA256, NewBundleManifestRecord, NewBundleManifest (auto-sort, auto-hash)
+- BundleManifest.Validate() checks: non-empty SHA256, non-empty records, record field validity, no duplicate paths
+- BundleManifest.VerifyHash() recomputes hash and compares with stored value
+- 55 tests covering: validation (9), hash verification (3), hash computation (7), path normalization (6), path allowlist/denylist (20), pattern matching (7), file SHA256 (4), record creation (1), manifest creation (4), allowlist/denylist completeness (2), cross-platform hash (1)
+- Files changed: internal/cloud/bundle_manifest.go (new), internal/cloud/bundle_manifest_test.go (new)
+- **Learnings for future iterations:**
+  - BundleManifest is a pure domain type with no DB schema — it's used by the submit/upload pipeline (US-040, US-046), not stored as a table
+  - The allowlist/denylist pattern uses ** for recursive globs — matchBundlePattern strips the suffix and does prefix matching with "/" separator
+  - ComputeBundleHash uses NUL byte (0x00) as separator between path and SHA256 to prevent ambiguity if a path contained the SHA256 value
+  - NewBundleManifest copies the input slice before sorting to avoid mutating the caller's data — follow this pattern for any sort operation on input
+  - IsBundlePathAllowed checks denylist first so denied paths are always excluded even if they match an allowlist pattern — this is the standard deny-first security pattern
+  - No Store, Runner, or other dependency changes needed — bundle manifest is a pure utility module consumed by submit (US-040) and CLI run (US-046) commands
+---
+
+## 2026-02-10 - US-040
+- Implemented bundle ingestion and input snapshot persistence in SubmitService
+- Added `SubmitWithBundle` method on SubmitService: validates bundle manifest, verifies hash, delegates to Submit for run creation, stores input snapshot (kind=input, version=1), updates run snapshot refs
+- Added `BundlePayload` struct containing Manifest (BundleManifest) and Content ([]byte) for the compressed bundle
+- Added `ErrBundleHashMismatch` domain error with `IsBundleHashMismatch()` helper for hash verification failures
+- Added `UpdateRunSnapshotRefs` Store method to update input_snapshot_id, latest_snapshot_id, and latest_snapshot_version on a run
+- Implemented UpdateRunSnapshotRefs in both Postgres and Turso adapters with ErrNotFound on non-existent run
+- Added contract test `testUpdateRunSnapshotRefs` for adapter verification
+- Extended submitMockStore with PutSnapshot and UpdateRunSnapshotRefs overrides for service-level testing
+- 12 SubmitWithBundle tests: successful submit, nil bundle, manifest validation (2), hash mismatch with error type check, request validation passthrough, snapshot store error, refs update error, SHA256 persistence, content persistence, IDFunc verification, input/latest ID match
+- Files changed: internal/cloud/submit.go, internal/cloud/submit_test.go, internal/cloud/errors.go, internal/cloud/errors_test.go, internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/storetest/contract.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go
+- **Learnings for future iterations:**
+  - SubmitWithBundle validates bundle BEFORE creating the run — this ensures no orphan runs if bundle is invalid
+  - The flow is: validate bundle → Submit (creates run) → PutSnapshot (stores input snapshot with FK to run) → UpdateRunSnapshotRefs (sets both input and latest refs)
+  - input_snapshot_id and latest_snapshot_id both point to the same snapshot initially — checkpoint/final snapshots (US-041) will only update latest_snapshot_id
+  - UpdateRunSnapshotRefs uses RowsAffected() for ErrNotFound detection — same pattern as UpdateAttemptSandboxID
+  - Snapshot content_encoding is hardcoded to "application/gzip" — bundles are expected to be gzip-compressed by the CLI (US-046)
+  - Adding a Store method now requires 5 updates: store.go, store_test.go (mock + count), postgres/store.go, turso/store.go, storetest/contract.go
+---
+
+## 2026-02-10 - US-041
+- Implemented SnapshotService in `internal/cloud/snapshot_service.go` with StoreSnapshot method for checkpoint and final snapshot persistence
+- SnapshotRequest.Validate() enforces: runID, attemptID, kind (checkpoint or final only — input rejected), sha256, contentEncoding
+- StoreSnapshot flow: validate → GetRun (resolve current version) → compute next version (latest + 1) → PutSnapshot → UpdateRunSnapshotRefs (latest only, not input) → emit snapshot_stored event
+- Version monotonically increases per run: reads run.LatestSnapshotVersion, increments by 1 for each new snapshot
+- Checkpoint and final snapshots update only latest_snapshot_id and latest_snapshot_version — input_snapshot_id is never modified (set only by SubmitWithBundle)
+- SnapshotResult returns SnapshotID and Version for downstream consumers
+- snapshotEventPayload includes snapshot_id, run_id, kind, version, sha256, size_bytes for audit trail
+- Event emission is best-effort (errors ignored) — consistent with all other service patterns
+- SnapshotServiceConfig follows same IDFunc pattern as other services (nil IDFunc = empty IDs)
+- 26 tests covering: request validation (8), successful checkpoint (1), successful final (1), version monotonic increase (1), get_run failure/not_found (2), put_snapshot failure/conflict (2), update_refs failure (1), event failure tolerance (1), nil/custom IDFunc (2), content size computation (2), input_id not updated (1), final same pattern (1), validation stops early (1), defaults (1), event payload structure (1)
+- Files changed: internal/cloud/snapshot_service.go (new), internal/cloud/snapshot_service_test.go (new)
+- **Learnings for future iterations:**
+  - SnapshotService depends only on Store (no Runner dependency) — it composes GetRun, PutSnapshot, UpdateRunSnapshotRefs, and InsertEvent
+  - Checkpoint/final snapshots pass nil for inputSnapshotID in UpdateRunSnapshotRefs — only SubmitWithBundle sets the input snapshot ref
+  - Version resolution reads from run.LatestSnapshotVersion rather than querying snapshots table — simpler and avoids race conditions
+  - SnapshotRequest rejects SnapshotKindInput since input snapshots are handled by SubmitWithBundle, not the worker
+  - No Store interface changes needed — all required methods already existed from US-040 (PutSnapshot, GetLatestSnapshot, UpdateRunSnapshotRefs)
+  - snapshotMockStore follows the same embed-mockStore pattern as other service tests — overrides GetRun, PutSnapshot, UpdateRunSnapshotRefs, InsertEvent
+---
+
+## 2026-02-10 - US-042
+- Implemented `hal cloud submit` CLI command in `cmd/cloud.go` with parent `cloudCmd` and `cloudSubmitCmd` subcommand
+- Supports flags: `--repo`, `--base`, `--engine`, `--auth-profile`, `--scope`, and `--json`
+- Human-readable output includes: run_id, status, engine, auth_profile, submitted_at
+- JSON success output uses `cloudSubmitResponse` struct with exact fields: run_id, status, engine, auth_profile, submitted_at
+- JSON error output uses `cloudSubmitErrorResponse` struct with exact fields: error, error_code
+- Error codes: validation_error, not_found, auth_profile_not_linked, engine_provider_mismatch, policy_blocked, store_error, configuration_error, unknown_error
+- Uses factory injection pattern (`cloudSubmitStoreFactory`, `cloudSubmitConfigFactory`) for testable dependency wiring
+- `classifySubmitError` maps SubmitService error messages to machine-readable codes via string pattern matching
+- 24 tests total: TestRunCloudSubmit (15 — success human/JSON, validation errors, auth not found/not linked, engine mismatch, policy blocked, enqueue failure, nil/error store factory, all-fields human/JSON), TestClassifySubmitError (8), TestWriteJSON (1)
+- Files changed: cmd/cloud.go (new), cmd/cloud_test.go (new)
+- **Learnings for future iterations:**
+  - Cloud CLI commands use a parent `cloudCmd` with subcommands — future commands (status, logs, cancel, run, pull, auth) should be added as subcommands of `cloudCmd`
+  - CLI mock stores in `cmd/` must implement the full `cloud.Store` interface (25 methods) since they can't embed the internal `mockStore` — this is the main cost of cross-package testing
+  - Factory injection (`storeFactory func() (cloud.Store, error)`) provides clean testability without Cobra flag dependency — the handler function accepts all values as explicit params
+  - `writeJSON` and `writeSubmitError` are reusable helpers for future cloud CLI commands that need JSON output
+  - `classifySubmitError` uses string matching on SubmitService error messages — if error messages change in `submit.go`, the error code mapping may need updating
+  - The `--json` flag on error paths writes JSON to stdout and returns nil (not error) so the output is clean JSON without Cobra's error formatting
+  - No Store, domain type, or DDL changes needed — this is a pure CLI layer on top of existing SubmitService
+---
+
+## 2026-02-10 - US-043
+- Implemented `hal cloud status <run-id>` CLI command with human-readable and `--json` output
+- Human-readable output includes: run_id, status, attempt_count, max_attempts, current_attempt, last_heartbeat_age (formatted duration), deadline_at
+- JSON output contains exactly: run_id, status, attempt_count, max_attempts, current_attempt (nullable), last_heartbeat_age_seconds (nullable), deadline_at (nullable), engine, auth_profile_id
+- Unknown run_id exits non-zero with error code `not_found` — JSON output writes error response before returning error
+- Added `GetActiveAttemptByRun` Store method to get the active attempt for a run (needed for heartbeat age and current_attempt)
+- Updated both Postgres and Turso adapters with the new Store method (SELECT WHERE status='active')
+- Added contract test `testGetActiveAttemptByRun` covering: no attempt, active found, after termination, non-existent run
+- Added `cloudStatusCmd` as subcommand of `cloudCmd` with `--json` flag and `cobra.ExactArgs(1)`
+- `cloudErrorResponse` and `writeCloudError` are reusable for future cloud CLI error responses
+- `formatDuration` helper provides human-friendly time formatting (seconds, minutes+seconds, hours+minutes)
+- Extended `cloudMockStore` with `runsByID`, `activeAttempts` maps and `getRErr`/`getAttemptErr` overrides for status testing
+- 13 status tests + 4 formatDuration tests covering: success human/JSON, no attempt, unknown run, nil/error store factory, store error, no deadline, required JSON fields
+- Files changed: cmd/cloud.go, cmd/cloud_test.go, internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/storetest/contract.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go
+- **Learnings for future iterations:**
+  - Adding a Store method now requires updating 6 places: store.go (interface), store_test.go (mock + method count), postgres/store.go, turso/store.go, storetest/contract.go, and cmd/cloud_test.go (cloudMockStore)
+  - CLI error paths for `--json` must write JSON to stdout AND return an error — the JSON output satisfies the machine-readable contract while the error triggers non-zero exit
+  - `cloudMockStore` in cmd/ needs `runsByID` and `activeAttempts` maps for status queries — the original submit-only mock only needed `profiles` map
+  - GetActiveAttemptByRun queries `WHERE status = 'active'` which works with the partial unique index `idx_attempts_one_active_per_run` — guaranteed at most one result
+  - Nullable JSON fields use pointer types (`*int`, `*int64`, `*string`) — omitted from JSON when nil, which produces `null` in output
+  - `writeCloudError` is the generalized version of `writeSubmitError` — future cloud commands should use it instead of duplicating error output logic
+---
+
+## 2026-02-10 - US-044
+- Implemented `hal cloud logs <run-id>` command that lists run events ordered by ascending timestamp
+- Added `--follow` flag that polls for new events until the run reaches a terminal state or context is canceled
+- Events are already redacted at the persistence layer; output never includes raw secret tokens
+- Used `cloudLogsFollowPollInterval` package-level var for testable poll intervals
+- Added `formatEvent` helper for consistent event line formatting: `<timestamp>  <event_type>  [payload]`
+- Extended `cloudMockStore` with `events` map and `listEventsErr` override for configurable test data
+- 8 table-driven tests + 3 standalone tests: events ordering, empty events, not_found, nil store, store error, list events error, nil payload, redacted output, follow terminal exit, follow context cancel, follow new events, formatEvent
+- Files changed: cmd/cloud.go, cmd/cloud_test.go
+- **Learnings for future iterations:**
+  - For --follow polling, reuse existing `ListEvents` + client-side deduplication (seen map) instead of adding a `ListEventsSince` store method — avoids the 6-place Store method update tax
+  - `cloudLogsFollowPollInterval` as package-level var enables deterministic follow tests with 10ms interval instead of real 2s polling
+  - `RunStatus.IsTerminal()` already exists and works well for follow exit detection — no need to build separate terminal status checks
+  - Events in the DB are already redacted via `redactPayload` at write time, so the logs CLI doesn't need an additional redaction pass
+---
+
+## 2026-02-10 - US-045
+- Implemented `hal-cloud cancel <run-id>` command with `--json` flag
+- Command uses `CancellationService.RequestCancel` to set cancel intent, then `store.GetRun` to read current state
+- Human output: run_id, cancel_requested, status, canceled_at (shows "pending" when not yet canceled)
+- JSON output: `cloudCancelResponse` with `run_id`, `cancel_requested`, `status`, `canceled_at` fields
+- `canceled_at` is derived from `run.UpdatedAt` when status is `canceled` (no dedicated DB column)
+- Unknown run_id exits non-zero with `not_found` error code
+- Enhanced mock `SetCancelIntent` to actually update `CancelRequested` on the run for realistic test behavior
+- Files changed: `cmd/cloud.go`, `cmd/cloud_test.go`
+- **Learnings for future iterations:**
+  - Cancel command follows the same testable `runCloudCancel(runID, jsonOutput, storeFactory, out)` extraction pattern as other cloud commands
+  - `CancellationService.RequestCancel` delegates to `store.SetCancelIntent` which is idempotent — calling on already-canceled runs succeeds
+  - When mock stubs need realistic behavior for new tests (e.g., SetCancelIntent updating state), enhance the mock method without breaking existing no-op tests that don't populate `runsByID`
+  - The `canceled_at` field uses `UpdatedAt` when status is `canceled` — a pragmatic choice avoiding a new DB column for a derived value
+---
+
+## 2026-02-10 - US-046
+- Implemented `hal-cloud run` command that packages allowlisted .hal files into a compressed bundle and submits via `SubmitWithBundle`
+- Added `--dry-run` flag that prints included file paths and total bytes without network requests
+- Added `--json` flag for machine-readable output with `run_id`, `status`, and `bundle_hash`
+- Implemented `collectBundleFiles` helper that walks `.hal/` and applies `cloud.IsBundlePathAllowed` filtering
+- Implemented `compressBundleFiles` helper for gzip compression with path-framed content
+- Added `cloudRunCmd` with flags: `--repo`, `--base`, `--engine`, `--auth-profile`, `--scope`, `--dry-run`, `--json`
+- Added response types: `cloudRunResponse`, `cloudRunDryRunResponse`, `cloudRunDryRunFile`
+- Added factory variables: `cloudRunStoreFactory`, `cloudRunConfigFactory` for test injection
+- Files changed: `cmd/cloud.go`, `cmd/cloud_test.go`
+- Tests: 10 test cases for `TestRunCloudRun`, 3 test cases for `TestCollectBundleFiles` — all pass
+- **Learnings for future iterations:**
+  - `runCloudRun` accepts `baseDir string` param (instead of using cwd) for testable filesystem access — use `t.TempDir()` as baseDir in tests
+  - `setupHalDir` test helper creates `.hal/` with arbitrary file map — useful for future cloud CLI tests that need filesystem state
+  - Dry-run mode tests verify that nil store factory doesn't cause errors — dry-run returns before store access
+  - `cloudRunResponse` is intentionally distinct from `cloudSubmitResponse` — run returns `bundle_hash` instead of engine/auth_profile details
+  - Bundle compression uses simple framing (path\x00length\x00content) inside gzip — matches `BundlePayload.Content` expectations
+---
+
+## 2026-02-10 - US-047
+- Implemented `hal-cloud pull <run-id>` command with `--force` and `--json` flags
+- Added `runCloudPull` testable function following existing CLI extraction pattern
+- Implemented `decompressBundleFiles` as inverse of `compressBundleFiles` (gzip with path\x00size\x00content framing)
+- Local change detection: compares file bytes before writing, refuses overwrite unless `--force`
+- JSON output includes `run_id`, `snapshot_version`, `sha256`, `files_restored`
+- Human output shows version, sha256, count, and file list
+- Files changed: cmd/cloud.go, cmd/cloud_test.go (plus gofmt-only changes in internal/cloud/*.go)
+- **Learnings for future iterations:**
+  - `decompressBundleFiles` reads entire gzip into memory then parses — fine for .hal bundles which are small, but would need streaming for large bundles
+  - Mock store `snapshots` map should be keyed by runID (matching `GetLatestSnapshot` access pattern), not snapshotID
+  - `makeBundleSnapshot` test helper reuses `compressBundleFiles` for roundtrip fidelity — always test with real compression, not hand-crafted bytes
+  - Local change detection checks all files before writing any — atomic refusal avoids partial restore state
+  - `gofmt` may touch unrelated files when `make fmt` runs — these are formatting-only changes and safe to include in the commit
+---
+
+## 2026-02-10 - US-048
+- Implemented `hal cloud auth link` command with `--provider`, `--profile`, `--secret`, `--owner`, `--mode`, `--json` flags
+- Added `CreateAuthProfile` method to Store interface, Postgres adapter, Turso adapter, and all mock stores
+- Created `AuthLinkService` in `internal/cloud/auth_link.go` — validates request, creates profile with `linked` status, emits `auth_profile_linked` audit event
+- Created `cloudAuthCmd` parent and `cloudAuthLinkCmd` subcommand in `cmd/cloud_auth.go`
+- Added `classifyAuthLinkError` for machine-readable error codes: `validation_error`, `duplicate_profile`, `store_error`
+- Updated Store method count from 26 to 27 in `internal/cloud/store_test.go`
+- Files changed: internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/auth_link.go, internal/cloud/auth_link_test.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go, cmd/cloud_auth.go, cmd/cloud_auth_test.go, cmd/cloud_test.go
+- **Learnings for future iterations:**
+  - Adding a Store method now requires updating 7 places (up from 6): store.go, store_test.go, postgres/store.go, turso/store.go, storetest/contract.go, cmd/cloud_test.go, and service-specific test mocks
+  - Auth CLI commands follow the same factory injection pattern as other cloud commands — put each command group in its own file (e.g., `cloud_auth.go`) for maintainability
+  - Audit events are best-effort side effects — `InsertEvent` failures are ignored so the primary operation (profile creation) succeeds
+  - The `cloudMockStore.CreateAuthProfile` implementation uses `ErrDuplicateKey` sentinel to simulate realistic duplicate detection
+---
+
+## 2026-02-10 - US-049
+- Implemented `hal-cloud auth import` command for importing local auth artifacts when interactive link is unavailable
+- Created `AuthImportService` in `internal/cloud/auth_import.go` with `Import()` method that validates request, encrypts source as secret reference, creates auth profile, and emits audit event
+- Added `cloudAuthImportCmd` Cobra subcommand under `auth` parent with flags `--provider`, `--profile`, `--source`, `--owner`, `--mode`, `--json`
+- Added `runCloudAuthImport` testable function following the existing extraction pattern (accepts storeFactory + io.Writer)
+- Added `classifyAuthImportError` for machine-readable error codes matching the auth link error classifier pattern
+- Files changed: internal/cloud/auth_import.go, internal/cloud/auth_import_test.go, cmd/cloud_auth.go, cmd/cloud_auth_test.go
+- **Learnings for future iterations:**
+  - Auth commands (link, import) share the same service pattern: validate → create profile → emit audit event (best-effort) — future auth commands (status, validate, revoke) should follow the same structure
+  - `classifyAuth*Error` functions are identical between link and import — could be consolidated into a shared `classifyAuthError` if more auth commands are added
+  - Import uses `"encrypted:" + source` as the secret reference — in production this would involve actual encryption of the source file contents
+  - Default mode for import is "imported" (vs "session" for link) to distinguish the origin of the profile
+---
+
+## 2026-02-10 - US-050
+- Implemented `hal-cloud auth status <profile>` command with human-readable and --json output
+- Added `GetActiveAuthLock` method to Store interface for querying active auth profile locks
+- Implemented `GetActiveAuthLock` in both Postgres and Turso adapters
+- JSON output includes exactly: profile_id, provider, status, lock_owner_run_id, lock_lease_expires_at, runtime_metadata, last_validated_at, expires_at, last_error_code
+- Missing profile exits non-zero with error code not_found
+- 11 table-driven test cases covering: human/JSON output, lock/no-lock, missing profile, store errors, optional fields
+- Files changed: internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go, cmd/cloud_auth.go, cmd/cloud_auth_test.go, cmd/cloud_test.go
+- **Learnings for future iterations:**
+  - Adding a Store method requires updating 7 places: store.go, store_test.go (mock+count comment), postgres/store.go, turso/store.go, storetest/contract.go, cmd/cloud_test.go, and any service test mocks
+  - Auth status command follows the read-only pattern: GetAuthProfile + GetActiveAuthLock (best-effort) — no service layer needed, direct store access is appropriate for pure reads
+  - `cloudMockStore` in `cmd/cloud_test.go` now has a `locks` map for auth lock tests — mirrors the `profiles`, `runsByID`, `activeAttempts`, etc. maps
+  - JSON not_found error pattern: write JSON output AND return error (non-zero exit) — same pattern used by cancel, status, pull commands
+---
+
+## 2026-02-10 - US-051
+- Implemented `hal-cloud auth validate <profile>` command
+- Created `AuthValidateService` in `internal/cloud/auth_validate.go` with `Validate()` method
+- Service validates: profile status (revoked check), runtime metadata JSON parseability, credential linkage (secret_ref presence)
+- Success path: updates `last_validated_at`, clears `last_error_code`, emits `auth_profile_validated` audit event
+- Failure path: sets `last_error_code` to `auth_invalid` or `auth_profile_incompatible`, emits audit event with error code
+- CLI command supports `--json` for machine-readable output with `cloudAuthValidateResponse` struct
+- Error classifier `classifyAuthValidateError` maps errors to codes: `not_found`, `auth_invalid`, `auth_profile_incompatible`, `validation_error`, `store_error`
+- Failure exits non-zero (returns wrapped error from CLI)
+- 12 service-layer tests and 13 CLI tests (human output, JSON output, error paths, store factory errors)
+- Files changed: `internal/cloud/auth_validate.go`, `internal/cloud/auth_validate_test.go`, `cmd/cloud_auth.go`, `cmd/cloud_auth_test.go`, `cmd/cloud_test.go`
+- **Learnings for future iterations:**
+  - Domain error `ErrNotFound` prints as `"not_found"` (underscore), not `"not found"` (space) — error classifiers must match both patterns
+  - Auth command CLI pattern: storeFactory check → store connect → service call → classify error on failure → JSON or human output on success
+  - `cloudMockStore.UpdateAuthProfile` was a no-op stub — validate tests needed it to actually persist changes; updated to store profile by ID
+  - Service tests use `mockStore` embedding (from `store_test.go`) while CLI tests use `cloudMockStore` (full interface impl) — different patterns for different test scopes
+---
+
+## 2026-02-10 - US-052
+- Implemented AuthRevokeService with Revoke() method that transitions auth profile status to revoked
+- Added AuthRevokeRequest with Validate() and AuthRevokeResult with revoked_at timestamp
+- Added audit event emission (auth_profile_revoked) with provider and profile ID payload
+- Added `hal-cloud auth revoke <profile>` CLI command with --json flag
+- Added classifyAuthRevokeError for machine-readable error codes (not_found, validation_error, store_error)
+- Files changed: `internal/cloud/auth_revoke.go`, `internal/cloud/auth_revoke_test.go`, `cmd/cloud_auth.go`, `cmd/cloud_auth_test.go`
+- **Learnings for future iterations:**
+  - Auth revoke is simpler than validate — no runtime metadata checks or secret_ref validation needed, just a status transition
+  - Revoking an already-revoked profile is idempotent (succeeds without error) — consistent with the service pattern
+  - Auth command services follow a consistent pattern: Request.Validate() → store.GetAuthProfile() → mutate → store.UpdateAuthProfile() → emitAuditEvent()
+  - CLI revoke command follows validate pattern exactly: storeFactory → service call → classifyError on failure → JSON/human output on success
+---
+
+## 2026-02-10 - US-053
+- Implemented Turso-first deployment profile with full infrastructure for 3 services
+- Created `internal/cloud/deploy/` package with Config, store factory, health handler, and smoke checks
+  - `config.go`: LoadConfig (env var loading), Validate (fail-fast on missing required vars), default adapter is turso
+  - `store_factory.go`: OpenStore selects Turso or Postgres adapter based on HAL_CLOUD_DB_ADAPTER, runs migration
+  - `health.go`: HealthHandler returns HTTP 200 JSON with ok, version, adapter fields
+  - `smoke.go`: RunSmoke checks control-plane and runner /health endpoints, WriteSmokeReport for human/JSON output
+- Created `deploy/` directory with Docker Compose and Dockerfiles
+  - `docker-compose.yml`: control-plane, worker, daytona-runner services with explicit env vars
+  - `Dockerfile.control-plane`, `Dockerfile.worker`: Multi-stage Go builds with alpine
+  - `Dockerfile.daytona-runner`: Multi-stage Node.js build
+  - `.env.example`: Template for required environment variables
+- Added `cmd/cloud_deploy.go` with `hal cloud smoke` and `hal cloud env` CLI commands
+  - smoke: Verifies both health endpoints return HTTP 200 with --json support
+  - env: Validates deployment environment variables are correctly set
+- Files changed: internal/cloud/deploy/config.go, config_test.go, store_factory.go, store_factory_test.go, health.go, health_test.go, smoke.go, smoke_test.go, cmd/cloud_deploy.go, cmd/cloud_deploy_test.go, deploy/docker-compose.yml, deploy/Dockerfile.control-plane, deploy/Dockerfile.worker, deploy/Dockerfile.daytona-runner, deploy/.env.example
+- **Learnings for future iterations:**
+  - The deploy package uses `getenv func(string) string` injection pattern for testable env var reading — same principle as io.Writer injection
+  - Store factory returns both `cloud.Store` and `*sql.DB` so caller can close the DB connection on shutdown
+  - Health endpoints are intentionally unauthenticated to allow external monitoring probes (consistent with daytona-runner pattern)
+  - Docker Compose healthchecks use `wget --spider` since alpine images don't include curl
+  - The `hal cloud env` command validates without needing actual DB/service connections — pure config check
+---
+
+## 2026-02-10 - US-014
+- Implemented parity benchmark harness for both Postgres and Turso adapters
+- Created adapter-neutral benchmark infrastructure in `internal/cloud/storetest/benchmark.go` with `BenchmarkClaimContention` and `BenchmarkAuthLockContention` scenario runners
+- BenchmarkResult JSON output uses exactly the required keys: scenario, adapter, runs, errors, claim_p95_ms, heartbeat_p95_ms, duplicate_claims, lock_overcommit_violations
+- Created Turso benchmark tests in `internal/cloud/turso/benchmark_test.go` (runs without integration tags)
+- Created Postgres benchmark tests in `internal/cloud/postgres/benchmark_test.go` (integration-tagged, requires HAL_TEST_POSTGRES_DSN)
+- Added unit tests for percentile calculation and JSON output contract in `internal/cloud/storetest/benchmark_test.go`
+- Report artifacts are written as timestamped JSON files to temp directories during test runs
+- Files changed: internal/cloud/storetest/benchmark.go, internal/cloud/storetest/benchmark_test.go, internal/cloud/turso/benchmark_test.go, internal/cloud/postgres/benchmark_test.go
+- **Learnings for future iterations:**
+  - Benchmark functions use `func() cloud.Store` factory (not `NewStoreFunc` which requires `*testing.T`) to allow per-scenario store creation
+  - Auth lock contention benchmarks need `setupAuthProfile func(id string)` callback because auth profile insertion is adapter-specific SQL (Postgres uses $1 params, Turso uses ?)
+  - The percentile function uses linear interpolation between floor/ceil ranks for non-integer percentile positions
+  - Turso benchmark tests run as regular unit tests (no build tags), while Postgres benchmarks are tagged `//go:build integration`
+  - Each benchmark scenario creates its own enqueued runs with staggered created_at to ensure deterministic claim ordering
+---

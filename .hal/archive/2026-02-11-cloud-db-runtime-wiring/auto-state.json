@@ -1,0 +1,29 @@
+{
+  "step": "pr",
+  "baseBranch": "hal/cloud-db-runtime-wiring",
+  "branchName": "compound/adapter-validation-parity-runtime-lifecycle",
+  "reportPath": ".hal/reports/review-2026-02-11-161022-000.md",
+  "prdPath": ".hal/prd-adapter-validation-parity-runtime-lifecycle.md",
+  "startedAt": "2026-02-11T16:10:28.691344+08:00",
+  "loopIterations": 7,
+  "loopComplete": true,
+  "loopMaxIterations": 25,
+  "analysis": {
+    "priorityItem": "Refactor adapter validation into shared helper with parity test",
+    "description": "Extract the duplicated adapter-specific switch logic from Config.ValidateStore and Config.Validate into a single shared validation helper function. Add a parity test that automatically fails if a new adapter is handled by only one validation method, preventing future drift. Also add runtime lifecycle APIs (CloseDefaultStore, ResetDefaultStoreForTest) to make DB connection management explicit in tests and command teardown.",
+    "rationale": "This is the highest priority because it addresses tech debt that was just introduced in the current session and is explicitly called out as risk #1 and #2 in the review. The duplicated validation logic is a ticking time bomb — the next developer who adds an adapter will almost certainly forget to update both paths. Fixing this now while the code is fresh prevents bugs and makes the codebase safer for the Simple Mode work that follows. The lifecycle APIs are tightly coupled to the same runtime.go file and should be addressed together. The recent PRDs already cover Simple Mode UX/DX, so this foundational cleanup is the right next step before building on top of it.",
+    "acceptanceCriteria": [
+      "A single validateAdapter helper function exists and is called by both Config.Validate and Config.ValidateStore",
+      "Adding a new adapter to only one validation path causes a test failure",
+      "CloseDefaultStore function exists in runtime.go and closes the cached *sql.DB connection",
+      "ResetDefaultStoreForTest function exists and resets the sync.Once and cached DB for test isolation",
+      "Existing runtime unit tests pass and use ResetDefaultStoreForTest for cleanup",
+      "sql.Drivers() assertion test validates that both libsql and pgx drivers are registered after blank import",
+      "No duplicate adapter switch/case blocks remain in config.go",
+      "make test passes with all new and existing tests green",
+      "make vet passes with no issues"
+    ],
+    "estimatedTasks": 10,
+    "branchName": "adapter-validation-parity-runtime-lifecycle"
+  }
+}

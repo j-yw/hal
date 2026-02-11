@@ -1,0 +1,161 @@
+{
+  "project": "adapter-validation-parity-runtime-lifecycle",
+  "branchName": "compound/adapter-validation-parity-runtime-lifecycle",
+  "description": "Extract shared adapter validation helper, add parity tests, and introduce runtime lifecycle APIs (CloseDefaultStore, ResetDefaultStoreForTest) for clean DB connection management.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Add KnownAdapters slice to config.go",
+      "description": "As a developer, I need a package-level KnownAdapters slice in config.go that lists all supported adapter names so that validation and parity tests have a single source of truth.",
+      "acceptanceCriteria": [
+        "A package-level exported variable `KnownAdapters` of type `[]string` exists in config.go",
+        "KnownAdapters contains exactly AdapterTurso and AdapterPostgres (in that order)",
+        "The existing AdapterTurso and AdapterPostgres constants remain unchanged",
+        "No existing function behavior is modified",
+        "go vet ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Extract validateAdapter method on Config in config.go",
+      "description": "As a developer, I need to extract the duplicated adapter switch logic from Config.Validate and Config.ValidateStore into a single unexported validateAdapter method on Config so that adapter-specific field checks live in exactly one place.",
+      "acceptanceCriteria": [
+        "A method `func (c Config) validateAdapter() error` exists in config.go",
+        "validateAdapter contains the switch block with cases for AdapterTurso (checks TursoURL, TursoAuthToken) and AdapterPostgres (checks PostgresDSN), plus a default case returning an error for unknown adapters",
+        "The error messages from validateAdapter match the existing error messages exactly",
+        "go vet ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Refactor ValidateStore to delegate to validateAdapter",
+      "description": "As a developer, I need Config.ValidateStore to call validateAdapter and return its error directly, removing its own adapter switch block, so that adapter checks are no longer duplicated.",
+      "acceptanceCriteria": [
+        "Config.ValidateStore() calls c.validateAdapter() and returns its result",
+        "Config.ValidateStore() body contains no switch statement on DBAdapter",
+        "All existing TestConfigValidateStore test cases pass unchanged",
+        "go test ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Refactor Config.Validate to delegate to validateAdapter",
+      "description": "As a developer, I need Config.Validate to call validateAdapter first, return early on error, then check runner fields, eliminating its own adapter switch block.",
+      "acceptanceCriteria": [
+        "Config.Validate() calls c.validateAdapter() first and returns early if error is non-nil",
+        "Config.Validate() then checks RunnerURL and RunnerServiceToken as before",
+        "Config.Validate() body contains no switch statement on DBAdapter",
+        "All existing TestConfigValidate test cases pass unchanged",
+        "go test ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Add adapter validation parity test",
+      "description": "As a developer, I need a test that automatically fails if a new adapter is added to KnownAdapters but not handled in OpenStore, or vice versa, preventing silent drift between validation and store opening.",
+      "acceptanceCriteria": [
+        "A TestAdapterValidationParity test exists in config_test.go or parity_test.go",
+        "The test iterates over KnownAdapters and verifies each adapter does NOT produce an 'unsupported adapter' error from OpenStore (it may fail for other reasons like connection refused)",
+        "The test verifies that an adapter NOT in KnownAdapters (e.g. 'mysql') DOES produce an 'unsupported adapter' error from OpenStore",
+        "The test verifies validateAdapter accepts every adapter in KnownAdapters with valid fields and rejects an unknown adapter",
+        "go test ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Add CloseDefaultStore function to runtime.go",
+      "description": "As a developer, I need an explicit function to close the cached *sql.DB connection held by DefaultStoreFactory so that commands and tests can cleanly release database resources.",
+      "acceptanceCriteria": [
+        "A function CloseDefaultStore() error exists in runtime.go",
+        "It closes defaultDB if non-nil and returns the error from db.Close()",
+        "It returns nil when defaultDB is nil (safe no-op)",
+        "go vet ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Add ResetDefaultStoreForTest helper to runtime.go",
+      "description": "As a developer, I need a test helper that resets the package-level sync.Once and cached store/DB/error so that multiple tests can exercise DefaultStoreFactory in isolation.",
+      "acceptanceCriteria": [
+        "An exported function ResetDefaultStoreForTest(t *testing.T) exists in runtime.go",
+        "It calls t.Helper()",
+        "It resets defaultOnce to a zero sync.Once value",
+        "It sets defaultStore, defaultDB, and defaultErr to nil",
+        "go vet ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Add driver registration assertion test",
+      "description": "As a developer, I need a test that verifies the blank imports in drivers.go correctly register both libsql and pgx database drivers so that sql.Open calls work at runtime.",
+      "acceptanceCriteria": [
+        "A TestDriversRegistered test exists in drivers_test.go",
+        "The test calls sql.Drivers() and asserts 'libsql' is present in the returned slice",
+        "The test calls sql.Drivers() and asserts 'pgx' is present in the returned slice",
+        "go test ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "title": "Add runtime lifecycle integration test using ResetDefaultStoreForTest",
+      "description": "As a developer, I need a test that demonstrates ResetDefaultStoreForTest enables re-initialization of DefaultStoreFactory, proving the lifecycle API works for test isolation.",
+      "acceptanceCriteria": [
+        "A TestDefaultStoreFactory_ResetIsolation test exists in runtime_test.go",
+        "The test calls ResetDefaultStoreForTest(t) and then DefaultStoreFactory() to verify clean state",
+        "The test verifies that after reset, calling DefaultStoreFactory re-triggers initialization (config loader runs again, not returning stale cached values)",
+        "Existing TestNewStoreFactory_* tests remain unchanged",
+        "go test ./internal/cloud/deploy/... passes",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "title": "Run full test suite and vet to verify integration",
+      "description": "As a developer, I need to verify that all changes integrate cleanly with no test failures or vet warnings across the entire project.",
+      "acceptanceCriteria": [
+        "make test passes with all tests green (exit code 0)",
+        "make vet passes with no issues (exit code 0)",
+        "No duplicate adapter switch/case blocks remain in config.go",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

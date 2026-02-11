@@ -1,0 +1,160 @@
+{
+  "project": "Cloud DB Runtime Wiring",
+  "branchName": "hal/cloud-db-runtime-wiring",
+  "description": "Wire production database drivers, harden DSN construction, create a composition root with lazy initialization, and connect default store factories to all cloud and auth commands so they work against real Turso/Postgres backends.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Register production database drivers via blank imports",
+      "description": "As a deployer, I want libsql and pgx drivers registered at init time so that sql.Open calls resolve without runtime errors.",
+      "acceptanceCriteria": [
+        "A new file internal/cloud/deploy/drivers.go contains blank imports for github.com/tursodatabase/libsql-client-go/libsql and github.com/jackc/pgx/v5/stdlib",
+        "go.mod includes the libsql-client-go dependency after running go mod tidy",
+        "sql.Drivers() includes both 'libsql' and 'pgx' when drivers.go is imported",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add ValidateStore method to Config",
+      "description": "As a command author, I want a ValidateStore method that checks only database-related env vars so that commands not needing runner credentials can validate the store config independently.",
+      "acceptanceCriteria": [
+        "Config has a new ValidateStore() error method in internal/cloud/deploy/config.go",
+        "ValidateStore checks TursoURL and TursoAuthToken when adapter is turso",
+        "ValidateStore checks PostgresDSN when adapter is postgres",
+        "ValidateStore does NOT check RunnerURL or RunnerServiceToken",
+        "Existing Validate() method remains unchanged",
+        "Unit test covers turso-missing-url, turso-missing-token, postgres-missing-dsn, and valid cases",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Harden Turso DSN construction with net/url",
+      "description": "As a deployer, I want the Turso DSN to be constructed using net/url so that special characters in the auth token are properly escaped and existing query parameters in the URL are preserved.",
+      "acceptanceCriteria": [
+        "openTurso in internal/cloud/deploy/store_factory.go uses net/url.Parse to build the DSN",
+        "Auth token is set via url.Values rather than string concatenation",
+        "If TursoURL already contains query parameters, authToken is appended without clobbering them",
+        "Unit test verifies DSN output for a URL with no query params",
+        "Unit test verifies DSN output for a URL that already has query params",
+        "Unit test verifies special characters in auth token are escaped",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Create cloud runtime composition root with lazy init",
+      "description": "As a command author, I want a DefaultStoreFactory function that loads config from env, validates it, and opens the store once using sync.Once so that multiple commands share a single connection without repeated setup.",
+      "acceptanceCriteria": [
+        "A new file internal/cloud/deploy/runtime.go exports DefaultStoreFactory() (cloud.Store, error)",
+        "Internally uses sync.Once to ensure LoadConfigFromEnv, ValidateStore, and OpenStore run exactly once",
+        "Returns the cached store on subsequent calls",
+        "On failure, DefaultStoreFactory returns an error that wraps the underlying ValidateStore or OpenStore error (verifiable in tests)",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Add runtime unit tests",
+      "description": "As a developer, I want unit tests for the runtime composition root so that lazy initialization and error paths are verified.",
+      "acceptanceCriteria": [
+        "Test file internal/cloud/deploy/runtime_test.go exists",
+        "Test verifies DefaultStoreFactory returns same store instance on multiple calls (sync.Once behavior)",
+        "Test verifies error is returned when required env vars are missing",
+        "Tests use LoadConfig with custom getenv to avoid real env dependency",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Wire default store factories for cloud commands",
+      "description": "As a CLI user, I want cloud submit, status, logs, cancel, run, and pull commands to use DefaultStoreFactory when no test override is set so that commands work against real databases without manual wiring.",
+      "acceptanceCriteria": [
+        "Each of the 6 cloud command factory variables (cloudSubmitStoreFactory, cloudStatusStoreFactory, cloudLogsStoreFactory, cloudCancelStoreFactory, cloudRunStoreFactory, cloudPullStoreFactory) is set to deploy.DefaultStoreFactory in an init() block in cmd/cloud.go when it is nil",
+        "The if-nil guard pattern preserves test override capability",
+        "cloudSubmitConfigFactory and cloudRunConfigFactory remain nil (no default config factory needed)",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Wire default store factories for auth commands",
+      "description": "As a CLI user, I want cloud auth link, import, status, validate, and revoke commands to use DefaultStoreFactory when no test override is set so that auth commands work against real databases.",
+      "acceptanceCriteria": [
+        "Each of the 5 auth command factory variables (cloudAuthLinkStoreFactory, cloudAuthImportStoreFactory, cloudAuthStatusStoreFactory, cloudAuthValidateStoreFactory, cloudAuthRevokeStoreFactory) is set to deploy.DefaultStoreFactory in an init() block in cmd/cloud_auth.go when it is nil",
+        "The if-nil guard pattern preserves test override capability",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Load dotenv in cloud env command",
+      "description": "As a deployer, I want the cloud env command to load a .env file from the deploy directory before validating so that I can validate my .env file without exporting variables manually.",
+      "acceptanceCriteria": [
+        "go.mod includes github.com/joho/godotenv dependency",
+        "runCloudEnv in cmd/cloud_deploy.go calls godotenv.Load before LoadConfig, ignoring file-not-found errors",
+        "When .env file exists, its variables are available via os.Getenv during validation",
+        "When .env file does not exist, command still works with existing env vars",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Update deploy/.env.example with complete key set",
+      "description": "As a deployer, I want the .env.example to include HAL_CLOUD_RUNNER_URL and document all keys so that I have a complete reference when configuring the deployment.",
+      "acceptanceCriteria": [
+        "deploy/.env.example contains HAL_CLOUD_RUNNER_URL with a placeholder value",
+        "All 6 env var keys from deploy/config.go constants are present: HAL_CLOUD_DB_ADAPTER, HAL_CLOUD_TURSO_URL, HAL_CLOUD_TURSO_AUTH_TOKEN, HAL_CLOUD_POSTGRES_DSN, HAL_CLOUD_RUNNER_URL, HAL_CLOUD_RUNNER_SERVICE_TOKEN",
+        "DAYTONA_API_KEY and DAYTONA_SERVER_URL remain in the file",
+        "Each variable has a comment describing its purpose",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Targeted verification for DB runtime wiring",
+      "description": "As a developer, I want targeted verification for DB runtime wiring so that config validation, store factory wiring, and cloud command behavior are confirmed without requiring unrelated full-suite work.",
+      "acceptanceCriteria": [
+        "go test ./internal/cloud/deploy/... exits 0 with no failures",
+        "go test ./cmd -run 'TestRunCloud|TestRunCloudAuth|TestRunCloudEnv' exits 0",
+        "go build ./... exits 0",
+        "go vet ./... exits 0",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

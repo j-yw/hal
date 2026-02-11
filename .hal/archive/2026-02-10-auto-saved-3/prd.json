@@ -1,0 +1,327 @@
+{
+  "project": "Hal Cloud Daytona Sandbox Orchestration v1",
+  "branchName": "hal/cloud-daytona-sandbox-orchestration-v1",
+  "description": "Deliver a production-safe v1 orchestration layer for running hal workloads in Daytona sandboxes with terminal-only operations, atomic claims, stale-attempt recovery, idempotent PR side effects, secure auth profile handling, and Postgres/Turso storage parity.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "[Schema] Create run state model",
+      "description": "As a platform engineer, I want a persisted run state model so orchestration can track each submitted workload safely.",
+      "acceptanceCriteria": [
+        "Add a runs table with columns: id, repo, base_branch, engine, auth_profile_id, status, retry_count, max_retries, cancel_requested_at, created_at, updated_at.",
+        "Restrict runs.status to exactly queued, claimed, running, retrying, succeeded, failed, and canceled.",
+        "Migration up and down paths succeed in CI for both Postgres and Turso configurations.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "[Schema] Create attempt and heartbeat model",
+      "description": "As a platform engineer, I want attempt-level records so each retry and heartbeat can be audited and recovered correctly.",
+      "acceptanceCriteria": [
+        "Add an attempts table with columns: run_id, attempt_number, state, worker_id, lease_expires_at, last_heartbeat_at, sandbox_id, started_at, finished_at, failure_code.",
+        "Enforce one active attempt per run with a schema constraint, and a test verifies a second active claim is rejected.",
+        "Create indexes on attempts.run_id, attempts.state, and attempts.lease_expires_at.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "[Schema] Create auth profile and compatibility model",
+      "description": "As an operator, I want reusable auth profiles so subscription credentials can be linked once and reused safely.",
+      "acceptanceCriteria": [
+        "Add an auth_profiles table with columns: id, name, provider, secret_ref, compatibility_metadata, created_at, updated_at, revoked_at.",
+        "Enforce unique profile names per provider using a unique constraint on (provider, name).",
+        "Store compatibility_metadata fields required for worker compatibility checks: OS, architecture, and CLI version.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "[Schema] Create profile lock model",
+      "description": "As a platform engineer, I want lease-based profile locks so concurrent runs cannot corrupt shared subscription sessions.",
+      "acceptanceCriteria": [
+        "Add an auth_profile_locks table with columns: profile_id, run_id, worker_id, lease_expires_at, last_heartbeat_at, created_at.",
+        "Enforce at most one active lock per profile.",
+        "Add an index on lock lease expiry to support stale-lock reconciliation.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "[Schema] Create idempotency and event log model",
+      "description": "As a platform engineer, I want durable side-effect and event records so retries remain safe and observable.",
+      "acceptanceCriteria": [
+        "Add a run_side_effects table keyed by (run_id, effect_type, idempotency_key).",
+        "Add an append-only run_events table with columns: run_id, attempt_number, event_type, message, redacted, created_at.",
+        "Add a uniqueness rule that prevents duplicate pr_create side effects for the same run and idempotency key.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "[Backend] Implement storage contract and Postgres adapter",
+      "description": "As a backend engineer, I want a single orchestration storage interface with a Postgres implementation so business logic stays database-agnostic.",
+      "acceptanceCriteria": [
+        "Define storage interface methods for run create, claim, update, attempts, events, side effects, and profile locks.",
+        "Implement a Postgres adapter for all methods in the storage interface.",
+        "Adapter integration tests cover create, claim, heartbeat, retry transition, cancel, and side-effect upsert paths.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "[Backend] Implement Turso adapter with parity test suite",
+      "description": "As a backend engineer, I want a Turso implementation that matches Postgres behavior so v1 can run on either backend.",
+      "acceptanceCriteria": [
+        "Implement a Turso adapter for the same storage interface used by Postgres.",
+        "Run one shared adapter test suite against both adapters with identical expected outcomes.",
+        "Normalize duplicate-key and timeout errors into shared domain error types.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "[Backend] Implement submit validation and run creation",
+      "description": "As an operator, I want invalid runs rejected at submit time so workers only process compatible, policy-allowed jobs.",
+      "acceptanceCriteria": [
+        "Submit validates required fields: repo, base branch, engine, and auth profile.",
+        "Submit fails fast when engine and profile provider are incompatible or when the profile is revoked.",
+        "Successful submit writes a runs row in queued state and inserts the first run_events entry.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "[Backend] Implement atomic claim and lease acquisition",
+      "description": "As a worker, I want run claiming to be atomic so multiple workers never process the same run at once.",
+      "acceptanceCriteria": [
+        "Claim transitions exactly one queued or retrying run to claimed within one transaction.",
+        "Claim creates an attempt record and acquires the profile lock in the same transaction, or rolls back all changes on failure.",
+        "A concurrency test with parallel workers shows one winner per run and zero duplicate claims.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "[Backend] Implement heartbeat renewal for attempts and profile locks",
+      "description": "As a worker, I want periodic lease renewal so healthy attempts are not reclaimed prematurely.",
+      "acceptanceCriteria": [
+        "Worker heartbeat updates attempts.last_heartbeat_at and auth_profile_locks.last_heartbeat_at for the active run.",
+        "Heartbeat extends lease_expires_at for both the attempt lease and profile lock lease.",
+        "If lease is missing or expired, worker stops processing and emits a terminal event.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "[Backend] Implement stale reconciler and retry scheduling",
+      "description": "As an operator, I want stale attempts recovered automatically so transient failures do not require manual intervention.",
+      "acceptanceCriteria": [
+        "Reconciler scans expired leases on a fixed interval and marks stale attempts as failed.",
+        "Eligible runs transition to retrying and then return to queued with incremented retry_count.",
+        "Integration test demonstrates stale recovery from expired lease to retry-ready queued state in under 30 seconds p95.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "[Backend] Implement Daytona sandbox bootstrap pipeline",
+      "description": "As a worker, I want deterministic sandbox setup so runs start consistently and fail with actionable error codes when setup breaks.",
+      "acceptanceCriteria": [
+        "Worker provisions a Daytona sandbox, persists sandbox_id, and records sandbox lifecycle events.",
+        "Bootstrap performs repository clone, branch checkout, and runs hal init only when .hal is missing.",
+        "Bootstrap failure classification maps errors to retryable and non-retryable failure codes.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "[Backend] Implement auth profile materialization and preflight checks",
+      "description": "As a platform engineer, I want headless-safe auth handling so workers can use subscription credentials without interactive login.",
+      "acceptanceCriteria": [
+        "Worker resolves secret_ref and materializes provider auth files with restrictive file permissions.",
+        "Worker runs provider-specific non-interactive preflight checks before executing hal.",
+        "Worker rejects incompatible profiles when stored compatibility metadata does not match OS, architecture, or CLI version.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "[Backend] Implement secret redaction for logs/events",
+      "description": "As an operator, I want sensitive output redacted so operational logs remain safe to store and stream.",
+      "acceptanceCriteria": [
+        "Redaction filters mask tokens, device codes, cookies, and secret-like patterns before persistence and streaming.",
+        "Redaction runs on bootstrap logs, preflight logs, runtime logs, and error messages.",
+        "Test fixtures with known secrets verify persisted and streamed logs contain [REDACTED] and never raw secret values.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "[Backend] Implement idempotent PR side-effect executor",
+      "description": "As an operator, I want retries to reuse prior PR side effects so duplicate PRs/comments are never created.",
+      "acceptanceCriteria": [
+        "PR create, update, and comment operations require deterministic idempotency keys.",
+        "Side-effect handler returns a previously stored PR reference when the same key already exists.",
+        "Retry simulation confirms exactly one PR create external call across repeated attempt failures.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "[Backend] Implement cancel flow and worker shutdown handling",
+      "description": "As an operator, I want cancel requests to stop active work quickly and safely.",
+      "acceptanceCriteria": [
+        "Cancel API marks run cancellation as requested and appends a cancel event.",
+        "Active worker detects cancellation within one heartbeat interval, stops execution, and tears down the sandbox.",
+        "Canceled runs are not eligible for future claims or retries.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "[Frontend] Add hal-cloud submit command UX",
+      "description": "As an operator, I want a simple submit command so I can enqueue a run from terminal with clear feedback.",
+      "acceptanceCriteria": [
+        "Command supports --repo, --base, --engine, --auth-profile, and task or PRD reference input.",
+        "On success, command prints run ID and initial status in human-readable format.",
+        "On validation error, command prints an actionable message and exits with a non-zero code.",
+        "Tests pass",
+        "Typecheck passes",
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "[Frontend] Add hal-cloud status command UX",
+      "description": "As an operator, I want status output so I can inspect run state and retry health from terminal.",
+      "acceptanceCriteria": [
+        "Command displays run status, current attempt, retry count, last heartbeat age, and profile name.",
+        "--json output returns stable machine-readable fields.",
+        "Unknown run ID returns a non-zero exit code with an explicit not-found message.",
+        "Tests pass",
+        "Typecheck passes",
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-019",
+      "title": "[Frontend] Add hal-cloud logs command UX",
+      "description": "As an operator, I want live logs so I can diagnose orchestration behavior without external tools.",
+      "acceptanceCriteria": [
+        "logs \u003crun-id\u003e returns historical events in timestamp order.",
+        "logs \u003crun-id\u003e --follow streams newly appended events until interrupted.",
+        "Displayed logs preserve [REDACTED] masking for sensitive fields.",
+        "Tests pass",
+        "Typecheck passes",
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-020",
+      "title": "[Frontend] Add hal-cloud cancel command UX",
+      "description": "As an operator, I want a clear cancel command so I can stop an active run safely from terminal.",
+      "acceptanceCriteria": [
+        "cancel \u003crun-id\u003e supports --yes and prints the final cancel outcome.",
+        "Canceling a completed run returns a no-op message with exit code 0.",
+        "Canceling an active run returns a pending-cancel state until worker confirmation is received.",
+        "Tests pass",
+        "Typecheck passes",
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-021",
+      "title": "[Frontend] Add auth profile command UX",
+      "description": "As an operator, I want terminal auth profile commands so I can manage provider credentials without leaving the CLI.",
+      "acceptanceCriteria": [
+        "auth link --provider --profile, auth status, and auth validate commands are available and documented in help output.",
+        "auth status shows lock owner, lock expiry, and a compatibility metadata summary.",
+        "auth validate returns pass or fail and exits with a non-zero code on failure.",
+        "Tests pass",
+        "Typecheck passes",
+        "Verify in browser using agent-browser skill (skip if no dev server running)"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "project": "deterministic-refresh-output",
+  "branchName": "compound/deterministic-refresh-output",
+  "description": "Sort template filenames at call sites in cmd/init.go so that CLI output from refreshTemplates and runInit is deterministic and testable.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Sort filenames in refreshTemplates iteration",
+      "description": "As a developer, I need refreshTemplates in cmd/init.go to extract keys from template.DefaultFiles(), sort them with sort.Strings, and iterate in sorted order so that CLI output is deterministic.",
+      "acceptanceCriteria": [
+        "refreshTemplates extracts keys from template.DefaultFiles() into a []string, sorts with sort.Strings, and iterates over the sorted slice",
+        "import \"sort\" is present in cmd/init.go",
+        "No changes are made to internal/template/template.go",
+        "go build ./... succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Sort filenames in runInit default-file creation loop",
+      "description": "As a developer, I need the for filename, content := range template.DefaultFiles() loop in runInit to extract keys, sort them, and iterate in sorted order so that the created and skipped slices are populated deterministically.",
+      "acceptanceCriteria": [
+        "The default-file creation loop in runInit extracts keys from template.DefaultFiles() into a []string, sorts them, and iterates in sorted order",
+        "The created and skipped slices are populated in lexicographic filename order (config.yaml, progress.txt, prompt.md)",
+        "go build ./... succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Verify existing refreshTemplates tests pass",
+      "description": "As a developer, I need to confirm that TestRefreshTemplates in cmd/init_test.go still passes after the sorting changes, updating assertions if needed to match sorted order.",
+      "acceptanceCriteria": [
+        "go test -v -run TestRefreshTemplates ./cmd/ passes with zero failures",
+        "If any test assertions depended on map iteration order, they are updated to expect sorted order",
+        "No test logic is removed — only assertion order is adjusted if necessary",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Verify existing runInit tests pass",
+      "description": "As a developer, I need to confirm that TestRunInit and TestRunInitAddsGitignore in cmd/init_test.go still pass after the sorting changes in runInit.",
+      "acceptanceCriteria": [
+        "go test -v -run TestRunInit ./cmd/ passes with zero failures",
+        "go test -v -run TestRunInitAddsGitignore ./cmd/ passes with zero failures",
+        "No test logic is removed",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Add deterministic-output unit test for refreshTemplates",
+      "description": "As a developer, I need a dedicated unit test that asserts the exact output line order of refreshTemplates matches sorted filename sequence (config.yaml, progress.txt, prompt.md), proving determinism across multiple invocations.",
+      "acceptanceCriteria": [
+        "A new test function TestRefreshTemplatesDeterministic in cmd/init_test.go calls refreshTemplates and asserts output lines appear in config.yaml, progress.txt, prompt.md order",
+        "The test runs refreshTemplates at least 3 times and asserts identical output each time",
+        "The test validates both dry-run=true and dry-run=false produce sorted output",
+        "go test -v -run TestRefreshTemplatesDeterministic ./cmd/ passes",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Add Cobra-level test for hal init --refresh-templates",
+      "description": "As a developer, I need a Cobra-level integration test that executes the init command with --refresh-templates through the Cobra command tree, validating full CLI wiring and deterministic output order.",
+      "acceptanceCriteria": [
+        "A new test function TestInitRefreshTemplatesCobra in cmd/init_test.go creates a root command, sets --refresh-templates flag via cmd.SetArgs, captures stdout via cmd.SetOut, and executes",
+        "The test asserts output lines containing refreshed/created/unchanged entries appear in sorted filename order (config.yaml before progress.txt before prompt.md)",
+        "The test validates that actual files are created or refreshed on disk in the temp directory",
+        "go test -v -run TestInitRefreshTemplatesCobra ./cmd/ passes",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Add Cobra-level test for hal init --refresh-templates --dry-run",
+      "description": "As a developer, I need a Cobra-level integration test that executes init --refresh-templates --dry-run through the Cobra command tree, validating dry-run output is deterministic and no files are modified.",
+      "acceptanceCriteria": [
+        "A new test function TestInitDryRunCobra in cmd/init_test.go creates a root command, sets both --refresh-templates and --dry-run flags via cmd.SetArgs, captures stdout via cmd.SetOut, and executes",
+        "The test asserts output lines contain [dry-run] prefix and appear in sorted filename order (config.yaml before progress.txt before prompt.md)",
+        "The test validates that no template files are modified or created on disk beyond what runInit creates by default",
+        "go test -v -run TestInitDryRunCobra ./cmd/ passes",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Run full test suite and verify no regressions",
+      "description": "As a developer, I need to run the complete test suite and static analysis to ensure all changes are backward-compatible and no regressions are introduced.",
+      "acceptanceCriteria": [
+        "go test ./... passes with zero failures",
+        "go vet ./... reports no issues",
+        "go build ./... succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

@@ -1,0 +1,189 @@
+## Codebase Patterns
+- `runInit` accepts `cmd *cobra.Command` which may be nil in tests — guard flag reads with `if cmd != nil`
+- Use `template.DefaultFiles()` to iterate the 3 core templates (prompt.md, progress.txt, config.yaml)
+- Extracted functions follow `run<Command>` naming and accept `io.Writer` for testability
+- GPG signing may not be available — use `git -c commit.gpgsign=false` when needed
+- Backup files use timestamped format `<file>.YYYYMMDD-HHMMSS.bak` via `time.Now().Format("20060102-150405")`
+- `refreshTemplates(halDir, dryRun, w)` is the testable function for template refresh — called from `runInit` via `doRefresh` flag
+- Test helpers (`writeFile`, `writePRD`) are shared within the `cmd` package via `archive_test.go` — don't redeclare them
+- For Cobra-level tests where the handler writes to `os.Stdout` directly, use `os.Pipe()` redirect to capture output (Cobra's `SetOut` won't work)
+
+## 2026-02-10 - US-001
+- Registered `--refresh-templates` bool flag on `initCmd` defaulting to false
+- Added flag reading in `runInit` with nil-guard for test compatibility
+- Added `refreshTemplateFiles(halDir, dryRun, w)` function with basic create/unchanged/refresh logic
+- Wired `--refresh-templates` flag to call `refreshTemplateFiles` before default file creation
+- Files changed: `cmd/init.go`
+- **Learnings for future iterations:**
+  - `runInit` is called with `nil` cmd in tests, so flag reads must be guarded
+  - The `refreshTemplateFiles` function was placed before `replaceFileContent` in init.go
+  - The 3 core templates come from `template.DefaultFiles()` map
+---
+
+## 2026-02-10 - US-002
+- Registered `--dry-run` bool flag on `initCmd` defaulting to false
+- Added `dryRun` variable reading in `runInit` with nil-guard for test compatibility
+- Wired `dryRun` value to `refreshTemplateFiles` call (replaced hardcoded `false`)
+- Files changed: `cmd/init.go`
+- **Learnings for future iterations:**
+  - Both flags are declared in `init()` alongside `--refresh-templates`
+  - The `dryRun` flag value is already passed through to `refreshTemplateFiles` which already supports it
+---
+
+## 2026-02-10 - US-003
+- Added timestamped backup format: `<filename>.YYYYMMDD-HHMMSS.bak` using `time.Now().Format("20060102-150405")`
+- Replaced plain `.bak` suffix with timestamped version for uniqueness across multiple refreshes
+- Added `time` import to cmd/init.go
+- Backup name is computed before the dry-run branch so both paths can reference it
+- Files changed: `cmd/init.go`
+- **Learnings for future iterations:**
+  - Go time format string `20060102-150405` produces `YYYYMMDD-HHMMSS` format
+  - The backup name variable is computed outside the if/else so dry-run output can show the expected backup filename
+  - `migrateTemplates()` already runs after `refreshTemplateFiles` in `runInit` — no wiring change needed
+---
+
+## 2026-02-10 - US-004
+- Added `[dry-run]` prefix to all per-file status lines (created, unchanged, refreshed) in `refreshTemplateFiles`
+- Extracted `prefix` variable at function top — empty string for real runs, `"[dry-run] "` for dry runs
+- Unified the refreshed output: removed the separate `if !dryRun / else` branches for the `fmt.Fprintf` call, using the prefix variable instead
+- Files changed: `cmd/init.go`
+- **Learnings for future iterations:**
+  - The prefix variable pattern (`prefix := ""; if dryRun { prefix = "[dry-run] " }`) is cleaner than duplicating fmt.Fprintf in each branch
+  - The "created" path already skipped writes via `if !dryRun` guard but was missing the output prefix
+---
+
+## 2026-02-10 - US-005
+- Verified per-file status output format in `refreshTemplateFiles` matches acceptance criteria
+- Status lines: `created .hal/<file>`, `refreshed .hal/<file> (backup: <file>.YYYYMMDD-HHMMSS.bak)`, `unchanged .hal/<file>`
+- Dry-run prefix `[dry-run]` applied via `prefix` variable pattern from US-004
+- Output written to `io.Writer` parameter (not hardcoded to `os.Stdout`)
+- No code changes needed — implementation was completed incrementally across US-003 and US-004
+- All quality checks pass: `go vet ./...` clean, all tests pass
+- Files changed: none (verification-only story)
+- **Learnings for future iterations:**
+  - Stories can be satisfied by prior incremental work — always check existing code before writing new code
+  - The `refreshTemplateFiles` function at cmd/init.go:424 is the single source of truth for template refresh output
+  - The 2-space indent on status lines is consistent with other init output (e.g., "Created:" section)
+---
+
+## 2026-02-10 - US-006
+- Renamed `refreshTemplateFiles` → `refreshTemplates` to match AC naming
+- Renamed local variable `refreshTemplates` → `doRefresh` in `runInit` to avoid shadowing the function name
+- Function signature: `refreshTemplates(halDir string, dryRun bool, w io.Writer) error`
+- `runInit` delegates via `if doRefresh { refreshTemplates(configDir, dryRun, os.Stdout) }`
+- Files changed: `cmd/init.go`
+- **Learnings for future iterations:**
+  - When renaming a function, check for local variables with the same name — Go shadows the function with the local variable
+  - The `doRefresh` naming is clearer than `refreshTemplates` as a boolean flag name
+---
+
+## 2026-02-10 - US-007
+- Added `TestRefreshTemplates` table-driven test in `cmd/init_test.go` with 4 cases:
+  1. `creates templates when none exist` — verifies files created, content matches embedded, no backups, output contains "created"
+  2. `creates backups when templates differ` — verifies .bak file created with old content, file overwritten, output contains "refreshed (backup: ...)"
+  3. `unchanged when templates match embedded` — verifies no writes, no backups, output contains "unchanged"
+  4. `dry-run does not write files` — verifies files not modified, no backups, output contains "[dry-run]"
+- Uses `t.TempDir()` and `bytes.Buffer` for isolation
+- Reuses existing `writeFile` helper from `cmd/archive_test.go` (same package)
+- Files changed: `cmd/init_test.go`
+- **Learnings for future iterations:**
+  - Test helpers like `writeFile` are shared within the `cmd` package — check `archive_test.go` before declaring new ones
+  - Use `filepath.Glob(pattern)` to find timestamped backup files in tests without knowing the exact timestamp
+---
+
+## 2026-02-10 - T-001
+- Sorted filenames in `refreshTemplates` by extracting keys from `template.DefaultFiles()` map into a `[]string`, sorting with `sort.Strings`, and iterating in sorted order
+- Added `"sort"` import to `cmd/init.go`
+- No changes to `internal/template/template.go` — sorting is done at the call site
+- Files changed: `cmd/init.go`
+- **Learnings for future iterations:**
+  - Go map iteration is non-deterministic — always sort keys when output order matters
+  - The pattern `keys := make([]string, 0, len(m)); for k := range m { keys = append(keys, k) }; sort.Strings(keys)` is the standard Go idiom for sorted map iteration
+  - The same pattern needs to be applied to the `runInit` default-file creation loop (T-002)
+---
+
+## 2026-02-10 - T-002
+- Sorted filenames in `runInit` default-file creation loop by extracting keys from `template.DefaultFiles()` into `defaultNames []string`, sorting with `sort.Strings`, and iterating in sorted order
+- The `created` and `skipped` slices are now populated in lexicographic order (config.yaml, progress.txt, prompt.md)
+- Files changed: `cmd/init.go`
+- **Learnings for future iterations:**
+  - Both `refreshTemplates` and `runInit` now use the same sorted-keys pattern for `template.DefaultFiles()` — keep them consistent
+  - The `sort` import was already present from T-001, so no import changes needed
+  - Note: the loop variable was renamed from `content` to avoid shadowing the outer `defaults` map lookup
+---
+
+## 2026-02-10 - T-003
+- Verified all 4 `TestRefreshTemplates` subtests pass after sorting changes from T-001
+- No assertion updates were needed — all tests use `strings.Contains` on output, which is order-independent
+- No test logic removed
+- Build (`go build ./...`), vet (`go vet ./...`), and typecheck all pass
+- Files changed: none (verification-only story)
+- **Learnings for future iterations:**
+  - Tests that use `strings.Contains` for checking output are naturally order-independent — they don't break when iteration order changes
+  - Tests that assert on exact output strings or line-by-line ordering would need updates after sorting changes
+  - The existing `TestRefreshTemplates` tests iterate over the `defaults` map in their `check` functions, making individual `strings.Contains` calls per file — a robust pattern
+---
+
+## 2026-02-10 - T-004
+- Verified `TestRunInit` (3 subtests) and `TestRunInitAddsGitignore` (3 subtests) all pass after sorting changes from T-002
+- No assertion updates needed — tests use `strings.Contains` checks which are order-independent
+- No test logic removed
+- Build (`go build ./...`), vet (`go vet ./...`), and typecheck all pass
+- Files changed: none (verification-only story)
+- **Learnings for future iterations:**
+  - `TestRunInit` subtests: `creates_reports_directory_and_gitkeep`, `creates_config.yaml_matching_template`, `second_run_does_not_overwrite_existing_config_and_migrates_prompt_branch_guidance`
+  - `TestRunInitAddsGitignore` subtests: `adds_.hal/*_to_new_gitignore`, `adds_.hal/*_to_existing_gitignore`, `does_not_duplicate_on_second_init`
+  - The sorted output (config.yaml, progress.txt, prompt.md) is visible in test output but assertions don't depend on order
+---
+
+## 2026-02-10 - T-005
+- Added `TestRefreshTemplatesDeterministic` in `cmd/init_test.go` with 2 subtests: `real` and `dry-run`
+- Each subtest runs `refreshTemplates` 3 times with fresh temp dirs pre-populated with custom content
+- Asserts all 3 runs produce identical output (determinism)
+- Asserts output lines appear in sorted order: config.yaml, progress.txt, prompt.md
+- Files changed: `cmd/init_test.go`
+- **Learnings for future iterations:**
+  - Use `[]bool{false, true}` loop over dryRun to test both modes in a single test function with labeled subtests
+  - Pre-populate files with custom content so refresh produces "refreshed" lines (not "created") — needed for timestamp-based backup names that could break determinism if not using fresh dirs
+  - `strings.Split(strings.TrimSpace(output), "\n")` is the clean way to get output lines for order assertion
+---
+
+## 2026-02-10 - T-007
+- Added `TestInitDryRunCobra` in `cmd/init_test.go` — Cobra-level integration test for dry-run mode
+- Test runs `runInit(nil, nil)` first to create `.hal/` infrastructure, then overwrites templates with custom content
+- Executes `rootCmd.SetArgs([]string{"init", "--refresh-templates", "--dry-run"})` through the full Cobra command tree
+- Captures stdout via `os.Pipe()` (same pattern as T-006)
+- Asserts `[dry-run]` prefix appears in output with sorted filename order (config.yaml < progress.txt < prompt.md)
+- Validates that no template files are modified (still contain custom content) and no backup files are created
+- Files changed: `cmd/init_test.go`
+- **Learnings for future iterations:**
+  - For dry-run Cobra tests, pre-create `.hal/` via `runInit(nil, nil)` first, then overwrite templates — this ensures all infrastructure (reports, gitkeep, gitignore, skills) exists without interfering with the dry-run assertions
+  - The `[dry-run] refreshed .hal/<file>` output format includes the 2-space indent from `refreshTemplates`, so the full search string is `[dry-run] refreshed .hal/config.yaml` (with leading spaces from the function)
+  - Both T-006 and T-007 follow the same `os.Pipe()` + `rootCmd.SetArgs` + `rootCmd.Execute()` pattern — keep them consistent
+---
+
+## 2026-02-10 - T-006
+- Added `TestInitRefreshTemplatesCobra` in `cmd/init_test.go` — Cobra-level integration test
+- Test executes `rootCmd.SetArgs([]string{"init", "--refresh-templates"})` through the full Cobra command tree
+- Pre-populates `.hal/` with custom content, then verifies refresh output is in sorted order (config.yaml < progress.txt < prompt.md)
+- Validates actual files on disk are refreshed with embedded content and backups are created
+- Captures stdout via `os.Pipe()` since `runInit` writes to `os.Stdout` directly (not `cmd.OutOrStdout()`)
+- Files changed: `cmd/init_test.go`, `AGENTS.md`
+- **Learnings for future iterations:**
+  - `runInit` writes to `os.Stdout` directly — Cobra's `SetOut` doesn't capture it. Use `os.Pipe()` redirect pattern for Cobra-level tests
+  - `rootCmd` is a package-level var — be careful about test isolation; `SetArgs` persists across tests
+  - The `os.Pipe()` pattern: save `os.Stdout`, create pipe, set `os.Stdout = w`, execute, close `w`, read from `r`, restore stdout
+  - For Cobra tests that modify the filesystem, still need `os.Chdir` + cleanup since `runInit` uses relative paths
+---
+
+## 2026-02-10 - T-008
+- Ran full test suite (`go test ./...`) — all packages pass with zero failures
+- Ran static analysis (`go vet ./...`) — no issues reported
+- Ran build (`go build ./...`) — succeeds
+- All acceptance criteria verified: no regressions introduced by sorting changes
+- Files changed: none (verification-only story)
+- **Learnings for future iterations:**
+  - All 13 packages compile and pass: cmd, internal/archive, internal/compound, internal/engine (+ claude, codex, pi), internal/loop, internal/prd, internal/skills, internal/standards
+  - The `internal/template` package has no test files — tests that exercise it are in `cmd` package
+  - Cached test results are valid for verification stories — Go caches test results when source hasn't changed
+---
