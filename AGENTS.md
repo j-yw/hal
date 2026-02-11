@@ -102,3 +102,11 @@
 - For cmd package behavior with side effects, extract a run<Feature> helper that accepts io.Writer (like refreshTemplates) and keep Cobra handlers focused on flag binding and delegation.
 - Template text migrations belong in migrateTemplates via replaceFileContent, normalizing multiple legacy prompt variants into one canonical guidance line.
 - In cmd tests, reuse shared helpers from archive_test.go (writeFile/writePRD) and validate timestamped backup artifacts with filepath.Glob(filename+".*.bak").
+
+## Patterns from hal/cloud-db-runtime-wiring (2026-02-11)
+
+- Register production database/sql adapters only via blank imports in internal/cloud/deploy/drivers.go; OpenStore depends on these init-time side effects and command packages should not duplicate driver imports.
+- Use deploy.DefaultStoreFactory as the command composition root by wiring each cloud/auth store factory variable in cmd init() with an if-nil guard so tests can still override factories.
+- For code that uses sync.Once, create isolated factories with newStoreFactory(func() Config { return LoadConfig(customGetenv) }) in tests to avoid package-level once-state leakage.
+- In cloud deploy CLI paths, call godotenv.Load() before LoadConfig(getenv); ignore os.ErrNotExist and warn (non-fatal) on other dotenv errors.
+- Construct Turso DSNs with parse-modify-stringify (url.Parse -> Query().Set("authToken") -> String()) and validate in tests by reparsing URL/query instead of raw string matching.
