@@ -117,6 +117,7 @@ func runForAttempt(runID, authProfileID string) *Run {
 		ID:            runID,
 		Repo:          "org/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: authProfileID,
 		ScopeRef:      "prd-123",

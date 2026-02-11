@@ -63,6 +63,7 @@ func overdueRun(id string, status RunStatus) *Run {
 		ID:            id,
 		Repo:          "org/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "profile-1",
 		ScopeRef:      "prd-123",

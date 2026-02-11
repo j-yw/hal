@@ -8,6 +8,7 @@ const runsSchema = `CREATE TABLE IF NOT EXISTS runs (
     id                      TEXT PRIMARY KEY,
     repo                    TEXT NOT NULL,
     base_branch             TEXT NOT NULL,
+    workflow_kind           TEXT NOT NULL CHECK (workflow_kind IN ('run','auto','review')),
     engine                  TEXT NOT NULL,
     auth_profile_id         TEXT NOT NULL,
     scope_ref               TEXT NOT NULL,

@@ -87,6 +87,7 @@ func validSubmitRequest() *SubmitRequest {
 	return &SubmitRequest{
 		Repo:          "org/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "profile-1",
 		ScopeRef:      "prd-123",
@@ -112,6 +113,16 @@ func TestSubmitRequestValidate(t *testing.T) {
 			name:    "missing base_branch",
 			modify:  func(r *SubmitRequest) { r.BaseBranch = "" },
 			wantErr: "base_branch must not be empty",
+		},
+		{
+			name:    "empty workflow_kind",
+			modify:  func(r *SubmitRequest) { r.WorkflowKind = "" },
+			wantErr: `workflow_kind "" is not a valid workflow kind`,
+		},
+		{
+			name:    "invalid workflow_kind",
+			modify:  func(r *SubmitRequest) { r.WorkflowKind = "deploy" },
+			wantErr: `workflow_kind "deploy" is not a valid workflow kind`,
 		},
 		{
 			name:    "missing engine",
@@ -288,6 +299,9 @@ func TestSubmitService(t *testing.T) {
 				}
 				if run.Repo != "org/repo" {
 					t.Errorf("repo = %q, want %q", run.Repo, "org/repo")
+				}
+				if run.WorkflowKind != WorkflowKindRun {
+					t.Errorf("workflow_kind = %q, want %q", run.WorkflowKind, WorkflowKindRun)
 				}
 				if run.MaxAttempts != 3 {
 					t.Errorf("max_attempts = %d, want 3", run.MaxAttempts)

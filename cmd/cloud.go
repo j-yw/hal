@@ -21,12 +21,13 @@ import (
 
 // Cloud submit flags.
 var (
-	cloudSubmitRepoFlag        string
-	cloudSubmitBaseFlag        string
-	cloudSubmitEngineFlag      string
-	cloudSubmitAuthProfileFlag string
-	cloudSubmitScopeFlag       string
-	cloudSubmitJSONFlag        bool
+	cloudSubmitRepoFlag          string
+	cloudSubmitBaseFlag          string
+	cloudSubmitEngineFlag        string
+	cloudSubmitAuthProfileFlag   string
+	cloudSubmitScopeFlag         string
+	cloudSubmitWorkflowKindFlag  string
+	cloudSubmitJSONFlag          bool
 )
 
 // Cloud status flags.
@@ -87,6 +88,7 @@ Required flags:
   --engine         Engine to use (e.g., claude, codex, pi)
   --auth-profile   Auth profile ID
   --scope          Scope reference (e.g., PRD ID)
+  --workflow-kind  Workflow kind (run, auto, review)
 
 Output includes run_id, status, engine, auth_profile, and submitted_at.
 Use --json for machine-readable output with error codes on failures.`,
@@ -97,6 +99,7 @@ Use --json for machine-readable output with error codes on failures.`,
 			cloudSubmitEngineFlag,
 			cloudSubmitAuthProfileFlag,
 			cloudSubmitScopeFlag,
+			cloud.WorkflowKind(cloudSubmitWorkflowKindFlag),
 			cloudSubmitJSONFlag,
 			cloudSubmitStoreFactory,
 			cloudSubmitConfigFactory,
@@ -223,6 +226,7 @@ func init() {
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitEngineFlag, "engine", "", "Engine to use")
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitAuthProfileFlag, "auth-profile", "", "Auth profile ID")
 	cloudSubmitCmd.Flags().StringVar(&cloudSubmitScopeFlag, "scope", "", "Scope reference")
+	cloudSubmitCmd.Flags().StringVar(&cloudSubmitWorkflowKindFlag, "workflow-kind", "", "Workflow kind (run, auto, review)")
 	cloudSubmitCmd.Flags().BoolVar(&cloudSubmitJSONFlag, "json", false, "Output in JSON format")
 
 	cloudStatusCmd.Flags().BoolVar(&cloudStatusJSONFlag, "json", false, "Output in JSON format")
@@ -336,6 +340,7 @@ type cloudSubmitErrorResponse struct {
 // runCloudSubmit is the testable logic for the cloud submit command.
 func runCloudSubmit(
 	repo, base, engine, authProfile, scope string,
+	workflowKind cloud.WorkflowKind,
 	jsonOutput bool,
 	storeFactory func() (cloud.Store, error),
 	configFactory func() cloud.SubmitConfig,
@@ -360,6 +365,7 @@ func runCloudSubmit(
 	req := &cloud.SubmitRequest{
 		Repo:          repo,
 		BaseBranch:    base,
+		WorkflowKind:  workflowKind,
 		Engine:        engine,
 		AuthProfileID: authProfile,
 		ScopeRef:      scope,
@@ -829,6 +835,7 @@ func runCloudRun(
 	req := &cloud.SubmitRequest{
 		Repo:          repo,
 		BaseBranch:    base,
+		WorkflowKind:  cloud.WorkflowKindRun,
 		Engine:        engine,
 		AuthProfileID: authProfile,
 		ScopeRef:      scope,

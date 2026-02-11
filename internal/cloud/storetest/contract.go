@@ -42,6 +42,7 @@ func validRun(id string) *cloud.Run {
 		ID:            id,
 		Repo:          "owner/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  cloud.WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "auth-001",
 		ScopeRef:      "prd-001",

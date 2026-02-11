@@ -85,6 +85,7 @@ func validRun() Run {
 		ID:            "run-001",
 		Repo:          "owner/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "auth-001",
 		ScopeRef:      "prd-001",
@@ -120,6 +121,16 @@ func TestRun_Validate(t *testing.T) {
 			name:    "empty base_branch",
 			modify:  func(r *Run) { r.BaseBranch = "" },
 			wantErr: "run.base_branch must not be empty",
+		},
+		{
+			name:    "empty workflow_kind",
+			modify:  func(r *Run) { r.WorkflowKind = "" },
+			wantErr: `run.workflow_kind "" is not a valid workflow kind`,
+		},
+		{
+			name:    "invalid workflow_kind",
+			modify:  func(r *Run) { r.WorkflowKind = "deploy" },
+			wantErr: `run.workflow_kind "deploy" is not a valid workflow kind`,
 		},
 		{
 			name:    "empty engine",
@@ -180,6 +191,7 @@ func TestRunsSchema_ContainsRequiredColumns(t *testing.T) {
 		"id",
 		"repo",
 		"base_branch",
+		"workflow_kind",
 		"engine",
 		"auth_profile_id",
 		"scope_ref",
@@ -210,6 +222,68 @@ func TestRunsSchema_StatusConstraint(t *testing.T) {
 		if !strings.Contains(RunsSchema, "'"+s+"'") {
 			t.Errorf("RunsSchema CHECK constraint missing status %q", s)
 		}
+	}
+}
+
+func TestRunsSchema_WorkflowKindConstraint(t *testing.T) {
+	kinds := []string{"run", "auto", "review"}
+	for _, k := range kinds {
+		if !strings.Contains(RunsSchema, "'"+k+"'") {
+			t.Errorf("RunsSchema CHECK constraint missing workflow_kind %q", k)
+		}
+	}
+}
+
+func TestWorkflowKind_IsValid(t *testing.T) {
+	tests := []struct {
+		kind WorkflowKind
+		want bool
+	}{
+		{WorkflowKindRun, true},
+		{WorkflowKindAuto, true},
+		{WorkflowKindReview, true},
+		{"", false},
+		{"deploy", false},
+		{"RUN", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.kind), func(t *testing.T) {
+			got := tt.kind.IsValid()
+			if got != tt.want {
+				t.Errorf("WorkflowKind(%q).IsValid() = %v, want %v", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowKind_ExhaustiveSet(t *testing.T) {
+	expected := []WorkflowKind{
+		WorkflowKindRun,
+		WorkflowKindAuto,
+		WorkflowKindReview,
+	}
+
+	if len(validWorkflowKinds) != len(expected) {
+		t.Fatalf("validWorkflowKinds has %d entries, expected %d", len(validWorkflowKinds), len(expected))
+	}
+
+	for _, k := range expected {
+		if !validWorkflowKinds[k] {
+			t.Errorf("expected workflow kind %q in validWorkflowKinds", k)
+		}
+	}
+}
+
+func TestRun_ValidWithAllWorkflowKinds(t *testing.T) {
+	for _, kind := range []WorkflowKind{WorkflowKindRun, WorkflowKindAuto, WorkflowKindReview} {
+		t.Run(string(kind), func(t *testing.T) {
+			r := validRun()
+			r.WorkflowKind = kind
+			if err := r.Validate(); err != nil {
+				t.Fatalf("valid run with WorkflowKind=%q: unexpected error: %v", kind, err)
+			}
+		})
 	}
 }
 

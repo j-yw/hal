@@ -74,6 +74,7 @@ func validSnapshotRun(version int) *Run {
 		ID:                    "run-001",
 		Repo:                  "owner/repo",
 		BaseBranch:            "main",
+		WorkflowKind:          WorkflowKindRun,
 		Engine:                "claude",
 		AuthProfileID:         "auth-001",
 		ScopeRef:              "prd-001",

@@ -1,0 +1,33 @@
+## Codebase Patterns
+- Cloud config lives in internal/cloud/config; use config.Parse(data) or config.Load(path) for YAML cloud.yaml handling
+- Use template.CloudConfigFile constant for the cloud.yaml filename
+- ValidationErrors type implements error interface and collects multiple field-level failures with path/rule/remediation
+- Secret detection walks raw YAML map recursively; also checks URL query params for secret-bearing parameter names
+- Profile.Wait uses *bool (pointer) to distinguish omitted from explicit false — follows the pointer-yaml-defaults pattern from AGENTS.md
+
+---
+## 2026-02-11 - US-001
+- Implemented .hal/cloud.yaml profile schema with CloudConfig/Profile types
+- Created internal/cloud/config package with Load, Parse, Validate functions
+- Files changed: internal/cloud/config/config.go, internal/cloud/config/config_test.go, internal/template/template.go
+- **Learnings for future iterations:**
+  - The existing cloud package under internal/cloud/ has deploy config (env-var based) separate from this new user-facing cloud.yaml config — they serve different layers (deploy = server infra, config = user project defaults)
+  - YAML secret detection needs both key-name scanning and URL query parameter scanning — keys like "authToken" as query params are a common leak vector
+  - ValidationErrors as a named slice type works well for collecting and reporting multiple errors in one pass
+  - The template package is the canonical place for file name constants (.hal/ paths)
+---
+## 2026-02-11 - US-002
+- Implemented workflow kind persistence in cloud run records
+- Added WorkflowKind type with constants (run, auto, review), validation map, and IsValid() method to internal/cloud/run.go
+- Added WorkflowKind field to Run struct and SubmitRequest, wired through Submit/SubmitWithBundle flows
+- Updated SQL schema (RunsSchema, postgres/schema.go) with workflow_kind column and CHECK constraint
+- Updated postgres and turso store implementations (EnqueueRun, ClaimRun, GetRun, ListOverdueRuns, scanRun)
+- Added --workflow-kind flag to cloud submit CLI command; cloud run command hardcodes WorkflowKindRun
+- Updated 20 files with test coverage across run, submit, claim, cancel, reconciler, retry, timeout, snapshot, storetest, and cmd packages
+- Files changed: internal/cloud/run.go, internal/cloud/submit.go, internal/cloud/postgres/schema.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go, cmd/cloud.go, cmd/cloud_test.go, and 13 test files
+- **Learnings for future iterations:**
+  - WorkflowKind follows the same typed string enum pattern as RunStatus — use a map for validation and IsValid() method
+  - When adding a new required field to Run, update all test helpers that construct Run structs (validRun, claimedRun, failedRun, etc.) across all packages
+  - Store implementations need scanRun helper updates for any new column — both postgres and turso share the same pattern
+  - The cmd package has its own mock store and test helpers separate from internal/cloud tests — both must be updated
+---

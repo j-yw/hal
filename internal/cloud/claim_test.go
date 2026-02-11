@@ -102,6 +102,7 @@ func claimedRun() *Run {
 		ID:            "run-1",
 		Repo:          "org/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "profile-1",
 		ScopeRef:      "prd-123",

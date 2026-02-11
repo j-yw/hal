@@ -8,11 +8,12 @@ import (
 
 // SubmitRequest contains the fields required to create a new cloud run.
 type SubmitRequest struct {
-	Repo          string `json:"repo"`
-	BaseBranch    string `json:"base_branch"`
-	Engine        string `json:"engine"`
-	AuthProfileID string `json:"auth_profile_id"`
-	ScopeRef      string `json:"scope_ref"`
+	Repo          string       `json:"repo"`
+	BaseBranch    string       `json:"base_branch"`
+	WorkflowKind  WorkflowKind `json:"workflow_kind"`
+	Engine        string       `json:"engine"`
+	AuthProfileID string       `json:"auth_profile_id"`
+	ScopeRef      string       `json:"scope_ref"`
 }
 
 // Validate checks that all required fields are set.
@@ -22,6 +23,9 @@ func (r *SubmitRequest) Validate() error {
 	}
 	if r.BaseBranch == "" {
 		return fmt.Errorf("base_branch must not be empty")
+	}
+	if !r.WorkflowKind.IsValid() {
+		return fmt.Errorf("workflow_kind %q is not a valid workflow kind", r.WorkflowKind)
 	}
 	if r.Engine == "" {
 		return fmt.Errorf("engine must not be empty")
@@ -158,6 +162,7 @@ func (s *SubmitService) Submit(ctx context.Context, req *SubmitRequest) (*Run, e
 		ID:            runID,
 		Repo:          req.Repo,
 		BaseBranch:    req.BaseBranch,
+		WorkflowKind:  req.WorkflowKind,
 		Engine:        req.Engine,
 		AuthProfileID: req.AuthProfileID,
 		ScopeRef:      req.ScopeRef,

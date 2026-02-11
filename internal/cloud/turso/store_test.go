@@ -87,6 +87,7 @@ func TestEnqueueAndGet(t *testing.T) {
 		ID:            "run-eq-001",
 		Repo:          "owner/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  cloud.WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "auth-001",
 		ScopeRef:      "prd-001",
@@ -134,12 +135,12 @@ func TestClaimPicksOldest(t *testing.T) {
 
 	// Enqueue two runs with staggered created_at.
 	run1 := &cloud.Run{
-		ID: "run-oldest-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-oldest-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "a", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now.Add(-2 * time.Second), UpdatedAt: now,
 	}
 	run2 := &cloud.Run{
-		ID: "run-oldest-002", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-oldest-002", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "a", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now.Add(-1 * time.Second), UpdatedAt: now,
 	}
@@ -187,7 +188,7 @@ func TestClaimOneWinnerParallel(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	run := &cloud.Run{
-		ID: "run-parallel-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-parallel-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "a", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
 	}
@@ -247,12 +248,12 @@ func TestAcquireLockConflict(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	run1 := &cloud.Run{
-		ID: "run-lock-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-lock-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "auth-lock-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
 	}
 	run2 := &cloud.Run{
-		ID: "run-lock-002", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-lock-002", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "auth-lock-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
 	}
@@ -312,7 +313,7 @@ func TestRenewLockExpired(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	run := &cloud.Run{
-		ID: "run-renew-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-renew-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "auth-renew-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
 	}
@@ -350,7 +351,7 @@ func TestRenewLockSuccess(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	run := &cloud.Run{
-		ID: "run-rs-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-rs-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "auth-rs-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
 	}
@@ -401,12 +402,12 @@ func TestStaleLockReclaim(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	run1 := &cloud.Run{
-		ID: "run-stale-001", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-stale-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "auth-stale-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
 	}
 	run2 := &cloud.Run{
-		ID: "run-stale-002", Repo: "r", BaseBranch: "main", Engine: "e",
+		ID: "run-stale-002", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
 		AuthProfileID: "auth-stale-001", ScopeRef: "s", Status: cloud.RunStatusQueued,
 		MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
 	}

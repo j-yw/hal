@@ -5,6 +5,27 @@ import (
 	"time"
 )
 
+// WorkflowKind represents the type of workflow a cloud run executes.
+type WorkflowKind string
+
+const (
+	WorkflowKindRun    WorkflowKind = "run"
+	WorkflowKindAuto   WorkflowKind = "auto"
+	WorkflowKindReview WorkflowKind = "review"
+)
+
+// validWorkflowKinds is the exhaustive set of allowed workflow kinds.
+var validWorkflowKinds = map[WorkflowKind]bool{
+	WorkflowKindRun:    true,
+	WorkflowKindAuto:   true,
+	WorkflowKindReview: true,
+}
+
+// IsValid reports whether k is one of the allowed workflow kinds.
+func (k WorkflowKind) IsValid() bool {
+	return validWorkflowKinds[k]
+}
+
 // RunStatus represents the lifecycle state of a cloud run.
 type RunStatus string
 
@@ -46,22 +67,23 @@ func (s RunStatus) IsTerminal() bool {
 
 // Run represents a durable cloud run record.
 type Run struct {
-	ID                    string     `json:"id"`
-	Repo                  string     `json:"repo"`
-	BaseBranch            string     `json:"base_branch"`
-	Engine                string     `json:"engine"`
-	AuthProfileID         string     `json:"auth_profile_id"`
-	ScopeRef              string     `json:"scope_ref"`
-	Status                RunStatus  `json:"status"`
-	AttemptCount          int        `json:"attempt_count"`
-	MaxAttempts           int        `json:"max_attempts"`
-	DeadlineAt            *time.Time `json:"deadline_at,omitempty"`
-	CancelRequested       bool       `json:"cancel_requested"`
-	InputSnapshotID       *string    `json:"input_snapshot_id,omitempty"`
-	LatestSnapshotID      *string    `json:"latest_snapshot_id,omitempty"`
-	LatestSnapshotVersion int        `json:"latest_snapshot_version"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+	ID                    string       `json:"id"`
+	Repo                  string       `json:"repo"`
+	BaseBranch            string       `json:"base_branch"`
+	WorkflowKind          WorkflowKind `json:"workflow_kind"`
+	Engine                string       `json:"engine"`
+	AuthProfileID         string       `json:"auth_profile_id"`
+	ScopeRef              string       `json:"scope_ref"`
+	Status                RunStatus    `json:"status"`
+	AttemptCount          int          `json:"attempt_count"`
+	MaxAttempts           int          `json:"max_attempts"`
+	DeadlineAt            *time.Time   `json:"deadline_at,omitempty"`
+	CancelRequested       bool         `json:"cancel_requested"`
+	InputSnapshotID       *string      `json:"input_snapshot_id,omitempty"`
+	LatestSnapshotID      *string      `json:"latest_snapshot_id,omitempty"`
+	LatestSnapshotVersion int          `json:"latest_snapshot_version"`
+	CreatedAt             time.Time    `json:"created_at"`
+	UpdatedAt             time.Time    `json:"updated_at"`
 }
 
 // Validate checks that all required fields are set and the status is valid.
@@ -74,6 +96,9 @@ func (r *Run) Validate() error {
 	}
 	if r.BaseBranch == "" {
 		return fmt.Errorf("run.base_branch must not be empty")
+	}
+	if !r.WorkflowKind.IsValid() {
+		return fmt.Errorf("run.workflow_kind %q is not a valid workflow kind", r.WorkflowKind)
 	}
 	if r.Engine == "" {
 		return fmt.Errorf("run.engine must not be empty")
@@ -98,6 +123,7 @@ const RunsSchema = `CREATE TABLE IF NOT EXISTS runs (
     id                      TEXT PRIMARY KEY,
     repo                    TEXT NOT NULL,
     base_branch             TEXT NOT NULL,
+    workflow_kind           TEXT NOT NULL CHECK (workflow_kind IN ('run','auto','review')),
     engine                  TEXT NOT NULL,
     auth_profile_id         TEXT NOT NULL,
     scope_ref               TEXT NOT NULL,

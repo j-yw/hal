@@ -601,6 +601,7 @@ func TestRunCloudSubmit(t *testing.T) {
 			var out bytes.Buffer
 			err := runCloudSubmit(
 				tt.repo, tt.base, tt.engine, tt.authProf, tt.scope,
+				cloud.WorkflowKindRun,
 				tt.jsonOutput,
 				storeFactory,
 				configFactory,
@@ -690,6 +691,7 @@ func validCloudRun(id string) *cloud.Run {
 		ID:            id,
 		Repo:          "org/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  cloud.WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "profile-1",
 		ScopeRef:      "prd-123",

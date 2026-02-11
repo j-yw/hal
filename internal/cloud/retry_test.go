@@ -68,6 +68,7 @@ func failedRun(id string, attemptCount, maxAttempts int) *Run {
 		ID:            id,
 		Repo:          "org/repo",
 		BaseBranch:    "main",
+		WorkflowKind:  WorkflowKindRun,
 		Engine:        "claude",
 		AuthProfileID: "profile-1",
 		ScopeRef:      "prd-123",

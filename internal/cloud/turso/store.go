@@ -47,11 +47,11 @@ func (s *Store) EnqueueRun(ctx context.Context, run *cloud.Run) error {
 		return err
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO runs (id, repo, base_branch, engine, auth_profile_id, scope_ref,
+		INSERT INTO runs (id, repo, base_branch, workflow_kind, engine, auth_profile_id, scope_ref,
 			status, attempt_count, max_attempts, deadline_at, cancel_requested,
 			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.Repo, run.BaseBranch, run.Engine, run.AuthProfileID, run.ScopeRef,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, run.Repo, run.BaseBranch, run.WorkflowKind, run.Engine, run.AuthProfileID, run.ScopeRef,
 		run.Status, run.AttemptCount, run.MaxAttempts, run.DeadlineAt, run.CancelRequested,
 		run.InputSnapshotID, run.LatestSnapshotID, run.LatestSnapshotVersion, run.CreatedAt, run.UpdatedAt,
 	)
@@ -72,7 +72,7 @@ func (s *Store) ClaimRun(ctx context.Context, workerID string) (*cloud.Run, erro
 			ORDER BY created_at ASC
 			LIMIT 1
 		)
-		RETURNING id, repo, base_branch, engine, auth_profile_id, scope_ref,
+		RETURNING id, repo, base_branch, workflow_kind, engine, auth_profile_id, scope_ref,
 			status, attempt_count, max_attempts, deadline_at, cancel_requested,
 			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at`,
 		now)
@@ -120,7 +120,7 @@ func (s *Store) TransitionRun(ctx context.Context, runID string, fromStatus, toS
 
 func (s *Store) GetRun(ctx context.Context, runID string) (*cloud.Run, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, repo, base_branch, engine, auth_profile_id, scope_ref,
+		SELECT id, repo, base_branch, workflow_kind, engine, auth_profile_id, scope_ref,
 			status, attempt_count, max_attempts, deadline_at, cancel_requested,
 			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at
 		FROM runs WHERE id = ?`, runID)
@@ -137,7 +137,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (*cloud.Run, error) {
 
 func (s *Store) ListOverdueRuns(ctx context.Context, now time.Time) ([]*cloud.Run, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, repo, base_branch, engine, auth_profile_id, scope_ref,
+		SELECT id, repo, base_branch, workflow_kind, engine, auth_profile_id, scope_ref,
 			status, attempt_count, max_attempts, deadline_at, cancel_requested,
 			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at
 		FROM runs
@@ -618,7 +618,7 @@ type rowScanner interface {
 func scanRun(row rowScanner) (*cloud.Run, error) {
 	var r cloud.Run
 	err := row.Scan(
-		&r.ID, &r.Repo, &r.BaseBranch, &r.Engine, &r.AuthProfileID, &r.ScopeRef,
+		&r.ID, &r.Repo, &r.BaseBranch, &r.WorkflowKind, &r.Engine, &r.AuthProfileID, &r.ScopeRef,
 		&r.Status, &r.AttemptCount, &r.MaxAttempts, &r.DeadlineAt, &r.CancelRequested,
 		&r.InputSnapshotID, &r.LatestSnapshotID, &r.LatestSnapshotVersion, &r.CreatedAt, &r.UpdatedAt,
 	)
