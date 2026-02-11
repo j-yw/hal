@@ -24,6 +24,7 @@ type cloudMockStore struct {
 	snapshots      map[string]*cloud.RunStateSnapshot // runID → latest snapshot
 	locks          map[string]*cloud.AuthProfileLock  // authProfileID → active lock
 	enqErr         error
+	listRunsErr    error
 	getRErr        error
 	getAttemptErr  error
 	listEventsErr  error
@@ -81,6 +82,16 @@ func (s *cloudMockStore) GetRun(_ context.Context, id string) (*cloud.Run, error
 		return nil, cloud.ErrNotFound
 	}
 	return r, nil
+}
+func (s *cloudMockStore) ListRuns(_ context.Context, limit int) ([]*cloud.Run, error) {
+	if s.listRunsErr != nil {
+		return nil, s.listRunsErr
+	}
+	runs := s.runs
+	if limit > 0 && limit < len(runs) {
+		runs = runs[:limit]
+	}
+	return runs, nil
 }
 func (s *cloudMockStore) ListOverdueRuns(_ context.Context, _ time.Time) ([]*cloud.Run, error) {
 	return nil, nil

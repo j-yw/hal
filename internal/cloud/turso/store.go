@@ -135,6 +135,30 @@ func (s *Store) GetRun(ctx context.Context, runID string) (*cloud.Run, error) {
 	return run, nil
 }
 
+func (s *Store) ListRuns(ctx context.Context, limit int) ([]*cloud.Run, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, repo, base_branch, workflow_kind, engine, auth_profile_id, scope_ref,
+			status, attempt_count, max_attempts, deadline_at, cancel_requested,
+			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at
+		FROM runs
+		ORDER BY updated_at DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []*cloud.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
 func (s *Store) ListOverdueRuns(ctx context.Context, now time.Time) ([]*cloud.Run, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, repo, base_branch, workflow_kind, engine, auth_profile_id, scope_ref,

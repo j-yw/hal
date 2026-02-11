@@ -14,6 +14,8 @@
 - When CloudEnabled=false, resolver returns hard defaults without loading cloud tiers — verifiable via golden tests
 - Load() wraps os.ReadFile error with fmt.Errorf %w — use errors.Is(err, os.ErrNotExist) not os.IsNotExist for wrapped errors
 - buildHalCommand(kind, mode) dispatches worker commands by WorkflowKind: run→"hal run", auto→"hal auto --mode <mode>", review→"hal review" — mode only applies to auto
+- ListRuns(ctx, limit) is the Store method for listing runs — ordered by updated_at DESC with LIMIT; use cloudListStoreFactory for test injection
+- Cloud list command follows the same pattern as status/cancel: separate file (cloud_list.go), testable runCloudList function, factory variable, init() wiring
 
 ---
 ## 2026-02-11 - US-001
@@ -156,4 +158,22 @@
   - Mode flags are only meaningful for auto workflows; run and review are simple dispatch commands
   - The `executionEventPayload` includes `workflow_kind` for all events — use this for log/event filtering and observability
   - When adding new fields to `ExecutionRequest`, update `validExecutionRequest()` in execution_test.go AND check other test files that use it (e.g., redact_pipeline_test.go)
+---
+## 2026-02-11 - US-006
+- Implemented `hal cloud list` command for listing recent cloud runs
+- Added `ListRuns(ctx, limit)` method to `Store` interface — returns up to `limit` runs ordered by `updated_at DESC`
+- Implemented `ListRuns` in postgres store (uses `$1` placeholder) and turso store (uses `?` placeholder)
+- Created `cmd/cloud_list.go` with `runCloudList` testable function following the extract-for-test pattern
+- Human output shows "Recent cloud runs:" header with run ID, workflow kind, status, and updated_at per row; empty state shows "No cloud runs found."
+- JSON output returns `{"runs": [...]}` with `run_id`, `workflow_kind`, `status`, `updated_at` fields per entry; empty state returns `{"runs": []}` (not null)
+- Added `listRunsErr` field and `ListRuns` method to `cloudMockStore` in cmd/cloud_test.go
+- Added `ListRuns` stub to `mockStore` in internal/cloud/store_test.go (embedded by all internal mock stores)
+- Updated `TestStoreMethodCount` from 28 to 29 methods
+- Created `cmd/cloud_list_test.go` with 12 table-driven tests covering: success (human+JSON), empty list (human+JSON), nil store factory (human+JSON), store factory error (human+JSON), store ListRuns error (human+JSON), JSON field validation, JSON-only output verification
+- Files changed: internal/cloud/store.go, internal/cloud/store_test.go, internal/cloud/postgres/store.go, internal/cloud/turso/store.go, cmd/cloud.go (mock), cmd/cloud_test.go (mock), cmd/cloud_list.go (new), cmd/cloud_list_test.go (new), .hal/prd.json
+- **Learnings for future iterations:**
+  - When adding a new method to the Store interface, all mock stores that embed `mockStore` in internal/cloud/*_test.go get it automatically — only need to update `mockStore` in store_test.go and `cloudMockStore` in cmd/cloud_test.go
+  - Separate cloud subcommands into their own files (cloud_list.go, cloud_setup.go, cloud_doctor.go) with init() for flag registration and cloudCmd.AddCommand
+  - JSON empty arrays: `make([]T, 0)` marshals as `[]` not `null` — important for API contracts
+  - Postgres uses `$1` placeholders, Turso uses `?` — both share identical scanRun + query structure otherwise
 ---
