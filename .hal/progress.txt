@@ -38,6 +38,8 @@
 - Supported cloud subcommands: setup, doctor, list, status, logs, cancel, pull, auth — legacy commands (submit, run, smoke, env, runs) are removed; `cloud_removed_test.go` locks this list
 - Cloud lifecycle integration scaffolding belongs in a `//go:build integration` test file under `cmd/`; keep the canonical command flow as shared table data (`setup → run → auto → review → status → logs → pull → cancel`) for reuse across scenario tests
 - Lifecycle integration tests should centralize checkpoint fixtures (`setup`/`run`/`status`/`logs`/`pull`/`cancel`) with `RequiresRunID`, `SupportsJSON`, and `RequiredJSONKeys`, plus shared camelCase JSON key constants and workflowKind expectations for `run`/`auto`/`review`
+- Lifecycle integration harnesses should snapshot and restore package-level cloud factory globals and poll intervals during teardown to prevent cross-test state leakage
+- For lifecycle integration scenarios, extend `cloudMockStore` in a harness-specific wrapper so `EnqueueRun`, `PutSnapshot`, and `UpdateRunSnapshotRefs` persist run/snapshot state for downstream `status`/`pull` assertions
 
 ---
 ## 2026-02-11 - US-001
@@ -502,4 +504,15 @@
   - Keep lifecycle scenario assertions driven by fixture tables instead of hardcoding expectations per test; this makes later scenario additions easier to maintain
   - Validate shared JSON key constants with a camelCase-format test to catch accidental snake_case key drift early
   - Keep workflow-kind expectations as explicit fixtures (`run`/`auto`/`review`) so status/logs/pull/cancel scenarios can assert command-to-kind consistency without duplicating logic
+---
+## 2026-02-12 01:11 +08 - T-003
+- Implemented an integration-only cloud lifecycle harness in `cmd/cloud_lifecycle_harness_integration_test.go` that provisions an isolated temp workspace (`.hal` state + `cloud.yaml`), a harness-specific in-memory store, and deterministic submit ID generation
+- Added harness setup/teardown helpers that override all cloud lifecycle store/config factories and poll intervals, then restore originals to prevent global state leakage between tests
+- Added harness store overrides for `EnqueueRun`, `PutSnapshot`, and `UpdateRunSnapshotRefs` so submitted runs/snapshots are queryable by downstream lifecycle commands without external services
+- Added integration-tagged tests covering per-invocation isolation, test-double factory wiring, and setup/teardown idempotency/restore behavior
+- Files changed: cmd/cloud_lifecycle_harness_integration_test.go, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Integration harnesses that mutate package-level factories should always snapshot originals and restore them in teardown; otherwise cross-test leakage will make lifecycle scenarios flaky
+  - A harness-specific wrapper around `cloudMockStore` is the easiest way to emulate run/snapshot persistence needed by `status` and `pull` without introducing real database/network dependencies
+  - Keep harness-provided submit ID generation deterministic (prefix + counter) so future scenario assertions can be stable across `run`/`auto`/`review`
 ---

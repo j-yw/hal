@@ -127,3 +127,5 @@
 - Centralize lifecycle checkpoint fixtures (`setup`/`run`/`status`/`logs`/`pull`/`cancel`) in one integration helper table with `RequiresRunID`, `SupportsJSON`, and `RequiredJSONKeys` so scenario tests assert one contract source of truth.
 - Keep lifecycle JSON contract keys as shared camelCase constants (e.g., `runId`, `workflowKind`, `filesRestored`) and validate key format in tests to prevent snake_case drift.
 - Define workflow-kind expectations for `run`, `auto`, and `review` in shared fixtures so scenario tests can assert persisted `workflowKind` consistently.
+- Integration harnesses that override package-level cloud factories (`runCloudStoreFactory`, `autoCloudStoreFactory`, etc.) should snapshot originals and restore them in teardown to avoid cross-test global state leakage.
+- For lifecycle harness stores, extend `cloudMockStore` with overrides for `EnqueueRun`, `PutSnapshot`, and `UpdateRunSnapshotRefs` so submitted runs/snapshots are queryable by downstream `status`/`pull` commands without external services.
