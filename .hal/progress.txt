@@ -240,3 +240,17 @@
   - Review and auto both reference "Artifacts available: state, reports" in terminal output; run only shows logs hint (no reports artifact group)
   - Each workflow cloud file has its own factory variables (reviewCloudStoreFactory, reviewCloudConfigFactory, reviewCloudPollInterval) to keep wiring independent and testable
 ---
+## 2026-02-11 - US-013
+- Completed `hal cloud status` command by adding missing acceptance criteria fields
+- Added `workflow_kind`, `created_at`, `updated_at` to `cloudStatusResponse` JSON struct and human output
+- Changed error code from `not_found` to `run_not_found` for invalid run ID to match AC deterministic error code requirement
+- Human output now includes `workflow_kind:`, `created_at:`, and `updated_at:` lines
+- JSON output now includes `workflow_kind`, `created_at`, `updated_at` fields
+- Updated 13 existing tests to verify new fields: workflow_kind assertions, created_at/updated_at non-empty checks, run_not_found error code, run ID in error message
+- Files changed: cmd/cloud.go, cmd/cloud_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - The `hal cloud status` command was already mostly implemented in cloud.go — the story was incomplete because the response was missing `workflow_kind` and timestamps, and the error code didn't match the AC (`not_found` vs `run_not_found`)
+  - When AC specifies a deterministic error code like `run_not_found`, verify the exact code string in the implementation — generic codes like `not_found` may not satisfy the contract
+  - Always check if fields mentioned in acceptance criteria (workflow kind, timestamps) are actually present in both human and JSON output modes
+  - The status command's tests in `cloud_test.go` (TestRunCloudStatus) are alongside tests for other cloud commands — consider moving to a dedicated `cloud_status_test.go` file for consistency with other commands like `cloud_list_test.go`
+---

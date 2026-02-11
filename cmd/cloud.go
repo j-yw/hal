@@ -480,6 +480,7 @@ type cloudErrorResponse struct {
 // cloudStatusResponse is the JSON output for a successful status query.
 type cloudStatusResponse struct {
 	RunID                   string  `json:"run_id"`
+	WorkflowKind            string  `json:"workflow_kind"`
 	Status                  string  `json:"status"`
 	AttemptCount            int     `json:"attempt_count"`
 	MaxAttempts             int     `json:"max_attempts"`
@@ -488,6 +489,8 @@ type cloudStatusResponse struct {
 	DeadlineAt              *string `json:"deadline_at"`
 	Engine                  string  `json:"engine"`
 	AuthProfileID           string  `json:"auth_profile_id"`
+	CreatedAt               string  `json:"created_at"`
+	UpdatedAt               string  `json:"updated_at"`
 }
 
 // runCloudStatus is the testable logic for the cloud status command.
@@ -513,7 +516,7 @@ func runCloudStatus(
 			if jsonOutput {
 				_ = writeJSON(out, cloudErrorResponse{
 					Error:     fmt.Sprintf("run %q not found", runID),
-					ErrorCode: "not_found",
+					ErrorCode: "run_not_found",
 				})
 				return fmt.Errorf("run %q not found", runID)
 			}
@@ -536,11 +539,14 @@ func runCloudStatus(
 	if jsonOutput {
 		resp := cloudStatusResponse{
 			RunID:         run.ID,
+			WorkflowKind:  string(run.WorkflowKind),
 			Status:        string(run.Status),
 			AttemptCount:  run.AttemptCount,
 			MaxAttempts:   run.MaxAttempts,
 			Engine:        run.Engine,
 			AuthProfileID: run.AuthProfileID,
+			CreatedAt:     run.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:     run.UpdatedAt.Format(time.RFC3339),
 		}
 		if currentAttempt != nil {
 			resp.CurrentAttempt = currentAttempt
@@ -559,6 +565,7 @@ func runCloudStatus(
 	// Human-readable output.
 	fmt.Fprintf(out, "Run status:\n")
 	fmt.Fprintf(out, "  run_id:          %s\n", run.ID)
+	fmt.Fprintf(out, "  workflow_kind:   %s\n", run.WorkflowKind)
 	fmt.Fprintf(out, "  status:          %s\n", run.Status)
 	fmt.Fprintf(out, "  attempt_count:   %d\n", run.AttemptCount)
 	fmt.Fprintf(out, "  max_attempts:    %d\n", run.MaxAttempts)
@@ -577,6 +584,8 @@ func runCloudStatus(
 	} else {
 		fmt.Fprintf(out, "  deadline_at:     none\n")
 	}
+	fmt.Fprintf(out, "  created_at:      %s\n", run.CreatedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "  updated_at:      %s\n", run.UpdatedAt.Format(time.RFC3339))
 	return nil
 }
 

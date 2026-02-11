@@ -743,7 +743,7 @@ func TestRunCloudStatus(t *testing.T) {
 				}
 				return s
 			},
-			wantOutput: []string{"Run status:", "run_id:", "run-001", "status:", "running", "attempt_count:", "1", "max_attempts:", "3", "current_attempt:", "1", "last_heartbeat:", "ago", "deadline_at:"},
+			wantOutput: []string{"Run status:", "run_id:", "run-001", "workflow_kind:", "run", "status:", "running", "attempt_count:", "1", "max_attempts:", "3", "current_attempt:", "1", "last_heartbeat:", "ago", "deadline_at:", "created_at:", "updated_at:"},
 		},
 		{
 			name:       "successful status with JSON output and active attempt",
@@ -772,6 +772,9 @@ func TestRunCloudStatus(t *testing.T) {
 				if resp.RunID != "run-001" {
 					t.Errorf("run_id = %q, want %q", resp.RunID, "run-001")
 				}
+				if resp.WorkflowKind != "run" {
+					t.Errorf("workflow_kind = %q, want %q", resp.WorkflowKind, "run")
+				}
 				if resp.Status != "running" {
 					t.Errorf("status = %q, want %q", resp.Status, "running")
 				}
@@ -795,6 +798,12 @@ func TestRunCloudStatus(t *testing.T) {
 				}
 				if resp.AuthProfileID != "profile-1" {
 					t.Errorf("auth_profile_id = %q, want %q", resp.AuthProfileID, "profile-1")
+				}
+				if resp.CreatedAt == "" {
+					t.Error("created_at should not be empty")
+				}
+				if resp.UpdatedAt == "" {
+					t.Error("updated_at should not be empty")
 				}
 			},
 		},
@@ -845,7 +854,7 @@ func TestRunCloudStatus(t *testing.T) {
 			wantErr: "not found",
 		},
 		{
-			name:       "unknown run_id returns not_found in JSON",
+			name:       "unknown run_id returns run_not_found in JSON",
 			runID:      "non-existent",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
@@ -857,8 +866,12 @@ func TestRunCloudStatus(t *testing.T) {
 				if err := json.Unmarshal([]byte(output), &resp); err != nil {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
-				if resp.ErrorCode != "not_found" {
-					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "not_found")
+				if resp.ErrorCode != "run_not_found" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "run_not_found")
+				}
+				// Verify the error includes the requested run ID.
+				if !strings.Contains(resp.Error, "non-existent") {
+					t.Errorf("error %q should contain the requested run ID", resp.Error)
 				}
 			},
 		},
@@ -978,9 +991,10 @@ func TestRunCloudStatus(t *testing.T) {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
 				requiredKeys := []string{
-					"run_id", "status", "attempt_count", "max_attempts",
+					"run_id", "workflow_kind", "status", "attempt_count", "max_attempts",
 					"current_attempt", "last_heartbeat_age_seconds",
 					"deadline_at", "engine", "auth_profile_id",
+					"created_at", "updated_at",
 				}
 				for _, key := range requiredKeys {
 					if _, ok := raw[key]; !ok {
