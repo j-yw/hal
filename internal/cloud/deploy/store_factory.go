@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 
 	"github.com/jywlabs/hal/internal/cloud"
 	"github.com/jywlabs/hal/internal/cloud/postgres"
@@ -24,8 +25,24 @@ func OpenStore(ctx context.Context, cfg Config) (cloud.Store, *sql.DB, error) {
 	}
 }
 
+// buildTursoDSN constructs a Turso DSN using net/url to properly escape
+// the auth token and preserve any existing query parameters in the URL.
+func buildTursoDSN(tursoURL, authToken string) (string, error) {
+	u, err := url.Parse(tursoURL)
+	if err != nil {
+		return "", fmt.Errorf("parse turso URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("authToken", authToken)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
 func openTurso(ctx context.Context, cfg Config) (cloud.Store, *sql.DB, error) {
-	dsn := cfg.TursoURL + "?authToken=" + cfg.TursoAuthToken
+	dsn, err := buildTursoDSN(cfg.TursoURL, cfg.TursoAuthToken)
+	if err != nil {
+		return nil, nil, fmt.Errorf("turso dsn: %w", err)
+	}
 	db, err := sql.Open("libsql", dsn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("turso open: %w", err)
