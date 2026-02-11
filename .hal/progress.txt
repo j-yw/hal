@@ -222,3 +222,21 @@
   - Each workflow cloud file (run_cloud.go, auto_cloud.go) has its own factory variables (autoCloudStoreFactory, autoCloudConfigFactory, autoCloudPollInterval) to keep wiring independent
   - The cloud guard intercepts at the very top of the command handler before any local initialization — this avoids engine creation, config loading, and display setup when running in cloud mode
 ---
+## 2026-02-11 - US-011
+- Implemented `hal review --cloud` cloud execution path for submitting and tracking review cloud runs
+- Created `cmd/review_cloud.go` with `runHalReviewCloud` testable function and `executeReviewCloud` guard function
+- Registers shared cloud flags on `reviewCmd` via `RegisterCloudFlags(reviewCmd)` in init()
+- Uses `config.Resolve()` for full 6-tier precedence cloud config resolution with `workflowKind=review`
+- Collects .hal bundle files via existing `collectBundleFiles` and submits via `SubmitWithBundle` with `workflowKind=review`
+- Wait/detach behavior reuses same pattern as hal run/auto --cloud
+- Completion summary references report and state artifact availability: "Artifacts available: state, reports" with `hal cloud pull` and `hal cloud logs` hints
+- Human output includes run ID, status, and next-step hints
+- JSON output returns `{runId, workflowKind, status}` matching the contract
+- Intercepted in `runReview` via `executeReviewCloud()` early return guard
+- Created `cmd/review_cloud_test.go` with 16 tests covering: detach success (human+JSON), wait success (human+JSON), detach/wait conflict (human+JSON), nil store factory (human+JSON), store factory error (JSON), missing .hal dir, JSON required fields, workflowKind=review verification, prerequisite failure (JSON), executeReviewCloud guard (false when no-cloud, false when nil flags), completion summary references artifacts
+- Files changed: cmd/review.go, cmd/review_cloud.go (new), cmd/review_cloud_test.go (new), .hal/prd.json
+- **Learnings for future iterations:**
+  - All three workflow cloud files (run_cloud.go, auto_cloud.go, review_cloud.go) follow the identical pattern — if a new workflow kind is added, create `<kind>_cloud.go` with `execute<Kind>Cloud` guard and `runHal<Kind>Cloud` testable function
+  - Review and auto both reference "Artifacts available: state, reports" in terminal output; run only shows logs hint (no reports artifact group)
+  - Each workflow cloud file has its own factory variables (reviewCloudStoreFactory, reviewCloudConfigFactory, reviewCloudPollInterval) to keep wiring independent and testable
+---

@@ -47,6 +47,11 @@ func init() {
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
+	// Check for --cloud flag: intercept and run cloud path.
+	if handled, err := executeReviewCloud(cmd, os.Stdout); handled {
+		return err
+	}
+
 	ctx := context.Background()
 	dir := "."
 
