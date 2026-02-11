@@ -774,7 +774,6 @@ func TestClassifyAuthImportError(t *testing.T) {
 
 func TestRunCloudAuthStatus(t *testing.T) {
 	now := time.Now().UTC()
-	leaseExpiry := now.Add(5 * time.Minute)
 
 	tests := []struct {
 		name       string
@@ -786,7 +785,42 @@ func TestRunCloudAuthStatus(t *testing.T) {
 		checkJSON  func(t *testing.T, output string)
 	}{
 		{
-			name:      "successful status with human output and no lock",
+			name:      "missing profile reports status missing in human output",
+			profileID: "no-such-profile",
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			wantOutput: []string{
+				"Auth profile status:",
+				"profileId: no-such-profile",
+				"status:    missing",
+			},
+		},
+		{
+			name:       "missing profile reports status missing in JSON",
+			profileID:  "no-such-profile",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				return newCloudMockStore()
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudAuthStatusResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ProfileID != "no-such-profile" {
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "no-such-profile")
+				}
+				if resp.Status != "missing" {
+					t.Errorf("status = %q, want %q", resp.Status, "missing")
+				}
+				if resp.LastValidatedAt != nil {
+					t.Errorf("lastValidatedAt should be nil for missing profile, got %v", resp.LastValidatedAt)
+				}
+			},
+		},
+		{
+			name:      "linked profile reports status linked in human output",
 			profileID: "prof-001",
 			store: func() *cloudMockStore {
 				s := newCloudMockStore()
@@ -795,15 +829,12 @@ func TestRunCloudAuthStatus(t *testing.T) {
 			},
 			wantOutput: []string{
 				"Auth profile status:",
-				"profile_id:       prof-001",
-				"provider:         anthropic",
-				"status:           linked",
-				"lock_owner:       none",
-				"lock_expires:     n/a",
+				"profileId: prof-001",
+				"status:    linked",
 			},
 		},
 		{
-			name:       "successful status with JSON output and no lock",
+			name:       "linked profile reports status linked in JSON with profileId and status",
 			profileID:  "prof-001",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
@@ -817,59 +848,38 @@ func TestRunCloudAuthStatus(t *testing.T) {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
 				if resp.ProfileID != "prof-001" {
-					t.Errorf("profile_id = %q, want %q", resp.ProfileID, "prof-001")
-				}
-				if resp.Provider != "anthropic" {
-					t.Errorf("provider = %q, want %q", resp.Provider, "anthropic")
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-001")
 				}
 				if resp.Status != "linked" {
 					t.Errorf("status = %q, want %q", resp.Status, "linked")
 				}
-				if resp.LockOwnerRunID != nil {
-					t.Errorf("lock_owner_run_id = %v, want nil", resp.LockOwnerRunID)
-				}
-				if resp.LockLeaseExpiresAt != nil {
-					t.Errorf("lock_lease_expires_at = %v, want nil", resp.LockLeaseExpiresAt)
-				}
 			},
 		},
 		{
-			name:      "status with active lock in human output",
-			profileID: "prof-001",
+			name:      "invalid profile reports status invalid in human output",
+			profileID: "prof-invalid",
 			store: func() *cloudMockStore {
 				s := newCloudMockStore()
-				s.profiles["prof-001"] = linkedCloudProfile("prof-001", "anthropic")
-				s.locks["prof-001"] = &cloud.AuthProfileLock{
-					AuthProfileID:  "prof-001",
-					RunID:          "run-123",
-					WorkerID:       "worker-1",
-					AcquiredAt:     now,
-					HeartbeatAt:    now,
-					LeaseExpiresAt: leaseExpiry,
-				}
+				p := linkedCloudProfile("prof-invalid", "anthropic")
+				p.Status = cloud.AuthProfileStatusInvalid
+				s.profiles["prof-invalid"] = p
 				return s
 			},
 			wantOutput: []string{
 				"Auth profile status:",
-				"profile_id:       prof-001",
-				"lock_owner:       run-123",
+				"profileId: prof-invalid",
+				"status:    invalid",
 			},
 		},
 		{
-			name:       "status with active lock in JSON output",
-			profileID:  "prof-001",
+			name:       "invalid profile reports status invalid in JSON",
+			profileID:  "prof-invalid",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
 				s := newCloudMockStore()
-				s.profiles["prof-001"] = linkedCloudProfile("prof-001", "anthropic")
-				s.locks["prof-001"] = &cloud.AuthProfileLock{
-					AuthProfileID:  "prof-001",
-					RunID:          "run-456",
-					WorkerID:       "worker-2",
-					AcquiredAt:     now,
-					HeartbeatAt:    now,
-					LeaseExpiresAt: leaseExpiry,
-				}
+				p := linkedCloudProfile("prof-invalid", "anthropic")
+				p.Status = cloud.AuthProfileStatusInvalid
+				s.profiles["prof-invalid"] = p
 				return s
 			},
 			checkJSON: func(t *testing.T, output string) {
@@ -877,37 +887,120 @@ func TestRunCloudAuthStatus(t *testing.T) {
 				if err := json.Unmarshal([]byte(output), &resp); err != nil {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
-				if resp.LockOwnerRunID == nil || *resp.LockOwnerRunID != "run-456" {
-					t.Errorf("lock_owner_run_id = %v, want %q", resp.LockOwnerRunID, "run-456")
+				if resp.ProfileID != "prof-invalid" {
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-invalid")
 				}
-				if resp.LockLeaseExpiresAt == nil {
-					t.Error("lock_lease_expires_at should not be nil")
+				if resp.Status != "invalid" {
+					t.Errorf("status = %q, want %q", resp.Status, "invalid")
 				}
 			},
 		},
 		{
-			name:      "missing profile exits non-zero with human output",
-			profileID: "no-such-profile",
+			name:      "revoked profile reports status revoked in human output",
+			profileID: "prof-revoked",
 			store: func() *cloudMockStore {
-				return newCloudMockStore()
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-revoked", "anthropic")
+				p.Status = cloud.AuthProfileStatusRevoked
+				s.profiles["prof-revoked"] = p
+				return s
 			},
-			wantErr: "not found",
+			wantOutput: []string{
+				"Auth profile status:",
+				"profileId: prof-revoked",
+				"status:    revoked",
+			},
 		},
 		{
-			name:       "missing profile exits non-zero with not_found in JSON",
-			profileID:  "no-such-profile",
+			name:       "revoked profile reports status revoked in JSON",
+			profileID:  "prof-revoked",
 			jsonOutput: true,
 			store: func() *cloudMockStore {
-				return newCloudMockStore()
+				s := newCloudMockStore()
+				p := linkedCloudProfile("prof-revoked", "anthropic")
+				p.Status = cloud.AuthProfileStatusRevoked
+				s.profiles["prof-revoked"] = p
+				return s
 			},
-			wantErr: "not found",
 			checkJSON: func(t *testing.T, output string) {
-				var resp cloudErrorResponse
+				var resp cloudAuthStatusResponse
 				if err := json.Unmarshal([]byte(output), &resp); err != nil {
 					t.Fatalf("failed to parse JSON: %v", err)
 				}
-				if resp.ErrorCode != "not_found" {
-					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "not_found")
+				if resp.ProfileID != "prof-revoked" {
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-revoked")
+				}
+				if resp.Status != "revoked" {
+					t.Errorf("status = %q, want %q", resp.Status, "revoked")
+				}
+			},
+		},
+		{
+			name:       "linked profile with lastValidatedAt in JSON",
+			profileID:  "prof-002",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				lastValidated := now.Add(-1 * time.Hour)
+				p := linkedCloudProfile("prof-002", "openai")
+				p.LastValidatedAt = &lastValidated
+				s.profiles["prof-002"] = p
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudAuthStatusResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ProfileID != "prof-002" {
+					t.Errorf("profileId = %q, want %q", resp.ProfileID, "prof-002")
+				}
+				if resp.Status != "linked" {
+					t.Errorf("status = %q, want %q", resp.Status, "linked")
+				}
+				if resp.LastValidatedAt == nil {
+					t.Error("lastValidatedAt should not be nil when available")
+				}
+			},
+		},
+		{
+			name:      "linked profile with lastValidatedAt in human output",
+			profileID: "prof-003",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				lastValidated := now.Add(-2 * time.Hour)
+				p := linkedCloudProfile("prof-003", "anthropic")
+				p.LastValidatedAt = &lastValidated
+				s.profiles["prof-003"] = p
+				return s
+			},
+			wantOutput: []string{
+				"Auth profile status:",
+				"profileId: prof-003",
+				"status:    linked",
+				"lastValidatedAt:",
+			},
+		},
+		{
+			name:       "linked profile without lastValidatedAt omits field in JSON",
+			profileID:  "prof-004",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.profiles["prof-004"] = linkedCloudProfile("prof-004", "anthropic")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudAuthStatusResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.LastValidatedAt != nil {
+					t.Errorf("lastValidatedAt should be nil when not available, got %v", resp.LastValidatedAt)
+				}
+				// Verify the raw JSON does not contain the field.
+				if strings.Contains(output, "lastValidatedAt") {
+					t.Error("JSON output should omit lastValidatedAt when not available")
 				}
 			},
 		},
@@ -947,75 +1040,6 @@ func TestRunCloudAuthStatus(t *testing.T) {
 				if resp.ErrorCode != "configuration_error" {
 					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "configuration_error")
 				}
-			},
-		},
-		{
-			name:       "profile with runtime metadata, last_validated_at, expires_at, and last_error_code in JSON",
-			profileID:  "prof-002",
-			jsonOutput: true,
-			store: func() *cloudMockStore {
-				s := newCloudMockStore()
-				runtimeMeta := `{"os":"linux","arch":"amd64","cli_version":"1.2.3"}`
-				lastValidated := now.Add(-1 * time.Hour)
-				expiresAt := now.Add(24 * time.Hour)
-				lastErr := "auth_invalid"
-				p := linkedCloudProfile("prof-002", "openai")
-				p.RuntimeMetadataJSON = &runtimeMeta
-				p.LastValidatedAt = &lastValidated
-				p.ExpiresAt = &expiresAt
-				p.LastErrorCode = &lastErr
-				s.profiles["prof-002"] = p
-				return s
-			},
-			checkJSON: func(t *testing.T, output string) {
-				var resp cloudAuthStatusResponse
-				if err := json.Unmarshal([]byte(output), &resp); err != nil {
-					t.Fatalf("failed to parse JSON: %v", err)
-				}
-				if resp.ProfileID != "prof-002" {
-					t.Errorf("profile_id = %q, want %q", resp.ProfileID, "prof-002")
-				}
-				if resp.Provider != "openai" {
-					t.Errorf("provider = %q, want %q", resp.Provider, "openai")
-				}
-				if resp.RuntimeMetadata == nil || *resp.RuntimeMetadata == "" {
-					t.Error("runtime_metadata should not be nil or empty")
-				}
-				if resp.LastValidatedAt == nil {
-					t.Error("last_validated_at should not be nil")
-				}
-				if resp.ExpiresAt == nil {
-					t.Error("expires_at should not be nil")
-				}
-				if resp.LastErrorCode == nil || *resp.LastErrorCode != "auth_invalid" {
-					t.Errorf("last_error_code = %v, want %q", resp.LastErrorCode, "auth_invalid")
-				}
-			},
-		},
-		{
-			name:      "profile with all optional fields in human output",
-			profileID: "prof-003",
-			store: func() *cloudMockStore {
-				s := newCloudMockStore()
-				runtimeMeta := `{"os":"linux"}`
-				lastValidated := now.Add(-2 * time.Hour)
-				expiresAt := now.Add(48 * time.Hour)
-				lastErr := "auth_profile_incompatible"
-				p := linkedCloudProfile("prof-003", "anthropic")
-				p.RuntimeMetadataJSON = &runtimeMeta
-				p.LastValidatedAt = &lastValidated
-				p.ExpiresAt = &expiresAt
-				p.LastErrorCode = &lastErr
-				s.profiles["prof-003"] = p
-				return s
-			},
-			wantOutput: []string{
-				"Auth profile status:",
-				"profile_id:       prof-003",
-				"provider:         anthropic",
-				"status:           linked",
-				`runtime_metadata: {"os":"linux"}`,
-				"last_error_code:  auth_profile_incompatible",
 			},
 		},
 	}
@@ -1076,6 +1100,28 @@ func TestRunCloudAuthStatus(t *testing.T) {
 
 			if tt.checkJSON != nil {
 				tt.checkJSON(t, strings.TrimSpace(output))
+			}
+		})
+	}
+}
+
+func TestMapAuthProfileStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status cloud.AuthProfileStatus
+		want   string
+	}{
+		{name: "pending_link maps to missing", status: cloud.AuthProfileStatusPendingLink, want: "missing"},
+		{name: "linked maps to linked", status: cloud.AuthProfileStatusLinked, want: "linked"},
+		{name: "invalid maps to invalid", status: cloud.AuthProfileStatusInvalid, want: "invalid"},
+		{name: "revoked maps to revoked", status: cloud.AuthProfileStatusRevoked, want: "revoked"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapAuthProfileStatus(tt.status)
+			if got != tt.want {
+				t.Errorf("mapAuthProfileStatus(%q) = %q, want %q", tt.status, got, tt.want)
 			}
 		})
 	}

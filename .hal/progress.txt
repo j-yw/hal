@@ -27,6 +27,7 @@
 - Cloud pull uses `MatchesArtifactPatterns` (not `IsBundlePathAllowed`) for artifact-group-based filtering — reports are valid pull artifacts despite being excluded from uploads
 - `decompressBundleFiles` expects gzip-compressed `path\x00size\x00content` frame format matching `compressBundleFiles`
 - Pull local-change detection uses `bytes.Equal` on file content — identical files pass silently, only truly changed files trigger the `--force` requirement
+- `mapAuthProfileStatus()` maps internal AuthProfileStatus to user-facing states: pending_link→missing, linked/invalid/revoked pass through. Use this for any user-facing profile status display
 
 ---
 ## 2026-02-11 - US-001
@@ -327,4 +328,20 @@
   - Credential validation runs AFTER request validation (Validate()) but BEFORE any store operations — this ensures field-level errors are caught first, and invalid credentials never create a profile
   - The `invalid_credentials` error code is the deterministic code for this path — matches the AC requirement and is distinct from `validation_error` (field-level) and `auth_invalid` (post-import validate check)
   - The `cloudAuthImportCredentialValidator` package-level variable follows the same factory/injectable pattern as `cloudAuthImportStoreFactory` — override in tests, nil in production (or set in init())
+---
+## 2026-02-11 - US-025
+- Implemented deterministic credential state reporting for `hal cloud auth status`
+- Changed `cloudAuthStatusResponse` JSON fields from snake_case to camelCase: `profileId`, `status`, `lastValidatedAt` (omitempty)
+- Simplified response struct to only include AC-required fields (removed lock/metadata/expires fields)
+- Added `mapAuthProfileStatus()` function: maps `pending_link` → `missing`, all others pass through (`linked`, `invalid`, `revoked`)
+- Missing profile (not found in store) now returns status `missing` (exit 0, not error) — previously returned a Go error with `not_found` code
+- Human output updated to use camelCase field labels matching JSON contract: `profileId:`, `status:`, `lastValidatedAt:`
+- Added `TestMapAuthProfileStatus` with 4 table-driven cases covering all status mappings
+- Rewrote `TestRunCloudAuthStatus` with 14 table-driven tests: missing human+JSON, linked human+JSON, invalid human+JSON, revoked human+JSON, lastValidatedAt present/absent in JSON/human, field omission verification, nil store factory (human+JSON), store factory error (JSON)
+- Files changed: cmd/cloud_auth.go, cmd/cloud_auth_test.go, .hal/prd.json
+- **Learnings for future iterations:**
+  - `hal cloud auth status` treats "missing" as a reportable state (exit 0) not an error — this is different from other cloud commands that return `not_found` errors
+  - `mapAuthProfileStatus` is the canonical mapping from internal AuthProfileStatus to user-facing status strings — use this when other commands need to display profile status
+  - The AC required camelCase JSON fields (`profileId`, `lastValidatedAt`) — this differs from other auth commands that still use snake_case — future stories (US-018) may normalize the naming convention
+  - `pending_link` is an internal-only status that users see as `missing` — this simplifies the user mental model to 4 states: missing/linked/invalid/revoked
 ---

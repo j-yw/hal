@@ -414,15 +414,18 @@ var cloudAuthStatusStoreFactory func() (cloud.Store, error)
 
 // cloudAuthStatusResponse is the JSON output for a successful auth status query.
 type cloudAuthStatusResponse struct {
-	ProfileID          string  `json:"profile_id"`
-	Provider           string  `json:"provider"`
-	Status             string  `json:"status"`
-	LockOwnerRunID     *string `json:"lock_owner_run_id"`
-	LockLeaseExpiresAt *string `json:"lock_lease_expires_at"`
-	RuntimeMetadata    *string `json:"runtime_metadata"`
-	LastValidatedAt    *string `json:"last_validated_at"`
-	ExpiresAt          *string `json:"expires_at"`
-	LastErrorCode      *string `json:"last_error_code"`
+	ProfileID       string  `json:"profileId"`
+	Status          string  `json:"status"`
+	LastValidatedAt *string `json:"lastValidatedAt,omitempty"`
+}
+
+// mapAuthProfileStatus maps internal auth profile statuses to user-facing status strings.
+// pending_link → missing, all others pass through.
+func mapAuthProfileStatus(s cloud.AuthProfileStatus) string {
+	if s == cloud.AuthProfileStatusPendingLink {
+		return "missing"
+	}
+	return string(s)
 }
 
 // runCloudAuthStatus is the testable logic for the cloud auth status command.
@@ -445,83 +448,41 @@ func runCloudAuthStatus(
 	profile, err := store.GetAuthProfile(ctx, profileID)
 	if err != nil {
 		if cloud.IsNotFound(err) {
+			// Missing profile is a reportable state, not an error.
 			if jsonOutput {
-				_ = writeJSON(out, cloudErrorResponse{
-					Error:     fmt.Sprintf("profile %q not found", profileID),
-					ErrorCode: "not_found",
+				return writeJSON(out, cloudAuthStatusResponse{
+					ProfileID: profileID,
+					Status:    "missing",
 				})
-				return fmt.Errorf("profile %q not found", profileID)
 			}
-			return fmt.Errorf("profile %q not found", profileID)
+			fmt.Fprintf(out, "Auth profile status:\n")
+			fmt.Fprintf(out, "  profileId: %s\n", profileID)
+			fmt.Fprintf(out, "  status:    missing\n")
+			return nil
 		}
 		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get profile: %v", err), "store_error")
 	}
 
-	// Try to get active lock for the profile.
-	var lockOwnerRunID *string
-	var lockLeaseExpiresAt *string
-	lock, err := store.GetActiveAuthLock(ctx, profileID)
-	if err == nil {
-		lockOwnerRunID = &lock.RunID
-		ts := lock.LeaseExpiresAt.Format(time.RFC3339)
-		lockLeaseExpiresAt = &ts
-	}
+	status := mapAuthProfileStatus(profile.Status)
 
 	if jsonOutput {
 		resp := cloudAuthStatusResponse{
-			ProfileID:          profile.ID,
-			Provider:           profile.Provider,
-			Status:             string(profile.Status),
-			LockOwnerRunID:     lockOwnerRunID,
-			LockLeaseExpiresAt: lockLeaseExpiresAt,
-			RuntimeMetadata:    profile.RuntimeMetadataJSON,
-			LastErrorCode:      profile.LastErrorCode,
+			ProfileID: profile.ID,
+			Status:    status,
 		}
 		if profile.LastValidatedAt != nil {
 			ts := profile.LastValidatedAt.Format(time.RFC3339)
 			resp.LastValidatedAt = &ts
-		}
-		if profile.ExpiresAt != nil {
-			ts := profile.ExpiresAt.Format(time.RFC3339)
-			resp.ExpiresAt = &ts
 		}
 		return writeJSON(out, resp)
 	}
 
 	// Human-readable output.
 	fmt.Fprintf(out, "Auth profile status:\n")
-	fmt.Fprintf(out, "  profile_id:       %s\n", profile.ID)
-	fmt.Fprintf(out, "  provider:         %s\n", profile.Provider)
-	fmt.Fprintf(out, "  status:           %s\n", profile.Status)
-	if lockOwnerRunID != nil {
-		fmt.Fprintf(out, "  lock_owner:       %s\n", *lockOwnerRunID)
-	} else {
-		fmt.Fprintf(out, "  lock_owner:       none\n")
-	}
-	if lockLeaseExpiresAt != nil {
-		fmt.Fprintf(out, "  lock_expires:     %s\n", *lockLeaseExpiresAt)
-	} else {
-		fmt.Fprintf(out, "  lock_expires:     n/a\n")
-	}
-	if profile.RuntimeMetadataJSON != nil {
-		fmt.Fprintf(out, "  runtime_metadata: %s\n", *profile.RuntimeMetadataJSON)
-	} else {
-		fmt.Fprintf(out, "  runtime_metadata: none\n")
-	}
+	fmt.Fprintf(out, "  profileId: %s\n", profile.ID)
+	fmt.Fprintf(out, "  status:    %s\n", status)
 	if profile.LastValidatedAt != nil {
-		fmt.Fprintf(out, "  last_validated:   %s\n", profile.LastValidatedAt.Format(time.RFC3339))
-	} else {
-		fmt.Fprintf(out, "  last_validated:   never\n")
-	}
-	if profile.ExpiresAt != nil {
-		fmt.Fprintf(out, "  expires_at:       %s\n", profile.ExpiresAt.Format(time.RFC3339))
-	} else {
-		fmt.Fprintf(out, "  expires_at:       none\n")
-	}
-	if profile.LastErrorCode != nil {
-		fmt.Fprintf(out, "  last_error_code:  %s\n", *profile.LastErrorCode)
-	} else {
-		fmt.Fprintf(out, "  last_error_code:  none\n")
+		fmt.Fprintf(out, "  lastValidatedAt: %s\n", profile.LastValidatedAt.Format(time.RFC3339))
 	}
 	return nil
 }
