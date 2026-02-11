@@ -44,6 +44,7 @@
 - For lifecycle `--json` assertions, decode with shared helpers and normalize only explicitly listed nondeterministic keys (run IDs/timestamps) so stable contract fields remain directly assertable
 - Lifecycle scenario tests should assert both human and `--json` checkpoints in one flow and verify persisted runs directly through the harness store (`GetRun`) to prove store-backed state visibility
 - Lifecycle logs scenarios should seed events via `h.Store.InsertEvent` after `run --cloud`; submit-only harness flows do not emit timeline events automatically
+- Auto/review lifecycle scenarios should assert `workflowKind` via `cloudLifecycleWorkflowFixtures` and `status --json`, then run one downstream checkpoint (`logs` or `pull`) to lock command-chain behavior
 - Lifecycle pull scenarios should derive `--artifacts` from `cloud.WorkflowArtifactGroups(run.WorkflowKind)` and delete target files before pull so tests verify real restoration, not pre-existing files
 
 ---
@@ -572,4 +573,14 @@
   - Pull scenarios should remove target files before running `cloud pull`; otherwise existence checks can pass on pre-existing files and miss restore regressions
   - `cloud.WorkflowArtifactGroups(run.WorkflowKind)` is the right source for expected artifact-group assertions in lifecycle tests
   - For pull JSON assertions, parse `filesRestored` using canonical+legacy key candidates to stay resilient during camelCase migration
+---
+## 2026-02-12 01:45 +08 - T-009
+- Added lifecycle auto scenario integration test in `cmd/cloud_lifecycle_auto_scenario_integration_test.go` covering `hal cloud setup` → `hal auto --cloud` → `hal cloud status` with a downstream `hal cloud logs` checkpoint in one harness flow
+- Asserted `workflowKind=auto` in auto `--json` output, status `--json` output, and persisted store-backed run state via `h.Store.GetRun`
+- Seeded and validated auto-specific logs output (`auto_checkpoint`) in `hal cloud logs --json` to lock the post-status command chain
+- Files changed: cmd/cloud_lifecycle_auto_scenario_integration_test.go, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - For auto/review lifecycle scenarios, use `cloudLifecycleWorkflowFixtures` for the workflow command contract and then assert the same `workflowKind` again via `status --json` to verify persistence end-to-end
+  - A single seeded event after `status` is enough to validate the required downstream `logs` checkpoint without introducing worker-loop dependencies in the harness
+  - Reusing `cloudLifecycleCheckpointFixtures` keeps `status` and `logs` key assertions aligned with the shared lifecycle contract
 ---
