@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/jywlabs/hal/internal/cloud/deploy"
 	"github.com/spf13/cobra"
 )
@@ -94,6 +96,12 @@ func runCloudSmoke(
 
 // runCloudEnv is the testable logic for the cloud env command.
 func runCloudEnv(getenv func(string) string, out io.Writer) error {
+	// Load .env file if present; ignore file-not-found errors.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Only fail on errors other than missing file.
+		fmt.Fprintf(out, "Warning: failed to load .env file: %v\n", err)
+	}
+
 	cfg := deploy.LoadConfig(getenv)
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(out, "Environment validation failed: %v\n", err)
