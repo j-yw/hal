@@ -6,7 +6,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -507,13 +506,24 @@ func TestCloudLifecycleCommandRunner_SupportsJSONModeInSameFlow(t *testing.T) {
 		t.Fatalf("run command failed: %v", runResult.Err)
 	}
 
-	runPayload := make(map[string]interface{})
-	if err := json.Unmarshal([]byte(strings.TrimSpace(runResult.Output)), &runPayload); err != nil {
-		t.Fatalf("run JSON output is invalid: %v\noutput: %s", err, runResult.Output)
-	}
-	runID, ok := jsonStringField(runPayload, cloudLifecycleJSONKeyRunID)
+	runPayload := mustDecodeLifecycleJSONOutput(t, runResult.Output)
+	runID, ok := lifecycleJSONStringField(runPayload, cloudLifecycleJSONKeyRunID, "run_id")
 	if !ok {
 		t.Fatalf("run JSON output missing %q: %v", cloudLifecycleJSONKeyRunID, runPayload)
+	}
+
+	runIDKey, ok := lifecycleJSONFirstKey(runPayload, cloudLifecycleJSONKeyRunID, "run_id")
+	if !ok {
+		t.Fatalf("run JSON output missing run ID key: %v", runPayload)
+	}
+	normalizedRunPayload := normalizeLifecycleJSONPayload(runPayload, cloudLifecycleJSONNormalization{
+		Fields: map[string]interface{}{
+			runIDKey: cloudLifecycleRunIDPlaceholder,
+		},
+	})
+	normalizedRunID, ok := lifecycleJSONStringField(normalizedRunPayload, cloudLifecycleJSONKeyRunID, "run_id")
+	if !ok || normalizedRunID != cloudLifecycleRunIDPlaceholder {
+		t.Fatalf("normalized run ID = %q, want %q", normalizedRunID, cloudLifecycleRunIDPlaceholder)
 	}
 
 	statusArgs := lifecycleCommandArgs(t, "status")
@@ -537,30 +547,55 @@ func TestCloudLifecycleCommandRunner_SupportsJSONModeInSameFlow(t *testing.T) {
 		t.Fatalf("json status command failed: %v", jsonStatus.Err)
 	}
 
-	statusPayload := make(map[string]interface{})
-	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonStatus.Output)), &statusPayload); err != nil {
-		t.Fatalf("status JSON output is invalid: %v\noutput: %s", err, jsonStatus.Output)
-	}
-	statusRunID, ok := jsonStringField(statusPayload, "runId", "run_id")
+	statusPayload := mustDecodeLifecycleJSONOutput(t, jsonStatus.Output)
+	statusRunID, ok := lifecycleJSONStringField(statusPayload, cloudLifecycleJSONKeyRunID, "run_id")
 	if !ok {
 		t.Fatalf("status JSON output missing run ID field: %v", statusPayload)
 	}
 	if statusRunID != runID {
 		t.Fatalf("status run ID = %q, want %q", statusRunID, runID)
 	}
-}
 
-func jsonStringField(payload map[string]interface{}, keys ...string) (string, bool) {
-	for _, key := range keys {
-		value, ok := payload[key]
-		if !ok {
-			continue
-		}
-		str, ok := value.(string)
-		if !ok || str == "" {
-			return "", false
-		}
-		return str, true
+	statusRunIDKey, ok := lifecycleJSONFirstKey(statusPayload, cloudLifecycleJSONKeyRunID, "run_id")
+	if !ok {
+		t.Fatalf("status JSON output missing run ID key: %v", statusPayload)
 	}
-	return "", false
+	createdAtKey, ok := lifecycleJSONFirstKey(statusPayload, cloudLifecycleJSONKeyCreatedAt, "created_at")
+	if !ok {
+		t.Fatalf("status JSON output missing createdAt key: %v", statusPayload)
+	}
+	updatedAtKey, ok := lifecycleJSONFirstKey(statusPayload, cloudLifecycleJSONKeyUpdatedAt, "updated_at")
+	if !ok {
+		t.Fatalf("status JSON output missing updatedAt key: %v", statusPayload)
+	}
+
+	normalizedStatusPayload := normalizeLifecycleJSONPayload(statusPayload, cloudLifecycleJSONNormalization{
+		Fields: map[string]interface{}{
+			statusRunIDKey: cloudLifecycleRunIDPlaceholder,
+			createdAtKey:   cloudLifecycleNormalizedCreatedAt,
+			updatedAtKey:   cloudLifecycleNormalizedUpdatedAt,
+		},
+	})
+
+	if got, _ := lifecycleJSONStringField(normalizedStatusPayload, statusRunIDKey); got != cloudLifecycleRunIDPlaceholder {
+		t.Fatalf("normalized status run ID = %q, want %q", got, cloudLifecycleRunIDPlaceholder)
+	}
+	if got, _ := lifecycleJSONStringField(normalizedStatusPayload, createdAtKey); got != cloudLifecycleNormalizedCreatedAt {
+		t.Fatalf("normalized createdAt = %q, want %q", got, cloudLifecycleNormalizedCreatedAt)
+	}
+	if got, _ := lifecycleJSONStringField(normalizedStatusPayload, updatedAtKey); got != cloudLifecycleNormalizedUpdatedAt {
+		t.Fatalf("normalized updatedAt = %q, want %q", got, cloudLifecycleNormalizedUpdatedAt)
+	}
+
+	originalStatus, ok := lifecycleJSONStringField(statusPayload, cloudLifecycleJSONKeyStatus)
+	if !ok {
+		t.Fatalf("status JSON output missing %q: %v", cloudLifecycleJSONKeyStatus, statusPayload)
+	}
+	normalizedStatus, ok := lifecycleJSONStringField(normalizedStatusPayload, cloudLifecycleJSONKeyStatus)
+	if !ok {
+		t.Fatalf("normalized status payload missing %q: %v", cloudLifecycleJSONKeyStatus, normalizedStatusPayload)
+	}
+	if normalizedStatus != originalStatus {
+		t.Fatalf("status field changed during normalization: got %q, want %q", normalizedStatus, originalStatus)
+	}
 }

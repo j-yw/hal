@@ -41,6 +41,7 @@
 - Lifecycle integration harnesses should snapshot and restore package-level cloud factory globals and poll intervals during teardown to prevent cross-test state leakage
 - For lifecycle integration scenarios, extend `cloudMockStore` in a harness-specific wrapper so `EnqueueRun`, `PutSnapshot`, and `UpdateRunSnapshotRefs` persist run/snapshot state for downstream `status`/`pull` assertions
 - Lifecycle command integration helpers should dispatch to existing `run<Command>` functions (not Cobra root execution), substitute `<run-id>` placeholders, and use `io.MultiWriter` so tests can inject stdout while still getting captured output for assertions
+- For lifecycle `--json` assertions, decode with shared helpers and normalize only explicitly listed nondeterministic keys (run IDs/timestamps) so stable contract fields remain directly assertable
 
 ---
 ## 2026-02-11 - US-001
@@ -526,4 +527,16 @@
   - For lifecycle integration tests, run command logic via testable `run<Command>` helpers instead of Cobra root execution to keep IO fully injectable and deterministic
   - Use `io.MultiWriter` in command helpers so tests can mirror output to custom writers while still returning a captured output string for assertions
   - Default workflow helper behavior should force detach when neither `--detach` nor `--wait` is provided in harness tests, because the in-memory lifecycle harness has no worker loop to advance queued runs automatically
+---
+## 2026-02-12 01:24 +08 - T-005
+- Added shared lifecycle JSON output utilities in `cmd/cloud_lifecycle_json_utils_integration_test.go`:
+  - `decodeLifecycleJSONOutput` / `mustDecodeLifecycleJSONOutput` for strict `--json` decoding (trimmed input, `UseNumber`, single-document validation)
+  - `normalizeLifecycleJSONPayload` with `cloudLifecycleJSONNormalization{Fields: ...}` so only explicitly configured nondeterministic keys are normalized
+  - reusable helpers `lifecycleJSONFirstKey` and `lifecycleJSONStringField` for key alias lookup in assertions
+- Updated `TestCloudLifecycleCommandRunner_SupportsJSONModeInSameFlow` in `cmd/cloud_lifecycle_runner_integration_test.go` to use shared decode/normalize helpers and normalize run ID + status timestamp fields before assertions
+- Files changed: cmd/cloud_lifecycle_json_utils_integration_test.go, cmd/cloud_lifecycle_runner_integration_test.go, AGENTS.md, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Use `json.Decoder` with `UseNumber()` in lifecycle integration assertions to avoid float coercion when checking numeric contract fields
+  - Normalize only fields declared in a replacement map (for example run IDs/timestamps) so status/workflow assertions still verify real values
+  - Keep normalization non-mutating by cloning payload maps; scenario tests may need both raw and normalized views in the same flow
 ---
