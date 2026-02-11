@@ -42,6 +42,7 @@
 - For lifecycle integration scenarios, extend `cloudMockStore` in a harness-specific wrapper so `EnqueueRun`, `PutSnapshot`, and `UpdateRunSnapshotRefs` persist run/snapshot state for downstream `status`/`pull` assertions
 - Lifecycle command integration helpers should dispatch to existing `run<Command>` functions (not Cobra root execution), substitute `<run-id>` placeholders, and use `io.MultiWriter` so tests can inject stdout while still getting captured output for assertions
 - For lifecycle `--json` assertions, decode with shared helpers and normalize only explicitly listed nondeterministic keys (run IDs/timestamps) so stable contract fields remain directly assertable
+- Lifecycle scenario tests should assert both human and `--json` checkpoints in one flow and verify persisted runs directly through the harness store (`GetRun`) to prove store-backed state visibility
 
 ---
 ## 2026-02-11 - US-001
@@ -539,4 +540,14 @@
   - Use `json.Decoder` with `UseNumber()` in lifecycle integration assertions to avoid float coercion when checking numeric contract fields
   - Normalize only fields declared in a replacement map (for example run IDs/timestamps) so status/workflow assertions still verify real values
   - Keep normalization non-mutating by cloning payload maps; scenario tests may need both raw and normalized views in the same flow
+---
+## 2026-02-12 01:29 +08 - T-006
+- Implemented baseline lifecycle integration scenario test in `cmd/cloud_lifecycle_run_status_scenario_integration_test.go` covering `hal cloud setup` → `hal run --cloud` → `hal cloud status` in one deterministic harness flow
+- Added assertions for both human and `--json` output at the run and status checkpoints, including shared fixture-driven required key checks
+- Added store-backed persistence assertions (`h.Store.GetRun`) to verify submitted runs are persisted and queryable by status with `workflowKind=run`
+- Files changed: cmd/cloud_lifecycle_run_status_scenario_integration_test.go, .hal/auto-prd.json, .hal/progress.txt
+- **Learnings for future iterations:**
+  - Baseline lifecycle scenarios should verify both presentation layers (human and JSON) for each checkpoint command to catch contract drift early
+  - Use checkpoint fixtures (`cloudLifecycleCheckpointFixtures`) as the source of required JSON keys, then resolve canonical key aliases when commands still emit legacy snake_case fields
+  - Parse `run_id` from human output and cross-check against harness store state to assert end-to-end command output aligns with persisted data
 ---
