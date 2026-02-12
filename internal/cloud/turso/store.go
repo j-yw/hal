@@ -180,7 +180,7 @@ func (s *Store) ClaimRun(ctx context.Context, workerID string) (*cloud.Run, erro
 	// cancel_requested are excluded so canceled intent is enforced before claim.
 	now := time.Now().UTC()
 	row := s.db.QueryRowContext(ctx, `
-		UPDATE runs SET status = 'claimed', updated_at = ?
+		UPDATE runs SET status = 'claimed', attempt_count = attempt_count + 1, updated_at = ?
 		WHERE id = (
 			SELECT id FROM runs
 			WHERE status = 'queued' AND cancel_requested = 0

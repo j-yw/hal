@@ -277,6 +277,90 @@ func TestClaimEmptyReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestClaimIncrementsAttemptCount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	run := &cloud.Run{
+		ID: "run-ac-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
+		AuthProfileID: "a", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		AttemptCount: 0, MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+
+	// First claim should increment attempt_count from 0 to 1.
+	claimed, err := s.ClaimRun(ctx, "worker-1")
+	if err != nil {
+		t.Fatalf("ClaimRun: %v", err)
+	}
+	if claimed.AttemptCount != 1 {
+		t.Errorf("first claim AttemptCount = %d, want 1", claimed.AttemptCount)
+	}
+
+	// Verify the stored run also has the incremented value.
+	got, err := s.GetRun(ctx, "run-ac-001")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.AttemptCount != 1 {
+		t.Errorf("stored AttemptCount = %d, want 1", got.AttemptCount)
+	}
+
+	// Transition back to queued to allow a second claim.
+	if err := s.TransitionRun(ctx, "run-ac-001", cloud.RunStatusClaimed, cloud.RunStatusQueued); err != nil {
+		t.Fatalf("TransitionRun(claimed->queued): %v", err)
+	}
+
+	// Second claim should increment from 1 to 2.
+	claimed2, err := s.ClaimRun(ctx, "worker-2")
+	if err != nil {
+		t.Fatalf("ClaimRun(second): %v", err)
+	}
+	if claimed2.AttemptCount != 2 {
+		t.Errorf("second claim AttemptCount = %d, want 2", claimed2.AttemptCount)
+	}
+}
+
+func TestClaimNoIncrementForIneligible(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	run := &cloud.Run{
+		ID: "run-acne-001", Repo: "r", BaseBranch: "main", WorkflowKind: cloud.WorkflowKindRun, Engine: "e",
+		AuthProfileID: "a", ScopeRef: "s", Status: cloud.RunStatusQueued,
+		AttemptCount: 0, MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.EnqueueRun(ctx, run); err != nil {
+		t.Fatalf("EnqueueRun: %v", err)
+	}
+
+	// Claim the run so it becomes ineligible.
+	if _, err := s.ClaimRun(ctx, "worker-1"); err != nil {
+		t.Fatalf("ClaimRun(setup): %v", err)
+	}
+
+	// Attempting to claim again should find nothing (no eligible runs).
+	_, err := s.ClaimRun(ctx, "worker-2")
+	if !cloud.IsNotFound(err) {
+		t.Errorf("ClaimRun(ineligible): got %v, want ErrNotFound", err)
+	}
+
+	// Verify the run still has attempt_count=1 (no extra increment).
+	got, err := s.GetRun(ctx, "run-acne-001")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.AttemptCount != 1 {
+		t.Errorf("ineligible run AttemptCount = %d, want 1 (should not have incremented again)", got.AttemptCount)
+	}
+}
+
 // --- Focused auth lock tests ---
 
 func TestAcquireLockConflict(t *testing.T) {
