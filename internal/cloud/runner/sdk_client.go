@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	daytona "github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
@@ -127,4 +129,24 @@ func (s *SDKClient) Exec(ctx context.Context, sandboxID string, req *ExecRequest
 	}
 
 	return result, nil
+}
+
+// StreamLogs retrieves session command logs from a sandbox via the SDK.
+func (s *SDKClient) StreamLogs(ctx context.Context, sandboxID string) (io.ReadCloser, error) {
+	if sandboxID == "" {
+		return nil, fmt.Errorf("sdk runner client: stream logs: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: stream logs: get sandbox: %w", err)
+	}
+
+	logsMap, err := sandbox.Process.GetSessionCommandLogs(ctx, "default", "default")
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: stream logs: %w", err)
+	}
+
+	logs, _ := logsMap["logs"].(string)
+	return io.NopCloser(strings.NewReader(logs)), nil
 }

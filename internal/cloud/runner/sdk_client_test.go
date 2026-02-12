@@ -276,6 +276,58 @@ func TestSDKClientExecSDKFailure(t *testing.T) {
 	}
 }
 
+func TestSDKClientStreamLogsValidation(t *testing.T) {
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		id      string
+		wantErr string
+	}{
+		{
+			name:    "empty sandbox ID",
+			id:      "",
+			wantErr: "sandbox_id must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := c.StreamLogs(context.Background(), tt.id)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+			if !strings.HasPrefix(err.Error(), "sdk runner client:") {
+				t.Errorf("error %q should have 'sdk runner client:' prefix", err.Error())
+			}
+		})
+	}
+}
+
+func TestSDKClientStreamLogsSDKFailure(t *testing.T) {
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately to force SDK failure
+
+	_, err = c.StreamLogs(ctx, "nonexistent-sandbox")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "sdk runner client: stream logs:") {
+		t.Errorf("error %q should contain 'sdk runner client: stream logs:' prefix", err.Error())
+	}
+}
+
 func TestSDKClientExecSDKFailureWithOptions(t *testing.T) {
 	// Verify that Exec with WorkDir and Timeout options still hits
 	// the SDK layer (and wraps the error) when the context is cancelled.
