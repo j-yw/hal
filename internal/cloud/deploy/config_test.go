@@ -24,12 +24,12 @@ func TestLoadConfig_ExplicitAdapter(t *testing.T) {
 
 func TestLoadConfig_AllFields(t *testing.T) {
 	env := map[string]string{
-		EnvDBAdapter:     AdapterTurso,
-		EnvTursoURL:      "libsql://db.example.com",
+		EnvDBAdapter:      AdapterTurso,
+		EnvTursoURL:       "libsql://db.example.com",
 		EnvTursoAuthToken: "token123",
-		EnvDaytonaAPIKey: "daytona-key-123",
-		EnvDaytonaAPIURL: "https://api.daytona.io",
-		EnvDaytonaTarget: "us-east-1",
+		EnvDaytonaAPIKey:  "daytona-key-123",
+		EnvDaytonaAPIURL:  "https://api.daytona.io",
+		EnvDaytonaTarget:  "us-east-1",
 	}
 	cfg := LoadConfig(func(key string) string { return env[key] })
 	if cfg.TursoURL != env[EnvTursoURL] {
@@ -66,6 +66,13 @@ func TestLoadConfig_DaytonaAPIURL(t *testing.T) {
 				EnvDaytonaAPIURL: "https://api.daytona.io",
 			},
 			wantURL: "https://api.daytona.io",
+		},
+		{
+			name: "legacy DAYTONA_SERVER_URL is ignored",
+			env: map[string]string{
+				"DAYTONA_SERVER_URL": "https://legacy.daytona.local",
+			},
+			wantURL: "",
 		},
 	}
 

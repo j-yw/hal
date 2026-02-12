@@ -27,11 +27,11 @@ The primary problem is operational complexity: maintaining an extra service, con
 
 **Acceptance Criteria:**
 - [ ] `internal/cloud/deploy/config.go` removes `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN` fields/constants/env parsing.
-- [ ] Config adds `DAYTONA_API_KEY` (required), `DAYTONA_API_URL` (optional), `DAYTONA_SERVER_URL` (legacy alias fallback), and `DAYTONA_TARGET` (optional).
-- [ ] `LoadConfig` reads `DAYTONA_API_URL` first and falls back to `DAYTONA_SERVER_URL` only when API URL is unset.
+- [ ] Config adds `DAYTONA_API_KEY` (required), `DAYTONA_API_URL` (optional), and `DAYTONA_TARGET` (optional).
+- [ ] `LoadConfig` reads `DAYTONA_API_URL` as the only Daytona endpoint URL variable.
 - [ ] `ValidateStore` remains DB-only.
 - [ ] `Validate` requires valid DB config plus `DAYTONA_API_KEY`.
-- [ ] `internal/cloud/deploy/config_test.go` includes passing and failing cases for new env schema and fallback precedence.
+- [ ] `internal/cloud/deploy/config_test.go` includes passing and failing cases for the new env schema and `DAYTONA_API_URL` handling.
 - [ ] Typecheck passes.
 
 ### US-002: Add Daytona Go SDK dependency and SDK client constructor
@@ -158,8 +158,8 @@ The primary problem is operational complexity: maintaining an extra service, con
 - **FR-12:** The legacy HTTP runner implementation file `internal/cloud/runner/client.go` must be removed.
 - **FR-13:** Runner package comments and tests must not mention or depend on HTTP runner mode.
 - **FR-14:** Deploy config must remove `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN`.
-- **FR-15:** Deploy config must add `DAYTONA_API_KEY`, `DAYTONA_API_URL`, `DAYTONA_SERVER_URL` alias fallback, and `DAYTONA_TARGET`.
-- **FR-16:** `LoadConfig` must prefer `DAYTONA_API_URL` over `DAYTONA_SERVER_URL`.
+- **FR-15:** Deploy config must add `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`.
+- **FR-16:** `LoadConfig` must read `DAYTONA_API_URL` as the only Daytona endpoint URL variable.
 - **FR-17:** `ValidateStore` must remain DB-only.
 - **FR-18:** `Validate` must require DB config and `DAYTONA_API_KEY`.
 - **FR-19:** Smoke checks must treat empty runner URL as SDK-direct synthetic healthy.
@@ -186,7 +186,7 @@ The primary problem is operational complexity: maintaining an extra service, con
 
 - Ensure SDK interactions are testable in `sdk_client_test.go` without relying on live Daytona endpoints (use controlled test doubles/wrappers where needed).
 - Preserve error semantics expected by upstream callers (clear operation-specific prefixes + `%w` wrapping).
-- Apply strict precedence for endpoint config: `DAYTONA_API_URL` > `DAYTONA_SERVER_URL` alias fallback.
+- Apply strict endpoint config via a single variable: `DAYTONA_API_URL`.
 - Keep smoke behavior deterministic in SDK-direct mode by returning synthetic healthy when runner URL is empty.
 
 ## 8) Success Metrics
@@ -200,10 +200,10 @@ The primary problem is operational complexity: maintaining an extra service, con
   - `go test ./internal/cloud/deploy/...`
   - `docker compose -f deploy/docker-compose.yml config`
 - No caller-facing interface changes required for `internal/cloud/runner/runner.go` consumers.
-- Deploy config is SDK-only, with only the explicitly permitted legacy alias (`DAYTONA_SERVER_URL`) retained.
+- Deploy config is SDK-only and uses `DAYTONA_API_URL` for endpoint configuration.
 
 ## 9) Open Questions
 
-1. Should `DAYTONA_SERVER_URL` alias support be kept indefinitely or scheduled for deprecation in a future release?
+1. Should we keep `DAYTONA_API_URL` optional, or require it for all environments?
 2. Are there any downstream docs/runbooks outside this repository that still mention `daytona-runner` and require coordinated updates?
 3. Should health checks eventually include target-level diagnostics (beyond current parity scope) in a follow-up PRD?
