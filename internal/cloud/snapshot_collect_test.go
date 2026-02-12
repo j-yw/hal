@@ -641,3 +641,145 @@ func TestCompressBundle_LargeContent(t *testing.T) {
 		t.Errorf("large content mismatch: got len %d, want len %d", len(decompressed[0].Content), len(largeContent))
 	}
 }
+
+func TestSandboxRecordsToBundleManifest(t *testing.T) {
+	records := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"test"}`)},
+		{Path: ".hal/progress.txt", Content: []byte("line one\nline two\n")},
+	}
+
+	manifest := SandboxRecordsToBundleManifest(records)
+	if len(manifest) != len(records) {
+		t.Fatalf("expected %d manifest records, got %d", len(records), len(manifest))
+	}
+
+	for i, m := range manifest {
+		wantPath := NormalizeBundlePath(records[i].Path)
+		if m.Path != wantPath {
+			t.Errorf("record[%d] path: got %q, want %q", i, m.Path, wantPath)
+		}
+		wantSHA := ComputeFileSHA256(records[i].Content)
+		if m.SHA256 != wantSHA {
+			t.Errorf("record[%d] sha256: got %q, want %q", i, m.SHA256, wantSHA)
+		}
+		wantSize := int64(len(records[i].Content))
+		if m.SizeBytes != wantSize {
+			t.Errorf("record[%d] size: got %d, want %d", i, m.SizeBytes, wantSize)
+		}
+	}
+}
+
+func TestComputeSandboxBundleHash_Deterministic(t *testing.T) {
+	records := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"test"}`)},
+		{Path: ".hal/progress.txt", Content: []byte("progress content")},
+	}
+
+	hash1 := ComputeSandboxBundleHash(records)
+	hash2 := ComputeSandboxBundleHash(records)
+	if hash1 != hash2 {
+		t.Fatalf("hash not deterministic: %s != %s", hash1, hash2)
+	}
+	if hash1 == "" {
+		t.Fatal("hash should not be empty")
+	}
+}
+
+func TestComputeSandboxBundleHash_OrderIndependent(t *testing.T) {
+	records1 := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"test"}`)},
+		{Path: ".hal/progress.txt", Content: []byte("progress content")},
+	}
+	records2 := []SandboxBundleRecord{
+		{Path: ".hal/progress.txt", Content: []byte("progress content")},
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"test"}`)},
+	}
+
+	hash1 := ComputeSandboxBundleHash(records1)
+	hash2 := ComputeSandboxBundleHash(records2)
+	if hash1 != hash2 {
+		t.Fatalf("hash not order-independent: %s != %s", hash1, hash2)
+	}
+}
+
+func TestComputeSandboxBundleHash_DifferentContentDifferentHash(t *testing.T) {
+	records1 := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"alpha"}`)},
+	}
+	records2 := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"beta"}`)},
+	}
+
+	hash1 := ComputeSandboxBundleHash(records1)
+	hash2 := ComputeSandboxBundleHash(records2)
+	if hash1 == hash2 {
+		t.Fatal("different content should produce different hash")
+	}
+}
+
+func TestComputeSandboxBundleHash_MatchesManifestHash(t *testing.T) {
+	// The sandbox hash must match the equivalent BundleManifestRecord hash
+	// to ensure snapshot SHA semantics are consistent across submit and worker paths.
+	sandboxRecords := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"test"}`)},
+		{Path: ".hal/progress.txt", Content: []byte("progress content")},
+	}
+
+	sandboxHash := ComputeSandboxBundleHash(sandboxRecords)
+
+	// Build equivalent manifest records manually.
+	manifestRecords := make([]BundleManifestRecord, len(sandboxRecords))
+	for i, r := range sandboxRecords {
+		manifestRecords[i] = NewBundleManifestRecord(r.Path, r.Content)
+	}
+	manifestHash := ComputeBundleHash(manifestRecords)
+
+	if sandboxHash != manifestHash {
+		t.Fatalf("sandbox hash %s does not match manifest hash %s", sandboxHash, manifestHash)
+	}
+}
+
+func TestComputeSandboxBundleHash_NotCompressedPayloadHash(t *testing.T) {
+	// Verify that the snapshot SHA is NOT a hash of the compressed bytes.
+	// This is a key requirement: SHA must be ComputeBundleHash(records),
+	// not a hash of CompressBundle(records) output.
+	records := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"test"}`)},
+		{Path: ".hal/progress.txt", Content: []byte("progress content")},
+	}
+
+	bundleHash := ComputeSandboxBundleHash(records)
+
+	compressed, err := CompressBundle(records)
+	if err != nil {
+		t.Fatalf("CompressBundle failed: %v", err)
+	}
+	compressedHash := ComputeFileSHA256(compressed)
+
+	if bundleHash == compressedHash {
+		t.Fatal("bundle hash must not equal compressed payload hash — snapshot SHA uses record-level hashing, not payload byte hashing")
+	}
+}
+
+func TestComputeSandboxBundleHash_EmptyRecords(t *testing.T) {
+	hash := ComputeSandboxBundleHash(nil)
+	if hash == "" {
+		t.Fatal("empty records should still produce a valid hash")
+	}
+	// Must match ComputeBundleHash(nil) for consistency.
+	emptyManifestHash := ComputeBundleHash(nil)
+	if hash != emptyManifestHash {
+		t.Fatalf("empty sandbox hash %s does not match empty manifest hash %s", hash, emptyManifestHash)
+	}
+}
+
+func TestComputeSandboxBundleHash_DoesNotMutateInput(t *testing.T) {
+	records := []SandboxBundleRecord{
+		{Path: ".hal/progress.txt", Content: []byte("content b")},
+		{Path: ".hal/prd.json", Content: []byte("content a")},
+	}
+	_ = ComputeSandboxBundleHash(records)
+	if records[0].Path != ".hal/progress.txt" {
+		t.Fatal("ComputeSandboxBundleHash mutated input slice")
+	}
+}

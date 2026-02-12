@@ -162,3 +162,22 @@ func CompressBundle(records []SandboxBundleRecord) ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+// SandboxRecordsToBundleManifest converts worker-side SandboxBundleRecords
+// into BundleManifestRecords suitable for ComputeBundleHash. Each record's
+// content is hashed with ComputeFileSHA256 to produce the per-file SHA.
+func SandboxRecordsToBundleManifest(records []SandboxBundleRecord) []BundleManifestRecord {
+	out := make([]BundleManifestRecord, len(records))
+	for i, r := range records {
+		out[i] = NewBundleManifestRecord(r.Path, r.Content)
+	}
+	return out
+}
+
+// ComputeSandboxBundleHash computes a deterministic bundle hash from
+// SandboxBundleRecords by converting them to BundleManifestRecords and
+// delegating to ComputeBundleHash. This is the canonical way for worker-side
+// snapshot persistence to derive the snapshot SHA field.
+func ComputeSandboxBundleHash(records []SandboxBundleRecord) string {
+	return ComputeBundleHash(SandboxRecordsToBundleManifest(records))
+}
