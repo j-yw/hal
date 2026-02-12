@@ -227,7 +227,15 @@ func (s *SDKClient) StreamLogs(ctx context.Context, sandboxID string) (io.ReadCl
 func (s *SDKClient) Health(ctx context.Context) (*HealthStatus, error) {
 	page := 1
 	limit := 1
-	if _, err := s.client.List(ctx, nil, &page, &limit); err != nil {
+
+	// Probe with an effectively unique label filter so List returns zero items.
+	// This avoids SDK sandbox hydration/toolbox-proxy calls for listed items and
+	// keeps health focused on API/auth reachability.
+	labels := map[string]string{
+		"hal-health-probe": fmt.Sprintf("probe-%d", time.Now().UnixNano()),
+	}
+
+	if _, err := s.client.List(ctx, labels, &page, &limit); err != nil {
 		return nil, fmt.Errorf("sdk runner client: health: %w", err)
 	}
 
