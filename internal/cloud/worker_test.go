@@ -63,11 +63,16 @@ type workerMockStore struct {
 	// HeartbeatAttempt tracking
 	mu             sync.Mutex
 	heartbeatCalls []heartbeatCall
+	heartbeatErr   error // when non-nil, HeartbeatAttempt returns this after heartbeatErrAfter successful calls
+	heartbeatErrAfter int // number of successful HeartbeatAttempt calls before returning heartbeatErr
 
 	// GetRun behavior — also controls cancel check behavior
 	getRun          *Run
 	getRunErr       error
 	cancelRequested bool // when true, GetRun returns CancelRequested=true
+
+	// ReleaseAuthLock tracking
+	releaseAuthLockCalls []releaseAuthLockCall
 
 	// Optional call log for ordering tests.
 	log *callLog
@@ -164,6 +169,10 @@ func (s *workerMockStore) HeartbeatAttempt(_ context.Context, attemptID string, 
 		HeartbeatAt:    heartbeatAt,
 		LeaseExpiresAt: leaseExpiresAt,
 	})
+	// Return error after N successful calls to simulate lease expiry.
+	if s.heartbeatErr != nil && len(s.heartbeatCalls) > s.heartbeatErrAfter {
+		return s.heartbeatErr
+	}
 	return nil
 }
 
@@ -192,6 +201,19 @@ func (s *workerMockStore) UpdateAttemptSandboxID(_ context.Context, _, _ string)
 	return nil
 }
 
+func (s *workerMockStore) ReleaseAuthLock(_ context.Context, authProfileID, runID string, _ time.Time) error {
+	if s.log != nil {
+		s.log.record("release_auth_lock")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releaseAuthLockCalls = append(s.releaseAuthLockCalls, releaseAuthLockCall{
+		AuthProfileID: authProfileID,
+		RunID:         runID,
+	})
+	return nil
+}
+
 // workerMockRunner is a minimal runner for worker tests with optional
 // call-log tracking for ordering assertions.
 type workerMockRunner struct {
@@ -208,6 +230,10 @@ type workerMockRunner struct {
 
 	// Per-command exec overrides: command prefix → result/error
 	execOverrides map[string]execOverride
+
+	// DestroySandbox tracking
+	mu                  sync.Mutex
+	destroySandboxCalls []string
 }
 
 type execCall struct {
@@ -285,7 +311,15 @@ func (r *workerMockRunner) Exec(_ context.Context, sandboxID string, req *runner
 func (r *workerMockRunner) StreamLogs(_ context.Context, _ string) (io.ReadCloser, error) {
 	return nil, nil
 }
-func (r *workerMockRunner) DestroySandbox(_ context.Context, _ string) error { return nil }
+func (r *workerMockRunner) DestroySandbox(_ context.Context, sandboxID string) error {
+	if r.log != nil {
+		r.log.record("destroy_sandbox")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.destroySandboxCalls = append(r.destroySandboxCalls, sandboxID)
+	return nil
+}
 func (r *workerMockRunner) Health(_ context.Context) (*runner.HealthStatus, error) {
 	return nil, nil
 }
@@ -1902,5 +1936,349 @@ func TestHeartbeat_CancelCheckCallOrderPerTick(t *testing.T) {
 				t.Fatalf("heartbeat_attempt at index %d without preceding get_run (log: %v)", i, calls)
 			}
 		}
+	}
+}
+
+// --- US-019: Handle lease_lost routing without duplicate attempt terminalization ---
+
+func TestLeaseLost_SetsReasonAndRoutesToLeaseLostHandling(t *testing.T) {
+	// When the heartbeat detects ErrLeaseExpired, the worker should route
+	// through handleLeaseLost which transitions the run to failed and performs
+	// cleanup — but does NOT emit a duplicate TransitionAttempt.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	// Return ErrLeaseExpired on the first HeartbeatAttempt call to simulate
+	// immediate lease loss.
+	store.heartbeatErr = ErrLeaseExpired
+	store.heartbeatErrAfter = 0
+
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for heartbeat to fire and detect lease_lost. The heartbeat loop
+	// will exit after setting LeaseLost=true, then unblock provision.
+	// Give it time to tick at least once.
+	time.Sleep(100 * time.Millisecond)
+
+	// Unblock provision so the pipeline can observe lease_lost and route.
+	close(gate)
+
+	err = <-done
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "lease lost") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "lease lost")
+	}
+
+	// Verify run was transitioned: claimed→running (success), then running→failed
+	// (lease_lost handling).
+	runningFound := false
+	failedFound := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusClaimed && tr.toStatus == RunStatusRunning {
+			runningFound = true
+		}
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			failedFound = true
+		}
+	}
+	if !runningFound {
+		t.Error("expected claimed→running transition")
+	}
+	if !failedFound {
+		t.Error("expected running→failed transition from handleLeaseLost")
+	}
+}
+
+func TestLeaseLost_NoDuplicateAttemptTerminalization(t *testing.T) {
+	// The heartbeat service already transitions the attempt to failed with
+	// error_code "lease_lost". The worker's handleLeaseLost must NOT emit
+	// a second TransitionAttempt.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.heartbeatErr = ErrLeaseExpired
+	store.heartbeatErrAfter = 0
+
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+	<-done
+
+	// Count TransitionAttempt calls to failed. The heartbeat service emits
+	// exactly one. The worker's handleLeaseLost must not add a second.
+	failedAttemptCount := 0
+	for _, tc := range store.transitionAttemptCalls {
+		if tc.Status == AttemptStatusFailed {
+			failedAttemptCount++
+		}
+	}
+
+	// Exactly 1 from heartbeat service's emitLeaseLostAndTerminate.
+	if failedAttemptCount != 1 {
+		t.Errorf("TransitionAttempt(failed) count = %d, want exactly 1 (from heartbeat service only)", failedAttemptCount)
+	}
+
+	// Verify the single attempt transition has the correct error code.
+	if len(store.transitionAttemptCalls) == 0 {
+		t.Fatal("expected at least 1 TransitionAttempt call")
+	}
+	tc := store.transitionAttemptCalls[0]
+	if tc.ErrorCode == nil || *tc.ErrorCode != "lease_lost" {
+		t.Errorf("TransitionAttempt.ErrorCode = %v, want %q", tc.ErrorCode, "lease_lost")
+	}
+}
+
+func TestLeaseLost_CleanupStillRuns(t *testing.T) {
+	// After lease_lost is detected, handleLeaseLost must still run cleanup:
+	// transition run to failed, release auth lock, and destroy sandbox.
+	log := &callLog{}
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.log = log
+	store.heartbeatErr = ErrLeaseExpired
+	store.heartbeatErrAfter = 0
+
+	baseRnr := newWorkerMockRunner(log)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+	<-done
+
+	// Verify auth lock release was called.
+	store.mu.Lock()
+	authLockReleased := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if authLockReleased == 0 {
+		t.Error("expected ReleaseAuthLock to be called during lease_lost cleanup")
+	}
+
+	// Verify sandbox destroy was called.
+	baseRnr.mu.Lock()
+	destroyCalls := len(baseRnr.destroySandboxCalls)
+	baseRnr.mu.Unlock()
+	if destroyCalls == 0 {
+		t.Error("expected DestroySandbox to be called during lease_lost cleanup")
+	}
+
+	// Verify run was transitioned to failed.
+	runToFailed := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			runToFailed = true
+			break
+		}
+	}
+	if !runToFailed {
+		t.Error("expected running→failed transition from handleLeaseLost")
+	}
+
+	// Verify cleanup happened in the call log.
+	calls := log.snapshot()
+	foundRelease := false
+	foundDestroy := false
+	for _, c := range calls {
+		if c == "release_auth_lock" {
+			foundRelease = true
+		}
+		if c == "destroy_sandbox" {
+			foundDestroy = true
+		}
+	}
+	if !foundRelease {
+		t.Errorf("release_auth_lock not found in call log: %v", calls)
+	}
+	if !foundDestroy {
+		t.Errorf("destroy_sandbox not found in call log: %v", calls)
+	}
+}
+
+func TestLeaseLost_AfterSuccessfulHeartbeats(t *testing.T) {
+	// Verify that lease_lost is correctly detected even after some successful
+	// heartbeat renewals. The heartbeat should work normally for a few ticks,
+	// then when HeartbeatAttempt returns ErrLeaseExpired, the pipeline routes
+	// through lease_lost handling.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	// Allow 2 successful heartbeats, then return ErrLeaseExpired.
+	store.heartbeatErr = ErrLeaseExpired
+	store.heartbeatErrAfter = 2
+
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for the 3rd heartbeat tick to fire and detect lease_lost.
+	time.Sleep(200 * time.Millisecond)
+	close(gate)
+
+	err = <-done
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "lease lost") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "lease lost")
+	}
+
+	// Verify some heartbeats succeeded before the lease expired.
+	store.mu.Lock()
+	hbCount := len(store.heartbeatCalls)
+	store.mu.Unlock()
+	if hbCount < 2 {
+		t.Errorf("expected at least 2 heartbeat calls before lease_lost, got %d", hbCount)
+	}
+
+	// Run transition should still be running→failed.
+	runToFailed := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			runToFailed = true
+			break
+		}
+	}
+	if !runToFailed {
+		t.Error("expected running→failed transition from handleLeaseLost")
 	}
 }

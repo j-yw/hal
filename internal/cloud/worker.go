@@ -144,6 +144,15 @@ func (p *WorkerPipeline) ProcessOne(ctx context.Context) error {
 	return p.executeAttempt(ctx, result)
 }
 
+// heartbeatResult communicates why the heartbeat goroutine exited.
+type heartbeatResult struct {
+	// LeaseLost is true when the heartbeat detected ErrLeaseExpired from Renew.
+	// The HeartbeatService already transitioned the attempt to failed with
+	// error_code "lease_lost" — the worker must NOT emit a duplicate
+	// TransitionAttempt.
+	LeaseLost bool
+}
+
 // executeAttempt runs the full attempt lifecycle for a claimed run.
 // It transitions the run from claimed to running, then executes setup
 // services in a deterministic order: provision → bootstrap →
@@ -169,7 +178,7 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 	// Start heartbeat loop after transitioning to running. The heartbeat
 	// remains active through setup and execution until stopHeartbeat is called.
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
-	heartbeatDone := p.startHeartbeat(heartbeatCtx, attempt.ID, run.AuthProfileID, run.ID)
+	hbResult, heartbeatDone := p.startHeartbeat(heartbeatCtx, attempt.ID, run.AuthProfileID, run.ID)
 	defer func() {
 		stopHeartbeat()
 		<-heartbeatDone
@@ -220,6 +229,16 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		return fmt.Errorf("preflight failed: %w", err)
 	}
 
+	// Check if heartbeat detected lease_lost during setup/execution.
+	// Stop the heartbeat first so we can safely read the result.
+	stopHeartbeat()
+	<-heartbeatDone
+
+	if hbResult.LeaseLost {
+		p.handleLeaseLost(ctx, run.ID, run.AuthProfileID, provResult.SandboxID)
+		return fmt.Errorf("lease lost during execution")
+	}
+
 	// Future stories will add: execution, finalization, cleanup.
 	return nil
 }
@@ -228,10 +247,12 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 // On each tick it calls cancel.CheckAndCancel before heartbeat.Renew.
 // When cancellation is detected, the tick skips Renew and cancels ctx
 // via the provided cancelFunc so the main pipeline observes the signal.
-// The goroutine runs until ctx is canceled. The returned channel is
-// closed when the goroutine exits.
-func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProfileID, runID string) <-chan struct{} {
+// The goroutine runs until ctx is canceled. The returned result is populated
+// before the done channel is closed; callers should stop the heartbeat and
+// drain the done channel before reading the result.
+func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProfileID, runID string) (*heartbeatResult, <-chan struct{}) {
 	done := make(chan struct{})
+	result := &heartbeatResult{}
 	go func() {
 		defer close(done)
 		ticker := time.NewTicker(p.heartbeatInterval)
@@ -242,16 +263,43 @@ func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProf
 				return
 			case <-ticker.C:
 				// Check cancellation before renewing the lease.
-				result, err := p.cancel.CheckAndCancel(ctx, runID, attemptID, authProfileID)
-				if err == nil && result.Canceled {
+				cancelResult, err := p.cancel.CheckAndCancel(ctx, runID, attemptID, authProfileID)
+				if err == nil && cancelResult.Canceled {
 					// Cancellation detected — do not renew, just return.
 					return
 				}
-				_ = p.heartbeat.Renew(ctx, attemptID, authProfileID, runID)
+				err = p.heartbeat.Renew(ctx, attemptID, authProfileID, runID)
+				if err != nil && IsLeaseExpired(err) {
+					// Lease lost — heartbeat service already marked the
+					// attempt as failed with error_code "lease_lost".
+					// Signal the main goroutine so it can route through
+					// lease-lost handling without duplicate transitions.
+					result.LeaseLost = true
+					return
+				}
 			}
 		}
 	}()
-	return done
+	return result, done
+}
+
+// handleLeaseLost handles the lease_lost terminal path. The HeartbeatService
+// has already transitioned the attempt to failed (with error_code "lease_lost"),
+// so this method must NOT emit a duplicate TransitionAttempt. It transitions
+// the run to failed and performs cleanup (auth lock release, sandbox teardown).
+func (p *WorkerPipeline) handleLeaseLost(ctx context.Context, runID, authProfileID, sandboxID string) {
+	// Transition run from running to failed. Best-effort — the run may have
+	// already been transitioned by a concurrent reconciler.
+	_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
+
+	// Release auth lock — tolerate ErrNotFound (lock may have expired or been released).
+	now := time.Now().UTC()
+	_ = p.store.ReleaseAuthLock(ctx, authProfileID, runID, now)
+
+	// Destroy sandbox — best-effort cleanup.
+	if sandboxID != "" {
+		_ = p.runner.DestroySandbox(ctx, sandboxID)
+	}
 }
 
 // handleSetupFailure transitions both the run and attempt to failed status
