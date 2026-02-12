@@ -333,6 +333,8 @@ func runCloudStatus(
 		currentAttempt = &ca
 		age := time.Since(attempt.HeartbeatAt)
 		lastHeartbeatAge = &age
+	} else if !cloud.IsNotFound(err) {
+		return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to get active attempt: %v", err), "store_error")
 	}
 
 	if jsonOutput {
@@ -931,6 +933,9 @@ func decompressBundleFiles(data []byte) ([]bundleFileRecord, error) {
 		var size int
 		if _, err := fmt.Sscanf(sizeStr, "%d", &size); err != nil {
 			return nil, fmt.Errorf("malformed bundle: invalid size %q: %w", sizeStr, err)
+		}
+		if size < 0 {
+			return nil, fmt.Errorf("malformed bundle: invalid negative size %d at offset %d", size, pos)
 		}
 
 		if pos+size > len(decompressed) {

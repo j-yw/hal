@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -497,6 +498,37 @@ func TestRunCloudStatus(t *testing.T) {
 					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "store_error")
 				}
 			},
+		},
+		{
+			name:       "store error on GetActiveAttemptByRun in JSON",
+			runID:      "run-001",
+			jsonOutput: true,
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.getAttemptErr = fmt.Errorf("attempt lookup failed")
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudErrorResponse
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to parse JSON: %v", err)
+				}
+				if resp.ErrorCode != "store_error" {
+					t.Errorf("error_code = %q, want %q", resp.ErrorCode, "store_error")
+				}
+			},
+		},
+		{
+			name:  "store error on GetActiveAttemptByRun in human output",
+			runID: "run-001",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.getAttemptErr = fmt.Errorf("attempt lookup failed")
+				return s
+			},
+			wantErr: "failed to get active attempt",
 		},
 		{
 			name:  "run with no deadline shows none",
@@ -2358,5 +2390,24 @@ func TestDecompressBundleFiles_InvalidData(t *testing.T) {
 	_, err := decompressBundleFiles([]byte("not gzip data"))
 	if err == nil {
 		t.Fatal("expected error for invalid gzip data, got nil")
+	}
+}
+
+func TestDecompressBundleFiles_NegativeSize(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write([]byte(".hal/prd.json\x00-1\x00")); err != nil {
+		t.Fatalf("failed to write malformed payload: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+
+	_, err := decompressBundleFiles(buf.Bytes())
+	if err == nil {
+		t.Fatal("expected error for negative bundle file size, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid negative size") {
+		t.Fatalf("expected negative-size error, got %v", err)
 	}
 }
