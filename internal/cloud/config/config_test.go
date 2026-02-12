@@ -125,6 +125,34 @@ profiles: {}
 	}
 }
 
+func TestParse_NullProfileEntry(t *testing.T) {
+	data := []byte(`
+profiles:
+  default: null
+`)
+	_, err := Parse(data)
+	if err == nil {
+		t.Fatal("expected validation error for null profile entry")
+	}
+	verrs, ok := err.(ValidationErrors)
+	if !ok {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	found := false
+	for _, e := range verrs {
+		if e.Field == "profiles.default" && e.Rule == "invalid_value" {
+			found = true
+			if !strings.Contains(e.Remediation, "not null") {
+				t.Errorf("expected remediation to mention null profile value: %q", e.Remediation)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected invalid_value error for null profile, got: %v", verrs)
+	}
+}
+
 func TestParse_InvalidMode(t *testing.T) {
 	data := []byte(`
 profiles:

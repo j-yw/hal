@@ -204,6 +204,15 @@ func (c *CloudConfig) GetProfile(name string) *Profile {
 func validateProfile(prefix string, p *Profile) ValidationErrors {
 	var errs ValidationErrors
 
+	if p == nil {
+		errs = append(errs, &ValidationError{
+			Field:       prefix,
+			Rule:        "invalid_value",
+			Remediation: "profile must be a mapping object, not null; define profile fields or remove the profile entry",
+		})
+		return errs
+	}
+
 	if p.Mode != "" && !validModes[p.Mode] {
 		errs = append(errs, &ValidationError{
 			Field:       prefix + ".mode",
