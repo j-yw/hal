@@ -52,7 +52,7 @@ type WorkerPipelineConfig struct {
 }
 
 // WorkerPipeline orchestrates the lifecycle of a single claimed run:
-// claim → setup → execute → finalize → cleanup. Each ProcessOne call
+// claim -> setup -> execute -> finalize -> cleanup. Each ProcessOne call
 // handles exactly one run from the queue.
 type WorkerPipeline struct {
 	store               Store
@@ -148,15 +148,22 @@ func (p *WorkerPipeline) ProcessOne(ctx context.Context) error {
 type heartbeatResult struct {
 	// LeaseLost is true when the heartbeat detected ErrLeaseExpired from Renew.
 	// The HeartbeatService already transitioned the attempt to failed with
-	// error_code "lease_lost" — the worker must NOT emit a duplicate
+	// error_code "lease_lost" -- the worker must NOT emit a duplicate
 	// TransitionAttempt.
 	LeaseLost bool
+
+	// ProfileRevoked is true when the heartbeat detected ErrProfileRevoked
+	// from Renew. The HeartbeatService already transitioned the attempt to
+	// failed with error_code "profile_revoked" and released the auth lock --
+	// the worker must NOT emit a duplicate TransitionAttempt or release the
+	// auth lock again.
+	ProfileRevoked bool
 }
 
 // executeAttempt runs the full attempt lifecycle for a claimed run.
 // It transitions the run from claimed to running, then executes setup
-// services in a deterministic order: provision → bootstrap →
-// auth materialization → preflight. A heartbeat goroutine runs
+// services in a deterministic order: provision -> bootstrap ->
+// auth materialization -> preflight. A heartbeat goroutine runs
 // throughout setup and execution until terminal routing begins.
 func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult) error {
 	run := claim.Run
@@ -184,14 +191,14 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		<-heartbeatDone
 	}()
 
-	// Step 2: Provision — create sandbox.
+	// Step 2: Provision -- create sandbox.
 	provResult, err := p.provision.Provision(ctx, attempt.ID, run.ID)
 	if err != nil {
 		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "provision", err)
 		return fmt.Errorf("provision failed: %w", err)
 	}
 
-	// Step 3: Bootstrap — clone repo, checkout branch, run hal init.
+	// Step 3: Bootstrap -- clone repo, checkout branch, run hal init.
 	if err := p.bootstrap.Bootstrap(ctx, &BootstrapRequest{
 		Repo:          run.Repo,
 		Branch:        run.BaseBranch,
@@ -207,7 +214,7 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		return fmt.Errorf("bootstrap failed: %w", err)
 	}
 
-	// Step 4: Auth materialization — write auth artifacts into sandbox.
+	// Step 4: Auth materialization -- write auth artifacts into sandbox.
 	if err := p.authMaterialization.Materialize(ctx, &MaterializeRequest{
 		AuthProfileID: run.AuthProfileID,
 		SandboxID:     provResult.SandboxID,
@@ -218,7 +225,7 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		return fmt.Errorf("auth materialization failed: %w", err)
 	}
 
-	// Step 5: Preflight — validate provider-specific requirements.
+	// Step 5: Preflight -- validate provider-specific requirements.
 	if err := p.preflight.Preflight(ctx, &PreflightRequest{
 		AuthProfileID: run.AuthProfileID,
 		SandboxID:     provResult.SandboxID,
@@ -229,14 +236,20 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		return fmt.Errorf("preflight failed: %w", err)
 	}
 
-	// Check if heartbeat detected lease_lost during setup/execution.
-	// Stop the heartbeat first so we can safely read the result.
+	// Check if heartbeat detected lease_lost or profile_revoked during
+	// setup/execution. Stop the heartbeat first so we can safely read
+	// the result.
 	stopHeartbeat()
 	<-heartbeatDone
 
 	if hbResult.LeaseLost {
 		p.handleLeaseLost(ctx, run.ID, run.AuthProfileID, provResult.SandboxID)
 		return fmt.Errorf("lease lost during execution")
+	}
+
+	if hbResult.ProfileRevoked {
+		p.handleProfileRevoked(ctx, run.ID, provResult.SandboxID)
+		return fmt.Errorf("profile revoked during execution")
 	}
 
 	// Future stories will add: execution, finalization, cleanup.
@@ -265,17 +278,28 @@ func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProf
 				// Check cancellation before renewing the lease.
 				cancelResult, err := p.cancel.CheckAndCancel(ctx, runID, attemptID, authProfileID)
 				if err == nil && cancelResult.Canceled {
-					// Cancellation detected — do not renew, just return.
+					// Cancellation detected -- do not renew, just return.
 					return
 				}
 				err = p.heartbeat.Renew(ctx, attemptID, authProfileID, runID)
-				if err != nil && IsLeaseExpired(err) {
-					// Lease lost — heartbeat service already marked the
-					// attempt as failed with error_code "lease_lost".
-					// Signal the main goroutine so it can route through
-					// lease-lost handling without duplicate transitions.
-					result.LeaseLost = true
-					return
+				if err != nil {
+					if IsLeaseExpired(err) {
+						// Lease lost -- heartbeat service already marked the
+						// attempt as failed with error_code "lease_lost".
+						// Signal the main goroutine so it can route through
+						// lease-lost handling without duplicate transitions.
+						result.LeaseLost = true
+						return
+					}
+					if IsProfileRevoked(err) {
+						// Profile revoked -- heartbeat service already marked
+						// the attempt as failed with error_code "profile_revoked"
+						// and released the auth lock. Signal the main goroutine
+						// so it can route through profile-revoked handling
+						// without duplicate transitions or auth lock releases.
+						result.ProfileRevoked = true
+						return
+					}
 				}
 			}
 		}
@@ -288,15 +312,33 @@ func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProf
 // so this method must NOT emit a duplicate TransitionAttempt. It transitions
 // the run to failed and performs cleanup (auth lock release, sandbox teardown).
 func (p *WorkerPipeline) handleLeaseLost(ctx context.Context, runID, authProfileID, sandboxID string) {
-	// Transition run from running to failed. Best-effort — the run may have
+	// Transition run from running to failed. Best-effort -- the run may have
 	// already been transitioned by a concurrent reconciler.
 	_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
 
-	// Release auth lock — tolerate ErrNotFound (lock may have expired or been released).
+	// Release auth lock -- tolerate ErrNotFound (lock may have expired or been released).
 	now := time.Now().UTC()
 	_ = p.store.ReleaseAuthLock(ctx, authProfileID, runID, now)
 
-	// Destroy sandbox — best-effort cleanup.
+	// Destroy sandbox -- best-effort cleanup.
+	if sandboxID != "" {
+		_ = p.runner.DestroySandbox(ctx, sandboxID)
+	}
+}
+
+// handleProfileRevoked handles the profile_revoked terminal path. The
+// HeartbeatService has already transitioned the attempt to failed (with
+// error_code "profile_revoked") and released the auth lock, so this method
+// must NOT emit a duplicate TransitionAttempt or release the auth lock.
+// It transitions the run to failed and performs sandbox cleanup.
+func (p *WorkerPipeline) handleProfileRevoked(ctx context.Context, runID, sandboxID string) {
+	// Transition run from running to failed. Best-effort -- the run may have
+	// already been transitioned by a concurrent reconciler.
+	_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
+
+	// Destroy sandbox -- best-effort cleanup.
+	// Note: Auth lock is NOT released here because emitProfileRevokedAndTerminate
+	// in HeartbeatService already released it.
 	if sandboxID != "" {
 		_ = p.runner.DestroySandbox(ctx, sandboxID)
 	}

@@ -61,10 +61,10 @@ type workerMockStore struct {
 	authProfileErr error
 
 	// HeartbeatAttempt tracking
-	mu             sync.Mutex
-	heartbeatCalls []heartbeatCall
-	heartbeatErr   error // when non-nil, HeartbeatAttempt returns this after heartbeatErrAfter successful calls
-	heartbeatErrAfter int // number of successful HeartbeatAttempt calls before returning heartbeatErr
+	mu                sync.Mutex
+	heartbeatCalls    []heartbeatCall
+	heartbeatErr      error // when non-nil, HeartbeatAttempt returns this after heartbeatErrAfter successful calls
+	heartbeatErrAfter int   // number of successful HeartbeatAttempt calls before returning heartbeatErr
 
 	// GetRun behavior — also controls cancel check behavior
 	getRun          *Run
@@ -73,6 +73,10 @@ type workerMockStore struct {
 
 	// ReleaseAuthLock tracking
 	releaseAuthLockCalls []releaseAuthLockCall
+
+	// Profile revocation control -- when true, GetAuthProfile returns
+	// AuthProfileStatusRevoked (used to trigger profile_revoked in heartbeat).
+	profileRevoked bool
 
 	// Optional call log for ordering tests.
 	log *callLog
@@ -155,7 +159,14 @@ func (s *workerMockStore) GetAuthProfile(_ context.Context, _ string) (*AuthProf
 	if s.authProfile != nil {
 		return s.authProfile, nil
 	}
-	return &AuthProfile{ID: "profile-1", Provider: "github", Status: AuthProfileStatusLinked}, nil
+	s.mu.Lock()
+	revoked := s.profileRevoked
+	s.mu.Unlock()
+	status := AuthProfileStatusLinked
+	if revoked {
+		status = AuthProfileStatusRevoked
+	}
+	return &AuthProfile{ID: "profile-1", Provider: "github", Status: status}, nil
 }
 
 func (s *workerMockStore) HeartbeatAttempt(_ context.Context, attemptID string, heartbeatAt, leaseExpiresAt time.Time) error {
@@ -2280,5 +2291,346 @@ func TestLeaseLost_AfterSuccessfulHeartbeats(t *testing.T) {
 	}
 	if !runToFailed {
 		t.Error("expected running→failed transition from handleLeaseLost")
+	}
+}
+
+// --- US-020: Handle profile_revoked routing without duplicate attempt terminalization ---
+
+func TestProfileRevoked_SetsReasonAndRoutesToProfileRevokedHandling(t *testing.T) {
+	// When the heartbeat detects ErrProfileRevoked (auth profile revoked),
+	// the worker should route through handleProfileRevoked which transitions
+	// the run to failed and performs sandbox cleanup — but does NOT emit a
+	// duplicate TransitionAttempt or release the auth lock (the heartbeat
+	// service already did both).
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	// Mark the profile as revoked so HeartbeatService.Renew detects it
+	// on the first heartbeat tick.
+	store.profileRevoked = true
+
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for heartbeat to fire and detect profile_revoked.
+	time.Sleep(100 * time.Millisecond)
+
+	// Unblock provision so the pipeline can observe profile_revoked and route.
+	close(gate)
+
+	err = <-done
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "profile revoked") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "profile revoked")
+	}
+
+	// Verify run was transitioned: claimed->running (success), then running->failed
+	// (profile_revoked handling).
+	runningFound := false
+	failedFound := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusClaimed && tr.toStatus == RunStatusRunning {
+			runningFound = true
+		}
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			failedFound = true
+		}
+	}
+	if !runningFound {
+		t.Error("expected claimed->running transition")
+	}
+	if !failedFound {
+		t.Error("expected running->failed transition from handleProfileRevoked")
+	}
+}
+
+func TestProfileRevoked_NoDuplicateAttemptTerminalization(t *testing.T) {
+	// The heartbeat service already transitions the attempt to failed with
+	// error_code "profile_revoked". The worker's handleProfileRevoked must
+	// NOT emit a second TransitionAttempt.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.profileRevoked = true
+
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+	<-done
+
+	// Count TransitionAttempt calls to failed. The heartbeat service emits
+	// exactly one. The worker's handleProfileRevoked must not add a second.
+	failedAttemptCount := 0
+	for _, tc := range store.transitionAttemptCalls {
+		if tc.Status == AttemptStatusFailed {
+			failedAttemptCount++
+		}
+	}
+
+	// Exactly 1 from heartbeat service's emitProfileRevokedAndTerminate.
+	if failedAttemptCount != 1 {
+		t.Errorf("TransitionAttempt(failed) count = %d, want exactly 1 (from heartbeat service only)", failedAttemptCount)
+	}
+
+	// Verify the single attempt transition has the correct error code.
+	if len(store.transitionAttemptCalls) == 0 {
+		t.Fatal("expected at least 1 TransitionAttempt call")
+	}
+	tc := store.transitionAttemptCalls[0]
+	if tc.ErrorCode == nil || *tc.ErrorCode != "profile_revoked" {
+		t.Errorf("TransitionAttempt.ErrorCode = %v, want %q", tc.ErrorCode, "profile_revoked")
+	}
+}
+
+func TestProfileRevoked_RunTransitionsToFailed(t *testing.T) {
+	// After profile_revoked is detected, handleProfileRevoked must transition
+	// the run from running to failed and destroy the sandbox, but must NOT
+	// release the auth lock (already released by heartbeat service).
+	log := &callLog{}
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.log = log
+	store.profileRevoked = true
+
+	baseRnr := newWorkerMockRunner(log)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+	<-done
+
+	// Verify run was transitioned to failed.
+	runToFailed := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			runToFailed = true
+			break
+		}
+	}
+	if !runToFailed {
+		t.Error("expected running->failed transition from handleProfileRevoked")
+	}
+
+	// Verify sandbox destroy was called.
+	baseRnr.mu.Lock()
+	destroyCalls := len(baseRnr.destroySandboxCalls)
+	baseRnr.mu.Unlock()
+	if destroyCalls == 0 {
+		t.Error("expected DestroySandbox to be called during profile_revoked cleanup")
+	}
+
+	// Verify handleProfileRevoked did NOT release auth lock — the heartbeat
+	// service's emitProfileRevokedAndTerminate already did that. Count only
+	// auth lock releases that come from handleProfileRevoked (after provision
+	// completes). The heartbeat service releases it internally via the store
+	// during emitProfileRevokedAndTerminate, but handleProfileRevoked must
+	// not issue a second release.
+	//
+	// We check the call log for release_auth_lock entries. The heartbeat
+	// service's emitProfileRevokedAndTerminate calls ReleaseAuthLock once.
+	// handleProfileRevoked must not add another.
+	store.mu.Lock()
+	authLockReleaseCount := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+
+	// Exactly 1 from emitProfileRevokedAndTerminate (heartbeat service).
+	// handleProfileRevoked must NOT add a second.
+	if authLockReleaseCount != 1 {
+		t.Errorf("ReleaseAuthLock call count = %d, want exactly 1 (from heartbeat service only)", authLockReleaseCount)
+	}
+}
+
+func TestProfileRevoked_AfterSuccessfulHeartbeats(t *testing.T) {
+	// Verify that profile_revoked is correctly detected even after some
+	// successful heartbeat renewals. The heartbeat should work normally for
+	// a few ticks, then when the profile is revoked, the pipeline routes
+	// through profile_revoked handling.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	// Start with non-revoked profile -- will be toggled after successful heartbeats.
+
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for a few successful heartbeat ticks.
+	time.Sleep(80 * time.Millisecond)
+
+	// Now revoke the profile -- next heartbeat tick will detect it.
+	store.mu.Lock()
+	store.profileRevoked = true
+	store.mu.Unlock()
+
+	// Wait for heartbeat to detect profile_revoked.
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+
+	err = <-done
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "profile revoked") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "profile revoked")
+	}
+
+	// Verify some heartbeats succeeded before the profile was revoked.
+	store.mu.Lock()
+	hbCount := len(store.heartbeatCalls)
+	store.mu.Unlock()
+	if hbCount < 2 {
+		t.Errorf("expected at least 2 heartbeat calls before profile_revoked, got %d", hbCount)
+	}
+
+	// Run transition should still be running->failed.
+	runToFailed := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			runToFailed = true
+			break
+		}
+	}
+	if !runToFailed {
+		t.Error("expected running->failed transition from handleProfileRevoked")
 	}
 }
