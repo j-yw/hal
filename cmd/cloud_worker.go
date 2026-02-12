@@ -26,6 +26,11 @@ var (
 	cloudWorkerSandboxImageFlag      string
 )
 
+// defaultWorkerSandboxImage is the fallback image used when --sandbox-image is
+// not provided. It must never be empty — ProvisionConfig.Image requires a
+// non-empty value so the runner can create a sandbox.
+const defaultWorkerSandboxImage = "ubuntu:22.04"
+
 // cloudWorkerStoreFactory is a package-level variable that tests can override.
 var cloudWorkerStoreFactory func() (cloud.Store, error)
 
@@ -76,6 +81,8 @@ func init() {
 }
 
 // defaultCloudWorkerRunnerFactory constructs a Daytona-backed runner from deploy config.
+// The returned *runner.SDKClient satisfies runner.Runner, runner.SessionExec,
+// and runner.GitOps interfaces simultaneously.
 func defaultCloudWorkerRunnerFactory(cfg deploy.Config) (runner.Runner, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate deploy config: %w", err)
@@ -89,6 +96,17 @@ func defaultCloudWorkerRunnerFactory(cfg deploy.Config) (runner.Runner, error) {
 		return nil, fmt.Errorf("create runner client: %w", err)
 	}
 	return client, nil
+}
+
+// resolveWorkerSandboxImage returns the sandbox image to use for provisioning.
+// If the provided image (from --sandbox-image flag) is non-empty, it is used
+// as-is. Otherwise, defaultWorkerSandboxImage is returned. The result is
+// always non-empty.
+func resolveWorkerSandboxImage(flagImage string) string {
+	if flagImage != "" {
+		return flagImage
+	}
+	return defaultWorkerSandboxImage
 }
 
 // runCloudWorker is the testable logic for the cloud worker command.
@@ -109,6 +127,9 @@ func runCloudWorker(
 		fmt.Fprintf(out, "Warning: failed to load .env file: %v\n", err)
 	}
 
+	// Resolve sandbox image — always non-empty.
+	image := resolveWorkerSandboxImage(sandboxImage)
+
 	// Create a context that cancels on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -117,9 +138,7 @@ func runCloudWorker(
 	fmt.Fprintf(out, "  poll-interval:      %s\n", pollInterval)
 	fmt.Fprintf(out, "  reconcile-interval: %s\n", reconcileInterval)
 	fmt.Fprintf(out, "  timeout-interval:   %s\n", timeoutInterval)
-	if sandboxImage != "" {
-		fmt.Fprintf(out, "  sandbox-image:      %s\n", sandboxImage)
-	}
+	fmt.Fprintf(out, "  sandbox-image:      %s\n", image)
 
 	// Wait for shutdown signal.
 	<-ctx.Done()

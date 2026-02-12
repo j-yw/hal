@@ -266,3 +266,175 @@ func TestCloudWorkerCmd_DelegatesRunCloudWorker(t *testing.T) {
 		t.Fatal("cloudWorkerCmd.RunE is nil")
 	}
 }
+
+// TestResolveWorkerSandboxImage verifies sandbox image resolution behavior.
+func TestResolveWorkerSandboxImage(t *testing.T) {
+	tests := []struct {
+		name      string
+		flagImage string
+		want      string
+	}{
+		{
+			name:      "empty flag uses default",
+			flagImage: "",
+			want:      defaultWorkerSandboxImage,
+		},
+		{
+			name:      "non-empty flag overrides default",
+			flagImage: "custom-image:v1",
+			want:      "custom-image:v1",
+		},
+		{
+			name:      "custom image with tag",
+			flagImage: "ghcr.io/org/worker:latest",
+			want:      "ghcr.io/org/worker:latest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveWorkerSandboxImage(tt.flagImage)
+			if got != tt.want {
+				t.Errorf("resolveWorkerSandboxImage(%q) = %q, want %q", tt.flagImage, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResolveWorkerSandboxImage_NeverEmpty verifies that the resolved image is
+// never empty regardless of input.
+func TestResolveWorkerSandboxImage_NeverEmpty(t *testing.T) {
+	got := resolveWorkerSandboxImage("")
+	if got == "" {
+		t.Fatal("resolveWorkerSandboxImage(\"\") returned empty string; ProvisionConfig.Image must never be empty")
+	}
+}
+
+// TestDefaultWorkerSandboxImage_Constant verifies that the default sandbox
+// image constant is non-empty.
+func TestDefaultWorkerSandboxImage_Constant(t *testing.T) {
+	if defaultWorkerSandboxImage == "" {
+		t.Fatal("defaultWorkerSandboxImage must not be empty")
+	}
+}
+
+// TestRunCloudWorker_SandboxImageAlwaysDisplayed verifies that the resolved
+// sandbox image is always shown in worker startup output, even when the flag
+// is empty (default is used).
+func TestRunCloudWorker_SandboxImageAlwaysDisplayed(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	tests := []struct {
+		name      string
+		flagImage string
+		wantImage string
+	}{
+		{
+			name:      "empty flag shows default image",
+			flagImage: "",
+			wantImage: defaultWorkerSandboxImage,
+		},
+		{
+			name:      "custom flag shows custom image",
+			flagImage: "custom:v2",
+			wantImage: "custom:v2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			done := make(chan error, 1)
+			go func() {
+				done <- runCloudWorker("test-worker", 10*time.Second, 30*time.Second, 60*time.Second, tt.flagImage, &buf)
+			}()
+
+			time.Sleep(50 * time.Millisecond)
+			p, _ := os.FindProcess(os.Getpid())
+			p.Signal(os.Interrupt)
+
+			if err := <-done; err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			output := buf.String()
+			wantLine := "sandbox-image:      " + tt.wantImage
+			if !strings.Contains(output, wantLine) {
+				t.Errorf("output does not contain %q\ngot: %s", wantLine, output)
+			}
+		})
+	}
+}
+
+// TestRunCloudWorker_ProvisionImageNeverEmpty verifies that sandbox image
+// resolution never produces an empty image that would be passed to
+// ProvisionConfig.Image. This test exercises the contract at the command
+// wiring level.
+func TestRunCloudWorker_ProvisionImageNeverEmpty(t *testing.T) {
+	// resolveWorkerSandboxImage is the single function that determines the
+	// image value passed to ProvisionConfig.Image. Verify all input variants
+	// produce non-empty output.
+	inputs := []string{"", "  ", "img:latest"}
+	for _, input := range inputs {
+		got := resolveWorkerSandboxImage(input)
+		if got == "" {
+			t.Errorf("resolveWorkerSandboxImage(%q) returned empty; ProvisionConfig.Image must never be empty", input)
+		}
+	}
+}
+
+// TestDefaultCloudWorkerRunnerFactory_ReturnsSDKClient verifies that the
+// default runner factory returns a *runner.SDKClient that satisfies Runner,
+// SessionExec, and GitOps interfaces. This test cannot fully construct a
+// client without a real Daytona API, so it verifies interface satisfaction
+// via the compile-time assertions in sdk_client.go and validates that the
+// factory rejects incomplete configs.
+func TestDefaultCloudWorkerRunnerFactory_ReturnsSDKClient(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     deploy.Config
+		wantErr string
+	}{
+		{
+			name: "missing Daytona API key",
+			cfg: deploy.Config{
+				DBAdapter:      "turso",
+				TursoURL:       "libsql://test.turso.io",
+				TursoAuthToken: "token",
+			},
+			wantErr: "DAYTONA_API_KEY",
+		},
+		{
+			name: "missing DB adapter config",
+			cfg: deploy.Config{
+				DaytonaAPIKey: "test-key",
+			},
+			wantErr: "HAL_CLOUD_DB_ADAPTER",
+		},
+		{
+			name:    "completely empty config",
+			cfg:     deploy.Config{},
+			wantErr: "validate deploy config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := defaultCloudWorkerRunnerFactory(tt.cfg)
+			if err == nil {
+				t.Fatal("expected error for incomplete config")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}

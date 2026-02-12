@@ -14,6 +14,13 @@ import (
 	"github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 )
 
+// Compile-time interface satisfaction assertions.
+var (
+	_ Runner      = (*SDKClient)(nil)
+	_ SessionExec = (*SDKClient)(nil)
+	_ GitOps      = (*SDKClient)(nil)
+)
+
 // SDKClientConfig holds configuration for the Daytona SDK runner client.
 type SDKClientConfig struct {
 	// APIKey is the Daytona API key (required).
