@@ -464,6 +464,61 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 	return pipeline
 }
 
+// prOpts holds optional PR configuration for worker pipeline tests.
+type prOpts struct {
+	prCreate      *PRCreateService
+	prEnabled     bool
+	prCreatorFunc func(sandboxID, authDir string) PRCreator
+}
+
+func newTestWorkerPipelineWithPR(t *testing.T, store *workerMockStore, rnr *workerMockRunner, pr *prOpts) *WorkerPipeline {
+	t.Helper()
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{
+		Image: "test-image:latest",
+	})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+	execution := NewExecutionService(store, rnr, ExecutionConfig{})
+	snapshot := NewSnapshotService(store, SnapshotServiceConfig{
+		IDFunc: func() string { return "snapshot-1" },
+	})
+	cancel := NewCancellationService(store, CancellationConfig{})
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+
+	cfg := WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Execution:           execution,
+		Snapshot:            snapshot,
+		Cancel:              cancel,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   50 * time.Millisecond,
+	}
+	if pr != nil {
+		cfg.PRCreate = pr.prCreate
+		cfg.PREnabled = pr.prEnabled
+		cfg.PRCreatorFunc = pr.prCreatorFunc
+	}
+
+	pipeline, err := NewWorkerPipeline(cfg)
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+	return pipeline
+}
+
 func testClaimedRun() *Run {
 	now := time.Now().UTC().Truncate(time.Second)
 	deadline := now.Add(1 * time.Hour)
@@ -3885,5 +3940,266 @@ func TestFinalizeSnapshot_MultipleFiles(t *testing.T) {
 	// Verify compressed payload is non-empty.
 	if len(snap.ContentBlob) == 0 {
 		t.Error("ContentBlob is empty, want compressed multi-file payload")
+	}
+}
+
+// --- US-025: Gate PR side effects by workflow kind and PREnabled ---
+
+func testClaimedRunWithKind(kind WorkflowKind) *Run {
+	now := time.Now().UTC().Truncate(time.Second)
+	deadline := now.Add(1 * time.Hour)
+	return &Run{
+		ID:            "run-1",
+		Repo:          "https://github.com/org/repo.git",
+		BaseBranch:    "main",
+		WorkflowKind:  kind,
+		Engine:        "claude",
+		AuthProfileID: "profile-1",
+		ScopeRef:      "prd-123",
+		Status:        RunStatusClaimed,
+		AttemptCount:  1,
+		MaxAttempts:   3,
+		DeadlineAt:    &deadline,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+}
+
+// trackingPRCreatorFactory records whether PRCreator was invoked.
+type trackingPRCreatorFactory struct {
+	mu      sync.Mutex
+	called  bool
+	request *PRCreateRequest
+}
+
+func (f *trackingPRCreatorFactory) factory(sandboxID, authDir string) PRCreator {
+	return func(ctx context.Context, req *PRCreateRequest) (string, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.called = true
+		f.request = req
+		return "https://github.com/org/repo/pull/1", nil
+	}
+}
+
+func (f *trackingPRCreatorFactory) wasCalled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.called
+}
+
+func TestPRGating_AutoWorkflowWithPREnabled(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindAuto)
+	rnr := newWorkerMockRunner(nil)
+
+	tracker := &trackingPRCreatorFactory{}
+	prSvc := NewPRCreateService(store, PRCreateConfig{})
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      prSvc,
+		prEnabled:     true,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !tracker.wasCalled() {
+		t.Error("PRCreator was not called for auto workflow with PREnabled=true")
+	}
+}
+
+func TestPRGating_ReviewWorkflowWithPREnabled(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindReview)
+	rnr := newWorkerMockRunner(nil)
+
+	tracker := &trackingPRCreatorFactory{}
+	prSvc := NewPRCreateService(store, PRCreateConfig{})
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      prSvc,
+		prEnabled:     true,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !tracker.wasCalled() {
+		t.Error("PRCreator was not called for review workflow with PREnabled=true")
+	}
+}
+
+func TestPRGating_AutoWorkflowWithPRDisabled(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindAuto)
+	rnr := newWorkerMockRunner(nil)
+
+	tracker := &trackingPRCreatorFactory{}
+	prSvc := NewPRCreateService(store, PRCreateConfig{})
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      prSvc,
+		prEnabled:     false,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if tracker.wasCalled() {
+		t.Error("PRCreator was called for auto workflow with PREnabled=false")
+	}
+}
+
+func TestPRGating_ReviewWorkflowWithPRDisabled(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindReview)
+	rnr := newWorkerMockRunner(nil)
+
+	tracker := &trackingPRCreatorFactory{}
+	prSvc := NewPRCreateService(store, PRCreateConfig{})
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      prSvc,
+		prEnabled:     false,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if tracker.wasCalled() {
+		t.Error("PRCreator was called for review workflow with PREnabled=false")
+	}
+}
+
+func TestPRGating_RunWorkflowNeverInvokesPRCreate(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindRun)
+	rnr := newWorkerMockRunner(nil)
+
+	tracker := &trackingPRCreatorFactory{}
+	prSvc := NewPRCreateService(store, PRCreateConfig{})
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      prSvc,
+		prEnabled:     true,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if tracker.wasCalled() {
+		t.Error("PRCreator was called for run workflow — run should never invoke PR creation")
+	}
+}
+
+func TestPRGating_NilPRCreateServiceSkipsPR(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindAuto)
+	rnr := newWorkerMockRunner(nil)
+
+	tracker := &trackingPRCreatorFactory{}
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      nil, // no PR service
+		prEnabled:     true,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if tracker.wasCalled() {
+		t.Error("PRCreator was called when PRCreate service is nil")
+	}
+}
+
+func TestPRGating_NonZeroExitSkipsPR(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindAuto)
+	rnr := newWorkerMockRunner(nil)
+	// Override hal auto command to return exit code 1.
+	rnr.execOverrides["hal auto"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 1, Stderr: "test failure"},
+	}
+
+	tracker := &trackingPRCreatorFactory{}
+	prSvc := NewPRCreateService(store, PRCreateConfig{})
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      prSvc,
+		prEnabled:     true,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if tracker.wasCalled() {
+		t.Error("PRCreator was called on non-zero exit — PR creation should only occur on exit code 0")
+	}
+}
+
+func TestPRGating_PRRequestContainsCorrectFields(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRunWithKind(WorkflowKindAuto)
+	rnr := newWorkerMockRunner(nil)
+
+	tracker := &trackingPRCreatorFactory{}
+	prSvc := NewPRCreateService(store, PRCreateConfig{})
+
+	pipeline := newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{
+		prCreate:      prSvc,
+		prEnabled:     true,
+		prCreatorFunc: tracker.factory,
+	})
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !tracker.wasCalled() {
+		t.Fatal("PRCreator was not called")
+	}
+
+	tracker.mu.Lock()
+	req := tracker.request
+	tracker.mu.Unlock()
+
+	if req == nil {
+		t.Fatal("PRCreateRequest is nil")
+	}
+	if req.RunID != "run-1" {
+		t.Errorf("RunID = %q, want %q", req.RunID, "run-1")
+	}
+	if req.Repo != "https://github.com/org/repo.git" {
+		t.Errorf("Repo = %q, want %q", req.Repo, "https://github.com/org/repo.git")
+	}
+	if req.Base != "main" {
+		t.Errorf("Base = %q, want %q", req.Base, "main")
+	}
+	expectedHead := WorkingBranch("run-1")
+	if req.Head != expectedHead {
+		t.Errorf("Head = %q, want %q", req.Head, expectedHead)
 	}
 }

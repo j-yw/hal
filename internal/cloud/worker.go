@@ -49,6 +49,16 @@ type WorkerPipelineConfig struct {
 	// HeartbeatInterval is the interval between heartbeat ticks. Defaults to
 	// 10 seconds if zero.
 	HeartbeatInterval time.Duration
+	// PRCreate is the service used to create pull requests (optional).
+	// When nil, PR creation is skipped regardless of PREnabled.
+	PRCreate *PRCreateService
+	// PREnabled gates whether PR creation runs on successful execution.
+	// PR creation only runs when PREnabled is true, PRCreate is non-nil,
+	// and workflowKind is auto or review.
+	PREnabled bool
+	// PRCreatorFunc builds a PRCreator for a given sandbox and auth directory.
+	// When nil, PR creation is skipped. Typically set to GitHubPRCreator.
+	PRCreatorFunc func(sandboxID, authDir string) PRCreator
 	// GitUsername is the HTTPS auth username for clone/push (optional).
 	GitUsername string
 	// GitPassword is the HTTPS auth password/token for clone/push (optional).
@@ -73,6 +83,9 @@ type WorkerPipeline struct {
 	cancel              *CancellationService
 	heartbeat           *HeartbeatService
 	heartbeatInterval   time.Duration
+	prCreate            *PRCreateService
+	prEnabled           bool
+	prCreatorFunc       func(sandboxID, authDir string) PRCreator
 	gitUsername         string
 	gitPassword         string
 }
@@ -138,6 +151,9 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		cancel:              cfg.Cancel,
 		heartbeat:           cfg.Heartbeat,
 		heartbeatInterval:   hbInterval,
+		prCreate:            cfg.PRCreate,
+		prEnabled:           cfg.PREnabled,
+		prCreatorFunc:       cfg.PRCreatorFunc,
 		gitUsername:         cfg.GitUsername,
 		gitPassword:         cfg.GitPassword,
 	}, nil
@@ -274,13 +290,22 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		WorkflowKind: run.WorkflowKind,
 		Mode:         ExecutionModeUntilComplete,
 	})
+
+	prCtx := &prContext{
+		repo:          run.Repo,
+		baseBranch:    run.BaseBranch,
+		workingBranch: workingBranch,
+		sandboxID:     provResult.SandboxID,
+		authDir:       p.authMaterialization.AuthDir(),
+	}
+
 	if err != nil {
 		// Runner API error -- treat as non-retryable failure.
-		p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, -1)
+		p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, -1, prCtx)
 		return fmt.Errorf("execution failed: %w", err)
 	}
 
-	p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, execResult.ExitCode)
+	p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, execResult.ExitCode, prCtx)
 
 	return nil
 }
@@ -411,20 +436,31 @@ func (p *WorkerPipeline) handleSetupFailure(_ context.Context, runID, attemptID 
 	_ = p.store.TransitionRun(ctx, runID, fromRunStatus, RunStatusFailed)
 }
 
+// prContext carries PR-related metadata from executeAttempt to
+// handleExecutionResult so that maybeCreatePR can build the PR request.
+type prContext struct {
+	repo          string
+	baseBranch    string
+	workingBranch string
+	sandboxID     string
+	authDir       string
+}
+
 // handleExecutionResult maps an execution exit code to deterministic terminal
 // transitions. Each outcome emits exactly one attempt transition and exactly
 // one run transition:
 //
-//   - Exit code 0: attempt succeeded + run succeeded + final snapshot persisted
+//   - Exit code 0: attempt succeeded + run succeeded + final snapshot persisted + optional PR
 //   - Non-zero exit: attempt failed (reason non_retryable) + run failed
 //
 // On success (exit code 0), finalization collects sandbox artifacts, compresses
 // the bundle, computes a deterministic SHA via ComputeSandboxBundleHash, and
 // persists the snapshot via SnapshotService before terminal transitions.
+// PR creation is gated by workflow kind (auto/review only) and PREnabled.
 //
 // Cleanup uses context.Background() with a timeout so it can complete even
 // when the parent context is already canceled (e.g., during graceful shutdown).
-func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attemptID, sandboxID, authProfileID string, workflowKind WorkflowKind, exitCode int) {
+func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attemptID, sandboxID, authProfileID string, workflowKind WorkflowKind, exitCode int, prc *prContext) {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
@@ -433,6 +469,9 @@ func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attempt
 	if exitCode == 0 {
 		// Finalize: collect, compress, hash, and persist final snapshot.
 		_ = p.finalizeSnapshot(ctx, runID, attemptID, sandboxID, workflowKind)
+
+		// PR creation: only for auto/review workflows when enabled.
+		_ = p.maybeCreatePR(ctx, runID, attemptID, workflowKind, prc)
 
 		// Success: attempt succeeded, run succeeded.
 		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusSucceeded, now, nil, nil)
@@ -444,6 +483,54 @@ func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attempt
 		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusFailed, now, &errCode, &errMsg)
 		_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
 	}
+}
+
+// maybeCreatePR invokes PR creation when the workflow kind is auto or review
+// and PREnabled is true. For workflowKind run, PR creation is always skipped.
+// Returns nil when PR creation is skipped or when it succeeds. Errors from
+// PR creation are best-effort and returned for logging but do not block
+// terminal transitions.
+func (p *WorkerPipeline) maybeCreatePR(ctx context.Context, runID, attemptID string, workflowKind WorkflowKind, prc *prContext) error {
+	// Gate 1: PR creation must be enabled.
+	if !p.prEnabled {
+		return nil
+	}
+
+	// Gate 2: PRCreate service must be available.
+	if p.prCreate == nil {
+		return nil
+	}
+
+	// Gate 3: PRCreatorFunc must be available to build the creator.
+	if p.prCreatorFunc == nil {
+		return nil
+	}
+
+	// Gate 4: Only auto and review workflows create PRs.
+	if workflowKind != WorkflowKindAuto && workflowKind != WorkflowKindReview {
+		return nil
+	}
+
+	// Gate 5: PR context must be available.
+	if prc == nil {
+		return nil
+	}
+
+	creator := p.prCreatorFunc(prc.sandboxID, prc.authDir)
+
+	_, err := p.prCreate.CreatePR(ctx, &PRCreateRequest{
+		RunID:     runID,
+		AttemptID: attemptID,
+		Title:     fmt.Sprintf("hal: %s workflow for %s", workflowKind, prc.repo),
+		Head:      prc.workingBranch,
+		Base:      prc.baseBranch,
+		Repo:      prc.repo,
+	}, creator)
+	if err != nil {
+		return fmt.Errorf("creating PR: %w", err)
+	}
+
+	return nil
 }
 
 // finalizeSnapshot collects sandbox artifacts, compresses them into a bundle,
@@ -498,3 +585,4 @@ func (p *WorkerPipeline) releaseAuthLockBestEffort(ctx context.Context, authProf
 	}
 	return nil
 }
+

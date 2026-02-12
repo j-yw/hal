@@ -42,6 +42,11 @@ func NewAuthMaterializationService(store Store, r runner.Runner, config AuthMate
 	}
 }
 
+// AuthDir returns the configured auth directory path inside the sandbox.
+func (s *AuthMaterializationService) AuthDir() string {
+	return s.config.AuthDir
+}
+
 // MaterializeRequest contains the parameters for materializing auth artifacts.
 type MaterializeRequest struct {
 	// AuthProfileID is the auth profile whose secret_ref should be materialized.
