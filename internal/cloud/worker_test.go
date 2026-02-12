@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -80,8 +81,26 @@ type workerMockStore struct {
 	// AuthProfileStatusRevoked (used to trigger profile_revoked in heartbeat).
 	profileRevoked bool
 
+	// PutSnapshot tracking
+	putSnapshotCalls []*RunStateSnapshot
+	putSnapshotErr   error
+
+	// UpdateRunSnapshotRefs tracking
+	updateRefsCalls []workerUpdateRefsCall
+	updateRefsErr   error
+
+	// InsertEvent tracking
+	insertedEvents []*Event
+
 	// Optional call log for ordering tests.
 	log *callLog
+}
+
+type workerUpdateRefsCall struct {
+	RunID                 string
+	InputSnapshotID       *string
+	LatestSnapshotID      *string
+	LatestSnapshotVersion int
 }
 
 type heartbeatCall struct {
@@ -225,6 +244,26 @@ func (s *workerMockStore) ReleaseAuthLock(_ context.Context, authProfileID, runI
 		RunID:         runID,
 	})
 	return s.releaseAuthLockErr
+}
+
+func (s *workerMockStore) PutSnapshot(_ context.Context, snapshot *RunStateSnapshot) error {
+	s.putSnapshotCalls = append(s.putSnapshotCalls, snapshot)
+	return s.putSnapshotErr
+}
+
+func (s *workerMockStore) UpdateRunSnapshotRefs(_ context.Context, runID string, inputSnapshotID, latestSnapshotID *string, latestSnapshotVersion int) error {
+	s.updateRefsCalls = append(s.updateRefsCalls, workerUpdateRefsCall{
+		RunID:                 runID,
+		InputSnapshotID:       inputSnapshotID,
+		LatestSnapshotID:      latestSnapshotID,
+		LatestSnapshotVersion: latestSnapshotVersion,
+	})
+	return s.updateRefsErr
+}
+
+func (s *workerMockStore) InsertEvent(_ context.Context, event *Event) error {
+	s.insertedEvents = append(s.insertedEvents, event)
+	return nil
 }
 
 // workerMockRunner is a minimal runner for worker tests with optional
@@ -395,6 +434,9 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, git, CheckpointConfig{})
 	execution := NewExecutionService(store, rnr, ExecutionConfig{})
+	snapshot := NewSnapshotService(store, SnapshotServiceConfig{
+		IDFunc: func() string { return "snapshot-1" },
+	})
 	cancel := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
@@ -409,6 +451,7 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           execution,
+		Snapshot:            snapshot,
 		Cancel:              cancel,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   50 * time.Millisecond, // fast ticks for tests
@@ -453,6 +496,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
 	execution := NewExecutionService(store, rnr, ExecutionConfig{})
+	snapshot := NewSnapshotService(store, SnapshotServiceConfig{})
 	cancel := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
@@ -474,6 +518,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -491,6 +536,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -509,6 +555,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -527,6 +574,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -545,6 +593,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -563,6 +612,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -581,6 +631,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -599,6 +650,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -617,6 +669,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           nil,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -635,6 +688,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          nil,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -653,10 +707,30 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           nil,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "execution must not be nil",
+		},
+		{
+			name: "nil snapshot service",
+			cfg: WorkerPipelineConfig{
+				Store:               store,
+				Runner:              rnr,
+				WorkerID:            "worker-1",
+				Claim:               claim,
+				Provision:           provision,
+				Bootstrap:           bootstrap,
+				AuthMaterialization: authMat,
+				Preflight:           preflight,
+				Checkpoint:          checkpoint,
+				Execution:           execution,
+				Snapshot:            nil,
+				Cancel:              cancel,
+				Heartbeat:           heartbeat,
+			},
+			wantErr: "snapshot must not be nil",
 		},
 		{
 			name: "nil cancel service",
@@ -671,6 +745,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              nil,
 				Heartbeat:           heartbeat,
 			},
@@ -689,6 +764,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
 				Execution:           execution,
+				Snapshot:            snapshot,
 				Cancel:              cancel,
 				Heartbeat:           nil,
 			},
@@ -1015,6 +1091,7 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 		Preflight:           preflightSvc,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -1444,6 +1521,7 @@ func TestExecuteAttempt_CheckpointServiceValidation(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          nil,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 	})
@@ -1506,6 +1584,7 @@ func TestHeartbeat_StartsAfterTransitionToRunning(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond, // fast ticks
@@ -1588,6 +1667,7 @@ func TestHeartbeat_ActiveThroughSetupAndExecution(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -1709,6 +1789,7 @@ func TestHeartbeat_RenewCallsIncludeCorrectIDs(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -1791,6 +1872,7 @@ func TestHeartbeat_CancelCheckedBeforeRenewOnEachTick(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -1896,6 +1978,7 @@ func TestHeartbeat_CancelDetectedSkipsRenew(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2031,6 +2114,7 @@ func TestLeaseLost_SetsReasonAndRoutesToLeaseLostHandling(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2115,6 +2199,7 @@ func TestLeaseLost_NoDuplicateAttemptTerminalization(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2192,6 +2277,7 @@ func TestLeaseLost_CleanupStillRuns(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2294,6 +2380,7 @@ func TestLeaseLost_AfterSuccessfulHeartbeats(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2380,6 +2467,7 @@ func TestProfileRevoked_SetsReasonAndRoutesToProfileRevokedHandling(t *testing.T
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2461,6 +2549,7 @@ func TestProfileRevoked_NoDuplicateAttemptTerminalization(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2538,6 +2627,7 @@ func TestProfileRevoked_RunTransitionsToFailed(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2631,6 +2721,7 @@ func TestProfileRevoked_AfterSuccessfulHeartbeats(t *testing.T) {
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2769,6 +2860,7 @@ func TestCleanup_HandleLeaseLost_UsesBackgroundContext(t *testing.T) {
 		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
 		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              NewCancellationService(store, CancellationConfig{}),
 		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -2839,6 +2931,7 @@ func TestCleanup_HandleProfileRevoked_UsesBackgroundContext(t *testing.T) {
 		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
 		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
 		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              NewCancellationService(store, CancellationConfig{}),
 		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -2916,6 +3009,7 @@ func TestCleanup_HandleSetupFailure_UsesBackgroundContext(t *testing.T) {
 		Preflight:           NewPreflightService(store, baseRnr, PreflightConfig{}),
 		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
 		Execution:           NewExecutionService(store, baseRnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
 		Cancel:              NewCancellationService(store, CancellationConfig{}),
 		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -3469,5 +3563,327 @@ func TestHandleLeaseLost_AuthLockOtherErrorStillCleansUp(t *testing.T) {
 	rnr.mu.Unlock()
 	if destroyCalls != 1 {
 		t.Errorf("expected 1 DestroySandbox call, got %d", destroyCalls)
+	}
+}
+
+// --- US-024: Persist final snapshot payloads with deterministic metadata ---
+
+func TestFinalizeSnapshot_StoresRecordsAndCompressedPayload(t *testing.T) {
+	// On success (exit code 0), finalization collects sandbox files,
+	// compresses them, and persists a final snapshot with deterministic SHA.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	// GetRun for snapshot service version resolution returns a run with version 0.
+	store.getRun = &Run{
+		ID:                    "run-1",
+		Status:                RunStatusRunning,
+		AuthProfileID:         "profile-1",
+		LatestSnapshotVersion: 0,
+	}
+	rnr := newWorkerMockRunner(nil)
+
+	// Set up sandbox file listing — find returns one file.
+	fileContent := []byte("test prd content")
+	encodedContent := base64.StdEncoding.EncodeToString(fileContent)
+	rnr.execOverrides["find /workspace/.hal"] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   "/workspace/.hal/prd.json\n",
+		},
+	}
+	rnr.execOverrides[base64Cmd] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   encodedContent,
+		},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify PutSnapshot was called.
+	if len(store.putSnapshotCalls) != 1 {
+		t.Fatalf("PutSnapshot calls = %d, want 1", len(store.putSnapshotCalls))
+	}
+
+	snap := store.putSnapshotCalls[0]
+
+	// Verify snapshot kind is final.
+	if snap.SnapshotKind != SnapshotKindFinal {
+		t.Errorf("SnapshotKind = %q, want %q", snap.SnapshotKind, SnapshotKindFinal)
+	}
+
+	// Verify snapshot content is non-empty (compressed payload).
+	if len(snap.ContentBlob) == 0 {
+		t.Error("ContentBlob is empty, want compressed payload")
+	}
+
+	// Verify content encoding.
+	if snap.ContentEncoding != "application/gzip" {
+		t.Errorf("ContentEncoding = %q, want %q", snap.ContentEncoding, "application/gzip")
+	}
+
+	// Verify SizeBytes matches ContentBlob length.
+	if snap.SizeBytes != int64(len(snap.ContentBlob)) {
+		t.Errorf("SizeBytes = %d, want %d (ContentBlob length)", snap.SizeBytes, len(snap.ContentBlob))
+	}
+
+	// Verify snapshot SHA equals ComputeSandboxBundleHash(records).
+	expectedRecords := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: fileContent},
+	}
+	expectedSHA := ComputeSandboxBundleHash(expectedRecords)
+	if snap.SHA256 != expectedSHA {
+		t.Errorf("SHA256 = %q, want %q (ComputeSandboxBundleHash)", snap.SHA256, expectedSHA)
+	}
+
+	// Verify snapshot run ID matches.
+	if snap.RunID != "run-1" {
+		t.Errorf("RunID = %q, want %q", snap.RunID, "run-1")
+	}
+
+	// Verify attempt ID is set.
+	if snap.AttemptID == nil || *snap.AttemptID != "attempt-1" {
+		t.Errorf("AttemptID = %v, want %q", snap.AttemptID, "attempt-1")
+	}
+
+	// Verify version is 1 (first snapshot).
+	if snap.Version != 1 {
+		t.Errorf("Version = %d, want 1", snap.Version)
+	}
+}
+
+func TestFinalizeSnapshot_SHAMatchesRecordHashNotCompressedPayload(t *testing.T) {
+	// The snapshot SHA must equal ComputeBundleHash(records), NOT a hash
+	// of the compressed payload bytes.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.getRun = &Run{
+		ID:                    "run-1",
+		Status:                RunStatusRunning,
+		AuthProfileID:         "profile-1",
+		LatestSnapshotVersion: 0,
+	}
+	rnr := newWorkerMockRunner(nil)
+
+	fileContent := []byte("deterministic hash test content")
+	encodedContent := base64.StdEncoding.EncodeToString(fileContent)
+	rnr.execOverrides["find /workspace/.hal"] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   "/workspace/.hal/progress.txt\n",
+		},
+	}
+	rnr.execOverrides[base64Cmd] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   encodedContent,
+		},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(store.putSnapshotCalls) != 1 {
+		t.Fatalf("PutSnapshot calls = %d, want 1", len(store.putSnapshotCalls))
+	}
+
+	snap := store.putSnapshotCalls[0]
+
+	// Compute expected SHA from records (not from compressed bytes).
+	records := []SandboxBundleRecord{
+		{Path: ".hal/progress.txt", Content: fileContent},
+	}
+	expectedSHA := ComputeSandboxBundleHash(records)
+
+	// Compute SHA from compressed payload bytes for comparison.
+	compressed, _ := CompressBundle(records)
+	compressedSHA := ComputeSandboxBundleHash([]SandboxBundleRecord{
+		{Path: "compressed", Content: compressed},
+	})
+
+	// The snapshot SHA should match the record hash.
+	if snap.SHA256 != expectedSHA {
+		t.Errorf("SHA256 = %q, want %q (record hash)", snap.SHA256, expectedSHA)
+	}
+
+	// The snapshot SHA should NOT equal the compressed payload hash.
+	if snap.SHA256 == compressedSHA {
+		t.Error("SHA256 equals compressed payload hash — should be record hash instead")
+	}
+}
+
+func TestFinalizeSnapshot_UpdatesRunSnapshotRefs(t *testing.T) {
+	// Finalization updates run snapshot references with new snapshot ID and version.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.getRun = &Run{
+		ID:                    "run-1",
+		Status:                RunStatusRunning,
+		AuthProfileID:         "profile-1",
+		LatestSnapshotVersion: 0,
+	}
+	rnr := newWorkerMockRunner(nil)
+
+	fileContent := []byte("refs test")
+	encodedContent := base64.StdEncoding.EncodeToString(fileContent)
+	rnr.execOverrides["find /workspace/.hal"] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   "/workspace/.hal/prd.json\n",
+		},
+	}
+	rnr.execOverrides[base64Cmd] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   encodedContent,
+		},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify UpdateRunSnapshotRefs was called.
+	if len(store.updateRefsCalls) != 1 {
+		t.Fatalf("UpdateRunSnapshotRefs calls = %d, want 1", len(store.updateRefsCalls))
+	}
+	refs := store.updateRefsCalls[0]
+	if refs.RunID != "run-1" {
+		t.Errorf("RunID = %q, want %q", refs.RunID, "run-1")
+	}
+	if refs.LatestSnapshotVersion != 1 {
+		t.Errorf("LatestSnapshotVersion = %d, want 1", refs.LatestSnapshotVersion)
+	}
+	if refs.LatestSnapshotID == nil || *refs.LatestSnapshotID != "snapshot-1" {
+		t.Errorf("LatestSnapshotID = %v, want %q", refs.LatestSnapshotID, "snapshot-1")
+	}
+}
+
+func TestFinalizeSnapshot_NotCalledOnNonZeroExit(t *testing.T) {
+	// Non-zero exit code should not trigger finalization.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.execOverrides["hal run"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 1},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// PutSnapshot should not have been called.
+	if len(store.putSnapshotCalls) != 0 {
+		t.Errorf("PutSnapshot calls = %d, want 0 (non-zero exit should skip finalization)", len(store.putSnapshotCalls))
+	}
+
+	// UpdateRunSnapshotRefs should not have been called.
+	if len(store.updateRefsCalls) != 0 {
+		t.Errorf("UpdateRunSnapshotRefs calls = %d, want 0", len(store.updateRefsCalls))
+	}
+}
+
+func TestFinalizeSnapshot_EmptyWorkspaceSkipsSnapshot(t *testing.T) {
+	// When the sandbox has no matching files, finalization is a no-op.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+
+	// find returns empty output (no files).
+	rnr.execOverrides["find /workspace/.hal"] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   "",
+		},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No snapshot should be stored.
+	if len(store.putSnapshotCalls) != 0 {
+		t.Errorf("PutSnapshot calls = %d, want 0 (empty workspace)", len(store.putSnapshotCalls))
+	}
+}
+
+func TestFinalizeSnapshot_MultipleFiles(t *testing.T) {
+	// Finalization with multiple sandbox files stores all in a single snapshot.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.getRun = &Run{
+		ID:                    "run-1",
+		Status:                RunStatusRunning,
+		AuthProfileID:         "profile-1",
+		LatestSnapshotVersion: 0,
+	}
+	rnr := newWorkerMockRunner(nil)
+
+	prdContent := []byte(`{"project":"test"}`)
+	progressContent := []byte("## progress\n- step 1")
+
+	rnr.execOverrides["find /workspace/.hal"] = execOverride{
+		result: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   "/workspace/.hal/prd.json\n/workspace/.hal/progress.txt\n",
+		},
+	}
+
+	// Return different base64 content per file.
+	// Since execOverrides match by prefix, we need to be more specific.
+	// The base64 command includes the full quoted path.
+	prdEncoded := base64.StdEncoding.EncodeToString(prdContent)
+	progressEncoded := base64.StdEncoding.EncodeToString(progressContent)
+	rnr.execOverrides[base64Cmd+" '/workspace/.hal/prd.json'"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 0, Stdout: prdEncoded},
+	}
+	rnr.execOverrides[base64Cmd+" '/workspace/.hal/progress.txt'"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 0, Stdout: progressEncoded},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(store.putSnapshotCalls) != 1 {
+		t.Fatalf("PutSnapshot calls = %d, want 1", len(store.putSnapshotCalls))
+	}
+
+	snap := store.putSnapshotCalls[0]
+
+	// Verify SHA matches the hash of both records.
+	expectedRecords := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: prdContent},
+		{Path: ".hal/progress.txt", Content: progressContent},
+	}
+	expectedSHA := ComputeSandboxBundleHash(expectedRecords)
+	if snap.SHA256 != expectedSHA {
+		t.Errorf("SHA256 = %q, want %q", snap.SHA256, expectedSHA)
+	}
+
+	// Verify compressed payload is non-empty.
+	if len(snap.ContentBlob) == 0 {
+		t.Error("ContentBlob is empty, want compressed multi-file payload")
 	}
 }

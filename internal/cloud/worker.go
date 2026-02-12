@@ -40,6 +40,8 @@ type WorkerPipelineConfig struct {
 	Checkpoint *CheckpointService
 	// Execution is the service used to run Hal inside the sandbox (required).
 	Execution *ExecutionService
+	// Snapshot is the service used to persist final state snapshots (required).
+	Snapshot *SnapshotService
 	// Cancel is the service used to check and propagate cancel intent (required).
 	Cancel *CancellationService
 	// Heartbeat is the service used to renew attempt leases (required).
@@ -67,6 +69,7 @@ type WorkerPipeline struct {
 	preflight           *PreflightService
 	checkpoint          *CheckpointService
 	execution           *ExecutionService
+	snapshot            *SnapshotService
 	cancel              *CancellationService
 	heartbeat           *HeartbeatService
 	heartbeatInterval   time.Duration
@@ -107,6 +110,9 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 	if cfg.Execution == nil {
 		return nil, fmt.Errorf("execution must not be nil")
 	}
+	if cfg.Snapshot == nil {
+		return nil, fmt.Errorf("snapshot must not be nil")
+	}
 	if cfg.Cancel == nil {
 		return nil, fmt.Errorf("cancel must not be nil")
 	}
@@ -128,6 +134,7 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		preflight:           cfg.Preflight,
 		checkpoint:          cfg.Checkpoint,
 		execution:           cfg.Execution,
+		snapshot:            cfg.Snapshot,
 		cancel:              cfg.Cancel,
 		heartbeat:           cfg.Heartbeat,
 		heartbeatInterval:   hbInterval,
@@ -269,13 +276,12 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 	})
 	if err != nil {
 		// Runner API error -- treat as non-retryable failure.
-		p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, -1)
+		p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, -1)
 		return fmt.Errorf("execution failed: %w", err)
 	}
 
-	p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, execResult.ExitCode)
+	p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, execResult.ExitCode)
 
-	// Future stories will add: finalization, cleanup.
 	return nil
 }
 
@@ -409,18 +415,25 @@ func (p *WorkerPipeline) handleSetupFailure(_ context.Context, runID, attemptID 
 // transitions. Each outcome emits exactly one attempt transition and exactly
 // one run transition:
 //
-//   - Exit code 0: attempt succeeded + run succeeded
+//   - Exit code 0: attempt succeeded + run succeeded + final snapshot persisted
 //   - Non-zero exit: attempt failed (reason non_retryable) + run failed
+//
+// On success (exit code 0), finalization collects sandbox artifacts, compresses
+// the bundle, computes a deterministic SHA via ComputeSandboxBundleHash, and
+// persists the snapshot via SnapshotService before terminal transitions.
 //
 // Cleanup uses context.Background() with a timeout so it can complete even
 // when the parent context is already canceled (e.g., during graceful shutdown).
-func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attemptID, sandboxID, authProfileID string, exitCode int) {
+func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attemptID, sandboxID, authProfileID string, workflowKind WorkflowKind, exitCode int) {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
 	now := time.Now().UTC()
 
 	if exitCode == 0 {
+		// Finalize: collect, compress, hash, and persist final snapshot.
+		_ = p.finalizeSnapshot(ctx, runID, attemptID, sandboxID, workflowKind)
+
 		// Success: attempt succeeded, run succeeded.
 		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusSucceeded, now, nil, nil)
 		_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusSucceeded)
@@ -431,6 +444,47 @@ func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attempt
 		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusFailed, now, &errCode, &errMsg)
 		_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
 	}
+}
+
+// finalizeSnapshot collects sandbox artifacts, compresses them into a bundle,
+// computes a deterministic SHA via ComputeSandboxBundleHash(records), and
+// persists the result via SnapshotService.StoreSnapshot. The persisted snapshot
+// SHA equals ComputeBundleHash(records), not the hash of the compressed payload
+// bytes. Errors are best-effort — finalization failures do not block terminal
+// transitions.
+func (p *WorkerPipeline) finalizeSnapshot(ctx context.Context, runID, attemptID, sandboxID string, workflowKind WorkflowKind) error {
+	// Step 1: Collect sandbox files filtered by workflow artifact patterns.
+	records, err := CollectSandboxBundle(ctx, p.runner, sandboxID, workflowKind)
+	if err != nil {
+		return fmt.Errorf("collecting sandbox bundle: %w", err)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	// Step 2: Compress collected records into gzipped bundle.
+	compressed, err := CompressBundle(records)
+	if err != nil {
+		return fmt.Errorf("compressing bundle: %w", err)
+	}
+
+	// Step 3: Compute deterministic SHA from records (not from compressed bytes).
+	sha := ComputeSandboxBundleHash(records)
+
+	// Step 4: Persist final snapshot via SnapshotService.
+	_, err = p.snapshot.StoreSnapshot(ctx, &SnapshotRequest{
+		RunID:           runID,
+		AttemptID:       attemptID,
+		Kind:            SnapshotKindFinal,
+		Content:         compressed,
+		SHA256:          sha,
+		ContentEncoding: "application/gzip",
+	})
+	if err != nil {
+		return fmt.Errorf("storing final snapshot: %w", err)
+	}
+
+	return nil
 }
 
 // releaseAuthLockBestEffort releases the auth lock for a run, treating
