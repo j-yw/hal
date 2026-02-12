@@ -136,3 +136,28 @@
   - `DAYTONA_API_KEY` in compose uses `${DAYTONA_API_KEY}` (no default) to enforce it's required, while `DAYTONA_API_URL` and `DAYTONA_TARGET` use `${VAR:-}` for optional with empty default
   - `.env.example` documents the `DAYTONA_SERVER_URL` legacy alias as a comment to show it exists without encouraging its use
 ---
+
+## 2026-02-12 - US-010
+- Deleted `deploy/Dockerfile.daytona-runner` (Node.js multi-stage build for TypeScript runner)
+- Deleted `daytona-runner/` directory (8 files: package.json, package-lock.json, tsconfig.json, src/index.ts, src/middleware.ts, src/routes.ts, src/middleware.test.ts, src/routes.test.ts)
+- Verified repository-wide search: no remaining `daytona-runner` or `HAL_CLOUD_RUNNER_` references outside `.hal/` documentation files (PRD, progress, archive)
+- `go build ./...`, `go vet ./...`, `make test`, and `docker compose config` all pass
+- Files changed: `deploy/Dockerfile.daytona-runner` (deleted), `daytona-runner/` (deleted, 8 files)
+- **Learnings for future iterations:**
+  - The `.hal/` directory (PRD docs, progress logs, archives) will naturally contain references to deleted artifacts since it documents the migration — these are acceptable and expected
+  - The `daytona-runner/` directory was self-contained with no imports from Go code — deletion was a clean removal with no cascading changes needed
+  - The Dockerfile was only referenced from `docker-compose.yml` which was already cleaned in US-009, so no additional compose changes were needed
+---
+
+## 2026-02-12 - US-011
+- Ran full verification suite confirming release readiness for Daytona Go SDK hard-cut migration
+- All 7 acceptance criteria pass: `make test`, `go vet ./...`, `go build ./...`, `go test ./internal/cloud/runner/...`, `go test ./internal/cloud/deploy/...`, `docker compose config`, typecheck
+- Runner tests: 14 tests covering SDK client constructor, sandbox lifecycle, exec, stream logs, health
+- Deploy tests: config loading, validation, store factory, smoke checks, DSN construction — all pass
+- No remaining `daytona-runner` or `HAL_CLOUD_RUNNER_` references in active code (only in `.hal/` documentation)
+- Files changed: `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - The `TestAdapterValidationParity` and store factory tests take ~5s each due to real database connection attempts (Turso timeout) — this is expected and not a flake
+  - All 11 stories in this PRD are now complete — the SDK-only hard cut is fully verified and ready to merge
+  - The verification story (US-011) is a good pattern for migration PRDs: run everything at the end to catch any regressions from earlier stories
+---
