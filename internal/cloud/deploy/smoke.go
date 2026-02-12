@@ -25,15 +25,28 @@ type SmokeReport struct {
 }
 
 // RunSmoke checks that the control-plane and runner health endpoints return HTTP 200.
+// When runnerURL is empty, the runner result is a synthetic healthy status indicating
+// SDK-direct mode (no separate runner service required).
 // It uses the provided HTTP client (or creates a default one with a 10-second timeout).
 func RunSmoke(ctx context.Context, controlPlaneURL, runnerURL string, client *http.Client) SmokeReport {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 
+	var runnerResult SmokeResult
+	if runnerURL == "" {
+		runnerResult = SmokeResult{
+			Service: "runner",
+			URL:     "sdk-direct",
+			OK:      true,
+		}
+	} else {
+		runnerResult = checkHealth(ctx, client, "runner", runnerURL+"/health")
+	}
+
 	results := []SmokeResult{
 		checkHealth(ctx, client, "control-plane", controlPlaneURL+"/health"),
-		checkHealth(ctx, client, "runner", runnerURL+"/health"),
+		runnerResult,
 	}
 
 	allOK := true

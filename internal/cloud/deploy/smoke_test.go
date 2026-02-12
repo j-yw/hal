@@ -84,6 +84,75 @@ func TestRunSmoke_ConnectionRefused(t *testing.T) {
 	}
 }
 
+func TestRunSmoke_EmptyRunnerURL_SyntheticHealth(t *testing.T) {
+	cpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cpServer.Close()
+
+	report := RunSmoke(context.Background(), cpServer.URL, "", nil)
+
+	if !report.AllOK {
+		t.Error("expected AllOK=true when runner URL is empty (SDK-direct mode)")
+	}
+	if len(report.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(report.Results))
+	}
+
+	// Control plane should be checked normally.
+	cp := report.Results[0]
+	if !cp.OK {
+		t.Error("expected control-plane OK")
+	}
+	if cp.StatusCode != 200 {
+		t.Errorf("expected control-plane status 200, got %d", cp.StatusCode)
+	}
+
+	// Runner should be synthetic healthy.
+	runner := report.Results[1]
+	if !runner.OK {
+		t.Error("expected runner OK in SDK-direct mode")
+	}
+	if runner.URL != "sdk-direct" {
+		t.Errorf("expected runner URL %q, got %q", "sdk-direct", runner.URL)
+	}
+	if runner.StatusCode != 0 {
+		t.Errorf("expected runner status 0 (no HTTP call), got %d", runner.StatusCode)
+	}
+	if runner.Error != "" {
+		t.Errorf("expected no error for synthetic runner, got %q", runner.Error)
+	}
+}
+
+func TestRunSmoke_NonEmptyRunnerURL_HTTPCheck(t *testing.T) {
+	cpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cpServer.Close()
+
+	runnerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer runnerServer.Close()
+
+	report := RunSmoke(context.Background(), cpServer.URL, runnerServer.URL, nil)
+
+	if !report.AllOK {
+		t.Error("expected AllOK=true")
+	}
+
+	runner := report.Results[1]
+	if !runner.OK {
+		t.Error("expected runner OK")
+	}
+	if runner.StatusCode != 200 {
+		t.Errorf("expected runner status 200, got %d", runner.StatusCode)
+	}
+	if runner.URL != runnerServer.URL+"/health" {
+		t.Errorf("expected runner URL %q, got %q", runnerServer.URL+"/health", runner.URL)
+	}
+}
+
 func TestWriteSmokeReport_HumanReadable(t *testing.T) {
 	report := SmokeReport{
 		Results: []SmokeResult{
