@@ -307,11 +307,23 @@ func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProf
 	return result, done
 }
 
+// cleanupTimeout is the maximum duration allowed for terminal cleanup
+// operations (transitions, lock release, sandbox teardown). Cleanup uses
+// context.Background() so it can proceed even when the parent context is
+// already canceled (e.g., during graceful shutdown).
+const cleanupTimeout = 30 * time.Second
+
 // handleLeaseLost handles the lease_lost terminal path. The HeartbeatService
 // has already transitioned the attempt to failed (with error_code "lease_lost"),
 // so this method must NOT emit a duplicate TransitionAttempt. It transitions
 // the run to failed and performs cleanup (auth lock release, sandbox teardown).
-func (p *WorkerPipeline) handleLeaseLost(ctx context.Context, runID, authProfileID, sandboxID string) {
+//
+// Cleanup uses context.Background() with a timeout so it can complete even
+// when the parent context is already canceled (e.g., during graceful shutdown).
+func (p *WorkerPipeline) handleLeaseLost(_ context.Context, runID, authProfileID, sandboxID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+
 	// Transition run from running to failed. Best-effort -- the run may have
 	// already been transitioned by a concurrent reconciler.
 	_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
@@ -331,7 +343,13 @@ func (p *WorkerPipeline) handleLeaseLost(ctx context.Context, runID, authProfile
 // error_code "profile_revoked") and released the auth lock, so this method
 // must NOT emit a duplicate TransitionAttempt or release the auth lock.
 // It transitions the run to failed and performs sandbox cleanup.
-func (p *WorkerPipeline) handleProfileRevoked(ctx context.Context, runID, sandboxID string) {
+//
+// Cleanup uses context.Background() with a timeout so it can complete even
+// when the parent context is already canceled (e.g., during graceful shutdown).
+func (p *WorkerPipeline) handleProfileRevoked(_ context.Context, runID, sandboxID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+
 	// Transition run from running to failed. Best-effort -- the run may have
 	// already been transitioned by a concurrent reconciler.
 	_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
@@ -347,7 +365,13 @@ func (p *WorkerPipeline) handleProfileRevoked(ctx context.Context, runID, sandbo
 // handleSetupFailure transitions both the run and attempt to failed status
 // using the provided fromRunStatus. This ensures failure transitions use the
 // correct source status regardless of how far setup progressed.
-func (p *WorkerPipeline) handleSetupFailure(ctx context.Context, runID, attemptID string, fromRunStatus RunStatus, stage string, cause error) {
+//
+// Cleanup uses context.Background() with a timeout so it can complete even
+// when the parent context is already canceled (e.g., during graceful shutdown).
+func (p *WorkerPipeline) handleSetupFailure(_ context.Context, runID, attemptID string, fromRunStatus RunStatus, stage string, cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+
 	now := time.Now().UTC()
 	errCode := "setup_failure"
 	errMsg := fmt.Sprintf("%s failed: %s", stage, cause.Error())

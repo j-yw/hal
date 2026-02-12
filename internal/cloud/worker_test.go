@@ -2634,3 +2634,275 @@ func TestProfileRevoked_AfterSuccessfulHeartbeats(t *testing.T) {
 		t.Error("expected running->failed transition from handleProfileRevoked")
 	}
 }
+
+// --- Shutdown-safe cleanup context tests (US-021) ---
+
+// ctxTrackingStore wraps workerMockStore and records whether contexts passed
+// to cleanup methods (TransitionRun, TransitionAttempt, ReleaseAuthLock) are
+// canceled at the time of the call.
+type ctxTrackingStore struct {
+	*workerMockStore
+	mu              sync.Mutex
+	canceledCtxSeen []string // method names that received a canceled context
+	liveCtxSeen     []string // method names that received a live (non-canceled) context
+}
+
+func newCtxTrackingStore(base *workerMockStore) *ctxTrackingStore {
+	return &ctxTrackingStore{workerMockStore: base}
+}
+
+func (s *ctxTrackingStore) recordCtx(method string, ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ctx.Err() != nil {
+		s.canceledCtxSeen = append(s.canceledCtxSeen, method)
+	} else {
+		s.liveCtxSeen = append(s.liveCtxSeen, method)
+	}
+}
+
+func (s *ctxTrackingStore) TransitionRun(ctx context.Context, runID string, from, to RunStatus) error {
+	s.recordCtx("TransitionRun", ctx)
+	return s.workerMockStore.TransitionRun(ctx, runID, from, to)
+}
+
+func (s *ctxTrackingStore) TransitionAttempt(ctx context.Context, attemptID string, status AttemptStatus, endedAt time.Time, errCode, errMsg *string) error {
+	s.recordCtx("TransitionAttempt", ctx)
+	return s.workerMockStore.TransitionAttempt(ctx, attemptID, status, endedAt, errCode, errMsg)
+}
+
+func (s *ctxTrackingStore) ReleaseAuthLock(ctx context.Context, authProfileID, runID string, t2 time.Time) error {
+	s.recordCtx("ReleaseAuthLock", ctx)
+	return s.workerMockStore.ReleaseAuthLock(ctx, authProfileID, runID, t2)
+}
+
+// ctxTrackingRunner wraps workerMockRunner and records whether
+// DestroySandbox receives a canceled context.
+type ctxTrackingRunner struct {
+	*workerMockRunner
+	mu              sync.Mutex
+	canceledCtxSeen []string
+	liveCtxSeen     []string
+}
+
+func newCtxTrackingRunner(base *workerMockRunner) *ctxTrackingRunner {
+	return &ctxTrackingRunner{workerMockRunner: base}
+}
+
+func (r *ctxTrackingRunner) DestroySandbox(ctx context.Context, sandboxID string) error {
+	r.mu.Lock()
+	if ctx.Err() != nil {
+		r.canceledCtxSeen = append(r.canceledCtxSeen, "DestroySandbox")
+	} else {
+		r.liveCtxSeen = append(r.liveCtxSeen, "DestroySandbox")
+	}
+	r.mu.Unlock()
+	return r.workerMockRunner.DestroySandbox(ctx, sandboxID)
+}
+
+func TestCleanup_HandleLeaseLost_UsesBackgroundContext(t *testing.T) {
+	// When parent context is canceled, handleLeaseLost should still complete
+	// cleanup using context.Background() with a timeout.
+	baseStore := newWorkerMockStore()
+	store := newCtxTrackingStore(baseStore)
+	baseRnr := newWorkerMockRunner(nil)
+	rnr := newCtxTrackingRunner(baseRnr)
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               NewClaimService(store, ClaimConfig{IDFunc: func() string { return "a-1" }}),
+		Provision:           NewProvisionService(store, rnr, ProvisionConfig{Image: "img"}),
+		Bootstrap:           NewBootstrapService(store, rnr, BootstrapConfig{}),
+		AuthMaterialization: NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{}),
+		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
+		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Cancel:              NewCancellationService(store, CancellationConfig{}),
+		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
+		HeartbeatInterval:   50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	// Create and immediately cancel a context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Call handleLeaseLost with the canceled context.
+	pipeline.handleLeaseLost(ctx, "run-1", "profile-1", "sandbox-1")
+
+	// All cleanup operations should have received a live (non-canceled) context
+	// because handleLeaseLost creates its own context.Background() with timeout.
+	store.mu.Lock()
+	canceledOps := append([]string{}, store.canceledCtxSeen...)
+	liveOps := append([]string{}, store.liveCtxSeen...)
+	store.mu.Unlock()
+
+	if len(canceledOps) > 0 {
+		t.Errorf("cleanup operations received canceled context: %v", canceledOps)
+	}
+
+	// Verify all expected operations ran with live context.
+	wantOps := map[string]bool{"TransitionRun": false, "ReleaseAuthLock": false}
+	for _, op := range liveOps {
+		wantOps[op] = true
+	}
+	for op, seen := range wantOps {
+		if !seen {
+			t.Errorf("expected %s to be called with live context", op)
+		}
+	}
+
+	// Verify DestroySandbox also got a live context.
+	rnr.mu.Lock()
+	rnrCanceled := append([]string{}, rnr.canceledCtxSeen...)
+	rnrLive := append([]string{}, rnr.liveCtxSeen...)
+	rnr.mu.Unlock()
+
+	if len(rnrCanceled) > 0 {
+		t.Errorf("DestroySandbox received canceled context: %v", rnrCanceled)
+	}
+	if len(rnrLive) == 0 {
+		t.Error("expected DestroySandbox to be called with live context")
+	}
+}
+
+func TestCleanup_HandleProfileRevoked_UsesBackgroundContext(t *testing.T) {
+	// When parent context is canceled, handleProfileRevoked should still
+	// complete cleanup using context.Background() with a timeout.
+	baseStore := newWorkerMockStore()
+	store := newCtxTrackingStore(baseStore)
+	baseRnr := newWorkerMockRunner(nil)
+	rnr := newCtxTrackingRunner(baseRnr)
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               NewClaimService(store, ClaimConfig{IDFunc: func() string { return "a-1" }}),
+		Provision:           NewProvisionService(store, rnr, ProvisionConfig{Image: "img"}),
+		Bootstrap:           NewBootstrapService(store, rnr, BootstrapConfig{}),
+		AuthMaterialization: NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{}),
+		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
+		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Cancel:              NewCancellationService(store, CancellationConfig{}),
+		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
+		HeartbeatInterval:   50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	// Create and immediately cancel a context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Call handleProfileRevoked with the canceled context.
+	pipeline.handleProfileRevoked(ctx, "run-1", "sandbox-1")
+
+	// All cleanup operations should have received a live context.
+	store.mu.Lock()
+	canceledOps := append([]string{}, store.canceledCtxSeen...)
+	liveOps := append([]string{}, store.liveCtxSeen...)
+	store.mu.Unlock()
+
+	if len(canceledOps) > 0 {
+		t.Errorf("cleanup operations received canceled context: %v", canceledOps)
+	}
+
+	// TransitionRun should have been called with live context.
+	transitionFound := false
+	for _, op := range liveOps {
+		if op == "TransitionRun" {
+			transitionFound = true
+		}
+	}
+	if !transitionFound {
+		t.Error("expected TransitionRun to be called with live context")
+	}
+
+	// DestroySandbox should have been called with live context.
+	rnr.mu.Lock()
+	rnrCanceled := append([]string{}, rnr.canceledCtxSeen...)
+	rnrLive := append([]string{}, rnr.liveCtxSeen...)
+	rnr.mu.Unlock()
+
+	if len(rnrCanceled) > 0 {
+		t.Errorf("DestroySandbox received canceled context: %v", rnrCanceled)
+	}
+	if len(rnrLive) == 0 {
+		t.Error("expected DestroySandbox to be called with live context")
+	}
+
+	// Verify ReleaseAuthLock was NOT called (profile_revoked path doesn't release it).
+	store.mu.Lock()
+	for _, op := range store.liveCtxSeen {
+		if op == "ReleaseAuthLock" {
+			t.Error("handleProfileRevoked should NOT call ReleaseAuthLock")
+		}
+	}
+	store.mu.Unlock()
+}
+
+func TestCleanup_HandleSetupFailure_UsesBackgroundContext(t *testing.T) {
+	// When parent context is canceled, handleSetupFailure should still
+	// complete cleanup (attempt and run transitions) using context.Background().
+	baseStore := newWorkerMockStore()
+	store := newCtxTrackingStore(baseStore)
+	baseRnr := newWorkerMockRunner(nil)
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              baseRnr,
+		WorkerID:            "worker-1",
+		Claim:               NewClaimService(store, ClaimConfig{IDFunc: func() string { return "a-1" }}),
+		Provision:           NewProvisionService(store, baseRnr, ProvisionConfig{Image: "img"}),
+		Bootstrap:           NewBootstrapService(store, baseRnr, BootstrapConfig{}),
+		AuthMaterialization: NewAuthMaterializationService(store, baseRnr, AuthMaterializationConfig{}),
+		Preflight:           NewPreflightService(store, baseRnr, PreflightConfig{}),
+		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Cancel:              NewCancellationService(store, CancellationConfig{}),
+		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
+		HeartbeatInterval:   50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	// Create and immediately cancel a context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Call handleSetupFailure with the canceled context.
+	pipeline.handleSetupFailure(ctx, "run-1", "attempt-1", RunStatusRunning, "provision", fmt.Errorf("sandbox creation failed"))
+
+	// All cleanup operations should have received a live context.
+	store.mu.Lock()
+	canceledOps := append([]string{}, store.canceledCtxSeen...)
+	liveOps := append([]string{}, store.liveCtxSeen...)
+	store.mu.Unlock()
+
+	if len(canceledOps) > 0 {
+		t.Errorf("cleanup operations received canceled context: %v", canceledOps)
+	}
+
+	// Both TransitionAttempt and TransitionRun should have been called with live context.
+	wantOps := map[string]bool{"TransitionAttempt": false, "TransitionRun": false}
+	for _, op := range liveOps {
+		wantOps[op] = true
+	}
+	for op, seen := range wantOps {
+		if !seen {
+			t.Errorf("expected %s to be called with live context", op)
+		}
+	}
+}
+
+func TestCleanup_CleanupTimeoutConstant(t *testing.T) {
+	// Verify the cleanup timeout is set to a reasonable value.
+	if cleanupTimeout != 30*time.Second {
+		t.Errorf("cleanupTimeout = %v, want 30s", cleanupTimeout)
+	}
+}
