@@ -10,6 +10,9 @@
 - `CollectSandboxBundle` uses `MatchesArtifactPatterns` (workflow-aware filtering) not `IsBundlePathAllowed` (input allowlist) — these are two different filtering policies for worker-side vs client-side collection.
 - When building shell commands with `ShellQuote`, wrap the entire path argument (e.g., `ShellQuote("/workspace/" + relPath)`) not just part of it.
 - Use `mockCollectRunner` + `sandboxFS` pattern for testing sandbox exec operations without real infrastructure.
+- `readSandboxFile` uses `stripBase64Whitespace` to strip all whitespace from base64 output before decoding — handles wrapped output from non-GNU base64 implementations and trailing newlines.
+- `base64Cmd` is a package-level variable (`"base64 -w0"`) used by `readSandboxFile` — mock runners must use `base64Cmd` (not hardcoded `"base64 -w0"`) when matching command prefixes.
+- Bundle framing uses `path\x00size\x00content` (null-terminated path, null-terminated decimal size, raw content bytes) plus gzip — `CompressBundle` (worker-side) and `compressBundleFiles` (client-side) produce identical framing consumed by `decompressBundleFiles`.
 
 ---
 
@@ -77,4 +80,28 @@
   - `WorkflowKindRun` produces only state artifacts; `WorkflowKindAuto` and `WorkflowKindReview` produce state + reports. This maps directly to `WorkflowArtifactGroups(kind)`.
   - The mock runner pattern (`mockCollectRunner` + `sandboxFS`) enables testing sandbox operations without real infrastructure — reuse this pattern for future sandbox-dependent tests.
   - `CollectSandboxBundle` uses `MatchesArtifactPatterns` (workflow-aware) not `IsBundlePathAllowed` (input allowlist) — these are two different filtering policies for different contexts (worker-side vs client-side).
+---
+
+## 2026-02-13 - US-007
+- Implemented robust base64 handling in `readSandboxFile` for binary-safe and multiline content capture
+- Files changed:
+  - `internal/cloud/snapshot_collect.go` — Added `base64Cmd` variable, `stripBase64Whitespace` function, updated `readSandboxFile` to strip whitespace before decoding
+  - `internal/cloud/snapshot_collect_test.go` — Added 5 new tests: `MultilineTextContent`, `BinarySafeContent`, `WrappedBase64Output`, `DecodeFailure`, `StripBase64Whitespace` (table-driven). Updated mock runner to use `base64Cmd` variable.
+- **Learnings for future iterations:**
+  - Different Linux containers may use GNU coreutils, BusyBox, or other base64 implementations — always strip whitespace from base64 output before decoding rather than relying solely on `-w0` flag.
+  - The `base64Cmd` package variable allows mock runners to match command prefixes without hardcoding `"base64 -w0"` — update mock command matching when `base64Cmd` changes.
+  - For wrapped base64 output tests, create a custom `mockCollectRunner` that inserts newlines every 76 chars rather than using the `sandboxFS`-backed default mock.
+  - Decode failure errors must include both the file path and stderr output — this enables rapid operational debugging when sandbox file capture fails.
+---
+
+## 2026-02-13 - US-008
+- Implemented `CompressBundle` in `internal/cloud/snapshot_collect.go` with `path\x00size\x00content` framing plus gzip compression
+- Files changed:
+  - `internal/cloud/snapshot_collect.go` — Added `CompressBundle(records []SandboxBundleRecord) ([]byte, error)` with gzip writer, added `bytes` and `compress/gzip` imports
+  - `internal/cloud/snapshot_collect_test.go` — Added `decompressBundle` helper (mirrors `cmd/cloud.go` `decompressBundleFiles` exactly), plus 5 round-trip tests: `RoundTrip` (multi-file), `BinaryContent`, `EmptyRecords`, `EmptyFileContent`, `LargeContent`
+- **Learnings for future iterations:**
+  - The `decompressBundleFiles` function in `cmd/cloud.go` is unexported and in a different package — round-trip tests in `internal/cloud` must duplicate the decompression logic to verify framing compatibility.
+  - The bundle framing format is `path\x00size\x00content` (null-terminated path, null-terminated decimal size, then raw content bytes) — this is the same format used by `compressBundleFiles` in `cmd/cloud.go` and must not change without updating both compress and decompress paths.
+  - `CompressBundle` takes `[]SandboxBundleRecord` (worker-side) while `compressBundleFiles` takes `[]BundleManifestRecord` + `map[string][]byte` (client-side) — they produce the same framing but have different input interfaces.
+  - Empty record slices produce valid gzip output that decompresses to zero records — no special-case handling needed.
 ---

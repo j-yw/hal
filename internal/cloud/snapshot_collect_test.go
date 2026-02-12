@@ -1,6 +1,8 @@
 package cloud
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -448,5 +450,194 @@ func TestCollectSandboxBundle_WorkspaceRelativePaths(t *testing.T) {
 	}
 	if string(records[0].Content) != `{"project":"test"}` {
 		t.Errorf("unexpected content: %q", string(records[0].Content))
+	}
+}
+
+// decompressedRecord is a local mirror of cmd.bundleFileRecord used to
+// verify round-trip compatibility with the cmd/cloud.go decompression logic.
+type decompressedRecord struct {
+	Path    string
+	Content []byte
+}
+
+// decompressBundle mirrors cmd/cloud.go decompressBundleFiles to verify
+// that CompressBundle output is compatible with the pull decompression path.
+func decompressBundle(data []byte) ([]decompressedRecord, error) {
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("gzip open: %w", err)
+	}
+	defer gr.Close()
+
+	decompressed, err := io.ReadAll(gr)
+	if err != nil {
+		return nil, fmt.Errorf("gzip read: %w", err)
+	}
+
+	var files []decompressedRecord
+	pos := 0
+	for pos < len(decompressed) {
+		// Read path (terminated by \x00).
+		nullIdx := bytes.IndexByte(decompressed[pos:], 0x00)
+		if nullIdx < 0 {
+			return nil, fmt.Errorf("malformed bundle: missing path null terminator at offset %d", pos)
+		}
+		filePath := string(decompressed[pos : pos+nullIdx])
+		pos += nullIdx + 1
+
+		// Read size (terminated by \x00).
+		nullIdx = bytes.IndexByte(decompressed[pos:], 0x00)
+		if nullIdx < 0 {
+			return nil, fmt.Errorf("malformed bundle: missing size null terminator at offset %d", pos)
+		}
+		sizeStr := string(decompressed[pos : pos+nullIdx])
+		pos += nullIdx + 1
+
+		var size int
+		if _, err := fmt.Sscanf(sizeStr, "%d", &size); err != nil {
+			return nil, fmt.Errorf("malformed bundle: invalid size %q: %w", sizeStr, err)
+		}
+		if pos+size > len(decompressed) {
+			return nil, fmt.Errorf("malformed bundle: content overflows at offset %d", pos)
+		}
+
+		content := make([]byte, size)
+		copy(content, decompressed[pos:pos+size])
+		pos += size
+
+		files = append(files, decompressedRecord{
+			Path:    filePath,
+			Content: content,
+		})
+	}
+	return files, nil
+}
+
+func TestCompressBundle_RoundTrip(t *testing.T) {
+	records := []SandboxBundleRecord{
+		{Path: ".hal/prd.json", Content: []byte(`{"project":"test"}`)},
+		{Path: ".hal/progress.txt", Content: []byte("line one\nline two\n")},
+		{Path: ".hal/config.yaml", Content: []byte("engine: claude\n")},
+	}
+
+	compressed, err := CompressBundle(records)
+	if err != nil {
+		t.Fatalf("CompressBundle failed: %v", err)
+	}
+	if len(compressed) == 0 {
+		t.Fatal("CompressBundle returned empty output")
+	}
+
+	// Decompress using the mirror of cmd/cloud.go logic.
+	decompressed, err := decompressBundle(compressed)
+	if err != nil {
+		t.Fatalf("decompressBundle failed: %v", err)
+	}
+
+	if len(decompressed) != len(records) {
+		t.Fatalf("record count mismatch: got %d, want %d", len(decompressed), len(records))
+	}
+	for i, rec := range records {
+		if decompressed[i].Path != rec.Path {
+			t.Errorf("record[%d] path: got %q, want %q", i, decompressed[i].Path, rec.Path)
+		}
+		if !bytes.Equal(decompressed[i].Content, rec.Content) {
+			t.Errorf("record[%d] content: got %q, want %q", i, string(decompressed[i].Content), string(rec.Content))
+		}
+	}
+}
+
+func TestCompressBundle_BinaryContent(t *testing.T) {
+	binaryContent := []byte{0x00, 0x01, 0xFF, 0xFE, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	records := []SandboxBundleRecord{
+		{Path: ".hal/binary.dat", Content: binaryContent},
+	}
+
+	compressed, err := CompressBundle(records)
+	if err != nil {
+		t.Fatalf("CompressBundle failed: %v", err)
+	}
+
+	decompressed, err := decompressBundle(compressed)
+	if err != nil {
+		t.Fatalf("decompressBundle failed: %v", err)
+	}
+
+	if len(decompressed) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(decompressed))
+	}
+	if !bytes.Equal(decompressed[0].Content, binaryContent) {
+		t.Errorf("binary content mismatch: got %x, want %x", decompressed[0].Content, binaryContent)
+	}
+}
+
+func TestCompressBundle_EmptyRecords(t *testing.T) {
+	compressed, err := CompressBundle(nil)
+	if err != nil {
+		t.Fatalf("CompressBundle failed: %v", err)
+	}
+	// Should produce valid gzip with no records.
+	decompressed, err := decompressBundle(compressed)
+	if err != nil {
+		t.Fatalf("decompressBundle failed: %v", err)
+	}
+	if len(decompressed) != 0 {
+		t.Errorf("expected 0 records, got %d", len(decompressed))
+	}
+}
+
+func TestCompressBundle_EmptyFileContent(t *testing.T) {
+	records := []SandboxBundleRecord{
+		{Path: ".hal/empty.txt", Content: []byte{}},
+	}
+
+	compressed, err := CompressBundle(records)
+	if err != nil {
+		t.Fatalf("CompressBundle failed: %v", err)
+	}
+
+	decompressed, err := decompressBundle(compressed)
+	if err != nil {
+		t.Fatalf("decompressBundle failed: %v", err)
+	}
+
+	if len(decompressed) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(decompressed))
+	}
+	if decompressed[0].Path != ".hal/empty.txt" {
+		t.Errorf("path: got %q, want %q", decompressed[0].Path, ".hal/empty.txt")
+	}
+	if len(decompressed[0].Content) != 0 {
+		t.Errorf("expected empty content, got %d bytes", len(decompressed[0].Content))
+	}
+}
+
+func TestCompressBundle_LargeContent(t *testing.T) {
+	// Generate a large file to verify compression works at scale.
+	largeContent := []byte(strings.Repeat("The quick brown fox jumps over the lazy dog. ", 1000))
+	records := []SandboxBundleRecord{
+		{Path: ".hal/large.txt", Content: largeContent},
+	}
+
+	compressed, err := CompressBundle(records)
+	if err != nil {
+		t.Fatalf("CompressBundle failed: %v", err)
+	}
+
+	// Compressed should be smaller than raw content for repetitive data.
+	if len(compressed) >= len(largeContent) {
+		t.Errorf("expected compression to reduce size: compressed=%d, raw=%d", len(compressed), len(largeContent))
+	}
+
+	decompressed, err := decompressBundle(compressed)
+	if err != nil {
+		t.Fatalf("decompressBundle failed: %v", err)
+	}
+
+	if len(decompressed) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(decompressed))
+	}
+	if !bytes.Equal(decompressed[0].Content, largeContent) {
+		t.Errorf("large content mismatch: got len %d, want len %d", len(decompressed[0].Content), len(largeContent))
 	}
 }

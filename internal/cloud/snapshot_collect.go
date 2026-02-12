@@ -1,6 +1,8 @@
 package cloud
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -136,4 +138,27 @@ func stripBase64Whitespace(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// CompressBundle compresses a set of SandboxBundleRecords into a gzipped byte
+// slice using path\x00size\x00content framing. The output is compatible with
+// the decompressBundleFiles function in cmd/cloud.go.
+func CompressBundle(records []SandboxBundleRecord) ([]byte, error) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+
+	for _, r := range records {
+		header := fmt.Sprintf("%s\x00%d\x00", r.Path, len(r.Content))
+		if _, err := gw.Write([]byte(header)); err != nil {
+			return nil, fmt.Errorf("writing bundle header for %s: %w", r.Path, err)
+		}
+		if _, err := gw.Write(r.Content); err != nil {
+			return nil, fmt.Errorf("writing bundle content for %s: %w", r.Path, err)
+		}
+	}
+
+	if err := gw.Close(); err != nil {
+		return nil, fmt.Errorf("closing gzip writer: %w", err)
+	}
+	return buf.Bytes(), nil
 }
