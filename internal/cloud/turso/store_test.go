@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -56,6 +57,45 @@ func newTestStoreWithDB(t *testing.T) (cloud.Store, *sql.DB) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return s, db
+}
+
+func TestMigrateFailsWhenRunsWorkflowKindMissing(t *testing.T) {
+	db := openTestDB(t)
+
+	const oldRunsSchema = `CREATE TABLE runs (
+	id                      TEXT PRIMARY KEY,
+	repo                    TEXT NOT NULL,
+	base_branch             TEXT NOT NULL,
+	engine                  TEXT NOT NULL,
+	auth_profile_id         TEXT NOT NULL,
+	scope_ref               TEXT NOT NULL,
+	status                  TEXT NOT NULL CHECK (status IN ('queued','claimed','running','retrying','succeeded','failed','canceled')),
+	attempt_count           INTEGER NOT NULL DEFAULT 0,
+	max_attempts            INTEGER NOT NULL DEFAULT 3,
+	deadline_at             TIMESTAMP,
+	cancel_requested        INTEGER NOT NULL DEFAULT 0,
+	input_snapshot_id       TEXT,
+	latest_snapshot_id      TEXT,
+	latest_snapshot_version INTEGER NOT NULL DEFAULT 0,
+	created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+	if _, err := db.ExecContext(context.Background(), oldRunsSchema); err != nil {
+		t.Fatalf("seed old runs schema: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `CREATE INDEX idx_runs_queue ON runs (status, created_at);`); err != nil {
+		t.Fatalf("seed old runs index: %v", err)
+	}
+
+	s := New(db)
+	err := s.Migrate(context.Background())
+	if err == nil {
+		t.Fatal("expected migrate error for missing workflow_kind column")
+	}
+	if !strings.Contains(err.Error(), "runs.workflow_kind column missing") {
+		t.Fatalf("unexpected migrate error: %v", err)
+	}
 }
 
 // insertAuthProfile inserts an auth profile directly via SQL for test setup.

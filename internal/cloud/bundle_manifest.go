@@ -16,6 +16,7 @@ var BundleAllowlist = []string{
 	".hal/prd.json",
 	".hal/auto-prd.json",
 	".hal/progress.txt",
+	".hal/auto-state.json",
 	".hal/prompt.md",
 	".hal/config.yaml",
 	".hal/standards/**",

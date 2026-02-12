@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -91,6 +92,63 @@ func newTestStoreWithDB(t *testing.T) (cloud.Store, *sql.DB) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return s, db
+}
+
+func TestMigrateFailsWhenRunsWorkflowKindMissing(t *testing.T) {
+	dsn := testDSN(t)
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+	schema := fmt.Sprintf("test_%d_%d", time.Now().UnixNano(), os.Getpid())
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s", schema)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s", schema)); err != nil {
+		t.Fatalf("set search_path: %v", err)
+	}
+	t.Cleanup(func() {
+		db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
+	})
+
+	const oldRunsSchema = `CREATE TABLE runs (
+	id                      TEXT PRIMARY KEY,
+	repo                    TEXT NOT NULL,
+	base_branch             TEXT NOT NULL,
+	engine                  TEXT NOT NULL,
+	auth_profile_id         TEXT NOT NULL,
+	scope_ref               TEXT NOT NULL,
+	status                  TEXT NOT NULL CHECK (status IN ('queued','claimed','running','retrying','succeeded','failed','canceled')),
+	attempt_count           INTEGER NOT NULL DEFAULT 0,
+	max_attempts            INTEGER NOT NULL DEFAULT 3,
+	deadline_at             TIMESTAMPTZ,
+	cancel_requested        BOOLEAN NOT NULL DEFAULT FALSE,
+	input_snapshot_id       TEXT,
+	latest_snapshot_id      TEXT,
+	latest_snapshot_version INTEGER NOT NULL DEFAULT 0,
+	created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);`
+
+	if _, err := db.ExecContext(ctx, oldRunsSchema); err != nil {
+		t.Fatalf("seed old runs schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX idx_runs_queue ON runs (status, created_at);`); err != nil {
+		t.Fatalf("seed old runs index: %v", err)
+	}
+
+	s := New(db)
+	err = s.Migrate(ctx)
+	if err == nil {
+		t.Fatal("expected migrate error for missing workflow_kind column")
+	}
+	if !strings.Contains(err.Error(), "runs.workflow_kind column missing") {
+		t.Fatalf("unexpected migrate error: %v", err)
+	}
 }
 
 // insertAuthProfile inserts an auth profile directly via SQL for test setup.

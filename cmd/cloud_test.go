@@ -1716,6 +1716,7 @@ func TestCollectBundleFiles(t *testing.T) {
 				"prd.json":         `{"project":"test"}`,
 				"auto-prd.json":    `{"auto":"test"}`,
 				"progress.txt":     "progress",
+				"auto-state.json":  "{\"step\":2}",
 				"prompt.md":        "prompt",
 				"config.yaml":      "config: true",
 				"skills/s1.md":     "skill content",
@@ -1723,6 +1724,7 @@ func TestCollectBundleFiles(t *testing.T) {
 			},
 			wantPaths: []string{
 				".hal/auto-prd.json",
+				".hal/auto-state.json",
 				".hal/config.yaml",
 				".hal/prd.json",
 				".hal/progress.txt",

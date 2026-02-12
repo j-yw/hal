@@ -458,6 +458,42 @@ func TestCheckEndpointReachability(t *testing.T) {
 		}
 	})
 
+	t.Run("redacts endpoint secret in pass message", func(t *testing.T) {
+		secret := "test-secret-key-0123456789abcdef"
+		resolved := &config.ResolvedConfig{Endpoint: "https://example.com/health?api_key=" + secret}
+		client := &mockHTTPClient{
+			response: &http.Response{StatusCode: 200, Body: http.NoBody},
+		}
+		result := checkEndpointReachability(resolved, client)
+		if result.Status != "pass" {
+			t.Errorf("expected pass, got %q", result.Status)
+		}
+		if strings.Contains(result.Message, secret) {
+			t.Fatalf("expected endpoint secret to be redacted, got message: %s", result.Message)
+		}
+		if !strings.Contains(result.Message, "[REDACTED]") {
+			t.Fatalf("expected redacted marker in message: %s", result.Message)
+		}
+	})
+
+	t.Run("redacts endpoint secret in fail message", func(t *testing.T) {
+		secret := "test-secret-tok-0123456789abcdefgh"
+		resolved := &config.ResolvedConfig{Endpoint: "https://example.com/health?api_key=" + secret}
+		client := &mockHTTPClient{
+			err: fmt.Errorf("connection refused"),
+		}
+		result := checkEndpointReachability(resolved, client)
+		if result.Status != "fail" {
+			t.Errorf("expected fail, got %q", result.Status)
+		}
+		if strings.Contains(result.Message, secret) {
+			t.Fatalf("expected endpoint secret to be redacted, got message: %s", result.Message)
+		}
+		if !strings.Contains(result.Message, "[REDACTED]") {
+			t.Fatalf("expected redacted marker in message: %s", result.Message)
+		}
+	})
+
 	t.Run("fail on nil resolved", func(t *testing.T) {
 		result := checkEndpointReachability(nil, &mockHTTPClient{})
 		if result.Status != "fail" {

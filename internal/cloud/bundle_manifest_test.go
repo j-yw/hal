@@ -262,6 +262,7 @@ func TestIsBundlePathAllowed(t *testing.T) {
 		{"prd.json allowed", ".hal/prd.json", true},
 		{"auto-prd.json allowed", ".hal/auto-prd.json", true},
 		{"progress.txt allowed", ".hal/progress.txt", true},
+		{"auto-state.json allowed", ".hal/auto-state.json", true},
 		{"prompt.md allowed", ".hal/prompt.md", true},
 		{"config.yaml allowed", ".hal/config.yaml", true},
 
@@ -442,6 +443,7 @@ func TestBundleAllowlist(t *testing.T) {
 			".hal/prd.json",
 			".hal/auto-prd.json",
 			".hal/progress.txt",
+			".hal/auto-state.json",
 			".hal/prompt.md",
 			".hal/config.yaml",
 			".hal/standards/**",

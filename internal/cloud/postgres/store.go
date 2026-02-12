@@ -28,6 +28,28 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("postgres migrate: %w", err)
 		}
 	}
+	if err := s.ensureRunsWorkflowKindColumn(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureRunsWorkflowKindColumn(ctx context.Context) error {
+	const query = `SELECT EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'runs'
+		  AND column_name = 'workflow_kind'
+	)`
+
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, query).Scan(&exists); err != nil {
+		return fmt.Errorf("postgres migrate: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("postgres migrate: runs.workflow_kind column missing; recreate database with latest schema")
+	}
 	return nil
 }
 

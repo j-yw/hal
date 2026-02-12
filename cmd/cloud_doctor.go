@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jywlabs/hal/internal/cloud"
 	"github.com/jywlabs/hal/internal/cloud/config"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -216,12 +217,14 @@ func checkEndpointReachability(resolved *config.ResolvedConfig, client httpDoer)
 		}
 	}
 
+	redactedEndpoint := cloud.Redact(endpoint)
+
 	req, err := http.NewRequest(http.MethodHead, endpoint, nil)
 	if err != nil {
 		return doctorCheckResult{
 			Name:     "endpoint_reachability",
 			Status:   "fail",
-			Message:  fmt.Sprintf("Invalid endpoint URL %q: %v", endpoint, err),
+			Message:  fmt.Sprintf("Invalid endpoint URL %q: %v", redactedEndpoint, err),
 			NextStep: "Verify the endpoint URL and rerun hal cloud doctor.",
 		}
 	}
@@ -231,7 +234,7 @@ func checkEndpointReachability(resolved *config.ResolvedConfig, client httpDoer)
 		return doctorCheckResult{
 			Name:     "endpoint_reachability",
 			Status:   "fail",
-			Message:  fmt.Sprintf("Endpoint %q is not reachable: %v", endpoint, err),
+			Message:  fmt.Sprintf("Endpoint %q is not reachable: %v", redactedEndpoint, err),
 			NextStep: "Verify the endpoint URL and rerun hal cloud doctor.",
 		}
 	}
@@ -241,7 +244,7 @@ func checkEndpointReachability(resolved *config.ResolvedConfig, client httpDoer)
 		return doctorCheckResult{
 			Name:     "endpoint_reachability",
 			Status:   "fail",
-			Message:  fmt.Sprintf("Endpoint %q returned server error (HTTP %d).", endpoint, resp.StatusCode),
+			Message:  fmt.Sprintf("Endpoint %q returned server error (HTTP %d).", redactedEndpoint, resp.StatusCode),
 			NextStep: "Verify the endpoint URL and rerun hal cloud doctor.",
 		}
 	}
@@ -249,7 +252,7 @@ func checkEndpointReachability(resolved *config.ResolvedConfig, client httpDoer)
 	return doctorCheckResult{
 		Name:    "endpoint_reachability",
 		Status:  "pass",
-		Message: fmt.Sprintf("Endpoint %q is reachable (HTTP %d).", endpoint, resp.StatusCode),
+		Message: fmt.Sprintf("Endpoint %q is reachable (HTTP %d).", redactedEndpoint, resp.StatusCode),
 	}
 }
 

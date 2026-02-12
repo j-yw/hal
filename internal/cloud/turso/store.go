@@ -28,7 +28,40 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("turso migrate: %w", err)
 		}
 	}
+	if err := s.ensureRunsWorkflowKindColumn(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) ensureRunsWorkflowKindColumn(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(runs)`)
+	if err != nil {
+		return fmt.Errorf("turso migrate: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			typeName   string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("turso migrate: %w", err)
+		}
+		if name == "workflow_kind" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("turso migrate: %w", err)
+	}
+
+	return fmt.Errorf("turso migrate: runs.workflow_kind column missing; recreate database with latest schema")
 }
 
 // validRunTransitions defines the allowed run status transitions.
