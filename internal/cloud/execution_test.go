@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/cloud/runner"
 )
@@ -114,8 +115,8 @@ func TestExecute(t *testing.T) {
 		if call.SandboxID != "sandbox-001" {
 			t.Errorf("sandboxID = %q, want %q", call.SandboxID, "sandbox-001")
 		}
-		if call.Command != "hal auto --mode until-complete" {
-			t.Errorf("command = %q, want %q", call.Command, "hal auto --mode until-complete")
+		if call.Command != "hal auto" {
+			t.Errorf("command = %q, want %q", call.Command, "hal auto")
 		}
 		if call.WorkDir != "/workspace" {
 			t.Errorf("workDir = %q, want %q", call.WorkDir, "/workspace")
@@ -213,11 +214,11 @@ func TestExecute(t *testing.T) {
 		if len(mockRunner.execCalls) != 1 {
 			t.Fatalf("execCalls = %d, want 1", len(mockRunner.execCalls))
 		}
-		if mockRunner.execCalls[0].Command != "hal auto --mode bounded-batch" {
-			t.Errorf("command = %q, want %q", mockRunner.execCalls[0].Command, "hal auto --mode bounded-batch")
+		if mockRunner.execCalls[0].Command != "hal auto" {
+			t.Errorf("command = %q, want %q", mockRunner.execCalls[0].Command, "hal auto")
 		}
 
-		// Verify started event payload has bounded_batch mode.
+		// Verify started event payload has bounded_batch mode (cloud scheduling metadata).
 		if len(store.insertedEvents) < 1 {
 			t.Fatal("expected at least 1 event")
 		}
@@ -544,13 +545,19 @@ func TestBuildHalCommand(t *testing.T) {
 			name:    "auto_until_complete",
 			kind:    WorkflowKindAuto,
 			mode:    ExecutionModeUntilComplete,
-			wantCmd: "hal auto --mode until-complete",
+			wantCmd: "hal auto",
 		},
 		{
 			name:    "auto_bounded_batch",
 			kind:    WorkflowKindAuto,
 			mode:    ExecutionModeBoundedBatch,
-			wantCmd: "hal auto --mode bounded-batch",
+			wantCmd: "hal auto",
+		},
+		{
+			name:    "auto_mode_does_not_appear_in_command",
+			kind:    WorkflowKindAuto,
+			mode:    ExecutionModeUntilComplete,
+			wantCmd: "hal auto",
 		},
 		{
 			name:    "review_dispatches_hal_review",
@@ -649,6 +656,363 @@ func TestModeDoesNotAlterDispatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Async execution tests ---
+
+// asyncMockSession implements runner.SessionExec for ExecuteAsync tests.
+type asyncMockSession struct {
+	createSessionErr error
+	execAsyncResult  *runner.SessionCommandStatus
+	execAsyncErr     error
+	statusResults    []*runner.SessionCommandStatus // returned in order per poll
+	statusIdx        int
+	statusErr        error
+	streamErr        error
+	streamStdout     []string // chunks to send
+	streamStderr     []string // chunks to send
+	commandLogs      string
+	commandLogsErr   error
+	deleteSessionErr error
+	neverComplete    bool // when true, GetCommandStatus always returns nil exit code
+
+	createdSessions []string
+	execAsyncCalls  []executionExecCall
+	deletedSessions []string
+}
+
+func (s *asyncMockSession) CreateSession(_ context.Context, _, sessionID string) error {
+	s.createdSessions = append(s.createdSessions, sessionID)
+	return s.createSessionErr
+}
+
+func (s *asyncMockSession) ExecAsync(_ context.Context, sandboxID, _ string, req *runner.ExecRequest) (*runner.SessionCommandStatus, error) {
+	s.execAsyncCalls = append(s.execAsyncCalls, executionExecCall{
+		SandboxID: sandboxID,
+		Command:   req.Command,
+		WorkDir:   req.WorkDir,
+	})
+	if s.execAsyncErr != nil {
+		return nil, s.execAsyncErr
+	}
+	if s.execAsyncResult != nil {
+		return s.execAsyncResult, nil
+	}
+	return &runner.SessionCommandStatus{CommandID: "cmd-001"}, nil
+}
+
+func (s *asyncMockSession) GetCommandStatus(_ context.Context, _, _, _ string) (*runner.SessionCommandStatus, error) {
+	if s.statusErr != nil {
+		return nil, s.statusErr
+	}
+	if s.statusIdx < len(s.statusResults) {
+		r := s.statusResults[s.statusIdx]
+		s.statusIdx++
+		return r, nil
+	}
+	if s.neverComplete {
+		return &runner.SessionCommandStatus{CommandID: "cmd-001", ExitCode: nil}, nil
+	}
+	// Default: completed with exit 0.
+	code := 0
+	return &runner.SessionCommandStatus{CommandID: "cmd-001", ExitCode: &code}, nil
+}
+
+func (s *asyncMockSession) StreamCommandLogs(_ context.Context, _, _, _ string, stdout, stderr chan<- string) error {
+	defer close(stdout)
+	defer close(stderr)
+	if s.streamErr != nil {
+		return s.streamErr
+	}
+	for _, chunk := range s.streamStdout {
+		stdout <- chunk
+	}
+	for _, chunk := range s.streamStderr {
+		stderr <- chunk
+	}
+	return nil
+}
+
+func (s *asyncMockSession) GetCommandLogs(_ context.Context, _, _, _ string) (string, error) {
+	return s.commandLogs, s.commandLogsErr
+}
+
+func (s *asyncMockSession) DeleteSession(_ context.Context, _, sessionID string) error {
+	s.deletedSessions = append(s.deletedSessions, sessionID)
+	return s.deleteSessionErr
+}
+
+func validAsyncExecutionRequest() *ExecutionRequest {
+	return &ExecutionRequest{
+		SandboxID:    "sandbox-001",
+		AttemptID:    "att-001",
+		RunID:        "run-001",
+		WorkflowKind: WorkflowKindAuto,
+		Mode:         ExecutionModeUntilComplete,
+		SessionID:    "session-att-001",
+	}
+}
+
+func TestExecuteAsync(t *testing.T) {
+	t.Run("successful_async_execution", func(t *testing.T) {
+		store := &executionMockStore{}
+		mockRunner := &executionMockRunner{}
+		code := 0
+		session := &asyncMockSession{
+			execAsyncResult: &runner.SessionCommandStatus{CommandID: "cmd-001"},
+			statusResults: []*runner.SessionCommandStatus{
+				{CommandID: "cmd-001", ExitCode: nil},   // still running
+				{CommandID: "cmd-001", ExitCode: nil},   // still running
+				{CommandID: "cmd-001", ExitCode: &code}, // done
+			},
+			streamStdout: []string{"output line 1\n", "output line 2\n"},
+			commandLogs:  "output line 1\noutput line 2\n",
+		}
+
+		idCounter := 0
+		svc := NewExecutionServiceWithSession(store, mockRunner, session, ExecutionConfig{
+			PollInterval: 1 * time.Millisecond, // fast polling for test
+			IDFunc: func() string {
+				idCounter++
+				return fmt.Sprintf("evt-%d", idCounter)
+			},
+		})
+
+		result, err := svc.ExecuteAsync(context.Background(), validAsyncExecutionRequest())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if result.ExitCode != 0 {
+			t.Errorf("exit_code = %d, want 0", result.ExitCode)
+		}
+		if result.CommandID != "cmd-001" {
+			t.Errorf("command_id = %q, want %q", result.CommandID, "cmd-001")
+		}
+		if result.Output == "" {
+			t.Error("output should not be empty")
+		}
+
+		// Verify session lifecycle.
+		if len(session.createdSessions) != 1 || session.createdSessions[0] != "session-att-001" {
+			t.Errorf("createdSessions = %v, want [session-att-001]", session.createdSessions)
+		}
+		if len(session.deletedSessions) != 1 || session.deletedSessions[0] != "session-att-001" {
+			t.Errorf("deletedSessions = %v, want [session-att-001]", session.deletedSessions)
+		}
+
+		// Verify events.
+		startedEvts := filterEventsByType(store.insertedEvents, "execution_started")
+		finishedEvts := filterEventsByType(store.insertedEvents, "execution_finished")
+		if len(startedEvts) != 1 {
+			t.Errorf("execution_started events = %d, want 1", len(startedEvts))
+		}
+		if len(finishedEvts) != 1 {
+			t.Errorf("execution_finished events = %d, want 1", len(finishedEvts))
+		}
+	})
+
+	t.Run("nonzero_exit_code", func(t *testing.T) {
+		store := &executionMockStore{}
+		code := 1
+		session := &asyncMockSession{
+			statusResults: []*runner.SessionCommandStatus{
+				{CommandID: "cmd-001", ExitCode: &code},
+			},
+			streamStderr: []string{"error: something failed\n"},
+			commandLogs:  "partial output",
+		}
+
+		svc := NewExecutionServiceWithSession(store, &executionMockRunner{}, session, ExecutionConfig{
+			PollInterval: 1 * time.Millisecond,
+		})
+
+		result, err := svc.ExecuteAsync(context.Background(), validAsyncExecutionRequest())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.ExitCode != 1 {
+			t.Errorf("exit_code = %d, want 1", result.ExitCode)
+		}
+
+		// Verify finished event has error.
+		finishedEvts := filterEventsByType(store.insertedEvents, "execution_finished")
+		if len(finishedEvts) != 1 {
+			t.Fatalf("execution_finished events = %d, want 1", len(finishedEvts))
+		}
+		var payload executionEventPayload
+		if err := json.Unmarshal([]byte(*finishedEvts[0].PayloadJSON), &payload); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if payload.ExitCode == nil || *payload.ExitCode != 1 {
+			t.Errorf("payload exit_code = %v, want 1", payload.ExitCode)
+		}
+	})
+
+	t.Run("create_session_failure", func(t *testing.T) {
+		store := &executionMockStore{}
+		session := &asyncMockSession{
+			createSessionErr: fmt.Errorf("session limit exceeded"),
+		}
+
+		svc := NewExecutionServiceWithSession(store, &executionMockRunner{}, session, ExecutionConfig{
+			PollInterval: 1 * time.Millisecond,
+		})
+
+		_, err := svc.ExecuteAsync(context.Background(), validAsyncExecutionRequest())
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "create session failed") {
+			t.Errorf("error = %q, want to contain 'create session failed'", err.Error())
+		}
+
+		// Should have emitted execution_finished with error.
+		finishedEvts := filterEventsByType(store.insertedEvents, "execution_finished")
+		if len(finishedEvts) != 1 {
+			t.Fatalf("execution_finished events = %d, want 1", len(finishedEvts))
+		}
+	})
+
+	t.Run("exec_async_launch_failure", func(t *testing.T) {
+		store := &executionMockStore{}
+		session := &asyncMockSession{
+			execAsyncErr: fmt.Errorf("command rejected"),
+		}
+
+		svc := NewExecutionServiceWithSession(store, &executionMockRunner{}, session, ExecutionConfig{
+			PollInterval: 1 * time.Millisecond,
+		})
+
+		_, err := svc.ExecuteAsync(context.Background(), validAsyncExecutionRequest())
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "execution launch failed") {
+			t.Errorf("error = %q, want to contain 'execution launch failed'", err.Error())
+		}
+
+		// Session should have been cleaned up.
+		if len(session.deletedSessions) != 1 {
+			t.Errorf("deletedSessions = %d, want 1 (cleanup)", len(session.deletedSessions))
+		}
+	})
+
+	t.Run("context_cancellation", func(t *testing.T) {
+		store := &executionMockStore{}
+		session := &asyncMockSession{
+			neverComplete: true, // never returns a completed status
+		}
+
+		svc := NewExecutionServiceWithSession(store, &executionMockRunner{}, session, ExecutionConfig{
+			PollInterval: 1 * time.Millisecond,
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+
+		_, err := svc.ExecuteAsync(ctx, validAsyncExecutionRequest())
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "execution cancelled") {
+			t.Errorf("error = %q, want to contain 'execution cancelled'", err.Error())
+		}
+	})
+
+	t.Run("no_session_returns_error", func(t *testing.T) {
+		svc := NewExecutionService(&executionMockStore{}, &executionMockRunner{}, ExecutionConfig{})
+
+		_, err := svc.ExecuteAsync(context.Background(), validAsyncExecutionRequest())
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "requires NewExecutionServiceWithSession") {
+			t.Errorf("error = %q, want session required error", err.Error())
+		}
+	})
+
+	t.Run("missing_session_id_validation", func(t *testing.T) {
+		session := &asyncMockSession{}
+		svc := NewExecutionServiceWithSession(&executionMockStore{}, &executionMockRunner{}, session, ExecutionConfig{})
+
+		req := validAsyncExecutionRequest()
+		req.SessionID = ""
+
+		_, err := svc.ExecuteAsync(context.Background(), req)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "sessionID must not be empty") {
+			t.Errorf("error = %q, want session validation error", err.Error())
+		}
+	})
+
+	t.Run("log_chunks_callback", func(t *testing.T) {
+		store := &executionMockStore{}
+		code := 0
+		session := &asyncMockSession{
+			statusResults: []*runner.SessionCommandStatus{
+				{CommandID: "cmd-001", ExitCode: &code},
+			},
+			streamStdout: []string{"hello\n", "world\n"},
+			streamStderr: []string{"warn\n"},
+			commandLogs:  "hello\nworld\n",
+		}
+
+		svc := NewExecutionServiceWithSession(store, &executionMockRunner{}, session, ExecutionConfig{
+			PollInterval: 1 * time.Millisecond,
+		})
+
+		var chunks []string
+		req := validAsyncExecutionRequest()
+		req.OnLogChunk = func(stream, chunk string) {
+			chunks = append(chunks, fmt.Sprintf("[%s] %s", stream, chunk))
+		}
+
+		_, err := svc.ExecuteAsync(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should have received log chunks via callback.
+		if len(chunks) == 0 {
+			t.Error("expected log chunks via OnLogChunk callback")
+		}
+	})
+}
+
+func TestExecutionRequestValidateAsync(t *testing.T) {
+	t.Run("valid_async", func(t *testing.T) {
+		req := validAsyncExecutionRequest()
+		if err := req.ValidateAsync(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing_session_id", func(t *testing.T) {
+		req := validAsyncExecutionRequest()
+		req.SessionID = ""
+		err := req.ValidateAsync()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "sessionID") {
+			t.Errorf("error = %q, want sessionID error", err.Error())
+		}
+	})
+
+	t.Run("inherits_base_validation", func(t *testing.T) {
+		req := validAsyncExecutionRequest()
+		req.SandboxID = ""
+		err := req.ValidateAsync()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "sandboxID") {
+			t.Errorf("error = %q, want sandboxID error", err.Error())
+		}
+	})
 }
 
 func TestExecutionRunnerExecErrorEmitsFinishedEvent(t *testing.T) {
