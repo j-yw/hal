@@ -132,8 +132,8 @@ func (s *AuthMaterializationService) Materialize(ctx context.Context, req *Mater
 	// Step 5: Write secret_ref content to credentials file with mode 0600.
 	// Use printf to write the secret content and chmod to set permissions.
 	credFile := s.config.AuthDir + "/credentials"
-	writeCmd := fmt.Sprintf("printf '%%s' '%s' > %s && chmod 0600 %s",
-		escapeShellSingleQuote(*profile.SecretRef), credFile, credFile)
+	writeCmd := fmt.Sprintf("printf '%%s' %s > %s && chmod 0600 %s",
+		ShellQuote(*profile.SecretRef), credFile, credFile)
 	writeResult, err := s.runner.Exec(ctx, req.SandboxID, &runner.ExecRequest{
 		Command: writeCmd,
 	})
@@ -264,16 +264,3 @@ func (s *AuthMaterializationService) emitEvent(ctx context.Context, runID, attem
 	_ = s.store.InsertEvent(ctx, event)
 }
 
-// escapeShellSingleQuote escapes single quotes for safe use in shell
-// single-quoted strings by replacing ' with '\”.
-func escapeShellSingleQuote(s string) string {
-	result := ""
-	for _, c := range s {
-		if c == '\'' {
-			result += "'\\''"
-		} else {
-			result += string(c)
-		}
-	}
-	return result
-}

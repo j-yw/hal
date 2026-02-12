@@ -478,7 +478,7 @@ func TestMaterialize(t *testing.T) {
 		}
 	})
 
-	t.Run("secret_with_single_quotes_escaped", func(t *testing.T) {
+	t.Run("secret_with_single_quotes_uses_shell_quote", func(t *testing.T) {
 		store := &authMatMockStore{
 			authProfile: linkedProfileWithSecret("it's a secret"),
 		}
@@ -491,13 +491,11 @@ func TestMaterialize(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// The write command should contain escaped single quotes.
+		// The write command should use ShellQuote output.
 		writeCmd := mockRunner.execCalls[1].Command
-		if strings.Contains(writeCmd, "it's") {
-			t.Errorf("write command contains unescaped single quote: %q", writeCmd)
-		}
-		if !strings.Contains(writeCmd, "it") {
-			t.Errorf("write command = %q, want to contain secret content", writeCmd)
+		expected := ShellQuote("it's a secret")
+		if !strings.Contains(writeCmd, expected) {
+			t.Errorf("write command = %q, want to contain ShellQuote output %q", writeCmd, expected)
 		}
 	})
 
@@ -798,39 +796,55 @@ func TestCleanup(t *testing.T) {
 	})
 }
 
-func TestEscapeShellSingleQuote(t *testing.T) {
+func TestMaterializeUsesShellQuote(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name      string
+		secretRef string
+		wantInCmd string
 	}{
 		{
-			name:  "no_quotes",
-			input: "hello world",
-			want:  "hello world",
+			name:      "plain_text",
+			secretRef: "sk-secret-key-123",
+			wantInCmd: ShellQuote("sk-secret-key-123"),
 		},
 		{
-			name:  "single_quote",
-			input: "it's",
-			want:  "it'\\''s",
+			name:      "embedded_single_quotes",
+			secretRef: "it's a secret",
+			wantInCmd: ShellQuote("it's a secret"),
 		},
 		{
-			name:  "multiple_quotes",
-			input: "it's a 'test'",
-			want:  "it'\\''s a '\\''test'\\''",
+			name:      "multiple_quotes",
+			secretRef: "it's a 'test'",
+			wantInCmd: ShellQuote("it's a 'test'"),
 		},
 		{
-			name:  "empty_string",
-			input: "",
-			want:  "",
+			name:      "newlines",
+			secretRef: "line1\nline2",
+			wantInCmd: ShellQuote("line1\nline2"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := escapeShellSingleQuote(tt.input)
-			if got != tt.want {
-				t.Errorf("escapeShellSingleQuote(%q) = %q, want %q", tt.input, got, tt.want)
+			store := &authMatMockStore{
+				authProfile: linkedProfileWithSecret(tt.secretRef),
+			}
+			mockRunner := &authMatMockRunner{}
+
+			svc := NewAuthMaterializationService(store, mockRunner, AuthMaterializationConfig{})
+
+			err := svc.Materialize(context.Background(), validMaterializeRequest())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(mockRunner.execCalls) < 2 {
+				t.Fatalf("execCalls = %d, want >= 2", len(mockRunner.execCalls))
+			}
+
+			writeCmd := mockRunner.execCalls[1].Command
+			if !strings.Contains(writeCmd, tt.wantInCmd) {
+				t.Errorf("write command = %q, want to contain ShellQuote output %q", writeCmd, tt.wantInCmd)
 			}
 		})
 	}
