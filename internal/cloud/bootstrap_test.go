@@ -576,3 +576,254 @@ func filterEventsByType(events []*Event, eventType string) []*Event {
 	}
 	return result
 }
+
+// --- Resume tests (working-branch checkpoint recovery) ---
+
+// bootstrapMockGit implements runner.GitOps for bootstrap resume tests.
+type bootstrapMockGit struct {
+	cloneErr        error
+	createBranchErr error
+	checkoutErr     error
+
+	cloneCalls        []bootstrapGitCloneCall
+	createBranchCalls []bootstrapGitBranchCall
+	checkoutCalls     []bootstrapGitBranchCall
+}
+
+type bootstrapGitCloneCall struct {
+	SandboxID string
+	Request   *runner.GitCloneRequest
+}
+
+type bootstrapGitBranchCall struct {
+	SandboxID string
+	Path      string
+	Branch    string
+}
+
+func (g *bootstrapMockGit) GitClone(_ context.Context, sandboxID string, req *runner.GitCloneRequest) error {
+	g.cloneCalls = append(g.cloneCalls, bootstrapGitCloneCall{SandboxID: sandboxID, Request: req})
+	return g.cloneErr
+}
+
+func (g *bootstrapMockGit) GitAdd(_ context.Context, _, _ string, _ []string) error { return nil }
+func (g *bootstrapMockGit) GitCommit(_ context.Context, _ string, _ *runner.GitCommitRequest) (*runner.GitCommitResult, error) {
+	return &runner.GitCommitResult{}, nil
+}
+func (g *bootstrapMockGit) GitPush(_ context.Context, _ string, _ *runner.GitPushRequest) error {
+	return nil
+}
+func (g *bootstrapMockGit) GitCreateBranch(_ context.Context, sandboxID, path, branch string) error {
+	g.createBranchCalls = append(g.createBranchCalls, bootstrapGitBranchCall{SandboxID: sandboxID, Path: path, Branch: branch})
+	return g.createBranchErr
+}
+func (g *bootstrapMockGit) GitCheckout(_ context.Context, sandboxID, path, branch string) error {
+	g.checkoutCalls = append(g.checkoutCalls, bootstrapGitBranchCall{SandboxID: sandboxID, Path: path, Branch: branch})
+	return g.checkoutErr
+}
+func (g *bootstrapMockGit) GitListBranches(_ context.Context, _, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func TestBootstrapResume(t *testing.T) {
+	t.Run("attempt_2_resumes_from_working_branch", func(t *testing.T) {
+		store := &bootstrapMockStore{}
+		mockRunner := &bootstrapMockRunner{
+			execResults: map[string]*runner.ExecResult{
+				"hal init": {ExitCode: 0},
+			},
+		}
+		git := &bootstrapMockGit{} // clone succeeds → working branch exists
+
+		svc := NewBootstrapServiceWithGit(store, mockRunner, git, BootstrapConfig{})
+
+		req := validBootstrapRequest()
+		req.WorkingBranch = "hal/cloud/run-001"
+		req.AttemptNumber = 2
+
+		err := svc.Bootstrap(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should have cloned via GitOps (working branch), not via Exec.
+		if len(git.cloneCalls) != 1 {
+			t.Fatalf("git cloneCalls = %d, want 1", len(git.cloneCalls))
+		}
+		if git.cloneCalls[0].Request.Branch != "hal/cloud/run-001" {
+			t.Errorf("git clone branch = %q, want working branch", git.cloneCalls[0].Request.Branch)
+		}
+
+		// Exec should only have hal init, no git clone.
+		if len(mockRunner.execCalls) != 1 {
+			t.Fatalf("execCalls = %d, want 1 (hal init only)", len(mockRunner.execCalls))
+		}
+		if !strings.Contains(mockRunner.execCalls[0].Command, "hal init") {
+			t.Errorf("exec command = %q, want hal init", mockRunner.execCalls[0].Command)
+		}
+
+		// No create/checkout branch (already on working branch from clone).
+		if len(git.createBranchCalls) != 0 {
+			t.Errorf("createBranchCalls = %d, want 0", len(git.createBranchCalls))
+		}
+
+		// Verify resumed=true in completed event.
+		completed := filterEventsByType(store.insertedEvents, "bootstrap_completed")
+		if len(completed) != 1 {
+			t.Fatalf("bootstrap_completed events = %d, want 1", len(completed))
+		}
+		var payload bootstrapEventPayload
+		if err := json.Unmarshal([]byte(*completed[0].PayloadJSON), &payload); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !payload.Resumed {
+			t.Error("payload.Resumed = false, want true")
+		}
+		if payload.Branch != "hal/cloud/run-001" {
+			t.Errorf("payload.Branch = %q, want working branch", payload.Branch)
+		}
+	})
+
+	t.Run("attempt_2_falls_back_when_working_branch_missing", func(t *testing.T) {
+		store := &bootstrapMockStore{}
+		mockRunner := &bootstrapMockRunner{
+			execResults: map[string]*runner.ExecResult{
+				"git clone": {ExitCode: 0},
+				"hal init":  {ExitCode: 0},
+			},
+		}
+		git := &bootstrapMockGit{
+			cloneErr: fmt.Errorf("branch not found"), // working branch doesn't exist
+		}
+
+		svc := NewBootstrapServiceWithGit(store, mockRunner, git, BootstrapConfig{})
+
+		req := validBootstrapRequest()
+		req.WorkingBranch = "hal/cloud/run-001"
+		req.AttemptNumber = 2
+
+		err := svc.Bootstrap(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// GitOps clone was attempted and failed.
+		if len(git.cloneCalls) != 1 {
+			t.Fatalf("git cloneCalls = %d, want 1", len(git.cloneCalls))
+		}
+
+		// Fell back to Exec clone with base branch.
+		cloneCalls := 0
+		for _, call := range mockRunner.execCalls {
+			if strings.Contains(call.Command, "git clone") {
+				cloneCalls++
+				if !strings.Contains(call.Command, "--branch main") {
+					t.Errorf("fallback clone should use base branch, got: %s", call.Command)
+				}
+			}
+		}
+		if cloneCalls != 1 {
+			t.Errorf("exec git clone calls = %d, want 1", cloneCalls)
+		}
+
+		// Working branch should have been created after fallback clone.
+		if len(git.createBranchCalls) != 1 {
+			t.Fatalf("createBranchCalls = %d, want 1", len(git.createBranchCalls))
+		}
+		if git.createBranchCalls[0].Branch != "hal/cloud/run-001" {
+			t.Errorf("createBranch name = %q, want working branch", git.createBranchCalls[0].Branch)
+		}
+		if len(git.checkoutCalls) != 1 {
+			t.Fatalf("checkoutCalls = %d, want 1", len(git.checkoutCalls))
+		}
+
+		// Verify resumed=false in completed event.
+		completed := filterEventsByType(store.insertedEvents, "bootstrap_completed")
+		if len(completed) != 1 {
+			t.Fatalf("bootstrap_completed events = %d, want 1", len(completed))
+		}
+		var payload bootstrapEventPayload
+		if err := json.Unmarshal([]byte(*completed[0].PayloadJSON), &payload); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if payload.Resumed {
+			t.Error("payload.Resumed = true, want false (fallback path)")
+		}
+	})
+
+	t.Run("attempt_1_creates_working_branch", func(t *testing.T) {
+		store := &bootstrapMockStore{}
+		mockRunner := &bootstrapMockRunner{
+			execResults: map[string]*runner.ExecResult{
+				"git clone": {ExitCode: 0},
+				"hal init":  {ExitCode: 0},
+			},
+		}
+		git := &bootstrapMockGit{}
+
+		svc := NewBootstrapServiceWithGit(store, mockRunner, git, BootstrapConfig{})
+
+		req := validBootstrapRequest()
+		req.WorkingBranch = "hal/cloud/run-001"
+		req.AttemptNumber = 1
+
+		err := svc.Bootstrap(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should NOT attempt GitOps clone (attempt 1 always uses base branch).
+		if len(git.cloneCalls) != 0 {
+			t.Errorf("git cloneCalls = %d, want 0 (attempt 1)", len(git.cloneCalls))
+		}
+
+		// Should clone via Exec (base branch).
+		cloneCalls := 0
+		for _, call := range mockRunner.execCalls {
+			if strings.Contains(call.Command, "git clone") {
+				cloneCalls++
+			}
+		}
+		if cloneCalls != 1 {
+			t.Errorf("exec git clone calls = %d, want 1", cloneCalls)
+		}
+
+		// Should create and checkout working branch.
+		if len(git.createBranchCalls) != 1 {
+			t.Fatalf("createBranchCalls = %d, want 1", len(git.createBranchCalls))
+		}
+		if git.createBranchCalls[0].Branch != "hal/cloud/run-001" {
+			t.Errorf("createBranch = %q, want working branch", git.createBranchCalls[0].Branch)
+		}
+		if len(git.checkoutCalls) != 1 {
+			t.Fatalf("checkoutCalls = %d, want 1", len(git.checkoutCalls))
+		}
+	})
+
+	t.Run("no_git_ops_preserves_original_behavior", func(t *testing.T) {
+		store := &bootstrapMockStore{}
+		mockRunner := &bootstrapMockRunner{
+			execResults: map[string]*runner.ExecResult{
+				"git clone": {ExitCode: 0},
+				"hal init":  {ExitCode: 0},
+			},
+		}
+
+		// Use original constructor (no GitOps).
+		svc := NewBootstrapService(store, mockRunner, BootstrapConfig{})
+
+		req := validBootstrapRequest()
+		req.WorkingBranch = "hal/cloud/run-001"
+		req.AttemptNumber = 2
+
+		err := svc.Bootstrap(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should use Exec clone only (no GitOps available).
+		if len(mockRunner.execCalls) != 2 { // clone + init
+			t.Errorf("execCalls = %d, want 2 (clone + init)", len(mockRunner.execCalls))
+		}
+	})
+}
