@@ -369,6 +369,339 @@ func commandSeen(snapshot map[string]map[string]struct{}, sessionID, commandID s
 	return ok
 }
 
+// ---------------------------------------------------------------------------
+// SessionExec implementation — uses Daytona sessions for long-running commands.
+// ---------------------------------------------------------------------------
+
+// CreateSession creates a named session in the sandbox.
+func (s *SDKClient) CreateSession(ctx context.Context, sandboxID, sessionID string) error {
+	if sandboxID == "" {
+		return fmt.Errorf("sdk runner client: create session: sandbox_id must not be empty")
+	}
+	if sessionID == "" {
+		return fmt.Errorf("sdk runner client: create session: session_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("sdk runner client: create session: get sandbox: %w", err)
+	}
+
+	if err := sandbox.Process.CreateSession(ctx, sessionID); err != nil {
+		return fmt.Errorf("sdk runner client: create session: %w", err)
+	}
+	return nil
+}
+
+// ExecAsync launches a command asynchronously in a session.
+func (s *SDKClient) ExecAsync(ctx context.Context, sandboxID, sessionID string, req *ExecRequest) (*SessionCommandStatus, error) {
+	if req == nil {
+		return nil, fmt.Errorf("sdk runner client: exec async: request must not be nil")
+	}
+	if sandboxID == "" {
+		return nil, fmt.Errorf("sdk runner client: exec async: sandbox_id must not be empty")
+	}
+	if sessionID == "" {
+		return nil, fmt.Errorf("sdk runner client: exec async: session_id must not be empty")
+	}
+	if req.Command == "" {
+		return nil, fmt.Errorf("sdk runner client: exec async: command must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: exec async: get sandbox: %w", err)
+	}
+
+	// Build the full command. If WorkDir is set, prepend a cd.
+	cmd := req.Command
+	if req.WorkDir != "" {
+		cmd = fmt.Sprintf("cd %s && %s", req.WorkDir, req.Command)
+	}
+
+	result, err := sandbox.Process.ExecuteSessionCommand(ctx, sessionID, cmd, true /* runAsync */)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: exec async: %w", err)
+	}
+
+	cmdID, _ := result["id"].(string)
+	if cmdID == "" {
+		return nil, fmt.Errorf("sdk runner client: exec async: no command id returned")
+	}
+
+	status := &SessionCommandStatus{CommandID: cmdID}
+	if ec, ok := result["exitCode"]; ok {
+		if code, ok := ec.(int32); ok {
+			c := int(code)
+			status.ExitCode = &c
+		}
+	}
+
+	// Store log ref for StreamLogs compatibility.
+	s.setLogRef(sandboxID, sessionCommandRef{
+		sessionID: sessionID,
+		commandID: cmdID,
+	})
+
+	return status, nil
+}
+
+// GetCommandStatus polls the status of a session command.
+func (s *SDKClient) GetCommandStatus(ctx context.Context, sandboxID, sessionID, commandID string) (*SessionCommandStatus, error) {
+	if sandboxID == "" {
+		return nil, fmt.Errorf("sdk runner client: get command status: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: get command status: get sandbox: %w", err)
+	}
+
+	result, err := sandbox.Process.GetSessionCommand(ctx, sessionID, commandID)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: get command status: %w", err)
+	}
+
+	status := &SessionCommandStatus{CommandID: commandID}
+	if ec, ok := result["exitCode"]; ok {
+		switch v := ec.(type) {
+		case int32:
+			c := int(v)
+			status.ExitCode = &c
+		case float64:
+			c := int(v)
+			status.ExitCode = &c
+		case int:
+			status.ExitCode = &v
+		}
+	}
+
+	return status, nil
+}
+
+// StreamCommandLogs opens a real-time WebSocket log stream for a session command.
+func (s *SDKClient) StreamCommandLogs(ctx context.Context, sandboxID, sessionID, commandID string, stdout, stderr chan<- string) error {
+	if sandboxID == "" {
+		close(stdout)
+		close(stderr)
+		return fmt.Errorf("sdk runner client: stream command logs: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		close(stdout)
+		close(stderr)
+		return fmt.Errorf("sdk runner client: stream command logs: get sandbox: %w", err)
+	}
+
+	// GetSessionCommandLogsStream closes stdout and stderr channels when done.
+	return sandbox.Process.GetSessionCommandLogsStream(ctx, sessionID, commandID, stdout, stderr)
+}
+
+// GetCommandLogs retrieves the full accumulated logs for a session command.
+func (s *SDKClient) GetCommandLogs(ctx context.Context, sandboxID, sessionID, commandID string) (string, error) {
+	if sandboxID == "" {
+		return "", fmt.Errorf("sdk runner client: get command logs: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return "", fmt.Errorf("sdk runner client: get command logs: get sandbox: %w", err)
+	}
+
+	logsMap, err := sandbox.Process.GetSessionCommandLogs(ctx, sessionID, commandID)
+	if err != nil {
+		return "", fmt.Errorf("sdk runner client: get command logs: %w", err)
+	}
+
+	return logsFromMap(logsMap), nil
+}
+
+// DeleteSession removes a session from the sandbox.
+func (s *SDKClient) DeleteSession(ctx context.Context, sandboxID, sessionID string) error {
+	if sandboxID == "" {
+		return fmt.Errorf("sdk runner client: delete session: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("sdk runner client: delete session: get sandbox: %w", err)
+	}
+
+	if err := sandbox.Process.DeleteSession(ctx, sessionID); err != nil {
+		return fmt.Errorf("sdk runner client: delete session: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// GitOps implementation — uses Daytona's native Git API instead of Exec.
+// ---------------------------------------------------------------------------
+
+// GitClone clones a repository into the sandbox via the Daytona Git API.
+func (s *SDKClient) GitClone(ctx context.Context, sandboxID string, req *GitCloneRequest) error {
+	if req == nil {
+		return fmt.Errorf("sdk runner client: git clone request must not be nil")
+	}
+	if sandboxID == "" {
+		return fmt.Errorf("sdk runner client: git clone: sandbox_id must not be empty")
+	}
+	if req.URL == "" {
+		return fmt.Errorf("sdk runner client: git clone: url must not be empty")
+	}
+	if req.Path == "" {
+		return fmt.Errorf("sdk runner client: git clone: path must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("sdk runner client: git clone: get sandbox: %w", err)
+	}
+
+	var opts []func(*options.GitClone)
+	if req.Branch != "" {
+		opts = append(opts, options.WithBranch(req.Branch))
+	}
+	if req.Username != "" {
+		opts = append(opts, options.WithUsername(req.Username))
+	}
+	if req.Password != "" {
+		opts = append(opts, options.WithPassword(req.Password))
+	}
+
+	if err := sandbox.Git.Clone(ctx, req.URL, req.Path, opts...); err != nil {
+		return fmt.Errorf("sdk runner client: git clone: %w", err)
+	}
+	return nil
+}
+
+// GitAdd stages files via the Daytona Git API.
+func (s *SDKClient) GitAdd(ctx context.Context, sandboxID, path string, files []string) error {
+	if sandboxID == "" {
+		return fmt.Errorf("sdk runner client: git add: sandbox_id must not be empty")
+	}
+	if path == "" {
+		return fmt.Errorf("sdk runner client: git add: path must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("sdk runner client: git add: get sandbox: %w", err)
+	}
+
+	if err := sandbox.Git.Add(ctx, path, files); err != nil {
+		return fmt.Errorf("sdk runner client: git add: %w", err)
+	}
+	return nil
+}
+
+// GitCommit creates a commit via the Daytona Git API.
+func (s *SDKClient) GitCommit(ctx context.Context, sandboxID string, req *GitCommitRequest) (*GitCommitResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("sdk runner client: git commit request must not be nil")
+	}
+	if sandboxID == "" {
+		return nil, fmt.Errorf("sdk runner client: git commit: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: git commit: get sandbox: %w", err)
+	}
+
+	var opts []func(*options.GitCommit)
+	if req.AllowEmpty {
+		opts = append(opts, options.WithAllowEmpty(true))
+	}
+
+	resp, err := sandbox.Git.Commit(ctx, req.Path, req.Message, req.Author, req.Email, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: git commit: %w", err)
+	}
+
+	return &GitCommitResult{SHA: resp.SHA}, nil
+}
+
+// GitPush pushes commits to the remote via the Daytona Git API.
+func (s *SDKClient) GitPush(ctx context.Context, sandboxID string, req *GitPushRequest) error {
+	if req == nil {
+		return fmt.Errorf("sdk runner client: git push request must not be nil")
+	}
+	if sandboxID == "" {
+		return fmt.Errorf("sdk runner client: git push: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("sdk runner client: git push: get sandbox: %w", err)
+	}
+
+	var opts []func(*options.GitPush)
+	if req.Username != "" {
+		opts = append(opts, options.WithPushUsername(req.Username))
+	}
+	if req.Password != "" {
+		opts = append(opts, options.WithPushPassword(req.Password))
+	}
+
+	if err := sandbox.Git.Push(ctx, req.Path, opts...); err != nil {
+		return fmt.Errorf("sdk runner client: git push: %w", err)
+	}
+	return nil
+}
+
+// GitCreateBranch creates a branch via the Daytona Git API.
+func (s *SDKClient) GitCreateBranch(ctx context.Context, sandboxID, path, branch string) error {
+	if sandboxID == "" {
+		return fmt.Errorf("sdk runner client: git create branch: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("sdk runner client: git create branch: get sandbox: %w", err)
+	}
+
+	if err := sandbox.Git.CreateBranch(ctx, path, branch); err != nil {
+		return fmt.Errorf("sdk runner client: git create branch: %w", err)
+	}
+	return nil
+}
+
+// GitCheckout switches to a branch via the Daytona Git API.
+func (s *SDKClient) GitCheckout(ctx context.Context, sandboxID, path, branch string) error {
+	if sandboxID == "" {
+		return fmt.Errorf("sdk runner client: git checkout: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("sdk runner client: git checkout: get sandbox: %w", err)
+	}
+
+	if err := sandbox.Git.Checkout(ctx, path, branch); err != nil {
+		return fmt.Errorf("sdk runner client: git checkout: %w", err)
+	}
+	return nil
+}
+
+// GitListBranches lists branches via the Daytona Git API.
+func (s *SDKClient) GitListBranches(ctx context.Context, sandboxID, path string) ([]string, error) {
+	if sandboxID == "" {
+		return nil, fmt.Errorf("sdk runner client: git list branches: sandbox_id must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: git list branches: get sandbox: %w", err)
+	}
+
+	branches, err := sandbox.Git.Branches(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: git list branches: %w", err)
+	}
+	return branches, nil
+}
+
 func logsFromMap(logsMap map[string]any) string {
 	raw, ok := logsMap["logs"]
 	if !ok || raw == nil {
