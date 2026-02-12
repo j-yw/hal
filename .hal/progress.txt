@@ -13,6 +13,9 @@
 - `readSandboxFile` uses `stripBase64Whitespace` to strip all whitespace from base64 output before decoding — handles wrapped output from non-GNU base64 implementations and trailing newlines.
 - `base64Cmd` is a package-level variable (`"base64 -w0"`) used by `readSandboxFile` — mock runners must use `base64Cmd` (not hardcoded `"base64 -w0"`) when matching command prefixes.
 - Bundle framing uses `path\x00size\x00content` (null-terminated path, null-terminated decimal size, raw content bytes) plus gzip — `CompressBundle` (worker-side) and `compressBundleFiles` (client-side) produce identical framing consumed by `decompressBundleFiles`.
+- Use `ComputeSandboxBundleHash(records)` for worker-side snapshot SHA — it converts `SandboxBundleRecord` → `BundleManifestRecord` via `NewBundleManifestRecord` then delegates to `ComputeBundleHash`. Never hash compressed payload bytes for the snapshot SHA field.
+- `GitHubPRCreator(r, sandboxID, authDir)` returns a `PRCreator` closure — use `mockPRRunner` in tests to capture and assert the executed command text without real sandbox infrastructure.
+- `parseGHPROutput` extracts the PR URL from `gh pr create` stdout by scanning the last non-empty line — `gh` may emit progress text before the URL.
 
 ---
 
@@ -104,4 +107,29 @@
   - The bundle framing format is `path\x00size\x00content` (null-terminated path, null-terminated decimal size, then raw content bytes) — this is the same format used by `compressBundleFiles` in `cmd/cloud.go` and must not change without updating both compress and decompress paths.
   - `CompressBundle` takes `[]SandboxBundleRecord` (worker-side) while `compressBundleFiles` takes `[]BundleManifestRecord` + `map[string][]byte` (client-side) — they produce the same framing but have different input interfaces.
   - Empty record slices produce valid gzip output that decompresses to zero records — no special-case handling needed.
+---
+
+## 2026-02-13 - US-009
+- Implemented `ComputeSandboxBundleHash` and `SandboxRecordsToBundleManifest` in `internal/cloud/snapshot_collect.go` to bridge worker-side `SandboxBundleRecord` to the existing `ComputeBundleHash` pipeline
+- Files changed:
+  - `internal/cloud/snapshot_collect.go` — Added `SandboxRecordsToBundleManifest(records []SandboxBundleRecord) []BundleManifestRecord` and `ComputeSandboxBundleHash(records []SandboxBundleRecord) string`
+  - `internal/cloud/snapshot_collect_test.go` — Added 8 tests: `TestSandboxRecordsToBundleManifest`, `TestComputeSandboxBundleHash_Deterministic`, `_OrderIndependent`, `_DifferentContentDifferentHash`, `_MatchesManifestHash`, `_NotCompressedPayloadHash`, `_EmptyRecords`, `_DoesNotMutateInput`
+- **Learnings for future iterations:**
+  - `ComputeSandboxBundleHash` is the canonical worker-side function for snapshot SHA computation — it converts `SandboxBundleRecord` → `BundleManifestRecord` (using `NewBundleManifestRecord` which normalizes paths and computes per-file SHA) then delegates to `ComputeBundleHash`.
+  - Snapshot SHA must NEVER be a hash of the compressed payload bytes — it must be `ComputeBundleHash(records)` which hashes sorted `(normalized_path, file_sha256)` pairs. This ensures the same set of files always produces the same SHA regardless of compression.
+  - `NewBundleManifestRecord` in `bundle_manifest.go` is the bridge from raw `(path, content)` to the `BundleManifestRecord` struct — reuse it instead of manually computing `ComputeFileSHA256` and `NormalizeBundlePath`.
+  - The `_MatchesManifestHash` test is critical — it verifies that worker-side and submit-side hash computation produce identical results for equivalent file sets, ensuring cross-path SHA consistency.
+---
+
+## 2026-02-13 - US-010
+- Implemented `GitHubPRCreator` in `internal/cloud/pr_github.go` returning a `PRCreator` function that executes `gh pr create` in the sandbox workspace
+- Files changed:
+  - `internal/cloud/pr_github.go` — New file with `GitHubPRCreator(r runner.Runner, sandboxID, authDir string) PRCreator`, `buildGHPRCreateCommand`, and `parseGHPROutput`
+  - `internal/cloud/pr_github_test.go` — New file with 9 tests: Success, ExecutesGHPRCreate, NonZeroExit, RunnerError, TokenSourcing, ShellEscaping, EmptyBody, ParseGHPROutput (5 subtests), BuildGHPRCreateCommand
+- **Learnings for future iterations:**
+  - `GitHubPRCreator` is a factory function returning a `PRCreator` closure — it captures `runner.Runner`, `sandboxID`, and `authDir` so the returned function matches the `PRCreator` signature `func(ctx, *PRCreateRequest) (string, error)`.
+  - The `gh pr create` command output has the PR URL as the last non-empty line of stdout — `parseGHPROutput` extracts it by scanning lines in reverse.
+  - `buildGHPRCreateCommand` sources `GITHUB_TOKEN` from `${authDir}/credentials` using `export GITHUB_TOKEN=$(cat ...)` — the same auth directory pattern used by `auth_materialization.go`.
+  - All user-controlled arguments (title, body, head, base, repo) are escaped with `ShellQuote` — use `mockPRRunner` pattern to capture and assert command text in tests.
+  - US-011 and US-012 refine token sourcing details and error handling respectively — the core implementation already includes both for completeness since they're tightly coupled to the PR creator behavior.
 ---
