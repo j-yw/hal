@@ -164,10 +164,11 @@ func (s *Store) SubmitRunWithInputSnapshot(ctx context.Context, run *cloud.Run, 
 func (s *Store) ClaimRun(ctx context.Context, workerID string) (*cloud.Run, error) {
 	// Use FOR UPDATE SKIP LOCKED to guarantee one winner under contention.
 	// The subquery selects the oldest queued run and locks it; the UPDATE
-	// transitions it to claimed atomically. Runs with cancel_requested are
-	// excluded so canceled intent is enforced before claim.
+	// transitions it to claimed and increments attempt_count atomically.
+	// Runs with cancel_requested are excluded so canceled intent is enforced
+	// before claim.
 	row := s.db.QueryRowContext(ctx, `
-		UPDATE runs SET status = 'claimed', updated_at = NOW()
+		UPDATE runs SET status = 'claimed', attempt_count = attempt_count + 1, updated_at = NOW()
 		WHERE id = (
 			SELECT id FROM runs
 			WHERE status = 'queued' AND cancel_requested = FALSE
