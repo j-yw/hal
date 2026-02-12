@@ -38,6 +38,11 @@ type WorkerPipelineConfig struct {
 	Preflight *PreflightService
 	// Checkpoint is the service used to commit and push sandbox changes (required).
 	Checkpoint *CheckpointService
+	// Heartbeat is the service used to renew attempt leases (required).
+	Heartbeat *HeartbeatService
+	// HeartbeatInterval is the interval between heartbeat ticks. Defaults to
+	// 10 seconds if zero.
+	HeartbeatInterval time.Duration
 	// GitUsername is the HTTPS auth username for clone/push (optional).
 	GitUsername string
 	// GitPassword is the HTTPS auth password/token for clone/push (optional).
@@ -57,6 +62,8 @@ type WorkerPipeline struct {
 	authMaterialization *AuthMaterializationService
 	preflight           *PreflightService
 	checkpoint          *CheckpointService
+	heartbeat           *HeartbeatService
+	heartbeatInterval   time.Duration
 	gitUsername         string
 	gitPassword         string
 }
@@ -91,6 +98,13 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 	if cfg.Checkpoint == nil {
 		return nil, fmt.Errorf("checkpoint must not be nil")
 	}
+	if cfg.Heartbeat == nil {
+		return nil, fmt.Errorf("heartbeat must not be nil")
+	}
+	hbInterval := cfg.HeartbeatInterval
+	if hbInterval == 0 {
+		hbInterval = 10 * time.Second
+	}
 	return &WorkerPipeline{
 		store:               cfg.Store,
 		runner:              cfg.Runner,
@@ -101,6 +115,8 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		authMaterialization: cfg.AuthMaterialization,
 		preflight:           cfg.Preflight,
 		checkpoint:          cfg.Checkpoint,
+		heartbeat:           cfg.Heartbeat,
+		heartbeatInterval:   hbInterval,
 		gitUsername:         cfg.GitUsername,
 		gitPassword:         cfg.GitPassword,
 	}, nil
@@ -124,7 +140,8 @@ func (p *WorkerPipeline) ProcessOne(ctx context.Context) error {
 // executeAttempt runs the full attempt lifecycle for a claimed run.
 // It transitions the run from claimed to running, then executes setup
 // services in a deterministic order: provision → bootstrap →
-// auth materialization → preflight.
+// auth materialization → preflight. A heartbeat goroutine runs
+// throughout setup and execution until terminal routing begins.
 func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult) error {
 	run := claim.Run
 	attempt := claim.Attempt
@@ -141,6 +158,15 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		return fmt.Errorf("transitioning run to running: %w", err)
 	}
 	currentStatus = RunStatusRunning
+
+	// Start heartbeat loop after transitioning to running. The heartbeat
+	// remains active through setup and execution until stopHeartbeat is called.
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	heartbeatDone := p.startHeartbeat(heartbeatCtx, attempt.ID, run.AuthProfileID, run.ID)
+	defer func() {
+		stopHeartbeat()
+		<-heartbeatDone
+	}()
 
 	// Step 2: Provision — create sandbox.
 	provResult, err := p.provision.Provision(ctx, attempt.ID, run.ID)
@@ -189,6 +215,27 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 
 	// Future stories will add: execution, finalization, cleanup.
 	return nil
+}
+
+// startHeartbeat launches a goroutine that ticks at p.heartbeatInterval,
+// calling heartbeat.Renew on each tick. The goroutine runs until ctx is
+// canceled. The returned channel is closed when the goroutine exits.
+func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProfileID, runID string) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(p.heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = p.heartbeat.Renew(ctx, attemptID, authProfileID, runID)
+			}
+		}
+	}()
+	return done
 }
 
 // handleSetupFailure transitions both the run and attempt to failed status

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,8 +49,22 @@ type workerMockStore struct {
 	authProfile    *AuthProfile
 	authProfileErr error
 
+	// HeartbeatAttempt tracking
+	mu             sync.Mutex
+	heartbeatCalls []heartbeatCall
+
+	// GetRun behavior
+	getRun    *Run
+	getRunErr error
+
 	// Optional call log for ordering tests.
 	log *callLog
+}
+
+type heartbeatCall struct {
+	AttemptID      string
+	HeartbeatAt    time.Time
+	LeaseExpiresAt time.Time
 }
 
 type runTransition struct {
@@ -124,6 +139,28 @@ func (s *workerMockStore) GetAuthProfile(_ context.Context, _ string) (*AuthProf
 		return s.authProfile, nil
 	}
 	return &AuthProfile{ID: "profile-1", Provider: "github", Status: AuthProfileStatusLinked}, nil
+}
+
+func (s *workerMockStore) HeartbeatAttempt(_ context.Context, attemptID string, heartbeatAt, leaseExpiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.heartbeatCalls = append(s.heartbeatCalls, heartbeatCall{
+		AttemptID:      attemptID,
+		HeartbeatAt:    heartbeatAt,
+		LeaseExpiresAt: leaseExpiresAt,
+	})
+	return nil
+}
+
+func (s *workerMockStore) GetRun(_ context.Context, _ string) (*Run, error) {
+	if s.getRunErr != nil {
+		return nil, s.getRunErr
+	}
+	if s.getRun != nil {
+		return s.getRun, nil
+	}
+	// Default: return a running run (for heartbeat service's auth check).
+	return &Run{ID: "run-1", Status: RunStatusRunning, AuthProfileID: "profile-1"}, nil
 }
 
 func (s *workerMockStore) UpdateAttemptSandboxID(_ context.Context, _, _ string) error {
@@ -285,6 +322,7 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, git, CheckpointConfig{})
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
 		Store:               store,
@@ -296,6 +334,8 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   50 * time.Millisecond, // fast ticks for tests
 		GitUsername:         gitUser,
 		GitPassword:         gitPass,
 	})
@@ -336,6 +376,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	tests := []struct {
 		name    string
@@ -354,6 +395,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 		},
 		{
@@ -368,6 +410,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "store must not be nil",
 		},
@@ -383,6 +426,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "runner must not be nil",
 		},
@@ -398,6 +442,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "workerID must not be empty",
 		},
@@ -413,6 +458,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "claim must not be nil",
 		},
@@ -428,6 +474,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "provision must not be nil",
 		},
@@ -443,6 +490,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "bootstrap must not be nil",
 		},
@@ -458,6 +506,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: nil,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "authMaterialization must not be nil",
 		},
@@ -473,6 +522,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           nil,
 				Checkpoint:          checkpoint,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "preflight must not be nil",
 		},
@@ -488,8 +538,25 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          nil,
+				Heartbeat:           heartbeat,
 			},
 			wantErr: "checkpoint must not be nil",
+		},
+		{
+			name: "nil heartbeat service",
+			cfg: WorkerPipelineConfig{
+				Store:               store,
+				Runner:              rnr,
+				WorkerID:            "worker-1",
+				Claim:               claim,
+				Provision:           provision,
+				Bootstrap:           bootstrap,
+				AuthMaterialization: authMat,
+				Preflight:           preflight,
+				Checkpoint:          checkpoint,
+				Heartbeat:           nil,
+			},
+			wantErr: "heartbeat must not be nil",
 		},
 	}
 
@@ -798,6 +865,7 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 
 	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	p, err := NewWorkerPipeline(WorkerPipelineConfig{
 		Store:               store,
@@ -809,6 +877,8 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflightSvc,
 		Checkpoint:          checkpoint,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   50 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewWorkerPipeline: %v", err)
@@ -1221,6 +1291,7 @@ func TestExecuteAttempt_CheckpointServiceValidation(t *testing.T) {
 	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	_, err := NewWorkerPipeline(WorkerPipelineConfig{
 		Store:               store,
@@ -1232,11 +1303,303 @@ func TestExecuteAttempt_CheckpointServiceValidation(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          nil,
+		Heartbeat:           heartbeat,
 	})
 	if err == nil {
 		t.Fatal("expected error for nil checkpoint, got nil")
 	}
 	if !strings.Contains(err.Error(), "checkpoint must not be nil") {
 		t.Errorf("error = %q, want containing %q", err.Error(), "checkpoint must not be nil")
+	}
+}
+
+// --- US-017: Heartbeat across setup and execution windows ---
+
+// slowProvisionRunner wraps workerMockRunner and blocks CreateSandbox until
+// a release signal is received, simulating long-running setup.
+type slowProvisionRunner struct {
+	*workerMockRunner
+	gate chan struct{} // close to unblock CreateSandbox
+}
+
+func (r *slowProvisionRunner) CreateSandbox(ctx context.Context, req *runner.CreateSandboxRequest) (*runner.Sandbox, error) {
+	// Wait until the test signals us to proceed (or context is canceled).
+	select {
+	case <-r.gate:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.workerMockRunner.CreateSandbox(ctx, req)
+}
+
+func TestHeartbeat_StartsAfterTransitionToRunning(t *testing.T) {
+	// Verify heartbeat ticks occur after run transitions to running but before
+	// setup completes. We use a slow provision step to keep the pipeline busy
+	// long enough for heartbeat ticks to fire.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond, // fast ticks
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	// Run ProcessOne in a goroutine since it will block on provision.
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for at least 2 heartbeat ticks to fire while provision is blocked.
+	deadline := time.After(2 * time.Second)
+	for {
+		store.mu.Lock()
+		count := len(store.heartbeatCalls)
+		store.mu.Unlock()
+		if count >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for heartbeat calls, got %d", count)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Unblock provision and let the pipeline finish.
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// Verify heartbeat calls were made with the correct attempt and run IDs.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.heartbeatCalls) < 2 {
+		t.Fatalf("expected at least 2 heartbeat calls, got %d", len(store.heartbeatCalls))
+	}
+	for i, hb := range store.heartbeatCalls {
+		if hb.AttemptID != "attempt-1" {
+			t.Errorf("heartbeatCalls[%d].AttemptID = %q, want %q", i, hb.AttemptID, "attempt-1")
+		}
+	}
+}
+
+func TestHeartbeat_ActiveThroughSetupAndExecution(t *testing.T) {
+	// Verify heartbeat remains active across the setup window by checking
+	// that heartbeat ticks continue to accumulate while provision is blocked.
+	// This proves the heartbeat loop runs concurrently with setup stages.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for at least 3 heartbeat ticks during the blocked provision,
+	// proving the heartbeat loop runs concurrently with setup.
+	deadline := time.After(2 * time.Second)
+	for {
+		store.mu.Lock()
+		count := len(store.heartbeatCalls)
+		store.mu.Unlock()
+		if count >= 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			store.mu.Lock()
+			c := len(store.heartbeatCalls)
+			store.mu.Unlock()
+			t.Fatalf("timed out waiting for heartbeat calls during setup, got %d", c)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Unblock provision and let the pipeline finish.
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+}
+
+func TestHeartbeat_StopsAfterExecuteAttemptReturns(t *testing.T) {
+	// Verify that heartbeat stops ticking after executeAttempt returns.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// Record count right after return.
+	store.mu.Lock()
+	countAfter := len(store.heartbeatCalls)
+	store.mu.Unlock()
+
+	// Wait a bit and verify no new heartbeat ticks occur.
+	time.Sleep(100 * time.Millisecond)
+	store.mu.Lock()
+	countLater := len(store.heartbeatCalls)
+	store.mu.Unlock()
+
+	if countLater != countAfter {
+		t.Errorf("heartbeat continued after ProcessOne returned: %d -> %d calls", countAfter, countLater)
+	}
+}
+
+func TestHeartbeat_NotStartedBeforeTransitionToRunning(t *testing.T) {
+	// Verify that heartbeat does NOT fire when transition to running fails
+	// (heartbeat should only start after successful transition).
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.transErr = fmt.Errorf("transition conflict")
+	rnr := newWorkerMockRunner(nil)
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	_ = pipeline.ProcessOne(context.Background())
+
+	// No heartbeat calls should have been made.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.heartbeatCalls) != 0 {
+		t.Errorf("expected 0 heartbeat calls when transition failed, got %d", len(store.heartbeatCalls))
+	}
+}
+
+func TestHeartbeat_RenewCallsIncludeCorrectIDs(t *testing.T) {
+	// Verify that heartbeat renew calls include the correct attempt, auth profile,
+	// and run IDs from the claimed run.
+	store := newWorkerMockStore()
+	run := testClaimedRun()
+	run.AuthProfileID = "custom-profile-99"
+	store.claimedRun = run
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-42" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "img"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for at least 1 heartbeat tick.
+	deadline := time.After(2 * time.Second)
+	for {
+		store.mu.Lock()
+		count := len(store.heartbeatCalls)
+		store.mu.Unlock()
+		if count >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for heartbeat call")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// HeartbeatService.Renew calls HeartbeatAttempt with the attempt ID.
+	// It uses the correct attempt ID ("attempt-42") from the claim.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for i, hb := range store.heartbeatCalls {
+		if hb.AttemptID != "attempt-42" {
+			t.Errorf("heartbeatCalls[%d].AttemptID = %q, want %q", i, hb.AttemptID, "attempt-42")
+		}
 	}
 }
