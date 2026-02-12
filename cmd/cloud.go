@@ -241,6 +241,8 @@ func classifySubmitError(err error) string {
 		return "policy_blocked"
 	case strings.Contains(msg, "failed to enqueue"):
 		return "store_error"
+	case strings.Contains(msg, "failed to submit run with input snapshot"):
+		return "store_error"
 	default:
 		return "unknown_error"
 	}
@@ -675,19 +677,31 @@ func runCloudCancel(
 // Returns manifest records and a map of path→content for compression.
 func collectBundleFiles(baseDir string) ([]cloud.BundleManifestRecord, map[string][]byte, error) {
 	halDir := filepath.Join(baseDir, ".hal")
-	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+	halInfo, err := os.Lstat(halDir)
+	if os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf(".hal directory not found")
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if halInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf(".hal path must not be a symlink")
+	}
+	if !halInfo.IsDir() {
+		return nil, nil, fmt.Errorf(".hal path is not a directory")
+	}
+
+	canonicalHalDir, err := filepath.EvalSymlinks(halDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve .hal directory: %w", err)
 	}
 
 	var records []cloud.BundleManifestRecord
 	fileContents := make(map[string][]byte)
 
-	err := filepath.Walk(halDir, func(absPath string, info os.FileInfo, err error) error {
+	err = filepath.Walk(halDir, func(absPath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
-		}
-		if info.IsDir() {
-			return nil
 		}
 
 		// Compute relative path from baseDir (e.g., ".hal/prd.json").
@@ -697,11 +711,33 @@ func collectBundleFiles(baseDir string) ([]cloud.BundleManifestRecord, map[strin
 		}
 		relPath = filepath.ToSlash(relPath)
 
+		if info.Mode()&os.ModeSymlink != 0 {
+			if cloud.IsBundlePathAllowed(relPath) {
+				return fmt.Errorf("symlinked bundle path is not allowed: %s", relPath)
+			}
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+
 		if !cloud.IsBundlePathAllowed(relPath) {
 			return nil
 		}
 
-		content, err := os.ReadFile(absPath)
+		resolvedPath, err := filepath.EvalSymlinks(absPath)
+		if err != nil {
+			return fmt.Errorf("resolving %s: %w", relPath, err)
+		}
+		withinHal, err := isPathWithinBase(canonicalHalDir, resolvedPath)
+		if err != nil {
+			return err
+		}
+		if !withinHal {
+			return fmt.Errorf("bundle path resolves outside .hal: %s", relPath)
+		}
+
+		content, err := os.ReadFile(resolvedPath)
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", relPath, err)
 		}
@@ -716,6 +752,81 @@ func collectBundleFiles(baseDir string) ([]cloud.BundleManifestRecord, map[strin
 	}
 
 	return records, fileContents, nil
+}
+
+func isPathWithinBase(basePath, candidatePath string) (bool, error) {
+	rel, err := filepath.Rel(basePath, candidatePath)
+	if err != nil {
+		return false, err
+	}
+	if rel == ".." {
+		return false, nil
+	}
+	if strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func resolveBundleTargetPath(baseDir, bundlePath string) (string, error) {
+	normalized := filepath.Clean(filepath.FromSlash(bundlePath))
+	slashed := filepath.ToSlash(normalized)
+	if slashed != ".hal" && !strings.HasPrefix(slashed, ".hal/") {
+		return "", fmt.Errorf("path is outside .hal: %s", bundlePath)
+	}
+	if filepath.IsAbs(normalized) {
+		return "", fmt.Errorf("absolute path is not allowed: %s", bundlePath)
+	}
+	if normalized == ".." || strings.HasPrefix(normalized, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes workspace: %s", bundlePath)
+	}
+	if normalized == "." {
+		return "", fmt.Errorf("empty path is not allowed")
+	}
+
+	targetPath := filepath.Join(baseDir, normalized)
+	withinBase, err := isPathWithinBase(baseDir, targetPath)
+	if err != nil {
+		return "", err
+	}
+	if !withinBase {
+		return "", fmt.Errorf("path escapes workspace: %s", bundlePath)
+	}
+	if err := ensureNoSymlinkPath(baseDir, normalized); err != nil {
+		return "", err
+	}
+	return targetPath, nil
+}
+
+func ensureNoSymlinkPath(baseDir, relPath string) error {
+	cleanRel := filepath.Clean(relPath)
+	if cleanRel == "." {
+		return nil
+	}
+
+	current := filepath.Clean(baseDir)
+	for _, part := range strings.Split(cleanRel, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			rel, relErr := filepath.Rel(baseDir, current)
+			if relErr != nil {
+				rel = current
+			}
+			return fmt.Errorf("refusing to restore through symlink path %s", filepath.ToSlash(rel))
+		}
+	}
+	return nil
 }
 
 // compressBundleFiles compresses collected file contents into a gzip archive.
@@ -837,7 +948,10 @@ func runCloudPull(
 			if !isAllowed(f.Path) {
 				continue
 			}
-			targetPath := filepath.Join(baseDir, f.Path)
+			targetPath, err := resolveBundleTargetPath(baseDir, f.Path)
+			if err != nil {
+				return writeCloudError(out, jsonOutput, fmt.Sprintf("invalid restore target %s: %v", f.Path, err), "restore_error")
+			}
 			existing, err := os.ReadFile(targetPath)
 			if err != nil {
 				continue // file doesn't exist locally — safe to write
@@ -858,7 +972,10 @@ func runCloudPull(
 		if !isAllowed(f.Path) {
 			continue
 		}
-		targetPath := filepath.Join(baseDir, f.Path)
+		targetPath, err := resolveBundleTargetPath(baseDir, f.Path)
+		if err != nil {
+			return writeCloudError(out, jsonOutput, fmt.Sprintf("invalid restore target %s: %v", f.Path, err), "restore_error")
+		}
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			return writeCloudError(out, jsonOutput, fmt.Sprintf("failed to create directory for %s: %v", f.Path, err), "restore_error")
 		}

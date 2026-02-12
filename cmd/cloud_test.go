@@ -230,6 +230,7 @@ func TestClassifySubmitError(t *testing.T) {
 		{name: "not compatible", err: fmt.Errorf("engine \"claude\" is not compatible with provider \"openai\""), wantCode: "engine_provider_mismatch"},
 		{name: "not allowed", err: fmt.Errorf("provider \"openai\" is not allowed by policy"), wantCode: "policy_blocked"},
 		{name: "enqueue failure", err: fmt.Errorf("failed to enqueue run: db error"), wantCode: "store_error"},
+		{name: "atomic submit failure", err: fmt.Errorf("failed to submit run with input snapshot: tx error"), wantCode: "store_error"},
 		{name: "unknown error", err: fmt.Errorf("something unexpected"), wantCode: "unknown_error"},
 	}
 
@@ -1734,6 +1735,7 @@ func TestCollectBundleFiles(t *testing.T) {
 	tests := []struct {
 		name      string
 		files     map[string]string
+		setup     func(t *testing.T, dir string)
 		wantPaths []string
 		wantErr   string
 	}{
@@ -1776,6 +1778,27 @@ func TestCollectBundleFiles(t *testing.T) {
 				".hal/standards/sub/deep.md",
 			},
 		},
+		{
+			name: "rejects symlinked allowlisted files",
+			files: map[string]string{
+				"prd.json": `{"project":"test"}`,
+			},
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				secretPath := filepath.Join(dir, "secret.txt")
+				if err := os.WriteFile(secretPath, []byte("top-secret"), 0644); err != nil {
+					t.Fatalf("failed to write secret file: %v", err)
+				}
+				standardsDir := filepath.Join(dir, ".hal", "standards")
+				if err := os.MkdirAll(standardsDir, 0755); err != nil {
+					t.Fatalf("failed to create standards dir: %v", err)
+				}
+				if err := os.Symlink(secretPath, filepath.Join(standardsDir, "leak.md")); err != nil {
+					t.Fatalf("failed to create symlink: %v", err)
+				}
+			},
+			wantErr: "symlinked bundle path is not allowed",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1784,6 +1807,9 @@ func TestCollectBundleFiles(t *testing.T) {
 
 			if tt.files != nil {
 				setupHalDir(t, dir, tt.files)
+			}
+			if tt.setup != nil {
+				tt.setup(t, dir)
 			}
 
 			records, contents, err := collectBundleFiles(dir)
@@ -2028,6 +2054,33 @@ func TestRunCloudPull(t *testing.T) {
 					t.Errorf("prd.json = %q, want %q", string(content), `{"project":"remote"}`)
 				}
 			},
+		},
+		{
+			name:  "refuses restore when target file is symlink",
+			runID: "run-001",
+			setupDir: func(t *testing.T, dir string) {
+				t.Helper()
+				halDir := filepath.Join(dir, ".hal")
+				if err := os.MkdirAll(halDir, 0755); err != nil {
+					t.Fatalf("failed to create .hal dir: %v", err)
+				}
+				outside := filepath.Join(dir, "outside.txt")
+				if err := os.WriteFile(outside, []byte("outside"), 0644); err != nil {
+					t.Fatalf("failed to write outside file: %v", err)
+				}
+				if err := os.Symlink(outside, filepath.Join(halDir, "prd.json")); err != nil {
+					t.Fatalf("failed to create symlink: %v", err)
+				}
+			},
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-001"] = validCloudRun("run-001")
+				s.snapshots["run-001"] = makeBundleSnapshot(t, "run-001", 2, map[string]string{
+					".hal/prd.json": `{"project":"remote"}`,
+				})
+				return s
+			},
+			wantErr: "refusing to restore through symlink path",
 		},
 		{
 			name:       "nil store factory returns configuration error in JSON",
