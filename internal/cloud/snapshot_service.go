@@ -128,8 +128,8 @@ func (s *SnapshotService) StoreSnapshot(ctx context.Context, req *SnapshotReques
 		return nil, fmt.Errorf("failed to store snapshot: %w", err)
 	}
 
-	// Step 4: Update run's latest snapshot references.
-	if err := s.store.UpdateRunSnapshotRefs(ctx, req.RunID, nil, &snapshotID, nextVersion); err != nil {
+	// Step 4: Update run snapshot references while preserving submission provenance.
+	if err := s.store.UpdateRunSnapshotRefs(ctx, req.RunID, run.InputSnapshotID, &snapshotID, nextVersion); err != nil {
 		return nil, fmt.Errorf("failed to update run snapshot refs: %w", err)
 	}
 

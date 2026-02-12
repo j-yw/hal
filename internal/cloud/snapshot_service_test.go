@@ -673,9 +673,14 @@ func TestStoreSnapshot(t *testing.T) {
 		}
 	})
 
-	t.Run("updates_only_latest_not_input", func(t *testing.T) {
+	t.Run("preserves_existing_input_snapshot_ref", func(t *testing.T) {
+		inputID := "input-snapshot-001"
 		store := &snapshotMockStore{
-			getRun: validSnapshotRun(1),
+			getRun: func() *Run {
+				r := validSnapshotRun(1)
+				r.InputSnapshotID = &inputID
+				return r
+			}(),
 		}
 
 		svc := NewSnapshotService(store, SnapshotServiceConfig{
@@ -695,9 +700,8 @@ func TestStoreSnapshot(t *testing.T) {
 		}
 
 		refs := store.updateRefsCalls[0]
-		// input_snapshot_id should be nil (not updated by checkpoint/final).
-		if refs.InputSnapshotID != nil {
-			t.Errorf("InputSnapshotID = %v, want nil", refs.InputSnapshotID)
+		if refs.InputSnapshotID == nil || *refs.InputSnapshotID != inputID {
+			t.Errorf("InputSnapshotID = %v, want %q", refs.InputSnapshotID, inputID)
 		}
 		// latest_snapshot_id should be set.
 		if refs.LatestSnapshotID == nil || *refs.LatestSnapshotID != "snap-id" {
