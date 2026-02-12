@@ -189,6 +189,85 @@ func TestGitHubPRCreator_ShellEscaping(t *testing.T) {
 	}
 }
 
+func TestGitHubPRCreator_QuoteHeavyArguments(t *testing.T) {
+	mock := &mockPRRunner{
+		execResult: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   "https://github.com/org/repo/pull/1\n",
+		},
+	}
+
+	// Use quote-heavy values in all five user-controlled arguments.
+	req := &PRCreateRequest{
+		RunID:     "run-999",
+		AttemptID: "att-888",
+		Title:     "fix: handle O'Brien's \"edge\" case",
+		Body:      "This fixes the user's issue where `cmd='val'` broke.\nLine2: more 'quotes' here.",
+		Head:      "hal/cloud/user's-branch",
+		Base:      "main-'v2'",
+		Repo:      "org/it's-a-repo",
+	}
+
+	creator := GitHubPRCreator(mock, "sandbox-1", "/home/user/.auth")
+	_, err := creator(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := mock.lastReq.Command
+
+	// Verify all five user-controlled arguments are shell-quoted.
+	quoteChecks := []struct {
+		label string
+		value string
+	}{
+		{"title", req.Title},
+		{"body", req.Body},
+		{"head", req.Head},
+		{"base", req.Base},
+		{"repo", req.Repo},
+	}
+	for _, qc := range quoteChecks {
+		quoted := ShellQuote(qc.value)
+		if !strings.Contains(cmd, quoted) {
+			t.Errorf("expected ShellQuote(%s) = %q in command, got %q", qc.label, quoted, cmd)
+		}
+	}
+}
+
+func TestGitHubPRCreator_TokenSourcingFromAuthDir(t *testing.T) {
+	mock := &mockPRRunner{
+		execResult: &runner.ExecResult{
+			ExitCode: 0,
+			Stdout:   "https://github.com/org/repo/pull/1\n",
+		},
+	}
+
+	// Use an authDir with special characters to verify escaping.
+	authDir := "/workspace/.auth/o'connor"
+	creator := GitHubPRCreator(mock, "sandbox-1", authDir)
+	_, err := creator(context.Background(), testPRRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := mock.lastReq.Command
+
+	// Verify the command sources GITHUB_TOKEN from ${authDir}/credentials.
+	expectedCredFile := authDir + "/credentials"
+	expectedExport := fmt.Sprintf("export GITHUB_TOKEN=$(cat %s)", ShellQuote(expectedCredFile))
+	if !strings.Contains(cmd, expectedExport) {
+		t.Errorf("expected token sourcing %q in command, got %q", expectedExport, cmd)
+	}
+
+	// Verify the token export appears before gh pr create.
+	exportIdx := strings.Index(cmd, "export GITHUB_TOKEN")
+	ghIdx := strings.Index(cmd, "gh pr create")
+	if exportIdx < 0 || ghIdx < 0 || exportIdx >= ghIdx {
+		t.Errorf("expected token export before gh pr create in command %q", cmd)
+	}
+}
+
 func TestGitHubPRCreator_EmptyBody(t *testing.T) {
 	mock := &mockPRRunner{
 		execResult: &runner.ExecResult{
