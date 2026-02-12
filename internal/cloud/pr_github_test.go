@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -332,6 +333,133 @@ func TestParseGHPROutput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- US-012: Surface GitHubPRCreator execution failures with concrete error data ---
+
+func TestGitHubPRCreator_NonZeroExitIncludesExitCodeAndStderr(t *testing.T) {
+	tests := []struct {
+		name     string
+		exitCode int
+		stderr   string
+		wantExit string // expected exit code fragment
+		wantMsg  string // expected stderr fragment
+	}{
+		{
+			name:     "exit 1 with stderr",
+			exitCode: 1,
+			stderr:   "pull request already exists",
+			wantExit: "exit 1",
+			wantMsg:  "pull request already exists",
+		},
+		{
+			name:     "exit 128 with stderr",
+			exitCode: 128,
+			stderr:   "fatal: authentication failed",
+			wantExit: "exit 128",
+			wantMsg:  "fatal: authentication failed",
+		},
+		{
+			name:     "exit 2 with empty stderr",
+			exitCode: 2,
+			stderr:   "",
+			wantExit: "exit 2",
+			wantMsg:  "", // empty stderr should still produce error with exit code
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockPRRunner{
+				execResult: &runner.ExecResult{
+					ExitCode: tt.exitCode,
+					Stderr:   tt.stderr,
+				},
+			}
+
+			creator := GitHubPRCreator(mock, "sandbox-1", "/home/user/.auth")
+			_, err := creator(context.Background(), testPRRequest())
+			if err == nil {
+				t.Fatal("expected error for non-zero exit")
+			}
+
+			errText := err.Error()
+			if !strings.Contains(errText, tt.wantExit) {
+				t.Errorf("error should contain %q, got %q", tt.wantExit, errText)
+			}
+			if tt.wantMsg != "" && !strings.Contains(errText, tt.wantMsg) {
+				t.Errorf("error should contain stderr %q, got %q", tt.wantMsg, errText)
+			}
+			if !strings.Contains(errText, "gh pr create failed") {
+				t.Errorf("error should contain operation context 'gh pr create failed', got %q", errText)
+			}
+		})
+	}
+}
+
+func TestGitHubPRCreator_RunnerErrorWrapping(t *testing.T) {
+	sentinel := fmt.Errorf("network timeout")
+	mock := &mockPRRunner{
+		execErr: sentinel,
+	}
+
+	creator := GitHubPRCreator(mock, "sandbox-1", "/home/user/.auth")
+	_, err := creator(context.Background(), testPRRequest())
+	if err == nil {
+		t.Fatal("expected error for runner failure")
+	}
+
+	// Verify the error wraps the original with %w.
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected error to wrap sentinel via %%w, errors.Is returned false")
+	}
+
+	// Verify the error includes operation context.
+	if !strings.Contains(err.Error(), "executing gh pr create") {
+		t.Errorf("error should contain 'executing gh pr create', got %q", err.Error())
+	}
+
+	// Verify the original error message is preserved.
+	if !strings.Contains(err.Error(), "network timeout") {
+		t.Errorf("error should contain original error message 'network timeout', got %q", err.Error())
+	}
+}
+
+func TestGitHubPRCreator_RunnerErrorVsNonZeroExit(t *testing.T) {
+	// Verify the two error branches produce different error text patterns.
+	// Runner error: "executing gh pr create: <underlying>"
+	// Non-zero exit: "gh pr create failed (exit N): <stderr>"
+
+	t.Run("runner_error_branch", func(t *testing.T) {
+		mock := &mockPRRunner{
+			execErr: fmt.Errorf("connection refused"),
+		}
+		creator := GitHubPRCreator(mock, "sandbox-1", "/auth")
+		_, err := creator(context.Background(), testPRRequest())
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "executing gh pr create:") {
+			t.Errorf("runner error should use 'executing gh pr create:' prefix, got %q", err.Error())
+		}
+	})
+
+	t.Run("non_zero_exit_branch", func(t *testing.T) {
+		mock := &mockPRRunner{
+			execResult: &runner.ExecResult{
+				ExitCode: 1,
+				Stderr:   "not found",
+			},
+		}
+		creator := GitHubPRCreator(mock, "sandbox-1", "/auth")
+		_, err := creator(context.Background(), testPRRequest())
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "gh pr create failed (exit") {
+			t.Errorf("non-zero exit error should use 'gh pr create failed (exit' prefix, got %q", err.Error())
+		}
+	})
 }
 
 func TestBuildGHPRCreateCommand(t *testing.T) {
