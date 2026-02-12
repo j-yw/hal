@@ -2,9 +2,11 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	daytona "github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
@@ -25,6 +27,25 @@ type SDKClientConfig struct {
 // SDKClient is a Daytona SDK implementation of the Runner interface.
 type SDKClient struct {
 	client *daytona.Client
+	mu     sync.RWMutex
+	logRef map[string]sessionCommandRef
+}
+
+type sessionCommand struct {
+	ID      string `json:"id"`
+	Command string `json:"command"`
+}
+
+type sessionCommandRef struct {
+	sessionID string
+	commandID string
+	logs      string
+}
+
+type sandboxCommandRef struct {
+	SessionID string
+	CommandID string
+	Command   string
 }
 
 // NewSDKClient creates a new SDK runner client with the given configuration.
@@ -43,7 +64,10 @@ func NewSDKClient(cfg SDKClientConfig) (*SDKClient, error) {
 		return nil, fmt.Errorf("sdk runner client: init: %w", err)
 	}
 
-	return &SDKClient{client: client}, nil
+	return &SDKClient{
+		client: client,
+		logRef: make(map[string]sessionCommandRef),
+	}, nil
 }
 
 // CreateSandbox provisions a new Daytona sandbox via the SDK.
@@ -87,6 +111,7 @@ func (s *SDKClient) DestroySandbox(ctx context.Context, sandboxID string) error 
 		return fmt.Errorf("sdk runner client: destroy sandbox: %w", err)
 	}
 
+	s.clearLogRef(sandboxID)
 	return nil
 }
 
@@ -106,6 +131,9 @@ func (s *SDKClient) Exec(ctx context.Context, sandboxID string, req *ExecRequest
 	if err != nil {
 		return nil, fmt.Errorf("sdk runner client: exec: get sandbox: %w", err)
 	}
+
+	beforeSessions, _ := sandbox.Process.ListSessions(ctx) // best-effort for log correlation
+	beforeSnapshot := snapshotSessionCommands(beforeSessions)
 
 	var opts []func(*options.ExecuteCommand)
 	if req.WorkDir != "" {
@@ -128,6 +156,23 @@ func (s *SDKClient) Exec(ctx context.Context, sandboxID string, req *ExecRequest
 		result.Stdout = resp.Artifacts.Stdout
 	}
 
+	logs := result.Stdout
+	if result.Stderr != "" {
+		if logs != "" {
+			logs += "\n"
+		}
+		logs += result.Stderr
+	}
+	ref := sessionCommandRef{logs: logs}
+
+	if afterSessions, listErr := sandbox.Process.ListSessions(ctx); listErr == nil {
+		if sessionID, commandID, ok := resolveSessionCommandRef(beforeSnapshot, afterSessions, req.Command); ok {
+			ref.sessionID = sessionID
+			ref.commandID = commandID
+		}
+	}
+	s.setLogRef(sandboxID, ref)
+
 	return result, nil
 }
 
@@ -142,12 +187,39 @@ func (s *SDKClient) StreamLogs(ctx context.Context, sandboxID string) (io.ReadCl
 		return nil, fmt.Errorf("sdk runner client: stream logs: get sandbox: %w", err)
 	}
 
-	logsMap, err := sandbox.Process.GetSessionCommandLogs(ctx, "default", "default")
+	ref, _ := s.getLogRef(sandboxID)
+	if ref.sessionID == "" || ref.commandID == "" {
+		sessions, listErr := sandbox.Process.ListSessions(ctx)
+		if listErr == nil {
+			if sessionID, commandID, ok := latestSessionCommandRef(sessions); ok {
+				ref.sessionID = sessionID
+				ref.commandID = commandID
+				s.setLogRef(sandboxID, ref)
+			}
+		} else if strings.TrimSpace(ref.logs) == "" {
+			return nil, fmt.Errorf("sdk runner client: stream logs: discover command: %w", listErr)
+		}
+	}
+
+	if ref.sessionID == "" || ref.commandID == "" {
+		if strings.TrimSpace(ref.logs) != "" {
+			return io.NopCloser(strings.NewReader(ref.logs)), nil
+		}
+		return nil, fmt.Errorf("sdk runner client: stream logs: no command logs found")
+	}
+
+	logsMap, err := sandbox.Process.GetSessionCommandLogs(ctx, ref.sessionID, ref.commandID)
 	if err != nil {
+		if strings.TrimSpace(ref.logs) != "" {
+			return io.NopCloser(strings.NewReader(ref.logs)), nil
+		}
 		return nil, fmt.Errorf("sdk runner client: stream logs: %w", err)
 	}
 
-	logs, _ := logsMap["logs"].(string)
+	logs := logsFromMap(logsMap)
+	if logs == "" && strings.TrimSpace(ref.logs) != "" {
+		logs = ref.logs
+	}
 	return io.NopCloser(strings.NewReader(logs)), nil
 }
 
@@ -163,4 +235,140 @@ func (s *SDKClient) Health(ctx context.Context) (*HealthStatus, error) {
 		OK:      true,
 		Version: daytona.Version,
 	}, nil
+}
+
+func (s *SDKClient) setLogRef(sandboxID string, ref sessionCommandRef) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logRef[sandboxID] = ref
+}
+
+func (s *SDKClient) getLogRef(sandboxID string) (sessionCommandRef, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ref, ok := s.logRef[sandboxID]
+	return ref, ok
+}
+
+func (s *SDKClient) clearLogRef(sandboxID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.logRef, sandboxID)
+}
+
+func snapshotSessionCommands(sessions []map[string]any) map[string]map[string]struct{} {
+	snapshot := make(map[string]map[string]struct{})
+	for _, ref := range flattenSessionCommands(sessions) {
+		if _, ok := snapshot[ref.SessionID]; !ok {
+			snapshot[ref.SessionID] = make(map[string]struct{})
+		}
+		snapshot[ref.SessionID][ref.CommandID] = struct{}{}
+	}
+	return snapshot
+}
+
+func resolveSessionCommandRef(before map[string]map[string]struct{}, sessions []map[string]any, command string) (string, string, bool) {
+	all := flattenSessionCommands(sessions)
+	if len(all) == 0 {
+		return "", "", false
+	}
+
+	newMatching := make([]sandboxCommandRef, 0, len(all))
+	newAny := make([]sandboxCommandRef, 0, len(all))
+	matchingAny := make([]sandboxCommandRef, 0, len(all))
+
+	for _, ref := range all {
+		seen := commandSeen(before, ref.SessionID, ref.CommandID)
+		if !seen {
+			newAny = append(newAny, ref)
+		}
+		if command != "" && ref.Command == command {
+			matchingAny = append(matchingAny, ref)
+			if !seen {
+				newMatching = append(newMatching, ref)
+			}
+		}
+	}
+
+	if len(newMatching) > 0 {
+		ref := newMatching[len(newMatching)-1]
+		return ref.SessionID, ref.CommandID, true
+	}
+	if len(newAny) > 0 {
+		ref := newAny[len(newAny)-1]
+		return ref.SessionID, ref.CommandID, true
+	}
+	if len(matchingAny) > 0 {
+		ref := matchingAny[len(matchingAny)-1]
+		return ref.SessionID, ref.CommandID, true
+	}
+
+	ref := all[len(all)-1]
+	return ref.SessionID, ref.CommandID, true
+}
+
+func latestSessionCommandRef(sessions []map[string]any) (string, string, bool) {
+	return resolveSessionCommandRef(nil, sessions, "")
+}
+
+func flattenSessionCommands(sessions []map[string]any) []sandboxCommandRef {
+	refs := make([]sandboxCommandRef, 0)
+	for _, session := range sessions {
+		sessionID, _ := session["sessionId"].(string)
+		if sessionID == "" {
+			continue
+		}
+		for _, cmd := range parseSessionCommands(session["commands"]) {
+			if cmd.ID == "" {
+				continue
+			}
+			refs = append(refs, sandboxCommandRef{
+				SessionID: sessionID,
+				CommandID: cmd.ID,
+				Command:   cmd.Command,
+			})
+		}
+	}
+	return refs
+}
+
+func parseSessionCommands(raw any) []sessionCommand {
+	if raw == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+
+	var commands []sessionCommand
+	if err := json.Unmarshal(data, &commands); err != nil {
+		return nil
+	}
+	return commands
+}
+
+func commandSeen(snapshot map[string]map[string]struct{}, sessionID, commandID string) bool {
+	if snapshot == nil {
+		return false
+	}
+	sessionCommands, ok := snapshot[sessionID]
+	if !ok {
+		return false
+	}
+	_, ok = sessionCommands[commandID]
+	return ok
+}
+
+func logsFromMap(logsMap map[string]any) string {
+	raw, ok := logsMap["logs"]
+	if !ok || raw == nil {
+		return ""
+	}
+	logs, ok := raw.(string)
+	if ok {
+		return logs
+	}
+	return fmt.Sprint(raw)
 }

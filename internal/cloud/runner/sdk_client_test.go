@@ -390,3 +390,129 @@ func TestSDKClientExecSDKFailureWithOptions(t *testing.T) {
 		t.Errorf("error %q should contain 'sdk runner client: exec:' prefix", err.Error())
 	}
 }
+
+func TestResolveSessionCommandRef_PrefersNewMatchingCommand(t *testing.T) {
+	before := snapshotSessionCommands([]map[string]any{
+		{
+			"sessionId": "s-1",
+			"commands": []map[string]any{
+				{"id": "c-old", "command": "echo old"},
+			},
+		},
+	})
+
+	after := []map[string]any{
+		{
+			"sessionId": "s-1",
+			"commands": []map[string]any{
+				{"id": "c-old", "command": "echo old"},
+				{"id": "c-new", "command": "hal run"},
+			},
+		},
+		{
+			"sessionId": "s-2",
+			"commands": []map[string]any{
+				{"id": "c-other", "command": "other command"},
+			},
+		},
+	}
+
+	sessionID, commandID, ok := resolveSessionCommandRef(before, after, "hal run")
+	if !ok {
+		t.Fatal("expected command reference, got none")
+	}
+	if sessionID != "s-1" || commandID != "c-new" {
+		t.Fatalf("got (%q, %q), want (%q, %q)", sessionID, commandID, "s-1", "c-new")
+	}
+}
+
+func TestResolveSessionCommandRef_FallsBackToNewestCommand(t *testing.T) {
+	before := snapshotSessionCommands([]map[string]any{
+		{
+			"sessionId": "s-1",
+			"commands": []map[string]any{
+				{"id": "c-old", "command": "echo old"},
+			},
+		},
+	})
+
+	after := []map[string]any{
+		{
+			"sessionId": "s-1",
+			"commands": []map[string]any{
+				{"id": "c-old", "command": "echo old"},
+			},
+		},
+		{
+			"sessionId": "s-2",
+			"commands": []map[string]any{
+				{"id": "c-newest", "command": "unrelated"},
+			},
+		},
+	}
+
+	sessionID, commandID, ok := resolveSessionCommandRef(before, after, "hal review")
+	if !ok {
+		t.Fatal("expected command reference, got none")
+	}
+	if sessionID != "s-2" || commandID != "c-newest" {
+		t.Fatalf("got (%q, %q), want (%q, %q)", sessionID, commandID, "s-2", "c-newest")
+	}
+}
+
+func TestLatestSessionCommandRef(t *testing.T) {
+	sessions := []map[string]any{
+		{
+			"sessionId": "s-1",
+			"commands": []map[string]any{
+				{"id": "c-1", "command": "first"},
+			},
+		},
+		{
+			"sessionId": "s-2",
+			"commands": []map[string]any{
+				{"id": "c-2", "command": "second"},
+			},
+		},
+	}
+
+	sessionID, commandID, ok := latestSessionCommandRef(sessions)
+	if !ok {
+		t.Fatal("expected command reference, got none")
+	}
+	if sessionID != "s-2" || commandID != "c-2" {
+		t.Fatalf("got (%q, %q), want (%q, %q)", sessionID, commandID, "s-2", "c-2")
+	}
+}
+
+func TestLogsFromMap(t *testing.T) {
+	tests := []struct {
+		name string
+		logs map[string]any
+		want string
+	}{
+		{
+			name: "string logs",
+			logs: map[string]any{"logs": "hello"},
+			want: "hello",
+		},
+		{
+			name: "non-string logs",
+			logs: map[string]any{"logs": 42},
+			want: "42",
+		},
+		{
+			name: "missing logs",
+			logs: map[string]any{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := logsFromMap(tt.logs); got != tt.want {
+				t.Fatalf("logsFromMap() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
