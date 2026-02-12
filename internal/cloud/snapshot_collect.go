@@ -86,12 +86,16 @@ func CollectSandboxBundle(ctx context.Context, r runner.Runner, sandboxID string
 	return records, nil
 }
 
+// base64Cmd is the command used to encode files. -w0 disables line wrapping
+// in GNU coreutils base64. The command is defined as a variable so sandbox
+// environments with different base64 implementations can be accommodated.
+var base64Cmd = "base64 -w0"
+
 // readSandboxFile reads a single file from the sandbox using base64 encoding
 // to safely capture binary and multiline content.
 func readSandboxFile(ctx context.Context, r runner.Runner, sandboxID, relPath string) (*SandboxBundleRecord, error) {
-	// Use base64 -w0 to produce non-wrapped output suitable for decode.
 	absPath := "/workspace/" + relPath
-	cmd := fmt.Sprintf("base64 -w0 %s", ShellQuote(absPath))
+	cmd := fmt.Sprintf("%s %s", base64Cmd, ShellQuote(absPath))
 	result, err := r.Exec(ctx, sandboxID, &runner.ExecRequest{
 		Command: cmd,
 		WorkDir: "/workspace",
@@ -103,7 +107,9 @@ func readSandboxFile(ctx context.Context, r runner.Runner, sandboxID, relPath st
 		return nil, fmt.Errorf("base64 encode failed for %s (exit %d): %s", relPath, result.ExitCode, result.Stderr)
 	}
 
-	encoded := strings.TrimSpace(result.Stdout)
+	// Strip all whitespace from the base64 output to handle implementations
+	// that produce wrapped output despite -w0, or trailing newlines.
+	encoded := stripBase64Whitespace(result.Stdout)
 	content, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("base64 decode failed for %s: %w (stderr: %s)", relPath, err, result.Stderr)
@@ -113,4 +119,21 @@ func readSandboxFile(ctx context.Context, r runner.Runner, sandboxID, relPath st
 		Path:    relPath,
 		Content: content,
 	}, nil
+}
+
+// stripBase64Whitespace removes all whitespace characters from base64 output.
+// This handles base64 implementations that produce wrapped output (76-char
+// lines with \n) even when -w0 is specified, as well as trailing newlines.
+func stripBase64Whitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, c := range s {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
 }

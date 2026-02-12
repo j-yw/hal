@@ -64,11 +64,11 @@ func newMockCollectRunner(fs sandboxFS) *mockCollectRunner {
 				}, nil
 			}
 
-			// Handle base64 command.
+			// Handle base64 command (matches the base64Cmd variable).
 			if strings.HasPrefix(cmd, "base64 ") {
 				// Extract path from: base64 -w0 '/workspace/<relPath>'
 				// The path is shell-quoted by ShellQuote.
-				pathPart := strings.TrimPrefix(cmd, "base64 -w0 ")
+				pathPart := strings.TrimPrefix(cmd, base64Cmd+" ")
 				// Remove ShellQuote wrapping (single quotes).
 				absPath := strings.Trim(pathPart, "'")
 				// Handle escaped quotes inside ShellQuote output.
@@ -152,9 +152,9 @@ func TestCollectSandboxBundle_RunWorkflow(t *testing.T) {
 
 func TestCollectSandboxBundle_AutoWorkflow(t *testing.T) {
 	fs := sandboxFS{
-		"/workspace/.hal/prd.json":          `{"project":"test"}`,
-		"/workspace/.hal/progress.txt":      "progress content",
-		"/workspace/.hal/reports/review.md": "# review report",
+		"/workspace/.hal/prd.json":           `{"project":"test"}`,
+		"/workspace/.hal/progress.txt":       "progress content",
+		"/workspace/.hal/reports/review.md":  "# review report",
 		"/workspace/.hal/skills/commit.yaml": "name: commit",
 	}
 
@@ -267,6 +267,163 @@ func TestCollectSandboxBundle_ListError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "network timeout") {
 		t.Errorf("error should include underlying cause: %v", err)
+	}
+}
+
+func TestCollectSandboxBundle_MultilineTextContent(t *testing.T) {
+	multiline := "line one\nline two\nline three\n\twith tabs\nand trailing newline\n"
+	fs := sandboxFS{
+		"/workspace/.hal/progress.txt": multiline,
+	}
+
+	r := newMockCollectRunner(fs)
+	ctx := context.Background()
+
+	records, err := CollectSandboxBundle(ctx, r, "sandbox-1", WorkflowKindRun)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if string(records[0].Content) != multiline {
+		t.Errorf("multiline content mismatch:\n  got:  %q\n  want: %q", string(records[0].Content), multiline)
+	}
+}
+
+func TestCollectSandboxBundle_BinarySafeContent(t *testing.T) {
+	// Binary content with null bytes, high bytes, and non-UTF8 sequences.
+	binaryContent := string([]byte{0x00, 0x01, 0xFF, 0xFE, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+	fs := sandboxFS{
+		"/workspace/.hal/prd.json": binaryContent,
+	}
+
+	r := newMockCollectRunner(fs)
+	ctx := context.Background()
+
+	records, err := CollectSandboxBundle(ctx, r, "sandbox-1", WorkflowKindRun)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if string(records[0].Content) != binaryContent {
+		t.Errorf("binary content mismatch:\n  got:  %x\n  want: %x", records[0].Content, []byte(binaryContent))
+	}
+}
+
+func TestCollectSandboxBundle_WrappedBase64Output(t *testing.T) {
+	// Simulate a base64 implementation that wraps output at 76 chars
+	// despite -w0 being requested. The stripBase64Whitespace function
+	// should handle this gracefully.
+	longContent := strings.Repeat("Hello, World! This is a longer string to produce wrapped base64 output. ", 5)
+
+	// Custom runner that returns wrapped base64 output (76-char lines).
+	r := &mockCollectRunner{
+		execFn: func(_ context.Context, _ string, req *runner.ExecRequest) (*runner.ExecResult, error) {
+			cmd := req.Command
+			if strings.HasPrefix(cmd, "find ") {
+				return &runner.ExecResult{
+					ExitCode: 0,
+					Stdout:   "/workspace/.hal/progress.txt\n",
+				}, nil
+			}
+			if strings.HasPrefix(cmd, "base64 ") {
+				raw := base64.StdEncoding.EncodeToString([]byte(longContent))
+				// Insert newlines every 76 characters to simulate wrapped output.
+				var wrapped strings.Builder
+				for i := 0; i < len(raw); i += 76 {
+					end := i + 76
+					if end > len(raw) {
+						end = len(raw)
+					}
+					wrapped.WriteString(raw[i:end])
+					wrapped.WriteByte('\n')
+				}
+				return &runner.ExecResult{
+					ExitCode: 0,
+					Stdout:   wrapped.String(),
+				}, nil
+			}
+			return &runner.ExecResult{ExitCode: 127, Stderr: "unknown command"}, nil
+		},
+	}
+
+	ctx := context.Background()
+	records, err := CollectSandboxBundle(ctx, r, "sandbox-1", WorkflowKindRun)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if string(records[0].Content) != longContent {
+		t.Errorf("content mismatch with wrapped base64 output:\n  got len:  %d\n  want len: %d", len(records[0].Content), len(longContent))
+	}
+}
+
+func TestCollectSandboxBundle_DecodeFailure(t *testing.T) {
+	// Simulate a runner that returns invalid base64 output.
+	r := &mockCollectRunner{
+		execFn: func(_ context.Context, _ string, req *runner.ExecRequest) (*runner.ExecResult, error) {
+			cmd := req.Command
+			if strings.HasPrefix(cmd, "find ") {
+				return &runner.ExecResult{
+					ExitCode: 0,
+					Stdout:   "/workspace/.hal/prd.json\n",
+				}, nil
+			}
+			if strings.HasPrefix(cmd, "base64 ") {
+				return &runner.ExecResult{
+					ExitCode: 0,
+					Stdout:   "!!!not-valid-base64!!!",
+					Stderr:   "corruption detected",
+				}, nil
+			}
+			return &runner.ExecResult{ExitCode: 127, Stderr: "unknown command"}, nil
+		},
+	}
+
+	ctx := context.Background()
+	_, err := CollectSandboxBundle(ctx, r, "sandbox-1", WorkflowKindRun)
+	if err == nil {
+		t.Fatal("expected error for invalid base64 output, got nil")
+	}
+	// Error must include the file path.
+	if !strings.Contains(err.Error(), ".hal/prd.json") {
+		t.Errorf("error should include file path: %v", err)
+	}
+	// Error must include stderr from the command.
+	if !strings.Contains(err.Error(), "corruption detected") {
+		t.Errorf("error should include stderr: %v", err)
+	}
+	// Error must indicate decode failure.
+	if !strings.Contains(err.Error(), "base64 decode failed") {
+		t.Errorf("error should indicate decode failure: %v", err)
+	}
+}
+
+func TestStripBase64Whitespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no whitespace", "SGVsbG8=", "SGVsbG8="},
+		{"trailing newline", "SGVsbG8=\n", "SGVsbG8="},
+		{"wrapped lines", "SGVs\nbG8=\n", "SGVsbG8="},
+		{"tabs and spaces", "SG Vs\tbG8=", "SGVsbG8="},
+		{"carriage return", "SGVs\r\nbG8=\r\n", "SGVsbG8="},
+		{"empty string", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripBase64Whitespace(tt.input)
+			if got != tt.want {
+				t.Errorf("stripBase64Whitespace(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 
