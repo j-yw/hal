@@ -1,163 +1,80 @@
 ## Codebase Patterns
-- Config env var constants live in `internal/cloud/deploy/config.go` — add new env constants to the same const block.
-- `LoadConfig(getenv)` pattern enables testable config loading; tests use inline `func(key string) string { return env[key] }` closures.
-- `ValidateStore()` is DB-only validation; `Validate()` is full validation. Both delegate to `validateAdapter()` for DB checks.
-- URL fallback precedence is implemented directly in `LoadConfig` (check primary, fallback to legacy alias).
-- Config fields are value types (not pointers) since these come from env vars, not YAML.
-- SDK client constructor pattern: `SDKClientConfig` struct → pre-validate required fields → delegate to `daytona.NewClientWithConfig` → wrap SDK errors with `%w`.
-- SDK client tests are in `sdk_client_test.go` (package-internal); HTTP client tests remain in `runner_test.go`.
-- The `daytona.NewClientWithConfig` constructor does not make network calls — it only configures HTTP clients, so tests can construct real SDK clients without mocking.
-- SDK sandbox lifecycle: `client.Create` → `*daytona.Sandbox`, `client.Get(id)` → `*daytona.Sandbox`, then `sandbox.Delete(ctx)` — the delete is on the sandbox object, not the client.
-- Use cancelled-context tests (`ctx, cancel := ...; cancel()`) to exercise SDK error wrapping without a mock or live server.
-- SDK `sandbox.Process.ExecuteCommand(ctx, cmd, opts...)` returns `*types.ExecuteResponse{ExitCode, Result, Artifacts}` — map `Result` to stdout, prefer `Artifacts.Stdout` when available.
-- SDK options are functional: `options.WithCwd(dir)`, `options.WithExecuteTimeout(dur)` — build a `[]func(*options.ExecuteCommand)` slice and spread with `opts...`.
-- SDK `ProcessService.GetSessionCommandLogs(ctx, sessionID, commandID)` returns `map[string]any` — access logs via `logsMap["logs"].(string)` with zero-value fallback.
-- SDK `client.List(ctx, labels, page *int, limit *int)` returns `*PaginatedSandboxes` — use for health probes with page=1, limit=1 and `daytona.Version` for version info.
+- Postgres/Turso ClaimRun uses `FOR UPDATE SKIP LOCKED` subquery pattern for atomic claim — modifications go in the outer UPDATE SET clause.
+- Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
+- `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
+- `scanRun` reads all RETURNING columns including `attempt_count`, so adding SET clauses to the UPDATE is automatically reflected in the returned Run struct.
+- Turso store tests are regular unit tests (no build tags) using `modernc.org/sqlite`, while Postgres store tests require `//go:build integration` and `HAL_TEST_POSTGRES_DSN`.
+- After US-001/US-002 made store adapters atomically increment `attempt_count`, ClaimService must use `run.AttemptCount` directly (not `+1`) for `Attempt.AttemptNumber` since the store already incremented it.
+- Mock `claimedRun()` in claim_test.go represents the run as returned by `ClaimRun` (post-increment), so `AttemptCount` should reflect the incremented value (e.g., 1 for first claim, not 0).
+- Use `cloud.ShellQuote(s)` from `internal/cloud/shell.go` for safe single-quote shell escaping — wraps in `'...'` with `'` → `'\''` replacement. The old `escapeShellSingleQuote` in auth_materialization.go only escapes inner content without wrapping.
+- `CollectSandboxBundle` uses `MatchesArtifactPatterns` (workflow-aware filtering) not `IsBundlePathAllowed` (input allowlist) — these are two different filtering policies for worker-side vs client-side collection.
+- When building shell commands with `ShellQuote`, wrap the entire path argument (e.g., `ShellQuote("/workspace/" + relPath)`) not just part of it.
+- Use `mockCollectRunner` + `sandboxFS` pattern for testing sandbox exec operations without real infrastructure.
 
-## 2026-02-12 - US-001
-- Removed `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN` constants, fields, and env parsing from `internal/cloud/deploy/config.go`
-- Added `DAYTONA_API_KEY` (required), `DAYTONA_API_URL` (optional), `DAYTONA_SERVER_URL` (legacy alias fallback), and `DAYTONA_TARGET` (optional)
-- `LoadConfig` prefers `DAYTONA_API_URL` and falls back to `DAYTONA_SERVER_URL` only when `DAYTONA_API_URL` is unset
-- `Validate()` now requires non-empty `DaytonaAPIKey` instead of `RunnerURL`/`RunnerServiceToken`
-- `ValidateStore()` remains DB-only (unchanged behavior)
-- Files changed: `internal/cloud/deploy/config.go`, `internal/cloud/deploy/config_test.go`
-- **Learnings for future iterations:**
-  - No other Go files in the project reference `deploy.Config` fields directly — the config struct is only used within the deploy package tests and config loading, making field changes safe.
-  - The smoke.go file references `runnerURL` as a parameter, not as a Config field — it will need separate attention in US-008.
-  - Runner-related env vars also appear in `deploy/docker-compose.yml` and `deploy/.env.example` — those are addressed in US-009.
 ---
 
-## 2026-02-12 - US-002
-- Added `github.com/daytonaio/daytona/libs/sdk-go v0.141.0` to go.mod (with transitive deps: api-client-go, toolbox-api-client-go)
-- Created `internal/cloud/runner/sdk_client.go` with `SDKClientConfig` struct and `NewSDKClient` constructor
-- Constructor validates APIKey is required, then delegates to `daytona.NewClientWithConfig` with `types.DaytonaConfig{APIKey, APIUrl, Target}`
-- Constructor wraps SDK init failures with `fmt.Errorf("sdk runner client: init: %w", err)`
-- Created `internal/cloud/runner/sdk_client_test.go` with table-driven constructor tests covering empty APIKey, valid configs, error prefix, and wrapping behavior
-- Files changed: `go.mod`, `go.sum`, `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+## 2026-02-13 - US-001
+- Implemented atomic `attempt_count` increment in Postgres `ClaimRun`
+- Files changed:
+  - `internal/cloud/postgres/store.go` — Added `attempt_count = attempt_count + 1` to ClaimRun UPDATE
+  - `internal/cloud/postgres/store_test.go` — Added `TestClaimIncrementsAttemptCount` and `TestClaimNoIncrementForIneligible`
 - **Learnings for future iterations:**
-  - The Daytona Go SDK brings significant transitive dependencies (AWS SDK, OpenTelemetry, gRPC, websocket) — expect a large go.sum diff.
-  - `NewClientWithConfig` is a pure config constructor (no network calls), so tests can create real SDK clients safely.
-  - The `SDKClient` struct stores `*daytona.Client` — future stories (US-003+) will add Runner interface methods that delegate to this client.
-  - The SDK `types.DaytonaConfig` also supports `JWTToken` and `OrganizationID` — we only expose APIKey/APIURL/Target since that's what our deploy config provides.
+  - The ClaimRun SQL pattern uses a subquery with `FOR UPDATE SKIP LOCKED` and the outer UPDATE applies all mutations atomically — extend the SET clause for any new claim-time state changes.
+  - Postgres store tests are integration tests (`//go:build integration`) that require `HAL_TEST_POSTGRES_DSN` — use `go vet -tags=integration` to verify compilation without a live database.
+  - The `validRunTransitions` map in `store.go` defines allowed state transitions — check it before writing tests that rely on `TransitionRun`.
 ---
 
-## 2026-02-12 - US-003
-- Added `CreateSandbox` method to `SDKClient`: validates nil request and empty image, then calls `client.Create(ctx, types.ImageParams{Image, SandboxBaseParams{EnvVars}})`, maps SDK `Sandbox` to `runner.Sandbox` (ID, State→Status, time.Now()→CreatedAt)
-- Added `DestroySandbox` method to `SDKClient`: validates empty sandboxID, retrieves sandbox via `client.Get(ctx, sandboxID)`, then calls `sandbox.Delete(ctx)`
-- Both methods wrap failures with `%w` and operation-specific prefixes (`sdk runner client: create sandbox:`, `sdk runner client: destroy:`)
-- Added tests: validation paths (nil request, empty image, empty ID), error prefix checks, and SDK failure paths (cancelled context forces SDK-level errors to exercise wrapping)
-- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+## 2026-02-13 - US-002
+- Implemented atomic `attempt_count` increment in Turso `ClaimRun`
+- Files changed:
+  - `internal/cloud/turso/store.go` — Added `attempt_count = attempt_count + 1` to ClaimRun UPDATE SET clause
+  - `internal/cloud/turso/store_test.go` — Added `TestClaimIncrementsAttemptCount` and `TestClaimNoIncrementForIneligible`
 - **Learnings for future iterations:**
-  - SDK `client.Create` returns `*daytona.Sandbox` with `ID`, `Name`, `State` (typed `apiclient.SandboxState`), and service fields (FileSystem, Git, Process, etc.) — cast `State` to string for `runner.Sandbox.Status`.
-  - SDK `client.Create` accepts `any` params (switch on `types.ImageParams` or `types.SnapshotParams`) — we use `ImageParams` since our `CreateSandboxRequest.Image` maps to it.
-  - SDK `Sandbox.Delete(ctx)` delegates to `DeleteWithTimeout(ctx, 60s)` — no separate timeout needed at our layer.
-  - Cancelled-context tests are the cleanest way to exercise SDK error wrapping without a mock or a live server — `ctx, cancel := context.WithCancel(ctx); cancel()` triggers immediate SDK failure.
-  - `DestroySandbox` uses a two-step get-then-delete pattern because the SDK's `Delete` is on the `*Sandbox` object, not on the client.
+  - Turso/SQLite ClaimRun uses the same subquery UPDATE pattern as Postgres but without `FOR UPDATE SKIP LOCKED` — SQLite's single-writer lock provides serialization instead.
+  - Turso store tests are regular unit tests (no build tag) using `modernc.org/sqlite` — they run with `go test ./...` unlike Postgres tests which need `-tags=integration`.
+  - The test pattern for claim attempt_count is identical across Postgres and Turso — reuse the same test structure when adapting claim-time mutations across adapters.
 ---
 
-## 2026-02-12 - US-004
-- Added `Exec` method to `SDKClient`: validates nil request, empty sandboxID, and empty command, then retrieves sandbox via `client.Get`, builds functional options slice for WorkDir/Timeout, calls `sandbox.Process.ExecuteCommand(ctx, cmd, opts...)`
-- Maps `ExecuteResponse` to `runner.ExecResult`: `ExitCode` direct, `Result` to `Stdout`, prefers `Artifacts.Stdout` when available
-- Options applied conditionally: `options.WithCwd` when `req.WorkDir != ""`, `options.WithExecuteTimeout` when `req.Timeout > 0`
-- All failures wrapped with `%w` and `sdk runner client: exec:` prefix
-- Added tests: validation table (nil request, empty sandboxID, empty command, empty command with workdir), SDK failure via cancelled context, SDK failure with options
-- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+## 2026-02-13 - US-003
+- Aligned ClaimService `Attempt.AttemptNumber` with claimed `Run.AttemptCount`
+- Files changed:
+  - `internal/cloud/claim.go` — Changed `AttemptNumber: run.AttemptCount + 1` to `AttemptNumber: run.AttemptCount`
+  - `internal/cloud/claim_test.go` — Updated `claimedRun()` helper to return `AttemptCount: 1` (post-increment), renamed test case, added `TestClaimAttemptNumberAlignment` with first-claim and second-claim-after-requeue subtests
 - **Learnings for future iterations:**
-  - SDK `ExecuteCommand` uses variadic functional options pattern: `func(*options.ExecuteCommand)` — build a slice and spread it
-  - `ExecuteResponse.Result` is the combined output; `Artifacts.Stdout` is structured stdout when available (Artifacts can be nil)
-  - The SDK converts `time.Duration` timeout to `int32` seconds internally, so pass the `time.Duration` directly to `WithExecuteTimeout`
-  - Exec follows the same get-then-operate pattern as DestroySandbox: `client.Get` first, then operate on the returned `*Sandbox` object's services
+  - After US-001/US-002, the store adapters atomically increment `attempt_count` during `ClaimRun`, so the returned `Run.AttemptCount` already has the incremented value — ClaimService must not add `+1` again.
+  - Mock stores in claim_test.go should return runs that simulate post-increment state (e.g., `AttemptCount: 1` for first claim) since the real store does the increment before returning.
+  - The `Attempt.AttemptNumber == Run.AttemptCount` invariant should be asserted explicitly in tests as a regression guard.
 ---
 
-## 2026-02-12 - US-005
-- Added `StreamLogs` method to `SDKClient`: validates empty sandboxID, retrieves sandbox via `client.Get`, calls `sandbox.Process.GetSessionCommandLogs(ctx, "default", "default")`, returns `io.NopCloser(strings.NewReader(logs))`
-- `GetSessionCommandLogs` returns `map[string]any` with a `"logs"` key containing the log text — type-assert with zero-value fallback
-- All failures wrapped with `%w` and `sdk runner client: stream logs:` prefix
-- Added tests: validation table (empty sandboxID), SDK failure via cancelled context
-- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+## 2026-02-13 - US-004
+- Added shared shell escaping helper `ShellQuote` in `internal/cloud/shell.go`
+- Files changed:
+  - `internal/cloud/shell.go` — New file with exported `ShellQuote(s string) string` function
+  - `internal/cloud/shell_test.go` — New file with table-driven tests covering plain text, whitespace, embedded single quotes, multiple quotes, newlines, tabs, empty string, and special shell characters
 - **Learnings for future iterations:**
-  - SDK `ProcessService.GetSessionCommandLogs(ctx, sessionID, commandID)` returns `map[string]any` not a string — access logs via `logsMap["logs"].(string)`
-  - The "default" session and "default" command IDs are used for standard log retrieval
-  - StreamLogs follows the same get-then-operate pattern as DestroySandbox and Exec
-  - The `io.NopCloser(strings.NewReader(...))` pattern fulfills the `io.ReadCloser` return type without any actual streaming or cleanup needed
+  - `ShellQuote` wraps values in single quotes and escapes `'` → `'\''` — use this instead of the old `escapeShellSingleQuote` which only does inner escaping without wrapping.
+  - US-005 will replace `escapeShellSingleQuote` usage in `auth_materialization.go` with `ShellQuote` — the caller will need to adjust the `printf` command format since `ShellQuote` includes the outer quotes.
+  - `strings.ReplaceAll` is simpler and more idiomatic than a rune-by-rune loop for single-character replacement.
 ---
 
-## 2026-02-12 - US-006
-- Added `Health` method to `SDKClient`: probes Daytona reachability via `client.List(ctx, nil, &page1, &limit1)`, returns `HealthStatus{OK:true, Version:daytona.Version}` on success
-- Pagination params are `*int` pointers (page=1, limit=1) — minimal probe to verify API reachability without fetching real data
-- Failures wrapped with `%w` and `sdk runner client: health:` prefix
-- Added tests: SDK failure via cancelled context, version/interface compliance verification
-- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+## 2026-02-13 - US-005
+- Replaced ad-hoc `escapeShellSingleQuote` with shared `ShellQuote` in auth materialization command construction
+- Files changed:
+  - `internal/cloud/auth_materialization.go` — Switched `printf` format from `'%s'` with `escapeShellSingleQuote()` to `%s` with `ShellQuote()`, removed the now-unused `escapeShellSingleQuote` function
+  - `internal/cloud/auth_materialization_test.go` — Replaced `TestEscapeShellSingleQuote` with `TestMaterializeUsesShellQuote` that verifies command strings contain `ShellQuote` output for various inputs (plain text, embedded quotes, newlines). Updated `secret_with_single_quotes_escaped` test to assert `ShellQuote` output directly.
 - **Learnings for future iterations:**
-  - SDK `client.List` takes `(ctx, labels map[string]string, page *int, limit *int)` and returns `*PaginatedSandboxes` — use `nil` labels and pointer-to-int for pagination
-  - `daytona.Version` is a package-level `var` (not const) embedded at SDK build time — may be empty in test builds without the embedded VERSION file
-  - Health has no validation step (no input params) so the only test paths are SDK success/failure — use cancelled-context for failure and interface compliance check for success wiring
+  - When switching from an inner-only escaping function to one that wraps in quotes (`ShellQuote`), update the surrounding format string to remove the manual outer quotes — otherwise you get double-quoting.
+  - Tests should assert the exact `ShellQuote(value)` output in command strings rather than testing for absence of unescaped characters — this directly validates the integration.
 ---
 
-## 2026-02-12 - US-007
-- Deleted `internal/cloud/runner/client.go` (HTTP runner implementation: ClientConfig, Client, NewClient, all HTTP methods, helpers)
-- Deleted `internal/cloud/runner/runner_test.go` (HTTP-focused tests: constructor, header, CRUD, context cancellation, interface compliance)
-- Updated `internal/cloud/runner/runner.go` package comment to remove "HTTP client implementation" mention
-- Verified no external references to HTTP runner types (`runner.Client`, `runner.NewClient`, `runner.ClientConfig`) exist in the codebase
-- `go test ./internal/cloud/runner/...` passes with SDK-only implementation (sdk_client.go + sdk_client_test.go)
-- `make test`, `go vet ./...`, `go build ./...` all pass
-- Files changed: `internal/cloud/runner/client.go` (deleted), `internal/cloud/runner/runner_test.go` (deleted), `internal/cloud/runner/runner.go` (comment update)
+## 2026-02-13 - US-006
+- Implemented `CollectSandboxBundle` in `internal/cloud/snapshot_collect.go` for workflow-aware sandbox artifact collection
+- Files changed:
+  - `internal/cloud/snapshot_collect.go` — New file with `CollectSandboxBundle(ctx, runner, sandboxID, workflowKind)` that lists files via `find` in sandbox, filters by `WorkflowDefaultArtifactPatterns` + `MatchesArtifactPatterns`, and reads content via base64-encoded exec calls. Also includes `SandboxBundleRecord` type and `readSandboxFile` helper.
+  - `internal/cloud/snapshot_collect_test.go` — New file with 7 tests: run/auto/review workflow filtering, empty workspace, no matching files, list error, and workspace-relative path verification. Uses `mockCollectRunner` backed by virtual `sandboxFS`.
 - **Learnings for future iterations:**
-  - The HTTP runner types (`Client`, `ClientConfig`, `NewClient`) were only used within the runner package — no external Go files import or reference them, making deletion safe
-  - The `runner_test.go` file was entirely HTTP-focused (used `httptest.NewServer`, `net/http`, etc.) — SDK tests live separately in `sdk_client_test.go`
-  - After deletion, the runner package contains only: `runner.go` (interface + types), `sdk_client.go` (SDK implementation), `sdk_client_test.go` (SDK tests)
-  - The compile-time interface check `var _ Runner = (*Client)(nil)` was in `client.go` — SDK compliance is verified in `sdk_client_test.go` via `TestSDKClientHealthReturnsVersion` which constructs and uses the client
----
-
-## 2026-02-12 - US-008
-- Updated `RunSmoke` in `internal/cloud/deploy/smoke.go` to treat empty `runnerURL` as SDK-direct mode, returning a synthetic healthy `SmokeResult{Service:"runner", URL:"sdk-direct", OK:true}`
-- Non-empty runner URL behavior is unchanged — still performs HTTP health check
-- Added `TestRunSmoke_EmptyRunnerURL_SyntheticHealth` test verifying synthetic healthy result with OK=true, URL="sdk-direct", StatusCode=0, no error
-- Added `TestRunSmoke_NonEmptyRunnerURL_HTTPCheck` test verifying HTTP check still occurs for non-empty URLs
-- Files changed: `internal/cloud/deploy/smoke.go`, `internal/cloud/deploy/smoke_test.go`
-- **Learnings for future iterations:**
-  - `RunSmoke` takes `runnerURL` as a plain string parameter, not from `Config` — callers pass whatever URL they have, so the empty-string check is the right place to handle SDK-direct mode
-  - Synthetic results use `StatusCode: 0` (zero value) since no HTTP call was made — tests should assert this explicitly
-  - The `URL` field on synthetic results is set to `"sdk-direct"` as a human-readable marker that distinguishes it from HTTP-checked results in reports
----
-
-## 2026-02-12 - US-009
-- Removed `daytona-runner` service from `deploy/docker-compose.yml` (build, ports, environment, healthcheck)
-- Removed `depends_on: daytona-runner` from `control-plane` service
-- Removed `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN` env vars from both `control-plane` and `worker` services
-- Added `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` env vars to `worker` service
-- Updated `deploy/.env.example`: removed `HAL_CLOUD_RUNNER_*` entries, added documented `DAYTONA_API_KEY` (required), `DAYTONA_API_URL` (optional), `DAYTONA_SERVER_URL` (legacy alias, commented), and `DAYTONA_TARGET` (optional, commented)
-- Updated compose header comment to remove daytona-runner mention and smoke check runner URL
-- Verified `docker compose -f deploy/docker-compose.yml config` succeeds
-- Files changed: `deploy/docker-compose.yml`, `deploy/.env.example`
-- **Learnings for future iterations:**
-  - The `daytona-runner` service was only referenced in compose as a service definition and `depends_on` — no other deploy files reference it by service name
-  - `control-plane` no longer needs runner env vars since it doesn't proxy runner requests — the worker connects directly via SDK
-  - `DAYTONA_API_KEY` in compose uses `${DAYTONA_API_KEY}` (no default) to enforce it's required, while `DAYTONA_API_URL` and `DAYTONA_TARGET` use `${VAR:-}` for optional with empty default
-  - `.env.example` documents the `DAYTONA_SERVER_URL` legacy alias as a comment to show it exists without encouraging its use
----
-
-## 2026-02-12 - US-010
-- Deleted `deploy/Dockerfile.daytona-runner` (Node.js multi-stage build for TypeScript runner)
-- Deleted `daytona-runner/` directory (8 files: package.json, package-lock.json, tsconfig.json, src/index.ts, src/middleware.ts, src/routes.ts, src/middleware.test.ts, src/routes.test.ts)
-- Verified repository-wide search: no remaining `daytona-runner` or `HAL_CLOUD_RUNNER_` references outside `.hal/` documentation files (PRD, progress, archive)
-- `go build ./...`, `go vet ./...`, `make test`, and `docker compose config` all pass
-- Files changed: `deploy/Dockerfile.daytona-runner` (deleted), `daytona-runner/` (deleted, 8 files)
-- **Learnings for future iterations:**
-  - The `.hal/` directory (PRD docs, progress logs, archives) will naturally contain references to deleted artifacts since it documents the migration — these are acceptable and expected
-  - The `daytona-runner/` directory was self-contained with no imports from Go code — deletion was a clean removal with no cascading changes needed
-  - The Dockerfile was only referenced from `docker-compose.yml` which was already cleaned in US-009, so no additional compose changes were needed
----
-
-## 2026-02-12 - US-011
-- Ran full verification suite confirming release readiness for Daytona Go SDK hard-cut migration
-- All 7 acceptance criteria pass: `make test`, `go vet ./...`, `go build ./...`, `go test ./internal/cloud/runner/...`, `go test ./internal/cloud/deploy/...`, `docker compose config`, typecheck
-- Runner tests: 14 tests covering SDK client constructor, sandbox lifecycle, exec, stream logs, health
-- Deploy tests: config loading, validation, store factory, smoke checks, DSN construction — all pass
-- No remaining `daytona-runner` or `HAL_CLOUD_RUNNER_` references in active code (only in `.hal/` documentation)
-- Files changed: `.hal/prd.json`, `.hal/progress.txt`
-- **Learnings for future iterations:**
-  - The `TestAdapterValidationParity` and store factory tests take ~5s each due to real database connection attempts (Turso timeout) — this is expected and not a flake
-  - All 11 stories in this PRD are now complete — the SDK-only hard cut is fully verified and ready to merge
-  - The verification story (US-011) is a good pattern for migration PRDs: run everything at the end to catch any regressions from earlier stories
+  - When constructing shell commands with `ShellQuote`, ensure the entire path (including any `/workspace/` prefix) is inside the quote — `fmt.Sprintf("base64 -w0 %s", ShellQuote(absPath))` not `fmt.Sprintf("base64 -w0 /workspace/%s", ShellQuote(relPath))`.
+  - `WorkflowKindRun` produces only state artifacts; `WorkflowKindAuto` and `WorkflowKindReview` produce state + reports. This maps directly to `WorkflowArtifactGroups(kind)`.
+  - The mock runner pattern (`mockCollectRunner` + `sandboxFS`) enables testing sandbox operations without real infrastructure — reuse this pattern for future sandbox-dependent tests.
+  - `CollectSandboxBundle` uses `MatchesArtifactPatterns` (workflow-aware) not `IsBundlePathAllowed` (input allowlist) — these are two different filtering policies for different contexts (worker-side vs client-side).
 ---

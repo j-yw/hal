@@ -1,19 +1,17 @@
 {
-  "project": "Replace TypeScript Daytona Runner with Daytona Go SDK",
-  "branchName": "hal/daytona-go-sdk-hard-cut",
-  "description": "Replace the Node/TypeScript daytona-runner HTTP service with a single Go implementation using the Daytona Go SDK while preserving the existing runner interface and behavior semantics.",
+  "project": "Cloud Worker Orchestration Pipeline (Gap-Free Alignment)",
+  "branchName": "hal/cloud-worker-orchestration-pipeline",
+  "description": "Deliver a deterministic cloud worker execution pipeline for run, auto, and review workflows with atomic claim semantics, workflow-aware snapshots, optional GitHub PR creation, worker CLI wiring, and stable cloud command contracts.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Migrate cloud runner environment schema to Daytona SDK variables",
-      "description": "As a backend/platform engineer, I want runtime config to use Daytona SDK environment variables so that workers can connect directly without legacy HTTP runner settings.",
+      "title": "Atomically increment attempt_count in Postgres ClaimRun",
+      "description": "As a platform maintainer, I want Postgres ClaimRun to claim and increment attempt_count atomically so attempt numbering stays deterministic.",
       "acceptanceCriteria": [
-        "internal/cloud/deploy/config.go removes HAL_CLOUD_RUNNER_URL and HAL_CLOUD_RUNNER_SERVICE_TOKEN fields, constants, and env parsing.",
-        "Config adds DAYTONA_API_KEY (required), DAYTONA_API_URL (optional), DAYTONA_SERVER_URL (legacy alias fallback), and DAYTONA_TARGET (optional).",
-        "LoadConfig prefers DAYTONA_API_URL and falls back to DAYTONA_SERVER_URL only when DAYTONA_API_URL is unset.",
-        "ValidateStore remains DB-only.",
-        "Validate requires valid DB config and non-empty DAYTONA_API_KEY.",
-        "internal/cloud/deploy/config_test.go includes passing and failing cases for the new env schema and URL fallback precedence.",
+        "internal/cloud/postgres/store.go ClaimRun updates eligible rows in one claim operation that sets status='claimed' and attempt_count=attempt_count+1.",
+        "Claim eligibility still requires status='queued' and cancel_requested=false.",
+        "A successful claim returns Run.AttemptCount with the incremented value.",
+        "internal/cloud/postgres/store_test.go verifies one increment per successful claim and no increment for ineligible claims.",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -23,14 +21,13 @@
     },
     {
       "id": "US-002",
-      "title": "Add Daytona Go SDK dependency and SDK client constructor",
-      "description": "As a backend/platform engineer, I want a dedicated SDK runner client constructor so that runner operations are initialized consistently with required Daytona configuration.",
+      "title": "Atomically increment attempt_count in Turso ClaimRun",
+      "description": "As a platform maintainer, I want Turso ClaimRun to claim and increment attempt_count atomically so semantics match Postgres.",
       "acceptanceCriteria": [
-        "go.mod includes github.com/daytonaio/daytona/libs/sdk-go v0.141.0.",
-        "internal/cloud/runner/sdk_client.go defines SDK client config fields APIKey, APIURL, and Target.",
-        "Constructor calls daytona.NewClientWithConfig(types.DaytonaConfig{APIKey, APIUrl, Target}).",
-        "Constructor validates APIKey as required and wraps constructor failures using %w.",
-        "internal/cloud/runner/sdk_client_test.go verifies constructor validation and wrapped error behavior.",
+        "internal/cloud/turso/store.go ClaimRun updates eligible rows in one claim operation that sets status='claimed' and attempt_count=attempt_count+1.",
+        "Claim eligibility still requires status='queued' and cancel_requested=false.",
+        "A successful claim returns Run.AttemptCount with the incremented value.",
+        "internal/cloud/turso/store_test.go verifies one increment per successful claim and no increment for ineligible claims.",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -40,14 +37,12 @@
     },
     {
       "id": "US-003",
-      "title": "Implement CreateSandbox and DestroySandbox via SDK",
-      "description": "As a backend/platform engineer, I want sandbox lifecycle methods implemented via the SDK so that provisioning and teardown no longer depend on HTTP runner endpoints.",
+      "title": "Align ClaimService attempt numbering with claimed run state",
+      "description": "As a platform maintainer, I want ClaimService to derive Attempt.AttemptNumber from claimed Run.AttemptCount so adapters and service logic stay consistent.",
       "acceptanceCriteria": [
-        "CreateSandbox returns an error when request is nil or request.Image is empty.",
-        "CreateSandbox calls client.Create(ctx, types.ImageParams{Image:req.Image, SandboxBaseParams:{EnvVars:req.EnvVars}}).",
-        "DestroySandbox retrieves sandbox via client.Get and deletes it with sandbox.Delete(ctx).",
-        "Validation and SDK call failures are wrapped with %w and operation-specific error prefixes.",
-        "internal/cloud/runner/sdk_client_test.go includes success and failure tests for CreateSandbox and DestroySandbox.",
+        "ClaimService sets Attempt.AttemptNumber equal to claimed Run.AttemptCount without adding an extra increment.",
+        "internal/cloud/claim_test.go verifies first claim attempt number is 1 and second claim after requeue is 2.",
+        "internal/cloud/claim_test.go verifies Attempt.AttemptNumber equals Run.AttemptCount for claimed runs.",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -57,16 +52,12 @@
     },
     {
       "id": "US-004",
-      "title": "Implement Exec command execution parity via SDK",
-      "description": "As a backend/platform engineer, I want command execution to preserve existing runner semantics while using Daytona SDK process APIs.",
+      "title": "Add shared shell escaping helper",
+      "description": "As a maintainer, I want one shared shell escaping helper so cloud services build shell commands safely and consistently.",
       "acceptanceCriteria": [
-        "Exec validates required inputs, including non-nil request and required execution fields.",
-        "Exec retrieves sandbox with client.Get before execution.",
-        "Exec calls sandbox.Process.ExecuteCommand.",
-        "Exec applies options.WithCwd(req.WorkDir) when req.WorkDir is set.",
-        "Exec applies options.WithExecuteTimeout(req.Timeout) when req.Timeout is set.",
-        "Execution and SDK failures are wrapped with %w and stable operation-specific messages.",
-        "internal/cloud/runner/sdk_client_test.go verifies validation paths, error paths, and option application.",
+        "Add internal/cloud/shell.go with a shared single-quote escaping helper.",
+        "The helper wraps values in single quotes and escapes embedded single quotes correctly.",
+        "Unit tests cover plain text, whitespace, embedded single quotes, and newline input.",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -76,14 +67,12 @@
     },
     {
       "id": "US-005",
-      "title": "Implement StreamLogs via SDK session log API",
-      "description": "As a backend/platform engineer, I want log streaming to come directly from Daytona SDK session command logs so that the runner keeps the existing return shape without HTTP mode.",
+      "title": "Use shared shell helper in auth materialization",
+      "description": "As a maintainer, I want auth materialization command building to reuse the shared shell helper so escaping logic is centralized.",
       "acceptanceCriteria": [
-        "StreamLogs fetches sandbox with client.Get.",
-        "StreamLogs reads logs via sandbox.Process.GetSessionCommandLogs(ctx, \"default\", \"default\").",
-        "StreamLogs returns io.NopCloser(strings.NewReader(logs)).",
-        "Get and log retrieval failures are wrapped with %w and stable operation-specific messages.",
-        "internal/cloud/runner/sdk_client_test.go covers successful log retrieval and failure cases.",
+        "internal/cloud/auth_materialization.go uses the shared shell helper for command construction.",
+        "Duplicate ad-hoc escaping logic is removed from auth_materialization.go.",
+        "internal/cloud/auth_materialization_test.go verifies generated command strings match helper escaping behavior.",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -93,13 +82,13 @@
     },
     {
       "id": "US-006",
-      "title": "Implement Health using SDK list probe",
-      "description": "As a backend/platform engineer, I want health checks to validate Daytona reachability through SDK APIs so that runner health reflects direct SDK connectivity.",
+      "title": "Collect sandbox bundle files with workflow artifact patterns",
+      "description": "As a cloud user, I want final artifact collection to filter by workflow artifact patterns so restored outputs match workflow expectations.",
       "acceptanceCriteria": [
-        "Health probes using client.List(ctx, nil, \u0026page1, \u0026limit1).",
-        "On success, Health returns runner.HealthStatus{OK:true, Version:daytona.Version}.",
-        "Probe failures are wrapped with %w and operation-specific messages.",
-        "internal/cloud/runner/sdk_client_test.go includes health success and failure tests.",
+        "Add internal/cloud/snapshot_collect.go with CollectSandboxBundle(...).",
+        "Collection scans files under /workspace/.hal and stores workspace-relative paths.",
+        "Filtering uses WorkflowDefaultArtifactPatterns(workflowKind) with MatchesArtifactPatterns and does not use input allowlist policy.",
+        "Tests verify expected files for run and auto/review workflows.",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -109,81 +98,479 @@
     },
     {
       "id": "US-007",
-      "title": "Remove HTTP runner implementation and references in runner package",
-      "description": "As a backend/platform engineer, I want the legacy HTTP runner implementation removed so that there is only one supported SDK execution path.",
+      "title": "Capture sandbox file contents with robust base64 handling",
+      "description": "As a cloud user, I want file content capture to avoid wrapped base64 corruption so binary and multiline content is restored correctly.",
       "acceptanceCriteria": [
-        "internal/cloud/runner/client.go is deleted.",
-        "HTTP-runner-focused tests are removed or replaced by SDK-focused tests.",
-        "internal/cloud/runner/runner.go comments no longer mention HTTP implementation.",
-        "go test ./internal/cloud/runner/... passes with SDK-only implementation.",
+        "CollectSandboxBundle uses a base64 command path that produces non-wrapped output suitable for decode.",
+        "Decode failures include the file path and stderr in returned errors.",
+        "Tests cover multiline text and binary-safe content capture.",
         "Tests pass",
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-008",
-      "title": "Update smoke checks for SDK-direct mode",
-      "description": "As a backend/platform engineer, I want smoke checks to treat empty runner URL as healthy SDK-direct mode so that deployments do not require a separate runner endpoint.",
+      "title": "Compress bundles with compatible framing",
+      "description": "As a platform engineer, I want bundle compression framing to stay compatible with existing pull decompression behavior.",
       "acceptanceCriteria": [
-        "internal/cloud/deploy/smoke.go treats empty runner URL as a synthetic healthy runner result.",
-        "Existing behavior for non-empty runner URL remains unchanged.",
-        "internal/cloud/deploy/smoke_test.go includes explicit tests for empty URL synthetic health and non-empty URL behavior.",
+        "snapshot_collect.go provides CompressBundle(...) using path\\u0000size\\u0000content framing plus gzip.",
+        "Compressed output is compatible with existing cmd/cloud.go decompression logic.",
+        "Round-trip tests verify decompressed records match original records.",
         "Tests pass",
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-009",
-      "title": "Update deployment manifests and environment documentation",
-      "description": "As a backend/platform engineer, I want deployment configuration updated to SDK-only variables so that compose workflows no longer reference the removed runner service.",
+      "title": "Persist snapshot SHA using ComputeBundleHash(records)",
+      "description": "As a platform engineer, I want snapshot SHA semantics to match submit path hashing so bundle identity is deterministic.",
       "acceptanceCriteria": [
-        "deploy/docker-compose.yml removes the daytona-runner service.",
-        "deploy/docker-compose.yml removes related depends_on and HAL_CLOUD_RUNNER_* environment wiring.",
-        "Worker service environment includes DAYTONA_API_KEY, DAYTONA_API_URL, and DAYTONA_TARGET.",
-        "deploy/.env.example removes HAL_CLOUD_RUNNER_* entries and documents DAYTONA_API_KEY, DAYTONA_API_URL, DAYTONA_SERVER_URL alias fallback, and DAYTONA_TARGET.",
-        "docker compose -f deploy/docker-compose.yml config succeeds.",
+        "Worker snapshot persistence computes SHA with ComputeBundleHash(records).",
+        "Compressed payload byte hash is not used for the snapshot SHA field.",
+        "Tests verify deterministic SHA behavior for equivalent record sets.",
+        "Tests pass",
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-010",
-      "title": "Delete TypeScript runner artifacts and complete hard-cut cleanup",
-      "description": "As a backend/platform engineer, I want all obsolete TypeScript runner assets removed so that the repository reflects a single Go-based execution implementation.",
+      "title": "Implement GitHubPRCreator core behavior",
+      "description": "As an operator, I want worker-side PR creation to execute gh in the sandbox workspace and return parsed PR metadata.",
       "acceptanceCriteria": [
-        "deploy/Dockerfile.daytona-runner is deleted.",
-        "daytona-runner/ directory is deleted.",
-        "Repository-wide search finds no remaining \"daytona-runner\" references.",
-        "Repository-wide search finds no remaining \"HAL_CLOUD_RUNNER_\" references.",
+        "Add internal/cloud/pr_github.go with GitHubPRCreator(r runner.Runner, sandboxID, authDir string) PRCreator.",
+        "PR creation executes gh pr create from /workspace.",
+        "Successful command output is parsed into PR URL and reference fields.",
+        "Tests pass",
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-011",
-      "title": "Run required verification suite for release readiness",
-      "description": "As a backend/platform engineer, I want the full verification suite to pass so that the SDK-only hard cut is safe to merge.",
+      "title": "Apply token sourcing and escaping in GitHubPRCreator",
+      "description": "As an operator, I want PR creation to source credentials from materialized auth and escape all user-controlled arguments.",
       "acceptanceCriteria": [
-        "make test passes.",
-        "go vet ./... passes.",
-        "go build ./... passes.",
-        "go test ./internal/cloud/runner/... passes.",
-        "go test ./internal/cloud/deploy/... passes.",
-        "docker compose -f deploy/docker-compose.yml config succeeds.",
+        "GitHubPRCreator exports GITHUB_TOKEN from ${authDir}/credentials in the in-sandbox command.",
+        "title, body, head, base, and repo arguments are escaped with the shared shell helper.",
+        "Tests verify command text for token sourcing and quote-heavy arguments.",
+        "Tests pass",
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": true,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Surface GitHubPRCreator execution failures with concrete error data",
+      "description": "As an operator, I want PR creation failures to include exit and stderr details so operational debugging is fast.",
+      "acceptanceCriteria": [
+        "Non-zero gh exit returns an error that includes exit code and stderr output.",
+        "Runner execution errors are wrapped with %w and include operation context.",
+        "Tests assert both error branches and expected error text fragments.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Add WorkerPipeline foundation and no-work sentinel behavior",
+      "description": "As a maintainer, I want a WorkerPipeline core type so orchestration logic is testable outside Cobra.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/worker.go defining WorkerPipelineConfig, WorkerPipeline, NewWorkerPipeline, and ErrNoWork with message 'no eligible runs in queue'.",
+        "NewWorkerPipeline validates required dependencies and returns errors for missing dependencies.",
+        "ProcessOne maps claim ErrNotFound to ErrNoWork.",
+        "Tests cover constructor validation and no-work mapping.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Enforce deterministic executeAttempt setup ordering",
+      "description": "As a maintainer, I want setup order to be deterministic so run lifecycle behavior is predictable.",
+      "acceptanceCriteria": [
+        "executeAttempt transitions run from claimed to running before provisioning starts.",
+        "Setup call order is provision -> bootstrap -> auth materialization -> preflight.",
+        "Call-order tests assert the exact sequence.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Use status-aware failure transitions during setup failures",
+      "description": "As a maintainer, I want setup failure handling to transition from the correct source status so transition contracts remain valid.",
+      "acceptanceCriteria": [
+        "Setup failure helper accepts fromRunStatus as input.",
+        "TransitionRun in setup-failure paths uses the provided fromRunStatus value instead of hardcoded running.",
+        "Tests cover failures occurring before run reaches running.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Propagate working branch and git credential fields",
+      "description": "As a maintainer, I want working branch and git credential context passed to setup and checkpoint services so writes target the expected branch.",
+      "acceptanceCriteria": [
+        "Worker computes workingBranch := WorkingBranch(runID) for each attempt.",
+        "Bootstrap and checkpoint inputs receive workingBranch and expected git credential fields.",
+        "Tests assert propagated branch and credential values.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Run heartbeat across setup and execution windows",
+      "description": "As a worker operator, I want lease renewals active through setup and execution so long setup does not silently lose leases.",
+      "acceptanceCriteria": [
+        "Heartbeat loop starts after run transitions to running.",
+        "Heartbeat loop remains active through setup and execution until terminal routing begins.",
+        "Tests simulate long setup and verify heartbeat renew calls occur.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Check cancellation before heartbeat renew on every tick",
+      "description": "As a worker operator, I want cancellation checks to run before lease renewal so canceled attempts stop promptly.",
+      "acceptanceCriteria": [
+        "Each heartbeat tick calls cancel.CheckAndCancel before heartbeat.Renew.",
+        "When cancellation is detected, the tick does not call heartbeat.Renew.",
+        "Tests verify per-tick call order and cancel short-circuit behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-019",
+      "title": "Handle lease_lost routing without duplicate attempt terminalization",
+      "description": "As a maintainer, I want lease_lost routing to respect heartbeat side effects so attempt transitions are emitted exactly once.",
+      "acceptanceCriteria": [
+        "Lease expiration sets cancel reason to lease_lost and routes through lease-lost handling.",
+        "Worker does not emit a second TransitionAttempt failure when heartbeat already terminalized the attempt.",
+        "Cleanup and retry evaluation still run in lease-lost handling.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-020",
+      "title": "Handle profile_revoked routing without duplicate attempt terminalization",
+      "description": "As a maintainer, I want profile_revoked routing to finalize run state correctly while avoiding duplicate attempt transitions.",
+      "acceptanceCriteria": [
+        "Profile revocation sets cancel reason to profile_revoked and routes through profile-revoked handling.",
+        "Worker avoids duplicate attempt terminal transitions when heartbeat already marked attempt failed.",
+        "Run transitions to failed for the profile_revoked path.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-021",
+      "title": "Use shutdown-safe background timeout contexts for cleanup",
+      "description": "As a platform engineer, I want terminal cleanup to continue under cancellation so lock and sandbox cleanup can finish during shutdown.",
+      "acceptanceCriteria": [
+        "When parent context is canceled, cleanup paths use context.WithTimeout(context.Background(), ...).",
+        "Cleanup timeout behavior is covered by deterministic tests.",
+        "Cleanup still attempts lock and sandbox release under canceled parent context.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-022",
+      "title": "Map execution exit codes to deterministic terminal transitions",
+      "description": "As a platform engineer, I want execution result mapping to emit one deterministic run/attempt transition set per exit outcome.",
+      "acceptanceCriteria": [
+        "Exit code 0 emits exactly one attempt succeeded transition and exactly one run succeeded transition.",
+        "Non-zero exit emits exactly one attempt failed transition with reason non_retryable and exactly one run failed transition.",
+        "Tests assert transition counts, statuses, and failure reason values.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-023",
+      "title": "Treat auth lock ErrNotFound as non-fatal during cleanup",
+      "description": "As a maintainer, I want cleanup to tolerate already-released auth locks so cancellation and revocation paths remain idempotent.",
+      "acceptanceCriteria": [
+        "Auth lock release treats ErrNotFound as non-fatal in terminal cleanup paths.",
+        "Non-ErrNotFound lock release errors are returned with wrapped context.",
+        "Tests cover both ErrNotFound and other error branches.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-024",
+      "title": "Persist final snapshot payloads with deterministic metadata",
+      "description": "As a platform engineer, I want finalization to persist snapshot records, compressed bundle bytes, and deterministic hash metadata.",
+      "acceptanceCriteria": [
+        "Finalization stores collected records and compressed payload bytes in snapshot storage.",
+        "Persisted snapshot SHA value equals ComputeBundleHash(records).",
+        "Tests verify stored metadata fields and payload presence.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 24,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-025",
+      "title": "Gate PR side effects by workflow kind and PREnabled",
+      "description": "As an operator, I want PR creation to run only for applicable workflows so run workflow terminalization has no PR side effects.",
+      "acceptanceCriteria": [
+        "PRCreate is called only when workflowKind is auto or review and PREnabled is true.",
+        "workflowKind run never invokes PRCreate.",
+        "Tests cover auto/review enabled and disabled branches.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 25,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-026",
+      "title": "Register hal cloud worker command and flags",
+      "description": "As an operator, I want a dedicated cloud worker command with explicit runtime flags.",
+      "acceptanceCriteria": [
+        "Add cmd/cloud_worker.go and register worker under the cloud command tree.",
+        "Worker command defines --worker-id, --poll-interval, --reconcile-interval, --timeout-interval, and --sandbox-image flags.",
+        "Help output includes worker command and all new flags.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 26,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-027",
+      "title": "Wire worker command factories and dotenv bootstrap",
+      "description": "As a maintainer, I want worker command bootstrap wiring to be injectable in tests and consistent with cloud dotenv loading behavior.",
+      "acceptanceCriteria": [
+        "Package-level store and runner factory vars are assigned via if-nil defaults and remain overrideable in tests.",
+        "Worker startup calls godotenv.Load() before deploy config resolution.",
+        "os.ErrNotExist from dotenv load is ignored and other dotenv errors produce non-fatal warnings.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 27,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-028",
+      "title": "Provide default runner factory and non-empty sandbox image wiring",
+      "description": "As an operator, I want default runtime wiring to construct a valid runner and always pass a sandbox image to provision.",
+      "acceptanceCriteria": [
+        "Default runner factory validates deploy config and constructs a Daytona-backed implementation satisfying Runner, SessionExec, and GitOps interfaces.",
+        "Worker wiring passes ProvisionConfig.Image from --sandbox-image or a non-empty default.",
+        "Tests assert provision service is never called with an empty image.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 28,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-029",
+      "title": "Implement worker loop scheduling and graceful shutdown",
+      "description": "As an operator, I want worker loop scheduling for poll and maintenance intervals with clean shutdown behavior.",
+      "acceptanceCriteria": [
+        "Worker loop schedules ProcessOne, reconciler, and timeout services using ticker intervals.",
+        "Loop exits cleanly when context is canceled.",
+        "Code comments or tests document accepted v1 behavior that long ProcessOne work can delay maintenance ticks.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 29,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-030",
+      "title": "Add snapshot collection test suite",
+      "description": "As a maintainer, I want dedicated snapshot collection tests so artifact filtering and compression regressions are caught quickly.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/snapshot_collect_test.go.",
+        "Tests cover happy path, empty workspace, pattern filtering, command failure, and compress/decompress round-trip.",
+        "Tests are deterministic and do not require network access.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 30,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-031",
+      "title": "Add GitHub PR creator test suite",
+      "description": "As a maintainer, I want dedicated PR creator tests so command construction and error handling remain stable.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/pr_github_test.go.",
+        "Tests cover success, non-zero exit, runner error, token sourcing, and shell escaping behavior.",
+        "Tests run with fake runner dependencies only.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 31,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-032",
+      "title": "Add worker orchestration test suite",
+      "description": "As a maintainer, I want worker orchestration tests for key success and failure routes so terminalization behavior stays deterministic.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/worker_test.go.",
+        "Tests cover happy path, no work, setup failure, non-zero execution, cancel, lease_lost, profile_revoked, and PR skip-for-run behavior.",
+        "Tests assert no duplicate attempt terminal transitions in heartbeat-driven paths.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 32,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-033",
+      "title": "Add cloud worker command test suite",
+      "description": "As a maintainer, I want command-level tests for cloud worker so flag wiring and startup/shutdown behavior are stable.",
+      "acceptanceCriteria": [
+        "Add cmd/cloud_worker_test.go.",
+        "Tests cover flag parsing/default values and startup/shutdown behavior with injected dependencies.",
+        "Tests verify Cobra handler delegates to testable helper functions.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 33,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-034",
+      "title": "Add claim adapter regression tests for attempt_count",
+      "description": "As a maintainer, I want explicit claim adapter regressions so atomic attempt_count behavior does not regress.",
+      "acceptanceCriteria": [
+        "Update internal/cloud/postgres/store_test.go and internal/cloud/turso/store_test.go for attempt_count increment assertions.",
+        "Tests verify one increment per successful claim and no increment for ineligible claims.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 34,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-035",
+      "title": "Add claim service regression tests for attempt numbering",
+      "description": "As a maintainer, I want claim service regression tests so Attempt.AttemptNumber remains aligned with claimed run state.",
+      "acceptanceCriteria": [
+        "Update internal/cloud/claim_test.go with attempt-number alignment assertions.",
+        "Tests verify first claim returns attempt 1 and second claim after requeue returns attempt 2.",
+        "Tests verify Attempt.AttemptNumber equals Run.AttemptCount.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 35,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-036",
+      "title": "Update cloud help and command tree contract tests",
+      "description": "As an automation consumer, I want command tree changes limited to the intentional worker addition.",
+      "acceptanceCriteria": [
+        "Update cmd/cloud_help_test.go and cmd/cloud_removed_test.go for the worker subcommand addition.",
+        "Tests assert no unrelated command or alias changes beyond worker wiring.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 36,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-037",
+      "title": "Preserve lifecycle JSON output contract tests",
+      "description": "As an automation consumer, I want existing lifecycle JSON contracts to remain stable while worker support is added.",
+      "acceptanceCriteria": [
+        "Lifecycle integration tests continue to assert required camelCase JSON keys for cloud command outputs.",
+        "No new snake_case aliases are introduced in commands already migrated to camelCase.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-038",
+      "title": "Preserve redaction behavior in human and JSON outputs",
+      "description": "As an automation consumer, I want redaction guarantees preserved so secrets never leak in cloud command output paths.",
+      "acceptanceCriteria": [
+        "Secret-bearing values are redacted in human-readable cloud command outputs after worker changes.",
+        "The same secret-bearing values are redacted in --json cloud command outputs.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 38,
+      "passes": false,
       "notes": ""
     }
   ]
