@@ -49,27 +49,12 @@ func TestLoadConfig_AllFields(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_DaytonaAPIURLFallback(t *testing.T) {
+func TestLoadConfig_DaytonaAPIURL(t *testing.T) {
 	tests := []struct {
 		name    string
 		env     map[string]string
 		wantURL string
 	}{
-		{
-			name: "prefers DAYTONA_API_URL when both set",
-			env: map[string]string{
-				EnvDaytonaAPIURL:    "https://api.daytona.io",
-				EnvDaytonaServerURL: "https://server.daytona.io",
-			},
-			wantURL: "https://api.daytona.io",
-		},
-		{
-			name: "falls back to DAYTONA_SERVER_URL when DAYTONA_API_URL is unset",
-			env: map[string]string{
-				EnvDaytonaServerURL: "https://server.daytona.io",
-			},
-			wantURL: "https://server.daytona.io",
-		},
 		{
 			name:    "empty when neither set",
 			env:     map[string]string{},

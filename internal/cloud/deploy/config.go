@@ -24,10 +24,9 @@ const (
 	EnvPostgresDSN    = "HAL_CLOUD_POSTGRES_DSN"
 
 	// Daytona SDK environment variables.
-	EnvDaytonaAPIKey    = "DAYTONA_API_KEY"
-	EnvDaytonaAPIURL    = "DAYTONA_API_URL"
-	EnvDaytonaServerURL = "DAYTONA_SERVER_URL" // legacy alias for DAYTONA_API_URL
-	EnvDaytonaTarget    = "DAYTONA_TARGET"
+	EnvDaytonaAPIKey = "DAYTONA_API_KEY"
+	EnvDaytonaAPIURL = "DAYTONA_API_URL"
+	EnvDaytonaTarget = "DAYTONA_TARGET"
 )
 
 // Config holds the resolved deployment configuration for hal-cloud services.
@@ -52,16 +51,10 @@ type Config struct {
 // LoadConfig reads deployment configuration from environment variables.
 // It uses the provided getenv function for testability (pass os.Getenv in production).
 // Default adapter is "turso" when HAL_CLOUD_DB_ADAPTER is unset.
-// DaytonaAPIURL prefers DAYTONA_API_URL and falls back to DAYTONA_SERVER_URL.
 func LoadConfig(getenv func(string) string) Config {
 	adapter := getenv(EnvDBAdapter)
 	if adapter == "" {
 		adapter = AdapterTurso
-	}
-
-	apiURL := getenv(EnvDaytonaAPIURL)
-	if apiURL == "" {
-		apiURL = getenv(EnvDaytonaServerURL)
 	}
 
 	return Config{
@@ -70,7 +63,7 @@ func LoadConfig(getenv func(string) string) Config {
 		TursoAuthToken: getenv(EnvTursoAuthToken),
 		PostgresDSN:    getenv(EnvPostgresDSN),
 		DaytonaAPIKey:  getenv(EnvDaytonaAPIKey),
-		DaytonaAPIURL:  apiURL,
+		DaytonaAPIURL:  getenv(EnvDaytonaAPIURL),
 		DaytonaTarget:  getenv(EnvDaytonaTarget),
 	}
 }
