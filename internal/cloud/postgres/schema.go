@@ -98,7 +98,7 @@ const authProfileLocksSchema = `CREATE TABLE IF NOT EXISTS auth_profile_locks (
 );`
 
 const authProfileLocksLeaseIndex = `CREATE INDEX IF NOT EXISTS idx_auth_profile_locks_lease ON auth_profile_locks (auth_profile_id, lease_expires_at);`
-const authProfileLocksOneActiveIndex = `CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_profile_locks_one_active ON auth_profile_locks (auth_profile_id, run_id) WHERE released_at IS NULL;`
+const authProfileLocksOneActiveIndex = `CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_profile_locks_one_active ON auth_profile_locks (auth_profile_id) WHERE released_at IS NULL;`
 
 const runStateSnapshotsSchema = `CREATE TABLE IF NOT EXISTS run_state_snapshots (
     id               TEXT PRIMARY KEY,

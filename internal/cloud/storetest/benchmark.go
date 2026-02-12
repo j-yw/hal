@@ -228,7 +228,7 @@ func BenchmarkAuthLockContention(newStore func() cloud.Store, setupAuthProfile f
 		wg                       sync.WaitGroup
 	)
 
-	// Track unique (profileID, runID) lock acquisitions.
+	// Track winners per auth profile to detect lock exclusivity violations.
 	acquiredLocks := make(map[string]bool)
 	var acquiredMu sync.Mutex
 
@@ -268,7 +268,7 @@ func BenchmarkAuthLockContention(newStore func() cloud.Store, setupAuthProfile f
 			mu.Unlock()
 
 			acquiredMu.Lock()
-			key := profileID + ":" + runID
+			key := profileID
 			if acquiredLocks[key] {
 				lockOvercommitViolations.Add(1)
 			}

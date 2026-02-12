@@ -331,7 +331,7 @@ func TestAcquireLockConflict(t *testing.T) {
 		t.Errorf("AcquireAuthLock(duplicate): got %v, want ErrConflict", err)
 	}
 
-	// Different run_id on same auth profile should succeed.
+	// Different run_id on same auth profile should conflict while lock1 is active.
 	lock2 := &cloud.AuthProfileLock{
 		AuthProfileID:  "auth-lock-001",
 		RunID:          "run-lock-002",
@@ -340,8 +340,9 @@ func TestAcquireLockConflict(t *testing.T) {
 		HeartbeatAt:    now,
 		LeaseExpiresAt: now.Add(30 * time.Second),
 	}
-	if err := s.AcquireAuthLock(ctx, lock2); err != nil {
-		t.Fatalf("AcquireAuthLock(different run): %v", err)
+	err = s.AcquireAuthLock(ctx, lock2)
+	if !cloud.IsConflict(err) {
+		t.Fatalf("AcquireAuthLock(different run): got %v, want ErrConflict", err)
 	}
 }
 
@@ -490,7 +491,12 @@ func TestStaleLockReclaim(t *testing.T) {
 		t.Fatalf("AcquireAuthLock(after release): %v", err)
 	}
 
-	// The original run1 can also re-acquire since the old lock was released.
+	// Release run2 lock to free the profile for re-acquisition.
+	if err := s.ReleaseAuthLock(ctx, "auth-stale-001", "run-stale-002", now); err != nil {
+		t.Fatalf("ReleaseAuthLock(run2): %v", err)
+	}
+
+	// The original run1 can also re-acquire since active lock was released.
 	reclaimLock := &cloud.AuthProfileLock{
 		AuthProfileID:  "auth-stale-001",
 		RunID:          "run-stale-001",

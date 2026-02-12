@@ -368,11 +368,7 @@ func TestAcquireLockConflict(t *testing.T) {
 		t.Fatalf("AcquireAuthLock(first): %v", err)
 	}
 
-	// Acquire lock for run2 on the same auth profile — should conflict
-	// because the partial unique index allows only one active lock per (auth_profile_id, run_id)
-	// but more importantly, the same auth_profile_id + different run_id is allowed by the schema.
-	// However, two locks for the same (auth_profile_id, run_id) WHERE released_at IS NULL conflicts.
-	// So let's test same (auth_profile_id, run_id) duplicate.
+	// Duplicate lock for same (auth_profile_id, run_id) should conflict.
 	lock1Dup := &cloud.AuthProfileLock{
 		AuthProfileID:  "auth-lock-001",
 		RunID:          "run-lock-001",
@@ -386,7 +382,8 @@ func TestAcquireLockConflict(t *testing.T) {
 		t.Errorf("AcquireAuthLock(duplicate): got %v, want ErrConflict", err)
 	}
 
-	// Acquiring a lock for a different run_id on the same profile should succeed.
+	// Acquiring a lock for a different run_id on the same profile should also conflict
+	// while the first lock is active.
 	lock2 := &cloud.AuthProfileLock{
 		AuthProfileID:  "auth-lock-001",
 		RunID:          "run-lock-002",
@@ -395,8 +392,9 @@ func TestAcquireLockConflict(t *testing.T) {
 		HeartbeatAt:    now,
 		LeaseExpiresAt: now.Add(30 * time.Second),
 	}
-	if err := s.AcquireAuthLock(ctx, lock2); err != nil {
-		t.Fatalf("AcquireAuthLock(different run): %v", err)
+	err = s.AcquireAuthLock(ctx, lock2)
+	if !cloud.IsConflict(err) {
+		t.Fatalf("AcquireAuthLock(different run): got %v, want ErrConflict", err)
 	}
 }
 
@@ -545,7 +543,12 @@ func TestStaleLockReclaim(t *testing.T) {
 		t.Fatalf("AcquireAuthLock(after release): %v", err)
 	}
 
-	// The original run1 can also re-acquire since the old lock was released.
+	// Release run2 lock to free the profile for re-acquisition.
+	if err := s.ReleaseAuthLock(ctx, "auth-stale-001", "run-stale-002", now); err != nil {
+		t.Fatalf("ReleaseAuthLock(run2): %v", err)
+	}
+
+	// The original run1 can also re-acquire since active lock was released.
 	reclaimLock := &cloud.AuthProfileLock{
 		AuthProfileID:  "auth-stale-001",
 		RunID:          "run-stale-001",

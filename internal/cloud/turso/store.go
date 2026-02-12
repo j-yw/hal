@@ -28,8 +28,23 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("turso migrate: %w", err)
 		}
 	}
+	if err := s.ensureAuthProfileOneActiveIndex(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureRunsWorkflowKindColumn(ctx); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureAuthProfileOneActiveIndex(ctx context.Context) error {
+	// Recreate index to migrate earlier schemas that scoped uniqueness by
+	// (auth_profile_id, run_id) instead of auth_profile_id only.
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_auth_profile_locks_one_active`); err != nil {
+		return fmt.Errorf("turso migrate: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, cloud.AuthProfileLocksOneActiveIndex); err != nil {
+		return fmt.Errorf("turso migrate: %w", err)
 	}
 	return nil
 }

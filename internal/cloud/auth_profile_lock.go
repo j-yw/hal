@@ -45,6 +45,6 @@ const AuthProfileLocksSchema = `CREATE TABLE IF NOT EXISTS auth_profile_locks (
 const AuthProfileLocksLeaseIndex = `CREATE INDEX IF NOT EXISTS idx_auth_profile_locks_lease
     ON auth_profile_locks (auth_profile_id, lease_expires_at);`
 
-// AuthProfileLocksOneActiveIndex prevents duplicate active lock rows for the same (auth_profile_id, run_id).
+// AuthProfileLocksOneActiveIndex enforces one active lock per auth profile.
 const AuthProfileLocksOneActiveIndex = `CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_profile_locks_one_active
-    ON auth_profile_locks (auth_profile_id, run_id) WHERE released_at IS NULL;`
+    ON auth_profile_locks (auth_profile_id) WHERE released_at IS NULL;`

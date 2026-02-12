@@ -120,9 +120,6 @@ func TestAuthProfileLocksOneActiveIndex_UniqueConstraint(t *testing.T) {
 	if !strings.Contains(AuthProfileLocksOneActiveIndex, "auth_profile_id") {
 		t.Error("AuthProfileLocksOneActiveIndex missing auth_profile_id")
 	}
-	if !strings.Contains(AuthProfileLocksOneActiveIndex, "run_id") {
-		t.Error("AuthProfileLocksOneActiveIndex missing run_id")
-	}
 	if !strings.Contains(AuthProfileLocksOneActiveIndex, "released_at IS NULL") {
 		t.Error("AuthProfileLocksOneActiveIndex must filter on released_at IS NULL for active-only constraint")
 	}
