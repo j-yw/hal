@@ -19,6 +19,12 @@
 - `WorkerPipeline` uses config-struct constructor pattern (`WorkerPipelineConfig` → `NewWorkerPipeline`) with explicit nil/empty checks for required dependencies (Store, Runner, WorkerID, Claim).
 - `ProcessOne` maps `ErrNotFound` from `ClaimAndLock` to `ErrNoWork` — callers should use `IsNoWork(err)` to detect empty queue, not `IsNotFound`.
 - Worker tests use `workerMockStore` embedding `mockStore` plus `workerMockRunner` implementing `runner.Runner` — reuse this pattern for future worker-related tests.
+- `executeAttempt` setup order is deterministic: TransitionRun(claimed→running) → Provision → Bootstrap → AuthMaterialization → Preflight. Tests use a shared `callLog` to verify ordering.
+- `AuthMaterializationService.Materialize` is a no-op when `AuthProfile.SecretRef` is nil — call-order tests must provide a profile with a non-nil `SecretRef` to observe auth materialization exec calls.
+- Use `newTestWorkerPipeline(t, store, rnr)` helper to construct a fully-wired pipeline with all services for worker tests — avoids duplicating service creation boilerplate.
+- `workerMockRunner` supports `execOverrides` map (command prefix → result/error) for per-command exec failure injection without affecting other commands.
+- `handleSetupFailure(ctx, runID, attemptID, fromRunStatus, stage, cause)` transitions both attempt and run to failed — uses `fromRunStatus` to handle failures before and after the run reaches `running` status.
+- `transitionAttemptCall` struct is defined in `claim_test.go` and shared across all test files in `package cloud` — don't redeclare it in new test files.
 
 ---
 
@@ -168,4 +174,30 @@
   - `ProcessOne` maps `ErrNotFound` from `ClaimAndLock` to `ErrNoWork` so callers can distinguish "empty queue" (expected) from operational errors. Use `IsNoWork(err)` not `IsNotFound(err)` at the worker loop level.
   - The `workerMockRunner` must implement `runner.Runner` including `StreamLogs` returning `io.ReadCloser` — using an anonymous interface type causes a compile error even if structurally identical.
   - Future stories (US-014+) will extend `ProcessOne` with setup, execution, finalization, and cleanup stages — the `_ = result` placeholder marks where that code will go.
+---
+
+## 2026-02-13 - US-014
+- Implemented deterministic `executeAttempt` setup ordering in `WorkerPipeline`
+- Files changed:
+  - `internal/cloud/worker.go` — Added `Provision`, `Bootstrap`, `AuthMaterialization`, `Preflight` to `WorkerPipelineConfig` and `WorkerPipeline`; added validation in `NewWorkerPipeline`; implemented `executeAttempt` with deterministic setup order: TransitionRun(claimed→running) → Provision → Bootstrap → AuthMaterialization → Preflight; wired `executeAttempt` into `ProcessOne`
+  - `internal/cloud/worker_test.go` — Added `callLog` for ordering assertions, `runTransition` tracking, `execOverrides` map for per-command failure injection, `newTestWorkerPipeline` helper, `testClaimedRun` helper; added 8 new tests: `TestExecuteAttempt_TransitionsClaimedToRunningBeforeSetup`, `TestExecuteAttempt_SetupCallOrder`, `TestExecuteAttempt_TransitionRunFailure`, `TestExecuteAttempt_ProvisionFailure`, `TestExecuteAttempt_BootstrapFailure`, `TestExecuteAttempt_AuthMaterializationFailure`, `TestExecuteAttempt_PreflightFailure`, `TestExecuteAttempt_SetupCallOrderExact`; updated all existing tests to provide new required service dependencies
+- **Learnings for future iterations:**
+  - `executeAttempt` transitions run to `running` before any setup work so that setup failures can be attributed to the `running` status (US-015 will add status-aware failure handling).
+  - `AuthMaterializationService.Materialize` silently no-ops when `SecretRef` is nil — tests that need to observe auth materialization behavior must provide a profile with a non-nil `SecretRef`.
+  - Use a shared `callLog` struct across mock store and runner to verify cross-service call ordering. Each mock records a descriptive entry (e.g., `"provision"`, `"bootstrap"`) when its key method is invoked.
+  - `workerMockRunner.execOverrides` allows targeting specific commands for failure without affecting the default success path — key for testing individual setup stage failures in isolation.
+  - The `Preflight` service with no `ProviderCommands` configured only calls `GetAuthProfile` and emits events, without issuing any `Exec` calls — to test preflight failure, either set incompatible `RuntimeMetadataJSON` or configure a `ProviderCommands` entry with a failing command override.
+---
+
+## 2026-02-13 - US-015
+- Implemented status-aware setup failure transitions in `WorkerPipeline.executeAttempt` with `handleSetupFailure` helper
+- Files changed:
+  - `internal/cloud/worker.go` — Added `handleSetupFailure(ctx, runID, attemptID, fromRunStatus, stage, cause)` method that transitions both attempt and run to failed using the correct source status; added `currentStatus` tracking in `executeAttempt` that starts at `claimed` and advances to `running` after successful transition; all setup failure paths now call `handleSetupFailure` before returning errors; added `time` import
+  - `internal/cloud/worker_test.go` — Added `TransitionAttempt` tracking to `workerMockStore` with `transitionAttemptCalls` slice; added 5 new tests: `TestHandleSetupFailure_ProvisionFailsFromRunning` (verifies running→failed after successful transition), `TestHandleSetupFailure_TransitionToRunningFailsFromClaimed` (verifies claimed→failed when transition never completed), `TestHandleSetupFailure_BootstrapFailsFromRunning`, `TestHandleSetupFailure_SetupFailureCallOrder` (verifies attempt transition before run transition), `TestHandleSetupFailure_NoSetupCallsAfterFailure`; updated `TestExecuteAttempt_ProvisionFailure` to expect 2 transitions instead of 1
+- **Learnings for future iterations:**
+  - `handleSetupFailure` accepts `fromRunStatus` so it transitions from the correct source status — `claimed` if the transition to `running` never completed, `running` if it did. This prevents invalid transitions.
+  - `handleSetupFailure` transitions attempt before run (attempt→failed, then run→failed) — this ordering ensures attempt state is recorded before run state changes.
+  - The `transitionAttemptCall` struct is shared across `claim_test.go` and `worker_test.go` in the same package — don't redeclare it in new test files.
+  - Setup failure error codes use `"setup_failure"` and error messages include the failing stage name — this enables operational debugging to identify which setup step caused the failure.
+  - When adding failure handling to `executeAttempt`, existing tests that assert on transition counts need updating since each failure path now generates additional transitions.
 ---

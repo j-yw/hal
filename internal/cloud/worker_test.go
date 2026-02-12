@@ -40,6 +40,10 @@ type workerMockStore struct {
 	transitions []runTransition
 	transErr    error
 
+	// TransitionAttempt tracking
+	transitionAttemptCalls []transitionAttemptCall
+	transAttemptErr        error
+
 	// GetAuthProfile behavior
 	authProfile    *AuthProfile
 	authProfileErr error
@@ -91,6 +95,23 @@ func (s *workerMockStore) TransitionRun(_ context.Context, runID string, from, t
 	s.transitions = append(s.transitions, runTransition{runID, from, to})
 	if s.transErr != nil {
 		return s.transErr
+	}
+	return nil
+}
+
+func (s *workerMockStore) TransitionAttempt(_ context.Context, attemptID string, status AttemptStatus, endedAt time.Time, errCode, errMsg *string) error {
+	if s.log != nil {
+		s.log.record(fmt.Sprintf("transition_attempt:%s", status))
+	}
+	s.transitionAttemptCalls = append(s.transitionAttemptCalls, transitionAttemptCall{
+		AttemptID:    attemptID,
+		Status:       status,
+		EndedAt:      endedAt,
+		ErrorCode:    errCode,
+		ErrorMessage: errMsg,
+	})
+	if s.transAttemptErr != nil {
+		return s.transAttemptErr
 	}
 	return nil
 }
@@ -617,12 +638,16 @@ func TestExecuteAttempt_ProvisionFailure(t *testing.T) {
 		t.Errorf("error = %q, want containing %q", err.Error(), "provision failed")
 	}
 
-	// Transition should still have happened before provision.
-	if len(store.transitions) != 1 {
-		t.Fatalf("expected 1 transition, got %d", len(store.transitions))
+	// Transition to running should have happened before provision,
+	// then setup failure handler transitions running → failed.
+	if len(store.transitions) != 2 {
+		t.Fatalf("expected 2 transitions, got %d", len(store.transitions))
 	}
 	if store.transitions[0].toStatus != RunStatusRunning {
-		t.Errorf("transition to = %q, want %q", store.transitions[0].toStatus, RunStatusRunning)
+		t.Errorf("transition[0] to = %q, want %q", store.transitions[0].toStatus, RunStatusRunning)
+	}
+	if store.transitions[1].fromStatus != RunStatusRunning || store.transitions[1].toStatus != RunStatusFailed {
+		t.Errorf("transition[1] = %s→%s, want running→failed", store.transitions[1].fromStatus, store.transitions[1].toStatus)
 	}
 }
 
@@ -797,5 +822,179 @@ func TestExecuteAttempt_SetupCallOrderExact(t *testing.T) {
 	}
 	if !foundAuth {
 		t.Error("auth_materialize not found in call log")
+	}
+}
+
+// --- US-015: Status-aware failure transitions during setup ---
+
+func TestHandleSetupFailure_ProvisionFailsFromRunning(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.createErr = fmt.Errorf("sandbox quota exceeded")
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "provision failed") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "provision failed")
+	}
+
+	// Verify run was transitioned: claimed→running (success), then running→failed (setup failure).
+	if len(store.transitions) != 2 {
+		t.Fatalf("expected 2 run transitions, got %d: %v", len(store.transitions), store.transitions)
+	}
+	// First: claimed → running.
+	if store.transitions[0].fromStatus != RunStatusClaimed || store.transitions[0].toStatus != RunStatusRunning {
+		t.Errorf("transition[0] = %s→%s, want claimed→running", store.transitions[0].fromStatus, store.transitions[0].toStatus)
+	}
+	// Second: running → failed (fromRunStatus is running because transition succeeded).
+	if store.transitions[1].fromStatus != RunStatusRunning || store.transitions[1].toStatus != RunStatusFailed {
+		t.Errorf("transition[1] = %s→%s, want running→failed", store.transitions[1].fromStatus, store.transitions[1].toStatus)
+	}
+
+	// Verify attempt was transitioned to failed.
+	if len(store.transitionAttemptCalls) != 1 {
+		t.Fatalf("expected 1 TransitionAttempt call, got %d", len(store.transitionAttemptCalls))
+	}
+	tc := store.transitionAttemptCalls[0]
+	if tc.Status != AttemptStatusFailed {
+		t.Errorf("TransitionAttempt.Status = %q, want %q", tc.Status, AttemptStatusFailed)
+	}
+	if tc.ErrorCode == nil || *tc.ErrorCode != "setup_failure" {
+		t.Errorf("TransitionAttempt.ErrorCode = %v, want %q", tc.ErrorCode, "setup_failure")
+	}
+	if tc.ErrorMessage == nil || !strings.Contains(*tc.ErrorMessage, "provision") {
+		t.Errorf("TransitionAttempt.ErrorMessage = %v, want containing %q", tc.ErrorMessage, "provision")
+	}
+}
+
+func TestHandleSetupFailure_TransitionToRunningFailsFromClaimed(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.transErr = fmt.Errorf("transition conflict")
+	rnr := newWorkerMockRunner(nil)
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "transitioning run to running") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "transitioning run to running")
+	}
+
+	// The first TransitionRun call (claimed→running) failed.
+	// handleSetupFailure should use fromRunStatus=claimed since the transition never completed.
+	// We expect 2 TransitionRun calls: the failed claimed→running, then claimed→failed.
+	if len(store.transitions) != 2 {
+		t.Fatalf("expected 2 run transitions, got %d: %v", len(store.transitions), store.transitions)
+	}
+	// First: attempted claimed → running (which failed).
+	if store.transitions[0].fromStatus != RunStatusClaimed || store.transitions[0].toStatus != RunStatusRunning {
+		t.Errorf("transition[0] = %s→%s, want claimed→running", store.transitions[0].fromStatus, store.transitions[0].toStatus)
+	}
+	// Second: claimed → failed (setup failure handler uses fromRunStatus=claimed).
+	if store.transitions[1].fromStatus != RunStatusClaimed || store.transitions[1].toStatus != RunStatusFailed {
+		t.Errorf("transition[1] = %s→%s, want claimed→failed", store.transitions[1].fromStatus, store.transitions[1].toStatus)
+	}
+
+	// Verify attempt was also transitioned to failed.
+	if len(store.transitionAttemptCalls) != 1 {
+		t.Fatalf("expected 1 TransitionAttempt call, got %d", len(store.transitionAttemptCalls))
+	}
+	tc := store.transitionAttemptCalls[0]
+	if tc.Status != AttemptStatusFailed {
+		t.Errorf("TransitionAttempt.Status = %q, want %q", tc.Status, AttemptStatusFailed)
+	}
+	if tc.ErrorCode == nil || *tc.ErrorCode != "setup_failure" {
+		t.Errorf("TransitionAttempt.ErrorCode = %v, want %q", tc.ErrorCode, "setup_failure")
+	}
+}
+
+func TestHandleSetupFailure_BootstrapFailsFromRunning(t *testing.T) {
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.execOverrides["git clone"] = execOverride{
+		err: fmt.Errorf("clone timeout"),
+	}
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// Bootstrap fails after transition to running, so failure should use running→failed.
+	if len(store.transitions) < 2 {
+		t.Fatalf("expected at least 2 run transitions, got %d", len(store.transitions))
+	}
+	// Find the failure transition.
+	lastTr := store.transitions[len(store.transitions)-1]
+	if lastTr.fromStatus != RunStatusRunning || lastTr.toStatus != RunStatusFailed {
+		t.Errorf("last transition = %s→%s, want running→failed", lastTr.fromStatus, lastTr.toStatus)
+	}
+
+	// Verify attempt failure.
+	if len(store.transitionAttemptCalls) != 1 {
+		t.Fatalf("expected 1 TransitionAttempt call, got %d", len(store.transitionAttemptCalls))
+	}
+	if store.transitionAttemptCalls[0].ErrorMessage == nil || !strings.Contains(*store.transitionAttemptCalls[0].ErrorMessage, "bootstrap") {
+		t.Errorf("TransitionAttempt.ErrorMessage = %v, want containing %q", store.transitionAttemptCalls[0].ErrorMessage, "bootstrap")
+	}
+}
+
+func TestHandleSetupFailure_SetupFailureCallOrder(t *testing.T) {
+	// Verify that handleSetupFailure transitions attempt before run.
+	log := &callLog{}
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.log = log
+	rnr := newWorkerMockRunner(log)
+	rnr.createErr = fmt.Errorf("provision error")
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	_ = pipeline.ProcessOne(context.Background())
+
+	// Expected call order for the failure path:
+	// 1. transition_run:claimed->running
+	// 2. provision (fails)
+	// 3. transition_attempt:failed (from handleSetupFailure)
+	// 4. transition_run:running->failed (from handleSetupFailure)
+	wantSuffix := []string{
+		"transition_attempt:failed",
+		"transition_run:running->failed",
+	}
+
+	if len(log.calls) < len(wantSuffix) {
+		t.Fatalf("call log has %d entries, want at least %d: %v", len(log.calls), len(wantSuffix), log.calls)
+	}
+
+	// Check the last two calls are the failure transitions in correct order.
+	tail := log.calls[len(log.calls)-len(wantSuffix):]
+	for i, want := range wantSuffix {
+		if tail[i] != want {
+			t.Errorf("call[%d from end] = %q, want %q (full log: %v)", i, tail[i], want, log.calls)
+		}
+	}
+}
+
+func TestHandleSetupFailure_NoSetupCallsAfterFailure(t *testing.T) {
+	// When provision fails, no subsequent setup steps should run.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.createErr = fmt.Errorf("sandbox unavailable")
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	_ = pipeline.ProcessOne(context.Background())
+
+	// No exec calls should have been made (provision uses CreateSandbox, not Exec).
+	// Bootstrap, auth materialization, and preflight use Exec calls, so none should appear.
+	if len(rnr.execCalls) != 0 {
+		t.Errorf("expected 0 exec calls after provision failure, got %d", len(rnr.execCalls))
 	}
 }

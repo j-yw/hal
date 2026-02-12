@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jywlabs/hal/internal/cloud/runner"
 )
@@ -113,14 +114,20 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 	run := claim.Run
 	attempt := claim.Attempt
 
+	// Track current run status for status-aware failure transitions.
+	currentStatus := RunStatusClaimed
+
 	// Step 1: Transition run from claimed to running before any setup work.
 	if err := p.store.TransitionRun(ctx, run.ID, RunStatusClaimed, RunStatusRunning); err != nil {
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "transitioning run to running", err)
 		return fmt.Errorf("transitioning run to running: %w", err)
 	}
+	currentStatus = RunStatusRunning
 
 	// Step 2: Provision — create sandbox.
 	provResult, err := p.provision.Provision(ctx, attempt.ID, run.ID)
 	if err != nil {
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "provision", err)
 		return fmt.Errorf("provision failed: %w", err)
 	}
 
@@ -132,6 +139,7 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		AttemptID: attempt.ID,
 		RunID:     run.ID,
 	}); err != nil {
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "bootstrap", err)
 		return fmt.Errorf("bootstrap failed: %w", err)
 	}
 
@@ -142,6 +150,7 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		AttemptID:     attempt.ID,
 		RunID:         run.ID,
 	}); err != nil {
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "auth materialization", err)
 		return fmt.Errorf("auth materialization failed: %w", err)
 	}
 
@@ -152,9 +161,25 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		AttemptID:     attempt.ID,
 		RunID:         run.ID,
 	}); err != nil {
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "preflight", err)
 		return fmt.Errorf("preflight failed: %w", err)
 	}
 
 	// Future stories will add: execution, finalization, cleanup.
 	return nil
+}
+
+// handleSetupFailure transitions both the run and attempt to failed status
+// using the provided fromRunStatus. This ensures failure transitions use the
+// correct source status regardless of how far setup progressed.
+func (p *WorkerPipeline) handleSetupFailure(ctx context.Context, runID, attemptID string, fromRunStatus RunStatus, stage string, cause error) {
+	now := time.Now().UTC()
+	errCode := "setup_failure"
+	errMsg := fmt.Sprintf("%s failed: %s", stage, cause.Error())
+
+	// Transition attempt to failed.
+	_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusFailed, now, &errCode, &errMsg)
+
+	// Transition run from its current status to failed.
+	_ = p.store.TransitionRun(ctx, runID, fromRunStatus, RunStatusFailed)
 }
