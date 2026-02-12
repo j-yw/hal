@@ -1,0 +1,28 @@
+{
+  "step": "pr",
+  "baseBranch": "hal/unified-cloud-ux",
+  "branchName": "compound/cloud-lifecycle-e2e-integration-tests",
+  "reportPath": ".hal/reports/review-2026-02-12-004922-000.md",
+  "prdPath": ".hal/prd-cloud-lifecycle-e2e-integration-tests.md",
+  "startedAt": "2026-02-12T00:49:46.176124361+08:00",
+  "loopIterations": 13,
+  "loopComplete": true,
+  "loopMaxIterations": 25,
+  "analysis": {
+    "priorityItem": "Add full cloud lifecycle end-to-end integration tests",
+    "description": "Build an end-to-end integration suite that exercises the unified cloud flow across commands: `hal cloud setup`, `hal run|auto|review --cloud`, then `status`, `logs`, `cancel`, and `pull`. Use an ephemeral store/runtime harness so tests validate real command interoperability, workflow-kind persistence, and artifact handling without production dependencies. Assert both human-readable and JSON outputs at key lifecycle checkpoints.",
+    "rationale": "The highest remaining risk after the unified cloud rollout is cross-command regression that unit and command-local tests may miss. This work has high impact because it validates the primary user journey end-to-end and protects recent changes in shared flags, resolver precedence, workflow dispatch, and output contracts. It is clearly scoped in the report and is not a duplicate of the already-completed unified cloud UX PRD.",
+    "acceptanceCriteria": [
+      "An automated integration suite runs `setup -\u003e run --cloud -\u003e status -\u003e logs -\u003e pull` against an ephemeral store and passes deterministically.",
+      "The suite includes `auto --cloud` and `review --cloud` lifecycle scenarios with persisted `workflowKind` assertions.",
+      "A cancel-path scenario validates `hal cloud cancel` updates workflow state to the expected terminal status.",
+      "Lifecycle tests assert both human and `--json` output contracts, including stable camelCase fields.",
+      "Secret-bearing values are redacted in all asserted outputs for cloud and auth-related responses.",
+      "Artifact retrieval assertions verify expected artifact-group metadata and pulled file presence.",
+      "The harness performs isolated setup/teardown and does not require external network services.",
+      "CI executes the lifecycle integration suite on pull requests and fails the pipeline on regressions."
+    ],
+    "estimatedTasks": 10,
+    "branchName": "cloud-lifecycle-e2e-integration-tests"
+  }
+}

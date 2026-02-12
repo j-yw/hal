@@ -1,0 +1,408 @@
+{
+  "project": "Unified Cloud UX for HAL",
+  "branchName": "hal/unified-cloud-ux",
+  "description": "Unify cloud and local execution behind the same primary commands (run/auto/review --cloud), provide minimal cloud support surface (setup/doctor/list/status/logs/cancel/pull/auth), remove legacy command variants, enforce non-secret project config, and provide predictable diagnostics and follow-up controls.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Define .hal/cloud.yaml profile schema",
+      "description": "As a product engineer, I want a clear non-secret cloud config schema so that setup is predictable and safe.",
+      "acceptanceCriteria": [
+        ".hal/cloud.yaml schema supports default profile name and per-profile defaults (mode/endpoints/repo/base/engine/auth profile/scope/wait/pull policy)",
+        "Schema validation errors include field path, failed rule, and remediation message for each invalid or missing required value",
+        "Schema explicitly excludes secret-bearing fields (tokens/passwords/DSNs with secrets)",
+        "Loading and validation are covered by automated tests for valid and invalid files",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Persist workflow kind in cloud run records",
+      "description": "As the cloud runtime, I want each run to persist run|auto|review kind so that workers execute the correct workflow command.",
+      "acceptanceCriteria": [
+        "Cloud run persistence includes a required workflowKind field with allowed values run, auto, review",
+        "Run submission from each workflow command stores the correct workflowKind",
+        "Worker/job loading fails fast with a clear error if workflowKind is missing or invalid",
+        "Automated tests verify serialization/deserialization and validation behavior",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Define artifact-group metadata for pull behavior",
+      "description": "As a user, I want deterministic artifact groups so that hal cloud pull can fetch state, reports, or all reliably.",
+      "acceptanceCriteria": [
+        "Cloud run artifacts are categorized into state and reports groups in persisted metadata",
+        "--artifacts state|reports|all maps to deterministic file selection",
+        "Auto/review runs include report artifacts; all workflows include continuation state artifacts",
+        "Automated tests verify artifact selection for each workflow kind",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Remove legacy cloud command aliases after unified rollout",
+      "description": "As a user, I want obsolete cloud command aliases removed after replacements exist so help output stays simple and unambiguous.",
+      "acceptanceCriteria": [
+        "After unified replacements are available, hal cloud run and hal cloud submit are removed",
+        "hal cloud runs namespace plus hal cloud smoke and hal cloud env are removed",
+        "hal cloud --help does not list removed commands",
+        "Invoking each removed command returns unknown-command behavior with non-zero exit status",
+        "Snapshot tests verify command-tree and unknown-command behavior for removed aliases",
+        "Typecheck passes"
+      ],
+      "priority": 26,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Implement shared cloud precedence resolver",
+      "description": "As a developer, I want one resolver for cloud defaults so precedence behavior is consistent across workflows.",
+      "acceptanceCriteria": [
+        "A shared resolver composes values with precedence: CLI > process env > .env (non-overriding) > .hal/cloud.yaml > inferred defaults > hard defaults",
+        "Resolver returns the same resolved runtime config shape for run, auto, and review inputs",
+        "When cloud mode is disabled, resolver outputs cloudEnabled=false and preserves existing local defaults for run/auto/review (verified by golden tests)",
+        "Unit tests cover precedence at each source tier and fallback behavior",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Add hal cloud list command",
+      "description": "As a user, I want to list cloud runs quickly so that I can find run IDs and statuses for follow-up actions.",
+      "acceptanceCriteria": [
+        "hal cloud list returns up to 20 runs ordered by updated timestamp descending, including run ID, workflow kind, status, and updated timestamp",
+        "hal cloud list --json returns valid JSON with no mixed plain-text lines",
+        "Empty-state behavior is explicit in human mode and valid in JSON mode",
+        "Command-level tests cover success, empty list, and store error paths",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Implement guided hal cloud setup",
+      "description": "As a new user, I want guided setup so that I can configure cloud defaults without editing files manually.",
+      "acceptanceCriteria": [
+        "hal cloud setup prompts for profile defaults and writes .hal/cloud.yaml",
+        "Setup writes only non-secret values",
+        "Re-running setup can update the selected profile without deleting unrelated profiles",
+        "Setup output prints profile name, selected endpoint, and default workflow mode",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Implement hal cloud doctor",
+      "description": "As a user, I want a diagnostic command so that I can resolve setup/auth/connectivity issues quickly.",
+      "acceptanceCriteria": [
+        "hal cloud doctor validates profile/config resolution",
+        "Doctor performs explicit checks for profile resolution, endpoint reachability, and auth profile validity",
+        "Blocking failures include category-specific next-step guidance: config -> rerun hal cloud setup, auth -> link/import credentials for the active profile, connectivity -> verify endpoint and rerun hal cloud doctor",
+        "Exit code is non-zero for blocking failures and zero for pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Add cloud execution path for hal run --cloud",
+      "description": "As a user, I want hal run --cloud to submit and track a cloud run so that cloud feels like local run with remote execution.",
+      "acceptanceCriteria": [
+        "hal run --cloud submits a run with workflowKind=run",
+        "Wait/detach behavior follows resolved defaults and explicit flags",
+        "Human output includes run ID, current status, and next-step command hints",
+        "JSON mode returns valid machine-readable submission/progress/summary payloads",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Add cloud execution path for hal auto --cloud",
+      "description": "As a user, I want hal auto --cloud to submit with workflowKind=auto so that auto workflows use the same cloud model.",
+      "acceptanceCriteria": [
+        "hal auto --cloud submits with workflowKind=auto",
+        "Command reuses shared cloud resolution and submit/wait behavior",
+        "Completion summary references report and state artifact availability",
+        "JSON mode is valid JSON with required fields runId, workflowKind, and status",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Add cloud execution path for hal review --cloud",
+      "description": "As a user, I want hal review --cloud to submit with workflowKind=review so that review workflows use the same cloud model.",
+      "acceptanceCriteria": [
+        "hal review --cloud submits with workflowKind=review",
+        "Command reuses shared cloud resolution and submit/wait behavior",
+        "Completion summary references report and state artifact availability",
+        "JSON mode is valid JSON with required fields runId, workflowKind, and status",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Enforce workflow-kind worker dispatch",
+      "description": "As a system owner, I want workers to execute only the command matching persisted workflow kind so that jobs cannot run the wrong workflow.",
+      "acceptanceCriteria": [
+        "Worker dispatch maps run -> hal run, auto -> hal auto, review -> hal review",
+        "Worker dispatch uses only workflowKind; tests assert exact argv mapping run->\"hal run\", auto->\"hal auto\", review->\"hal review\" and verify mode flags do not alter dispatch",
+        "Worker tests assert exact command construction by kind",
+        "Logs/events include workflow kind for observability",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Implement hal cloud status command",
+      "description": "As a user, I want to check the status of a cloud run by ID so that I can monitor progress after submission.",
+      "acceptanceCriteria": [
+        "hal cloud status <run-id> returns current run state, workflow kind, and timestamps",
+        "Command supports --json with valid JSON output",
+        "Invalid run ID returns deterministic error payload/code run_not_found including the requested run ID",
+        "Tests cover success and error paths",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Implement hal cloud logs command",
+      "description": "As a user, I want to view logs for a cloud run so that I can debug or monitor execution.",
+      "acceptanceCriteria": [
+        "hal cloud logs <run-id> returns run output logs",
+        "hal cloud logs <run-id> --follow streams logs until completion",
+        "Command supports --json with valid JSON output",
+        "Tests cover success, follow mode, and error paths",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Implement hal cloud cancel command",
+      "description": "As a user, I want to cancel a running cloud run so that I can stop unwanted executions.",
+      "acceptanceCriteria": [
+        "hal cloud cancel <run-id> cancels the specified run",
+        "Command returns confirmation of cancellation with final status",
+        "Cancelling an already-completed run returns exit code 0 with status already_terminal and the terminal status value",
+        "Command supports --json with valid JSON output",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Implement hal cloud pull command",
+      "description": "As a user, I want to pull artifacts from a cloud run so that I can retrieve state and reports locally.",
+      "acceptanceCriteria": [
+        "hal cloud pull <run-id> pulls artifacts to local .hal/ directory",
+        "hal cloud pull <run-id> --artifacts state|reports|all supports deterministic artifact selection",
+        "Pull behavior is safe for existing local files (no destructive overwrite unless explicitly forced)",
+        "Command supports --json with valid JSON output",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Implement hal cloud auth import validation",
+      "description": "As a security-conscious user, I want auth import to validate credentials and return deterministic results.",
+      "acceptanceCriteria": [
+        "hal cloud auth import validates supplied credentials with the configured backend",
+        "Invalid credentials return non-zero exit with deterministic error code invalid_credentials",
+        "Successful import persists linked credential metadata for the selected auth profile",
+        "Command tests cover import success and invalid-credential failure paths",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Standardize cloud help text and command discoverability",
+      "description": "As a user, I want concise help output so that I can learn cloud commands quickly without legacy noise.",
+      "acceptanceCriteria": [
+        "hal cloud --help lists only supported commands: setup, doctor, list, status, logs, cancel, pull, auth",
+        "hal run --help, hal auto --help, and hal review --help each document the same cloud flag set: --cloud, --cloud-profile, --detach, --wait, --json, --cloud-mode, --cloud-endpoint, --cloud-repo, --cloud-base, --cloud-auth-profile, --cloud-auth-scope",
+        "Removed commands do not appear in any help text",
+        "Help snapshot tests verify exact command tree and key flag docs",
+        "Typecheck passes"
+      ],
+      "priority": 27,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-019",
+      "title": "Normalize hal run --cloud output contract",
+      "description": "As a user and tool integrator, I want hal run --cloud outputs normalized to a deterministic contract.",
+      "acceptanceCriteria": [
+        "hal run --cloud human output includes run ID after submission, terminal status at completion, and one next-step hint command",
+        "hal run --cloud --json output is valid JSON with required fields runId, workflowKind, and status",
+        "hal run --cloud prerequisite failures return deterministic error code and message fields in human and JSON modes",
+        "Command-level tests verify the hal run output contract fields for success and prerequisite-failure cases",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-020",
+      "title": "Enforce non-secret cloud config schema validation",
+      "description": "As a security-conscious user, I want .hal/cloud.yaml schema validation to reject secret-bearing project config values.",
+      "acceptanceCriteria": [
+        ".hal/cloud.yaml schema rejects secret-bearing fields and values (token/password/secret/authToken query parameters)",
+        "Schema loading fails fast before runtime resolution when secret-bearing keys are present",
+        "Validation errors include offending field path and violated rule",
+        "Unit tests cover schema rejection and error formatting for secret inputs",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-021",
+      "title": "Define shared cloud flag contract and conflict validation",
+      "description": "As a developer, I want a shared cloud-flag contract helper so command flag behavior is defined in one place.",
+      "acceptanceCriteria": [
+        "A shared helper defines cloud flags: --cloud, --cloud-profile, --detach, --wait, --json, --cloud-mode, --cloud-endpoint, --cloud-repo, --cloud-base, --cloud-auth-profile, --cloud-auth-scope",
+        "The helper validates the --detach and --wait conflict and returns deterministic error code invalid_flag_combination",
+        "Unit tests verify helper-provided flag definitions and conflict validation behavior",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-022",
+      "title": "Redact secrets in hal run --cloud output",
+      "description": "As a security-conscious user, I want hal run --cloud output to redact secrets in both human and JSON modes.",
+      "acceptanceCriteria": [
+        "hal run --cloud human output replaces detected secret values with [REDACTED]",
+        "hal run --cloud --json output redacts secrets while remaining valid JSON",
+        "Security tests inject sample secrets and assert they are absent from hal run output",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-023",
+      "title": "Add integration conformance tests for workflow cloud outputs",
+      "description": "As a maintainer, I want integration tests that lock workflow output contracts to prevent regressions.",
+      "acceptanceCriteria": [
+        "Integration tests run hal run --cloud, hal auto --cloud, and hal review --cloud against deterministic mocked backend responses",
+        "Tests assert JSON parseability and required fields defined in the workflow output contract story",
+        "Tests assert human-mode summaries include run ID, terminal status, and next-step hint command",
+        "Integration suite includes at least one prerequisite-failure case with deterministic error fields",
+        "Typecheck passes"
+      ],
+      "priority": 25,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-024",
+      "title": "Redact secrets in hal cloud auth import output",
+      "description": "As a security-conscious user, I want hal cloud auth import output to redact secrets in human and JSON responses.",
+      "acceptanceCriteria": [
+        "hal cloud auth import human output replaces detected secret values with [REDACTED]",
+        "hal cloud auth import --json output redacts secrets while remaining valid JSON",
+        "Security tests inject sample secrets and assert they are absent from auth import output",
+        "Typecheck passes"
+      ],
+      "priority": 24,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-025",
+      "title": "Implement hal cloud auth status state reporting",
+      "description": "As a user, I want hal cloud auth status to report deterministic credential state for a profile.",
+      "acceptanceCriteria": [
+        "hal cloud auth status reports one of missing, linked, invalid, or revoked for the selected profile",
+        "hal cloud auth status --json includes profileId and status, plus lastValidatedAt when available",
+        "Command tests cover status output for missing, linked, invalid, and revoked states",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-026",
+      "title": "Implement hal cloud auth revoke transition",
+      "description": "As a user, I want revoke to transition credentials into a deterministic revoked state.",
+      "acceptanceCriteria": [
+        "hal cloud auth revoke transitions linked or invalid credentials to revoked for the selected profile",
+        "Revoking missing or already-revoked credentials returns deterministic non-fatal output contract",
+        "Subsequent hal cloud auth status reports revoked after successful revoke",
+        "Command tests cover revoke success and edge-state behavior",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-027",
+      "title": "Implement hal cloud auth validate state refresh",
+      "description": "As a user, I want hal cloud auth validate to refresh backend credential validity deterministically.",
+      "acceptanceCriteria": [
+        "hal cloud auth validate re-checks backend credentials for the selected profile and updates stored status deterministically",
+        "hal cloud auth validate --json includes profileId, status, and validatedAt fields",
+        "Command tests cover validate success and invalid-credential outcomes",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}
