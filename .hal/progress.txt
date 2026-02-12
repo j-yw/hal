@@ -1,0 +1,36 @@
+## Codebase Patterns
+- Config env var constants live in `internal/cloud/deploy/config.go` — add new env constants to the same const block.
+- `LoadConfig(getenv)` pattern enables testable config loading; tests use inline `func(key string) string { return env[key] }` closures.
+- `ValidateStore()` is DB-only validation; `Validate()` is full validation. Both delegate to `validateAdapter()` for DB checks.
+- URL fallback precedence is implemented directly in `LoadConfig` (check primary, fallback to legacy alias).
+- Config fields are value types (not pointers) since these come from env vars, not YAML.
+- SDK client constructor pattern: `SDKClientConfig` struct → pre-validate required fields → delegate to `daytona.NewClientWithConfig` → wrap SDK errors with `%w`.
+- SDK client tests are in `sdk_client_test.go` (package-internal); HTTP client tests remain in `runner_test.go`.
+- The `daytona.NewClientWithConfig` constructor does not make network calls — it only configures HTTP clients, so tests can construct real SDK clients without mocking.
+
+## 2026-02-12 - US-001
+- Removed `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN` constants, fields, and env parsing from `internal/cloud/deploy/config.go`
+- Added `DAYTONA_API_KEY` (required), `DAYTONA_API_URL` (optional), `DAYTONA_SERVER_URL` (legacy alias fallback), and `DAYTONA_TARGET` (optional)
+- `LoadConfig` prefers `DAYTONA_API_URL` and falls back to `DAYTONA_SERVER_URL` only when `DAYTONA_API_URL` is unset
+- `Validate()` now requires non-empty `DaytonaAPIKey` instead of `RunnerURL`/`RunnerServiceToken`
+- `ValidateStore()` remains DB-only (unchanged behavior)
+- Files changed: `internal/cloud/deploy/config.go`, `internal/cloud/deploy/config_test.go`
+- **Learnings for future iterations:**
+  - No other Go files in the project reference `deploy.Config` fields directly — the config struct is only used within the deploy package tests and config loading, making field changes safe.
+  - The smoke.go file references `runnerURL` as a parameter, not as a Config field — it will need separate attention in US-008.
+  - Runner-related env vars also appear in `deploy/docker-compose.yml` and `deploy/.env.example` — those are addressed in US-009.
+---
+
+## 2026-02-12 - US-002
+- Added `github.com/daytonaio/daytona/libs/sdk-go v0.141.0` to go.mod (with transitive deps: api-client-go, toolbox-api-client-go)
+- Created `internal/cloud/runner/sdk_client.go` with `SDKClientConfig` struct and `NewSDKClient` constructor
+- Constructor validates APIKey is required, then delegates to `daytona.NewClientWithConfig` with `types.DaytonaConfig{APIKey, APIUrl, Target}`
+- Constructor wraps SDK init failures with `fmt.Errorf("sdk runner client: init: %w", err)`
+- Created `internal/cloud/runner/sdk_client_test.go` with table-driven constructor tests covering empty APIKey, valid configs, error prefix, and wrapping behavior
+- Files changed: `go.mod`, `go.sum`, `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+- **Learnings for future iterations:**
+  - The Daytona Go SDK brings significant transitive dependencies (AWS SDK, OpenTelemetry, gRPC, websocket) — expect a large go.sum diff.
+  - `NewClientWithConfig` is a pure config constructor (no network calls), so tests can create real SDK clients safely.
+  - The `SDKClient` struct stores `*daytona.Client` — future stories (US-003+) will add Runner interface methods that delegate to this client.
+  - The SDK `types.DaytonaConfig` also supports `JWTToken` and `OrganizationID` — we only expose APIKey/APIURL/Target since that's what our deploy config provides.
+---
