@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+	"github.com/jywlabs/hal/internal/cloud"
+	"github.com/jywlabs/hal/internal/cloud/deploy"
+	"github.com/jywlabs/hal/internal/cloud/runner"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +25,12 @@ var (
 	cloudWorkerTimeoutIntervalFlag   time.Duration
 	cloudWorkerSandboxImageFlag      string
 )
+
+// cloudWorkerStoreFactory is a package-level variable that tests can override.
+var cloudWorkerStoreFactory func() (cloud.Store, error)
+
+// cloudWorkerRunnerFactory is a package-level variable that tests can override.
+var cloudWorkerRunnerFactory func(cfg deploy.Config) (runner.Runner, error)
 
 var cloudWorkerCmd = &cobra.Command{
 	Use:   "worker",
@@ -54,7 +65,30 @@ func init() {
 	cloudWorkerCmd.Flags().DurationVar(&cloudWorkerTimeoutIntervalFlag, "timeout-interval", 60*time.Second, "Interval between timeout checks")
 	cloudWorkerCmd.Flags().StringVar(&cloudWorkerSandboxImageFlag, "sandbox-image", "", "Container image for sandbox provisioning")
 
+	if cloudWorkerStoreFactory == nil {
+		cloudWorkerStoreFactory = deploy.DefaultStoreFactory
+	}
+	if cloudWorkerRunnerFactory == nil {
+		cloudWorkerRunnerFactory = defaultCloudWorkerRunnerFactory
+	}
+
 	cloudCmd.AddCommand(cloudWorkerCmd)
+}
+
+// defaultCloudWorkerRunnerFactory constructs a Daytona-backed runner from deploy config.
+func defaultCloudWorkerRunnerFactory(cfg deploy.Config) (runner.Runner, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validate deploy config: %w", err)
+	}
+	client, err := runner.NewSDKClient(runner.SDKClientConfig{
+		APIKey: cfg.DaytonaAPIKey,
+		APIURL: cfg.DaytonaAPIURL,
+		Target: cfg.DaytonaTarget,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create runner client: %w", err)
+	}
+	return client, nil
 }
 
 // runCloudWorker is the testable logic for the cloud worker command.
@@ -68,6 +102,11 @@ func runCloudWorker(
 ) error {
 	if workerID == "" {
 		return fmt.Errorf("--worker-id is required")
+	}
+
+	// Load .env before deploy config resolution.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(out, "Warning: failed to load .env file: %v\n", err)
 	}
 
 	// Create a context that cancels on SIGINT/SIGTERM.
