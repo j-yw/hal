@@ -988,6 +988,35 @@ func TestRunCloudLogs_JSON(t *testing.T) {
 			},
 		},
 		{
+			name:  "cli redaction marks event redacted when payload is masked",
+			runID: "run-003",
+			store: func() *cloudMockStore {
+				s := newCloudMockStore()
+				s.runsByID["run-003"] = validCloudRun("run-003")
+				legacyPayload := `{"token":"ghp_ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEF"}`
+				s.events["run-003"] = []*cloud.Event{
+					{ID: "e1", RunID: "run-003", EventType: "auth_materialized", PayloadJSON: &legacyPayload, Redacted: false, CreatedAt: now},
+				}
+				return s
+			},
+			checkJSON: func(t *testing.T, output string) {
+				var resp cloudLogsResponse
+				if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				if len(resp.Events) != 1 {
+					t.Fatalf("events count = %d, want 1", len(resp.Events))
+				}
+				wantPayload := `{"token":"[REDACTED]"}`
+				if resp.Events[0].PayloadJSON == nil || *resp.Events[0].PayloadJSON != wantPayload {
+					t.Errorf("events[0].payload_json = %v, want %q", resp.Events[0].PayloadJSON, wantPayload)
+				}
+				if !resp.Events[0].Redacted {
+					t.Errorf("redacted = false, want true")
+				}
+			},
+		},
+		{
 			name:  "empty events returns valid JSON with empty array",
 			runID: "run-002",
 			store: func() *cloudMockStore {

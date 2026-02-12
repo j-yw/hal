@@ -538,16 +538,20 @@ func runCloudLogs(
 // eventToJSON converts a cloud Event to a JSON-serializable struct.
 func eventToJSON(e *cloud.Event) cloudLogsEventJSON {
 	var payloadJSON *string
+	redacted := e.Redacted
 	if e.PayloadJSON != nil {
 		redactedPayload := cloud.Redact(*e.PayloadJSON)
 		payloadJSON = &redactedPayload
+		if redactedPayload != *e.PayloadJSON {
+			redacted = true
+		}
 	}
 
 	return cloudLogsEventJSON{
 		ID:          cloud.Redact(e.ID),
 		EventType:   cloud.Redact(e.EventType),
 		PayloadJSON: payloadJSON,
-		Redacted:    e.Redacted,
+		Redacted:    redacted,
 		CreatedAt:   e.CreatedAt.Format(time.RFC3339),
 	}
 }
