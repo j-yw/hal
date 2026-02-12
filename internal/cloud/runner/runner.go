@@ -1,5 +1,5 @@
-// Package runner defines the sandbox lifecycle interface and an HTTP client
-// implementation that communicates with a Daytona runner service.
+// Package runner defines the sandbox lifecycle interface and types for
+// communicating with a Daytona sandbox service.
 package runner
 
 import (
