@@ -392,6 +392,7 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, git, CheckpointConfig{})
+	execution := NewExecutionService(store, rnr, ExecutionConfig{})
 	cancel := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
@@ -405,6 +406,7 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           execution,
 		Cancel:              cancel,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   50 * time.Millisecond, // fast ticks for tests
@@ -448,6 +450,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+	execution := NewExecutionService(store, rnr, ExecutionConfig{})
 	cancel := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
@@ -468,6 +471,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -484,6 +488,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -501,6 +506,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -518,6 +524,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -535,6 +542,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -552,6 +560,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -569,6 +578,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -586,6 +596,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: nil,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -603,6 +614,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           nil,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
@@ -620,10 +632,29 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          nil,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "checkpoint must not be nil",
+		},
+		{
+			name: "nil execution service",
+			cfg: WorkerPipelineConfig{
+				Store:               store,
+				Runner:              rnr,
+				WorkerID:            "worker-1",
+				Claim:               claim,
+				Provision:           provision,
+				Bootstrap:           bootstrap,
+				AuthMaterialization: authMat,
+				Preflight:           preflight,
+				Checkpoint:          checkpoint,
+				Execution:           nil,
+				Cancel:              cancel,
+				Heartbeat:           heartbeat,
+			},
+			wantErr: "execution must not be nil",
 		},
 		{
 			name: "nil cancel service",
@@ -637,6 +668,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              nil,
 				Heartbeat:           heartbeat,
 			},
@@ -654,6 +686,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Execution:           execution,
 				Cancel:              cancel,
 				Heartbeat:           nil,
 			},
@@ -979,6 +1012,7 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflightSvc,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -1407,6 +1441,7 @@ func TestExecuteAttempt_CheckpointServiceValidation(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          nil,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 	})
@@ -1468,6 +1503,7 @@ func TestHeartbeat_StartsAfterTransitionToRunning(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond, // fast ticks
@@ -1549,6 +1585,7 @@ func TestHeartbeat_ActiveThroughSetupAndExecution(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -1669,6 +1706,7 @@ func TestHeartbeat_RenewCallsIncludeCorrectIDs(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -1750,6 +1788,7 @@ func TestHeartbeat_CancelCheckedBeforeRenewOnEachTick(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -1854,6 +1893,7 @@ func TestHeartbeat_CancelDetectedSkipsRenew(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -1988,6 +2028,7 @@ func TestLeaseLost_SetsReasonAndRoutesToLeaseLostHandling(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2071,6 +2112,7 @@ func TestLeaseLost_NoDuplicateAttemptTerminalization(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2147,6 +2189,7 @@ func TestLeaseLost_CleanupStillRuns(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2248,6 +2291,7 @@ func TestLeaseLost_AfterSuccessfulHeartbeats(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2333,6 +2377,7 @@ func TestProfileRevoked_SetsReasonAndRoutesToProfileRevokedHandling(t *testing.T
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2413,6 +2458,7 @@ func TestProfileRevoked_NoDuplicateAttemptTerminalization(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2489,6 +2535,7 @@ func TestProfileRevoked_RunTransitionsToFailed(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2581,6 +2628,7 @@ func TestProfileRevoked_AfterSuccessfulHeartbeats(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
@@ -2718,6 +2766,7 @@ func TestCleanup_HandleLeaseLost_UsesBackgroundContext(t *testing.T) {
 		AuthMaterialization: NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{}),
 		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
 		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              NewCancellationService(store, CancellationConfig{}),
 		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -2787,6 +2836,7 @@ func TestCleanup_HandleProfileRevoked_UsesBackgroundContext(t *testing.T) {
 		AuthMaterialization: NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{}),
 		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
 		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
 		Cancel:              NewCancellationService(store, CancellationConfig{}),
 		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -2863,6 +2913,7 @@ func TestCleanup_HandleSetupFailure_UsesBackgroundContext(t *testing.T) {
 		AuthMaterialization: NewAuthMaterializationService(store, baseRnr, AuthMaterializationConfig{}),
 		Preflight:           NewPreflightService(store, baseRnr, PreflightConfig{}),
 		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Execution:           NewExecutionService(store, baseRnr, ExecutionConfig{}),
 		Cancel:              NewCancellationService(store, CancellationConfig{}),
 		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
 		HeartbeatInterval:   50 * time.Millisecond,
@@ -2905,4 +2956,398 @@ func TestCleanup_CleanupTimeoutConstant(t *testing.T) {
 	if cleanupTimeout != 30*time.Second {
 		t.Errorf("cleanupTimeout = %v, want 30s", cleanupTimeout)
 	}
+}
+
+// --- Execution exit code mapping tests (US-022) ---
+
+func TestExecutionResult_ExitCodeZero_EmitsSucceededTransitions(t *testing.T) {
+	// Exit code 0 must emit exactly one attempt succeeded transition and
+	// exactly one run succeeded transition.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Count attempt transitions.
+	attemptSucceeded := 0
+	attemptFailed := 0
+	for _, tc := range store.transitionAttemptCalls {
+		switch tc.Status {
+		case AttemptStatusSucceeded:
+			attemptSucceeded++
+		case AttemptStatusFailed:
+			attemptFailed++
+		}
+	}
+	if attemptSucceeded != 1 {
+		t.Errorf("attempt succeeded transitions = %d, want exactly 1", attemptSucceeded)
+	}
+	if attemptFailed != 0 {
+		t.Errorf("attempt failed transitions = %d, want 0", attemptFailed)
+	}
+
+	// Count run transitions (excluding claimed->running which is setup).
+	runSucceeded := 0
+	runFailed := 0
+	for _, tr := range store.transitions {
+		switch {
+		case tr.toStatus == RunStatusSucceeded:
+			runSucceeded++
+		case tr.toStatus == RunStatusFailed:
+			runFailed++
+		}
+	}
+	if runSucceeded != 1 {
+		t.Errorf("run succeeded transitions = %d, want exactly 1", runSucceeded)
+	}
+	if runFailed != 0 {
+		t.Errorf("run failed transitions = %d, want 0", runFailed)
+	}
+
+	// Verify the run transition was from running to succeeded.
+	found := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusSucceeded {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected running->succeeded transition, not found")
+	}
+
+	// Verify attempt transition has no error code or message.
+	for _, tc := range store.transitionAttemptCalls {
+		if tc.Status == AttemptStatusSucceeded {
+			if tc.ErrorCode != nil {
+				t.Errorf("succeeded attempt error_code = %q, want nil", *tc.ErrorCode)
+			}
+			if tc.ErrorMessage != nil {
+				t.Errorf("succeeded attempt error_message = %q, want nil", *tc.ErrorMessage)
+			}
+		}
+	}
+}
+
+func TestExecutionResult_NonZeroExit_EmitsFailedTransitions(t *testing.T) {
+	// Non-zero exit must emit exactly one attempt failed transition with
+	// reason non_retryable and exactly one run failed transition.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	// Override hal run command to return exit code 1 (testClaimedRun uses WorkflowKindRun).
+	rnr.execOverrides["hal run"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 1, Stderr: "test failure"},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Count attempt transitions.
+	attemptSucceeded := 0
+	attemptFailed := 0
+	for _, tc := range store.transitionAttemptCalls {
+		switch tc.Status {
+		case AttemptStatusSucceeded:
+			attemptSucceeded++
+		case AttemptStatusFailed:
+			attemptFailed++
+		}
+	}
+	if attemptFailed != 1 {
+		t.Errorf("attempt failed transitions = %d, want exactly 1", attemptFailed)
+	}
+	if attemptSucceeded != 0 {
+		t.Errorf("attempt succeeded transitions = %d, want 0", attemptSucceeded)
+	}
+
+	// Count run transitions (excluding claimed->running).
+	runSucceeded := 0
+	runFailed := 0
+	for _, tr := range store.transitions {
+		switch {
+		case tr.toStatus == RunStatusSucceeded:
+			runSucceeded++
+		case tr.toStatus == RunStatusFailed:
+			runFailed++
+		}
+	}
+	if runFailed != 1 {
+		t.Errorf("run failed transitions = %d, want exactly 1", runFailed)
+	}
+	if runSucceeded != 0 {
+		t.Errorf("run succeeded transitions = %d, want 0", runSucceeded)
+	}
+
+	// Verify the run transition was from running to failed.
+	found := false
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected running->failed transition, not found")
+	}
+}
+
+func TestExecutionResult_NonZeroExit_FailureReasonIsNonRetryable(t *testing.T) {
+	// Verify the attempt failure has error_code = "non_retryable".
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.execOverrides["hal run"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 2},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the failed attempt transition.
+	var failedTC *transitionAttemptCall
+	for i, tc := range store.transitionAttemptCalls {
+		if tc.Status == AttemptStatusFailed {
+			failedTC = &store.transitionAttemptCalls[i]
+			break
+		}
+	}
+	if failedTC == nil {
+		t.Fatal("no failed attempt transition found")
+	}
+
+	// Verify error_code is non_retryable.
+	if failedTC.ErrorCode == nil {
+		t.Fatal("error_code is nil, want non_retryable")
+	}
+	if *failedTC.ErrorCode != string(FailureNonRetryable) {
+		t.Errorf("error_code = %q, want %q", *failedTC.ErrorCode, FailureNonRetryable)
+	}
+
+	// Verify error_message includes the exit code.
+	if failedTC.ErrorMessage == nil {
+		t.Fatal("error_message is nil, want non-nil")
+	}
+	if !strings.Contains(*failedTC.ErrorMessage, "code 2") {
+		t.Errorf("error_message = %q, want containing 'code 2'", *failedTC.ErrorMessage)
+	}
+}
+
+func TestExecutionResult_MultipleExitCodes(t *testing.T) {
+	// Table-driven test covering various exit codes to verify deterministic
+	// transition mapping.
+	tests := []struct {
+		name              string
+		exitCode          int
+		wantAttemptStatus AttemptStatus
+		wantRunToStatus   RunStatus
+		wantErrCode       *string
+	}{
+		{
+			name:              "exit_0_success",
+			exitCode:          0,
+			wantAttemptStatus: AttemptStatusSucceeded,
+			wantRunToStatus:   RunStatusSucceeded,
+			wantErrCode:       nil,
+		},
+		{
+			name:              "exit_1_failure",
+			exitCode:          1,
+			wantAttemptStatus: AttemptStatusFailed,
+			wantRunToStatus:   RunStatusFailed,
+			wantErrCode:       strPtr(string(FailureNonRetryable)),
+		},
+		{
+			name:              "exit_2_failure",
+			exitCode:          2,
+			wantAttemptStatus: AttemptStatusFailed,
+			wantRunToStatus:   RunStatusFailed,
+			wantErrCode:       strPtr(string(FailureNonRetryable)),
+		},
+		{
+			name:              "exit_128_failure",
+			exitCode:          128,
+			wantAttemptStatus: AttemptStatusFailed,
+			wantRunToStatus:   RunStatusFailed,
+			wantErrCode:       strPtr(string(FailureNonRetryable)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newWorkerMockStore()
+			store.claimedRun = testClaimedRun()
+			rnr := newWorkerMockRunner(nil)
+			if tt.exitCode != 0 {
+				rnr.execOverrides["hal run"] = execOverride{
+					result: &runner.ExecResult{ExitCode: tt.exitCode},
+				}
+			}
+
+			pipeline := newTestWorkerPipeline(t, store, rnr)
+
+			err := pipeline.ProcessOne(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Verify exactly one attempt transition with expected status.
+			if len(store.transitionAttemptCalls) != 1 {
+				t.Fatalf("attempt transitions = %d, want exactly 1", len(store.transitionAttemptCalls))
+			}
+			tc := store.transitionAttemptCalls[0]
+			if tc.Status != tt.wantAttemptStatus {
+				t.Errorf("attempt status = %q, want %q", tc.Status, tt.wantAttemptStatus)
+			}
+
+			// Verify error code.
+			if tt.wantErrCode == nil {
+				if tc.ErrorCode != nil {
+					t.Errorf("error_code = %q, want nil", *tc.ErrorCode)
+				}
+			} else {
+				if tc.ErrorCode == nil {
+					t.Fatalf("error_code is nil, want %q", *tt.wantErrCode)
+				}
+				if *tc.ErrorCode != *tt.wantErrCode {
+					t.Errorf("error_code = %q, want %q", *tc.ErrorCode, *tt.wantErrCode)
+				}
+			}
+
+			// Verify run transition: claimed->running (setup) + running->terminal.
+			// Find the terminal transition (last one).
+			terminalFound := false
+			for _, tr := range store.transitions {
+				if tr.fromStatus == RunStatusRunning && tr.toStatus == tt.wantRunToStatus {
+					terminalFound = true
+				}
+			}
+			if !terminalFound {
+				t.Errorf("expected running->%s transition, not found", tt.wantRunToStatus)
+			}
+		})
+	}
+}
+
+func TestExecutionResult_RunnerAPIError_TreatsAsFailure(t *testing.T) {
+	// When the execution service returns an error (runner API failure),
+	// the pipeline should treat it as a non-retryable failure with exit -1.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	// Make the hal run command return a runner error.
+	rnr.execOverrides["hal run"] = execOverride{
+		err: fmt.Errorf("sandbox unreachable"),
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "execution failed") {
+		t.Errorf("error = %q, want containing 'execution failed'", err.Error())
+	}
+
+	// Should still emit attempt failed transition.
+	attemptFailed := 0
+	for _, tc := range store.transitionAttemptCalls {
+		if tc.Status == AttemptStatusFailed {
+			attemptFailed++
+		}
+	}
+	if attemptFailed != 1 {
+		t.Errorf("attempt failed transitions = %d, want exactly 1", attemptFailed)
+	}
+
+	// Should emit run failed transition.
+	runFailed := 0
+	for _, tr := range store.transitions {
+		if tr.fromStatus == RunStatusRunning && tr.toStatus == RunStatusFailed {
+			runFailed++
+		}
+	}
+	if runFailed != 1 {
+		t.Errorf("run failed transitions = %d, want exactly 1", runFailed)
+	}
+}
+
+func TestExecutionResult_TransitionCounts(t *testing.T) {
+	// Verify that handleExecutionResult emits exactly one attempt transition
+	// and exactly one run transition (beyond the setup claimed->running).
+	tests := []struct {
+		name                       string
+		exitCode                   int
+		wantAttemptTransitions     int
+		wantRunTerminalTransitions int
+	}{
+		{
+			name:                       "exit_0_one_of_each",
+			exitCode:                   0,
+			wantAttemptTransitions:     1,
+			wantRunTerminalTransitions: 1,
+		},
+		{
+			name:                       "exit_1_one_of_each",
+			exitCode:                   1,
+			wantAttemptTransitions:     1,
+			wantRunTerminalTransitions: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newWorkerMockStore()
+			store.claimedRun = testClaimedRun()
+			rnr := newWorkerMockRunner(nil)
+			if tt.exitCode != 0 {
+				rnr.execOverrides["hal run"] = execOverride{
+					result: &runner.ExecResult{ExitCode: tt.exitCode},
+				}
+			}
+
+			pipeline := newTestWorkerPipeline(t, store, rnr)
+
+			err := pipeline.ProcessOne(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Count attempt transitions (all of them come from handleExecutionResult).
+			if len(store.transitionAttemptCalls) != tt.wantAttemptTransitions {
+				t.Errorf("attempt transitions = %d, want %d", len(store.transitionAttemptCalls), tt.wantAttemptTransitions)
+			}
+
+			// Count run terminal transitions (exclude claimed->running from setup).
+			terminalRunTransitions := 0
+			for _, tr := range store.transitions {
+				if tr.fromStatus == RunStatusRunning && (tr.toStatus == RunStatusSucceeded || tr.toStatus == RunStatusFailed) {
+					terminalRunTransitions++
+				}
+			}
+			if terminalRunTransitions != tt.wantRunTerminalTransitions {
+				t.Errorf("run terminal transitions = %d, want %d", terminalRunTransitions, tt.wantRunTerminalTransitions)
+			}
+		})
+	}
+}
+
+// strPtr returns a pointer to s.
+func strPtr(s string) *string {
+	return &s
 }

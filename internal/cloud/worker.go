@@ -38,6 +38,8 @@ type WorkerPipelineConfig struct {
 	Preflight *PreflightService
 	// Checkpoint is the service used to commit and push sandbox changes (required).
 	Checkpoint *CheckpointService
+	// Execution is the service used to run Hal inside the sandbox (required).
+	Execution *ExecutionService
 	// Cancel is the service used to check and propagate cancel intent (required).
 	Cancel *CancellationService
 	// Heartbeat is the service used to renew attempt leases (required).
@@ -64,6 +66,7 @@ type WorkerPipeline struct {
 	authMaterialization *AuthMaterializationService
 	preflight           *PreflightService
 	checkpoint          *CheckpointService
+	execution           *ExecutionService
 	cancel              *CancellationService
 	heartbeat           *HeartbeatService
 	heartbeatInterval   time.Duration
@@ -101,6 +104,9 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 	if cfg.Checkpoint == nil {
 		return nil, fmt.Errorf("checkpoint must not be nil")
 	}
+	if cfg.Execution == nil {
+		return nil, fmt.Errorf("execution must not be nil")
+	}
 	if cfg.Cancel == nil {
 		return nil, fmt.Errorf("cancel must not be nil")
 	}
@@ -121,6 +127,7 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		authMaterialization: cfg.AuthMaterialization,
 		preflight:           cfg.Preflight,
 		checkpoint:          cfg.Checkpoint,
+		execution:           cfg.Execution,
 		cancel:              cfg.Cancel,
 		heartbeat:           cfg.Heartbeat,
 		heartbeatInterval:   hbInterval,
@@ -252,7 +259,23 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		return fmt.Errorf("profile revoked during execution")
 	}
 
-	// Future stories will add: execution, finalization, cleanup.
+	// Step 6: Execute -- run Hal in the sandbox.
+	execResult, err := p.execution.Execute(ctx, &ExecutionRequest{
+		SandboxID:    provResult.SandboxID,
+		AttemptID:    attempt.ID,
+		RunID:        run.ID,
+		WorkflowKind: run.WorkflowKind,
+		Mode:         ExecutionModeUntilComplete,
+	})
+	if err != nil {
+		// Runner API error -- treat as non-retryable failure.
+		p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, -1)
+		return fmt.Errorf("execution failed: %w", err)
+	}
+
+	p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, execResult.ExitCode)
+
+	// Future stories will add: finalization, cleanup.
 	return nil
 }
 
@@ -381,4 +404,32 @@ func (p *WorkerPipeline) handleSetupFailure(_ context.Context, runID, attemptID 
 
 	// Transition run from its current status to failed.
 	_ = p.store.TransitionRun(ctx, runID, fromRunStatus, RunStatusFailed)
+}
+
+// handleExecutionResult maps an execution exit code to deterministic terminal
+// transitions. Each outcome emits exactly one attempt transition and exactly
+// one run transition:
+//
+//   - Exit code 0: attempt succeeded + run succeeded
+//   - Non-zero exit: attempt failed (reason non_retryable) + run failed
+//
+// Cleanup uses context.Background() with a timeout so it can complete even
+// when the parent context is already canceled (e.g., during graceful shutdown).
+func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attemptID, sandboxID, authProfileID string, exitCode int) {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+
+	now := time.Now().UTC()
+
+	if exitCode == 0 {
+		// Success: attempt succeeded, run succeeded.
+		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusSucceeded, now, nil, nil)
+		_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusSucceeded)
+	} else {
+		// Non-zero exit: attempt failed with reason non_retryable, run failed.
+		errCode := string(FailureNonRetryable)
+		errMsg := fmt.Sprintf("execution exited with code %d", exitCode)
+		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusFailed, now, &errCode, &errMsg)
+		_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
+	}
 }
