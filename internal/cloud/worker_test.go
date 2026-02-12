@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -73,6 +74,7 @@ type workerMockStore struct {
 
 	// ReleaseAuthLock tracking
 	releaseAuthLockCalls []releaseAuthLockCall
+	releaseAuthLockErr   error
 
 	// Profile revocation control -- when true, GetAuthProfile returns
 	// AuthProfileStatusRevoked (used to trigger profile_revoked in heartbeat).
@@ -222,7 +224,7 @@ func (s *workerMockStore) ReleaseAuthLock(_ context.Context, authProfileID, runI
 		AuthProfileID: authProfileID,
 		RunID:         runID,
 	})
-	return nil
+	return s.releaseAuthLockErr
 }
 
 // workerMockRunner is a minimal runner for worker tests with optional
@@ -3350,4 +3352,122 @@ func TestExecutionResult_TransitionCounts(t *testing.T) {
 // strPtr returns a pointer to s.
 func strPtr(s string) *string {
 	return &s
+}
+
+// --- US-023: Auth lock ErrNotFound tolerance in cleanup paths ---
+
+func TestReleaseAuthLockBestEffort_ToleratesErrNotFound(t *testing.T) {
+	store := newWorkerMockStore()
+	store.releaseAuthLockErr = ErrNotFound
+	rnr := newWorkerMockRunner(nil)
+
+	p := newTestWorkerPipeline(t, store, rnr)
+
+	err := p.releaseAuthLockBestEffort(context.Background(), "profile-1", "run-1")
+	if err != nil {
+		t.Errorf("releaseAuthLockBestEffort returned error for ErrNotFound: %v", err)
+	}
+
+	// Verify ReleaseAuthLock was still called.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.releaseAuthLockCalls) != 1 {
+		t.Fatalf("expected 1 ReleaseAuthLock call, got %d", len(store.releaseAuthLockCalls))
+	}
+	if store.releaseAuthLockCalls[0].AuthProfileID != "profile-1" {
+		t.Errorf("AuthProfileID = %q, want %q", store.releaseAuthLockCalls[0].AuthProfileID, "profile-1")
+	}
+	if store.releaseAuthLockCalls[0].RunID != "run-1" {
+		t.Errorf("RunID = %q, want %q", store.releaseAuthLockCalls[0].RunID, "run-1")
+	}
+}
+
+func TestReleaseAuthLockBestEffort_ReturnsWrappedNonNotFoundError(t *testing.T) {
+	dbErr := fmt.Errorf("database connection lost")
+	store := newWorkerMockStore()
+	store.releaseAuthLockErr = dbErr
+	rnr := newWorkerMockRunner(nil)
+
+	p := newTestWorkerPipeline(t, store, rnr)
+
+	err := p.releaseAuthLockBestEffort(context.Background(), "profile-1", "run-1")
+	if err == nil {
+		t.Fatal("expected error for non-ErrNotFound, got nil")
+	}
+
+	// Verify the error wraps the original with %w.
+	if !errors.Is(err, dbErr) {
+		t.Errorf("error does not wrap original: %v", err)
+	}
+
+	// Verify the error includes context about the operation.
+	if !strings.Contains(err.Error(), "releasing auth lock") {
+		t.Errorf("error missing operation context: %v", err)
+	}
+	if !strings.Contains(err.Error(), "profile-1") {
+		t.Errorf("error missing profile ID: %v", err)
+	}
+	if !strings.Contains(err.Error(), "run-1") {
+		t.Errorf("error missing run ID: %v", err)
+	}
+}
+
+func TestReleaseAuthLockBestEffort_SuccessReturnsNil(t *testing.T) {
+	store := newWorkerMockStore()
+	// releaseAuthLockErr defaults to nil — successful release.
+	rnr := newWorkerMockRunner(nil)
+
+	p := newTestWorkerPipeline(t, store, rnr)
+
+	err := p.releaseAuthLockBestEffort(context.Background(), "profile-1", "run-1")
+	if err != nil {
+		t.Errorf("releaseAuthLockBestEffort returned error for success: %v", err)
+	}
+}
+
+func TestHandleLeaseLost_ToleratesErrNotFoundForAuthLock(t *testing.T) {
+	store := newWorkerMockStore()
+	store.releaseAuthLockErr = ErrNotFound
+	rnr := newWorkerMockRunner(nil)
+
+	p := newTestWorkerPipeline(t, store, rnr)
+
+	// handleLeaseLost should not panic or fail for ErrNotFound on auth lock release.
+	p.handleLeaseLost(context.Background(), "run-1", "profile-1", "sandbox-1")
+
+	// Verify ReleaseAuthLock was called.
+	store.mu.Lock()
+	lockCalls := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if lockCalls != 1 {
+		t.Errorf("expected 1 ReleaseAuthLock call, got %d", lockCalls)
+	}
+
+	// Verify sandbox cleanup still ran despite auth lock ErrNotFound.
+	rnr.mu.Lock()
+	destroyCalls := len(rnr.destroySandboxCalls)
+	rnr.mu.Unlock()
+	if destroyCalls != 1 {
+		t.Errorf("expected 1 DestroySandbox call, got %d", destroyCalls)
+	}
+}
+
+func TestHandleLeaseLost_AuthLockOtherErrorStillCleansUp(t *testing.T) {
+	store := newWorkerMockStore()
+	store.releaseAuthLockErr = fmt.Errorf("database timeout")
+	rnr := newWorkerMockRunner(nil)
+
+	p := newTestWorkerPipeline(t, store, rnr)
+
+	// handleLeaseLost is best-effort — non-ErrNotFound errors are handled
+	// internally, and cleanup still proceeds (sandbox teardown).
+	p.handleLeaseLost(context.Background(), "run-1", "profile-1", "sandbox-1")
+
+	// Verify sandbox cleanup still ran.
+	rnr.mu.Lock()
+	destroyCalls := len(rnr.destroySandboxCalls)
+	rnr.mu.Unlock()
+	if destroyCalls != 1 {
+		t.Errorf("expected 1 DestroySandbox call, got %d", destroyCalls)
+	}
 }

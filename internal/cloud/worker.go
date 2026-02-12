@@ -352,8 +352,7 @@ func (p *WorkerPipeline) handleLeaseLost(_ context.Context, runID, authProfileID
 	_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
 
 	// Release auth lock -- tolerate ErrNotFound (lock may have expired or been released).
-	now := time.Now().UTC()
-	_ = p.store.ReleaseAuthLock(ctx, authProfileID, runID, now)
+	_ = p.releaseAuthLockBestEffort(ctx, authProfileID, runID)
 
 	// Destroy sandbox -- best-effort cleanup.
 	if sandboxID != "" {
@@ -432,4 +431,16 @@ func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attempt
 		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusFailed, now, &errCode, &errMsg)
 		_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
 	}
+}
+
+// releaseAuthLockBestEffort releases the auth lock for a run, treating
+// ErrNotFound as non-fatal (the lock may have already been released or
+// expired). Non-ErrNotFound errors are returned with wrapped context.
+func (p *WorkerPipeline) releaseAuthLockBestEffort(ctx context.Context, authProfileID, runID string) error {
+	now := time.Now().UTC()
+	err := p.store.ReleaseAuthLock(ctx, authProfileID, runID, now)
+	if err != nil && !IsNotFound(err) {
+		return fmt.Errorf("releasing auth lock for profile %s run %s: %w", authProfileID, runID, err)
+	}
+	return nil
 }
