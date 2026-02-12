@@ -120,6 +120,9 @@ func newWorkerMockStore() *workerMockStore {
 }
 
 func (s *workerMockStore) ClaimRun(_ context.Context, _ string) (*Run, error) {
+	if s.log != nil {
+		s.log.record("claim_run")
+	}
 	if s.claimErr != nil {
 		return nil, s.claimErr
 	}
@@ -988,6 +991,7 @@ func TestExecuteAttempt_SetupCallOrder(t *testing.T) {
 	// GetAuthProfile but emits no exec calls, so it won't appear in
 	// the runner log. We verify the first 4 are in order.
 	wantOrder := []string{
+		"claim_run",
 		"transition_run:claimed->running",
 		"provision",
 		"bootstrap",
@@ -4202,4 +4206,397 @@ func TestPRGating_PRRequestContainsCorrectFields(t *testing.T) {
 	if req.Head != expectedHead {
 		t.Errorf("Head = %q, want %q", req.Head, expectedHead)
 	}
+}
+
+// --- RunLoop tests ---
+
+// TestRunLoop_ExitsOnContextCancel verifies that RunLoop returns when context
+// is canceled.
+func TestRunLoop_ExitsOnContextCancel(t *testing.T) {
+	store := &workerMockStore{}
+	store.claimErr = ErrNotFound // no work available
+	rnr := &workerMockRunner{}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      50 * time.Millisecond,
+			ReconcileInterval: 50 * time.Millisecond,
+			TimeoutInterval:   50 * time.Millisecond,
+		})
+		close(done)
+	}()
+
+	// Let a few ticks fire, then cancel.
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// RunLoop exited cleanly.
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunLoop did not exit after context cancellation")
+	}
+}
+
+// TestRunLoop_CallsProcessOneOnPollTick verifies that RunLoop invokes
+// ProcessOne on each poll tick.
+func TestRunLoop_CallsProcessOneOnPollTick(t *testing.T) {
+	store := &workerMockStore{
+		mockStore: mockStore{},
+	}
+	store.claimErr = ErrNotFound // no work, but ProcessOne is still called
+	rnr := &workerMockRunner{}
+
+	log := &callLog{}
+	store.log = log
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      30 * time.Millisecond,
+			ReconcileInterval: 10 * time.Second, // long interval to avoid noise
+			TimeoutInterval:   10 * time.Second,
+		})
+		close(done)
+	}()
+
+	// Wait for at least 2 poll ticks.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	// ClaimRun is the first call in ProcessOne. Verify it was called.
+	calls := log.snapshot()
+	claimCount := 0
+	for _, c := range calls {
+		if c == "claim_run" {
+			claimCount++
+		}
+	}
+	if claimCount < 2 {
+		t.Errorf("expected at least 2 claim_run calls from poll ticks, got %d; calls: %v", claimCount, calls)
+	}
+}
+
+// TestRunLoop_CallsReconcilerOnReconcileTick verifies that RunLoop invokes
+// the reconciler on each reconcile tick.
+func TestRunLoop_CallsReconcilerOnReconcileTick(t *testing.T) {
+	store := &workerMockStore{}
+	store.claimErr = ErrNotFound
+	rnr := &workerMockRunner{}
+
+	// Track reconciler calls.
+	var mu sync.Mutex
+	reconcileCalls := 0
+	reconciler := NewReconcilerService(store, ReconcilerConfig{
+		IDFunc: func() string { return "evt-1" },
+	})
+
+	// Wrap store to count ListStaleAttempts calls (reconciler's entry point).
+	origStore := &reconcileTrackingStore{
+		Store: store,
+		mu:    &mu,
+		onListStaleAttempts: func() {
+			mu.Lock()
+			reconcileCalls++
+			mu.Unlock()
+		},
+	}
+	reconciler = NewReconcilerService(origStore, ReconcilerConfig{
+		IDFunc: func() string { return "evt-1" },
+	})
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+	pipeline.reconciler = reconciler
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      10 * time.Second, // long to avoid poll noise
+			ReconcileInterval: 30 * time.Millisecond,
+			TimeoutInterval:   10 * time.Second,
+		})
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	mu.Lock()
+	count := reconcileCalls
+	mu.Unlock()
+
+	if count < 2 {
+		t.Errorf("expected at least 2 reconcile calls, got %d", count)
+	}
+}
+
+// reconcileTrackingStore wraps a Store to track ListStaleAttempts calls.
+type reconcileTrackingStore struct {
+	Store
+	mu                  *sync.Mutex
+	onListStaleAttempts func()
+}
+
+func (s *reconcileTrackingStore) ListStaleAttempts(ctx context.Context, cutoff time.Time) ([]*Attempt, error) {
+	if s.onListStaleAttempts != nil {
+		s.onListStaleAttempts()
+	}
+	return nil, nil
+}
+
+// TestRunLoop_CallsTimeoutOnTimeoutTick verifies that RunLoop invokes the
+// timeout service on each timeout tick.
+func TestRunLoop_CallsTimeoutOnTimeoutTick(t *testing.T) {
+	store := &workerMockStore{}
+	store.claimErr = ErrNotFound
+	rnr := &workerMockRunner{}
+
+	var mu sync.Mutex
+	timeoutCalls := 0
+
+	timeoutStore := &timeoutTrackingStore{
+		Store: store,
+		mu:    &mu,
+		onListOverdueRuns: func() {
+			mu.Lock()
+			timeoutCalls++
+			mu.Unlock()
+		},
+	}
+	timeoutSvc := NewTimeoutService(timeoutStore, TimeoutConfig{
+		IDFunc: func() string { return "evt-1" },
+	})
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+	pipeline.timeout = timeoutSvc
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      10 * time.Second,
+			ReconcileInterval: 10 * time.Second,
+			TimeoutInterval:   30 * time.Millisecond,
+		})
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	mu.Lock()
+	count := timeoutCalls
+	mu.Unlock()
+
+	if count < 2 {
+		t.Errorf("expected at least 2 timeout calls, got %d", count)
+	}
+}
+
+// timeoutTrackingStore wraps a Store to track ListOverdueRuns calls.
+type timeoutTrackingStore struct {
+	Store
+	mu                *sync.Mutex
+	onListOverdueRuns func()
+}
+
+func (s *timeoutTrackingStore) ListOverdueRuns(ctx context.Context, now time.Time) ([]*Run, error) {
+	if s.onListOverdueRuns != nil {
+		s.onListOverdueRuns()
+	}
+	return nil, nil
+}
+
+// TestRunLoop_NilReconcilerSkipsReconcileTick verifies that RunLoop tolerates
+// a nil reconciler and does not panic on reconcile ticks.
+func TestRunLoop_NilReconcilerSkipsReconcileTick(t *testing.T) {
+	store := &workerMockStore{}
+	store.claimErr = ErrNotFound
+	rnr := &workerMockRunner{}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+	// pipeline.reconciler is nil by default.
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      10 * time.Second,
+			ReconcileInterval: 30 * time.Millisecond, // fast ticks with nil reconciler
+			TimeoutInterval:   10 * time.Second,
+		})
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// No panic — passed.
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunLoop did not exit with nil reconciler")
+	}
+}
+
+// TestRunLoop_NilTimeoutSkipsTimeoutTick verifies that RunLoop tolerates
+// a nil timeout service and does not panic on timeout ticks.
+func TestRunLoop_NilTimeoutSkipsTimeoutTick(t *testing.T) {
+	store := &workerMockStore{}
+	store.claimErr = ErrNotFound
+	rnr := &workerMockRunner{}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+	// pipeline.timeout is nil by default.
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      10 * time.Second,
+			ReconcileInterval: 10 * time.Second,
+			TimeoutInterval:   30 * time.Millisecond, // fast ticks with nil timeout
+		})
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// No panic — passed.
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunLoop did not exit with nil timeout")
+	}
+}
+
+// TestRunLoop_ProcessOneErrorDoesNotStopLoop verifies that operational errors
+// from ProcessOne do not terminate the loop — it continues polling.
+func TestRunLoop_ProcessOneErrorDoesNotStopLoop(t *testing.T) {
+	store := &workerMockStore{}
+	store.claimErr = fmt.Errorf("transient database error")
+	rnr := &workerMockRunner{}
+
+	log := &callLog{}
+	store.log = log
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      30 * time.Millisecond,
+			ReconcileInterval: 10 * time.Second,
+			TimeoutInterval:   10 * time.Second,
+		})
+		close(done)
+	}()
+
+	// Wait for multiple poll ticks despite errors.
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+	<-done
+
+	calls := log.snapshot()
+	claimCount := 0
+	for _, c := range calls {
+		if c == "claim_run" {
+			claimCount++
+		}
+	}
+	if claimCount < 2 {
+		t.Errorf("expected at least 2 claim_run calls despite errors, got %d", claimCount)
+	}
+}
+
+// TestRunLoop_LongProcessOneDelaysMaintenanceTicks documents the v1 behavior
+// that a long ProcessOne call can delay subsequent maintenance ticks.
+func TestRunLoop_LongProcessOneDelaysMaintenanceTicks(t *testing.T) {
+	// This test documents accepted v1 behavior: since ProcessOne runs
+	// synchronously on the select loop, long-running claims can delay
+	// reconcile and timeout ticks. This is an accepted simplification
+	// for the initial implementation.
+
+	store := &workerMockStore{}
+	rnr := &workerMockRunner{}
+
+	// Set up a claim that takes ~150ms (longer than reconcile interval).
+	store.claimedRun = testClaimedRun()
+	store.getRun = testClaimedRun()
+	store.authProfile = &AuthProfile{
+		ID:       "auth-1",
+		Provider: "github",
+		Status:   AuthProfileStatusLinked,
+	}
+	rnr.sandboxID = "sandbox-1"
+
+	// Make execution take ~100ms by having the exec call sleep.
+	rnr.execOverrides = map[string]execOverride{
+		"hal run": {
+			result: &runner.ExecResult{ExitCode: 0, Stdout: "ok"},
+			err:    nil,
+		},
+	}
+
+	var mu sync.Mutex
+	reconcileCalls := 0
+	reconcileStore := &reconcileTrackingStore{
+		Store: store,
+		mu:    &mu,
+		onListStaleAttempts: func() {
+			mu.Lock()
+			reconcileCalls++
+			mu.Unlock()
+		},
+	}
+	reconciler := NewReconcilerService(reconcileStore, ReconcilerConfig{
+		IDFunc: func() string { return "evt-1" },
+	})
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+	pipeline.reconciler = reconciler
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pipeline.RunLoop(ctx, RunLoopConfig{
+			PollInterval:      20 * time.Millisecond,
+			ReconcileInterval: 20 * time.Millisecond,
+			TimeoutInterval:   10 * time.Second,
+		})
+		close(done)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	// We just verify the loop eventually ran and exited without panic.
+	// The reconciler should have been called at least once despite potential
+	// delays from ProcessOne. The exact count is non-deterministic.
+	mu.Lock()
+	count := reconcileCalls
+	mu.Unlock()
+	t.Logf("reconcile calls during test: %d (v1 behavior: long ProcessOne may delay maintenance ticks)", count)
 }

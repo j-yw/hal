@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,57 @@ import (
 	"github.com/jywlabs/hal/internal/cloud/deploy"
 	"github.com/jywlabs/hal/internal/cloud/runner"
 )
+
+// workerTestMockStore is a minimal cloud.Store for cmd-level worker tests.
+type workerTestMockStore struct {
+	cloud.Store
+}
+
+func (s *workerTestMockStore) ClaimRun(_ context.Context, _ string) (*cloud.Run, error) {
+	return nil, cloud.ErrNotFound
+}
+
+// workerTestMockRunner is a minimal runner.Runner for cmd-level worker tests.
+type workerTestMockRunner struct{}
+
+func (r *workerTestMockRunner) CreateSandbox(_ context.Context, _ *runner.CreateSandboxRequest) (*runner.Sandbox, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (r *workerTestMockRunner) DestroySandbox(_ context.Context, _ string) error {
+	return nil
+}
+
+func (r *workerTestMockRunner) Exec(_ context.Context, _ string, _ *runner.ExecRequest) (*runner.ExecResult, error) {
+	return &runner.ExecResult{ExitCode: 0}, nil
+}
+
+func (r *workerTestMockRunner) StreamLogs(_ context.Context, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func (r *workerTestMockRunner) Health(_ context.Context) (*runner.HealthStatus, error) {
+	return &runner.HealthStatus{OK: true}, nil
+}
+
+// injectWorkerTestFactories overrides package-level factory vars with test mocks
+// and returns a cleanup function that restores the originals.
+func injectWorkerTestFactories(t *testing.T) {
+	t.Helper()
+	origStore := cloudWorkerStoreFactory
+	origRunner := cloudWorkerRunnerFactory
+	t.Cleanup(func() {
+		cloudWorkerStoreFactory = origStore
+		cloudWorkerRunnerFactory = origRunner
+	})
+
+	cloudWorkerStoreFactory = func() (cloud.Store, error) {
+		return &workerTestMockStore{}, nil
+	}
+	cloudWorkerRunnerFactory = func(cfg deploy.Config) (runner.Runner, error) {
+		return &workerTestMockRunner{}, nil
+	}
+}
 
 // TestCloudWorkerStoreFactory_DefaultIsDeployFactory verifies that the
 // package-level cloudWorkerStoreFactory is assigned deploy.DefaultStoreFactory
@@ -70,6 +124,8 @@ func TestCloudWorkerRunnerFactory_OverridableInTests(t *testing.T) {
 // godotenv.Load() before config resolution and that os.ErrNotExist from
 // dotenv is silently ignored (no warning output).
 func TestRunCloudWorker_DotenvIgnoresMissingFile(t *testing.T) {
+	injectWorkerTestFactories(t)
+
 	// Run from a temp dir with no .env file.
 	origDir, err := os.Getwd()
 	if err != nil {
@@ -107,6 +163,8 @@ func TestRunCloudWorker_DotenvIgnoresMissingFile(t *testing.T) {
 // TestRunCloudWorker_DotenvParseErrorWarns verifies that a malformed .env file
 // produces a non-fatal warning.
 func TestRunCloudWorker_DotenvParseErrorWarns(t *testing.T) {
+	injectWorkerTestFactories(t)
+
 	origDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +209,8 @@ func TestRunCloudWorker_DotenvParseErrorWarns(t *testing.T) {
 // TestRunCloudWorker_DotenvLoadedBeforeStartup verifies that a valid .env file
 // is loaded and does not produce warnings.
 func TestRunCloudWorker_DotenvLoadedBeforeStartup(t *testing.T) {
+	injectWorkerTestFactories(t)
+
 	origDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -322,6 +382,8 @@ func TestDefaultWorkerSandboxImage_Constant(t *testing.T) {
 // sandbox image is always shown in worker startup output, even when the flag
 // is empty (default is used).
 func TestRunCloudWorker_SandboxImageAlwaysDisplayed(t *testing.T) {
+	injectWorkerTestFactories(t)
+
 	origDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -436,5 +498,99 @@ func TestDefaultCloudWorkerRunnerFactory_ReturnsSDKClient(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestRunCloudWorker_StoreFactoryError verifies that runCloudWorker returns
+// a store creation error without starting the loop.
+func TestRunCloudWorker_StoreFactoryError(t *testing.T) {
+	origStore := cloudWorkerStoreFactory
+	origRunner := cloudWorkerRunnerFactory
+	t.Cleanup(func() {
+		cloudWorkerStoreFactory = origStore
+		cloudWorkerRunnerFactory = origRunner
+	})
+
+	cloudWorkerStoreFactory = func() (cloud.Store, error) {
+		return nil, fmt.Errorf("store connection failed")
+	}
+	cloudWorkerRunnerFactory = func(cfg deploy.Config) (runner.Runner, error) {
+		return &workerTestMockRunner{}, nil
+	}
+
+	origDir, _ := os.Getwd()
+	tmpDir := t.TempDir()
+	os.Chdir(tmpDir)
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	var buf bytes.Buffer
+	err := runCloudWorker("test-worker", 10*time.Second, 30*time.Second, 60*time.Second, "", &buf)
+	if err == nil {
+		t.Fatal("expected error from store factory failure")
+	}
+	if !strings.Contains(err.Error(), "creating store") {
+		t.Errorf("error %q does not mention store creation", err.Error())
+	}
+}
+
+// TestRunCloudWorker_RunnerFactoryError verifies that runCloudWorker returns
+// a runner creation error without starting the loop.
+func TestRunCloudWorker_RunnerFactoryError(t *testing.T) {
+	origStore := cloudWorkerStoreFactory
+	origRunner := cloudWorkerRunnerFactory
+	t.Cleanup(func() {
+		cloudWorkerStoreFactory = origStore
+		cloudWorkerRunnerFactory = origRunner
+	})
+
+	cloudWorkerStoreFactory = func() (cloud.Store, error) {
+		return &workerTestMockStore{}, nil
+	}
+	cloudWorkerRunnerFactory = func(cfg deploy.Config) (runner.Runner, error) {
+		return nil, fmt.Errorf("runner validation failed")
+	}
+
+	origDir, _ := os.Getwd()
+	tmpDir := t.TempDir()
+	os.Chdir(tmpDir)
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	var buf bytes.Buffer
+	err := runCloudWorker("test-worker", 10*time.Second, 30*time.Second, 60*time.Second, "", &buf)
+	if err == nil {
+		t.Fatal("expected error from runner factory failure")
+	}
+	if !strings.Contains(err.Error(), "creating runner") {
+		t.Errorf("error %q does not mention runner creation", err.Error())
+	}
+}
+
+// TestRunCloudWorker_ShutdownOutputIncludesWorkerID verifies that graceful
+// shutdown emits the worker ID in the shutdown message.
+func TestRunCloudWorker_ShutdownOutputIncludesWorkerID(t *testing.T) {
+	injectWorkerTestFactories(t)
+
+	origDir, _ := os.Getwd()
+	tmpDir := t.TempDir()
+	os.Chdir(tmpDir)
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	var buf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- runCloudWorker("my-worker-42", 10*time.Second, 30*time.Second, 60*time.Second, "", &buf)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	p, _ := os.FindProcess(os.Getpid())
+	p.Signal(os.Interrupt)
+
+	if err := <-done; err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Shutting down worker my-worker-42") {
+		t.Errorf("shutdown message missing worker ID; got: %s", output)
 	}
 }

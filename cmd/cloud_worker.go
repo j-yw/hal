@@ -140,8 +140,60 @@ func runCloudWorker(
 	fmt.Fprintf(out, "  timeout-interval:   %s\n", timeoutInterval)
 	fmt.Fprintf(out, "  sandbox-image:      %s\n", image)
 
-	// Wait for shutdown signal.
-	<-ctx.Done()
+	// Construct infrastructure from factories.
+	store, err := cloudWorkerStoreFactory()
+	if err != nil {
+		return fmt.Errorf("creating store: %w", err)
+	}
+
+	cfg := deploy.LoadConfig(os.Getenv)
+	rnr, err := cloudWorkerRunnerFactory(cfg)
+	if err != nil {
+		return fmt.Errorf("creating runner: %w", err)
+	}
+
+	// Build pipeline services.
+	claim := cloud.NewClaimService(store, cloud.ClaimConfig{})
+	provision := cloud.NewProvisionService(store, rnr, cloud.ProvisionConfig{Image: image})
+	bootstrap := cloud.NewBootstrapService(store, rnr, cloud.BootstrapConfig{})
+	authMat := cloud.NewAuthMaterializationService(store, rnr, cloud.AuthMaterializationConfig{})
+	preflight := cloud.NewPreflightService(store, rnr, cloud.PreflightConfig{})
+	checkpoint := cloud.NewCheckpointService(store, nil, cloud.CheckpointConfig{})
+	execution := cloud.NewExecutionService(store, rnr, cloud.ExecutionConfig{})
+	snapshot := cloud.NewSnapshotService(store, cloud.SnapshotServiceConfig{})
+	cancelSvc := cloud.NewCancellationService(store, cloud.CancellationConfig{})
+	heartbeat := cloud.NewHeartbeatService(store, cloud.HeartbeatConfig{})
+	reconciler := cloud.NewReconcilerService(store, cloud.ReconcilerConfig{})
+	timeout := cloud.NewTimeoutService(store, cloud.TimeoutConfig{})
+
+	pipeline, err := cloud.NewWorkerPipeline(cloud.WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            workerID,
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Execution:           execution,
+		Snapshot:            snapshot,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		Reconciler:          reconciler,
+		Timeout:             timeout,
+	})
+	if err != nil {
+		return fmt.Errorf("creating worker pipeline: %w", err)
+	}
+
+	// Run the worker loop until context is canceled (SIGINT/SIGTERM).
+	pipeline.RunLoop(ctx, cloud.RunLoopConfig{
+		PollInterval:      pollInterval,
+		ReconcileInterval: reconcileInterval,
+		TimeoutInterval:   timeoutInterval,
+	})
+
 	fmt.Fprintf(out, "Shutting down worker %s\n", workerID)
 	return nil
 }

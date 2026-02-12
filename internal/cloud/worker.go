@@ -59,6 +59,12 @@ type WorkerPipelineConfig struct {
 	// PRCreatorFunc builds a PRCreator for a given sandbox and auth directory.
 	// When nil, PR creation is skipped. Typically set to GitHubPRCreator.
 	PRCreatorFunc func(sandboxID, authDir string) PRCreator
+	// Reconciler is the service used to detect and close stale attempts (optional).
+	// When nil, reconciliation ticks are skipped in RunLoop.
+	Reconciler *ReconcilerService
+	// Timeout is the service used to detect and fail overdue runs (optional).
+	// When nil, timeout enforcement ticks are skipped in RunLoop.
+	Timeout *TimeoutService
 	// GitUsername is the HTTPS auth username for clone/push (optional).
 	GitUsername string
 	// GitPassword is the HTTPS auth password/token for clone/push (optional).
@@ -86,6 +92,8 @@ type WorkerPipeline struct {
 	prCreate            *PRCreateService
 	prEnabled           bool
 	prCreatorFunc       func(sandboxID, authDir string) PRCreator
+	reconciler          *ReconcilerService
+	timeout             *TimeoutService
 	gitUsername         string
 	gitPassword         string
 }
@@ -154,6 +162,8 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		prCreate:            cfg.PRCreate,
 		prEnabled:           cfg.PREnabled,
 		prCreatorFunc:       cfg.PRCreatorFunc,
+		reconciler:          cfg.Reconciler,
+		timeout:             cfg.Timeout,
 		gitUsername:         cfg.GitUsername,
 		gitPassword:         cfg.GitPassword,
 	}, nil
@@ -586,3 +596,54 @@ func (p *WorkerPipeline) releaseAuthLockBestEffort(ctx context.Context, authProf
 	return nil
 }
 
+// RunLoopConfig holds the interval settings for the worker loop.
+type RunLoopConfig struct {
+	// PollInterval is the interval between ProcessOne claim polls.
+	PollInterval time.Duration
+	// ReconcileInterval is the interval between reconciliation sweeps.
+	ReconcileInterval time.Duration
+	// TimeoutInterval is the interval between timeout enforcement checks.
+	TimeoutInterval time.Duration
+}
+
+// RunLoop runs the worker loop until ctx is canceled. On each poll tick it
+// calls ProcessOne to claim and execute one eligible run. On each reconcile
+// tick it calls the reconciler to close stale attempts. On each timeout tick
+// it calls the timeout service to fail overdue runs.
+//
+// V1 behavior note: ProcessOne runs synchronously on the poll ticker goroutine,
+// so a long-running ProcessOne call can delay subsequent poll and maintenance
+// ticks. This is an accepted simplification for the initial implementation —
+// future versions may process claims in a separate goroutine to decouple poll
+// latency from execution duration.
+func (p *WorkerPipeline) RunLoop(ctx context.Context, cfg RunLoopConfig) {
+	pollTicker := time.NewTicker(cfg.PollInterval)
+	defer pollTicker.Stop()
+
+	reconcileTicker := time.NewTicker(cfg.ReconcileInterval)
+	defer reconcileTicker.Stop()
+
+	timeoutTicker := time.NewTicker(cfg.TimeoutInterval)
+	defer timeoutTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-pollTicker.C:
+			err := p.ProcessOne(ctx)
+			if err != nil && !IsNoWork(err) {
+				// Log operational errors but continue looping.
+				_ = err
+			}
+		case <-reconcileTicker.C:
+			if p.reconciler != nil {
+				_, _ = p.reconciler.Reconcile(ctx, time.Now().UTC())
+			}
+		case <-timeoutTicker.C:
+			if p.timeout != nil {
+				_, _ = p.timeout.EnforceTimeouts(ctx, time.Now().UTC())
+			}
+		}
+	}
+}

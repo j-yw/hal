@@ -1,4 +1,8 @@
 ## Codebase Patterns
+- `RunLoop` uses `select` on poll/reconcile/timeout tickers + `ctx.Done()` — V1 behavior: long `ProcessOne` blocks all ticks. Reconciler/Timeout are optional (nil-guarded), unlike required pipeline dependencies.
+- For cmd-level `runCloudWorker` tests, use `injectWorkerTestFactories(t)` to override package-level store/runner factories with mocks — the mock store must implement `ClaimRun` returning `ErrNotFound`.
+- Cloud worker factory vars use `cloudWorkerStoreFactory` (store) and `cloudWorkerRunnerFactory` (runner) — override in tests, restore in cleanup. Runner factory takes `deploy.Config` input, store factory is `func() (cloud.Store, error)`.
+- Use `resolveWorkerSandboxImage(flagImage)` to ensure `ProvisionConfig.Image` is always non-empty — returns `defaultWorkerSandboxImage` (`"ubuntu:22.04"`) when flag is empty.
 - Postgres/Turso ClaimRun uses `FOR UPDATE SKIP LOCKED` subquery pattern for atomic claim — modifications go in the outer UPDATE SET clause.
 - Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
@@ -25,6 +29,37 @@
 - `workerMockRunner` supports `execOverrides` map (command prefix → result/error) for per-command exec failure injection without affecting other commands.
 - `handleSetupFailure(ctx, runID, attemptID, fromRunStatus, stage, cause)` transitions both attempt and run to failed — uses `fromRunStatus` to handle failures before and after the run reaches `running` status.
 - `transitionAttemptCall` struct is defined in `claim_test.go` and shared across all test files in `package cloud` — don't redeclare it in new test files.
+- `WorkerPipeline` computes `workingBranch := WorkingBranch(run.ID)` per attempt and propagates it with `AttemptNumber`, `GitUsername`, `GitPassword` to `BootstrapRequest` — use `newTestWorkerPipelineWithOpts` with `workerMockGitOps` to test GitOps propagation.
+- `WorkerPipelineConfig` requires `Checkpoint *CheckpointService` — all tests constructing `WorkerPipelineConfig` must include it.
+- `WorkerPipelineConfig` requires `Heartbeat *HeartbeatService` — all tests constructing `WorkerPipelineConfig` must include it. `HeartbeatInterval` defaults to 10s; tests use 20-50ms for fast ticks.
+- `startHeartbeat` returns `<-chan struct{}` (done channel) — defer `stopHeartbeat(); <-done` to guarantee goroutine cleanup. Heartbeat starts after `TransitionRun(claimed→running)`.
+- Use `slowProvisionRunner` (gate-channel pattern) to simulate long setup for concurrent behavior testing — blocks `CreateSandbox` until gate is closed.
+- `workerMockStore` fields accessed from goroutines (`heartbeatCalls`) must use `sync.Mutex` — heartbeat goroutine writes while test goroutine reads.
+- `startHeartbeat` calls `cancel.CheckAndCancel` before `heartbeat.Renew` on each tick — when cancel is detected, the tick skips Renew and the heartbeat goroutine exits. This means `GetRun` is called twice per tick (cancel check + heartbeat auth check).
+- `WorkerPipelineConfig` requires `Cancel *CancellationService` — all tests constructing `WorkerPipelineConfig` must include it.
+- `callLog` has thread-safe `record()` (with mutex) and `snapshot()` method — use `snapshot()` when heartbeat goroutine may still be running, use `log.calls` directly only after `ProcessOne` returns.
+- `startHeartbeat` returns `(*heartbeatResult, <-chan struct{})` — the `heartbeatResult.LeaseLost` flag signals when `Renew` returned `ErrLeaseExpired`. Stop heartbeat and drain done channel before reading the result.
+- `handleLeaseLost` transitions run to failed and performs cleanup (auth lock release, sandbox destroy) but does NOT emit `TransitionAttempt` — the `HeartbeatService.emitLeaseLostAndTerminate` already did that.
+- `workerMockStore.heartbeatErr` + `heartbeatErrAfter` controls when `HeartbeatAttempt` returns an error — set `heartbeatErrAfter=0` for immediate lease loss, or `>0` to simulate loss after N successful renewals.
+- `workerMockRunner.destroySandboxCalls` (mutex-protected) tracks sandbox cleanup assertions. `workerMockStore.releaseAuthLockCalls` (mutex-protected) tracks auth lock release.
+- `workerMockStore.profileRevoked` controls auth profile status via `GetAuthProfile` — set with mutex. When true, `HeartbeatService.Renew` returns `ErrProfileRevoked`.
+- `handleProfileRevoked` does NOT release auth lock (heartbeat already did) — differs from `handleLeaseLost` which DOES release it.
+- Cleanup handlers (`handleLeaseLost`, `handleProfileRevoked`, `handleSetupFailure`, `handleExecutionResult`) use `context.WithTimeout(context.Background(), cleanupTimeout)` — never the parent context, which may be canceled during shutdown.
+- Use `ctxTrackingStore`/`ctxTrackingRunner` wrappers to verify context liveness at call time in tests.
+- `WorkerPipelineConfig` requires `Execution *ExecutionService` — all tests constructing `WorkerPipelineConfig` must include it.
+- `handleExecutionResult` maps exit code 0 → attempt succeeded + run succeeded, non-zero → attempt failed (non_retryable) + run failed. Exactly one attempt and one run transition per outcome.
+- When using `execOverrides` to control execution exit codes in tests, use `"hal run"` (or the specific workflow command) as the prefix — `"hal "` is too broad and also matches `"hal init"` from bootstrap.
+- Use `releaseAuthLockBestEffort(ctx, authProfileID, runID)` to release auth locks in cleanup paths — tolerates `ErrNotFound` (already released) and wraps other errors. Same pattern as `CancellationService.CheckAndCancel`.
+- `workerMockStore.releaseAuthLockErr` controls auth lock release error behavior in tests — set to `ErrNotFound` to simulate already-released locks or to a custom error for failure scenarios.
+- `WorkerPipelineConfig` requires `Snapshot *SnapshotService` — all tests constructing `WorkerPipelineConfig` must include it. Use `NewSnapshotService(store, SnapshotServiceConfig{IDFunc: ...})` with IDFunc for snapshot ID generation.
+- `finalizeSnapshot` collects via `CollectSandboxBundle`, compresses via `CompressBundle`, hashes via `ComputeSandboxBundleHash(records)`, persists via `SnapshotService.StoreSnapshot` — all best-effort (error ignored).
+- Mock runner `execOverrides` for sandbox collection need `"find /workspace/.hal"` (listing) and `base64Cmd` (content capture) prefixes — use full command strings for per-file targeting in multi-file tests.
+- `WorkerPipelineConfig` optional PR fields: `PRCreate *PRCreateService`, `PREnabled bool`, `PRCreatorFunc func(sandboxID, authDir string) PRCreator` — all nil/false by default, no validation required.
+- `maybeCreatePR` gates on 5 conditions: `PREnabled`, `PRCreate != nil`, `PRCreatorFunc != nil`, `workflowKind ∈ {auto, review}`, `prContext != nil`. `WorkflowKindRun` never creates PRs.
+- `AuthMaterializationService.AuthDir()` exposes the configured auth directory for callers like `executeAttempt` that build `prContext`.
+- Use `testClaimedRunWithKind(kind)` helper when testing workflow-kind-dependent behavior to avoid duplicating run construction.
+- Use `trackingPRCreatorFactory` pattern for verifying whether PR creation was invoked and capturing the `PRCreateRequest`.
+- Use `newTestWorkerPipelineWithPR(t, store, rnr, &prOpts{...})` to test PR-enabled pipelines without modifying the default test helper.
 
 ---
 
@@ -200,4 +235,193 @@
   - The `transitionAttemptCall` struct is shared across `claim_test.go` and `worker_test.go` in the same package — don't redeclare it in new test files.
   - Setup failure error codes use `"setup_failure"` and error messages include the failing stage name — this enables operational debugging to identify which setup step caused the failure.
   - When adding failure handling to `executeAttempt`, existing tests that assert on transition counts need updating since each failure path now generates additional transitions.
+---
+
+## 2026-02-13 - US-016
+- Propagated working branch and git credential fields through worker pipeline to bootstrap and checkpoint services
+- Files changed:
+  - `internal/cloud/worker.go` — Added `Checkpoint *CheckpointService`, `GitUsername string`, `GitPassword string` to `WorkerPipelineConfig` and `WorkerPipeline`; added checkpoint validation in `NewWorkerPipeline`; compute `workingBranch := WorkingBranch(run.ID)` in `executeAttempt`; propagate `WorkingBranch`, `AttemptNumber`, `GitUsername`, `GitPassword` to `BootstrapRequest`
+  - `internal/cloud/worker_test.go` — Added `workerMockGitOps` implementing `runner.GitOps` for testing branch and credential propagation; added `newTestWorkerPipelineWithOpts` helper for configuring GitOps and credentials; added "nil checkpoint service" test case to `TestNewWorkerPipeline`; added 5 new tests: `TestExecuteAttempt_PropagatesWorkingBranch`, `TestExecuteAttempt_PropagatesGitCredentials`, `TestExecuteAttempt_WorkingBranchDerivedFromRunID` (table-driven, 3 subtests), `TestExecuteAttempt_PropagatesAttemptNumber` (first attempt + retry), `TestExecuteAttempt_CheckpointServiceValidation`; updated `TestExecuteAttempt_PreflightFailure` to include checkpoint in config
+- **Learnings for future iterations:**
+  - `WorkerPipeline` stores `gitUsername`/`gitPassword` as pipeline-level fields (not per-run) — these are operator-configured credentials passed to all bootstrap and checkpoint operations.
+  - `workerMockGitOps` enables testing that `BootstrapServiceWithGit` receives the correct `WorkingBranch` by capturing `branchCreated` and `checkedOut` slices — use this pattern for future tests that need to verify GitOps propagation.
+  - `newTestWorkerPipelineWithOpts` allows specifying optional GitOps and git credentials while preserving the default `newTestWorkerPipeline` helper for tests that don't need those features.
+  - When adding new required dependencies to `WorkerPipelineConfig` (like `Checkpoint`), all manually-constructed configs in existing tests must be updated — the compiler catches the validation, but tests with hand-built configs need the new field.
+  - On first attempt (`AttemptNumber=1`), bootstrap creates the working branch from base branch. On retry (`AttemptNumber>1`), bootstrap tries to clone the working branch directly for resume.
+- `slowProvisionRunner` wraps `workerMockRunner` with a gate channel to simulate long-running `CreateSandbox` — use this pattern for testing concurrent behavior like heartbeat ticks during blocked setup steps.
+- `workerMockStore.mu` (sync.Mutex) protects `heartbeatCalls` from concurrent reads/writes — any field accessed from both goroutines (heartbeat goroutine + test goroutine) must use the mutex.
+- `startHeartbeat` returns a `<-chan struct{}` (done channel) that closes when the goroutine exits — defer `stopHeartbeat()` then `<-heartbeatDone` to guarantee clean shutdown before `executeAttempt` returns.
+- Heartbeat starts after `TransitionRun(claimed→running)` and before `Provision` — this means heartbeats cover the full setup+execution window.
+---
+
+## 2026-02-13 - US-017
+- Implemented heartbeat loop in WorkerPipeline.executeAttempt that starts after transition to running and remains active through setup and execution
+- Files changed:
+  - `internal/cloud/worker.go` — Added `Heartbeat *HeartbeatService` and `HeartbeatInterval time.Duration` to `WorkerPipelineConfig` and `WorkerPipeline`; added validation in `NewWorkerPipeline` with 10s default interval; added `startHeartbeat` method returning done channel; wired heartbeat goroutine into `executeAttempt` after transition to running with deferred stop+drain
+  - `internal/cloud/worker_test.go` — Added `sync.Mutex`-protected `heartbeatCalls` tracking and `GetRun`/`HeartbeatAttempt` overrides to `workerMockStore`; added `slowProvisionRunner` for blocking `CreateSandbox`; added 5 new tests: `TestHeartbeat_StartsAfterTransitionToRunning`, `TestHeartbeat_ActiveThroughSetupAndExecution`, `TestHeartbeat_StopsAfterExecuteAttemptReturns`, `TestHeartbeat_NotStartedBeforeTransitionToRunning`, `TestHeartbeat_RenewCallsIncludeCorrectIDs`; updated all existing tests and helpers to provide `Heartbeat` and `HeartbeatInterval`
+- **Learnings for future iterations:**
+  - When adding a new required dependency to `WorkerPipelineConfig`, every manually-constructed config in tests must be updated — use `newTestWorkerPipeline` helper where possible to minimize churn.
+  - For testing concurrent goroutine behavior, use a blocking mock (like `slowProvisionRunner` with a gate channel) to keep the pipeline busy while asserting on goroutine side effects (heartbeat ticks). Poll with `time.Sleep` + deadline pattern.
+  - `workerMockStore` fields accessed from multiple goroutines (like `heartbeatCalls`) need `sync.Mutex` protection — the heartbeat goroutine writes while the test goroutine reads.
+  - The `startHeartbeat` pattern (context.WithCancel + done channel) cleanly separates the heartbeat lifecycle from the main execution path — `defer stopHeartbeat(); <-done` ensures no goroutine leak.
+  - `HeartbeatService.Renew` also checks auth profile revocation status via `GetRun` and `GetAuthProfile` — `workerMockStore` needs `GetRun` override to return a valid run during heartbeat ticks.
+---
+
+## 2026-02-13 - US-018
+- Implemented cancel-before-renew check on every heartbeat tick in WorkerPipeline
+- Files changed:
+  - `internal/cloud/worker.go` — Added `Cancel *CancellationService` to `WorkerPipelineConfig` and `WorkerPipeline`; added validation in `NewWorkerPipeline`; modified `startHeartbeat` to call `cancel.CheckAndCancel` before `heartbeat.Renew` on each tick; when cancellation is detected, the tick skips Renew and the heartbeat goroutine exits
+  - `internal/cloud/worker_test.go` — Added `cancelRequested` field to `workerMockStore` for dynamic cancel flag control; added `get_run` and `heartbeat_attempt` logging to store methods; added thread-safe `callLog.snapshot()` method; added 3 new tests: `TestHeartbeat_CancelCheckedBeforeRenewOnEachTick` (verifies GetRun precedes HeartbeatAttempt per tick), `TestHeartbeat_CancelDetectedSkipsRenew` (verifies no Renew after cancel detection), `TestHeartbeat_CancelCheckCallOrderPerTick` (verifies ordering invariant after synchronous completion); updated all existing tests and helpers to provide `Cancel` service; added "nil cancel service" case to `TestNewWorkerPipeline`
+- **Learnings for future iterations:**
+  - `CancellationService.CheckAndCancel` calls `store.GetRun` to check the `CancelRequested` flag — this means `GetRun` is called twice per heartbeat tick (once by cancel check, once by heartbeat Renew's auth profile check). The `callLog` can track this ordering.
+  - When testing cancel short-circuit behavior, set `cancelRequested` on the mock store dynamically (after initial ticks) using `sync.Mutex`-protected field access, then verify heartbeat calls stop accumulating.
+  - `callLog` now uses `sync.Mutex` and `snapshot()` for goroutine-safe access — use `snapshot()` in concurrent tests (heartbeat goroutine running) and direct `log.calls` access only after `ProcessOne` returns (goroutine joined).
+  - When adding a new required dependency to `WorkerPipelineConfig` (like `Cancel`), all manually-constructed configs in tests must be updated — the compiler catches the validation error, but hand-built configs need the new field explicitly.
+---
+
+## 2026-02-13 - US-019
+- Implemented lease_lost routing in WorkerPipeline without duplicate attempt terminalization
+- Files changed:
+  - `internal/cloud/worker.go` — Added `heartbeatResult` type with `LeaseLost` flag; changed `startHeartbeat` to return `(*heartbeatResult, <-chan struct{})` and detect `ErrLeaseExpired` from `Renew`; added `handleLeaseLost` method that transitions run to failed and performs cleanup (auth lock release, sandbox destroy) without emitting duplicate `TransitionAttempt`; added lease_lost check after setup in `executeAttempt`
+  - `internal/cloud/worker_test.go` — Added `heartbeatErr`/`heartbeatErrAfter` to `workerMockStore` for simulating lease expiry; added `releaseAuthLockCalls` tracking; added `destroySandboxCalls` and `mu` to `workerMockRunner`; overrode `ReleaseAuthLock` and `DestroySandbox` with logging; added 4 new tests: `TestLeaseLost_SetsReasonAndRoutesToLeaseLostHandling`, `TestLeaseLost_NoDuplicateAttemptTerminalization`, `TestLeaseLost_CleanupStillRuns`, `TestLeaseLost_AfterSuccessfulHeartbeats`
+- **Learnings for future iterations:**
+  - `startHeartbeat` communicates lease_lost via a shared `*heartbeatResult` pointer that the goroutine writes before closing the done channel — callers must stop heartbeat and drain `<-done` before reading the result to avoid data races.
+  - `HeartbeatService.emitLeaseLostAndTerminate` already calls `TransitionAttempt(failed, "lease_lost")` — `handleLeaseLost` must only transition the **run** to failed, not the attempt. This is the key insight for avoiding duplicate transitions.
+  - `handleLeaseLost` does run transition + auth lock release + sandbox destroy as best-effort operations — all errors are deliberately ignored since the lease is already lost and the attempt is already terminal.
+  - To test lease_lost with `slowProvisionRunner`, set `heartbeatErrAfter=0` for immediate lease loss and sleep 100ms to let the heartbeat tick fire before unblocking the gate.
+  - `releaseAuthLockCall` type is already defined in `reconciler_test.go` within the same package — don't redeclare it in `worker_test.go`.
+---
+
+## 2026-02-13 - US-020
+- Implemented profile_revoked routing in WorkerPipeline without duplicate attempt terminalization
+- Files changed:
+  - `internal/cloud/worker.go` — Added `ProfileRevoked` flag to `heartbeatResult`; updated `startHeartbeat` to detect `ErrProfileRevoked` from `Renew` and set the flag; added `handleProfileRevoked` method (transitions run to failed + sandbox cleanup, but NO auth lock release and NO attempt transition); updated `executeAttempt` to check `hbResult.ProfileRevoked` after `LeaseLost` and route to `handleProfileRevoked`
+  - `internal/cloud/worker_test.go` — Added `profileRevoked` field to `workerMockStore` for dynamic profile revocation control; updated `GetAuthProfile` to return revoked status when flag is set; added 4 new tests: `TestProfileRevoked_SetsReasonAndRoutesToProfileRevokedHandling`, `TestProfileRevoked_NoDuplicateAttemptTerminalization`, `TestProfileRevoked_RunTransitionsToFailed`, `TestProfileRevoked_AfterSuccessfulHeartbeats`
+- **Learnings for future iterations:**
+  - `handleProfileRevoked` differs from `handleLeaseLost` in a critical way: it must NOT release the auth lock because `HeartbeatService.emitProfileRevokedAndTerminate` already called `ReleaseAuthLock`. The `handleLeaseLost` method DOES release the auth lock because `emitLeaseLostAndTerminate` does NOT release it.
+  - To trigger profile_revoked in heartbeat tests, use `workerMockStore.profileRevoked = true` (mutex-protected) which makes `GetAuthProfile` return `AuthProfileStatusRevoked`. This is checked by `HeartbeatService.Renew` after successful `HeartbeatAttempt`.
+  - The `TestProfileRevoked_RunTransitionsToFailed` test is the most important — it verifies that `ReleaseAuthLock` is called exactly once (from heartbeat service only), confirming `handleProfileRevoked` does not duplicate it.
+  - For dynamic revocation testing (TestProfileRevoked_AfterSuccessfulHeartbeats), toggle `profileRevoked` with mutex after an initial sleep to let normal heartbeats succeed first, then sleep again to let the revocation be detected.
+---
+
+## 2026-02-13 - US-021
+- Implemented shutdown-safe background timeout contexts for cleanup in `handleLeaseLost`, `handleProfileRevoked`, and `handleSetupFailure`
+- Files changed:
+  - `internal/cloud/worker.go` — Added `cleanupTimeout` constant (30s); changed `handleLeaseLost`, `handleProfileRevoked`, and `handleSetupFailure` to ignore the passed-in context (`_ context.Context`) and create `context.WithTimeout(context.Background(), cleanupTimeout)` for all cleanup operations
+  - `internal/cloud/worker_test.go` — Added `ctxTrackingStore` and `ctxTrackingRunner` wrappers that record whether contexts are canceled at call time; added 4 tests: `TestCleanup_HandleLeaseLost_UsesBackgroundContext`, `TestCleanup_HandleProfileRevoked_UsesBackgroundContext`, `TestCleanup_HandleSetupFailure_UsesBackgroundContext`, `TestCleanup_CleanupTimeoutConstant`
+- **Learnings for future iterations:**
+  - Cleanup handlers that run during shutdown must use `context.Background()` with a timeout, not the parent context — the parent may already be canceled when graceful shutdown triggers cleanup.
+  - The `ctxTrackingStore`/`ctxTrackingRunner` wrapper pattern (embedding the base mock + overriding methods to check `ctx.Err()`) is reusable for any test that needs to verify context liveness at call time.
+  - Cleanup methods now use `_ context.Context` as the parameter name to signal that the passed-in context is intentionally unused — this is a Go convention for documenting intent.
+  - `handleProfileRevoked` does NOT call `ReleaseAuthLock` even in the background context — the asymmetry with `handleLeaseLost` (which DOES) remains unchanged by this story.
+---
+
+## 2026-02-13 - US-022
+- Implemented execution exit code to deterministic terminal transition mapping in `WorkerPipeline.executeAttempt`
+- Files changed:
+  - `internal/cloud/worker.go` — Added `Execution *ExecutionService` to `WorkerPipelineConfig` and `WorkerPipeline`; added validation in `NewWorkerPipeline`; wired `p.execution.Execute(...)` after setup/heartbeat checks in `executeAttempt`; added `handleExecutionResult` method that maps exit code 0 → attempt succeeded + run succeeded, non-zero → attempt failed (non_retryable) + run failed
+  - `internal/cloud/worker_test.go` — Added `Execution` field to all ~30 existing `WorkerPipelineConfig` constructions and `newTestWorkerPipelineWithOpts` helper; added "nil execution service" case to `TestNewWorkerPipeline`; added 6 new tests: `TestExecutionResult_ExitCodeZero_EmitsSucceededTransitions`, `TestExecutionResult_NonZeroExit_EmitsFailedTransitions`, `TestExecutionResult_NonZeroExit_FailureReasonIsNonRetryable`, `TestExecutionResult_MultipleExitCodes` (table-driven: exit 0/1/2/128), `TestExecutionResult_RunnerAPIError_TreatsAsFailure`, `TestExecutionResult_TransitionCounts` (table-driven: exit 0/1)
+- **Learnings for future iterations:**
+  - `handleExecutionResult` uses `context.Background()` with `cleanupTimeout` — same shutdown-safe pattern as all other cleanup handlers.
+  - When using `execOverrides` in tests, be specific with the command prefix — `"hal run"` not `"hal "` — because bootstrap also runs `"hal init"` and a broad prefix match would break bootstrap before execution is reached.
+  - `testClaimedRun()` uses `WorkflowKindRun`, so the execution service dispatches `"hal run"` — tests that override execution exit codes must use `"hal run"` as the override key.
+  - Runner API errors (where `Execute` returns an error, not a non-zero exit code) are treated as non-retryable failures with exit code -1 — the pipeline returns an error so the worker loop can log it.
+  - `strPtr` helper added in `worker_test.go` for table-driven test pointer comparisons.
+---
+
+## 2026-02-13 - US-023
+- Implemented auth lock ErrNotFound tolerance in cleanup paths via `releaseAuthLockBestEffort` helper
+- Files changed:
+  - `internal/cloud/worker.go` — Added `releaseAuthLockBestEffort(ctx, authProfileID, runID) error` method that tolerates `ErrNotFound` and wraps other errors with operation context; updated `handleLeaseLost` to use `releaseAuthLockBestEffort` instead of bare `_ = store.ReleaseAuthLock`
+  - `internal/cloud/worker_test.go` — Added `releaseAuthLockErr` field to `workerMockStore`; updated `ReleaseAuthLock` mock to return configurable error; added 5 new tests: `TestReleaseAuthLockBestEffort_ToleratesErrNotFound`, `TestReleaseAuthLockBestEffort_ReturnsWrappedNonNotFoundError`, `TestReleaseAuthLockBestEffort_SuccessReturnsNil`, `TestHandleLeaseLost_ToleratesErrNotFoundForAuthLock`, `TestHandleLeaseLost_AuthLockOtherErrorStillCleansUp`
+- **Learnings for future iterations:**
+  - `releaseAuthLockBestEffort` follows the same pattern as `CancellationService.CheckAndCancel` which uses `if err != nil && !IsNotFound(err)` — this is the canonical pattern for tolerating already-released auth locks in the codebase.
+  - `handleLeaseLost` calls `releaseAuthLockBestEffort` and ignores its return (best-effort cleanup), but the helper itself distinguishes `ErrNotFound` from real errors so callers with stricter error handling can propagate.
+  - `workerMockStore.releaseAuthLockErr` enables per-test control of auth lock release behavior — set it to `ErrNotFound` or a custom error to simulate already-released locks or database failures.
+  - The `handleLeaseLost` path is best-effort for all cleanup operations (transitions, auth lock, sandbox) — non-ErrNotFound auth lock errors are still silently ignored at the handler level because the lease is already lost.
+---
+
+## 2026-02-13 - US-024
+- Implemented final snapshot persistence in `WorkerPipeline.handleExecutionResult` on exit code 0 via `finalizeSnapshot` method
+- Files changed:
+  - `internal/cloud/worker.go` — Added `Snapshot *SnapshotService` to `WorkerPipelineConfig` and `WorkerPipeline` with validation in `NewWorkerPipeline`; added `workflowKind` parameter to `handleExecutionResult`; added `finalizeSnapshot(ctx, runID, attemptID, sandboxID, workflowKind)` method that collects sandbox files via `CollectSandboxBundle`, compresses with `CompressBundle`, computes SHA via `ComputeSandboxBundleHash(records)`, and persists via `SnapshotService.StoreSnapshot`; wired finalization into exit code 0 path before terminal transitions
+  - `internal/cloud/worker_test.go` — Added `putSnapshotCalls`, `updateRefsCalls`, `insertedEvents` tracking fields and `PutSnapshot`/`UpdateRunSnapshotRefs`/`InsertEvent` overrides to `workerMockStore`; added `Snapshot` service to `newTestWorkerPipelineWithOpts` helper and all 18+ manual `WorkerPipelineConfig` constructions; added "nil snapshot service" test case to `TestNewWorkerPipeline`; added 6 new tests: `TestFinalizeSnapshot_StoresRecordsAndCompressedPayload`, `TestFinalizeSnapshot_SHAMatchesRecordHashNotCompressedPayload`, `TestFinalizeSnapshot_UpdatesRunSnapshotRefs`, `TestFinalizeSnapshot_NotCalledOnNonZeroExit`, `TestFinalizeSnapshot_EmptyWorkspaceSkipsSnapshot`, `TestFinalizeSnapshot_MultipleFiles`
+- **Learnings for future iterations:**
+  - `finalizeSnapshot` is best-effort (error return is ignored by `handleExecutionResult`) — snapshot persistence failures do not block terminal state transitions. This is consistent with the overall cleanup pattern.
+  - The snapshot SHA is computed via `ComputeSandboxBundleHash(records)` which converts `SandboxBundleRecord` → `BundleManifestRecord` → sorted `(path, sha)` pairs. It is NOT the hash of the compressed payload bytes.
+  - When adding a new required dependency to `WorkerPipelineConfig`, all manually-constructed configs across the test file (18+ instances) must be updated — use `replace_all` with the exact `Execution:...\n\t\tCancel:` pattern for efficient batch updates.
+  - Mock runner `execOverrides` for sandbox file collection need both `"find /workspace/.hal"` and `base64Cmd` prefixes. For multi-file tests, use full command strings like `base64Cmd + " '/workspace/.hal/prd.json'"` for per-file override targeting.
+  - `SnapshotService.StoreSnapshot` calls `store.GetRun` to resolve the next version — the `workerMockStore.getRun` field must be set with `LatestSnapshotVersion` for version assertions to work correctly.
+---
+
+## 2026-02-13 - US-025
+- Implemented PR side effect gating by workflow kind and PREnabled in `WorkerPipeline`
+- Files changed:
+  - `internal/cloud/worker.go` — Added `PRCreate *PRCreateService`, `PREnabled bool`, `PRCreatorFunc func(sandboxID, authDir string) PRCreator` to `WorkerPipelineConfig` and `WorkerPipeline` (all optional); added `prContext` struct for passing PR metadata from `executeAttempt` to `handleExecutionResult`; added `maybeCreatePR` method with 5-gate logic (PREnabled, PRCreate != nil, PRCreatorFunc != nil, workflowKind in {auto, review}, prContext != nil); updated `handleExecutionResult` signature to accept `*prContext` and call `maybeCreatePR` on exit code 0
+  - `internal/cloud/auth_materialization.go` — Added `AuthDir()` accessor method to `AuthMaterializationService` for pipeline to build `prContext`
+  - `internal/cloud/worker_test.go` — Added `prOpts` struct and `newTestWorkerPipelineWithPR` helper; added `testClaimedRunWithKind` helper for workflow-kind-specific test runs; added `trackingPRCreatorFactory` for verifying PR creation invocation; added 8 new tests: `TestPRGating_AutoWorkflowWithPREnabled`, `TestPRGating_ReviewWorkflowWithPREnabled`, `TestPRGating_AutoWorkflowWithPRDisabled`, `TestPRGating_ReviewWorkflowWithPRDisabled`, `TestPRGating_RunWorkflowNeverInvokesPRCreate`, `TestPRGating_NilPRCreateServiceSkipsPR`, `TestPRGating_NonZeroExitSkipsPR`, `TestPRGating_PRRequestContainsCorrectFields`
+- **Learnings for future iterations:**
+  - PR creation is optional (all three fields nil/false by default) — no validation in `NewWorkerPipeline` required, unlike required dependencies like Store or Runner.
+  - `maybeCreatePR` uses 5 sequential gates — any nil/false/wrong-kind condition short-circuits to nil. This keeps the method flat and easy to extend.
+  - `AuthMaterializationService.AuthDir()` exposes the auth dir so `executeAttempt` can build `prContext` without duplicating the default path logic.
+  - When testing workflow-kind-dependent behavior, use `testClaimedRunWithKind(kind)` helper and set `execOverrides` for the specific workflow command (e.g., `"hal auto"` for auto, `"hal review"` for review).
+  - `trackingPRCreatorFactory` captures both `called` boolean and `*PRCreateRequest` — use `wasCalled()` for gate tests and the captured request for field-level assertions.
+  - The `prContext` pattern passes run-level metadata (repo, baseBranch, workingBranch, sandboxID, authDir) through `handleExecutionResult` to `maybeCreatePR` without changing the existing transition logic.
+---
+
+## 2026-02-13 - US-026
+- Registered `hal cloud worker` command under the cloud command tree with 5 explicit runtime flags
+- Files changed:
+  - `cmd/cloud_worker.go` — New file with `cloudWorkerCmd` Cobra command, `--worker-id`, `--poll-interval`, `--reconcile-interval`, `--timeout-interval`, `--sandbox-image` flags, `init()` registration, and `runCloudWorker` testable helper
+  - `cmd/cloud.go` — Added `worker` entry to cloud Long description
+  - `cmd/cloud_help_test.go` — Updated 3 test functions to include "worker" in supported commands lists and command tree snapshot
+  - `cmd/cloud_removed_test.go` — Updated supported commands list to include "worker"
+- **Learnings for future iterations:**
+  - Cloud subcommands follow a consistent pattern: flag vars, Cobra command, `init()` for flag registration + `cloudCmd.AddCommand()`, and extracted `run<Command>` testable helper.
+  - When adding a new cloud subcommand, update 3 test locations: `TestCloudHelp_ListsOnlySupportedCommands`, `TestCloudHelp_LongDescriptionListsSupportedCommands`, `TestCloudHelp_CommandTreeSnapshot` in `cloud_help_test.go`, plus `TestCloudCommandTree_SnapshotSupportedCommands` in `cloud_removed_test.go`.
+  - Worker command uses `signal.NotifyContext` for SIGINT/SIGTERM-based graceful shutdown — this is the Go standard pattern for long-running services.
+  - Duration flags (`time.Duration`) use `cmd.Flags().DurationVar` with defaults like `10*time.Second` — Cobra renders these as `10s` in help output.
+---
+
+## 2026-02-13 - US-027
+- Wired worker command factories and dotenv bootstrap into `cmd/cloud_worker.go`
+- Files changed:
+  - `cmd/cloud_worker.go` — Added `cloudWorkerStoreFactory` and `cloudWorkerRunnerFactory` package-level vars with if-nil defaults in `init()`; added `defaultCloudWorkerRunnerFactory` that validates deploy config and constructs Daytona-backed `runner.SDKClient`; added `godotenv.Load()` call in `runCloudWorker` before config resolution with `os.ErrNotExist` tolerance
+  - `cmd/cloud_worker_test.go` — New file with 11 tests: `TestCloudWorkerStoreFactory_DefaultIsDeployFactory`, `TestCloudWorkerRunnerFactory_DefaultIsSet`, `TestCloudWorkerStoreFactory_OverridableInTests`, `TestCloudWorkerRunnerFactory_OverridableInTests`, `TestRunCloudWorker_DotenvIgnoresMissingFile`, `TestRunCloudWorker_DotenvParseErrorWarns`, `TestRunCloudWorker_DotenvLoadedBeforeStartup`, `TestRunCloudWorker_RequiresWorkerID`, `TestDefaultCloudWorkerRunnerFactory_ValidatesConfig`, `TestCloudWorkerCmd_FlagDefaults` (5 subtests), `TestCloudWorkerCmd_DelegatesRunCloudWorker`
+- **Learnings for future iterations:**
+  - Cloud worker follows the same factory pattern as other cloud commands: package-level `var <name>Factory func() (T, error)` with `if-nil` default assignment in `init()` pointing to `deploy.DefaultStoreFactory` or a custom factory.
+  - The runner factory takes `deploy.Config` as input (not `func() (runner.Runner, error)`) because the worker needs to resolve deploy config before constructing the runner — this differs from the store factory which encapsulates config loading internally.
+  - `defaultCloudWorkerRunnerFactory` calls `cfg.Validate()` (not `ValidateStore()`) because the runner needs Daytona API key in addition to DB config — `Validate()` checks both adapter and Daytona fields.
+  - `godotenv.Load()` in `runCloudWorker` is called before any config resolution, matching the pattern in `deploy.DefaultStoreFactory` — uses `errors.Is(err, os.ErrNotExist)` to silently ignore missing `.env` files.
+  - Dotenv tests use `os.Chdir(t.TempDir())` with cleanup to control `.env` file presence. Signal-based tests use `os.FindProcess(os.Getpid()).Signal(os.Interrupt)` with a 50ms delay to unblock `signal.NotifyContext`.
+  - The `SDKClient` satisfies `runner.Runner`, `runner.SessionExec`, and `runner.GitOps` interfaces simultaneously — the default factory returns it typed as `runner.Runner` but callers can type-assert to access session and git operations.
+---
+
+## 2026-02-13 - US-028
+- Implemented default runner factory validation, SDKClient interface assertions, and non-empty sandbox image wiring
+- Files changed:
+  - `cmd/cloud_worker.go` — Added `defaultWorkerSandboxImage` constant (`"ubuntu:22.04"`), `resolveWorkerSandboxImage` helper that returns flag value or default, updated `runCloudWorker` to always resolve image and always display it in startup output
+  - `cmd/cloud_worker_test.go` — Added 6 new tests: `TestResolveWorkerSandboxImage` (table-driven: 3 subtests), `TestResolveWorkerSandboxImage_NeverEmpty`, `TestDefaultWorkerSandboxImage_Constant`, `TestRunCloudWorker_SandboxImageAlwaysDisplayed` (2 subtests), `TestRunCloudWorker_ProvisionImageNeverEmpty`, `TestDefaultCloudWorkerRunnerFactory_ReturnsSDKClient` (3 subtests)
+  - `internal/cloud/runner/sdk_client.go` — Added compile-time interface satisfaction assertions: `var _ Runner = (*SDKClient)(nil)`, `var _ SessionExec = (*SDKClient)(nil)`, `var _ GitOps = (*SDKClient)(nil)`
+- **Learnings for future iterations:**
+  - `deploy.Config.Validate()` checks both adapter fields AND `DaytonaAPIKey`, while `ValidateStore()` only checks adapter fields — use `Validate()` for runner factory since the runner needs the Daytona API key.
+  - `deploy.LoadConfig` applies the default adapter (`"turso"`) but `deploy.Config{}` literal has empty `DBAdapter` — tests that construct `Config` directly must set `DBAdapter` explicitly or expect the "must be turso or postgres" error.
+  - Compile-time interface assertions (`var _ Interface = (*Type)(nil)`) in the same file as the implementation provide immediate feedback if interface compliance breaks after refactoring.
+  - `resolveWorkerSandboxImage` is a pure function that centralizes the flag-or-default logic — test it directly instead of relying on signal-based integration tests for image resolution correctness.
+  - The `--sandbox-image` flag has an empty default in Cobra, but the resolved image is always non-empty because `resolveWorkerSandboxImage` fills in `defaultWorkerSandboxImage`. This ensures `ProvisionConfig.Image` is never empty regardless of how the worker is invoked.
+---
+
+## 2026-02-13 - US-029
+- Implemented worker loop scheduling with poll, reconcile, and timeout tickers, plus graceful shutdown via context cancellation
+- Files changed:
+  - `internal/cloud/worker.go` — Added `RunLoopConfig` struct and `RunLoop(ctx, cfg)` method on `WorkerPipeline`; added optional `Reconciler *ReconcilerService` and `Timeout *TimeoutService` to `WorkerPipelineConfig` and `WorkerPipeline`; wired reconciler/timeout into constructor. RunLoop uses `time.NewTicker` for poll/reconcile/timeout intervals, exits on `ctx.Done()`, nil-guards optional reconciler and timeout services
+  - `internal/cloud/worker_test.go` — Added `claim_run` logging to `workerMockStore.ClaimRun`; updated `TestExecuteAttempt_SetupCallOrder` wantOrder to include `claim_run`; added `reconcileTrackingStore` and `timeoutTrackingStore` wrapper types; added 8 new tests: `TestRunLoop_ExitsOnContextCancel`, `TestRunLoop_CallsProcessOneOnPollTick`, `TestRunLoop_CallsReconcilerOnReconcileTick`, `TestRunLoop_CallsTimeoutOnTimeoutTick`, `TestRunLoop_NilReconcilerSkipsReconcileTick`, `TestRunLoop_NilTimeoutSkipsTimeoutTick`, `TestRunLoop_ProcessOneErrorDoesNotStopLoop`, `TestRunLoop_LongProcessOneDelaysMaintenanceTicks`
+  - `cmd/cloud_worker.go` — Updated `runCloudWorker` to construct full pipeline from factory-injected store/runner, create all services, and call `pipeline.RunLoop(ctx, ...)` instead of bare `<-ctx.Done()`. Added `deploy.LoadConfig` import for config resolution
+  - `cmd/cloud_worker_test.go` — Added `workerTestMockStore`, `workerTestMockRunner`, and `injectWorkerTestFactories` helper for cmd-level tests; injected mock factories into all signal-based tests; added 3 new tests: `TestRunCloudWorker_StoreFactoryError`, `TestRunCloudWorker_RunnerFactoryError`, `TestRunCloudWorker_ShutdownOutputIncludesWorkerID`
+- **Learnings for future iterations:**
+  - `RunLoop` uses `select` on three ticker channels plus `ctx.Done()` — V1 accepted behavior is that long `ProcessOne` calls block the select loop and delay maintenance ticks. Future versions could run claims in a separate goroutine to decouple poll latency from execution duration.
+  - `Reconciler` and `Timeout` are optional in `WorkerPipelineConfig` (nil-guarded in RunLoop), unlike required dependencies like Store/Runner/Claim which are validated in `NewWorkerPipeline`.
+  - When adding call logging to mock methods (e.g., `ClaimRun`), existing tests that check call order by absolute position will break — update `wantOrder` slices to include the new log entry.
+  - For cmd-level tests that call `runCloudWorker` (which now constructs real infrastructure from factories), inject mock factories via `injectWorkerTestFactories` helper that saves/restores package-level factory vars. The mock store must implement `ClaimRun` returning `ErrNotFound` so the poll loop doesn't panic.
+  - `reconcileTrackingStore` and `timeoutTrackingStore` wrap `Store` with callback hooks on entry-point methods (`ListStaleAttempts`, `ListOverdueRuns`) — use this pattern for counting service invocations without modifying service code.
 ---
