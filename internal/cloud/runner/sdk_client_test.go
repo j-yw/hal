@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -82,5 +83,123 @@ func TestNewSDKClientWrapsErrors(t *testing.T) {
 	// Our pre-validation produces a descriptive error with the "sdk runner client:" prefix.
 	if !strings.Contains(err.Error(), "sdk runner client:") {
 		t.Errorf("error %q should contain 'sdk runner client:' prefix", err.Error())
+	}
+}
+
+func TestSDKClientCreateSandboxValidation(t *testing.T) {
+	// Create a real client for validation tests (no network calls for validation failures).
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		req     *CreateSandboxRequest
+		wantErr string
+	}{
+		{
+			name:    "nil request",
+			req:     nil,
+			wantErr: "create request must not be nil",
+		},
+		{
+			name:    "empty image",
+			req:     &CreateSandboxRequest{},
+			wantErr: "image must not be empty",
+		},
+		{
+			name:    "empty image with env vars",
+			req:     &CreateSandboxRequest{EnvVars: map[string]string{"K": "V"}},
+			wantErr: "image must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := c.CreateSandbox(context.Background(), tt.req)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+			if !strings.HasPrefix(err.Error(), "sdk runner client:") {
+				t.Errorf("error %q should have 'sdk runner client:' prefix", err.Error())
+			}
+		})
+	}
+}
+
+func TestSDKClientDestroySandboxValidation(t *testing.T) {
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		id      string
+		wantErr string
+	}{
+		{
+			name:    "empty sandbox ID",
+			id:      "",
+			wantErr: "sandbox_id must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := c.DestroySandbox(context.Background(), tt.id)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+			if !strings.HasPrefix(err.Error(), "sdk runner client:") {
+				t.Errorf("error %q should have 'sdk runner client:' prefix", err.Error())
+			}
+		})
+	}
+}
+
+func TestSDKClientCreateSandboxSDKFailure(t *testing.T) {
+	// The SDK client is configured with a key but no valid API URL.
+	// Calling Create with a valid request should fail at the SDK level,
+	// and the error should be wrapped with the operation prefix.
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately to force SDK failure
+
+	_, err = c.CreateSandbox(ctx, &CreateSandboxRequest{Image: "ubuntu:latest"})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "sdk runner client: create sandbox:") {
+		t.Errorf("error %q should contain 'sdk runner client: create sandbox:' prefix", err.Error())
+	}
+}
+
+func TestSDKClientDestroySandboxSDKFailure(t *testing.T) {
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately to force SDK failure
+
+	err = c.DestroySandbox(ctx, "nonexistent-sandbox")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "sdk runner client: destroy:") {
+		t.Errorf("error %q should contain 'sdk runner client: destroy:' prefix", err.Error())
 	}
 }
