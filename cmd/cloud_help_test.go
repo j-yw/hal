@@ -9,9 +9,9 @@ import (
 )
 
 // TestCloudHelp_ListsOnlySupportedCommands verifies that hal cloud --help
-// lists exactly the 8 supported commands and no others.
+// lists exactly the 9 supported commands and no others.
 func TestCloudHelp_ListsOnlySupportedCommands(t *testing.T) {
-	supported := []string{"setup", "doctor", "list", "status", "logs", "cancel", "pull", "auth"}
+	supported := []string{"setup", "doctor", "list", "status", "logs", "cancel", "pull", "auth", "worker"}
 
 	var subcommands []string
 	for _, sub := range cloudCmd.Commands() {
@@ -91,7 +91,7 @@ func TestCloudHelp_RemovedCommandsAbsentFromHelpText(t *testing.T) {
 // TestCloudHelp_LongDescriptionListsSupportedCommands verifies that the Long
 // description in cloudCmd lists the supported command entries.
 func TestCloudHelp_LongDescriptionListsSupportedCommands(t *testing.T) {
-	supported := []string{"setup", "doctor", "list", "status", "logs", "cancel", "pull", "auth"}
+	supported := []string{"setup", "doctor", "list", "status", "logs", "cancel", "pull", "auth", "worker"}
 	longText := cloudCmd.Long
 
 	for _, want := range supported {
@@ -226,6 +226,7 @@ func TestCloudHelp_CommandTreeSnapshot(t *testing.T) {
 		"cancel": "Cancel a running run",
 		"pull":   "Pull final state from a completed run",
 		"auth":   "Manage auth profiles",
+		"worker": "Run the cloud worker loop",
 	}
 
 	subs := cloudCmd.Commands()

@@ -55,7 +55,8 @@ Commands:
   logs        View execution logs
   cancel      Cancel a running execution
   pull        Pull artifacts from a completed execution
-  auth        Manage auth profiles`,
+  auth        Manage auth profiles
+  worker      Run the cloud worker loop`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()

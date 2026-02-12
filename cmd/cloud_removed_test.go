@@ -9,7 +9,7 @@ import (
 // TestCloudCommandTree_SnapshotSupportedCommands verifies that hal cloud --help
 // lists exactly the supported commands and does not list any removed commands.
 func TestCloudCommandTree_SnapshotSupportedCommands(t *testing.T) {
-	supported := []string{"setup", "doctor", "list", "status", "logs", "cancel", "pull", "auth"}
+	supported := []string{"setup", "doctor", "list", "status", "logs", "cancel", "pull", "auth", "worker"}
 	removed := []string{"submit", "run", "smoke", "env", "runs"}
 
 	var subcommands []string
