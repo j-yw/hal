@@ -7,6 +7,10 @@
 - SDK client constructor pattern: `SDKClientConfig` struct → pre-validate required fields → delegate to `daytona.NewClientWithConfig` → wrap SDK errors with `%w`.
 - SDK client tests are in `sdk_client_test.go` (package-internal); HTTP client tests remain in `runner_test.go`.
 - The `daytona.NewClientWithConfig` constructor does not make network calls — it only configures HTTP clients, so tests can construct real SDK clients without mocking.
+- SDK sandbox lifecycle: `client.Create` → `*daytona.Sandbox`, `client.Get(id)` → `*daytona.Sandbox`, then `sandbox.Delete(ctx)` — the delete is on the sandbox object, not the client.
+- Use cancelled-context tests (`ctx, cancel := ...; cancel()`) to exercise SDK error wrapping without a mock or live server.
+- SDK `sandbox.Process.ExecuteCommand(ctx, cmd, opts...)` returns `*types.ExecuteResponse{ExitCode, Result, Artifacts}` — map `Result` to stdout, prefer `Artifacts.Stdout` when available.
+- SDK options are functional: `options.WithCwd(dir)`, `options.WithExecuteTimeout(dur)` — build a `[]func(*options.ExecuteCommand)` slice and spread with `opts...`.
 
 ## 2026-02-12 - US-001
 - Removed `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN` constants, fields, and env parsing from `internal/cloud/deploy/config.go`
@@ -33,4 +37,32 @@
   - `NewClientWithConfig` is a pure config constructor (no network calls), so tests can create real SDK clients safely.
   - The `SDKClient` struct stores `*daytona.Client` — future stories (US-003+) will add Runner interface methods that delegate to this client.
   - The SDK `types.DaytonaConfig` also supports `JWTToken` and `OrganizationID` — we only expose APIKey/APIURL/Target since that's what our deploy config provides.
+---
+
+## 2026-02-12 - US-003
+- Added `CreateSandbox` method to `SDKClient`: validates nil request and empty image, then calls `client.Create(ctx, types.ImageParams{Image, SandboxBaseParams{EnvVars}})`, maps SDK `Sandbox` to `runner.Sandbox` (ID, State→Status, time.Now()→CreatedAt)
+- Added `DestroySandbox` method to `SDKClient`: validates empty sandboxID, retrieves sandbox via `client.Get(ctx, sandboxID)`, then calls `sandbox.Delete(ctx)`
+- Both methods wrap failures with `%w` and operation-specific prefixes (`sdk runner client: create sandbox:`, `sdk runner client: destroy:`)
+- Added tests: validation paths (nil request, empty image, empty ID), error prefix checks, and SDK failure paths (cancelled context forces SDK-level errors to exercise wrapping)
+- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+- **Learnings for future iterations:**
+  - SDK `client.Create` returns `*daytona.Sandbox` with `ID`, `Name`, `State` (typed `apiclient.SandboxState`), and service fields (FileSystem, Git, Process, etc.) — cast `State` to string for `runner.Sandbox.Status`.
+  - SDK `client.Create` accepts `any` params (switch on `types.ImageParams` or `types.SnapshotParams`) — we use `ImageParams` since our `CreateSandboxRequest.Image` maps to it.
+  - SDK `Sandbox.Delete(ctx)` delegates to `DeleteWithTimeout(ctx, 60s)` — no separate timeout needed at our layer.
+  - Cancelled-context tests are the cleanest way to exercise SDK error wrapping without a mock or a live server — `ctx, cancel := context.WithCancel(ctx); cancel()` triggers immediate SDK failure.
+  - `DestroySandbox` uses a two-step get-then-delete pattern because the SDK's `Delete` is on the `*Sandbox` object, not on the client.
+---
+
+## 2026-02-12 - US-004
+- Added `Exec` method to `SDKClient`: validates nil request, empty sandboxID, and empty command, then retrieves sandbox via `client.Get`, builds functional options slice for WorkDir/Timeout, calls `sandbox.Process.ExecuteCommand(ctx, cmd, opts...)`
+- Maps `ExecuteResponse` to `runner.ExecResult`: `ExitCode` direct, `Result` to `Stdout`, prefers `Artifacts.Stdout` when available
+- Options applied conditionally: `options.WithCwd` when `req.WorkDir != ""`, `options.WithExecuteTimeout` when `req.Timeout > 0`
+- All failures wrapped with `%w` and `sdk runner client: exec:` prefix
+- Added tests: validation table (nil request, empty sandboxID, empty command, empty command with workdir), SDK failure via cancelled context, SDK failure with options
+- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+- **Learnings for future iterations:**
+  - SDK `ExecuteCommand` uses variadic functional options pattern: `func(*options.ExecuteCommand)` — build a slice and spread it
+  - `ExecuteResponse.Result` is the combined output; `Artifacts.Stdout` is structured stdout when available (Artifacts can be nil)
+  - The SDK converts `time.Duration` timeout to `int32` seconds internally, so pass the `time.Duration` directly to `WithExecuteTimeout`
+  - Exec follows the same get-then-operate pattern as DestroySandbox: `client.Get` first, then operate on the returned `*Sandbox` object's services
 ---

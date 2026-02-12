@@ -203,3 +203,99 @@ func TestSDKClientDestroySandboxSDKFailure(t *testing.T) {
 		t.Errorf("error %q should contain 'sdk runner client: destroy:' prefix", err.Error())
 	}
 }
+
+func TestSDKClientExecValidation(t *testing.T) {
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		sandboxID string
+		req       *ExecRequest
+		wantErr   string
+	}{
+		{
+			name:      "nil request",
+			sandboxID: "sb-123",
+			req:       nil,
+			wantErr:   "exec request must not be nil",
+		},
+		{
+			name:      "empty sandbox ID",
+			sandboxID: "",
+			req:       &ExecRequest{Command: "echo hello"},
+			wantErr:   "sandbox_id must not be empty",
+		},
+		{
+			name:      "empty command",
+			sandboxID: "sb-123",
+			req:       &ExecRequest{},
+			wantErr:   "command must not be empty",
+		},
+		{
+			name:      "empty command with workdir",
+			sandboxID: "sb-123",
+			req:       &ExecRequest{WorkDir: "/tmp"},
+			wantErr:   "command must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := c.Exec(context.Background(), tt.sandboxID, tt.req)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+			if !strings.HasPrefix(err.Error(), "sdk runner client:") {
+				t.Errorf("error %q should have 'sdk runner client:' prefix", err.Error())
+			}
+		})
+	}
+}
+
+func TestSDKClientExecSDKFailure(t *testing.T) {
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately to force SDK failure
+
+	_, err = c.Exec(ctx, "nonexistent-sandbox", &ExecRequest{Command: "echo hello"})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "sdk runner client: exec:") {
+		t.Errorf("error %q should contain 'sdk runner client: exec:' prefix", err.Error())
+	}
+}
+
+func TestSDKClientExecSDKFailureWithOptions(t *testing.T) {
+	// Verify that Exec with WorkDir and Timeout options still hits
+	// the SDK layer (and wraps the error) when the context is cancelled.
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = c.Exec(ctx, "nonexistent-sandbox", &ExecRequest{
+		Command: "ls -la",
+		WorkDir: "/home/daytona",
+		Timeout: 30 * 1e9, // 30 seconds as time.Duration
+	})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "sdk runner client: exec:") {
+		t.Errorf("error %q should contain 'sdk runner client: exec:' prefix", err.Error())
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	daytona "github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
+	"github.com/daytonaio/daytona/libs/sdk-go/pkg/options"
 	"github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 )
 
@@ -85,4 +86,45 @@ func (s *SDKClient) DestroySandbox(ctx context.Context, sandboxID string) error 
 	}
 
 	return nil
+}
+
+// Exec executes a command inside an existing sandbox and returns the result.
+func (s *SDKClient) Exec(ctx context.Context, sandboxID string, req *ExecRequest) (*ExecResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("sdk runner client: exec request must not be nil")
+	}
+	if sandboxID == "" {
+		return nil, fmt.Errorf("sdk runner client: exec: sandbox_id must not be empty")
+	}
+	if req.Command == "" {
+		return nil, fmt.Errorf("sdk runner client: exec: command must not be empty")
+	}
+
+	sandbox, err := s.client.Get(ctx, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: exec: get sandbox: %w", err)
+	}
+
+	var opts []func(*options.ExecuteCommand)
+	if req.WorkDir != "" {
+		opts = append(opts, options.WithCwd(req.WorkDir))
+	}
+	if req.Timeout > 0 {
+		opts = append(opts, options.WithExecuteTimeout(req.Timeout))
+	}
+
+	resp, err := sandbox.Process.ExecuteCommand(ctx, req.Command, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("sdk runner client: exec: %w", err)
+	}
+
+	result := &ExecResult{
+		ExitCode: resp.ExitCode,
+		Stdout:   resp.Result,
+	}
+	if resp.Artifacts != nil && resp.Artifacts.Stdout != "" {
+		result.Stdout = resp.Artifacts.Stdout
+	}
+
+	return result, nil
 }
