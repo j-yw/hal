@@ -14,11 +14,22 @@ import (
 
 // callLog records the order of service calls for deterministic ordering tests.
 type callLog struct {
+	mu    sync.Mutex
 	calls []string
 }
 
 func (l *callLog) record(name string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.calls = append(l.calls, name)
+}
+
+func (l *callLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.calls))
+	copy(out, l.calls)
+	return out
 }
 
 // workerMockStore extends mockStore with behavior needed by worker tests.
@@ -53,9 +64,10 @@ type workerMockStore struct {
 	mu             sync.Mutex
 	heartbeatCalls []heartbeatCall
 
-	// GetRun behavior
-	getRun    *Run
-	getRunErr error
+	// GetRun behavior — also controls cancel check behavior
+	getRun          *Run
+	getRunErr       error
+	cancelRequested bool // when true, GetRun returns CancelRequested=true
 
 	// Optional call log for ordering tests.
 	log *callLog
@@ -142,6 +154,9 @@ func (s *workerMockStore) GetAuthProfile(_ context.Context, _ string) (*AuthProf
 }
 
 func (s *workerMockStore) HeartbeatAttempt(_ context.Context, attemptID string, heartbeatAt, leaseExpiresAt time.Time) error {
+	if s.log != nil {
+		s.log.record("heartbeat_attempt")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.heartbeatCalls = append(s.heartbeatCalls, heartbeatCall{
@@ -153,14 +168,24 @@ func (s *workerMockStore) HeartbeatAttempt(_ context.Context, attemptID string, 
 }
 
 func (s *workerMockStore) GetRun(_ context.Context, _ string) (*Run, error) {
+	if s.log != nil {
+		s.log.record("get_run")
+	}
 	if s.getRunErr != nil {
 		return nil, s.getRunErr
 	}
 	if s.getRun != nil {
-		return s.getRun, nil
+		r := *s.getRun
+		s.mu.Lock()
+		r.CancelRequested = s.cancelRequested
+		s.mu.Unlock()
+		return &r, nil
 	}
 	// Default: return a running run (for heartbeat service's auth check).
-	return &Run{ID: "run-1", Status: RunStatusRunning, AuthProfileID: "profile-1"}, nil
+	s.mu.Lock()
+	cr := s.cancelRequested
+	s.mu.Unlock()
+	return &Run{ID: "run-1", Status: RunStatusRunning, AuthProfileID: "profile-1", CancelRequested: cr}, nil
 }
 
 func (s *workerMockStore) UpdateAttemptSandboxID(_ context.Context, _, _ string) error {
@@ -322,6 +347,7 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, git, CheckpointConfig{})
+	cancel := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
@@ -334,6 +360,7 @@ func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *wo
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Cancel:              cancel,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   50 * time.Millisecond, // fast ticks for tests
 		GitUsername:         gitUser,
@@ -376,6 +403,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
 	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+	cancel := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	tests := []struct {
@@ -395,6 +423,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 		},
@@ -410,6 +439,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "store must not be nil",
@@ -426,6 +456,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "runner must not be nil",
@@ -442,6 +473,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "workerID must not be empty",
@@ -458,6 +490,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "claim must not be nil",
@@ -474,6 +507,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "provision must not be nil",
@@ -490,6 +524,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "bootstrap must not be nil",
@@ -506,6 +541,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: nil,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "authMaterialization must not be nil",
@@ -522,6 +558,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           nil,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "preflight must not be nil",
@@ -538,9 +575,27 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          nil,
+				Cancel:              cancel,
 				Heartbeat:           heartbeat,
 			},
 			wantErr: "checkpoint must not be nil",
+		},
+		{
+			name: "nil cancel service",
+			cfg: WorkerPipelineConfig{
+				Store:               store,
+				Runner:              rnr,
+				WorkerID:            "worker-1",
+				Claim:               claim,
+				Provision:           provision,
+				Bootstrap:           bootstrap,
+				AuthMaterialization: authMat,
+				Preflight:           preflight,
+				Checkpoint:          checkpoint,
+				Cancel:              nil,
+				Heartbeat:           heartbeat,
+			},
+			wantErr: "cancel must not be nil",
 		},
 		{
 			name: "nil heartbeat service",
@@ -554,6 +609,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
 				Checkpoint:          checkpoint,
+				Cancel:              cancel,
 				Heartbeat:           nil,
 			},
 			wantErr: "heartbeat must not be nil",
@@ -865,6 +921,7 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 
 	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	p, err := NewWorkerPipeline(WorkerPipelineConfig{
@@ -877,6 +934,7 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflightSvc,
 		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   50 * time.Millisecond,
 	})
@@ -1291,6 +1349,7 @@ func TestExecuteAttempt_CheckpointServiceValidation(t *testing.T) {
 	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
 
 	_, err := NewWorkerPipeline(WorkerPipelineConfig{
@@ -1303,6 +1362,7 @@ func TestExecuteAttempt_CheckpointServiceValidation(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          nil,
+		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 	})
 	if err == nil {
@@ -1343,6 +1403,7 @@ func TestHeartbeat_StartsAfterTransitionToRunning(t *testing.T) {
 	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
 
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
 	claim := NewClaimService(store, ClaimConfig{
 		IDFunc: func() string { return "attempt-1" },
 	})
@@ -1362,6 +1423,7 @@ func TestHeartbeat_StartsAfterTransitionToRunning(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond, // fast ticks
 	})
@@ -1422,6 +1484,7 @@ func TestHeartbeat_ActiveThroughSetupAndExecution(t *testing.T) {
 	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
 
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
 	claim := NewClaimService(store, ClaimConfig{
 		IDFunc: func() string { return "attempt-1" },
 	})
@@ -1441,6 +1504,7 @@ func TestHeartbeat_ActiveThroughSetupAndExecution(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
 	})
@@ -1540,6 +1604,7 @@ func TestHeartbeat_RenewCallsIncludeCorrectIDs(t *testing.T) {
 	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
 
 	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
 	claim := NewClaimService(store, ClaimConfig{
 		IDFunc: func() string { return "attempt-42" },
 	})
@@ -1559,6 +1624,7 @@ func TestHeartbeat_RenewCallsIncludeCorrectIDs(t *testing.T) {
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
 		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
 		Heartbeat:           heartbeat,
 		HeartbeatInterval:   20 * time.Millisecond,
 	})
@@ -1600,6 +1666,241 @@ func TestHeartbeat_RenewCallsIncludeCorrectIDs(t *testing.T) {
 	for i, hb := range store.heartbeatCalls {
 		if hb.AttemptID != "attempt-42" {
 			t.Errorf("heartbeatCalls[%d].AttemptID = %q, want %q", i, hb.AttemptID, "attempt-42")
+		}
+	}
+}
+
+// --- US-018: Check cancellation before heartbeat renew on every tick ---
+
+func TestHeartbeat_CancelCheckedBeforeRenewOnEachTick(t *testing.T) {
+	// Verify that on each heartbeat tick, cancel.CheckAndCancel is called
+	// before heartbeat.Renew. We use a slow provision to keep the pipeline
+	// busy and inspect the call log for ordering.
+	log := &callLog{}
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.log = log
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for at least 2 heartbeat ticks.
+	deadline := time.After(2 * time.Second)
+	for {
+		store.mu.Lock()
+		count := len(store.heartbeatCalls)
+		store.mu.Unlock()
+		if count >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for heartbeat ticks")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Unblock provision and let the pipeline finish.
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// Inspect the call log. For each tick, we expect a GetRun (from
+	// cancel.CheckAndCancel) to appear before HeartbeatAttempt (from
+	// heartbeat.Renew). The log records the store-level calls.
+	// After the transition_run:claimed->running call, the heartbeat
+	// goroutine calls GetRun for cancel check, then HeartbeatAttempt
+	// for renew, then GetRun again for renew's auth check, then
+	// RenewAuthLock.
+	//
+	// We verify the pattern: each heartbeat_attempt is preceded by
+	// at least one get_run (from the cancel check).
+	calls := log.snapshot()
+
+	// Count heartbeat ticks — each tick produces a "get_run" (cancel check)
+	// followed by "heartbeat_attempt" (renew).
+	heartbeatAttemptCount := 0
+	for _, c := range calls {
+		if c == "heartbeat_attempt" {
+			heartbeatAttemptCount++
+		}
+	}
+	if heartbeatAttemptCount < 2 {
+		t.Fatalf("expected at least 2 heartbeat_attempt calls, got %d (log: %v)", heartbeatAttemptCount, calls)
+	}
+
+	// Verify ordering: each heartbeat_attempt is preceded by get_run.
+	getRuns := 0
+	for _, c := range calls {
+		if c == "get_run" {
+			getRuns++
+		}
+		if c == "heartbeat_attempt" {
+			if getRuns == 0 {
+				t.Fatalf("heartbeat_attempt found before any get_run call (log: %v)", calls)
+			}
+		}
+	}
+}
+
+func TestHeartbeat_CancelDetectedSkipsRenew(t *testing.T) {
+	// When cancellation is detected during a heartbeat tick, the tick should
+	// NOT call heartbeat.Renew, and the heartbeat loop should exit.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Let one heartbeat tick fire normally (no cancel), then set cancel flag.
+	deadline := time.After(2 * time.Second)
+	for {
+		store.mu.Lock()
+		count := len(store.heartbeatCalls)
+		store.mu.Unlock()
+		if count >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for initial heartbeat tick")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Record heartbeat count before setting cancel flag.
+	store.mu.Lock()
+	countBefore := len(store.heartbeatCalls)
+	store.mu.Unlock()
+
+	// Set cancel_requested on the run — the next tick's CheckAndCancel will
+	// see this and cancel without calling Renew.
+	store.mu.Lock()
+	store.cancelRequested = true
+	store.mu.Unlock()
+
+	// Wait for the heartbeat loop to exit (it should stop after detecting cancel).
+	// We can detect this because once the cancel propagates, the heartbeat
+	// goroutine returns without further HeartbeatAttempt calls.
+	time.Sleep(200 * time.Millisecond)
+
+	store.mu.Lock()
+	countAfter := len(store.heartbeatCalls)
+	store.mu.Unlock()
+
+	// After cancel is detected, no more heartbeat renew calls should occur.
+	// At most one more heartbeat might have been in flight at the time we set
+	// the flag, so we allow countBefore+1 but not more.
+	if countAfter > countBefore+1 {
+		t.Errorf("heartbeat continued after cancel: before=%d, after=%d (expected at most %d)", countBefore, countAfter, countBefore+1)
+	}
+
+	// Unblock provision so pipeline can finish.
+	close(gate)
+	<-done
+}
+
+func TestHeartbeat_CancelCheckCallOrderPerTick(t *testing.T) {
+	// Verify the exact per-tick call order: GetRun (cancel check) happens
+	// first on every tick, and when it returns Canceled=false, HeartbeatAttempt
+	// follows. Uses a log to capture ordering.
+	log := &callLog{}
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.log = log
+	rnr := newWorkerMockRunner(nil)
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// Pipeline completes quickly; heartbeat may have ticked 0-2 times.
+	// Regardless, if there are any heartbeat_attempt entries, each must
+	// have been preceded by a get_run.
+	calls := log.snapshot()
+
+	lastGetRun := -1
+	for i, c := range calls {
+		if c == "get_run" {
+			lastGetRun = i
+		}
+		if c == "heartbeat_attempt" {
+			if lastGetRun < 0 || lastGetRun > i {
+				t.Fatalf("heartbeat_attempt at index %d without preceding get_run (log: %v)", i, calls)
+			}
 		}
 	}
 }

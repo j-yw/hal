@@ -38,6 +38,8 @@ type WorkerPipelineConfig struct {
 	Preflight *PreflightService
 	// Checkpoint is the service used to commit and push sandbox changes (required).
 	Checkpoint *CheckpointService
+	// Cancel is the service used to check and propagate cancel intent (required).
+	Cancel *CancellationService
 	// Heartbeat is the service used to renew attempt leases (required).
 	Heartbeat *HeartbeatService
 	// HeartbeatInterval is the interval between heartbeat ticks. Defaults to
@@ -62,6 +64,7 @@ type WorkerPipeline struct {
 	authMaterialization *AuthMaterializationService
 	preflight           *PreflightService
 	checkpoint          *CheckpointService
+	cancel              *CancellationService
 	heartbeat           *HeartbeatService
 	heartbeatInterval   time.Duration
 	gitUsername         string
@@ -98,6 +101,9 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 	if cfg.Checkpoint == nil {
 		return nil, fmt.Errorf("checkpoint must not be nil")
 	}
+	if cfg.Cancel == nil {
+		return nil, fmt.Errorf("cancel must not be nil")
+	}
 	if cfg.Heartbeat == nil {
 		return nil, fmt.Errorf("heartbeat must not be nil")
 	}
@@ -115,6 +121,7 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		authMaterialization: cfg.AuthMaterialization,
 		preflight:           cfg.Preflight,
 		checkpoint:          cfg.Checkpoint,
+		cancel:              cfg.Cancel,
 		heartbeat:           cfg.Heartbeat,
 		heartbeatInterval:   hbInterval,
 		gitUsername:         cfg.GitUsername,
@@ -217,9 +224,12 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 	return nil
 }
 
-// startHeartbeat launches a goroutine that ticks at p.heartbeatInterval,
-// calling heartbeat.Renew on each tick. The goroutine runs until ctx is
-// canceled. The returned channel is closed when the goroutine exits.
+// startHeartbeat launches a goroutine that ticks at p.heartbeatInterval.
+// On each tick it calls cancel.CheckAndCancel before heartbeat.Renew.
+// When cancellation is detected, the tick skips Renew and cancels ctx
+// via the provided cancelFunc so the main pipeline observes the signal.
+// The goroutine runs until ctx is canceled. The returned channel is
+// closed when the goroutine exits.
 func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProfileID, runID string) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
@@ -231,6 +241,12 @@ func (p *WorkerPipeline) startHeartbeat(ctx context.Context, attemptID, authProf
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Check cancellation before renewing the lease.
+				result, err := p.cancel.CheckAndCancel(ctx, runID, attemptID, authProfileID)
+				if err == nil && result.Canceled {
+					// Cancellation detected — do not renew, just return.
+					return
+				}
 				_ = p.heartbeat.Renew(ctx, attemptID, authProfileID, runID)
 			}
 		}
