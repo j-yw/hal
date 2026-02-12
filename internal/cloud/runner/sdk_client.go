@@ -150,3 +150,17 @@ func (s *SDKClient) StreamLogs(ctx context.Context, sandboxID string) (io.ReadCl
 	logs, _ := logsMap["logs"].(string)
 	return io.NopCloser(strings.NewReader(logs)), nil
 }
+
+// Health probes Daytona reachability by listing sandboxes and returns SDK version info.
+func (s *SDKClient) Health(ctx context.Context) (*HealthStatus, error) {
+	page := 1
+	limit := 1
+	if _, err := s.client.List(ctx, nil, &page, &limit); err != nil {
+		return nil, fmt.Errorf("sdk runner client: health: %w", err)
+	}
+
+	return &HealthStatus{
+		OK:      true,
+		Version: daytona.Version,
+	}, nil
+}

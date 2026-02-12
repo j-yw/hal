@@ -11,6 +11,8 @@
 - Use cancelled-context tests (`ctx, cancel := ...; cancel()`) to exercise SDK error wrapping without a mock or live server.
 - SDK `sandbox.Process.ExecuteCommand(ctx, cmd, opts...)` returns `*types.ExecuteResponse{ExitCode, Result, Artifacts}` — map `Result` to stdout, prefer `Artifacts.Stdout` when available.
 - SDK options are functional: `options.WithCwd(dir)`, `options.WithExecuteTimeout(dur)` — build a `[]func(*options.ExecuteCommand)` slice and spread with `opts...`.
+- SDK `ProcessService.GetSessionCommandLogs(ctx, sessionID, commandID)` returns `map[string]any` — access logs via `logsMap["logs"].(string)` with zero-value fallback.
+- SDK `client.List(ctx, labels, page *int, limit *int)` returns `*PaginatedSandboxes` — use for health probes with page=1, limit=1 and `daytona.Version` for version info.
 
 ## 2026-02-12 - US-001
 - Removed `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN` constants, fields, and env parsing from `internal/cloud/deploy/config.go`
@@ -65,4 +67,29 @@
   - `ExecuteResponse.Result` is the combined output; `Artifacts.Stdout` is structured stdout when available (Artifacts can be nil)
   - The SDK converts `time.Duration` timeout to `int32` seconds internally, so pass the `time.Duration` directly to `WithExecuteTimeout`
   - Exec follows the same get-then-operate pattern as DestroySandbox: `client.Get` first, then operate on the returned `*Sandbox` object's services
+---
+
+## 2026-02-12 - US-005
+- Added `StreamLogs` method to `SDKClient`: validates empty sandboxID, retrieves sandbox via `client.Get`, calls `sandbox.Process.GetSessionCommandLogs(ctx, "default", "default")`, returns `io.NopCloser(strings.NewReader(logs))`
+- `GetSessionCommandLogs` returns `map[string]any` with a `"logs"` key containing the log text — type-assert with zero-value fallback
+- All failures wrapped with `%w` and `sdk runner client: stream logs:` prefix
+- Added tests: validation table (empty sandboxID), SDK failure via cancelled context
+- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+- **Learnings for future iterations:**
+  - SDK `ProcessService.GetSessionCommandLogs(ctx, sessionID, commandID)` returns `map[string]any` not a string — access logs via `logsMap["logs"].(string)`
+  - The "default" session and "default" command IDs are used for standard log retrieval
+  - StreamLogs follows the same get-then-operate pattern as DestroySandbox and Exec
+  - The `io.NopCloser(strings.NewReader(...))` pattern fulfills the `io.ReadCloser` return type without any actual streaming or cleanup needed
+---
+
+## 2026-02-12 - US-006
+- Added `Health` method to `SDKClient`: probes Daytona reachability via `client.List(ctx, nil, &page1, &limit1)`, returns `HealthStatus{OK:true, Version:daytona.Version}` on success
+- Pagination params are `*int` pointers (page=1, limit=1) — minimal probe to verify API reachability without fetching real data
+- Failures wrapped with `%w` and `sdk runner client: health:` prefix
+- Added tests: SDK failure via cancelled context, version/interface compliance verification
+- Files changed: `internal/cloud/runner/sdk_client.go`, `internal/cloud/runner/sdk_client_test.go`
+- **Learnings for future iterations:**
+  - SDK `client.List` takes `(ctx, labels map[string]string, page *int, limit *int)` and returns `*PaginatedSandboxes` — use `nil` labels and pointer-to-int for pagination
+  - `daytona.Version` is a package-level `var` (not const) embedded at SDK build time — may be empty in test builds without the embedded VERSION file
+  - Health has no validation step (no input params) so the only test paths are SDK success/failure — use cancelled-context for failure and interface compliance check for success wiring
 ---

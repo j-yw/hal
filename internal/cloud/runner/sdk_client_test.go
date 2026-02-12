@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	daytona "github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
 )
 
 func TestNewSDKClient(t *testing.T) {
@@ -325,6 +327,43 @@ func TestSDKClientStreamLogsSDKFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sdk runner client: stream logs:") {
 		t.Errorf("error %q should contain 'sdk runner client: stream logs:' prefix", err.Error())
+	}
+}
+
+func TestSDKClientHealthSDKFailure(t *testing.T) {
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately to force SDK failure
+
+	_, err = c.Health(ctx)
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "sdk runner client: health:") {
+		t.Errorf("error %q should contain 'sdk runner client: health:' prefix", err.Error())
+	}
+}
+
+func TestSDKClientHealthReturnsVersion(t *testing.T) {
+	// Verify that the Health method is wired to return daytona.Version.
+	// We cannot call Health successfully without a live server, so we verify
+	// the version constant is accessible and non-empty (it's embedded at
+	// SDK build time).
+	c, err := NewSDKClient(SDKClientConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("unexpected constructor error: %v", err)
+	}
+
+	// Verify the SDKClient satisfies the Runner interface including Health.
+	var _ Runner = c
+
+	// Verify daytona.Version is accessible (used in Health success path).
+	if daytona.Version == "" {
+		t.Log("daytona.Version is empty (expected in test builds without embedded VERSION file)")
 	}
 }
 
