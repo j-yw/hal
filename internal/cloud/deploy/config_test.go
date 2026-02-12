@@ -24,11 +24,12 @@ func TestLoadConfig_ExplicitAdapter(t *testing.T) {
 
 func TestLoadConfig_AllFields(t *testing.T) {
 	env := map[string]string{
-		EnvDBAdapter:          AdapterTurso,
-		EnvTursoURL:           "libsql://db.example.com",
-		EnvTursoAuthToken:     "token123",
-		EnvRunnerURL:          "http://runner:8090",
-		EnvRunnerServiceToken: "svc-token",
+		EnvDBAdapter:     AdapterTurso,
+		EnvTursoURL:      "libsql://db.example.com",
+		EnvTursoAuthToken: "token123",
+		EnvDaytonaAPIKey: "daytona-key-123",
+		EnvDaytonaAPIURL: "https://api.daytona.io",
+		EnvDaytonaTarget: "us-east-1",
 	}
 	cfg := LoadConfig(func(key string) string { return env[key] })
 	if cfg.TursoURL != env[EnvTursoURL] {
@@ -37,11 +38,59 @@ func TestLoadConfig_AllFields(t *testing.T) {
 	if cfg.TursoAuthToken != env[EnvTursoAuthToken] {
 		t.Errorf("TursoAuthToken = %q, want %q", cfg.TursoAuthToken, env[EnvTursoAuthToken])
 	}
-	if cfg.RunnerURL != env[EnvRunnerURL] {
-		t.Errorf("RunnerURL = %q, want %q", cfg.RunnerURL, env[EnvRunnerURL])
+	if cfg.DaytonaAPIKey != env[EnvDaytonaAPIKey] {
+		t.Errorf("DaytonaAPIKey = %q, want %q", cfg.DaytonaAPIKey, env[EnvDaytonaAPIKey])
 	}
-	if cfg.RunnerServiceToken != env[EnvRunnerServiceToken] {
-		t.Errorf("RunnerServiceToken = %q, want %q", cfg.RunnerServiceToken, env[EnvRunnerServiceToken])
+	if cfg.DaytonaAPIURL != env[EnvDaytonaAPIURL] {
+		t.Errorf("DaytonaAPIURL = %q, want %q", cfg.DaytonaAPIURL, env[EnvDaytonaAPIURL])
+	}
+	if cfg.DaytonaTarget != env[EnvDaytonaTarget] {
+		t.Errorf("DaytonaTarget = %q, want %q", cfg.DaytonaTarget, env[EnvDaytonaTarget])
+	}
+}
+
+func TestLoadConfig_DaytonaAPIURLFallback(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantURL string
+	}{
+		{
+			name: "prefers DAYTONA_API_URL when both set",
+			env: map[string]string{
+				EnvDaytonaAPIURL:    "https://api.daytona.io",
+				EnvDaytonaServerURL: "https://server.daytona.io",
+			},
+			wantURL: "https://api.daytona.io",
+		},
+		{
+			name: "falls back to DAYTONA_SERVER_URL when DAYTONA_API_URL is unset",
+			env: map[string]string{
+				EnvDaytonaServerURL: "https://server.daytona.io",
+			},
+			wantURL: "https://server.daytona.io",
+		},
+		{
+			name:    "empty when neither set",
+			env:     map[string]string{},
+			wantURL: "",
+		},
+		{
+			name: "DAYTONA_API_URL only",
+			env: map[string]string{
+				EnvDaytonaAPIURL: "https://api.daytona.io",
+			},
+			wantURL: "https://api.daytona.io",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := LoadConfig(func(key string) string { return tt.env[key] })
+			if cfg.DaytonaAPIURL != tt.wantURL {
+				t.Errorf("DaytonaAPIURL = %q, want %q", cfg.DaytonaAPIURL, tt.wantURL)
+			}
+		})
 	}
 }
 
@@ -99,22 +148,12 @@ func TestConfigValidateStore(t *testing.T) {
 			wantErr: "must be",
 		},
 		{
-			name: "does not check runner url",
+			name: "does not check daytona api key",
 			config: Config{
 				DBAdapter:      AdapterTurso,
 				TursoURL:       "libsql://db.example.com",
 				TursoAuthToken: "token123",
-				RunnerURL:      "", // empty runner URL should not cause error
-			},
-			wantErr: "",
-		},
-		{
-			name: "does not check runner service token",
-			config: Config{
-				DBAdapter:          AdapterTurso,
-				TursoURL:           "libsql://db.example.com",
-				TursoAuthToken:     "token123",
-				RunnerServiceToken: "", // empty service token should not cause error
+				DaytonaAPIKey:  "", // empty API key should not cause error
 			},
 			wantErr: "",
 		},
@@ -146,83 +185,90 @@ func TestConfigValidate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "valid turso config",
+			name: "valid turso config with daytona api key",
 			config: Config{
-				DBAdapter:          AdapterTurso,
-				TursoURL:           "libsql://db.example.com",
-				TursoAuthToken:     "token123",
-				RunnerURL:          "http://runner:8090",
-				RunnerServiceToken: "svc-token",
+				DBAdapter:      AdapterTurso,
+				TursoURL:       "libsql://db.example.com",
+				TursoAuthToken: "token123",
+				DaytonaAPIKey:  "daytona-key-123",
 			},
 			wantErr: "",
 		},
 		{
-			name: "valid postgres config",
+			name: "valid postgres config with daytona api key",
 			config: Config{
-				DBAdapter:          AdapterPostgres,
-				PostgresDSN:        "postgres://localhost:5432/hal",
-				RunnerURL:          "http://runner:8090",
-				RunnerServiceToken: "svc-token",
+				DBAdapter:     AdapterPostgres,
+				PostgresDSN:   "postgres://localhost:5432/hal",
+				DaytonaAPIKey: "daytona-key-123",
+			},
+			wantErr: "",
+		},
+		{
+			name: "valid config with all daytona fields",
+			config: Config{
+				DBAdapter:      AdapterTurso,
+				TursoURL:       "libsql://db.example.com",
+				TursoAuthToken: "token123",
+				DaytonaAPIKey:  "daytona-key-123",
+				DaytonaAPIURL:  "https://api.daytona.io",
+				DaytonaTarget:  "us-east-1",
 			},
 			wantErr: "",
 		},
 		{
 			name: "turso missing url",
 			config: Config{
-				DBAdapter:          AdapterTurso,
-				TursoAuthToken:     "token123",
-				RunnerURL:          "http://runner:8090",
-				RunnerServiceToken: "svc-token",
+				DBAdapter:      AdapterTurso,
+				TursoAuthToken: "token123",
+				DaytonaAPIKey:  "daytona-key-123",
 			},
 			wantErr: "HAL_CLOUD_TURSO_URL is required",
 		},
 		{
 			name: "turso missing token",
 			config: Config{
-				DBAdapter:          AdapterTurso,
-				TursoURL:           "libsql://db.example.com",
-				RunnerURL:          "http://runner:8090",
-				RunnerServiceToken: "svc-token",
+				DBAdapter:     AdapterTurso,
+				TursoURL:      "libsql://db.example.com",
+				DaytonaAPIKey: "daytona-key-123",
 			},
 			wantErr: "HAL_CLOUD_TURSO_AUTH_TOKEN is required",
 		},
 		{
 			name: "postgres missing dsn",
 			config: Config{
-				DBAdapter:          AdapterPostgres,
-				RunnerURL:          "http://runner:8090",
-				RunnerServiceToken: "svc-token",
+				DBAdapter:     AdapterPostgres,
+				DaytonaAPIKey: "daytona-key-123",
 			},
 			wantErr: "HAL_CLOUD_POSTGRES_DSN is required",
 		},
 		{
 			name: "invalid adapter",
 			config: Config{
-				DBAdapter:          "mysql",
-				RunnerURL:          "http://runner:8090",
-				RunnerServiceToken: "svc-token",
+				DBAdapter:     "mysql",
+				DaytonaAPIKey: "daytona-key-123",
 			},
 			wantErr: "must be",
 		},
 		{
-			name: "missing runner url",
-			config: Config{
-				DBAdapter:          AdapterTurso,
-				TursoURL:           "libsql://db.example.com",
-				TursoAuthToken:     "token123",
-				RunnerServiceToken: "svc-token",
-			},
-			wantErr: "HAL_CLOUD_RUNNER_URL is required",
-		},
-		{
-			name: "missing runner service token",
+			name: "missing daytona api key",
 			config: Config{
 				DBAdapter:      AdapterTurso,
 				TursoURL:       "libsql://db.example.com",
 				TursoAuthToken: "token123",
-				RunnerURL:      "http://runner:8090",
 			},
-			wantErr: "HAL_CLOUD_RUNNER_SERVICE_TOKEN is required",
+			wantErr: "DAYTONA_API_KEY is required",
+		},
+		{
+			name: "daytona api url and target are optional",
+			config: Config{
+				DBAdapter:      AdapterTurso,
+				TursoURL:       "libsql://db.example.com",
+				TursoAuthToken: "token123",
+				DaytonaAPIKey:  "daytona-key-123",
+				DaytonaAPIURL:  "", // optional
+				DaytonaTarget:  "", // optional
+			},
+			wantErr: "",
 		},
 	}
 

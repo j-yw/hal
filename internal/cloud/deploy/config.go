@@ -18,12 +18,16 @@ var KnownAdapters = []string{AdapterTurso, AdapterPostgres}
 
 // Environment variable keys used by hal-cloud services.
 const (
-	EnvDBAdapter          = "HAL_CLOUD_DB_ADAPTER"
-	EnvTursoURL           = "HAL_CLOUD_TURSO_URL"
-	EnvTursoAuthToken     = "HAL_CLOUD_TURSO_AUTH_TOKEN"
-	EnvRunnerURL          = "HAL_CLOUD_RUNNER_URL"
-	EnvRunnerServiceToken = "HAL_CLOUD_RUNNER_SERVICE_TOKEN"
-	EnvPostgresDSN        = "HAL_CLOUD_POSTGRES_DSN"
+	EnvDBAdapter      = "HAL_CLOUD_DB_ADAPTER"
+	EnvTursoURL       = "HAL_CLOUD_TURSO_URL"
+	EnvTursoAuthToken = "HAL_CLOUD_TURSO_AUTH_TOKEN"
+	EnvPostgresDSN    = "HAL_CLOUD_POSTGRES_DSN"
+
+	// Daytona SDK environment variables.
+	EnvDaytonaAPIKey    = "DAYTONA_API_KEY"
+	EnvDaytonaAPIURL    = "DAYTONA_API_URL"
+	EnvDaytonaServerURL = "DAYTONA_SERVER_URL" // legacy alias for DAYTONA_API_URL
+	EnvDaytonaTarget    = "DAYTONA_TARGET"
 )
 
 // Config holds the resolved deployment configuration for hal-cloud services.
@@ -36,27 +40,38 @@ type Config struct {
 	TursoAuthToken string
 	// PostgresDSN is the Postgres connection string (required when DBAdapter is "postgres").
 	PostgresDSN string
-	// RunnerURL is the Daytona runner service URL.
-	RunnerURL string
-	// RunnerServiceToken is the service token for runner authentication.
-	RunnerServiceToken string
+
+	// DaytonaAPIKey is the Daytona SDK API key (required).
+	DaytonaAPIKey string
+	// DaytonaAPIURL is the Daytona SDK API URL (optional).
+	DaytonaAPIURL string
+	// DaytonaTarget is the Daytona SDK target (optional).
+	DaytonaTarget string
 }
 
 // LoadConfig reads deployment configuration from environment variables.
 // It uses the provided getenv function for testability (pass os.Getenv in production).
 // Default adapter is "turso" when HAL_CLOUD_DB_ADAPTER is unset.
+// DaytonaAPIURL prefers DAYTONA_API_URL and falls back to DAYTONA_SERVER_URL.
 func LoadConfig(getenv func(string) string) Config {
 	adapter := getenv(EnvDBAdapter)
 	if adapter == "" {
 		adapter = AdapterTurso
 	}
+
+	apiURL := getenv(EnvDaytonaAPIURL)
+	if apiURL == "" {
+		apiURL = getenv(EnvDaytonaServerURL)
+	}
+
 	return Config{
-		DBAdapter:          adapter,
-		TursoURL:           getenv(EnvTursoURL),
-		TursoAuthToken:     getenv(EnvTursoAuthToken),
-		PostgresDSN:        getenv(EnvPostgresDSN),
-		RunnerURL:          getenv(EnvRunnerURL),
-		RunnerServiceToken: getenv(EnvRunnerServiceToken),
+		DBAdapter:      adapter,
+		TursoURL:       getenv(EnvTursoURL),
+		TursoAuthToken: getenv(EnvTursoAuthToken),
+		PostgresDSN:    getenv(EnvPostgresDSN),
+		DaytonaAPIKey:  getenv(EnvDaytonaAPIKey),
+		DaytonaAPIURL:  apiURL,
+		DaytonaTarget:  getenv(EnvDaytonaTarget),
 	}
 }
 
@@ -86,23 +101,21 @@ func (c Config) validateAdapter() error {
 }
 
 // ValidateStore checks that database-related fields are set for the selected adapter.
-// Unlike Validate, it does NOT check RunnerURL or RunnerServiceToken.
+// Unlike Validate, it does NOT check Daytona SDK fields.
 func (c Config) ValidateStore() error {
 	return c.validateAdapter()
 }
 
-// Validate checks that all required fields are set for the selected adapter.
+// Validate checks that all required fields are set for the selected adapter
+// and that the Daytona API key is present.
 // Returns an error describing the first missing required variable.
 func (c Config) Validate() error {
 	if err := c.validateAdapter(); err != nil {
 		return err
 	}
 
-	if c.RunnerURL == "" {
-		return fmt.Errorf("%s is required", EnvRunnerURL)
-	}
-	if c.RunnerServiceToken == "" {
-		return fmt.Errorf("%s is required", EnvRunnerServiceToken)
+	if c.DaytonaAPIKey == "" {
+		return fmt.Errorf("%s is required", EnvDaytonaAPIKey)
 	}
 
 	return nil
