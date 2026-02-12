@@ -70,7 +70,7 @@ func (s *ClaimService) ClaimAndLock(ctx context.Context, workerID string) (*Clai
 	attempt := &Attempt{
 		ID:             attemptID,
 		RunID:          run.ID,
-		AttemptNumber:  run.AttemptCount + 1,
+		AttemptNumber:  run.AttemptCount,
 		WorkerID:       workerID,
 		Status:         AttemptStatusActive,
 		StartedAt:      now,

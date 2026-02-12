@@ -107,7 +107,7 @@ func claimedRun() *Run {
 		AuthProfileID: "profile-1",
 		ScopeRef:      "prd-123",
 		Status:        RunStatusClaimed,
-		AttemptCount:  0,
+		AttemptCount:  1,
 		MaxAttempts:   3,
 		DeadlineAt:    &deadline,
 		CreatedAt:     now,
@@ -254,7 +254,7 @@ func TestClaimAndLock(t *testing.T) {
 			},
 		},
 		{
-			name:     "attempt number increments from attempt count",
+			name:     "attempt number equals claimed run attempt count",
 			workerID: "worker-1",
 			setup: func(s *claimMockStore) {
 				r := claimedRun()
@@ -263,8 +263,12 @@ func TestClaimAndLock(t *testing.T) {
 			},
 			check: func(t *testing.T, result *ClaimResult, _ *claimMockStore) {
 				t.Helper()
-				if result.Attempt.AttemptNumber != 3 {
-					t.Errorf("attempt.AttemptNumber = %d, want 3", result.Attempt.AttemptNumber)
+				if result.Attempt.AttemptNumber != 2 {
+					t.Errorf("attempt.AttemptNumber = %d, want 2", result.Attempt.AttemptNumber)
+				}
+				if result.Attempt.AttemptNumber != result.Run.AttemptCount {
+					t.Errorf("attempt.AttemptNumber (%d) != run.AttemptCount (%d), want equal",
+						result.Attempt.AttemptNumber, result.Run.AttemptCount)
 				}
 			},
 		},
@@ -347,6 +351,66 @@ func TestNewClaimServiceDefaults(t *testing.T) {
 	if svc.config.LeaseDuration != 30*time.Second {
 		t.Errorf("LeaseDuration = %v, want 30s", svc.config.LeaseDuration)
 	}
+}
+
+func TestClaimAttemptNumberAlignment(t *testing.T) {
+	idSeq := 0
+	idFunc := func() string {
+		idSeq++
+		return fmt.Sprintf("attempt-%d", idSeq)
+	}
+
+	t.Run("first claim returns attempt number 1", func(t *testing.T) {
+		idSeq = 0
+		store := newClaimMockStore()
+		// Store atomically increments attempt_count from 0 to 1 during ClaimRun.
+		r := claimedRun() // AttemptCount: 1
+		store.claimedRun = r
+
+		svc := NewClaimService(store, ClaimConfig{
+			LeaseDuration: 30 * time.Second,
+			IDFunc:        idFunc,
+		})
+
+		result, err := svc.ClaimAndLock(context.Background(), "worker-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Attempt.AttemptNumber != 1 {
+			t.Errorf("attempt.AttemptNumber = %d, want 1", result.Attempt.AttemptNumber)
+		}
+		if result.Attempt.AttemptNumber != result.Run.AttemptCount {
+			t.Errorf("attempt.AttemptNumber (%d) != run.AttemptCount (%d), want equal",
+				result.Attempt.AttemptNumber, result.Run.AttemptCount)
+		}
+	})
+
+	t.Run("second claim after requeue returns attempt number 2", func(t *testing.T) {
+		idSeq = 0
+		store := newClaimMockStore()
+		// Simulate second claim: store atomically increments attempt_count
+		// from 1 to 2 during ClaimRun after a requeue.
+		r := claimedRun()
+		r.AttemptCount = 2
+		store.claimedRun = r
+
+		svc := NewClaimService(store, ClaimConfig{
+			LeaseDuration: 30 * time.Second,
+			IDFunc:        idFunc,
+		})
+
+		result, err := svc.ClaimAndLock(context.Background(), "worker-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Attempt.AttemptNumber != 2 {
+			t.Errorf("attempt.AttemptNumber = %d, want 2", result.Attempt.AttemptNumber)
+		}
+		if result.Attempt.AttemptNumber != result.Run.AttemptCount {
+			t.Errorf("attempt.AttemptNumber (%d) != run.AttemptCount (%d), want equal",
+				result.Attempt.AttemptNumber, result.Run.AttemptCount)
+		}
+	})
 }
 
 func TestClaimAndLockCustomLeaseDuration(t *testing.T) {
