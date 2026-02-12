@@ -21,6 +21,11 @@ type CloudFlags struct {
 	CloudBase        string
 	CloudAuthProfile string
 	CloudAuthScope   string
+
+	// Engine carries the command-scoped --engine/-e value when a workflow
+	// command (for example `hal run --cloud`) forwards it into cloud
+	// resolution. It is not registered by RegisterCloudFlags.
+	Engine string
 }
 
 // RegisterCloudFlags registers the shared cloud flag set on the given command.

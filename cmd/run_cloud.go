@@ -57,8 +57,12 @@ func executeRunCloud(cmd_unused interface{}, out io.Writer) (bool, error) {
 	if runCloudFlags == nil || !runCloudFlags.Cloud {
 		return false, nil
 	}
+
+	flags := *runCloudFlags
+	flags.Engine = engineFlag // Honor run command --engine/-e in cloud mode.
+
 	err := runHalRunCloud(
-		runCloudFlags,
+		&flags,
 		template.HalDir,
 		".",
 		runCloudStoreFactory,
@@ -92,6 +96,7 @@ func runHalRunCloud(
 			Endpoint:    flags.CloudEndpoint,
 			Repo:        flags.CloudRepo,
 			Base:        flags.CloudBase,
+			Engine:      flags.Engine,
 			AuthProfile: flags.CloudAuthProfile,
 			Scope:       flags.CloudAuthScope,
 		},

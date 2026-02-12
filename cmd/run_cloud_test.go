@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +235,117 @@ func TestRunHalRunCloud_SubmitSuccess_Wait_JSON(t *testing.T) {
 	}
 	if resp.Status != "succeeded" {
 		t.Errorf("status = %q, want %q", resp.Status, "succeeded")
+	}
+}
+
+func TestRunHalRunCloud_UsesEngineOverride(t *testing.T) {
+	dir := t.TempDir()
+	setupHalDir(t, dir, map[string]string{
+		"prd.json": `{"project":"test"}`,
+		"cloud.yaml": `defaultProfile: default
+profiles:
+  default:
+    engine: claude
+`,
+	})
+
+	store := newCloudMockStore()
+	store.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+
+	flags := &CloudFlags{
+		Cloud:            true,
+		Detach:           true,
+		CloudProfile:     "default",
+		CloudRepo:        "org/repo",
+		CloudBase:        "main",
+		CloudAuthProfile: "profile-1",
+		CloudAuthScope:   "prd-123",
+		Engine:           "pi",
+	}
+
+	var out bytes.Buffer
+	err := runHalRunCloud(
+		flags,
+		dir+"/.hal",
+		dir,
+		func() (cloud.Store, error) { return store, nil },
+		func() cloud.SubmitConfig {
+			return cloud.SubmitConfig{IDFunc: func() string { return "run-engine-override" }}
+		},
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(store.runs) != 1 {
+		t.Fatalf("store.runs count = %d, want 1", len(store.runs))
+	}
+	if store.runs[0].Engine != "pi" {
+		t.Fatalf("submitted engine = %q, want %q", store.runs[0].Engine, "pi")
+	}
+}
+
+func TestExecuteRunCloud_ForwardsRunEngineFlag(t *testing.T) {
+	dir := t.TempDir()
+	setupHalDir(t, dir, map[string]string{
+		"prd.json": `{"project":"test"}`,
+	})
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(cwd)
+	})
+
+	store := newCloudMockStore()
+	store.profiles["profile-1"] = linkedCloudProfile("profile-1", "anthropic")
+
+	origFlags := runCloudFlags
+	origStoreFactory := runCloudStoreFactory
+	origConfigFactory := runCloudConfigFactory
+	origEngineFlag := engineFlag
+	t.Cleanup(func() {
+		runCloudFlags = origFlags
+		runCloudStoreFactory = origStoreFactory
+		runCloudConfigFactory = origConfigFactory
+		engineFlag = origEngineFlag
+	})
+
+	runCloudFlags = &CloudFlags{
+		Cloud:            true,
+		Detach:           true,
+		CloudRepo:        "org/repo",
+		CloudBase:        "main",
+		CloudAuthProfile: "profile-1",
+		CloudAuthScope:   "prd-123",
+	}
+	runCloudStoreFactory = func() (cloud.Store, error) { return store, nil }
+	runCloudConfigFactory = func() cloud.SubmitConfig {
+		return cloud.SubmitConfig{IDFunc: func() string { return "run-engine-forward" }}
+	}
+
+	engineFlag = "codex" // Simulate `hal run --cloud --engine codex` / `-e codex`.
+
+	var out bytes.Buffer
+	handled, err := executeRunCloud(nil, &out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !handled {
+		t.Fatal("executeRunCloud should return handled=true when --cloud is set")
+	}
+
+	if len(store.runs) != 1 {
+		t.Fatalf("store.runs count = %d, want 1", len(store.runs))
+	}
+	if store.runs[0].Engine != "codex" {
+		t.Fatalf("submitted engine = %q, want %q", store.runs[0].Engine, "codex")
 	}
 }
 
