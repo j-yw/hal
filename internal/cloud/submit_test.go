@@ -19,6 +19,12 @@ type submitMockStore struct {
 	refsErr   error
 }
 
+type submitAtomicMockStore struct {
+	*submitMockStore
+	atomicCalls int
+	atomicErr   error
+}
+
 type updateRunSnapshotRefsCall struct {
 	runID                 string
 	inputSnapshotID       *string
@@ -67,6 +73,11 @@ func (s *submitMockStore) UpdateRunSnapshotRefs(_ context.Context, runID string,
 		latestSnapshotVersion: latestSnapshotVersion,
 	})
 	return nil
+}
+
+func (s *submitAtomicMockStore) SubmitRunWithInputSnapshot(_ context.Context, _ *Run, _ *RunStateSnapshot) error {
+	s.atomicCalls++
+	return s.atomicErr
 }
 
 func linkedProfile(id, provider string) *AuthProfile {
@@ -483,7 +494,9 @@ func TestSubmitService(t *testing.T) {
 func TestNewSubmitServiceDefaults(t *testing.T) {
 	store := newSubmitMockStore()
 
-	svc := NewSubmitService(store, SubmitConfig{})
+	svc := NewSubmitService(store, SubmitConfig{
+		IDFunc: func() string { return "id-run" },
+	})
 	if svc.config.DefaultMaxAttempts != 3 {
 		t.Errorf("DefaultMaxAttempts = %d, want 3", svc.config.DefaultMaxAttempts)
 	}
@@ -772,5 +785,65 @@ func TestSubmitWithBundle(t *testing.T) {
 				tt.checkRun(t, run, store)
 			}
 		})
+	}
+}
+
+func TestSubmitWithBundle_UsesAtomicStoreWhenAvailable(t *testing.T) {
+	idSeq := 0
+	idFunc := func() string {
+		idSeq++
+		return fmt.Sprintf("id-%d", idSeq)
+	}
+
+	base := newSubmitMockStore()
+	base.profiles["profile-1"] = linkedProfile("profile-1", "anthropic")
+	// If fallback path is used, this would fail the test.
+	base.enqErr = fmt.Errorf("fallback enqueue should not be called")
+
+	store := &submitAtomicMockStore{submitMockStore: base}
+	svc := NewSubmitService(store, SubmitConfig{IDFunc: idFunc})
+
+	run, err := svc.SubmitWithBundle(context.Background(), validSubmitRequest(), validBundlePayload())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if run == nil {
+		t.Fatal("expected non-nil run")
+	}
+	if store.atomicCalls != 1 {
+		t.Fatalf("atomicCalls = %d, want 1", store.atomicCalls)
+	}
+	if run.InputSnapshotID == nil || run.LatestSnapshotID == nil {
+		t.Fatal("expected snapshot refs to be populated")
+	}
+	if *run.InputSnapshotID != *run.LatestSnapshotID {
+		t.Errorf("InputSnapshotID=%q != LatestSnapshotID=%q", *run.InputSnapshotID, *run.LatestSnapshotID)
+	}
+	if run.LatestSnapshotVersion != 1 {
+		t.Errorf("LatestSnapshotVersion = %d, want 1", run.LatestSnapshotVersion)
+	}
+}
+
+func TestSubmitWithBundle_AtomicStoreError(t *testing.T) {
+	base := newSubmitMockStore()
+	base.profiles["profile-1"] = linkedProfile("profile-1", "anthropic")
+	store := &submitAtomicMockStore{
+		submitMockStore: base,
+		atomicErr:       fmt.Errorf("tx failed"),
+	}
+
+	svc := NewSubmitService(store, SubmitConfig{
+		IDFunc: func() string { return "id-run" },
+	})
+	_, err := svc.SubmitWithBundle(context.Background(), validSubmitRequest(), validBundlePayload())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	want := "failed to submit run with input snapshot: tx failed"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	if store.atomicCalls != 1 {
+		t.Fatalf("atomicCalls = %d, want 1", store.atomicCalls)
 	}
 }

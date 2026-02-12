@@ -104,6 +104,12 @@ type SubmitService struct {
 	config SubmitConfig
 }
 
+// submitAtomicStore is an optional Store extension for atomically persisting
+// a run and its initial input snapshot in one transaction.
+type submitAtomicStore interface {
+	SubmitRunWithInputSnapshot(ctx context.Context, run *Run, snapshot *RunStateSnapshot) error
+}
+
 // NewSubmitService creates a new SubmitService with the given store and config.
 func NewSubmitService(store Store, config SubmitConfig) *SubmitService {
 	if config.DefaultMaxAttempts < 1 {
@@ -121,59 +127,10 @@ func NewSubmitService(store Store, config SubmitConfig) *SubmitService {
 // Submit validates a request, checks auth profile status and engine/provider
 // compatibility, applies provider policy, and enqueues a new run.
 func (s *SubmitService) Submit(ctx context.Context, req *SubmitRequest) (*Run, error) {
-	// 1. Validate required fields.
-	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
-	}
-
-	// 2. Fetch and validate auth profile.
-	profile, err := s.store.GetAuthProfile(ctx, req.AuthProfileID)
+	run, err := s.prepareRun(ctx, req)
 	if err != nil {
-		if IsNotFound(err) {
-			return nil, fmt.Errorf("auth profile %q not found", req.AuthProfileID)
-		}
-		return nil, fmt.Errorf("failed to get auth profile: %w", err)
+		return nil, err
 	}
-
-	if profile.Status != AuthProfileStatusLinked {
-		return nil, fmt.Errorf("auth profile %q is not linked (status: %s)", req.AuthProfileID, profile.Status)
-	}
-
-	// 3. Check engine/provider compatibility.
-	if !s.config.EngineProviders.IsCompatible(req.Engine, profile.Provider) {
-		return nil, fmt.Errorf("engine %q is not compatible with provider %q", req.Engine, profile.Provider)
-	}
-
-	// 4. Apply provider allow/deny policy.
-	if !s.config.ProviderPolicy.IsAllowed(profile.Provider) {
-		return nil, fmt.Errorf("provider %q is not allowed by policy", profile.Provider)
-	}
-
-	// 5. Build and enqueue the run.
-	now := time.Now().UTC().Truncate(time.Second)
-	deadline := now.Add(s.config.DefaultTimeout)
-
-	runID := ""
-	if s.config.IDFunc != nil {
-		runID = s.config.IDFunc()
-	}
-
-	run := &Run{
-		ID:            runID,
-		Repo:          req.Repo,
-		BaseBranch:    req.BaseBranch,
-		WorkflowKind:  req.WorkflowKind,
-		Engine:        req.Engine,
-		AuthProfileID: req.AuthProfileID,
-		ScopeRef:      req.ScopeRef,
-		Status:        RunStatusQueued,
-		AttemptCount:  0,
-		MaxAttempts:   s.config.DefaultMaxAttempts,
-		DeadlineAt:    &deadline,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
-
 	if err := s.store.EnqueueRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("failed to enqueue run: %w", err)
 	}
@@ -204,8 +161,8 @@ func (s *SubmitService) SubmitWithBundle(ctx context.Context, req *SubmitRequest
 		return nil, ErrBundleHashMismatch
 	}
 
-	// 3. Submit the run (validates request, auth profile, etc.).
-	run, err := s.Submit(ctx, req)
+	// 3. Build the run (validates request, auth profile, policy, etc.).
+	run, err := s.prepareRun(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +173,7 @@ func (s *SubmitService) SubmitWithBundle(ctx context.Context, req *SubmitRequest
 		snapshotID = s.config.IDFunc()
 	}
 
-	// 5. Store the input snapshot.
+	// 5. Build the input snapshot.
 	now := time.Now().UTC().Truncate(time.Second)
 	snapshot := &RunStateSnapshot{
 		ID:              snapshotID,
@@ -230,13 +187,28 @@ func (s *SubmitService) SubmitWithBundle(ctx context.Context, req *SubmitRequest
 		CreatedAt:       now,
 	}
 
-	if err := s.store.PutSnapshot(ctx, snapshot); err != nil {
-		return nil, fmt.Errorf("failed to store input snapshot: %w", err)
-	}
+	// 6. Prefer an atomic write path when supported by the store adapter.
+	if atomicStore, ok := s.store.(submitAtomicStore); ok {
+		if err := atomicStore.SubmitRunWithInputSnapshot(ctx, run, snapshot); err != nil {
+			return nil, fmt.Errorf("failed to submit run with input snapshot: %w", err)
+		}
+	} else {
+		// Fallback path for test/memory stores that do not expose a transaction API.
+		if err := s.store.EnqueueRun(ctx, run); err != nil {
+			return nil, fmt.Errorf("failed to enqueue run: %w", err)
+		}
 
-	// 6. Update run's snapshot references.
-	if err := s.store.UpdateRunSnapshotRefs(ctx, run.ID, &snapshot.ID, &snapshot.ID, 1); err != nil {
-		return nil, fmt.Errorf("failed to update run snapshot refs: %w", err)
+		if err := s.store.PutSnapshot(ctx, snapshot); err != nil {
+			// Best-effort compensation: prevent the orphaned queued run from executing.
+			_ = s.store.TransitionRun(ctx, run.ID, RunStatusQueued, RunStatusFailed)
+			return nil, fmt.Errorf("failed to store input snapshot: %w", err)
+		}
+
+		if err := s.store.UpdateRunSnapshotRefs(ctx, run.ID, &snapshot.ID, &snapshot.ID, 1); err != nil {
+			// Best-effort compensation: run exists without valid refs; do not leave it queued.
+			_ = s.store.TransitionRun(ctx, run.ID, RunStatusQueued, RunStatusFailed)
+			return nil, fmt.Errorf("failed to update run snapshot refs: %w", err)
+		}
 	}
 
 	run.InputSnapshotID = &snapshot.ID
@@ -244,4 +216,60 @@ func (s *SubmitService) SubmitWithBundle(ctx context.Context, req *SubmitRequest
 	run.LatestSnapshotVersion = 1
 
 	return run, nil
+}
+
+// prepareRun validates a submit request, checks auth/profile policy constraints,
+// and constructs a queued run record without persisting it.
+func (s *SubmitService) prepareRun(ctx context.Context, req *SubmitRequest) (*Run, error) {
+	// 1. Validate required fields.
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	// 2. Fetch and validate auth profile.
+	profile, err := s.store.GetAuthProfile(ctx, req.AuthProfileID)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil, fmt.Errorf("auth profile %q not found", req.AuthProfileID)
+		}
+		return nil, fmt.Errorf("failed to get auth profile: %w", err)
+	}
+
+	if profile.Status != AuthProfileStatusLinked {
+		return nil, fmt.Errorf("auth profile %q is not linked (status: %s)", req.AuthProfileID, profile.Status)
+	}
+
+	// 3. Check engine/provider compatibility.
+	if !s.config.EngineProviders.IsCompatible(req.Engine, profile.Provider) {
+		return nil, fmt.Errorf("engine %q is not compatible with provider %q", req.Engine, profile.Provider)
+	}
+
+	// 4. Apply provider allow/deny policy.
+	if !s.config.ProviderPolicy.IsAllowed(profile.Provider) {
+		return nil, fmt.Errorf("provider %q is not allowed by policy", profile.Provider)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	deadline := now.Add(s.config.DefaultTimeout)
+
+	runID := ""
+	if s.config.IDFunc != nil {
+		runID = s.config.IDFunc()
+	}
+
+	return &Run{
+		ID:            runID,
+		Repo:          req.Repo,
+		BaseBranch:    req.BaseBranch,
+		WorkflowKind:  req.WorkflowKind,
+		Engine:        req.Engine,
+		AuthProfileID: req.AuthProfileID,
+		ScopeRef:      req.ScopeRef,
+		Status:        RunStatusQueued,
+		AttemptCount:  0,
+		MaxAttempts:   s.config.DefaultMaxAttempts,
+		DeadlineAt:    &deadline,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}, nil
 }

@@ -95,6 +95,72 @@ func (s *Store) EnqueueRun(ctx context.Context, run *cloud.Run) error {
 	return err
 }
 
+// SubmitRunWithInputSnapshot atomically persists a queued run, its initial
+// input snapshot, and run snapshot references in one transaction.
+func (s *Store) SubmitRunWithInputSnapshot(ctx context.Context, run *cloud.Run, snapshot *cloud.RunStateSnapshot) error {
+	if err := run.Validate(); err != nil {
+		return err
+	}
+	if err := snapshot.Validate(); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO runs (id, repo, base_branch, workflow_kind, engine, auth_profile_id, scope_ref,
+			status, attempt_count, max_attempts, deadline_at, cancel_requested,
+			input_snapshot_id, latest_snapshot_id, latest_snapshot_version, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		run.ID, run.Repo, run.BaseBranch, run.WorkflowKind, run.Engine, run.AuthProfileID, run.ScopeRef,
+		run.Status, run.AttemptCount, run.MaxAttempts, run.DeadlineAt, run.CancelRequested,
+		run.InputSnapshotID, run.LatestSnapshotID, run.LatestSnapshotVersion, run.CreatedAt, run.UpdatedAt,
+	); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_state_snapshots (id, run_id, attempt_id, snapshot_kind, version, sha256, size_bytes, content_encoding, content_blob, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		snapshot.ID, snapshot.RunID, snapshot.AttemptID, snapshot.SnapshotKind, snapshot.Version, snapshot.SHA256,
+		snapshot.SizeBytes, snapshot.ContentEncoding, snapshot.ContentBlob, snapshot.CreatedAt,
+	); err != nil {
+		_ = tx.Rollback()
+		if isUniqueViolation(err) {
+			return cloud.ErrConflict
+		}
+		return err
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE runs SET input_snapshot_id = $1, latest_snapshot_id = $2,
+			latest_snapshot_version = $3, updated_at = NOW()
+		WHERE id = $4`,
+		&snapshot.ID, &snapshot.ID, snapshot.Version, run.ID)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if n == 0 {
+		_ = tx.Rollback()
+		return cloud.ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) ClaimRun(ctx context.Context, workerID string) (*cloud.Run, error) {
 	// Use FOR UPDATE SKIP LOCKED to guarantee one winner under contention.
 	// The subquery selects the oldest queued run and locks it; the UPDATE
