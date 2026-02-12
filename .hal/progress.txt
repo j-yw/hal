@@ -16,6 +16,9 @@
 - Use `ComputeSandboxBundleHash(records)` for worker-side snapshot SHA — it converts `SandboxBundleRecord` → `BundleManifestRecord` via `NewBundleManifestRecord` then delegates to `ComputeBundleHash`. Never hash compressed payload bytes for the snapshot SHA field.
 - `GitHubPRCreator(r, sandboxID, authDir)` returns a `PRCreator` closure — use `mockPRRunner` in tests to capture and assert the executed command text without real sandbox infrastructure.
 - `parseGHPROutput` extracts the PR URL from `gh pr create` stdout by scanning the last non-empty line — `gh` may emit progress text before the URL.
+- `WorkerPipeline` uses config-struct constructor pattern (`WorkerPipelineConfig` → `NewWorkerPipeline`) with explicit nil/empty checks for required dependencies (Store, Runner, WorkerID, Claim).
+- `ProcessOne` maps `ErrNotFound` from `ClaimAndLock` to `ErrNoWork` — callers should use `IsNoWork(err)` to detect empty queue, not `IsNotFound`.
+- Worker tests use `workerMockStore` embedding `mockStore` plus `workerMockRunner` implementing `runner.Runner` — reuse this pattern for future worker-related tests.
 
 ---
 
@@ -132,4 +135,37 @@
   - `buildGHPRCreateCommand` sources `GITHUB_TOKEN` from `${authDir}/credentials` using `export GITHUB_TOKEN=$(cat ...)` — the same auth directory pattern used by `auth_materialization.go`.
   - All user-controlled arguments (title, body, head, base, repo) are escaped with `ShellQuote` — use `mockPRRunner` pattern to capture and assert command text in tests.
   - US-011 and US-012 refine token sourcing details and error handling respectively — the core implementation already includes both for completeness since they're tightly coupled to the PR creator behavior.
+---
+
+## 2026-02-13 - US-011
+- Added comprehensive tests verifying token sourcing and shell escaping in GitHubPRCreator
+- Files changed:
+  - `internal/cloud/pr_github_test.go` — Added `TestGitHubPRCreator_QuoteHeavyArguments` (verifies all 5 user-controlled args are ShellQuoted with complex quote patterns), added `TestGitHubPRCreator_TokenSourcingFromAuthDir` (verifies token export from authDir/credentials with special characters in path, and ordering before gh pr create)
+- **Learnings for future iterations:**
+  - The core implementation for US-011 was already complete from US-010 since token sourcing and escaping are tightly coupled to the PR creator. The story's value is in explicit test coverage for the acceptance criteria.
+  - When verifying shell escaping, test all five user-controlled arguments (title, body, head, base, repo) in a single test case with quote-heavy values to ensure none are missed.
+  - Token sourcing tests should verify both the exact `export GITHUB_TOKEN=$(cat ...)` pattern AND that it appears before `gh pr create` in the command string — ordering matters for shell evaluation.
+  - Auth directories with special characters (e.g., apostrophes) in the path validate that `ShellQuote` is applied to the credentials file path, not just the user-controlled PR arguments.
+---
+
+## 2026-02-13 - US-012
+- Added comprehensive tests for GitHubPRCreator execution failure surfacing with concrete error data
+- Files changed:
+  - `internal/cloud/pr_github_test.go` — Added `TestGitHubPRCreator_NonZeroExitIncludesExitCodeAndStderr` (table-driven: exit 1/128/2, with/without stderr), `TestGitHubPRCreator_RunnerErrorWrapping` (verifies `%w` wrapping via `errors.Is` plus operation context), `TestGitHubPRCreator_RunnerErrorVsNonZeroExit` (asserts distinct error text patterns for both branches)
+- **Learnings for future iterations:**
+  - The `pr_github.go` implementation already had correct error handling from US-010 — US-012's value is in explicit test coverage proving both error branches satisfy acceptance criteria.
+  - Use `errors.Is(err, sentinel)` to verify `%w` wrapping rather than just substring matching — this confirms the error chain is properly maintained for callers using `errors.Is`/`errors.As`.
+  - The two error branches produce distinct prefixes: `"executing gh pr create: <underlying>"` for runner errors and `"gh pr create failed (exit N): <stderr>"` for non-zero exits — tests should verify these are distinguishable so callers can differentiate failure modes.
+---
+
+## 2026-02-13 - US-013
+- Implemented WorkerPipeline foundation with ErrNoWork sentinel and ProcessOne claim-to-nowork mapping
+- Files changed:
+  - `internal/cloud/worker.go` — New file with `ErrNoWork`, `IsNoWork`, `WorkerPipelineConfig`, `WorkerPipeline`, `NewWorkerPipeline`, and `ProcessOne`
+  - `internal/cloud/worker_test.go` — New file with 6 tests: `TestNewWorkerPipeline` (5 subtests for valid config and each missing dependency), `TestProcessOne_NoWork`, `TestProcessOne_ClaimError`, `TestProcessOne_SuccessfulClaim`, `TestErrNoWork_Message`, `TestIsNoWork`
+- **Learnings for future iterations:**
+  - `WorkerPipelineConfig` uses the config-struct constructor pattern — all required dependencies (Store, Runner, WorkerID, Claim) are validated in `NewWorkerPipeline` with descriptive error messages.
+  - `ProcessOne` maps `ErrNotFound` from `ClaimAndLock` to `ErrNoWork` so callers can distinguish "empty queue" (expected) from operational errors. Use `IsNoWork(err)` not `IsNotFound(err)` at the worker loop level.
+  - The `workerMockRunner` must implement `runner.Runner` including `StreamLogs` returning `io.ReadCloser` — using an anonymous interface type causes a compile error even if structurally identical.
+  - Future stories (US-014+) will extend `ProcessOne` with setup, execution, finalization, and cleanup stages — the `_ = result` placeholder marks where that code will go.
 ---
