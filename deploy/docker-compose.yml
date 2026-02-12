@@ -2,15 +2,14 @@
 #
 # Services:
 #   control-plane  — HTTP API for run management (Go binary)
-#   worker         — Claims and executes runs in Daytona sandboxes (Go binary)
-#   daytona-runner — Sandbox lifecycle proxy using Daytona SDK (Node.js)
+#   worker         — Claims and executes runs in Daytona sandboxes (Go binary, SDK-direct)
 #
 # Usage:
 #   cp deploy/.env.example deploy/.env   # fill in secrets
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up
 #
 # Smoke check (after services are running):
-#   hal cloud smoke --control-plane http://localhost:8080 --runner http://localhost:8090
+#   hal cloud smoke --control-plane http://localhost:8080
 
 services:
   control-plane:
@@ -23,12 +22,7 @@ services:
       HAL_CLOUD_DB_ADAPTER: ${HAL_CLOUD_DB_ADAPTER:-turso}
       HAL_CLOUD_TURSO_URL: ${HAL_CLOUD_TURSO_URL}
       HAL_CLOUD_TURSO_AUTH_TOKEN: ${HAL_CLOUD_TURSO_AUTH_TOKEN}
-      HAL_CLOUD_RUNNER_URL: http://daytona-runner:8090
-      HAL_CLOUD_RUNNER_SERVICE_TOKEN: ${HAL_CLOUD_RUNNER_SERVICE_TOKEN}
       PORT: "8080"
-    depends_on:
-      daytona-runner:
-        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 10s
@@ -44,26 +38,9 @@ services:
       HAL_CLOUD_DB_ADAPTER: ${HAL_CLOUD_DB_ADAPTER:-turso}
       HAL_CLOUD_TURSO_URL: ${HAL_CLOUD_TURSO_URL}
       HAL_CLOUD_TURSO_AUTH_TOKEN: ${HAL_CLOUD_TURSO_AUTH_TOKEN}
-      HAL_CLOUD_RUNNER_URL: http://daytona-runner:8090
-      HAL_CLOUD_RUNNER_SERVICE_TOKEN: ${HAL_CLOUD_RUNNER_SERVICE_TOKEN}
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY}
+      DAYTONA_API_URL: ${DAYTONA_API_URL:-}
+      DAYTONA_TARGET: ${DAYTONA_TARGET:-}
     depends_on:
       control-plane:
         condition: service_healthy
-
-  daytona-runner:
-    build:
-      context: ../daytona-runner
-      dockerfile: ../deploy/Dockerfile.daytona-runner
-    ports:
-      - "8090:8090"
-    environment:
-      HAL_CLOUD_RUNNER_SERVICE_TOKEN: ${HAL_CLOUD_RUNNER_SERVICE_TOKEN}
-      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
-      DAYTONA_SERVER_URL: ${DAYTONA_SERVER_URL:-}
-      PORT: "8090"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8090/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s

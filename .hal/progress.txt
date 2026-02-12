@@ -93,3 +93,46 @@
   - `daytona.Version` is a package-level `var` (not const) embedded at SDK build time — may be empty in test builds without the embedded VERSION file
   - Health has no validation step (no input params) so the only test paths are SDK success/failure — use cancelled-context for failure and interface compliance check for success wiring
 ---
+
+## 2026-02-12 - US-007
+- Deleted `internal/cloud/runner/client.go` (HTTP runner implementation: ClientConfig, Client, NewClient, all HTTP methods, helpers)
+- Deleted `internal/cloud/runner/runner_test.go` (HTTP-focused tests: constructor, header, CRUD, context cancellation, interface compliance)
+- Updated `internal/cloud/runner/runner.go` package comment to remove "HTTP client implementation" mention
+- Verified no external references to HTTP runner types (`runner.Client`, `runner.NewClient`, `runner.ClientConfig`) exist in the codebase
+- `go test ./internal/cloud/runner/...` passes with SDK-only implementation (sdk_client.go + sdk_client_test.go)
+- `make test`, `go vet ./...`, `go build ./...` all pass
+- Files changed: `internal/cloud/runner/client.go` (deleted), `internal/cloud/runner/runner_test.go` (deleted), `internal/cloud/runner/runner.go` (comment update)
+- **Learnings for future iterations:**
+  - The HTTP runner types (`Client`, `ClientConfig`, `NewClient`) were only used within the runner package — no external Go files import or reference them, making deletion safe
+  - The `runner_test.go` file was entirely HTTP-focused (used `httptest.NewServer`, `net/http`, etc.) — SDK tests live separately in `sdk_client_test.go`
+  - After deletion, the runner package contains only: `runner.go` (interface + types), `sdk_client.go` (SDK implementation), `sdk_client_test.go` (SDK tests)
+  - The compile-time interface check `var _ Runner = (*Client)(nil)` was in `client.go` — SDK compliance is verified in `sdk_client_test.go` via `TestSDKClientHealthReturnsVersion` which constructs and uses the client
+---
+
+## 2026-02-12 - US-008
+- Updated `RunSmoke` in `internal/cloud/deploy/smoke.go` to treat empty `runnerURL` as SDK-direct mode, returning a synthetic healthy `SmokeResult{Service:"runner", URL:"sdk-direct", OK:true}`
+- Non-empty runner URL behavior is unchanged — still performs HTTP health check
+- Added `TestRunSmoke_EmptyRunnerURL_SyntheticHealth` test verifying synthetic healthy result with OK=true, URL="sdk-direct", StatusCode=0, no error
+- Added `TestRunSmoke_NonEmptyRunnerURL_HTTPCheck` test verifying HTTP check still occurs for non-empty URLs
+- Files changed: `internal/cloud/deploy/smoke.go`, `internal/cloud/deploy/smoke_test.go`
+- **Learnings for future iterations:**
+  - `RunSmoke` takes `runnerURL` as a plain string parameter, not from `Config` — callers pass whatever URL they have, so the empty-string check is the right place to handle SDK-direct mode
+  - Synthetic results use `StatusCode: 0` (zero value) since no HTTP call was made — tests should assert this explicitly
+  - The `URL` field on synthetic results is set to `"sdk-direct"` as a human-readable marker that distinguishes it from HTTP-checked results in reports
+---
+
+## 2026-02-12 - US-009
+- Removed `daytona-runner` service from `deploy/docker-compose.yml` (build, ports, environment, healthcheck)
+- Removed `depends_on: daytona-runner` from `control-plane` service
+- Removed `HAL_CLOUD_RUNNER_URL` and `HAL_CLOUD_RUNNER_SERVICE_TOKEN` env vars from both `control-plane` and `worker` services
+- Added `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` env vars to `worker` service
+- Updated `deploy/.env.example`: removed `HAL_CLOUD_RUNNER_*` entries, added documented `DAYTONA_API_KEY` (required), `DAYTONA_API_URL` (optional), `DAYTONA_SERVER_URL` (legacy alias, commented), and `DAYTONA_TARGET` (optional, commented)
+- Updated compose header comment to remove daytona-runner mention and smoke check runner URL
+- Verified `docker compose -f deploy/docker-compose.yml config` succeeds
+- Files changed: `deploy/docker-compose.yml`, `deploy/.env.example`
+- **Learnings for future iterations:**
+  - The `daytona-runner` service was only referenced in compose as a service definition and `depends_on` — no other deploy files reference it by service name
+  - `control-plane` no longer needs runner env vars since it doesn't proxy runner requests — the worker connects directly via SDK
+  - `DAYTONA_API_KEY` in compose uses `${DAYTONA_API_KEY}` (no default) to enforce it's required, while `DAYTONA_API_URL` and `DAYTONA_TARGET` use `${VAR:-}` for optional with empty default
+  - `.env.example` documents the `DAYTONA_SERVER_URL` legacy alias as a comment to show it exists without encouraging its use
+---
