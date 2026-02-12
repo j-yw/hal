@@ -230,7 +230,45 @@ func (r *workerMockRunner) Health(_ context.Context) (*runner.HealthStatus, erro
 
 // --- Helper to build a full WorkerPipelineConfig with all required services ---
 
+// workerMockGitOps is a minimal GitOps mock for worker tests that records
+// clone, branch creation, checkout, add, commit, and push calls.
+type workerMockGitOps struct {
+	cloneRequests []*runner.GitCloneRequest
+	branchCreated []string
+	checkedOut    []string
+	pushRequests  []*runner.GitPushRequest
+}
+
+func (g *workerMockGitOps) GitClone(_ context.Context, _ string, req *runner.GitCloneRequest) error {
+	g.cloneRequests = append(g.cloneRequests, req)
+	return nil
+}
+func (g *workerMockGitOps) GitAdd(_ context.Context, _, _ string, _ []string) error { return nil }
+func (g *workerMockGitOps) GitCommit(_ context.Context, _ string, _ *runner.GitCommitRequest) (*runner.GitCommitResult, error) {
+	return &runner.GitCommitResult{}, nil
+}
+func (g *workerMockGitOps) GitPush(_ context.Context, _ string, req *runner.GitPushRequest) error {
+	g.pushRequests = append(g.pushRequests, req)
+	return nil
+}
+func (g *workerMockGitOps) GitCreateBranch(_ context.Context, _, _, branch string) error {
+	g.branchCreated = append(g.branchCreated, branch)
+	return nil
+}
+func (g *workerMockGitOps) GitCheckout(_ context.Context, _, _, branch string) error {
+	g.checkedOut = append(g.checkedOut, branch)
+	return nil
+}
+func (g *workerMockGitOps) GitListBranches(_ context.Context, _, _ string) ([]string, error) {
+	return nil, nil
+}
+
 func newTestWorkerPipeline(t *testing.T, store *workerMockStore, rnr *workerMockRunner) *WorkerPipeline {
+	t.Helper()
+	return newTestWorkerPipelineWithOpts(t, store, rnr, nil, "", "")
+}
+
+func newTestWorkerPipelineWithOpts(t *testing.T, store *workerMockStore, rnr *workerMockRunner, git runner.GitOps, gitUser, gitPass string) *WorkerPipeline {
 	t.Helper()
 	claim := NewClaimService(store, ClaimConfig{
 		IDFunc: func() string { return "attempt-1" },
@@ -238,9 +276,15 @@ func newTestWorkerPipeline(t *testing.T, store *workerMockStore, rnr *workerMock
 	provision := NewProvisionService(store, rnr, ProvisionConfig{
 		Image: "test-image:latest",
 	})
-	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	var bootstrap *BootstrapService
+	if git != nil {
+		bootstrap = NewBootstrapServiceWithGit(store, rnr, git, BootstrapConfig{})
+	} else {
+		bootstrap = NewBootstrapService(store, rnr, BootstrapConfig{})
+	}
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, git, CheckpointConfig{})
 
 	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
 		Store:               store,
@@ -251,6 +295,9 @@ func newTestWorkerPipeline(t *testing.T, store *workerMockStore, rnr *workerMock
 		Bootstrap:           bootstrap,
 		AuthMaterialization: authMat,
 		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		GitUsername:         gitUser,
+		GitPassword:         gitPass,
 	})
 	if err != nil {
 		t.Fatalf("NewWorkerPipeline: %v", err)
@@ -288,6 +335,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
 
 	tests := []struct {
 		name    string
@@ -305,6 +353,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 		},
 		{
@@ -318,6 +367,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "store must not be nil",
 		},
@@ -332,6 +382,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "runner must not be nil",
 		},
@@ -346,6 +397,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "workerID must not be empty",
 		},
@@ -360,6 +412,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "claim must not be nil",
 		},
@@ -374,6 +427,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "provision must not be nil",
 		},
@@ -388,6 +442,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           nil,
 				AuthMaterialization: authMat,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "bootstrap must not be nil",
 		},
@@ -402,6 +457,7 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: nil,
 				Preflight:           preflight,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "authMaterialization must not be nil",
 		},
@@ -416,8 +472,24 @@ func TestNewWorkerPipeline(t *testing.T) {
 				Bootstrap:           bootstrap,
 				AuthMaterialization: authMat,
 				Preflight:           nil,
+				Checkpoint:          checkpoint,
 			},
 			wantErr: "preflight must not be nil",
+		},
+		{
+			name: "nil checkpoint service",
+			cfg: WorkerPipelineConfig{
+				Store:               store,
+				Runner:              rnr,
+				WorkerID:            "worker-1",
+				Claim:               claim,
+				Provision:           provision,
+				Bootstrap:           bootstrap,
+				AuthMaterialization: authMat,
+				Preflight:           preflight,
+				Checkpoint:          nil,
+			},
+			wantErr: "checkpoint must not be nil",
 		},
 	}
 
@@ -725,6 +797,8 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
 	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
 
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
 	p, err := NewWorkerPipeline(WorkerPipelineConfig{
 		Store:               store,
 		Runner:              rnr,
@@ -734,6 +808,7 @@ func TestExecuteAttempt_PreflightFailure(t *testing.T) {
 		Bootstrap:           bootstrap,
 		AuthMaterialization: authMat,
 		Preflight:           preflightSvc,
+		Checkpoint:          checkpoint,
 	})
 	if err != nil {
 		t.Fatalf("NewWorkerPipeline: %v", err)
@@ -996,5 +1071,172 @@ func TestHandleSetupFailure_NoSetupCallsAfterFailure(t *testing.T) {
 	// Bootstrap, auth materialization, and preflight use Exec calls, so none should appear.
 	if len(rnr.execCalls) != 0 {
 		t.Errorf("expected 0 exec calls after provision failure, got %d", len(rnr.execCalls))
+	}
+}
+
+// --- US-016: Propagate working branch and git credential fields ---
+
+func TestExecuteAttempt_PropagatesWorkingBranch(t *testing.T) {
+	// Verify that executeAttempt computes WorkingBranch(runID) and passes
+	// it to bootstrap along with AttemptNumber.
+	git := &workerMockGitOps{}
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	pipeline := newTestWorkerPipelineWithOpts(t, store, rnr, git, "", "")
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// Bootstrap with GitOps creates and checks out the working branch on first attempt.
+	wantBranch := WorkingBranch("run-1") // "hal/cloud/run-1"
+	if len(git.branchCreated) != 1 {
+		t.Fatalf("expected 1 branch creation, got %d", len(git.branchCreated))
+	}
+	if git.branchCreated[0] != wantBranch {
+		t.Errorf("branchCreated = %q, want %q", git.branchCreated[0], wantBranch)
+	}
+	if len(git.checkedOut) != 1 {
+		t.Fatalf("expected 1 checkout, got %d", len(git.checkedOut))
+	}
+	if git.checkedOut[0] != wantBranch {
+		t.Errorf("checkedOut = %q, want %q", git.checkedOut[0], wantBranch)
+	}
+}
+
+func TestExecuteAttempt_PropagatesGitCredentials(t *testing.T) {
+	// Verify that git credentials from the pipeline config are propagated
+	// to bootstrap (and will flow to checkpoint in future stories).
+	git := &workerMockGitOps{}
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	pipeline := newTestWorkerPipelineWithOpts(t, store, rnr, git, "x-access-token", "ghp_secret123")
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// Verify pipeline stores credentials.
+	if pipeline.gitUsername != "x-access-token" {
+		t.Errorf("pipeline.gitUsername = %q, want %q", pipeline.gitUsername, "x-access-token")
+	}
+	if pipeline.gitPassword != "ghp_secret123" {
+		t.Errorf("pipeline.gitPassword = %q, want %q", pipeline.gitPassword, "ghp_secret123")
+	}
+}
+
+func TestExecuteAttempt_WorkingBranchDerivedFromRunID(t *testing.T) {
+	// Different run IDs produce different working branches.
+	tests := []struct {
+		runID      string
+		wantBranch string
+	}{
+		{"run-001", "hal/cloud/run-001"},
+		{"run-abc", "hal/cloud/run-abc"},
+		{"my-special-run", "hal/cloud/my-special-run"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.runID, func(t *testing.T) {
+			git := &workerMockGitOps{}
+			store := newWorkerMockStore()
+			run := testClaimedRun()
+			run.ID = tt.runID
+			store.claimedRun = run
+			rnr := newWorkerMockRunner(nil)
+			pipeline := newTestWorkerPipelineWithOpts(t, store, rnr, git, "", "")
+
+			err := pipeline.ProcessOne(context.Background())
+			if err != nil {
+				t.Fatalf("ProcessOne: %v", err)
+			}
+
+			if len(git.branchCreated) != 1 {
+				t.Fatalf("expected 1 branch creation, got %d", len(git.branchCreated))
+			}
+			if git.branchCreated[0] != tt.wantBranch {
+				t.Errorf("branchCreated = %q, want %q", git.branchCreated[0], tt.wantBranch)
+			}
+		})
+	}
+}
+
+func TestExecuteAttempt_PropagatesAttemptNumber(t *testing.T) {
+	// Verify that AttemptNumber from the claimed attempt is passed through to bootstrap.
+	// On first attempt (AttemptNumber=1), bootstrap creates working branch.
+	// On retry (AttemptNumber>1), bootstrap would attempt resume (clone working branch).
+	git := &workerMockGitOps{}
+	store := newWorkerMockStore()
+	run := testClaimedRun()
+	run.AttemptCount = 1 // first claim
+	store.claimedRun = run
+	rnr := newWorkerMockRunner(nil)
+	pipeline := newTestWorkerPipelineWithOpts(t, store, rnr, git, "", "")
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+
+	// First attempt: bootstrap clones base branch and creates working branch.
+	// With GitOps enabled and AttemptNumber=1, we should see branch creation.
+	if len(git.branchCreated) != 1 {
+		t.Fatalf("expected 1 branch creation on first attempt, got %d", len(git.branchCreated))
+	}
+
+	// Simulate second attempt by creating a new run with AttemptCount=2.
+	git2 := &workerMockGitOps{}
+	store2 := newWorkerMockStore()
+	run2 := testClaimedRun()
+	run2.AttemptCount = 2
+	store2.claimedRun = run2
+	rnr2 := newWorkerMockRunner(nil)
+	pipeline2 := newTestWorkerPipelineWithOpts(t, store2, rnr2, git2, "", "")
+
+	err = pipeline2.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessOne (retry): %v", err)
+	}
+
+	// Second attempt (AttemptNumber=2): bootstrap tries resume clone on working branch.
+	// GitClone should be called with the working branch.
+	if len(git2.cloneRequests) != 1 {
+		t.Fatalf("expected 1 clone request on retry, got %d", len(git2.cloneRequests))
+	}
+	wantBranch := WorkingBranch("run-1")
+	if git2.cloneRequests[0].Branch != wantBranch {
+		t.Errorf("clone branch = %q, want %q", git2.cloneRequests[0].Branch, wantBranch)
+	}
+}
+
+func TestExecuteAttempt_CheckpointServiceValidation(t *testing.T) {
+	// Verify that NewWorkerPipeline rejects nil checkpoint.
+	store := newWorkerMockStore()
+	rnr := newWorkerMockRunner(nil)
+	claim := NewClaimService(store, ClaimConfig{IDFunc: func() string { return "a" }})
+	provision := NewProvisionService(store, rnr, ProvisionConfig{Image: "img"})
+	bootstrap := NewBootstrapService(store, rnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, rnr, PreflightConfig{})
+
+	_, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "w",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          nil,
+	})
+	if err == nil {
+		t.Fatal("expected error for nil checkpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "checkpoint must not be nil") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "checkpoint must not be nil")
 	}
 }

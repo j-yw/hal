@@ -36,6 +36,12 @@ type WorkerPipelineConfig struct {
 	AuthMaterialization *AuthMaterializationService
 	// Preflight is the service used to run provider-specific validation (required).
 	Preflight *PreflightService
+	// Checkpoint is the service used to commit and push sandbox changes (required).
+	Checkpoint *CheckpointService
+	// GitUsername is the HTTPS auth username for clone/push (optional).
+	GitUsername string
+	// GitPassword is the HTTPS auth password/token for clone/push (optional).
+	GitPassword string
 }
 
 // WorkerPipeline orchestrates the lifecycle of a single claimed run:
@@ -50,6 +56,9 @@ type WorkerPipeline struct {
 	bootstrap           *BootstrapService
 	authMaterialization *AuthMaterializationService
 	preflight           *PreflightService
+	checkpoint          *CheckpointService
+	gitUsername         string
+	gitPassword         string
 }
 
 // NewWorkerPipeline validates required dependencies and returns a ready
@@ -79,6 +88,9 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 	if cfg.Preflight == nil {
 		return nil, fmt.Errorf("preflight must not be nil")
 	}
+	if cfg.Checkpoint == nil {
+		return nil, fmt.Errorf("checkpoint must not be nil")
+	}
 	return &WorkerPipeline{
 		store:               cfg.Store,
 		runner:              cfg.Runner,
@@ -88,6 +100,9 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		bootstrap:           cfg.Bootstrap,
 		authMaterialization: cfg.AuthMaterialization,
 		preflight:           cfg.Preflight,
+		checkpoint:          cfg.Checkpoint,
+		gitUsername:         cfg.GitUsername,
+		gitPassword:         cfg.GitPassword,
 	}, nil
 }
 
@@ -114,6 +129,9 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 	run := claim.Run
 	attempt := claim.Attempt
 
+	// Compute the deterministic working branch for this run.
+	workingBranch := WorkingBranch(run.ID)
+
 	// Track current run status for status-aware failure transitions.
 	currentStatus := RunStatusClaimed
 
@@ -133,11 +151,15 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 
 	// Step 3: Bootstrap — clone repo, checkout branch, run hal init.
 	if err := p.bootstrap.Bootstrap(ctx, &BootstrapRequest{
-		Repo:      run.Repo,
-		Branch:    run.BaseBranch,
-		SandboxID: provResult.SandboxID,
-		AttemptID: attempt.ID,
-		RunID:     run.ID,
+		Repo:          run.Repo,
+		Branch:        run.BaseBranch,
+		SandboxID:     provResult.SandboxID,
+		AttemptID:     attempt.ID,
+		RunID:         run.ID,
+		WorkingBranch: workingBranch,
+		AttemptNumber: attempt.AttemptNumber,
+		GitUsername:   p.gitUsername,
+		GitPassword:   p.gitPassword,
 	}); err != nil {
 		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "bootstrap", err)
 		return fmt.Errorf("bootstrap failed: %w", err)
