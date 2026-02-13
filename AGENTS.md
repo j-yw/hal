@@ -140,3 +140,12 @@
 - For lifecycle security coverage, seed secret-bearing values (for example in run IDs or log payloads) and assert redaction through shared helpers (`assertLifecycleOutputRedacted`, `assertLifecycleJSONOutputRedacted`) in both human and `--json` command paths.
 - Keep auth JSON contract checks explicit in integration tests by asserting required camelCase keys (`profileId`, `validatedAt`, `revokedAt`) and rejecting snake_case aliases for commands that already migrated.
 - Keep the lifecycle integration invocation centralized in `make test-integration-cloud-lifecycle` and have CI pull-request checks call that target directly to prevent command drift.
+- For worker lifecycle integration suites, use a shared `runWorkerLifecycleAdapterMatrix` helper with adapter fixtures (`postgres`, `turso`) and `adapter/scenario` subtest names; each case should create its own `setupCloudLifecycleIntegrationHarness(t)` and register teardown via `t.Cleanup` to avoid cross-adapter global factory leakage.
+
+## Patterns from hal/cloud-worker-orchestration-pipeline (2026-02-13)
+
+- Keep claim semantics adapter-first: Postgres/Turso `ClaimRun` must atomically set `status='claimed'` and `attempt_count=attempt_count+1`, and ClaimService must use returned `Run.AttemptCount` directly (no additional increment).
+- Construct worker runtime via `WorkerPipelineConfig` -> `NewWorkerPipeline`; all core dependencies (`Store`, `Runner`, `WorkerID`, `Claim`, `Checkpoint`, `Heartbeat`, `Cancel`, `Execution`, `Snapshot`) are required and validated up front.
+- Cleanup/failure handlers should always use `context.WithTimeout(context.Background(), cleanupTimeout)` (not parent ctx) and call `releaseAuthLockBestEffort` so shutdown cancellation and already-released locks do not break terminalization.
+- Snapshot identity must use record-based hashing (`ComputeSandboxBundleHash(records)` -> `ComputeBundleHash`) while bundle payloads keep `path\x00size\x00content` + gzip framing for pull compatibility.
+- For `cmd` worker tests, override package-level factories via `injectWorkerTestFactories(t)` and restore in cleanup; no-work polling is modeled by mock `ClaimRun` returning `ErrNotFound`.

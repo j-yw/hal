@@ -7,6 +7,7 @@
 - Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
 - New cmd integration suites should start with a dedicated `*_integration_test.go` scaffold file that defines a top-level `Test<Feature>Integration` entrypoint; expand scenarios in additional tagged files.
 - For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
+- For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
 - `scanRun` reads all RETURNING columns including `attempt_count`, so adding SET clauses to the UPDATE is automatically reflected in the returned Run struct.
 - Turso store tests are regular unit tests (no build tags) using `modernc.org/sqlite`, while Postgres store tests require `//go:build integration` and `HAL_TEST_POSTGRES_DSN`.
@@ -524,4 +525,19 @@
   - Use one placeholder-driven flow template for workflow matrices so run/auto/review scenarios stay aligned while varying only the submit command.
   - Keep lifecycle integration runners helper-first (`run<Command>` functions) to avoid Cobra root side effects and keep tests deterministic.
   - Validate integration-tagged additions with both default tests and targeted tagged tests (`go test -tags=integration ./cmd -run '^TestWorkerLifecycle'`).
+---
+
+## 2026-02-13 14:04 CST - T-003
+- Added a table-driven worker lifecycle adapter matrix with canonical `postgres` and `turso` fixtures and a shared `runWorkerLifecycleAdapterMatrix` runner.
+- Added per-adapter harness setup helper that applies adapter-specific env wiring and uses per-case cleanup hooks (`t.Cleanup`) for teardown isolation.
+- Added integration tests that verify adapter coverage, isolation/teardown behavior, and `adapter/scenario` subtest naming.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_adapter_matrix_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep adapter coverage in one fixture table and route scenario execution through a single matrix helper so new scenarios automatically run across both adapters.
+  - Use explicit `adapter/scenario` subtest naming to make failures immediately attributable in CI output.
+  - Even when harness setup already registers teardown, adding matrix-level `t.Cleanup(harness.Teardown)` is safe because teardown is idempotent and documents lifecycle ownership clearly.
 ---
