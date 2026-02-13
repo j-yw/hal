@@ -56,15 +56,9 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		}
 	}
 
-	// Record output file modification time before conversion (if exists)
-	var preModTime time.Time
-	if stat, err := os.Stat(outPath); err == nil {
-		preModTime = stat.ModTime()
-	}
-
 	prompt := buildConversionPrompt(halSkill, string(mdContent))
 
-	// Execute prompt
+	// Execute prompt — AI returns JSON text, hal writes the file deterministically.
 	var response string
 	var err2 error
 	if display != nil {
@@ -76,36 +70,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		return fmt.Errorf("engine prompt failed: %w", err2)
 	}
 
-	// Check if Claude wrote the output file directly using tools
-	// (file exists and was modified after we started)
-	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
-		// Claude wrote the file - validate it and return success
-		content, err := os.ReadFile(outPath)
-		if err != nil {
-			return fmt.Errorf("failed to read Claude-written prd.json: %w", err)
-		}
-
-		// Validate JSON structure
-		var prd engine.PRD
-		if err := json.Unmarshal(content, &prd); err != nil {
-			return fmt.Errorf("Claude wrote invalid JSON: %w", err)
-		}
-
-		// Re-marshal with proper formatting to ensure consistent output
-		formatted, err := json.MarshalIndent(prd, "", "  ")
-		if err != nil {
-			return err
-		}
-
-		// Write formatted version back
-		if err := os.WriteFile(outPath, formatted, 0644); err != nil {
-			return fmt.Errorf("failed to write formatted prd.json: %w", err)
-		}
-
-		return nil
-	}
-
-	// Fallback: Parse and validate JSON from text response
+	// Parse and validate JSON from text response
 	prdJSON, err := extractJSONFromResponse(response)
 	if err != nil {
 		return fmt.Errorf("failed to extract JSON from response: %w", err)
@@ -146,7 +111,8 @@ Convert the markdown PRD to JSON format following the skill rules:
 7. Priority based on dependency order
 8. All stories have passes: false and empty notes
 
-Return ONLY the JSON object (no markdown, no explanation). The format must be:
+IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
+File saving is handled by the caller. Return ONLY the JSON object (no markdown, no explanation). The format must be:
 {
   "project": "ProjectName",
   "branchName": "hal/feature-name",

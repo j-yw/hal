@@ -12,9 +12,9 @@ Create actionable PRDs suitable for implementation by developers or AI agents.
 1. Receive a feature description
 2. Ask 3-5 clarifying questions with lettered options (A/B/C/D)
 3. Generate a structured PRD from the answers
-4. Save to `.hal/prd-[feature-name].md`
 
-**Do NOT start implementing. Just create the PRD.**
+**Do NOT start implementing. Do NOT write files. Just return the PRD content.**
+**File saving is handled by the caller (hal plan).**
 
 ## Step 1: Clarifying Questions
 
@@ -67,6 +67,6 @@ Generate with these sections:
 ## Output
 
 - **Format:** Markdown
-- **Location:** `.hal/prd-[feature-name].md`
+- **Return the content only** — do not use tools to write files
 
 For a complete PRD example, see [examples/task-priority-prd.md](examples/task-priority-prd.md).
