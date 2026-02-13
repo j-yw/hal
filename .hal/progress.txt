@@ -5,6 +5,7 @@
 - Use `resolveWorkerSandboxImage(flagImage)` to ensure `ProvisionConfig.Image` is always non-empty — returns `defaultWorkerSandboxImage` (`"ubuntu:22.04"`) when flag is empty.
 - Postgres/Turso ClaimRun uses `FOR UPDATE SKIP LOCKED` subquery pattern for atomic claim — modifications go in the outer UPDATE SET clause.
 - Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
+- New cmd integration suites should start with a dedicated `*_integration_test.go` scaffold file that defines a top-level `Test<Feature>Integration` entrypoint; expand scenarios in additional tagged files.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
 - `scanRun` reads all RETURNING columns including `attempt_count`, so adding SET clauses to the UPDATE is automatically reflected in the returned Run struct.
 - Turso store tests are regular unit tests (no build tags) using `modernc.org/sqlite`, while Postgres store tests require `//go:build integration` and `HAL_TEST_POSTGRES_DSN`.
@@ -424,4 +425,87 @@
   - When adding call logging to mock methods (e.g., `ClaimRun`), existing tests that check call order by absolute position will break — update `wantOrder` slices to include the new log entry.
   - For cmd-level tests that call `runCloudWorker` (which now constructs real infrastructure from factories), inject mock factories via `injectWorkerTestFactories` helper that saves/restores package-level factory vars. The mock store must implement `ClaimRun` returning `ErrNotFound` so the poll loop doesn't panic.
   - `reconcileTrackingStore` and `timeoutTrackingStore` wrap `Store` with callback hooks on entry-point methods (`ListStaleAttempts`, `ListOverdueRuns`) — use this pattern for counting service invocations without modifying service code.
+---
+
+## 2026-02-13 - US-030
+- Verified snapshot collection test suite completeness — all acceptance criteria already satisfied by tests built incrementally across US-006 through US-009
+- Files verified (no changes needed):
+  - `internal/cloud/snapshot_collect_test.go` — 24 tests covering: happy path (run/auto/review workflows), empty workspace, pattern filtering (no matching files), command failure (list error, decode failure), compress/decompress round-trip (multi-file, binary, empty records, empty content, large content), base64 whitespace handling, workspace-relative paths, manifest conversion, bundle hash (deterministic, order-independent, matches manifest hash, not compressed payload hash, empty records, no mutation)
+- **Learnings for future iterations:**
+  - When a PRD splits implementation and testing into separate user stories, the incremental implementation stories (US-006 through US-009) may organically satisfy the testing story's acceptance criteria — verify coverage before writing duplicate tests.
+  - The existing test file has 24 tests organized by feature area (collect, compress, hash) with clear naming that maps directly to acceptance criteria keywords (happy path, empty workspace, pattern filtering, command failure, round-trip).
+  - Pre-existing flaky tests (e.g., `TestPrompt_AllowsNonZeroWithStdoutAndNoStderr` in `internal/engine/claude`) can timeout intermittently — rerun to confirm they are not related to current changes.
+---
+
+## 2026-02-13 - US-031
+- Verified GitHub PR creator test suite completeness — all acceptance criteria already satisfied by tests built incrementally across US-010, US-011, and US-012
+- Files verified (no changes needed):
+  - `internal/cloud/pr_github_test.go` — 14 tests covering: success (URL extraction, /workspace WorkDir), non-zero exit (3 exit codes table-driven, stderr surfacing), runner error (wrapping with %w, errors.Is verification, distinct error text patterns), token sourcing (export from authDir/credentials, ordering before gh, special chars in authDir path), shell escaping (single quotes in title/body, all 5 user-controlled args with quote-heavy values), empty body, parseGHPROutput (5 subtests), buildGHPRCreateCommand (structure + quoting)
+- **Learnings for future iterations:**
+  - When a PRD splits implementation and testing into separate user stories, the incremental implementation stories (US-010 through US-012) may organically satisfy the testing story's acceptance criteria — verify coverage before writing duplicate tests.
+  - The existing test file uses `mockPRRunner` (fake runner with configurable `execResult`/`execErr`) — all tests run without real sandbox infrastructure, satisfying the "fake runner dependencies only" criterion.
+---
+
+## 2026-02-13 - US-032
+- Verified worker orchestration test suite completeness — all acceptance criteria already satisfied by 76 tests built incrementally across US-013 through US-025
+- Files verified (no changes needed):
+  - `internal/cloud/worker_test.go` — 76 tests covering: happy path (successful claim, setup call order, exit 0 succeeded transitions), no work (ErrNoWork mapping, message, IsNoWork), setup failure (provision/bootstrap/auth/preflight from both claimed and running status), non-zero execution (exit 1/2/128, failure reason non_retryable, runner API errors), cancel (cancel-before-renew per tick, cancel short-circuit), lease_lost (routing, no duplicate attempt terminalization, cleanup runs, after successful heartbeats), profile_revoked (routing, no duplicate attempt terminalization, run transitions to failed, after successful heartbeats), PR skip-for-run (WorkflowKindRun never invokes PRCreate), background context cleanup
+- **Learnings for future iterations:**
+  - Same pattern as US-030/US-031 — incremental implementation stories organically satisfy the dedicated testing story's acceptance criteria when tests are co-developed with implementation.
+---
+
+## 2026-02-13 - US-033
+- Verified cloud worker command test suite completeness — all acceptance criteria already satisfied by 24 tests built incrementally across US-026, US-027, US-028, and US-029
+- Files verified (no changes needed):
+  - `cmd/cloud_worker_test.go` — 24 tests covering: flag parsing/default values (5 flags with subtests), factory overridability (store + runner), dotenv bootstrap (missing file ignored, parse error warns, loaded before startup), worker ID required, runner factory validates config, Cobra delegation, sandbox image resolution (3 subtests + never-empty + constant), startup/shutdown with injected dependencies (store/runner factory errors, shutdown output, provision image never empty)
+- **Learnings for future iterations:**
+  - Same pattern as US-030/US-031/US-032 — tests co-developed with implementation stories already cover the dedicated testing story's acceptance criteria.
+---
+
+## 2026-02-13 - US-034
+- Verified claim adapter regression tests for attempt_count — already implemented in US-001 (Postgres) and US-002 (Turso)
+- Files verified (no changes needed):
+  - `internal/cloud/postgres/store_test.go` — `TestClaimIncrementsAttemptCount` (single claim → AttemptCount=1), `TestClaimNoIncrementForIneligible` (canceled run stays AttemptCount=0)
+  - `internal/cloud/turso/store_test.go` — Same two tests with identical assertion structure
+- Turso tests pass as unit tests; Postgres tests compile with `-tags=integration` (require `HAL_TEST_POSTGRES_DSN` for execution)
+---
+
+## 2026-02-13 - US-035
+- Verified claim service regression tests for attempt numbering — already implemented in US-003
+- Files verified (no changes needed):
+  - `internal/cloud/claim_test.go` — `TestClaimAttemptNumberAlignment` with subtests: "first_claim_returns_attempt_number_1", "second_claim_after_requeue_returns_attempt_number_2"; explicit `Attempt.AttemptNumber == Run.AttemptCount` assertions at 3 call sites
+---
+
+## 2026-02-13 - US-036
+- Verified cloud help and command tree contract tests — already updated in US-026 when worker command was registered
+- Files verified (no changes needed):
+  - `cmd/cloud_help_test.go` — 3 test functions include "worker" in supported commands lists; `TestCloudHelp_CommandTreeSnapshot` includes `"worker": "Run the cloud worker loop"`
+  - `cmd/cloud_removed_test.go` — `TestCloudCommandTree_SnapshotSupportedCommands` includes "worker" in supported commands
+- All 7 cloud help/command tree tests pass with no unrelated command or alias changes beyond worker wiring
+---
+
+## 2026-02-13 - US-037
+- Verified lifecycle JSON output contract tests remain stable — integration tests enforce camelCase JSON keys via `cloudLifecycleJSONKey*` constants and format validation
+- Files verified (no changes needed):
+  - `cmd/cloud_lifecycle_fixtures_integration_test.go` — `RequiredJSONKeys` assertions for all lifecycle checkpoints (run, status, logs, pull, cancel), camelCase format validation at line 332 rejects any snake_case keys, compiles cleanly with `-tags=integration`
+- Worker command addition does not introduce any new JSON output contract — the worker is a long-running loop, not a user-facing command with `--json` output
+---
+
+## 2026-02-13 - US-038
+- Verified redaction behavior preserved in human and JSON outputs — integration tests enforce secret-bearing value redaction across all cloud command output paths
+- Files verified (no changes needed):
+  - `cmd/cloud_lifecycle_security_scenario_integration_test.go` — `TestCloudLifecycleSecurity_WorkflowCommandsRedactSecrets` (human + JSON for run/auto/review), `TestCloudLifecycleSecurity_CloudCommandsRedactSecrets` (human + JSON for status/logs/pull/cancel), `TestCloudLifecycleSecurity_AuthStatusRedactsSecretProfileID`
+  - `cmd/cloud_lifecycle_security_assertions_integration_test.go` — `assertLifecycleOutputRedacted` and `assertLifecycleJSONOutputRedacted` helpers
+- Worker command does not produce user-facing output containing secrets — existing redaction coverage is sufficient
+---
+
+## 2026-02-13 13:52 CST - T-001
+- Implemented the worker lifecycle integration test scaffold under `cmd/` with integration build tags and a top-level `TestWorkerLifecycleIntegration` entrypoint.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_integration_test.go`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Start new cmd integration suites with a dedicated tagged scaffold test file and a single top-level entrypoint test so later scenario files can extend the suite incrementally.
+  - Validate both paths after scaffolding: `go test ./...` (suite excluded) and `go test -tags=integration ./cmd -run TestWorkerLifecycleIntegration` (suite included).
 ---

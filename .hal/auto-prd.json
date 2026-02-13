@@ -1,0 +1,189 @@
+{
+  "project": "hal",
+  "branchName": "compound/worker-lifecycle-integration-scenarios",
+  "description": "Add cross-adapter worker lifecycle integration coverage for run/auto/review with deterministic success and failure-path assertions, stable JSON contracts, and canonical CI execution.",
+  "userStories": [
+    {
+      "id": "T-001",
+      "title": "Scaffold integration-tagged worker lifecycle suite",
+      "description": "As a maintainer, I need a dedicated integration-only test suite under cmd/ so worker lifecycle coverage is isolated from default unit tests.",
+      "acceptanceCriteria": [
+        "A new test file under cmd/ includes //go:build integration for the worker lifecycle suite.",
+        "The suite defines a top-level TestWorkerLifecycleIntegration entrypoint.",
+        "The suite is excluded from default test runs without -tags=integration.",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Define shared lifecycle flow fixtures and placeholder substitution",
+      "description": "As a maintainer, I need one shared lifecycle command-flow model so run/auto/review scenarios stay consistent and easy to extend.",
+      "acceptanceCriteria": [
+        "A single shared fixture table defines lifecycle steps reused across workflow scenarios.",
+        "Flow arguments support deterministic placeholder substitution for values such as \u003crun-id\u003e.",
+        "Scenario runners dispatch through run\u003cCommand\u003e helper functions instead of Cobra root execution.",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Add table-driven adapter matrix runner",
+      "description": "As a maintainer, I need one adapter matrix runner so identical scenario definitions execute against both Postgres and Turso.",
+      "acceptanceCriteria": [
+        "A table-driven adapter matrix includes Postgres and Turso cases.",
+        "Each adapter case performs isolated setup and teardown with cleanup hooks.",
+        "Subtest names include both adapter and scenario identifiers.",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Instrument harness for transition and terminalization tracking",
+      "description": "As a maintainer, I need deterministic harness instrumentation so tests can assert exact run and attempt lifecycle behavior.",
+      "acceptanceCriteria": [
+        "Harness store records per-run status transitions in an assertion-friendly structure.",
+        "Harness store records attempt terminalization calls with queryable counts.",
+        "Harness store exposes persisted snapshot references for downstream assertions.",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Add harness helpers for event seeding and factory restoration",
+      "description": "As a maintainer, I need reusable harness helpers so logs/snapshot scenarios can seed state and package-level overrides cannot leak between tests.",
+      "acceptanceCriteria": [
+        "A helper seeds timeline events into the harness store for logs assertions.",
+        "A helper snapshots and restores all overridden package-level factories.",
+        "Factory restoration is guaranteed through t.Cleanup even when tests fail.",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Implement success scenarios for run, auto, and review",
+      "description": "As a maintainer, I need success-path integration scenarios across workflow kinds so the core worker lifecycle is validated end-to-end.",
+      "acceptanceCriteria": [
+        "Success scenarios run for workflow kinds run, auto, and review using shared fixtures.",
+        "Each scenario asserts terminal run status is success and final attempt status is terminal success.",
+        "Each scenario asserts persisted snapshot reference fields are present and queryable.",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Verify pull restores workflow artifacts on success paths",
+      "description": "As a maintainer, I need explicit pull restoration checks so artifact recovery behavior is proven for every workflow kind.",
+      "acceptanceCriteria": [
+        "Expected artifact groups are derived via cloud.WorkflowArtifactGroups(workflowKind).",
+        "Scenario setup deletes target artifact files before pull execution.",
+        "After pull, expected artifact files are restored and readable.",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Implement deterministic cancel scenarios",
+      "description": "As a maintainer, I need cancel-path scenarios so cancel intent and canceled terminalization behavior stay regression-safe.",
+      "acceptanceCriteria": [
+        "Cancel scenarios persist cancel intent and end in terminal canceled run state.",
+        "Attempt terminalization count for each cancel scenario is exactly one.",
+        "Post-cancel status assertions confirm canceled outcome from persisted run state.",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "title": "Implement lease_lost lifecycle scenarios",
+      "description": "As a maintainer, I need lease-loss scenarios so interrupted execution paths preserve terminalization invariants.",
+      "acceptanceCriteria": [
+        "Lease-loss scenarios assert terminal run status and reason match lease_lost constants.",
+        "Attempt terminalization count for lease-loss scenarios is exactly one.",
+        "Persisted run and attempt records match expected terminal lifecycle fields.",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "title": "Implement profile_revoked scenarios with cleanup tolerance",
+      "description": "As a maintainer, I need profile-revoked scenarios so auth-revocation terminalization remains correct even when cleanup lock release is already absent.",
+      "acceptanceCriteria": [
+        "Profile-revoked scenarios assert terminal run status and reason match profile_revoked constants.",
+        "Scenario setup forces auth-lock release to return ErrNotFound and terminalization still succeeds.",
+        "Attempt terminalization count for profile-revoked scenarios is exactly one.",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-011",
+      "title": "Add shared JSON contract fixtures and decode helpers",
+      "description": "As a maintainer, I need shared JSON contract fixtures so status/logs/pull output checks remain stable and reusable.",
+      "acceptanceCriteria": [
+        "Shared required-key fixtures are defined for status, logs, and pull JSON payloads.",
+        "A shared helper decodes lifecycle --json output for assertion reuse.",
+        "Required key fixtures use camelCase contract names.",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-012",
+      "title": "Apply JSON contract assertions across lifecycle scenarios",
+      "description": "As a maintainer, I need scenario-level JSON assertions so adapter and workflow combinations enforce the same output contract.",
+      "acceptanceCriteria": [
+        "Status/logs/pull scenarios using --json assert all required camelCase keys.",
+        "Assertions fail when snake_case aliases appear for migrated command contracts.",
+        "JSON assertion helpers are reused across adapters and workflow kinds.",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-013",
+      "title": "Add canonical make target and CI/doc invocation",
+      "description": "As a maintainer, I need one canonical invocation path so local and CI execution of the worker lifecycle suite stays consistent.",
+      "acceptanceCriteria": [
+        "Makefile includes a dedicated target that runs only the worker lifecycle integration suite with integration tags.",
+        "CI workflow or repository docs invoke the new target as the canonical command.",
+        "Existing cloud lifecycle integration target remains available and unchanged.",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
