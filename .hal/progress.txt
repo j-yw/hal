@@ -6,6 +6,7 @@
 - Postgres/Turso ClaimRun uses `FOR UPDATE SKIP LOCKED` subquery pattern for atomic claim — modifications go in the outer UPDATE SET clause.
 - Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
 - New cmd integration suites should start with a dedicated `*_integration_test.go` scaffold file that defines a top-level `Test<Feature>Integration` entrypoint; expand scenarios in additional tagged files.
+- For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
 - `scanRun` reads all RETURNING columns including `attempt_count`, so adding SET clauses to the UPDATE is automatically reflected in the returned Run struct.
 - Turso store tests are regular unit tests (no build tags) using `modernc.org/sqlite`, while Postgres store tests require `//go:build integration` and `HAL_TEST_POSTGRES_DSN`.
@@ -508,4 +509,19 @@
 - **Learnings for future iterations:**
   - Start new cmd integration suites with a dedicated tagged scaffold test file and a single top-level entrypoint test so later scenario files can extend the suite incrementally.
   - Validate both paths after scaffolding: `go test ./...` (suite excluded) and `go test -tags=integration ./cmd -run TestWorkerLifecycleIntegration` (suite included).
+---
+
+## 2026-02-13 14:02 CST - T-002
+- Defined shared worker lifecycle flow fixtures with one canonical step template (`setup`, `submit`, `status`, `logs`, `pull`, `cancel`) reused across run/auto/review workflows.
+- Added deterministic placeholder substitution for `<workflow-command>` and `<run-id>` via `workerLifecycleResolveArgs` and `workerLifecycleFlowForWorkflow`.
+- Added a worker lifecycle scenario runner that dispatches directly through testable helper functions (`runHalRunCloud`, `runHalAutoCloud`, `runHalReviewCloud`, `runCloudSetup`, `runCloudStatus`, `runCloudLogs`, `runCloudPull`, `runCloudCancel`) instead of Cobra root execution.
+- Added integration tests covering fixture reuse, placeholder substitution (including non-mutation), helper-based dispatch across run/auto/review, and run-id requirement enforcement.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_flow_integration_test.go`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use one placeholder-driven flow template for workflow matrices so run/auto/review scenarios stay aligned while varying only the submit command.
+  - Keep lifecycle integration runners helper-first (`run<Command>` functions) to avoid Cobra root side effects and keep tests deterministic.
+  - Validate integration-tagged additions with both default tests and targeted tagged tests (`go test -tags=integration ./cmd -run '^TestWorkerLifecycle'`).
 ---
