@@ -74,7 +74,7 @@ func validCheckpointRequest() *CheckpointRequest {
 		WorkingBranch: "hal/cloud/run-001",
 		RepoPath:      "/workspace",
 		Message:       "checkpoint after attempt 1",
-		GitUsername:    "x-access-token",
+		GitUsername:   "x-access-token",
 		GitPassword:   "ghp_test123",
 	}
 }

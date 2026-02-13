@@ -268,4 +268,3 @@ func (s *AuthMaterializationService) emitEvent(ctx context.Context, runID, attem
 	}
 	_ = s.store.InsertEvent(ctx, event)
 }
-
