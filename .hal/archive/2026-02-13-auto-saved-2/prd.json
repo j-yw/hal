@@ -1,0 +1,167 @@
+{
+  "project": "Cloud Worker Orchestration Pipeline with Final Artifacts, Optional PR Creation, and Worker CLI Wiring",
+  "branchName": "hal/cloud-worker-orchestration-pipeline-final-artifacts-pr-creation-worker-cli-wiring",
+  "description": "Implement a deterministic cloud worker orchestration pipeline that claims runs, executes setup and workflow logic, persists final workflow-specific artifacts, optionally creates PRs for auto/review, and finalizes run/attempt states without regressing existing CLI help, JSON contracts, or redaction guarantees.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Fix atomic claim attempt-count semantics in persistence adapters",
+      "description": "As a platform engineer, I want ClaimRun to atomically increment attempt_count and enforce eligibility filters so attempt numbering is deterministic under worker contention.",
+      "acceptanceCriteria": [
+        "Postgres ClaimRun atomically selects an eligible run, sets status to claimed, and increments attempt_count in a single statement.",
+        "Turso ClaimRun provides equivalent atomic select/claim/increment behavior.",
+        "Claim selection excludes runs where cancel_requested=true or attempt_count has reached max_attempts.",
+        "Store contract tests verify attempt_count increments exactly once on a successful claim and does not increment when no run is claimed.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add worker orchestration composition root",
+      "description": "As a maintainer, I want a dedicated worker orchestration package with injected dependencies so the run loop is testable and isolated from Cobra wiring.",
+      "acceptanceCriteria": [
+        "A worker orchestration package exists with explicit configuration and dependency injection boundaries.",
+        "The package exposes a run-loop API that polls for claims and dispatches single-attempt execution.",
+        "Context cancellation stops the loop gracefully without leaving partial in-flight state transitions.",
+        "Unit tests cover idle polling, one successful dispatch, and graceful shutdown behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Orchestrate deterministic setup pipeline for claimed attempts",
+      "description": "As a worker, I want setup to run in a fixed sequence so every claimed attempt starts from a valid sandbox and auth state.",
+      "acceptanceCriteria": [
+        "Setup executes in strict order: provision sandbox, bootstrap repo/init, materialize auth, then run preflight.",
+        "Transition from claimed to running uses valid transition checks with conflict-safe update behavior.",
+        "Setup failures emit failure events and set deterministic run/attempt outcomes.",
+        "Retry evaluation is invoked for setup failures using existing retry classification logic.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Execute workflows with heartbeat renewals and cancel propagation",
+      "description": "As a worker, I want long-running workflow execution to renew leases and honor cancel intent so active attempts are safely controlled.",
+      "acceptanceCriteria": [
+        "Workflow dispatch maps run, auto, and review to the correct execution command paths.",
+        "Heartbeat renewal and cancel checks run at a configurable interval during active execution.",
+        "When cancel_requested is observed, the active attempt transitions to canceled and the run transitions to canceled.",
+        "Lease renewal failure, lease_lost, and profile_revoked conditions terminate attempts with the expected error-code semantics.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Collect final artifacts by workflow kind and persist final snapshots",
+      "description": "As a cloud user, I want final snapshots to contain the correct artifact groups for each workflow so cloud pull restores expected files.",
+      "acceptanceCriteria": [
+        "Final artifact collection uses workflow-specific groups: run=state and auto/review=state+reports.",
+        "Artifact collection enforces allowlist and path-safety protections, including symlink protections.",
+        "Final bundle manifests use ComputeBundleHash and are persisted with SnapshotKindFinal.",
+        "Run snapshot references are updated to final snapshot/version while preserving original input snapshot reference.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Add optional idempotent GitHub PR creation for auto/review",
+      "description": "As an operator, I want optional PR creation for auto/review workflows so merge-ready changes can be surfaced automatically without affecting run workflows.",
+      "acceptanceCriteria": [
+        "PR creation executes only for auto/review workflows when enabled in worker configuration.",
+        "Run workflows never trigger PR creation side effects.",
+        "PR creation uses existing idempotency semantics so retries do not create duplicate PRs.",
+        "PR side-effect events are emitted through existing redaction-aware event paths.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Deterministic finalization and cleanup across terminal outcomes",
+      "description": "As a platform engineer, I want terminal transitions and cleanup to be deterministic so runs cannot end in ambiguous states.",
+      "acceptanceCriteria": [
+        "Success path finalizes with attempt=succeeded and run=succeeded after final snapshot handling.",
+        "Failure paths finalize retryable and non-retryable outcomes consistent with existing failure classification.",
+        "lease_lost and profile_revoked paths finalize with expected error codes and lock-release behavior.",
+        "Sandbox teardown and auth-lock release are attempted on all terminal paths with best-effort semantics.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Add orchestration scenario tests for happy path and required failures",
+      "description": "As a maintainer, I want scenario-driven tests so worker state-machine regressions are caught before merge.",
+      "acceptanceCriteria": [
+        "Table-driven orchestration scenarios cover happy path, cancel, lease_lost, profile_revoked, and setup failure.",
+        "Each scenario asserts final run status, final attempt status, and required event emissions.",
+        "Scenarios verify final snapshot presence or absence according to outcome.",
+        "Tests verify ComputeBundleHash remains deterministic and does not mutate input data.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Wire a worker CLI entrypoint with testable command handlers",
+      "description": "As an operator, I want a CLI command to run the worker loop so cloud workers can be started and configured explicitly.",
+      "acceptanceCriteria": [
+        "A worker command surface is added with flags for worker identity and loop intervals.",
+        "The Cobra handler delegates to a testable run-command helper with injectable factories and writers.",
+        "The command supports bounded/single-run mode for deterministic test execution.",
+        "Unit tests cover flag validation, startup errors, and successful execution.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Preserve existing command/help output and cloud JSON/redaction contracts",
+      "description": "As an automation consumer, I want existing CLI help and JSON outputs to remain stable while worker support is added.",
+      "acceptanceCriteria": [
+        "Help text for existing cloud commands (setup, run, auto, review, status, logs, pull, cancel, auth) remains valid with no regressions.",
+        "Existing cloud JSON response key contracts for already-supported commands remain unchanged.",
+        "Worker and lifecycle outputs continue to pass through redaction chokepoints with no secret leakage in human or JSON output.",
+        "Regression tests assert help-surface compatibility and redaction/JSON contract stability.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

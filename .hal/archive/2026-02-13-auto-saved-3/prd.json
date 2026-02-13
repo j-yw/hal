@@ -1,0 +1,246 @@
+{
+  "project": "Cloud Worker Orchestration Pipeline (Gap-Free Alignment)",
+  "branchName": "hal/cloud-worker-orchestration-pipeline",
+  "description": "Deliver a deterministic cloud worker execution pipeline for run, auto, and review workflows with atomic claim semantics, workflow-aware final snapshots, optional GitHub PR creation, worker CLI wiring, and stable cloud command contracts.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Fix atomic claim attempt counting in store adapters",
+      "description": "As a platform maintainer, I want ClaimRun to atomically claim runs and increment attempt_count so that retry budgeting and attempt numbering remain deterministic.",
+      "acceptanceCriteria": [
+        "internal/cloud/postgres/store.go ClaimRun updates eligible runs by setting status='claimed' and attempt_count=attempt_count+1 atomically.",
+        "internal/cloud/turso/store.go ClaimRun performs equivalent atomic status and attempt_count updates.",
+        "Claim eligibility remains restricted to status='queued' and cancel_requested=false.",
+        "Store adapter tests verify attempt_count increments exactly once per successful claim and does not increment on failed claim attempts.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add shared shell escaping helper for cloud command construction",
+      "description": "As a maintainer, I want a single shell escaping helper so that cloud command construction is safe and consistent across services.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/shell.go with a shared single-quote shell escaping helper.",
+        "auth_materialization.go uses the shared helper when building credential write commands.",
+        "PR command construction uses the shared helper for all user-controlled segments (title, body, head, base, repo).",
+        "Escaping behavior tests cover the shared helper and updated callsites.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Implement workflow-aware sandbox bundle collection",
+      "description": "As a cloud user, I want final artifact collection to be workflow-aware so that pull and restore include the correct files.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/snapshot_collect.go with CollectSandboxBundle(...) that scans files under /workspace/.hal.",
+        "Collected file paths are normalized to workspace-relative paths.",
+        "Collection filtering uses WorkflowDefaultArtifactPatterns(workflowKind) rather than input bundle allowlists.",
+        "File content capture uses a base64 command path that avoids wrapped output corruption and returns explicit errors on command failure.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Implement bundle compression and hash semantics for snapshots",
+      "description": "As a platform engineer, I want deterministic snapshot compression and hashing so that bundle storage and restore stay compatible.",
+      "acceptanceCriteria": [
+        "snapshot_collect.go provides CompressBundle(...) using path\\x00size\\x00content framing plus gzip compression.",
+        "Compressed output is compatible with existing cmd/cloud.go decompression behavior.",
+        "Snapshot SHA is computed as ComputeBundleHash(records) and not as a hash of compressed bytes.",
+        "Round-trip tests assert decompress compatibility and deterministic hash behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Add worker-side GitHub PR creator",
+      "description": "As an operator, I want worker-side PR creation to use sandbox credentials so that auto and review workflows can open PRs safely.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/pr_github.go with GitHubPRCreator(r runner.Runner, sandboxID, authDir string) PRCreator.",
+        "Creator executes gh pr create in /workspace and returns parsed PR URL/reference on success.",
+        "Command exports GITHUB_TOKEN from ${authDir}/credentials during sandbox execution.",
+        "title/body/head/base/repo arguments are escaped using the shared shell helper.",
+        "Runner errors and non-zero exits are returned as wrapped actionable errors.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Create WorkerPipeline core types and no-work behavior",
+      "description": "As a maintainer, I want a testable WorkerPipeline core so that orchestration logic is independent from Cobra handlers.",
+      "acceptanceCriteria": [
+        "Add internal/cloud/worker.go defining WorkerPipelineConfig, WorkerPipeline, NewWorkerPipeline, and ErrNoWork.",
+        "ProcessOne(ctx) claims one run and returns ErrNoWork when the store returns ErrNotFound.",
+        "Unit tests cover no-work and successful claim flow for ProcessOne.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Implement deterministic worker setup orchestration",
+      "description": "As a maintainer, I want executeAttempt setup ordering to be deterministic so that run lifecycle behavior is predictable.",
+      "acceptanceCriteria": [
+        "executeAttempt transitions run claimed-\u003erunning before provisioning starts.",
+        "Setup order is provision -\u003e bootstrap -\u003e auth materialization -\u003e preflight.",
+        "Failure helper accepts fromRunStatus and TransitionRun uses that provided source status instead of a hardcoded value.",
+        "workingBranch := WorkingBranch(runID) is computed and passed into bootstrap/checkpoint inputs with expected git credential fields.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Route heartbeat, cancel, and revocation across full attempt lifecycle",
+      "description": "As a worker operator, I want heartbeat and cancellation handling active across setup and execution so that long-running attempts remain consistent.",
+      "acceptanceCriteria": [
+        "Heartbeat loop starts after run enters running and continues through setup and execution completion.",
+        "Each heartbeat tick executes cancel.CheckAndCancel before heartbeat.Renew.",
+        "Cancel reason is tracked with atomic-safe state and routed deterministically to canceled, lease_lost, profile_revoked, or unknown.",
+        "lease_lost routing avoids duplicate terminal transitions while still allowing cleanup and retry evaluation.",
+        "profile_revoked routing finalizes run state consistently after revocation handling.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Implement deterministic terminal cleanup and state transitions",
+      "description": "As a platform engineer, I want terminal cleanup to be deterministic so that run, attempt, and lock states remain consistent during shutdown.",
+      "acceptanceCriteria": [
+        "Cleanup uses background timeout contexts when parent context is canceled.",
+        "Exit code 0 produces exactly one attempt-succeeded transition and one run-succeeded transition.",
+        "Non-zero exit produces exactly one attempt-failed(non_retryable) transition and one run-failed transition.",
+        "cancel, lease_lost, and profile_revoked paths avoid duplicate attempt terminalization.",
+        "Auth lock release treats ErrNotFound as non-fatal when lock was already released.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Persist final snapshots and gate PR side effects by workflow",
+      "description": "As an operator, I want final snapshot persistence and PR side effects to be workflow-aware so that terminalization is correct for run, auto, and review.",
+      "acceptanceCriteria": [
+        "Post-execution checkpoint/writeback steps run best-effort and do not block terminalization.",
+        "Final snapshot persistence stores collected records, compressed payload, and ComputeBundleHash(records) SHA.",
+        "PR creation is attempted only when workflowKind is auto or review and PREnabled is true.",
+        "workflowKind run never invokes PR creation.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Add hal cloud worker command and injectable factory wiring",
+      "description": "As an operator, I want a dedicated cloud worker command so that queue processing can run with configurable runtime dependencies.",
+      "acceptanceCriteria": [
+        "Add cmd/cloud_worker.go registering hal cloud worker under the cloud command.",
+        "Command exposes --worker-id, --poll-interval, --reconcile-interval, --timeout-interval, and --sandbox-image flags.",
+        "Package-level store and runner factories use if-nil defaults and remain overrideable in tests.",
+        "Default runner factory validates deploy config and creates a Daytona-backed implementation satisfying Runner, SessionExec, and GitOps interfaces.",
+        "Worker wiring passes ProvisionConfig.Image from --sandbox-image or a non-empty default.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Implement worker loop scheduling and graceful shutdown",
+      "description": "As an operator, I want the worker command loop to coordinate polling and maintenance tickers so that runtime behavior is predictable and safe.",
+      "acceptanceCriteria": [
+        "Worker run helper schedules ProcessOne, reconciler, and timeout services using ticker-based loops.",
+        "Main loop exits cleanly on context cancellation without leaked goroutines.",
+        "Startup and shutdown behavior is deterministic in tests with injected dependencies.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Add tests for snapshot collection, PR creator, and claim semantics",
+      "description": "As a maintainer, I want targeted tests for snapshot and PR helpers so that regressions in artifact and PR behavior are caught early.",
+      "acceptanceCriteria": [
+        "internal/cloud/snapshot_collect_test.go covers happy path, empty workspace, filtering behavior, command failures, and compress/decompress hash assertions.",
+        "internal/cloud/pr_github_test.go covers success, non-zero exit, runner error, escaping behavior, and token sourcing.",
+        "Claim/store tests are updated to validate atomic attempt_count increments for Postgres and Turso.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Add tests for worker orchestration and worker CLI",
+      "description": "As a maintainer, I want high-confidence worker orchestration and CLI tests so that failure routing and command behavior remain stable.",
+      "acceptanceCriteria": [
+        "internal/cloud/worker_test.go covers happy path, no work, setup failure, non-zero execution, cancel, lease_lost, profile_revoked, PR skip-for-run, and no duplicate attempt transitions.",
+        "cmd/cloud_worker_test.go covers flag/default wiring and startup/shutdown command behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Keep cloud output, JSON contracts, and redaction behavior stable",
+      "description": "As an automation consumer, I want existing cloud command contracts to remain stable so that adding worker support does not break integrations.",
+      "acceptanceCriteria": [
+        "Existing status/logs/pull/cancel/auth output contracts remain unchanged for human-readable output.",
+        "Existing cloud lifecycle JSON contract tests remain green with canonical camelCase keys.",
+        "Redaction assertions remain green in both human and --json paths.",
+        "Help/command tree tests only change for intentional worker subcommand addition.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

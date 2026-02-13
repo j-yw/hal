@@ -1,0 +1,28 @@
+{
+  "step": "pr",
+  "baseBranch": "hal/cloud-worker-orchestration-pipeline",
+  "branchName": "compound/worker-lifecycle-integration-scenarios",
+  "reportPath": ".hal/reports/review-2026-02-13-104059-000.md",
+  "prdPath": ".hal/prd-worker-lifecycle-integration-scenarios.md",
+  "startedAt": "2026-02-13T13:47:43.065747+08:00",
+  "loopIterations": 13,
+  "loopComplete": true,
+  "loopMaxIterations": 25,
+  "analysis": {
+    "priorityItem": "Build cross-adapter worker lifecycle integration scenarios",
+    "description": "Implement an integration test suite that runs the full cloud worker lifecycle for run/auto/review workflows against both Postgres and Turso backends. Cover successful execution plus cancel, lease_lost, and profile_revoked paths, and assert deterministic run/attempt transitions, cleanup behavior, and artifact restoration.",
+    "rationale": "The worker orchestration pipeline is newly shipped and has the highest regression risk because it combines complex state transitions with adapter-specific claim semantics. End-to-end cross-adapter lifecycle coverage is high impact, directly recommended in the report, and well-defined enough to implement immediately using existing integration harness patterns.",
+    "acceptanceCriteria": [
+      "A new integration-tagged worker lifecycle suite exists and runs against both Postgres and Turso store configurations.",
+      "The suite executes shared lifecycle scenarios for workflow kinds run, auto, and review using one common command/runner flow definition.",
+      "Successful scenarios verify terminal success state, persisted snapshot references, and that pull restores expected artifacts.",
+      "Cancel scenarios verify cancel intent transitions runs to canceled deterministically and attempt terminalization occurs exactly once.",
+      "Lease-loss scenarios verify expected terminal status/reason and no duplicate attempt terminalization is recorded.",
+      "Profile-revoked scenarios verify expected terminal status/reason and cleanup tolerates already-released auth locks (ErrNotFound) without failing terminalization.",
+      "Status/logs/pull JSON outputs in these scenarios are asserted for required camelCase contract keys.",
+      "A dedicated make target executes this integration suite and is used by CI or documented as the canonical invocation."
+    ],
+    "estimatedTasks": 10,
+    "branchName": "worker-lifecycle-integration-scenarios"
+  }
+}

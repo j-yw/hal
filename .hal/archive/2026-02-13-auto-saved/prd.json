@@ -1,0 +1,190 @@
+{
+  "project": "Replace TypeScript Daytona Runner with Daytona Go SDK",
+  "branchName": "hal/daytona-go-sdk-hard-cut",
+  "description": "Replace the Node/TypeScript daytona-runner HTTP service with a single Go implementation using the Daytona Go SDK while preserving the existing runner interface and behavior semantics.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Migrate cloud runner environment schema to Daytona SDK variables",
+      "description": "As a backend/platform engineer, I want runtime config to use Daytona SDK environment variables so that workers can connect directly without legacy HTTP runner settings.",
+      "acceptanceCriteria": [
+        "internal/cloud/deploy/config.go removes HAL_CLOUD_RUNNER_URL and HAL_CLOUD_RUNNER_SERVICE_TOKEN fields, constants, and env parsing.",
+        "Config adds DAYTONA_API_KEY (required), DAYTONA_API_URL (optional), DAYTONA_SERVER_URL (legacy alias fallback), and DAYTONA_TARGET (optional).",
+        "LoadConfig prefers DAYTONA_API_URL and falls back to DAYTONA_SERVER_URL only when DAYTONA_API_URL is unset.",
+        "ValidateStore remains DB-only.",
+        "Validate requires valid DB config and non-empty DAYTONA_API_KEY.",
+        "internal/cloud/deploy/config_test.go includes passing and failing cases for the new env schema and URL fallback precedence.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add Daytona Go SDK dependency and SDK client constructor",
+      "description": "As a backend/platform engineer, I want a dedicated SDK runner client constructor so that runner operations are initialized consistently with required Daytona configuration.",
+      "acceptanceCriteria": [
+        "go.mod includes github.com/daytonaio/daytona/libs/sdk-go v0.141.0.",
+        "internal/cloud/runner/sdk_client.go defines SDK client config fields APIKey, APIURL, and Target.",
+        "Constructor calls daytona.NewClientWithConfig(types.DaytonaConfig{APIKey, APIUrl, Target}).",
+        "Constructor validates APIKey as required and wraps constructor failures using %w.",
+        "internal/cloud/runner/sdk_client_test.go verifies constructor validation and wrapped error behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Implement CreateSandbox and DestroySandbox via SDK",
+      "description": "As a backend/platform engineer, I want sandbox lifecycle methods implemented via the SDK so that provisioning and teardown no longer depend on HTTP runner endpoints.",
+      "acceptanceCriteria": [
+        "CreateSandbox returns an error when request is nil or request.Image is empty.",
+        "CreateSandbox calls client.Create(ctx, types.ImageParams{Image:req.Image, SandboxBaseParams:{EnvVars:req.EnvVars}}).",
+        "DestroySandbox retrieves sandbox via client.Get and deletes it with sandbox.Delete(ctx).",
+        "Validation and SDK call failures are wrapped with %w and operation-specific error prefixes.",
+        "internal/cloud/runner/sdk_client_test.go includes success and failure tests for CreateSandbox and DestroySandbox.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Implement Exec command execution parity via SDK",
+      "description": "As a backend/platform engineer, I want command execution to preserve existing runner semantics while using Daytona SDK process APIs.",
+      "acceptanceCriteria": [
+        "Exec validates required inputs, including non-nil request and required execution fields.",
+        "Exec retrieves sandbox with client.Get before execution.",
+        "Exec calls sandbox.Process.ExecuteCommand.",
+        "Exec applies options.WithCwd(req.WorkDir) when req.WorkDir is set.",
+        "Exec applies options.WithExecuteTimeout(req.Timeout) when req.Timeout is set.",
+        "Execution and SDK failures are wrapped with %w and stable operation-specific messages.",
+        "internal/cloud/runner/sdk_client_test.go verifies validation paths, error paths, and option application.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Implement StreamLogs via SDK session log API",
+      "description": "As a backend/platform engineer, I want log streaming to come directly from Daytona SDK session command logs so that the runner keeps the existing return shape without HTTP mode.",
+      "acceptanceCriteria": [
+        "StreamLogs fetches sandbox with client.Get.",
+        "StreamLogs reads logs via sandbox.Process.GetSessionCommandLogs(ctx, \"default\", \"default\").",
+        "StreamLogs returns io.NopCloser(strings.NewReader(logs)).",
+        "Get and log retrieval failures are wrapped with %w and stable operation-specific messages.",
+        "internal/cloud/runner/sdk_client_test.go covers successful log retrieval and failure cases.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Implement Health using SDK list probe",
+      "description": "As a backend/platform engineer, I want health checks to validate Daytona reachability through SDK APIs so that runner health reflects direct SDK connectivity.",
+      "acceptanceCriteria": [
+        "Health probes using client.List(ctx, nil, \u0026page1, \u0026limit1).",
+        "On success, Health returns runner.HealthStatus{OK:true, Version:daytona.Version}.",
+        "Probe failures are wrapped with %w and operation-specific messages.",
+        "internal/cloud/runner/sdk_client_test.go includes health success and failure tests.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Remove HTTP runner implementation and references in runner package",
+      "description": "As a backend/platform engineer, I want the legacy HTTP runner implementation removed so that there is only one supported SDK execution path.",
+      "acceptanceCriteria": [
+        "internal/cloud/runner/client.go is deleted.",
+        "HTTP-runner-focused tests are removed or replaced by SDK-focused tests.",
+        "internal/cloud/runner/runner.go comments no longer mention HTTP implementation.",
+        "go test ./internal/cloud/runner/... passes with SDK-only implementation.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Update smoke checks for SDK-direct mode",
+      "description": "As a backend/platform engineer, I want smoke checks to treat empty runner URL as healthy SDK-direct mode so that deployments do not require a separate runner endpoint.",
+      "acceptanceCriteria": [
+        "internal/cloud/deploy/smoke.go treats empty runner URL as a synthetic healthy runner result.",
+        "Existing behavior for non-empty runner URL remains unchanged.",
+        "internal/cloud/deploy/smoke_test.go includes explicit tests for empty URL synthetic health and non-empty URL behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Update deployment manifests and environment documentation",
+      "description": "As a backend/platform engineer, I want deployment configuration updated to SDK-only variables so that compose workflows no longer reference the removed runner service.",
+      "acceptanceCriteria": [
+        "deploy/docker-compose.yml removes the daytona-runner service.",
+        "deploy/docker-compose.yml removes related depends_on and HAL_CLOUD_RUNNER_* environment wiring.",
+        "Worker service environment includes DAYTONA_API_KEY, DAYTONA_API_URL, and DAYTONA_TARGET.",
+        "deploy/.env.example removes HAL_CLOUD_RUNNER_* entries and documents DAYTONA_API_KEY, DAYTONA_API_URL, DAYTONA_SERVER_URL alias fallback, and DAYTONA_TARGET.",
+        "docker compose -f deploy/docker-compose.yml config succeeds.",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Delete TypeScript runner artifacts and complete hard-cut cleanup",
+      "description": "As a backend/platform engineer, I want all obsolete TypeScript runner assets removed so that the repository reflects a single Go-based execution implementation.",
+      "acceptanceCriteria": [
+        "deploy/Dockerfile.daytona-runner is deleted.",
+        "daytona-runner/ directory is deleted.",
+        "Repository-wide search finds no remaining \"daytona-runner\" references.",
+        "Repository-wide search finds no remaining \"HAL_CLOUD_RUNNER_\" references.",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Run required verification suite for release readiness",
+      "description": "As a backend/platform engineer, I want the full verification suite to pass so that the SDK-only hard cut is safe to merge.",
+      "acceptanceCriteria": [
+        "make test passes.",
+        "go vet ./... passes.",
+        "go build ./... passes.",
+        "go test ./internal/cloud/runner/... passes.",
+        "go test ./internal/cloud/deploy/... passes.",
+        "docker compose -f deploy/docker-compose.yml config succeeds.",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}
