@@ -329,7 +329,7 @@ func TestWorkerLifecycleFlowRunner_DispatchesViaRunHelpers(t *testing.T) {
 				t.Fatalf("submit step failed: %v\noutput:\n%s", submitResult.Err, submitResult.Output)
 			}
 
-			runPayload := mustDecodeLifecycleJSONOutput(t, submitResult.Output)
+			runPayload := mustDecodeWorkerLifecycleJSONOutput(t, submitResult.Output)
 			runID, ok := lifecycleJSONStringField(runPayload, cloudLifecycleJSONKeyRunID)
 			if !ok {
 				t.Fatalf("submit output missing runId: %v", runPayload)
@@ -347,7 +347,7 @@ func TestWorkerLifecycleFlowRunner_DispatchesViaRunHelpers(t *testing.T) {
 				t.Fatalf("status step failed: %v\noutput:\n%s", statusResult.Err, statusResult.Output)
 			}
 
-			statusPayload := mustDecodeLifecycleJSONOutput(t, statusResult.Output)
+			statusPayload := mustDecodeWorkerLifecycleJSONOutput(t, statusResult.Output)
 			statusRunID, ok := lifecycleJSONStringField(statusPayload, cloudLifecycleJSONKeyRunID, "run_id")
 			if !ok {
 				t.Fatalf("status output missing run ID: %v", statusPayload)

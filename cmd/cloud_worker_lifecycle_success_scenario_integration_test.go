@@ -39,7 +39,7 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 				t.Fatalf("submit step failed: %v\noutput:\n%s", submitResult.Err, submitResult.Output)
 			}
 
-			submitPayload := mustDecodeLifecycleJSONOutput(t, submitResult.Output)
+			submitPayload := mustDecodeWorkerLifecycleJSONOutput(t, submitResult.Output)
 			runID := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyRunID)
 			if got := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyWorkflowKind); got != string(workflow.WorkflowKind) {
 				t.Fatalf("submit workflowKind = %q, want %q", got, workflow.WorkflowKind)
@@ -52,7 +52,7 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 				t.Fatalf("status step failed: %v\noutput:\n%s", statusResult.Err, statusResult.Output)
 			}
 
-			statusPayload := mustDecodeLifecycleJSONOutput(t, statusResult.Output)
+			statusPayload := mustDecodeWorkerLifecycleJSONOutput(t, statusResult.Output)
 			if got := mustLifecycleJSONStringField(t, statusPayload, cloudLifecycleJSONKeyRunID); got != runID {
 				t.Fatalf("status runID = %q, want %q", got, runID)
 			}
@@ -212,7 +212,7 @@ func assertWorkerLifecyclePullRestoresArtifacts(
 ) {
 	t.Helper()
 
-	pullFixture := mustLifecycleCheckpointFixture(t, cloudLifecycleCheckpointPull)
+	pullFixture := mustWorkerLifecycleJSONContractFixture(t, workerLifecycleJSONContractCheckpointPull)
 	expectedGroups := cloud.WorkflowArtifactGroups(workflowKind)
 	if len(expectedGroups) == 0 {
 		t.Fatalf("workflow %q must expose at least one artifact group", workflowKind)
@@ -245,7 +245,7 @@ func assertWorkerLifecyclePullRestoresArtifacts(
 			t.Fatalf("pull --json failed for workflow %q artifacts %q: %v\noutput:\n%s", workflowKind, group, pullJSON.Err, pullJSON.Output)
 		}
 
-		pullPayload := mustDecodeLifecycleJSONOutput(t, pullJSON.Output)
+		pullPayload := mustDecodeWorkerLifecycleJSONOutput(t, pullJSON.Output)
 		assertLifecycleRequiredJSONKeys(t, pullPayload, pullFixture.RequiredJSONKeys)
 		if got := mustLifecycleJSONStringField(t, pullPayload, cloudLifecycleJSONKeyRunID); got != runID {
 			t.Fatalf("pull runID = %q, want %q", got, runID)

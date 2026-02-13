@@ -13,7 +13,7 @@ import (
 )
 
 func TestWorkerLifecycleCancelScenarios(t *testing.T) {
-	statusFixture := mustLifecycleCheckpointFixture(t, cloudLifecycleCheckpointStatus)
+	statusFixture := mustWorkerLifecycleJSONContractFixture(t, workerLifecycleJSONContractCheckpointStatus)
 	cancelFixture := mustLifecycleCheckpointFixture(t, cloudLifecycleCheckpointCancel)
 
 	for _, workflow := range workerLifecycleWorkflowFixtures {
@@ -34,7 +34,7 @@ func TestWorkerLifecycleCancelScenarios(t *testing.T) {
 				t.Fatalf("submit step failed: %v\noutput:\n%s", submitResult.Err, submitResult.Output)
 			}
 
-			submitPayload := mustDecodeLifecycleJSONOutput(t, submitResult.Output)
+			submitPayload := mustDecodeWorkerLifecycleJSONOutput(t, submitResult.Output)
 			runID := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyRunID)
 			if got := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyWorkflowKind); got != string(workflow.WorkflowKind) {
 				t.Fatalf("submit workflowKind = %q, want %q", got, workflow.WorkflowKind)
@@ -47,7 +47,7 @@ func TestWorkerLifecycleCancelScenarios(t *testing.T) {
 				t.Fatalf("cancel step failed: %v\noutput:\n%s", cancelResult.Err, cancelResult.Output)
 			}
 
-			cancelPayload := mustDecodeLifecycleJSONOutput(t, cancelResult.Output)
+			cancelPayload := mustDecodeWorkerLifecycleJSONOutput(t, cancelResult.Output)
 			assertLifecycleRequiredJSONKeys(t, cancelPayload, []string{
 				cloudLifecycleJSONKeyRunID,
 				cloudLifecycleJSONKeyCancelRequested,
@@ -70,7 +70,7 @@ func TestWorkerLifecycleCancelScenarios(t *testing.T) {
 				t.Fatalf("status step failed: %v\noutput:\n%s", statusResult.Err, statusResult.Output)
 			}
 
-			statusPayload := mustDecodeLifecycleJSONOutput(t, statusResult.Output)
+			statusPayload := mustDecodeWorkerLifecycleJSONOutput(t, statusResult.Output)
 			assertLifecycleRequiredJSONKeys(t, statusPayload, statusFixture.RequiredJSONKeys)
 			if got := mustLifecycleJSONStringField(t, statusPayload, cloudLifecycleJSONKeyRunID); got != runID {
 				t.Fatalf("status runID = %q, want %q", got, runID)

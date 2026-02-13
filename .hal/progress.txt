@@ -5,6 +5,7 @@
 - Use `resolveWorkerSandboxImage(flagImage)` to ensure `ProvisionConfig.Image` is always non-empty — returns `defaultWorkerSandboxImage` (`"ubuntu:22.04"`) when flag is empty.
 - Postgres/Turso ClaimRun uses `FOR UPDATE SKIP LOCKED` subquery pattern for atomic claim — modifications go in the outer UPDATE SET clause.
 - Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
+- Worker lifecycle JSON contract assertions should come from shared fixtures (`workerLifecycleJSONContractFixtures` for status/logs/pull) and use `mustDecodeWorkerLifecycleJSONOutput` so required keys stay camelCase and matrix-wide.
 - New cmd integration suites should start with a dedicated `*_integration_test.go` scaffold file that defines a top-level `Test<Feature>Integration` entrypoint; expand scenarios in additional tagged files.
 - For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
 - For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
@@ -655,4 +656,24 @@
   - For deterministic profile_revoked scenarios without a live worker loop, use `HeartbeatService.Renew` (with profile status set to revoked) instead of manually transitioning attempts; this keeps reason/event behavior aligned with production heartbeat logic.
   - To validate cleanup tolerance when auth locks are already gone, wrap the harness store to force `ReleaseAuthLock` -> `ErrNotFound` and assert terminalization still succeeds with one attempt transition.
   - After heartbeat-driven terminalization, transition only the run (`running->failed`) in scenario seeding — the attempt has already been terminalized by heartbeat and should not be transitioned twice.
+---
+
+## 2026-02-13 14:54 CST - T-011
+- Added shared worker-lifecycle JSON contract fixtures for `status`, `logs`, and `pull` payloads via `workerLifecycleJSONContractFixtures`.
+- Added reusable worker-lifecycle JSON decode helpers (`decodeWorkerLifecycleJSONOutput` / `mustDecodeWorkerLifecycleJSONOutput`) and switched worker lifecycle scenario tests to use the shared decoder helper.
+- Added integration-tagged tests validating fixture coverage, camelCase contract-key usage, and decode-helper behavior.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_json_contract_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_flow_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_success_scenario_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_cancel_scenario_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_lease_lost_scenario_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_profile_revoked_scenario_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep worker lifecycle JSON output contracts in one fixture table (`workerLifecycleJSONContractFixtures`) so status/logs/pull checks don’t drift across adapters or workflows.
+  - Prefer wrapper helpers (`mustDecodeWorkerLifecycleJSONOutput`) for worker-suite JSON decoding so error messaging and JSON parsing behavior stay consistent across scenario files.
+  - Validate fixture keys against canonical lifecycle JSON constants and camelCase formatting to catch contract regressions early.
 ---
