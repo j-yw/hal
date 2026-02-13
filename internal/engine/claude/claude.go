@@ -370,6 +370,12 @@ func (h *textCollectingStreamHandler) collectText(line []byte) {
 		return
 	}
 
+	// Collect text blocks from this assistant event into a temporary builder.
+	// If the event has text, replace previously collected text so that only
+	// the last assistant message's text is kept. This prevents duplication
+	// when Claude performs multi-turn operations (e.g., generates a draft,
+	// reads files, then regenerates the final version).
+	var current strings.Builder
 	for _, item := range content {
 		block, ok := item.(map[string]interface{})
 		if !ok {
@@ -377,9 +383,13 @@ func (h *textCollectingStreamHandler) collectText(line []byte) {
 		}
 		if blockType, _ := block["type"].(string); blockType == "text" {
 			if text, _ := block["text"].(string); text != "" {
-				h.text.WriteString(text)
+				current.WriteString(text)
 			}
 		}
+	}
+	if current.Len() > 0 {
+		h.text.Reset()
+		h.text.WriteString(current.String())
 	}
 }
 
@@ -394,8 +404,11 @@ func (h *textCollectingStreamHandler) Text() string {
 	return h.text.String()
 }
 
+// collectAssistantTextFromStream extracts assistant text from the raw
+// stream-json output. It keeps only the text from the last assistant event
+// that contains text blocks, matching the streaming handler behavior.
 func collectAssistantTextFromStream(output string) string {
-	var text strings.Builder
+	var lastText string
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
@@ -420,6 +433,7 @@ func collectAssistantTextFromStream(output string) string {
 			continue
 		}
 
+		var current strings.Builder
 		for _, item := range content {
 			block, ok := item.(map[string]interface{})
 			if !ok {
@@ -427,13 +441,16 @@ func collectAssistantTextFromStream(output string) string {
 			}
 			if blockType, _ := block["type"].(string); blockType == "text" {
 				if t, _ := block["text"].(string); t != "" {
-					text.WriteString(t)
+					current.WriteString(t)
 				}
 			}
 		}
+		if current.Len() > 0 {
+			lastText = current.String()
+		}
 	}
 
-	return text.String()
+	return lastText
 }
 
 // streamHandler processes output line by line.
