@@ -526,58 +526,35 @@ func TestBuildHalCommand(t *testing.T) {
 	tests := []struct {
 		name    string
 		kind    WorkflowKind
-		mode    ExecutionMode
 		wantCmd string
 	}{
 		{
 			name:    "run_dispatches_hal_run",
 			kind:    WorkflowKindRun,
-			mode:    ExecutionModeUntilComplete,
 			wantCmd: "hal run",
 		},
 		{
-			name:    "run_ignores_mode",
-			kind:    WorkflowKindRun,
-			mode:    ExecutionModeBoundedBatch,
-			wantCmd: "hal run",
-		},
-		{
-			name:    "auto_until_complete",
+			name:    "auto_dispatches_hal_auto",
 			kind:    WorkflowKindAuto,
-			mode:    ExecutionModeUntilComplete,
-			wantCmd: "hal auto",
-		},
-		{
-			name:    "auto_bounded_batch",
-			kind:    WorkflowKindAuto,
-			mode:    ExecutionModeBoundedBatch,
-			wantCmd: "hal auto",
-		},
-		{
-			name:    "auto_mode_does_not_appear_in_command",
-			kind:    WorkflowKindAuto,
-			mode:    ExecutionModeUntilComplete,
 			wantCmd: "hal auto",
 		},
 		{
 			name:    "review_dispatches_hal_review",
 			kind:    WorkflowKindReview,
-			mode:    ExecutionModeUntilComplete,
 			wantCmd: "hal review",
 		},
 		{
-			name:    "review_ignores_mode",
-			kind:    WorkflowKindReview,
-			mode:    ExecutionModeBoundedBatch,
-			wantCmd: "hal review",
+			name:    "unknown_defaults_to_hal_auto",
+			kind:    WorkflowKind("unknown"),
+			wantCmd: "hal auto",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildHalCommand(tt.kind, tt.mode)
+			got := buildHalCommand(tt.kind)
 			if got != tt.wantCmd {
-				t.Errorf("buildHalCommand(%q, %q) = %q, want %q", tt.kind, tt.mode, got, tt.wantCmd)
+				t.Errorf("buildHalCommand(%q) = %q, want %q", tt.kind, got, tt.wantCmd)
 			}
 		})
 	}
@@ -637,24 +614,22 @@ func TestWorkflowKindDispatchExactArgv(t *testing.T) {
 	}
 }
 
-// TestModeDoesNotAlterDispatch verifies that mode flags only affect auto
-// workflow commands, not run or review.
-func TestModeDoesNotAlterDispatch(t *testing.T) {
-	modes := []ExecutionMode{ExecutionModeUntilComplete, ExecutionModeBoundedBatch}
-
-	for _, mode := range modes {
-		t.Run("run_mode_"+string(mode), func(t *testing.T) {
-			cmd := buildHalCommand(WorkflowKindRun, mode)
-			if cmd != "hal run" {
-				t.Errorf("buildHalCommand(run, %q) = %q, want %q", mode, cmd, "hal run")
-			}
-		})
-		t.Run("review_mode_"+string(mode), func(t *testing.T) {
-			cmd := buildHalCommand(WorkflowKindReview, mode)
-			if cmd != "hal review" {
-				t.Errorf("buildHalCommand(review, %q) = %q, want %q", mode, cmd, "hal review")
-			}
-		})
+// TestBuildHalCommand_AllKinds verifies every WorkflowKind produces the
+// expected command string.
+func TestBuildHalCommand_AllKinds(t *testing.T) {
+	kinds := []struct {
+		kind WorkflowKind
+		want string
+	}{
+		{WorkflowKindRun, "hal run"},
+		{WorkflowKindAuto, "hal auto"},
+		{WorkflowKindReview, "hal review"},
+	}
+	for _, tt := range kinds {
+		got := buildHalCommand(tt.kind)
+		if got != tt.want {
+			t.Errorf("buildHalCommand(%q) = %q, want %q", tt.kind, got, tt.want)
+		}
 	}
 }
 

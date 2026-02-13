@@ -197,8 +197,8 @@ func (s *ExecutionService) Execute(ctx context.Context, req *ExecutionRequest) (
 
 	now := time.Now().UTC().Truncate(time.Second)
 
-	// Build the Hal command based on workflow kind and execution mode.
-	cmd := buildHalCommand(req.WorkflowKind, req.Mode)
+	// Build the Hal command based on workflow kind.
+	cmd := buildHalCommand(req.WorkflowKind)
 
 	// Step 1: Emit execution_started event.
 	startPayload := &executionEventPayload{
@@ -271,7 +271,7 @@ func (s *ExecutionService) ExecuteAsync(ctx context.Context, req *ExecutionReque
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
-	cmd := buildHalCommand(req.WorkflowKind, req.Mode)
+	cmd := buildHalCommand(req.WorkflowKind)
 
 	// Step 1: Emit execution_started event.
 	startPayload := &executionEventPayload{
@@ -441,11 +441,7 @@ done:
 //	run    → "hal run"
 //	auto   → "hal auto"
 //	review → "hal review"
-//
-// ExecutionMode (until_complete / bounded_batch) is a cloud scheduling concept
-// that controls how the worker pipeline behaves (retry vs. stop), NOT a CLI
-// flag on the hal binary. The hal commands themselves do not accept a --mode flag.
-func buildHalCommand(kind WorkflowKind, mode ExecutionMode) string {
+func buildHalCommand(kind WorkflowKind) string {
 	switch kind {
 	case WorkflowKindRun:
 		return "hal run"
