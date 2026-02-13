@@ -81,6 +81,52 @@ func mustDecodeWorkerLifecycleJSONOutput(t *testing.T, output string) map[string
 	return payload
 }
 
+func assertWorkerLifecycleCheckpointJSONContract(t *testing.T, payload map[string]interface{}, checkpoint workerLifecycleJSONContractCheckpoint) {
+	t.Helper()
+	fixture := mustWorkerLifecycleJSONContractFixture(t, checkpoint)
+	assertLifecycleRequiredJSONKeys(t, payload, fixture.RequiredJSONKeys)
+}
+
+func assertWorkerLifecycleCanonicalJSONContract(t *testing.T, payload map[string]interface{}, requiredCanonicalKeys []string) {
+	t.Helper()
+	assertLifecycleRequiredJSONKeys(t, payload, requiredCanonicalKeys)
+
+	aliases := workerLifecycleSnakeCaseAliasesForCanonicalKeys(requiredCanonicalKeys)
+	presentAliases := workerLifecyclePresentJSONKeys(payload, aliases)
+	if len(presentAliases) > 0 {
+		t.Fatalf(
+			"JSON payload contains forbidden snake_case keys %v for canonical keys %v: %v",
+			presentAliases,
+			requiredCanonicalKeys,
+			payload,
+		)
+	}
+}
+
+func workerLifecycleSnakeCaseAliasesForCanonicalKeys(requiredCanonicalKeys []string) []string {
+	aliases := make([]string, 0, len(requiredCanonicalKeys))
+	seen := make(map[string]bool, len(requiredCanonicalKeys))
+	for _, key := range requiredCanonicalKeys {
+		alias, ok := cloudLifecycleJSONLegacyAliases[key]
+		if !ok || alias == "" || seen[alias] {
+			continue
+		}
+		aliases = append(aliases, alias)
+		seen[alias] = true
+	}
+	return aliases
+}
+
+func workerLifecyclePresentJSONKeys(payload map[string]interface{}, keys []string) []string {
+	present := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := payload[key]; ok {
+			present = append(present, key)
+		}
+	}
+	return present
+}
+
 func TestWorkerLifecycleJSONContractFixtures(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -195,5 +241,31 @@ func TestDecodeWorkerLifecycleJSONOutput(t *testing.T) {
 				tt.checkValue(t, payload)
 			}
 		})
+	}
+}
+
+func TestWorkerLifecycleSnakeCaseAliasesForCanonicalKeys(t *testing.T) {
+	aliases := workerLifecycleSnakeCaseAliasesForCanonicalKeys([]string{
+		cloudLifecycleJSONKeyRunID,
+		cloudLifecycleJSONKeyWorkflowKind,
+		cloudLifecycleJSONKeyStatus,
+		cloudLifecycleJSONKeyRunID, // duplicate should not duplicate alias output
+	})
+
+	if !slices.Equal(aliases, []string{"run_id", "workflow_kind"}) {
+		t.Fatalf("aliases = %v, want %v", aliases, []string{"run_id", "workflow_kind"})
+	}
+}
+
+func TestWorkerLifecyclePresentJSONKeys(t *testing.T) {
+	payload := map[string]interface{}{
+		cloudLifecycleJSONKeyRunID: "run-001",
+		"run_id":                   "legacy-run-001",
+		"status":                   "queued",
+	}
+
+	present := workerLifecyclePresentJSONKeys(payload, []string{"run_id", "workflow_kind", "status"})
+	if !slices.Equal(present, []string{"run_id", "status"}) {
+		t.Fatalf("present keys = %v, want %v", present, []string{"run_id", "status"})
 	}
 }

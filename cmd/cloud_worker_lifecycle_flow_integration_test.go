@@ -318,6 +318,7 @@ func TestWorkerLifecycleFlowRunner_DispatchesViaRunHelpers(t *testing.T) {
 			h := setupCloudLifecycleIntegrationHarness(t)
 			runner := newWorkerLifecycleFlowRunner(h)
 			flow := workerLifecycleFlowForWorkflow(fixture.WorkflowCommand)
+			workflowFixture := mustLifecycleWorkflowFixtureForCommand(t, fixture.WorkflowCommand)
 
 			setupResult := runner.Run(workerLifecycleFlowRunInput{Step: flow[0]})
 			if setupResult.Err != nil {
@@ -330,6 +331,7 @@ func TestWorkerLifecycleFlowRunner_DispatchesViaRunHelpers(t *testing.T) {
 			}
 
 			runPayload := mustDecodeWorkerLifecycleJSONOutput(t, submitResult.Output)
+			assertWorkerLifecycleCanonicalJSONContract(t, runPayload, workflowFixture.RequiredJSONKeys)
 			runID, ok := lifecycleJSONStringField(runPayload, cloudLifecycleJSONKeyRunID)
 			if !ok {
 				t.Fatalf("submit output missing runId: %v", runPayload)
@@ -348,6 +350,7 @@ func TestWorkerLifecycleFlowRunner_DispatchesViaRunHelpers(t *testing.T) {
 			}
 
 			statusPayload := mustDecodeWorkerLifecycleJSONOutput(t, statusResult.Output)
+			assertWorkerLifecycleCheckpointJSONContract(t, statusPayload, workerLifecycleJSONContractCheckpointStatus)
 			statusRunID, ok := lifecycleJSONStringField(statusPayload, cloudLifecycleJSONKeyRunID, "run_id")
 			if !ok {
 				t.Fatalf("status output missing run ID: %v", statusPayload)

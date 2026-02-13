@@ -6,6 +6,7 @@
 - Postgres/Turso ClaimRun uses `FOR UPDATE SKIP LOCKED` subquery pattern for atomic claim — modifications go in the outer UPDATE SET clause.
 - Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
 - Worker lifecycle JSON contract assertions should come from shared fixtures (`workerLifecycleJSONContractFixtures` for status/logs/pull) and use `mustDecodeWorkerLifecycleJSONOutput` so required keys stay camelCase and matrix-wide.
+- For worker lifecycle JSON assertions, use `assertWorkerLifecycleCheckpointJSONContract` for status/logs/pull and `assertWorkerLifecycleCanonicalJSONContract` for migrated workflow submit payloads (`run/auto/review`) so snake_case alias regressions fail fast.
 - New cmd integration suites should start with a dedicated `*_integration_test.go` scaffold file that defines a top-level `Test<Feature>Integration` entrypoint; expand scenarios in additional tagged files.
 - For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
 - For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
@@ -676,4 +677,24 @@
   - Keep worker lifecycle JSON output contracts in one fixture table (`workerLifecycleJSONContractFixtures`) so status/logs/pull checks don’t drift across adapters or workflows.
   - Prefer wrapper helpers (`mustDecodeWorkerLifecycleJSONOutput`) for worker-suite JSON decoding so error messaging and JSON parsing behavior stay consistent across scenario files.
   - Validate fixture keys against canonical lifecycle JSON constants and camelCase formatting to catch contract regressions early.
+---
+
+## 2026-02-13 15:02 CST - T-012
+- Applied shared JSON contract assertions across worker lifecycle scenario matrices (run/auto/review × postgres/turso) by centralizing checkpoint checks in `assertWorkerLifecycleCheckpointJSONContract`.
+- Added strict canonical contract assertions for migrated workflow submit payloads via `assertWorkerLifecycleCanonicalJSONContract` so snake_case aliases are explicitly rejected.
+- Extended lease_lost/profile_revoked scenarios to execute `logs --json` and assert required logs contract keys in addition to existing status/pull checks.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_json_contract_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_flow_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_success_scenario_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_cancel_scenario_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_lease_lost_scenario_integration_test.go`
+  - `cmd/cloud_worker_lifecycle_profile_revoked_scenario_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use `assertWorkerLifecycleCanonicalJSONContract` for migrated workflow submit outputs (`run/auto/review`) to require canonical camelCase keys and fail fast when legacy snake_case aliases reappear.
+  - Route status/logs/pull JSON checks through `assertWorkerLifecycleCheckpointJSONContract` so fixture updates automatically propagate to every adapter/workflow scenario.
+  - Include `logs --json` assertions in failure-path scenarios that seed timeline events (lease_lost/profile_revoked) to keep logs contract coverage active across the matrix.
 ---

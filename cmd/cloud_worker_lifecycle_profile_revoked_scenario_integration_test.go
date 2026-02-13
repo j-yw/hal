@@ -19,8 +19,6 @@ const (
 )
 
 func TestWorkerLifecycleProfileRevokedScenarios(t *testing.T) {
-	statusFixture := mustWorkerLifecycleJSONContractFixture(t, workerLifecycleJSONContractCheckpointStatus)
-
 	for _, workflow := range workerLifecycleWorkflowFixtures {
 		workflow := workflow
 		runWorkerLifecycleAdapterMatrix(t, "profile_revoked_"+workflow.Name, func(t *testing.T, scenario workerLifecycleAdapterScenario) {
@@ -28,6 +26,7 @@ func TestWorkerLifecycleProfileRevokedScenarios(t *testing.T) {
 			if len(flow) < 4 {
 				t.Fatalf("workflow flow must include setup/submit/status/logs steps, got %d steps", len(flow))
 			}
+			workflowFixture := mustLifecycleWorkflowFixtureForCommand(t, workflow.WorkflowCommand)
 
 			setupResult := scenario.Runner.Run(workerLifecycleFlowRunInput{Step: flow[0]})
 			if setupResult.Err != nil {
@@ -40,6 +39,7 @@ func TestWorkerLifecycleProfileRevokedScenarios(t *testing.T) {
 			}
 
 			submitPayload := mustDecodeWorkerLifecycleJSONOutput(t, submitResult.Output)
+			assertWorkerLifecycleCanonicalJSONContract(t, submitPayload, workflowFixture.RequiredJSONKeys)
 			runID := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyRunID)
 			if got := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyWorkflowKind); got != string(workflow.WorkflowKind) {
 				t.Fatalf("submit workflowKind = %q, want %q", got, workflow.WorkflowKind)
@@ -57,7 +57,7 @@ func TestWorkerLifecycleProfileRevokedScenarios(t *testing.T) {
 			}
 
 			statusPayload := mustDecodeWorkerLifecycleJSONOutput(t, statusResult.Output)
-			assertLifecycleRequiredJSONKeys(t, statusPayload, statusFixture.RequiredJSONKeys)
+			assertWorkerLifecycleCheckpointJSONContract(t, statusPayload, workerLifecycleJSONContractCheckpointStatus)
 			if got := mustLifecycleJSONStringField(t, statusPayload, cloudLifecycleJSONKeyRunID); got != runID {
 				t.Fatalf("status runID = %q, want %q", got, runID)
 			}
@@ -66,6 +66,20 @@ func TestWorkerLifecycleProfileRevokedScenarios(t *testing.T) {
 			}
 			if got := mustLifecycleJSONStringField(t, statusPayload, cloudLifecycleJSONKeyStatus); got != string(cloud.RunStatusFailed) {
 				t.Fatalf("status = %q, want %q", got, cloud.RunStatusFailed)
+			}
+
+			logsResult := scenario.Runner.Run(workerLifecycleFlowRunInput{Step: flow[3], RunID: runID, JSON: true})
+			if logsResult.Err != nil {
+				t.Fatalf("logs step failed: %v\noutput:\n%s", logsResult.Err, logsResult.Output)
+			}
+
+			logsPayload := mustDecodeWorkerLifecycleJSONOutput(t, logsResult.Output)
+			assertWorkerLifecycleCheckpointJSONContract(t, logsPayload, workerLifecycleJSONContractCheckpointLogs)
+			if got := mustLifecycleJSONStringField(t, logsPayload, cloudLifecycleJSONKeyRunID); got != runID {
+				t.Fatalf("logs runID = %q, want %q", got, runID)
+			}
+			if got := mustLifecycleJSONStringField(t, logsPayload, cloudLifecycleJSONKeyStatus); got != string(cloud.RunStatusFailed) {
+				t.Fatalf("logs status = %q, want %q", got, cloud.RunStatusFailed)
 			}
 
 			assertWorkerLifecycleProfileRevokedTerminalState(t, scenario.Harness, runID, attemptID)

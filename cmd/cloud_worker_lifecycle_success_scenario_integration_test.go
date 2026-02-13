@@ -25,6 +25,7 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 			if len(flow) < 5 {
 				t.Fatalf("workflow flow must include setup/submit/status/pull steps, got %d steps", len(flow))
 			}
+			workflowFixture := mustLifecycleWorkflowFixtureForCommand(t, workflow.WorkflowCommand)
 
 			setupResult := scenario.Runner.Run(workerLifecycleFlowRunInput{Step: flow[0]})
 			if setupResult.Err != nil {
@@ -40,6 +41,7 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 			}
 
 			submitPayload := mustDecodeWorkerLifecycleJSONOutput(t, submitResult.Output)
+			assertWorkerLifecycleCanonicalJSONContract(t, submitPayload, workflowFixture.RequiredJSONKeys)
 			runID := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyRunID)
 			if got := mustLifecycleJSONStringField(t, submitPayload, cloudLifecycleJSONKeyWorkflowKind); got != string(workflow.WorkflowKind) {
 				t.Fatalf("submit workflowKind = %q, want %q", got, workflow.WorkflowKind)
@@ -53,6 +55,7 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 			}
 
 			statusPayload := mustDecodeWorkerLifecycleJSONOutput(t, statusResult.Output)
+			assertWorkerLifecycleCheckpointJSONContract(t, statusPayload, workerLifecycleJSONContractCheckpointStatus)
 			if got := mustLifecycleJSONStringField(t, statusPayload, cloudLifecycleJSONKeyRunID); got != runID {
 				t.Fatalf("status runID = %q, want %q", got, runID)
 			}
@@ -212,7 +215,6 @@ func assertWorkerLifecyclePullRestoresArtifacts(
 ) {
 	t.Helper()
 
-	pullFixture := mustWorkerLifecycleJSONContractFixture(t, workerLifecycleJSONContractCheckpointPull)
 	expectedGroups := cloud.WorkflowArtifactGroups(workflowKind)
 	if len(expectedGroups) == 0 {
 		t.Fatalf("workflow %q must expose at least one artifact group", workflowKind)
@@ -246,7 +248,7 @@ func assertWorkerLifecyclePullRestoresArtifacts(
 		}
 
 		pullPayload := mustDecodeWorkerLifecycleJSONOutput(t, pullJSON.Output)
-		assertLifecycleRequiredJSONKeys(t, pullPayload, pullFixture.RequiredJSONKeys)
+		assertWorkerLifecycleCheckpointJSONContract(t, pullPayload, workerLifecycleJSONContractCheckpointPull)
 		if got := mustLifecycleJSONStringField(t, pullPayload, cloudLifecycleJSONKeyRunID); got != runID {
 			t.Fatalf("pull runID = %q, want %q", got, runID)
 		}
