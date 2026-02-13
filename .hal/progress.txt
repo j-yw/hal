@@ -12,6 +12,7 @@
 - For deterministic success-path worker lifecycle scenarios without a live worker loop, seed harness state in order: `TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt(succeeded)`, then persist a latest snapshot (`PutSnapshot`) before `UpdateRunSnapshotRefs`; this keeps `cloud pull` assertions deterministic and restorable from harness state.
 - For deterministic cancel-path worker lifecycle scenarios, seed run state to `running` with one active attempt before `cloud cancel`; then record exactly one terminal `TransitionAttempt(..., canceled, ...)` and assert both persisted `cancel_requested/status=canceled` and `AttemptTerminalizationCount(runID) == 1`.
 - For deterministic lease_lost worker lifecycle scenarios, seed a `running` run with one active attempt, emit a `lease_lost` timeline event, transition the attempt exactly once to `failed` with `error_code=lease_lost`, then transition the run `running->failed`; assert `AttemptTerminalizationCount(runID) == 1` and no active attempt remains.
+- For deterministic profile_revoked worker lifecycle scenarios, drive terminalization through `HeartbeatService.Renew` with a store wrapper that forces `ReleaseAuthLock` to return `ErrNotFound`; assert renew returns `ErrProfileRevoked`, terminal attempt reason is `profile_revoked`, and `AttemptTerminalizationCount(runID) == 1`.
 - Use `h.SeedTimelineEvents(t, runID, ...)` for lifecycle log fixtures instead of direct `h.Store.InsertEvent` calls — it centralizes default event IDs/run wiring and keeps payload pointers cloned for mutation-safe assertions.
 - Capture/restore package-level lifecycle factories with `snapshotCloudLifecycleHarnessFactories` + `restoreCloudLifecycleHarnessFactories`; harness setup must register teardown via `t.Cleanup` to prevent global factory leakage across integration subtests.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
@@ -639,4 +640,19 @@
   - For deterministic lease_lost scenarios without a live worker loop, seed run state to `running` with one active attempt, then drive failure via one `TransitionAttempt(..., failed, lease_lost)` plus `TransitionRun(running->failed)`.
   - Persisted-attempt assertions should validate both reason fields (`error_code`, `error_message`) and cleanup invariants (`GetActiveAttemptByRun` returns `ErrNotFound`) to catch partial terminalization bugs.
   - Seeding a `lease_lost` timeline event via `h.SeedTimelineEvents` keeps reason assertions aligned between command-visible logs and harness-persisted attempt records.
+---
+
+## 2026-02-13 14:45 CST - T-010
+- Implemented deterministic worker lifecycle `profile_revoked` scenarios across run/auto/review workflows and Postgres/Turso adapters.
+- Added profile-revoked state seeding (`queued->claimed->running` + active attempt) and terminalization through `HeartbeatService.Renew` with a store wrapper that forces `ReleaseAuthLock` to return `ErrNotFound`.
+- Added assertions for status output (`failed`), profile_revoked terminal reason fields (`error_code`, `error_message`), timeline event presence, exactly-one attempt terminalization, active-attempt cleanup, and auth-lock release call count under ErrNotFound tolerance.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_profile_revoked_scenario_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - For deterministic profile_revoked scenarios without a live worker loop, use `HeartbeatService.Renew` (with profile status set to revoked) instead of manually transitioning attempts; this keeps reason/event behavior aligned with production heartbeat logic.
+  - To validate cleanup tolerance when auth locks are already gone, wrap the harness store to force `ReleaseAuthLock` -> `ErrNotFound` and assert terminalization still succeeds with one attempt transition.
+  - After heartbeat-driven terminalization, transition only the run (`running->failed`) in scenario seeding — the attempt has already been terminalized by heartbeat and should not be transitioned twice.
 ---

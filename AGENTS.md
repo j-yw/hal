@@ -146,6 +146,7 @@
 - Success-path worker lifecycle scenarios can stay deterministic without a live worker by seeding harness state in order (`TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt`, then `PutSnapshot` for the latest artifacts before `UpdateRunSnapshotRefs`) and asserting through harness query helpers (`RunTransitions`, `AttemptTerminalizations`, `SnapshotRefs`) plus pull restoration checks.
 - Cancel-path worker lifecycle scenarios should seed a `running` run with one active attempt before invoking `cloud cancel`, then record exactly one terminal `TransitionAttempt(..., canceled, ...)` and assert both `AttemptTerminalizationCount(runID) == 1` and persisted `cancel_requested/status=canceled` invariants.
 - Lease-loss worker lifecycle scenarios should seed a `running` run with one active attempt, emit a `lease_lost` event, then apply exactly one terminal `TransitionAttempt(..., failed, error_code=lease_lost)` before transitioning the run `running->failed`; assert `AttemptTerminalizationCount(runID) == 1` plus `GetActiveAttemptByRun` not-found cleanup invariants.
+- Profile-revoked worker lifecycle scenarios should trigger terminalization through `HeartbeatService.Renew` (not manual `TransitionAttempt`) using a store wrapper that forces `ReleaseAuthLock` to return `ErrNotFound`; assert renew returns `ErrProfileRevoked`, attempt terminalization is still exactly once (`error_code=profile_revoked`), and the run still transitions `running->failed`.
 
 ## Patterns from hal/cloud-worker-orchestration-pipeline (2026-02-13)
 
