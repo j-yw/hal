@@ -4,7 +4,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -83,15 +82,12 @@ func TestCloudLifecycleScenario_ReviewStatusLogs(t *testing.T) {
 		reviewRunID,
 		cloud.WorkflowKindReview,
 	)
-	if err := h.Store.InsertEvent(context.Background(), &cloud.Event{
+	h.SeedTimelineEvents(t, reviewRunID, cloudLifecycleTimelineEventSeed{
 		ID:          reviewRunID + "-review-log-1",
-		RunID:       reviewRunID,
 		EventType:   "review_checkpoint",
 		PayloadJSON: &eventPayload,
 		CreatedAt:   time.Date(2026, 2, 12, 2, 30, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("failed to seed review lifecycle log event: %v", err)
-	}
+	})
 
 	logsJSON := runner.Run(cloudLifecycleCommandInvocation{
 		Args:  lifecycleCommandArgs(t, logsFixture.CommandName),

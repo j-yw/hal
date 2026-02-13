@@ -9,6 +9,8 @@
 - For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
 - For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
 - Worker lifecycle harness stores should override `TransitionRun` + `TransitionAttempt` and expose query helpers (`RunTransitions`, `AttemptTerminalizations`, `AttemptTerminalizationCount`, `SnapshotRefs`) so scenarios can assert lifecycle invariants deterministically without poking raw maps.
+- Use `h.SeedTimelineEvents(t, runID, ...)` for lifecycle log fixtures instead of direct `h.Store.InsertEvent` calls — it centralizes default event IDs/run wiring and keeps payload pointers cloned for mutation-safe assertions.
+- Capture/restore package-level lifecycle factories with `snapshotCloudLifecycleHarnessFactories` + `restoreCloudLifecycleHarnessFactories`; harness setup must register teardown via `t.Cleanup` to prevent global factory leakage across integration subtests.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
 - `scanRun` reads all RETURNING columns including `attempt_count`, so adding SET clauses to the UPDATE is automatically reflected in the returned Run struct.
 - Turso store tests are regular unit tests (no build tags) using `modernc.org/sqlite`, while Postgres store tests require `//go:build integration` and `HAL_TEST_POSTGRES_DSN`.
@@ -557,4 +559,22 @@
   - When harness stores track assertion state, return copied slices/pointers from helper methods so tests cannot accidentally mutate shared in-memory fixtures.
   - If `TransitionAttempt` tracking is keyed by run, maintain an `attemptsByID` index and clear `activeAttempts` on terminal statuses to keep status/log assertions consistent.
   - Record cancel-path status flips through the same transition tracker (`recordRunTransition`) so manual cancel behavior and worker-driven behavior share one assertion surface.
+---
+
+## 2026-02-13 14:29 CST - T-005
+- Added reusable harness helpers for lifecycle event seeding and package-level factory snapshot/restore.
+- Added `SeedTimelineEvents` on `cloudLifecycleIntegrationHarness` and refactored logs-related integration scenarios to use it instead of direct `InsertEvent` calls.
+- Added `snapshotCloudLifecycleHarnessFactories`/`restoreCloudLifecycleHarnessFactories` helpers and new integration-tagged tests proving full factory restoration and `t.Cleanup`-based teardown behavior.
+- Files changed:
+  - `cmd/cloud_lifecycle_harness_integration_test.go`
+  - `cmd/cloud_lifecycle_logs_scenario_integration_test.go`
+  - `cmd/cloud_lifecycle_auto_scenario_integration_test.go`
+  - `cmd/cloud_lifecycle_review_scenario_integration_test.go`
+  - `cmd/cloud_lifecycle_security_scenario_integration_test.go`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Prefer harness-level seeding helpers for timeline events so logs scenarios stay concise and consistent on IDs/run wiring.
+  - Centralized factory snapshot/restore helpers make teardown coverage explicit and reduce the chance of leaving global command factories overridden between tests.
+  - Keep a dedicated restoration test (`RestoresFactoriesViaTCleanup`) to guard against future harness setup refactors that might accidentally skip cleanup registration.
 ---

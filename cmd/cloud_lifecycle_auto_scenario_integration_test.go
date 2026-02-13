@@ -4,7 +4,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -83,15 +82,12 @@ func TestCloudLifecycleScenario_AutoStatusLogs(t *testing.T) {
 		autoRunID,
 		cloud.WorkflowKindAuto,
 	)
-	if err := h.Store.InsertEvent(context.Background(), &cloud.Event{
+	h.SeedTimelineEvents(t, autoRunID, cloudLifecycleTimelineEventSeed{
 		ID:          autoRunID + "-auto-log-1",
-		RunID:       autoRunID,
 		EventType:   "auto_checkpoint",
 		PayloadJSON: &eventPayload,
 		CreatedAt:   time.Date(2026, 2, 12, 2, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("failed to seed auto lifecycle log event: %v", err)
-	}
+	})
 
 	logsJSON := runner.Run(cloudLifecycleCommandInvocation{
 		Args:  lifecycleCommandArgs(t, logsFixture.CommandName),

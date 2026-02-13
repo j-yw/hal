@@ -4,7 +4,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -48,24 +47,18 @@ func TestCloudLifecycleScenario_RunLogs(t *testing.T) {
 	firstPayload := fmt.Sprintf(`{"runId":"%s","message":"sandbox ready"}`, runID)
 	secondPayload := fmt.Sprintf(`{"runId":"%s","message":"execution finished"}`, runID)
 
-	for i, event := range []struct {
-		eventType string
-		payload   *string
-	}{
-		{eventType: "sandbox_ready", payload: &firstPayload},
-		{eventType: "execution_finished", payload: &secondPayload},
-	} {
-		err := h.Store.InsertEvent(context.Background(), &cloud.Event{
-			ID:          fmt.Sprintf("%s-log-%d", runID, i+1),
-			RunID:       runID,
-			EventType:   event.eventType,
-			PayloadJSON: event.payload,
-			CreatedAt:   seededAt.Add(time.Duration(i) * time.Second),
-		})
-		if err != nil {
-			t.Fatalf("failed to seed lifecycle log event %d: %v", i+1, err)
-		}
-	}
+	h.SeedTimelineEvents(t, runID,
+		cloudLifecycleTimelineEventSeed{
+			EventType:   "sandbox_ready",
+			PayloadJSON: &firstPayload,
+			CreatedAt:   seededAt,
+		},
+		cloudLifecycleTimelineEventSeed{
+			EventType:   "execution_finished",
+			PayloadJSON: &secondPayload,
+			CreatedAt:   seededAt.Add(time.Second),
+		},
+	)
 
 	logsHuman := runner.Run(cloudLifecycleCommandInvocation{
 		Args:  lifecycleCommandArgs(t, logsFixture.CommandName),

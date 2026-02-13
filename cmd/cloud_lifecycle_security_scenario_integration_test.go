@@ -107,15 +107,12 @@ func TestCloudLifecycleSecurity_CloudCommandsRedactSecrets(t *testing.T) {
 				seedLifecycleSecurityRun(t, h, runID, cloud.RunStatusRunning)
 
 				payload := fmt.Sprintf(`{"runId":"%s","token":"%s"}`, runID, cloudLifecycleSecuritySecret)
-				if err := h.Store.InsertEvent(context.Background(), &cloud.Event{
+				h.SeedTimelineEvents(t, runID, cloudLifecycleTimelineEventSeed{
 					ID:          runID + "-secret-event",
-					RunID:       runID,
 					EventType:   "secret_event",
 					PayloadJSON: &payload,
 					CreatedAt:   time.Now().UTC(),
-				}); err != nil {
-					t.Fatalf("failed to seed log event: %v", err)
-				}
+				})
 			},
 		},
 		{

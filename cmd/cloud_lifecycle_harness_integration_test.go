@@ -46,6 +46,46 @@ type cloudLifecycleHarnessFactorySnapshot struct {
 	reviewPollInterval time.Duration
 }
 
+func snapshotCloudLifecycleHarnessFactories() cloudLifecycleHarnessFactorySnapshot {
+	return cloudLifecycleHarnessFactorySnapshot{
+		runStoreFactory:    runCloudStoreFactory,
+		autoStoreFactory:   autoCloudStoreFactory,
+		reviewStoreFactory: reviewCloudStoreFactory,
+		listStoreFactory:   cloudListStoreFactory,
+		statusStoreFactory: cloudStatusStoreFactory,
+		logsStoreFactory:   cloudLogsStoreFactory,
+		cancelStoreFactory: cloudCancelStoreFactory,
+		pullStoreFactory:   cloudPullStoreFactory,
+
+		runConfigFactory:    runCloudConfigFactory,
+		autoConfigFactory:   autoCloudConfigFactory,
+		reviewConfigFactory: reviewCloudConfigFactory,
+
+		runPollInterval:    runCloudPollInterval,
+		autoPollInterval:   autoCloudPollInterval,
+		reviewPollInterval: reviewCloudPollInterval,
+	}
+}
+
+func restoreCloudLifecycleHarnessFactories(snapshot cloudLifecycleHarnessFactorySnapshot) {
+	runCloudStoreFactory = snapshot.runStoreFactory
+	autoCloudStoreFactory = snapshot.autoStoreFactory
+	reviewCloudStoreFactory = snapshot.reviewStoreFactory
+	cloudListStoreFactory = snapshot.listStoreFactory
+	cloudStatusStoreFactory = snapshot.statusStoreFactory
+	cloudLogsStoreFactory = snapshot.logsStoreFactory
+	cloudCancelStoreFactory = snapshot.cancelStoreFactory
+	cloudPullStoreFactory = snapshot.pullStoreFactory
+
+	runCloudConfigFactory = snapshot.runConfigFactory
+	autoCloudConfigFactory = snapshot.autoConfigFactory
+	reviewCloudConfigFactory = snapshot.reviewConfigFactory
+
+	runCloudPollInterval = snapshot.runPollInterval
+	autoCloudPollInterval = snapshot.autoPollInterval
+	reviewCloudPollInterval = snapshot.reviewPollInterval
+}
+
 // cloudLifecycleIntegrationHarness provisions isolated workspace, store, and
 // factory wiring for lifecycle integration scenarios.
 type cloudLifecycleIntegrationHarness struct {
@@ -92,22 +132,7 @@ func (h *cloudLifecycleIntegrationHarness) Teardown() {
 	}
 	h.tornDown = true
 
-	runCloudStoreFactory = h.origFactories.runStoreFactory
-	autoCloudStoreFactory = h.origFactories.autoStoreFactory
-	reviewCloudStoreFactory = h.origFactories.reviewStoreFactory
-	cloudListStoreFactory = h.origFactories.listStoreFactory
-	cloudStatusStoreFactory = h.origFactories.statusStoreFactory
-	cloudLogsStoreFactory = h.origFactories.logsStoreFactory
-	cloudCancelStoreFactory = h.origFactories.cancelStoreFactory
-	cloudPullStoreFactory = h.origFactories.pullStoreFactory
-
-	runCloudConfigFactory = h.origFactories.runConfigFactory
-	autoCloudConfigFactory = h.origFactories.autoConfigFactory
-	reviewCloudConfigFactory = h.origFactories.reviewConfigFactory
-
-	runCloudPollInterval = h.origFactories.runPollInterval
-	autoCloudPollInterval = h.origFactories.autoPollInterval
-	reviewCloudPollInterval = h.origFactories.reviewPollInterval
+	restoreCloudLifecycleHarnessFactories(h.origFactories)
 }
 
 func (h *cloudLifecycleIntegrationHarness) setupWorkspace(t *testing.T) {
@@ -166,24 +191,7 @@ func (h *cloudLifecycleIntegrationHarness) seedLinkedAuthProfile(profileID, prov
 }
 
 func (h *cloudLifecycleIntegrationHarness) installFactoryOverrides() {
-	h.origFactories = cloudLifecycleHarnessFactorySnapshot{
-		runStoreFactory:    runCloudStoreFactory,
-		autoStoreFactory:   autoCloudStoreFactory,
-		reviewStoreFactory: reviewCloudStoreFactory,
-		listStoreFactory:   cloudListStoreFactory,
-		statusStoreFactory: cloudStatusStoreFactory,
-		logsStoreFactory:   cloudLogsStoreFactory,
-		cancelStoreFactory: cloudCancelStoreFactory,
-		pullStoreFactory:   cloudPullStoreFactory,
-
-		runConfigFactory:    runCloudConfigFactory,
-		autoConfigFactory:   autoCloudConfigFactory,
-		reviewConfigFactory: reviewCloudConfigFactory,
-
-		runPollInterval:    runCloudPollInterval,
-		autoPollInterval:   autoCloudPollInterval,
-		reviewPollInterval: reviewCloudPollInterval,
-	}
+	h.origFactories = snapshotCloudLifecycleHarnessFactories()
 
 	storeFactory := func() (cloud.Store, error) {
 		return h.Store, nil
@@ -216,6 +224,51 @@ func (h *cloudLifecycleIntegrationHarness) installFactoryOverrides() {
 func (h *cloudLifecycleIntegrationHarness) nextID(prefix string) string {
 	n := atomic.AddInt64(&h.idCounter, 1)
 	return fmt.Sprintf("%s-%03d", prefix, n)
+}
+
+type cloudLifecycleTimelineEventSeed struct {
+	ID          string
+	EventType   string
+	PayloadJSON *string
+	CreatedAt   time.Time
+}
+
+// SeedTimelineEvents inserts timeline events into the harness store for
+// lifecycle logs assertions.
+func (h *cloudLifecycleIntegrationHarness) SeedTimelineEvents(t *testing.T, runID string, events ...cloudLifecycleTimelineEventSeed) {
+	t.Helper()
+
+	if strings.TrimSpace(runID) == "" {
+		t.Fatal("runID must not be empty when seeding timeline events")
+	}
+
+	for i, event := range events {
+		eventType := strings.TrimSpace(event.EventType)
+		if eventType == "" {
+			t.Fatalf("timeline event %d has empty event type", i+1)
+		}
+
+		eventID := strings.TrimSpace(event.ID)
+		if eventID == "" {
+			eventID = fmt.Sprintf("%s-log-%d", runID, i+1)
+		}
+
+		createdAt := event.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC().Add(time.Duration(i) * time.Second)
+		}
+
+		payload := cloneStringPointer(event.PayloadJSON)
+		if err := h.Store.InsertEvent(context.Background(), &cloud.Event{
+			ID:          eventID,
+			RunID:       runID,
+			EventType:   eventType,
+			PayloadJSON: payload,
+			CreatedAt:   createdAt,
+		}); err != nil {
+			t.Fatalf("failed to seed timeline event %d for run %q: %v", i+1, runID, err)
+		}
+	}
 }
 
 // cloudLifecycleRunTransition tracks one run status transition for assertions.
@@ -750,6 +803,117 @@ func TestCloudLifecycleIntegrationHarness_WiresEphemeralDependencies(t *testing.
 	}
 }
 
+func TestCloudLifecycleIntegrationHarness_SeedTimelineEventsHelper(t *testing.T) {
+	h := setupCloudLifecycleIntegrationHarness(t)
+
+	run := newHarnessTestRun("run-events-001", cloud.RunStatusRunning)
+	if err := h.Store.EnqueueRun(context.Background(), run); err != nil {
+		t.Fatalf("enqueue run failed: %v", err)
+	}
+
+	firstPayload := fmt.Sprintf(`{"runId":"%s","message":"sandbox ready"}`, run.ID)
+	secondPayload := fmt.Sprintf(`{"runId":"%s","message":"execution finished"}`, run.ID)
+	seededAt := time.Date(2026, 2, 13, 0, 0, 0, 0, time.UTC)
+
+	h.SeedTimelineEvents(t, run.ID,
+		cloudLifecycleTimelineEventSeed{
+			EventType:   "sandbox_ready",
+			PayloadJSON: &firstPayload,
+			CreatedAt:   seededAt,
+		},
+		cloudLifecycleTimelineEventSeed{
+			EventType:   "execution_finished",
+			PayloadJSON: &secondPayload,
+			CreatedAt:   seededAt.Add(time.Second),
+		},
+	)
+
+	firstPayload = "mutated"
+	secondPayload = "mutated"
+
+	events, err := h.Store.ListEvents(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("ListEvents failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events count = %d, want 2", len(events))
+	}
+
+	if events[0].ID != run.ID+"-log-1" {
+		t.Fatalf("events[0].ID = %q, want %q", events[0].ID, run.ID+"-log-1")
+	}
+	if events[0].EventType != "sandbox_ready" {
+		t.Fatalf("events[0].EventType = %q, want %q", events[0].EventType, "sandbox_ready")
+	}
+	if events[0].PayloadJSON == nil || *events[0].PayloadJSON != fmt.Sprintf(`{"runId":"%s","message":"sandbox ready"}`, run.ID) {
+		t.Fatalf("events[0].PayloadJSON = %v, want seeded payload", events[0].PayloadJSON)
+	}
+
+	if events[1].ID != run.ID+"-log-2" {
+		t.Fatalf("events[1].ID = %q, want %q", events[1].ID, run.ID+"-log-2")
+	}
+	if events[1].EventType != "execution_finished" {
+		t.Fatalf("events[1].EventType = %q, want %q", events[1].EventType, "execution_finished")
+	}
+	if events[1].PayloadJSON == nil || *events[1].PayloadJSON != fmt.Sprintf(`{"runId":"%s","message":"execution finished"}`, run.ID) {
+		t.Fatalf("events[1].PayloadJSON = %v, want seeded payload", events[1].PayloadJSON)
+	}
+}
+
+func TestCloudLifecycleHarnessFactorySnapshot_RestoreAllOverrides(t *testing.T) {
+	original := snapshotCloudLifecycleHarnessFactories()
+	t.Cleanup(func() {
+		restoreCloudLifecycleHarnessFactories(original)
+	})
+
+	stubStoreFactory := func() (cloud.Store, error) {
+		return nil, nil
+	}
+	stubConfigFactory := func() cloud.SubmitConfig {
+		return cloud.SubmitConfig{IDFunc: func() string { return "stub" }}
+	}
+
+	runCloudStoreFactory = stubStoreFactory
+	autoCloudStoreFactory = stubStoreFactory
+	reviewCloudStoreFactory = stubStoreFactory
+	cloudListStoreFactory = stubStoreFactory
+	cloudStatusStoreFactory = stubStoreFactory
+	cloudLogsStoreFactory = stubStoreFactory
+	cloudCancelStoreFactory = stubStoreFactory
+	cloudPullStoreFactory = stubStoreFactory
+
+	runCloudConfigFactory = stubConfigFactory
+	autoCloudConfigFactory = stubConfigFactory
+	reviewCloudConfigFactory = stubConfigFactory
+
+	runCloudPollInterval = 17 * time.Millisecond
+	autoCloudPollInterval = 19 * time.Millisecond
+	reviewCloudPollInterval = 23 * time.Millisecond
+
+	restoreCloudLifecycleHarnessFactories(original)
+	got := snapshotCloudLifecycleHarnessFactories()
+	assertCloudLifecycleFactorySnapshotsEqual(t, got, original)
+}
+
+func TestCloudLifecycleIntegrationHarness_RestoresFactoriesViaTCleanup(t *testing.T) {
+	original := snapshotCloudLifecycleHarnessFactories()
+
+	t.Run("harness_scope", func(t *testing.T) {
+		_ = setupCloudLifecycleIntegrationHarness(t)
+
+		overridden := snapshotCloudLifecycleHarnessFactories()
+		if functionPointer(overridden.runStoreFactory) == functionPointer(original.runStoreFactory) {
+			t.Fatal("runCloudStoreFactory should be overridden inside harness scope")
+		}
+		if overridden.runPollInterval != cloudLifecycleHarnessPollInterval {
+			t.Fatalf("runCloudPollInterval = %s, want %s", overridden.runPollInterval, cloudLifecycleHarnessPollInterval)
+		}
+	})
+
+	restored := snapshotCloudLifecycleHarnessFactories()
+	assertCloudLifecycleFactorySnapshotsEqual(t, restored, original)
+}
+
 func TestCloudLifecycleIntegrationHarness_SetupAndTeardownHelpers(t *testing.T) {
 	origRunStoreFactory := functionPointer(runCloudStoreFactory)
 	origAutoStoreFactory := functionPointer(autoCloudStoreFactory)
@@ -804,6 +968,40 @@ func TestCloudLifecycleIntegrationHarness_SetupAndTeardownHelpers(t *testing.T) 
 	}
 	if runCloudPollInterval != origRunPoll {
 		t.Fatalf("runCloudPollInterval = %s, want %s", runCloudPollInterval, origRunPoll)
+	}
+}
+
+func assertCloudLifecycleFactorySnapshotsEqual(t *testing.T, got, want cloudLifecycleHarnessFactorySnapshot) {
+	t.Helper()
+
+	assertFnPointer := func(name string, gotFn, wantFn interface{}) {
+		t.Helper()
+		if functionPointer(gotFn) != functionPointer(wantFn) {
+			t.Fatalf("%s function pointer mismatch", name)
+		}
+	}
+
+	assertFnPointer("runCloudStoreFactory", got.runStoreFactory, want.runStoreFactory)
+	assertFnPointer("autoCloudStoreFactory", got.autoStoreFactory, want.autoStoreFactory)
+	assertFnPointer("reviewCloudStoreFactory", got.reviewStoreFactory, want.reviewStoreFactory)
+	assertFnPointer("cloudListStoreFactory", got.listStoreFactory, want.listStoreFactory)
+	assertFnPointer("cloudStatusStoreFactory", got.statusStoreFactory, want.statusStoreFactory)
+	assertFnPointer("cloudLogsStoreFactory", got.logsStoreFactory, want.logsStoreFactory)
+	assertFnPointer("cloudCancelStoreFactory", got.cancelStoreFactory, want.cancelStoreFactory)
+	assertFnPointer("cloudPullStoreFactory", got.pullStoreFactory, want.pullStoreFactory)
+
+	assertFnPointer("runCloudConfigFactory", got.runConfigFactory, want.runConfigFactory)
+	assertFnPointer("autoCloudConfigFactory", got.autoConfigFactory, want.autoConfigFactory)
+	assertFnPointer("reviewCloudConfigFactory", got.reviewConfigFactory, want.reviewConfigFactory)
+
+	if got.runPollInterval != want.runPollInterval {
+		t.Fatalf("runCloudPollInterval = %s, want %s", got.runPollInterval, want.runPollInterval)
+	}
+	if got.autoPollInterval != want.autoPollInterval {
+		t.Fatalf("autoCloudPollInterval = %s, want %s", got.autoPollInterval, want.autoPollInterval)
+	}
+	if got.reviewPollInterval != want.reviewPollInterval {
+		t.Fatalf("reviewCloudPollInterval = %s, want %s", got.reviewPollInterval, want.reviewPollInterval)
 	}
 }
 
