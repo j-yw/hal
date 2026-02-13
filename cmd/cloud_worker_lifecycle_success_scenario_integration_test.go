@@ -6,11 +6,15 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/cloud"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
@@ -18,8 +22,8 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 		workflow := workflow
 		runWorkerLifecycleAdapterMatrix(t, "success_"+workflow.Name, func(t *testing.T, scenario workerLifecycleAdapterScenario) {
 			flow := workerLifecycleFlowForWorkflow(workflow.WorkflowCommand)
-			if len(flow) < 3 {
-				t.Fatalf("workflow flow must include setup/submit/status steps, got %d steps", len(flow))
+			if len(flow) < 5 {
+				t.Fatalf("workflow flow must include setup/submit/status/pull steps, got %d steps", len(flow))
 			}
 
 			setupResult := scenario.Runner.Run(workerLifecycleFlowRunInput{Step: flow[0]})
@@ -41,7 +45,7 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 				t.Fatalf("submit workflowKind = %q, want %q", got, workflow.WorkflowKind)
 			}
 
-			seedWorkerLifecycleSuccessState(t, scenario.Harness, runID)
+			expectedArtifactsByGroup := seedWorkerLifecycleSuccessState(t, scenario.Harness, runID)
 
 			statusResult := scenario.Runner.Run(workerLifecycleFlowRunInput{Step: flow[2], RunID: runID, JSON: true})
 			if statusResult.Err != nil {
@@ -61,11 +65,12 @@ func TestWorkerLifecycleSuccessScenarios(t *testing.T) {
 
 			assertWorkerLifecycleTerminalSuccess(t, scenario.Harness, runID)
 			assertWorkerLifecycleSnapshotRefsPresent(t, scenario.Harness, runID)
+			assertWorkerLifecyclePullRestoresArtifacts(t, scenario, flow[4], runID, workflow.WorkflowKind, expectedArtifactsByGroup)
 		})
 	}
 }
 
-func seedWorkerLifecycleSuccessState(t *testing.T, h *cloudLifecycleIntegrationHarness, runID string) {
+func seedWorkerLifecycleSuccessState(t *testing.T, h *cloudLifecycleIntegrationHarness, runID string) map[cloud.ArtifactGroup]map[string]string {
 	t.Helper()
 
 	ctx := context.Background()
@@ -109,6 +114,8 @@ func seedWorkerLifecycleSuccessState(t *testing.T, h *cloudLifecycleIntegrationH
 		t.Fatalf("TransitionRun(%q running->succeeded): %v", runID, err)
 	}
 
+	expectedArtifactsByGroup := workerLifecycleExpectedArtifactsByGroup(run.WorkflowKind, runID)
+
 	inputSnapshotID := run.InputSnapshotID
 	if inputSnapshotID == nil || strings.TrimSpace(*inputSnapshotID) == "" {
 		fallbackInput := fmt.Sprintf("%s-input-snapshot", runID)
@@ -119,8 +126,171 @@ func seedWorkerLifecycleSuccessState(t *testing.T, h *cloudLifecycleIntegrationH
 	if latestVersion < 2 {
 		latestVersion = 2
 	}
+
+	seedWorkerLifecycleLatestSnapshot(t, h, runID, latestSnapshotID, latestVersion, workerLifecycleFlattenArtifactFiles(expectedArtifactsByGroup))
+
 	if err := h.Store.UpdateRunSnapshotRefs(ctx, runID, inputSnapshotID, &latestSnapshotID, latestVersion); err != nil {
 		t.Fatalf("UpdateRunSnapshotRefs(%q): %v", runID, err)
+	}
+
+	return expectedArtifactsByGroup
+}
+
+func workerLifecycleExpectedArtifactsByGroup(workflowKind cloud.WorkflowKind, runID string) map[cloud.ArtifactGroup]map[string]string {
+	stateFiles := map[string]string{
+		filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)):      fmt.Sprintf(`{"project":"hal","workflowKind":"%s","runId":"%s"}`, workflowKind, runID),
+		filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)): fmt.Sprintf("## %s progress for %s\n", workflowKind, runID),
+	}
+
+	artifactsByGroup := map[cloud.ArtifactGroup]map[string]string{
+		cloud.ArtifactGroupState: stateFiles,
+	}
+
+	switch workflowKind {
+	case cloud.WorkflowKindAuto, cloud.WorkflowKindReview:
+		reportPath := filepath.ToSlash(filepath.Join(template.HalDir, "reports", fmt.Sprintf("%s-summary.md", workflowKind)))
+		artifactsByGroup[cloud.ArtifactGroupReports] = map[string]string{
+			reportPath: fmt.Sprintf("# %s report for %s\n", workflowKind, runID),
+		}
+	}
+
+	return artifactsByGroup
+}
+
+func workerLifecycleFlattenArtifactFiles(artifactsByGroup map[cloud.ArtifactGroup]map[string]string) map[string]string {
+	flattened := make(map[string]string)
+	for _, files := range artifactsByGroup {
+		for path, content := range files {
+			flattened[path] = content
+		}
+	}
+	return flattened
+}
+
+func seedWorkerLifecycleLatestSnapshot(t *testing.T, h *cloudLifecycleIntegrationHarness, runID, snapshotID string, version int, files map[string]string) {
+	t.Helper()
+
+	records := make([]cloud.BundleManifestRecord, 0, len(files))
+	fileContents := make(map[string][]byte, len(files))
+	for path, content := range files {
+		contentBytes := []byte(content)
+		record := cloud.NewBundleManifestRecord(path, contentBytes)
+		records = append(records, record)
+		fileContents[record.Path] = contentBytes
+	}
+
+	compressed, err := compressBundleFiles(records, fileContents)
+	if err != nil {
+		t.Fatalf("compressBundleFiles(%q): %v", runID, err)
+	}
+
+	manifest := cloud.NewBundleManifest(records)
+	snapshot := &cloud.RunStateSnapshot{
+		ID:              snapshotID,
+		RunID:           runID,
+		SnapshotKind:    cloud.SnapshotKindFinal,
+		Version:         version,
+		SHA256:          manifest.SHA256,
+		SizeBytes:       int64(len(compressed)),
+		ContentEncoding: "application/gzip",
+		ContentBlob:     compressed,
+		CreatedAt:       time.Now().UTC(),
+	}
+
+	if err := h.Store.PutSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("PutSnapshot(%q): %v", runID, err)
+	}
+}
+
+func assertWorkerLifecyclePullRestoresArtifacts(
+	t *testing.T,
+	scenario workerLifecycleAdapterScenario,
+	pullStep workerLifecycleFlowStep,
+	runID string,
+	workflowKind cloud.WorkflowKind,
+	expectedArtifactsByGroup map[cloud.ArtifactGroup]map[string]string,
+) {
+	t.Helper()
+
+	pullFixture := mustLifecycleCheckpointFixture(t, cloudLifecycleCheckpointPull)
+	expectedGroups := cloud.WorkflowArtifactGroups(workflowKind)
+	if len(expectedGroups) == 0 {
+		t.Fatalf("workflow %q must expose at least one artifact group", workflowKind)
+	}
+
+	for _, group := range expectedGroups {
+		expectedFiles := expectedArtifactsByGroup[group]
+		if len(expectedFiles) == 0 {
+			t.Fatalf("missing expected files for workflow %q artifact group %q", workflowKind, group)
+		}
+
+		expectedPaths := workerLifecycleSortedArtifactPaths(expectedFiles)
+		removeWorkerLifecycleArtifactTargets(t, scenario.Harness.WorkspaceDir, expectedPaths)
+
+		pullStepWithArtifacts := workerLifecycleFlowStep{
+			Name:          pullStep.Name,
+			RequiresRunID: pullStep.RequiresRunID,
+			Args:          append(append([]string(nil), pullStep.Args...), "--artifacts", string(group)),
+		}
+
+		pullHuman := scenario.Runner.Run(workerLifecycleFlowRunInput{Step: pullStepWithArtifacts, RunID: runID})
+		if pullHuman.Err != nil {
+			t.Fatalf("pull step failed for workflow %q artifacts %q: %v\noutput:\n%s", workflowKind, group, pullHuman.Err, pullHuman.Output)
+		}
+		assertLifecycleOutputContains(t, pullHuman.Output, append([]string{"Snapshot restored successfully."}, expectedPaths...)...)
+		assertWorkerLifecycleArtifactFilesReadable(t, scenario.Harness.WorkspaceDir, expectedFiles)
+
+		pullJSON := scenario.Runner.Run(workerLifecycleFlowRunInput{Step: pullStepWithArtifacts, RunID: runID, JSON: true})
+		if pullJSON.Err != nil {
+			t.Fatalf("pull --json failed for workflow %q artifacts %q: %v\noutput:\n%s", workflowKind, group, pullJSON.Err, pullJSON.Output)
+		}
+
+		pullPayload := mustDecodeLifecycleJSONOutput(t, pullJSON.Output)
+		assertLifecycleRequiredJSONKeys(t, pullPayload, pullFixture.RequiredJSONKeys)
+		if got := mustLifecycleJSONStringField(t, pullPayload, cloudLifecycleJSONKeyRunID); got != runID {
+			t.Fatalf("pull runID = %q, want %q", got, runID)
+		}
+		if got := cloud.ArtifactGroup(mustLifecycleJSONStringField(t, pullPayload, cloudLifecycleJSONKeyArtifacts)); got != group {
+			t.Fatalf("pull artifacts = %q, want %q", got, group)
+		}
+
+		restoredPaths := mustLifecycleJSONStringSliceField(t, pullPayload, cloudLifecycleJSONKeyFilesRestored)
+		assertLifecycleStringSliceContains(t, restoredPaths, expectedPaths...)
+	}
+}
+
+func workerLifecycleSortedArtifactPaths(files map[string]string) []string {
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func removeWorkerLifecycleArtifactTargets(t *testing.T, workspaceDir string, paths []string) {
+	t.Helper()
+
+	for _, path := range paths {
+		absPath := filepath.Join(workspaceDir, filepath.FromSlash(path))
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove %s before pull: %v", absPath, err)
+		}
+	}
+}
+
+func assertWorkerLifecycleArtifactFilesReadable(t *testing.T, workspaceDir string, files map[string]string) {
+	t.Helper()
+
+	for _, path := range workerLifecycleSortedArtifactPaths(files) {
+		absPath := filepath.Join(workspaceDir, filepath.FromSlash(path))
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", absPath, err)
+		}
+		if string(content) != files[path] {
+			t.Fatalf("content of %s = %q, want %q", absPath, string(content), files[path])
+		}
 	}
 }
 

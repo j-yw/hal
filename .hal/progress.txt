@@ -9,7 +9,7 @@
 - For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
 - For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
 - Worker lifecycle harness stores should override `TransitionRun` + `TransitionAttempt` and expose query helpers (`RunTransitions`, `AttemptTerminalizations`, `AttemptTerminalizationCount`, `SnapshotRefs`) so scenarios can assert lifecycle invariants deterministically without poking raw maps.
-- For deterministic success-path worker lifecycle scenarios without a live worker loop, seed harness state in order: `TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt(succeeded)`, then `UpdateRunSnapshotRefs`; assert via `RunTransitions`, `AttemptTerminalizations`, and `SnapshotRefs`.
+- For deterministic success-path worker lifecycle scenarios without a live worker loop, seed harness state in order: `TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt(succeeded)`, then persist a latest snapshot (`PutSnapshot`) before `UpdateRunSnapshotRefs`; this keeps `cloud pull` assertions deterministic and restorable from harness state.
 - Use `h.SeedTimelineEvents(t, runID, ...)` for lifecycle log fixtures instead of direct `h.Store.InsertEvent` calls — it centralizes default event IDs/run wiring and keeps payload pointers cloned for mutation-safe assertions.
 - Capture/restore package-level lifecycle factories with `snapshotCloudLifecycleHarnessFactories` + `restoreCloudLifecycleHarnessFactories`; harness setup must register teardown via `t.Cleanup` to prevent global factory leakage across integration subtests.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
@@ -593,4 +593,19 @@
   - For deterministic worker success scenarios, seed lifecycle state in harness order (`queued->claimed->running->succeeded`, terminal attempt transition, snapshot ref update) before asserting command outputs.
   - Reuse `workerLifecycleWorkflowFixtures` + `workerLifecycleFlowForWorkflow` with `runWorkerLifecycleAdapterMatrix` so each new scenario automatically covers run/auto/review across both adapters.
   - Validate both command output (`status --json`) and harness persistence (`RunTransitions`, `AttemptTerminalizations`, `SnapshotRefs`) to keep output and state invariants aligned.
+---
+
+## 2026-02-13 14:46 CST - T-007
+- Added workflow-aware pull assertions to worker lifecycle success scenarios for run/auto/review across both adapters.
+- Seeded a deterministic final snapshot per run with artifact-group file content (`state` for run, `state+reports` for auto/review) so `cloud pull --artifacts` restores test-owned files.
+- Added pull checks that remove target files before each pull, verify human output paths, verify restored file readability/content, and validate JSON `artifacts` + `filesRestored` fields.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_success_scenario_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Worker lifecycle pull scenarios need an explicit latest snapshot (`PutSnapshot`) in harness state; `UpdateRunSnapshotRefs` alone is not enough for `GetLatestSnapshot`-driven pull checks.
+  - Re-run pull assertions per artifact group from `cloud.WorkflowArtifactGroups(workflowKind)` to keep run/auto/review expectations aligned with workflow contracts.
+  - Delete expected target files before each pull execution so restoration assertions prove pull behavior rather than pre-existing workspace state.
 ---
