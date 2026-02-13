@@ -8,6 +8,7 @@
 - New cmd integration suites should start with a dedicated `*_integration_test.go` scaffold file that defines a top-level `Test<Feature>Integration` entrypoint; expand scenarios in additional tagged files.
 - For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
 - For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
+- Worker lifecycle harness stores should override `TransitionRun` + `TransitionAttempt` and expose query helpers (`RunTransitions`, `AttemptTerminalizations`, `AttemptTerminalizationCount`, `SnapshotRefs`) so scenarios can assert lifecycle invariants deterministically without poking raw maps.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
 - `scanRun` reads all RETURNING columns including `attempt_count`, so adding SET clauses to the UPDATE is automatically reflected in the returned Run struct.
 - Turso store tests are regular unit tests (no build tags) using `modernc.org/sqlite`, while Postgres store tests require `//go:build integration` and `HAL_TEST_POSTGRES_DSN`.
@@ -540,4 +541,20 @@
   - Keep adapter coverage in one fixture table and route scenario execution through a single matrix helper so new scenarios automatically run across both adapters.
   - Use explicit `adapter/scenario` subtest naming to make failures immediately attributable in CI output.
   - Even when harness setup already registers teardown, adding matrix-level `t.Cleanup(harness.Teardown)` is safe because teardown is idempotent and documents lifecycle ownership clearly.
+---
+
+## 2026-02-13 14:11 CST - T-004
+- Instrumented `cloudLifecycleHarnessStore` with deterministic lifecycle tracking for worker-scenario assertions.
+- Added per-run transition tracking (`RunTransitions`), attempt terminalization tracking (`AttemptTerminalizations`, `AttemptTerminalizationCount`), and snapshot ref exposure (`SnapshotRefs`).
+- Overrode `TransitionRun`, `CreateAttempt`, `GetAttempt`, `TransitionAttempt`, and enhanced `UpdateRunSnapshotRefs` to persist both runtime state and assertion-friendly tracking records.
+- Added integration-tagged harness tests covering transition tracking, terminalization counting, and snapshot ref cloning/persistence behavior.
+- Files changed:
+  - `cmd/cloud_lifecycle_harness_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - When harness stores track assertion state, return copied slices/pointers from helper methods so tests cannot accidentally mutate shared in-memory fixtures.
+  - If `TransitionAttempt` tracking is keyed by run, maintain an `attemptsByID` index and clear `activeAttempts` on terminal statuses to keep status/log assertions consistent.
+  - Record cancel-path status flips through the same transition tracker (`recordRunTransition`) so manual cancel behavior and worker-driven behavior share one assertion surface.
 ---

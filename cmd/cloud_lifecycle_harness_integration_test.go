@@ -218,14 +218,86 @@ func (h *cloudLifecycleIntegrationHarness) nextID(prefix string) string {
 	return fmt.Sprintf("%s-%03d", prefix, n)
 }
 
+// cloudLifecycleRunTransition tracks one run status transition for assertions.
+type cloudLifecycleRunTransition struct {
+	From      cloud.RunStatus
+	To        cloud.RunStatus
+	UpdatedAt time.Time
+}
+
+// cloudLifecycleAttemptTerminalization tracks one terminal attempt transition.
+type cloudLifecycleAttemptTerminalization struct {
+	AttemptID    string
+	Status       cloud.AttemptStatus
+	EndedAt      time.Time
+	ErrorCode    *string
+	ErrorMessage *string
+}
+
+// cloudLifecycleSnapshotRefs captures persisted run snapshot references.
+type cloudLifecycleSnapshotRefs struct {
+	InputSnapshotID       *string
+	LatestSnapshotID      *string
+	LatestSnapshotVersion int
+}
+
 // cloudLifecycleHarnessStore extends cloudMockStore with lifecycle-focused
 // persistence behavior needed by integration scenarios.
 type cloudLifecycleHarnessStore struct {
 	*cloudMockStore
+
+	attemptsByID            map[string]*cloud.Attempt
+	runTransitions          map[string][]cloudLifecycleRunTransition
+	attemptTerminalizations map[string][]cloudLifecycleAttemptTerminalization
+	snapshotRefsByRun       map[string]cloudLifecycleSnapshotRefs
 }
 
 func newCloudLifecycleHarnessStore() *cloudLifecycleHarnessStore {
-	return &cloudLifecycleHarnessStore{cloudMockStore: newCloudMockStore()}
+	return &cloudLifecycleHarnessStore{
+		cloudMockStore:          newCloudMockStore(),
+		attemptsByID:            make(map[string]*cloud.Attempt),
+		runTransitions:          make(map[string][]cloudLifecycleRunTransition),
+		attemptTerminalizations: make(map[string][]cloudLifecycleAttemptTerminalization),
+		snapshotRefsByRun:       make(map[string]cloudLifecycleSnapshotRefs),
+	}
+}
+
+func (s *cloudLifecycleHarnessStore) RunTransitions(runID string) []cloudLifecycleRunTransition {
+	transitions := s.runTransitions[runID]
+	copied := make([]cloudLifecycleRunTransition, len(transitions))
+	copy(copied, transitions)
+	return copied
+}
+
+func (s *cloudLifecycleHarnessStore) AttemptTerminalizationCount(runID string) int {
+	return len(s.attemptTerminalizations[runID])
+}
+
+func (s *cloudLifecycleHarnessStore) AttemptTerminalizations(runID string) []cloudLifecycleAttemptTerminalization {
+	records := s.attemptTerminalizations[runID]
+	copied := make([]cloudLifecycleAttemptTerminalization, len(records))
+	for i, record := range records {
+		copied[i] = cloudLifecycleAttemptTerminalization{
+			AttemptID:    record.AttemptID,
+			Status:       record.Status,
+			EndedAt:      record.EndedAt,
+			ErrorCode:    cloneStringPointer(record.ErrorCode),
+			ErrorMessage: cloneStringPointer(record.ErrorMessage),
+		}
+	}
+	return copied
+}
+
+func (s *cloudLifecycleHarnessStore) SnapshotRefs(runID string) (cloudLifecycleSnapshotRefs, bool) {
+	refs, ok := s.snapshotRefsByRun[runID]
+	if !ok {
+		return cloudLifecycleSnapshotRefs{}, false
+	}
+	return cloudLifecycleSnapshotRefs{
+		InputSnapshotID:       cloneStringPointer(refs.InputSnapshotID),
+		LatestSnapshotID:      cloneStringPointer(refs.LatestSnapshotID),
+		LatestSnapshotVersion: refs.LatestSnapshotVersion,
+	}, true
 }
 
 func (s *cloudLifecycleHarnessStore) EnqueueRun(ctx context.Context, run *cloud.Run) error {
@@ -233,6 +305,68 @@ func (s *cloudLifecycleHarnessStore) EnqueueRun(ctx context.Context, run *cloud.
 		return err
 	}
 	s.runsByID[run.ID] = run
+	return nil
+}
+
+func (s *cloudLifecycleHarnessStore) TransitionRun(_ context.Context, runID string, fromStatus, toStatus cloud.RunStatus) error {
+	run, ok := s.runsByID[runID]
+	if !ok {
+		return cloud.ErrNotFound
+	}
+	if run.Status != fromStatus {
+		return cloud.ErrConflict
+	}
+
+	now := time.Now().UTC()
+	run.Status = toStatus
+	run.UpdatedAt = now
+	s.recordRunTransition(runID, fromStatus, toStatus, now)
+	return nil
+}
+
+func (s *cloudLifecycleHarnessStore) CreateAttempt(_ context.Context, attempt *cloud.Attempt) error {
+	if attempt == nil {
+		return nil
+	}
+	s.attemptsByID[attempt.ID] = attempt
+	s.activeAttempts[attempt.RunID] = attempt
+	return nil
+}
+
+func (s *cloudLifecycleHarnessStore) GetAttempt(_ context.Context, attemptID string) (*cloud.Attempt, error) {
+	attempt := s.findAttemptByID(attemptID)
+	if attempt == nil {
+		return nil, cloud.ErrNotFound
+	}
+	return attempt, nil
+}
+
+func (s *cloudLifecycleHarnessStore) TransitionAttempt(_ context.Context, attemptID string, status cloud.AttemptStatus, endedAt time.Time, errorCode, errorMessage *string) error {
+	attempt := s.findAttemptByID(attemptID)
+	if attempt == nil {
+		return cloud.ErrNotFound
+	}
+
+	endedAtCopy := endedAt
+	attempt.Status = status
+	attempt.EndedAt = &endedAtCopy
+	attempt.ErrorCode = cloneStringPointer(errorCode)
+	attempt.ErrorMessage = cloneStringPointer(errorMessage)
+
+	if status.IsTerminal() {
+		if active, ok := s.activeAttempts[attempt.RunID]; ok && active != nil && active.ID == attemptID {
+			delete(s.activeAttempts, attempt.RunID)
+		}
+	}
+
+	s.attemptTerminalizations[attempt.RunID] = append(s.attemptTerminalizations[attempt.RunID], cloudLifecycleAttemptTerminalization{
+		AttemptID:    attemptID,
+		Status:       status,
+		EndedAt:      endedAt,
+		ErrorCode:    cloneStringPointer(errorCode),
+		ErrorMessage: cloneStringPointer(errorMessage),
+	})
+
 	return nil
 }
 
@@ -247,11 +381,37 @@ func (s *cloudLifecycleHarnessStore) SetCancelIntent(ctx context.Context, runID 
 	}
 
 	if !run.Status.IsTerminal() {
+		fromStatus := run.Status
+		now := time.Now().UTC()
 		run.Status = cloud.RunStatusCanceled
-		run.UpdatedAt = time.Now().UTC()
+		run.UpdatedAt = now
+		s.recordRunTransition(runID, fromStatus, cloud.RunStatusCanceled, now)
 	}
 
 	return nil
+}
+
+func (s *cloudLifecycleHarnessStore) findAttemptByID(attemptID string) *cloud.Attempt {
+	if attempt, ok := s.attemptsByID[attemptID]; ok {
+		return attempt
+	}
+
+	for _, attempt := range s.activeAttempts {
+		if attempt != nil && attempt.ID == attemptID {
+			s.attemptsByID[attemptID] = attempt
+			return attempt
+		}
+	}
+
+	return nil
+}
+
+func (s *cloudLifecycleHarnessStore) recordRunTransition(runID string, fromStatus, toStatus cloud.RunStatus, updatedAt time.Time) {
+	s.runTransitions[runID] = append(s.runTransitions[runID], cloudLifecycleRunTransition{
+		From:      fromStatus,
+		To:        toStatus,
+		UpdatedAt: updatedAt,
+	})
 }
 
 func (s *cloudLifecycleHarnessStore) InsertEvent(_ context.Context, event *cloud.Event) error {
@@ -278,9 +438,17 @@ func (s *cloudLifecycleHarnessStore) UpdateRunSnapshotRefs(_ context.Context, ru
 	if !ok {
 		return cloud.ErrNotFound
 	}
-	run.InputSnapshotID = cloneStringPointer(inputSnapshotID)
-	run.LatestSnapshotID = cloneStringPointer(latestSnapshotID)
-	run.LatestSnapshotVersion = latestSnapshotVersion
+
+	refs := cloudLifecycleSnapshotRefs{
+		InputSnapshotID:       cloneStringPointer(inputSnapshotID),
+		LatestSnapshotID:      cloneStringPointer(latestSnapshotID),
+		LatestSnapshotVersion: latestSnapshotVersion,
+	}
+	s.snapshotRefsByRun[runID] = refs
+
+	run.InputSnapshotID = cloneStringPointer(refs.InputSnapshotID)
+	run.LatestSnapshotID = cloneStringPointer(refs.LatestSnapshotID)
+	run.LatestSnapshotVersion = refs.LatestSnapshotVersion
 	run.UpdatedAt = time.Now().UTC()
 	return nil
 }
@@ -291,6 +459,202 @@ func cloneStringPointer(v *string) *string {
 	}
 	copyValue := *v
 	return &copyValue
+}
+
+func newHarnessTestRun(runID string, status cloud.RunStatus) *cloud.Run {
+	now := time.Now().UTC().Truncate(time.Second)
+	return &cloud.Run{
+		ID:            runID,
+		Repo:          "acme/hal",
+		BaseBranch:    "main",
+		WorkflowKind:  cloud.WorkflowKindRun,
+		Engine:        "claude",
+		AuthProfileID: cloudLifecycleHarnessDefaultAuthProfile,
+		ScopeRef:      "scope",
+		Status:        status,
+		AttemptCount:  1,
+		MaxAttempts:   3,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+}
+
+func TestCloudLifecycleHarnessStore_RecordsRunTransitions(t *testing.T) {
+	store := newCloudLifecycleHarnessStore()
+	run := newHarnessTestRun("run-transition-001", cloud.RunStatusQueued)
+	if err := store.EnqueueRun(context.Background(), run); err != nil {
+		t.Fatalf("enqueue run failed: %v", err)
+	}
+
+	transitions := []struct {
+		from cloud.RunStatus
+		to   cloud.RunStatus
+	}{
+		{from: cloud.RunStatusQueued, to: cloud.RunStatusClaimed},
+		{from: cloud.RunStatusClaimed, to: cloud.RunStatusRunning},
+		{from: cloud.RunStatusRunning, to: cloud.RunStatusSucceeded},
+	}
+
+	for _, transition := range transitions {
+		if err := store.TransitionRun(context.Background(), run.ID, transition.from, transition.to); err != nil {
+			t.Fatalf("transition %s->%s failed: %v", transition.from, transition.to, err)
+		}
+	}
+
+	recorded := store.RunTransitions(run.ID)
+	if len(recorded) != len(transitions) {
+		t.Fatalf("recorded transitions = %d, want %d", len(recorded), len(transitions))
+	}
+	for i, want := range transitions {
+		got := recorded[i]
+		if got.From != want.from || got.To != want.to {
+			t.Fatalf("transition[%d] = %s->%s, want %s->%s", i, got.From, got.To, want.from, want.to)
+		}
+		if got.UpdatedAt.IsZero() {
+			t.Fatalf("transition[%d] has zero UpdatedAt", i)
+		}
+	}
+
+	persisted, err := store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if persisted.Status != cloud.RunStatusSucceeded {
+		t.Fatalf("persisted run status = %q, want %q", persisted.Status, cloud.RunStatusSucceeded)
+	}
+}
+
+func TestCloudLifecycleHarnessStore_RecordsAttemptTerminalizations(t *testing.T) {
+	store := newCloudLifecycleHarnessStore()
+	run := newHarnessTestRun("run-attempt-001", cloud.RunStatusRunning)
+	if err := store.EnqueueRun(context.Background(), run); err != nil {
+		t.Fatalf("enqueue run failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	attempt := &cloud.Attempt{
+		ID:             "att-001",
+		RunID:          run.ID,
+		AttemptNumber:  1,
+		WorkerID:       "worker-1",
+		Status:         cloud.AttemptStatusActive,
+		StartedAt:      now,
+		HeartbeatAt:    now,
+		LeaseExpiresAt: now.Add(30 * time.Second),
+	}
+	if err := store.CreateAttempt(context.Background(), attempt); err != nil {
+		t.Fatalf("CreateAttempt failed: %v", err)
+	}
+
+	errorCode := "lease_lost"
+	errorMessage := "lease expired"
+	endedAt := now.Add(15 * time.Second)
+	if err := store.TransitionAttempt(context.Background(), attempt.ID, cloud.AttemptStatusFailed, endedAt, &errorCode, &errorMessage); err != nil {
+		t.Fatalf("TransitionAttempt failed: %v", err)
+	}
+
+	if got := store.AttemptTerminalizationCount(run.ID); got != 1 {
+		t.Fatalf("AttemptTerminalizationCount = %d, want 1", got)
+	}
+	terminalizations := store.AttemptTerminalizations(run.ID)
+	if len(terminalizations) != 1 {
+		t.Fatalf("terminalization records = %d, want 1", len(terminalizations))
+	}
+	record := terminalizations[0]
+	if record.AttemptID != attempt.ID {
+		t.Fatalf("record.AttemptID = %q, want %q", record.AttemptID, attempt.ID)
+	}
+	if record.Status != cloud.AttemptStatusFailed {
+		t.Fatalf("record.Status = %q, want %q", record.Status, cloud.AttemptStatusFailed)
+	}
+	if record.ErrorCode == nil || *record.ErrorCode != "lease_lost" {
+		t.Fatalf("record.ErrorCode = %v, want %q", record.ErrorCode, "lease_lost")
+	}
+	if record.ErrorMessage == nil || *record.ErrorMessage != "lease expired" {
+		t.Fatalf("record.ErrorMessage = %v, want %q", record.ErrorMessage, "lease expired")
+	}
+
+	errorCode = "mutated"
+	errorMessage = "mutated"
+	if record.ErrorCode == nil || *record.ErrorCode != "lease_lost" {
+		t.Fatalf("record.ErrorCode mutated unexpectedly: %v", record.ErrorCode)
+	}
+	if record.ErrorMessage == nil || *record.ErrorMessage != "lease expired" {
+		t.Fatalf("record.ErrorMessage mutated unexpectedly: %v", record.ErrorMessage)
+	}
+
+	persistedAttempt, err := store.GetAttempt(context.Background(), attempt.ID)
+	if err != nil {
+		t.Fatalf("GetAttempt failed: %v", err)
+	}
+	if persistedAttempt.Status != cloud.AttemptStatusFailed {
+		t.Fatalf("persisted attempt status = %q, want %q", persistedAttempt.Status, cloud.AttemptStatusFailed)
+	}
+	if _, err := store.GetActiveAttemptByRun(context.Background(), run.ID); !cloud.IsNotFound(err) {
+		t.Fatalf("expected active attempt to be cleared, got err = %v", err)
+	}
+}
+
+func TestCloudLifecycleHarnessStore_ExposesSnapshotRefs(t *testing.T) {
+	store := newCloudLifecycleHarnessStore()
+	run := newHarnessTestRun("run-snapshot-001", cloud.RunStatusQueued)
+	if err := store.EnqueueRun(context.Background(), run); err != nil {
+		t.Fatalf("enqueue run failed: %v", err)
+	}
+
+	inputSnapshotID := "snapshot-input-001"
+	latestSnapshotID := "snapshot-latest-002"
+	if err := store.UpdateRunSnapshotRefs(context.Background(), run.ID, &inputSnapshotID, &latestSnapshotID, 2); err != nil {
+		t.Fatalf("UpdateRunSnapshotRefs failed: %v", err)
+	}
+
+	refs, ok := store.SnapshotRefs(run.ID)
+	if !ok {
+		t.Fatalf("SnapshotRefs(%q) not found", run.ID)
+	}
+	if refs.InputSnapshotID == nil || *refs.InputSnapshotID != "snapshot-input-001" {
+		t.Fatalf("InputSnapshotID = %v, want %q", refs.InputSnapshotID, "snapshot-input-001")
+	}
+	if refs.LatestSnapshotID == nil || *refs.LatestSnapshotID != "snapshot-latest-002" {
+		t.Fatalf("LatestSnapshotID = %v, want %q", refs.LatestSnapshotID, "snapshot-latest-002")
+	}
+	if refs.LatestSnapshotVersion != 2 {
+		t.Fatalf("LatestSnapshotVersion = %d, want 2", refs.LatestSnapshotVersion)
+	}
+
+	inputSnapshotID = "mutated-input"
+	latestSnapshotID = "mutated-latest"
+	if refs.InputSnapshotID == nil || *refs.InputSnapshotID != "snapshot-input-001" {
+		t.Fatalf("InputSnapshotID mutated unexpectedly: %v", refs.InputSnapshotID)
+	}
+	if refs.LatestSnapshotID == nil || *refs.LatestSnapshotID != "snapshot-latest-002" {
+		t.Fatalf("LatestSnapshotID mutated unexpectedly: %v", refs.LatestSnapshotID)
+	}
+
+	if refs.InputSnapshotID != nil {
+		*refs.InputSnapshotID = "local-mutation"
+	}
+	freshRefs, ok := store.SnapshotRefs(run.ID)
+	if !ok {
+		t.Fatalf("SnapshotRefs(%q) missing on second read", run.ID)
+	}
+	if freshRefs.InputSnapshotID == nil || *freshRefs.InputSnapshotID != "snapshot-input-001" {
+		t.Fatalf("stored InputSnapshotID mutated unexpectedly: %v", freshRefs.InputSnapshotID)
+	}
+
+	persistedRun, err := store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if persistedRun.InputSnapshotID == nil || *persistedRun.InputSnapshotID != "snapshot-input-001" {
+		t.Fatalf("persisted run InputSnapshotID = %v, want %q", persistedRun.InputSnapshotID, "snapshot-input-001")
+	}
+	if persistedRun.LatestSnapshotID == nil || *persistedRun.LatestSnapshotID != "snapshot-latest-002" {
+		t.Fatalf("persisted run LatestSnapshotID = %v, want %q", persistedRun.LatestSnapshotID, "snapshot-latest-002")
+	}
+	if persistedRun.LatestSnapshotVersion != 2 {
+		t.Fatalf("persisted run LatestSnapshotVersion = %d, want 2", persistedRun.LatestSnapshotVersion)
+	}
 }
 
 func TestCloudLifecycleIntegrationHarness_IsolatedStatePerInvocation(t *testing.T) {
