@@ -5,6 +5,7 @@
 - Use `resolveWorkerSandboxImage(flagImage)` to ensure `ProvisionConfig.Image` is always non-empty — returns `defaultWorkerSandboxImage` (`"ubuntu:22.04"`) when flag is empty.
 - Postgres/Turso ClaimRun uses `FOR UPDATE SKIP LOCKED` subquery pattern for atomic claim — modifications go in the outer UPDATE SET clause.
 - Integration tests behind `//go:build integration` tags need `go vet -tags=integration` to verify compilation since default `go test ./...` skips them.
+- Keep worker lifecycle suite invocation centralized in `make test-integration-worker-lifecycle`; CI and docs should call this target instead of duplicating the raw `go test -tags=integration -run '^TestWorkerLifecycle' ./cmd` command.
 - Worker lifecycle JSON contract assertions should come from shared fixtures (`workerLifecycleJSONContractFixtures` for status/logs/pull) and use `mustDecodeWorkerLifecycleJSONOutput` so required keys stay camelCase and matrix-wide.
 - For worker lifecycle JSON assertions, use `assertWorkerLifecycleCheckpointJSONContract` for status/logs/pull and `assertWorkerLifecycleCanonicalJSONContract` for migrated workflow submit payloads (`run/auto/review`) so snake_case alias regressions fail fast.
 - New cmd integration suites should start with a dedicated `*_integration_test.go` scaffold file that defines a top-level `Test<Feature>Integration` entrypoint; expand scenarios in additional tagged files.
@@ -697,4 +698,21 @@
   - Use `assertWorkerLifecycleCanonicalJSONContract` for migrated workflow submit outputs (`run/auto/review`) to require canonical camelCase keys and fail fast when legacy snake_case aliases reappear.
   - Route status/logs/pull JSON checks through `assertWorkerLifecycleCheckpointJSONContract` so fixture updates automatically propagate to every adapter/workflow scenario.
   - Include `logs --json` assertions in failure-path scenarios that seed timeline events (lease_lost/profile_revoked) to keep logs contract coverage active across the matrix.
+---
+
+## 2026-02-13 15:06 CST - T-013
+- Added a dedicated Makefile target `test-integration-worker-lifecycle` that runs only worker lifecycle integration tests via `-tags=integration` and `-run '^TestWorkerLifecycle'`.
+- Wired CI pull-request checks to invoke the new canonical worker lifecycle target while keeping the existing cloud lifecycle integration step unchanged.
+- Updated repository docs to point to `make test-integration-worker-lifecycle` as the canonical worker lifecycle invocation.
+- Files changed:
+  - `Makefile`
+  - `.github/workflows/ci.yml`
+  - `README.md`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep integration-suite commands centralized in Make targets, then call those targets from CI/docs to prevent regex/build-tag drift.
+  - Maintain separate Make targets per suite (`worker` vs `cloud`) so PR checks can add/remove suites independently without editing raw `go test` command strings.
+  - After introducing a new integration target, run both the new and existing suite targets to verify no regressions in shared `./cmd` integration wiring.
 ---

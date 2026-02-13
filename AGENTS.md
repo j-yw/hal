@@ -16,6 +16,7 @@
 - `make lint`: run `golangci-lint` if installed.
 - `make run ARGS='--help'`: build and run with arguments.
 - Integration tests: `go test -tags=integration ./internal/engine/codex/...` (requires the Codex CLI).
+- Worker lifecycle integration suite: `make test-integration-worker-lifecycle` (runs `go test -tags=integration -v -run '^TestWorkerLifecycle' ./cmd`).
 - Cloud lifecycle integration suite: `make test-integration-cloud-lifecycle` (runs `go test -tags=integration -v -run '^TestCloudLifecycle' ./cmd`).
 
 ## Coding Style & Naming Conventions
@@ -144,6 +145,7 @@
 - For lifecycle security coverage, seed secret-bearing values (for example in run IDs or log payloads) and assert redaction through shared helpers (`assertLifecycleOutputRedacted`, `assertLifecycleJSONOutputRedacted`) in both human and `--json` command paths.
 - Keep auth JSON contract checks explicit in integration tests by asserting required camelCase keys (`profileId`, `validatedAt`, `revokedAt`) and rejecting snake_case aliases for commands that already migrated.
 - Keep the lifecycle integration invocation centralized in `make test-integration-cloud-lifecycle` and have CI pull-request checks call that target directly to prevent command drift.
+- Keep worker lifecycle integration invocation centralized in `make test-integration-worker-lifecycle` and have CI pull-request checks call that target so worker-suite regex/build-tag wiring does not drift.
 - For worker lifecycle integration suites, use a shared `runWorkerLifecycleAdapterMatrix` helper with adapter fixtures (`postgres`, `turso`) and `adapter/scenario` subtest names; each case should create its own `setupCloudLifecycleIntegrationHarness(t)` and register teardown via `t.Cleanup` to avoid cross-adapter global factory leakage.
 - Success-path worker lifecycle scenarios can stay deterministic without a live worker by seeding harness state in order (`TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt`, then `PutSnapshot` for the latest artifacts before `UpdateRunSnapshotRefs`) and asserting through harness query helpers (`RunTransitions`, `AttemptTerminalizations`, `SnapshotRefs`) plus pull restoration checks.
 - Cancel-path worker lifecycle scenarios should seed a `running` run with one active attempt before invoking `cloud cancel`, then record exactly one terminal `TransitionAttempt(..., canceled, ...)` and assert both `AttemptTerminalizationCount(runID) == 1` and persisted `cancel_requested/status=canceled` invariants.
