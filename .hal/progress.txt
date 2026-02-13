@@ -9,6 +9,7 @@
 - For workflow-matrix integration suites, define one shared flow-step template (e.g., setup/submit/status/logs/pull/cancel) using placeholders like `<workflow-command>` and `<run-id>`, then resolve placeholders per scenario to avoid drift.
 - For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
 - Worker lifecycle harness stores should override `TransitionRun` + `TransitionAttempt` and expose query helpers (`RunTransitions`, `AttemptTerminalizations`, `AttemptTerminalizationCount`, `SnapshotRefs`) so scenarios can assert lifecycle invariants deterministically without poking raw maps.
+- For deterministic success-path worker lifecycle scenarios without a live worker loop, seed harness state in order: `TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt(succeeded)`, then `UpdateRunSnapshotRefs`; assert via `RunTransitions`, `AttemptTerminalizations`, and `SnapshotRefs`.
 - Use `h.SeedTimelineEvents(t, runID, ...)` for lifecycle log fixtures instead of direct `h.Store.InsertEvent` calls — it centralizes default event IDs/run wiring and keeps payload pointers cloned for mutation-safe assertions.
 - Capture/restore package-level lifecycle factories with `snapshotCloudLifecycleHarnessFactories` + `restoreCloudLifecycleHarnessFactories`; harness setup must register teardown via `t.Cleanup` to prevent global factory leakage across integration subtests.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
@@ -577,4 +578,19 @@
   - Prefer harness-level seeding helpers for timeline events so logs scenarios stay concise and consistent on IDs/run wiring.
   - Centralized factory snapshot/restore helpers make teardown coverage explicit and reduce the chance of leaving global command factories overridden between tests.
   - Keep a dedicated restoration test (`RestoresFactoriesViaTCleanup`) to guard against future harness setup refactors that might accidentally skip cleanup registration.
+---
+
+## 2026-02-13 14:24 CST - T-006
+- Implemented worker lifecycle success scenarios across run/auto/review workflows using shared flow fixtures and adapter matrix execution (`postgres`, `turso`).
+- Added deterministic success-state seeding helper that transitions run state to terminal success, records terminal attempt success, and updates snapshot refs for assertion-ready harness state.
+- Added assertions that status output reflects terminal success, final attempt terminalization is `succeeded`, and persisted snapshot refs are present/queryable via harness helpers.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_success_scenario_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - For deterministic worker success scenarios, seed lifecycle state in harness order (`queued->claimed->running->succeeded`, terminal attempt transition, snapshot ref update) before asserting command outputs.
+  - Reuse `workerLifecycleWorkflowFixtures` + `workerLifecycleFlowForWorkflow` with `runWorkerLifecycleAdapterMatrix` so each new scenario automatically covers run/auto/review across both adapters.
+  - Validate both command output (`status --json`) and harness persistence (`RunTransitions`, `AttemptTerminalizations`, `SnapshotRefs`) to keep output and state invariants aligned.
 ---
