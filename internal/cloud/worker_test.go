@@ -1384,9 +1384,11 @@ func TestHandleSetupFailure_SetupFailureCallOrder(t *testing.T) {
 	// 2. provision (fails)
 	// 3. transition_attempt:failed (from handleSetupFailure)
 	// 4. transition_run:running->failed (from handleSetupFailure)
+	// 5. release_auth_lock (from handleSetupFailure)
 	wantSuffix := []string{
 		"transition_attempt:failed",
 		"transition_run:running->failed",
+		"release_auth_lock",
 	}
 
 	if len(log.calls) < len(wantSuffix) {
@@ -2933,7 +2935,7 @@ func TestCleanup_HandleLeaseLost_UsesBackgroundContext(t *testing.T) {
 	cancel()
 
 	// Call handleLeaseLost with the canceled context.
-	pipeline.handleLeaseLost(ctx, "run-1", "profile-1", "sandbox-1")
+	pipeline.handleLeaseLost(ctx, "run-1", "profile-1")
 
 	// All cleanup operations should have received a live (non-canceled) context
 	// because handleLeaseLost creates its own context.Background() with timeout.
@@ -2955,19 +2957,6 @@ func TestCleanup_HandleLeaseLost_UsesBackgroundContext(t *testing.T) {
 		if !seen {
 			t.Errorf("expected %s to be called with live context", op)
 		}
-	}
-
-	// Verify DestroySandbox also got a live context.
-	rnr.mu.Lock()
-	rnrCanceled := append([]string{}, rnr.canceledCtxSeen...)
-	rnrLive := append([]string{}, rnr.liveCtxSeen...)
-	rnr.mu.Unlock()
-
-	if len(rnrCanceled) > 0 {
-		t.Errorf("DestroySandbox received canceled context: %v", rnrCanceled)
-	}
-	if len(rnrLive) == 0 {
-		t.Error("expected DestroySandbox to be called with live context")
 	}
 }
 
@@ -3004,7 +2993,7 @@ func TestCleanup_HandleProfileRevoked_UsesBackgroundContext(t *testing.T) {
 	cancel()
 
 	// Call handleProfileRevoked with the canceled context.
-	pipeline.handleProfileRevoked(ctx, "run-1", "sandbox-1")
+	pipeline.handleProfileRevoked(ctx, "run-1")
 
 	// All cleanup operations should have received a live context.
 	store.mu.Lock()
@@ -3027,18 +3016,8 @@ func TestCleanup_HandleProfileRevoked_UsesBackgroundContext(t *testing.T) {
 		t.Error("expected TransitionRun to be called with live context")
 	}
 
-	// DestroySandbox should have been called with live context.
-	rnr.mu.Lock()
-	rnrCanceled := append([]string{}, rnr.canceledCtxSeen...)
-	rnrLive := append([]string{}, rnr.liveCtxSeen...)
-	rnr.mu.Unlock()
-
-	if len(rnrCanceled) > 0 {
-		t.Errorf("DestroySandbox received canceled context: %v", rnrCanceled)
-	}
-	if len(rnrLive) == 0 {
-		t.Error("expected DestroySandbox to be called with live context")
-	}
+	// Sandbox teardown is now handled by the deferred destroySandboxBestEffort
+	// in executeAttempt, so handleProfileRevoked does not call DestroySandbox.
 
 	// Verify ReleaseAuthLock was NOT called (profile_revoked path doesn't release it).
 	store.mu.Lock()
@@ -3082,7 +3061,7 @@ func TestCleanup_HandleSetupFailure_UsesBackgroundContext(t *testing.T) {
 	cancel()
 
 	// Call handleSetupFailure with the canceled context.
-	pipeline.handleSetupFailure(ctx, "run-1", "attempt-1", RunStatusRunning, "provision", fmt.Errorf("sandbox creation failed"))
+	pipeline.handleSetupFailure(ctx, "run-1", "attempt-1", "profile-1", RunStatusRunning, "provision", fmt.Errorf("sandbox creation failed"))
 
 	// All cleanup operations should have received a live context.
 	store.mu.Lock()
@@ -3094,8 +3073,8 @@ func TestCleanup_HandleSetupFailure_UsesBackgroundContext(t *testing.T) {
 		t.Errorf("cleanup operations received canceled context: %v", canceledOps)
 	}
 
-	// Both TransitionAttempt and TransitionRun should have been called with live context.
-	wantOps := map[string]bool{"TransitionAttempt": false, "TransitionRun": false}
+	// TransitionAttempt, TransitionRun, and ReleaseAuthLock should have been called with live context.
+	wantOps := map[string]bool{"TransitionAttempt": false, "TransitionRun": false, "ReleaseAuthLock": false}
 	for _, op := range liveOps {
 		wantOps[op] = true
 	}
@@ -3586,7 +3565,7 @@ func TestHandleLeaseLost_ToleratesErrNotFoundForAuthLock(t *testing.T) {
 	p := newTestWorkerPipeline(t, store, rnr)
 
 	// handleLeaseLost should not panic or fail for ErrNotFound on auth lock release.
-	p.handleLeaseLost(context.Background(), "run-1", "profile-1", "sandbox-1")
+	p.handleLeaseLost(context.Background(), "run-1", "profile-1")
 
 	// Verify ReleaseAuthLock was called.
 	store.mu.Lock()
@@ -3594,14 +3573,6 @@ func TestHandleLeaseLost_ToleratesErrNotFoundForAuthLock(t *testing.T) {
 	store.mu.Unlock()
 	if lockCalls != 1 {
 		t.Errorf("expected 1 ReleaseAuthLock call, got %d", lockCalls)
-	}
-
-	// Verify sandbox cleanup still ran despite auth lock ErrNotFound.
-	rnr.mu.Lock()
-	destroyCalls := len(rnr.destroySandboxCalls)
-	rnr.mu.Unlock()
-	if destroyCalls != 1 {
-		t.Errorf("expected 1 DestroySandbox call, got %d", destroyCalls)
 	}
 }
 
@@ -3612,16 +3583,16 @@ func TestHandleLeaseLost_AuthLockOtherErrorStillCleansUp(t *testing.T) {
 
 	p := newTestWorkerPipeline(t, store, rnr)
 
-	// handleLeaseLost is best-effort — non-ErrNotFound errors are handled
-	// internally, and cleanup still proceeds (sandbox teardown).
-	p.handleLeaseLost(context.Background(), "run-1", "profile-1", "sandbox-1")
+	// handleLeaseLost is best-effort — non-ErrNotFound errors from auth lock
+	// release are handled internally.
+	p.handleLeaseLost(context.Background(), "run-1", "profile-1")
 
-	// Verify sandbox cleanup still ran.
-	rnr.mu.Lock()
-	destroyCalls := len(rnr.destroySandboxCalls)
-	rnr.mu.Unlock()
-	if destroyCalls != 1 {
-		t.Errorf("expected 1 DestroySandbox call, got %d", destroyCalls)
+	// Verify ReleaseAuthLock was called despite error.
+	store.mu.Lock()
+	lockCalls := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if lockCalls != 1 {
+		t.Errorf("expected 1 ReleaseAuthLock call, got %d", lockCalls)
 	}
 }
 
@@ -4599,4 +4570,496 @@ func TestRunLoop_LongProcessOneDelaysMaintenanceTicks(t *testing.T) {
 	count := reconcileCalls
 	mu.Unlock()
 	t.Logf("reconcile calls during test: %d (v1 behavior: long ProcessOne may delay maintenance ticks)", count)
+}
+
+// --- Sandbox teardown on all exit paths ---
+
+func TestSandboxTeardown_SuccessfulExecution(t *testing.T) {
+	// On successful execution (exit code 0), the sandbox must be destroyed
+	// by the deferred cleanup in executeAttempt.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rnr.mu.Lock()
+	destroyCalls := len(rnr.destroySandboxCalls)
+	rnr.mu.Unlock()
+	if destroyCalls != 1 {
+		t.Errorf("DestroySandbox calls = %d, want 1", destroyCalls)
+	}
+}
+
+func TestSandboxTeardown_FailedExecution(t *testing.T) {
+	// On non-zero exit code, the sandbox must be destroyed.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.execOverrides["hal run"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 1, Stderr: "test failure"},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rnr.mu.Lock()
+	destroyCalls := len(rnr.destroySandboxCalls)
+	rnr.mu.Unlock()
+	if destroyCalls != 1 {
+		t.Errorf("DestroySandbox calls = %d, want 1", destroyCalls)
+	}
+}
+
+func TestSandboxTeardown_SetupFailureAfterProvision(t *testing.T) {
+	// When bootstrap fails after provisioning, the sandbox must still be destroyed.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	// Fail the bootstrap git clone.
+	rnr.execOverrides["git clone"] = execOverride{
+		err: fmt.Errorf("clone timeout"),
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error from bootstrap failure")
+	}
+
+	rnr.mu.Lock()
+	destroyCalls := len(rnr.destroySandboxCalls)
+	rnr.mu.Unlock()
+	if destroyCalls != 1 {
+		t.Errorf("DestroySandbox calls = %d, want 1 (sandbox leaked after setup failure)", destroyCalls)
+	}
+}
+
+func TestSandboxTeardown_ProvisionFailureNoSandbox(t *testing.T) {
+	// When provision itself fails, no sandbox was created. DestroySandbox
+	// must NOT be called (sandboxID is empty).
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.createErr = fmt.Errorf("quota exceeded")
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error from provision failure")
+	}
+
+	rnr.mu.Lock()
+	destroyCalls := len(rnr.destroySandboxCalls)
+	rnr.mu.Unlock()
+	if destroyCalls != 0 {
+		t.Errorf("DestroySandbox calls = %d, want 0 (no sandbox to destroy)", destroyCalls)
+	}
+}
+
+func TestSandboxTeardown_LeaseLost(t *testing.T) {
+	// When lease is lost during setup, sandbox must still be destroyed.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.heartbeatErr = ErrLeaseExpired
+	store.heartbeatErrAfter = 0
+	baseRnr := newWorkerMockRunner(nil)
+	gate := make(chan struct{})
+	rnr := &slowProvisionRunner{workerMockRunner: baseRnr, gate: gate}
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               NewClaimService(store, ClaimConfig{IDFunc: func() string { return "attempt-1" }}),
+		Provision:           NewProvisionService(store, rnr, ProvisionConfig{Image: "test-image:latest"}),
+		Bootstrap:           NewBootstrapService(store, rnr, BootstrapConfig{}),
+		AuthMaterialization: NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{}),
+		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
+		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
+		Cancel:              NewCancellationService(store, CancellationConfig{}),
+		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for heartbeat to detect lease loss, then unblock provision.
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+	<-done
+
+	baseRnr.mu.Lock()
+	destroyCalls := len(baseRnr.destroySandboxCalls)
+	baseRnr.mu.Unlock()
+	if destroyCalls != 1 {
+		t.Errorf("DestroySandbox calls = %d, want 1", destroyCalls)
+	}
+}
+
+// --- Auth lock release on normal exit paths ---
+
+func TestAuthLockRelease_SuccessfulExecution(t *testing.T) {
+	// On exit code 0, the auth lock must be released.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	store.mu.Lock()
+	lockCalls := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if lockCalls != 1 {
+		t.Errorf("ReleaseAuthLock calls = %d, want 1", lockCalls)
+	}
+}
+
+func TestAuthLockRelease_FailedExecution(t *testing.T) {
+	// On non-zero exit code, the auth lock must be released.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.execOverrides["hal run"] = execOverride{
+		result: &runner.ExecResult{ExitCode: 1, Stderr: "fail"},
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	store.mu.Lock()
+	lockCalls := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if lockCalls != 1 {
+		t.Errorf("ReleaseAuthLock calls = %d, want 1", lockCalls)
+	}
+}
+
+// --- Heartbeat active during execution ---
+
+func TestHeartbeat_ActiveDuringExecution(t *testing.T) {
+	// Verify heartbeat ticks continue to fire while execution is blocked,
+	// proving the heartbeat loop runs concurrently with the execution step.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	baseRnr := newWorkerMockRunner(nil)
+
+	// Use a channel-gated exec override for "hal run" to block execution.
+	execGate := make(chan struct{})
+	gatedRnr := &gatedExecRunner{
+		workerMockRunner: baseRnr,
+		gateCommand:      "hal run",
+		gate:             execGate,
+	}
+
+	heartbeat := NewHeartbeatService(store, HeartbeatConfig{})
+	cancelSvc := NewCancellationService(store, CancellationConfig{})
+	claim := NewClaimService(store, ClaimConfig{
+		IDFunc: func() string { return "attempt-1" },
+	})
+	provision := NewProvisionService(store, gatedRnr, ProvisionConfig{Image: "test-image:latest"})
+	bootstrap := NewBootstrapService(store, gatedRnr, BootstrapConfig{})
+	authMat := NewAuthMaterializationService(store, gatedRnr, AuthMaterializationConfig{})
+	preflight := NewPreflightService(store, gatedRnr, PreflightConfig{})
+	checkpoint := NewCheckpointService(store, nil, CheckpointConfig{})
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              gatedRnr,
+		WorkerID:            "worker-1",
+		Claim:               claim,
+		Provision:           provision,
+		Bootstrap:           bootstrap,
+		AuthMaterialization: authMat,
+		Preflight:           preflight,
+		Checkpoint:          checkpoint,
+		Execution:           NewExecutionService(store, gatedRnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
+		Cancel:              cancelSvc,
+		Heartbeat:           heartbeat,
+		HeartbeatInterval:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.ProcessOne(context.Background())
+	}()
+
+	// Wait for heartbeat ticks to accumulate while execution is blocked.
+	// We need to see ticks AFTER setup completes (provision/bootstrap/etc
+	// pass instantly) — i.e., during the execution step itself.
+	deadline := time.After(2 * time.Second)
+	for {
+		store.mu.Lock()
+		count := len(store.heartbeatCalls)
+		store.mu.Unlock()
+		if count >= 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			store.mu.Lock()
+			c := len(store.heartbeatCalls)
+			store.mu.Unlock()
+			t.Fatalf("timed out waiting for heartbeat calls during execution, got %d", c)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Unblock execution and let the pipeline finish.
+	close(execGate)
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessOne: %v", err)
+	}
+}
+
+// gatedExecRunner wraps workerMockRunner and blocks Exec for a specific
+// command prefix until a release signal is received.
+type gatedExecRunner struct {
+	*workerMockRunner
+	gateCommand string
+	gate        chan struct{}
+}
+
+func (r *gatedExecRunner) Exec(ctx context.Context, sandboxID string, req *runner.ExecRequest) (*runner.ExecResult, error) {
+	if strings.HasPrefix(req.Command, r.gateCommand) {
+		select {
+		case <-r.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return r.workerMockRunner.Exec(ctx, sandboxID, req)
+}
+
+// --- OnError callback in RunLoop ---
+
+func TestRunLoop_OnErrorCallbackInvoked(t *testing.T) {
+	// Verify that OnError is called when ProcessOne returns an operational error.
+	store := newWorkerMockStore()
+	store.claimErr = fmt.Errorf("database unreachable")
+	rnr := newWorkerMockRunner(nil)
+
+	var mu sync.Mutex
+	var errors []error
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               NewClaimService(store, ClaimConfig{IDFunc: func() string { return "a-1" }}),
+		Provision:           NewProvisionService(store, rnr, ProvisionConfig{Image: "img"}),
+		Bootstrap:           NewBootstrapService(store, rnr, BootstrapConfig{}),
+		AuthMaterialization: NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{}),
+		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
+		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
+		Cancel:              NewCancellationService(store, CancellationConfig{}),
+		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
+		HeartbeatInterval:   50 * time.Millisecond,
+		OnError: func(err error) {
+			mu.Lock()
+			errors = append(errors, err)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go pipeline.RunLoop(ctx, RunLoopConfig{
+		PollInterval:      20 * time.Millisecond,
+		ReconcileInterval: 10 * time.Second,
+		TimeoutInterval:   10 * time.Second,
+	})
+
+	// Wait for errors to accumulate.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	mu.Lock()
+	count := len(errors)
+	mu.Unlock()
+	if count == 0 {
+		t.Error("expected OnError to be called at least once")
+	}
+}
+
+func TestRunLoop_NilOnErrorDoesNotPanic(t *testing.T) {
+	// Verify RunLoop does not panic when OnError is nil and errors occur.
+	store := newWorkerMockStore()
+	store.claimErr = fmt.Errorf("database unreachable")
+	rnr := newWorkerMockRunner(nil)
+
+	pipeline, err := NewWorkerPipeline(WorkerPipelineConfig{
+		Store:               store,
+		Runner:              rnr,
+		WorkerID:            "worker-1",
+		Claim:               NewClaimService(store, ClaimConfig{IDFunc: func() string { return "a-1" }}),
+		Provision:           NewProvisionService(store, rnr, ProvisionConfig{Image: "img"}),
+		Bootstrap:           NewBootstrapService(store, rnr, BootstrapConfig{}),
+		AuthMaterialization: NewAuthMaterializationService(store, rnr, AuthMaterializationConfig{}),
+		Preflight:           NewPreflightService(store, rnr, PreflightConfig{}),
+		Checkpoint:          NewCheckpointService(store, nil, CheckpointConfig{}),
+		Execution:           NewExecutionService(store, rnr, ExecutionConfig{}),
+		Snapshot:            NewSnapshotService(store, SnapshotServiceConfig{}),
+		Cancel:              NewCancellationService(store, CancellationConfig{}),
+		Heartbeat:           NewHeartbeatService(store, HeartbeatConfig{}),
+		HeartbeatInterval:   50 * time.Millisecond,
+		// OnError intentionally nil.
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerPipeline: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go pipeline.RunLoop(ctx, RunLoopConfig{
+		PollInterval:      20 * time.Millisecond,
+		ReconcileInterval: 10 * time.Second,
+		TimeoutInterval:   10 * time.Second,
+	})
+
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	// If we reach here without panic, the test passes.
+}
+
+// --- destroySandboxBestEffort ---
+
+func TestDestroySandboxBestEffort_EmptyIDSkipsCall(t *testing.T) {
+	rnr := newWorkerMockRunner(nil)
+	store := newWorkerMockStore()
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	pipeline.destroySandboxBestEffort("")
+
+	rnr.mu.Lock()
+	calls := len(rnr.destroySandboxCalls)
+	rnr.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("DestroySandbox calls = %d, want 0 for empty sandbox ID", calls)
+	}
+}
+
+func TestDestroySandboxBestEffort_NonEmptyIDCallsDestroy(t *testing.T) {
+	rnr := newWorkerMockRunner(nil)
+	store := newWorkerMockStore()
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	pipeline.destroySandboxBestEffort("sandbox-xyz")
+
+	rnr.mu.Lock()
+	calls := rnr.destroySandboxCalls
+	rnr.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("DestroySandbox calls = %d, want 1", len(calls))
+	}
+	if calls[0] != "sandbox-xyz" {
+		t.Errorf("DestroySandbox ID = %q, want %q", calls[0], "sandbox-xyz")
+	}
+}
+
+// --- Auth lock release on setup failures ---
+
+func TestAuthLockRelease_BootstrapFailure(t *testing.T) {
+	// When bootstrap fails, the auth lock must be released by handleSetupFailure.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.execOverrides["git clone"] = execOverride{
+		err: fmt.Errorf("clone timeout"),
+	}
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error from bootstrap failure")
+	}
+
+	store.mu.Lock()
+	lockCalls := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if lockCalls != 1 {
+		t.Errorf("ReleaseAuthLock calls = %d, want 1 (auth lock leaked on setup failure)", lockCalls)
+	}
+}
+
+func TestAuthLockRelease_ProvisionFailure(t *testing.T) {
+	// When provision fails, the auth lock must be released by handleSetupFailure.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	rnr := newWorkerMockRunner(nil)
+	rnr.createErr = fmt.Errorf("quota exceeded")
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error from provision failure")
+	}
+
+	store.mu.Lock()
+	lockCalls := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if lockCalls != 1 {
+		t.Errorf("ReleaseAuthLock calls = %d, want 1 (auth lock leaked on provision failure)", lockCalls)
+	}
+}
+
+func TestAuthLockRelease_TransitionToRunningFailure(t *testing.T) {
+	// When TransitionRun(claimed→running) fails, the auth lock must still
+	// be released by handleSetupFailure.
+	store := newWorkerMockStore()
+	store.claimedRun = testClaimedRun()
+	store.transErr = fmt.Errorf("transition conflict")
+	rnr := newWorkerMockRunner(nil)
+
+	pipeline := newTestWorkerPipeline(t, store, rnr)
+
+	err := pipeline.ProcessOne(context.Background())
+	if err == nil {
+		t.Fatal("expected error from transition failure")
+	}
+
+	store.mu.Lock()
+	lockCalls := len(store.releaseAuthLockCalls)
+	store.mu.Unlock()
+	if lockCalls != 1 {
+		t.Errorf("ReleaseAuthLock calls = %d, want 1 (auth lock leaked on transition failure)", lockCalls)
+	}
 }

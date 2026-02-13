@@ -18,6 +18,11 @@ func IsNoWork(err error) bool {
 	return err == ErrNoWork
 }
 
+// ErrorFunc is an optional callback for reporting operational errors from
+// the worker loop. When non-nil, RunLoop invokes it for each non-nil,
+// non-ErrNoWork error from ProcessOne, Reconcile, or EnforceTimeouts.
+type ErrorFunc func(err error)
+
 // WorkerPipelineConfig holds the dependencies and settings for WorkerPipeline.
 type WorkerPipelineConfig struct {
 	// Store is the persistence backend (required).
@@ -65,6 +70,9 @@ type WorkerPipelineConfig struct {
 	// Timeout is the service used to detect and fail overdue runs (optional).
 	// When nil, timeout enforcement ticks are skipped in RunLoop.
 	Timeout *TimeoutService
+	// OnError is called for each operational error in the worker loop (optional).
+	// When nil, errors are silently discarded.
+	OnError ErrorFunc
 	// GitUsername is the HTTPS auth username for clone/push (optional).
 	GitUsername string
 	// GitPassword is the HTTPS auth password/token for clone/push (optional).
@@ -94,6 +102,7 @@ type WorkerPipeline struct {
 	prCreatorFunc       func(sandboxID, authDir string) PRCreator
 	reconciler          *ReconcilerService
 	timeout             *TimeoutService
+	onError             ErrorFunc
 	gitUsername         string
 	gitPassword         string
 }
@@ -164,6 +173,7 @@ func NewWorkerPipeline(cfg WorkerPipelineConfig) (*WorkerPipeline, error) {
 		prCreatorFunc:       cfg.PRCreatorFunc,
 		reconciler:          cfg.Reconciler,
 		timeout:             cfg.Timeout,
+		onError:             cfg.OnError,
 		gitUsername:         cfg.GitUsername,
 		gitPassword:         cfg.GitPassword,
 	}, nil
@@ -205,6 +215,9 @@ type heartbeatResult struct {
 // services in a deterministic order: provision -> bootstrap ->
 // auth materialization -> preflight. A heartbeat goroutine runs
 // throughout setup and execution until terminal routing begins.
+//
+// Sandbox cleanup is guaranteed via a deferred destroySandboxBestEffort call
+// that fires whenever provisioning succeeded, regardless of the exit path.
 func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult) error {
 	run := claim.Run
 	attempt := claim.Attempt
@@ -215,15 +228,23 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 	// Track current run status for status-aware failure transitions.
 	currentStatus := RunStatusClaimed
 
+	// sandboxID is set after successful provisioning. The deferred cleanup
+	// uses this value to destroy the sandbox on all exit paths.
+	var sandboxID string
+	defer func() {
+		p.destroySandboxBestEffort(sandboxID)
+	}()
+
 	// Step 1: Transition run from claimed to running before any setup work.
 	if err := p.store.TransitionRun(ctx, run.ID, RunStatusClaimed, RunStatusRunning); err != nil {
-		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "transitioning run to running", err)
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, run.AuthProfileID, currentStatus, "transitioning run to running", err)
 		return fmt.Errorf("transitioning run to running: %w", err)
 	}
 	currentStatus = RunStatusRunning
 
 	// Start heartbeat loop after transitioning to running. The heartbeat
-	// remains active through setup and execution until stopHeartbeat is called.
+	// remains active through setup and execution until terminal routing
+	// stops it.
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	hbResult, heartbeatDone := p.startHeartbeat(heartbeatCtx, attempt.ID, run.AuthProfileID, run.ID)
 	defer func() {
@@ -234,9 +255,10 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 	// Step 2: Provision -- create sandbox.
 	provResult, err := p.provision.Provision(ctx, attempt.ID, run.ID)
 	if err != nil {
-		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "provision", err)
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, run.AuthProfileID, currentStatus, "provision", err)
 		return fmt.Errorf("provision failed: %w", err)
 	}
+	sandboxID = provResult.SandboxID
 
 	// Step 3: Bootstrap -- clone repo, checkout branch, run hal init.
 	if err := p.bootstrap.Bootstrap(ctx, &BootstrapRequest{
@@ -250,7 +272,7 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		GitUsername:   p.gitUsername,
 		GitPassword:   p.gitPassword,
 	}); err != nil {
-		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "bootstrap", err)
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, run.AuthProfileID, currentStatus, "bootstrap", err)
 		return fmt.Errorf("bootstrap failed: %w", err)
 	}
 
@@ -261,7 +283,7 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		AttemptID:     attempt.ID,
 		RunID:         run.ID,
 	}); err != nil {
-		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "auth materialization", err)
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, run.AuthProfileID, currentStatus, "auth materialization", err)
 		return fmt.Errorf("auth materialization failed: %w", err)
 	}
 
@@ -272,27 +294,12 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		AttemptID:     attempt.ID,
 		RunID:         run.ID,
 	}); err != nil {
-		p.handleSetupFailure(ctx, run.ID, attempt.ID, currentStatus, "preflight", err)
+		p.handleSetupFailure(ctx, run.ID, attempt.ID, run.AuthProfileID, currentStatus, "preflight", err)
 		return fmt.Errorf("preflight failed: %w", err)
 	}
 
-	// Check if heartbeat detected lease_lost or profile_revoked during
-	// setup/execution. Stop the heartbeat first so we can safely read
-	// the result.
-	stopHeartbeat()
-	<-heartbeatDone
-
-	if hbResult.LeaseLost {
-		p.handleLeaseLost(ctx, run.ID, run.AuthProfileID, provResult.SandboxID)
-		return fmt.Errorf("lease lost during execution")
-	}
-
-	if hbResult.ProfileRevoked {
-		p.handleProfileRevoked(ctx, run.ID, provResult.SandboxID)
-		return fmt.Errorf("profile revoked during execution")
-	}
-
-	// Step 6: Execute -- run Hal in the sandbox.
+	// Step 6: Execute -- run Hal in the sandbox. The heartbeat continues
+	// running throughout execution to keep the lease alive.
 	execResult, err := p.execution.Execute(ctx, &ExecutionRequest{
 		SandboxID:    provResult.SandboxID,
 		AttemptID:    attempt.ID,
@@ -300,6 +307,21 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 		WorkflowKind: run.WorkflowKind,
 		Mode:         ExecutionModeUntilComplete,
 	})
+
+	// Stop heartbeat and check for async terminal signals before routing
+	// the execution result.
+	stopHeartbeat()
+	<-heartbeatDone
+
+	if hbResult.LeaseLost {
+		p.handleLeaseLost(ctx, run.ID, run.AuthProfileID)
+		return fmt.Errorf("lease lost during execution")
+	}
+
+	if hbResult.ProfileRevoked {
+		p.handleProfileRevoked(ctx, run.ID)
+		return fmt.Errorf("profile revoked during execution")
+	}
 
 	prCtx := &prContext{
 		repo:          run.Repo,
@@ -311,11 +333,11 @@ func (p *WorkerPipeline) executeAttempt(ctx context.Context, claim *ClaimResult)
 
 	if err != nil {
 		// Runner API error -- treat as non-retryable failure.
-		p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, -1, prCtx)
+		p.handleExecutionResult(ctx, run.ID, attempt.ID, run.AuthProfileID, run.WorkflowKind, -1, prCtx)
 		return fmt.Errorf("execution failed: %w", err)
 	}
 
-	p.handleExecutionResult(ctx, run.ID, attempt.ID, provResult.SandboxID, run.AuthProfileID, run.WorkflowKind, execResult.ExitCode, prCtx)
+	p.handleExecutionResult(ctx, run.ID, attempt.ID, run.AuthProfileID, run.WorkflowKind, execResult.ExitCode, prCtx)
 
 	return nil
 }
@@ -380,11 +402,14 @@ const cleanupTimeout = 30 * time.Second
 // handleLeaseLost handles the lease_lost terminal path. The HeartbeatService
 // has already transitioned the attempt to failed (with error_code "lease_lost"),
 // so this method must NOT emit a duplicate TransitionAttempt. It transitions
-// the run to failed and performs cleanup (auth lock release, sandbox teardown).
+// the run to failed and releases the auth lock.
+//
+// Sandbox teardown is handled by the deferred destroySandboxBestEffort in
+// executeAttempt, so this method does not need to destroy the sandbox.
 //
 // Cleanup uses context.Background() with a timeout so it can complete even
 // when the parent context is already canceled (e.g., during graceful shutdown).
-func (p *WorkerPipeline) handleLeaseLost(_ context.Context, runID, authProfileID, sandboxID string) {
+func (p *WorkerPipeline) handleLeaseLost(_ context.Context, runID, authProfileID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
@@ -394,22 +419,20 @@ func (p *WorkerPipeline) handleLeaseLost(_ context.Context, runID, authProfileID
 
 	// Release auth lock -- tolerate ErrNotFound (lock may have expired or been released).
 	_ = p.releaseAuthLockBestEffort(ctx, authProfileID, runID)
-
-	// Destroy sandbox -- best-effort cleanup.
-	if sandboxID != "" {
-		_ = p.runner.DestroySandbox(ctx, sandboxID)
-	}
 }
 
 // handleProfileRevoked handles the profile_revoked terminal path. The
 // HeartbeatService has already transitioned the attempt to failed (with
 // error_code "profile_revoked") and released the auth lock, so this method
 // must NOT emit a duplicate TransitionAttempt or release the auth lock.
-// It transitions the run to failed and performs sandbox cleanup.
+// It transitions the run to failed.
+//
+// Sandbox teardown is handled by the deferred destroySandboxBestEffort in
+// executeAttempt, so this method does not need to destroy the sandbox.
 //
 // Cleanup uses context.Background() with a timeout so it can complete even
 // when the parent context is already canceled (e.g., during graceful shutdown).
-func (p *WorkerPipeline) handleProfileRevoked(_ context.Context, runID, sandboxID string) {
+func (p *WorkerPipeline) handleProfileRevoked(_ context.Context, runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
@@ -417,21 +440,21 @@ func (p *WorkerPipeline) handleProfileRevoked(_ context.Context, runID, sandboxI
 	// already been transitioned by a concurrent reconciler.
 	_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
 
-	// Destroy sandbox -- best-effort cleanup.
 	// Note: Auth lock is NOT released here because emitProfileRevokedAndTerminate
 	// in HeartbeatService already released it.
-	if sandboxID != "" {
-		_ = p.runner.DestroySandbox(ctx, sandboxID)
-	}
 }
 
 // handleSetupFailure transitions both the run and attempt to failed status
 // using the provided fromRunStatus. This ensures failure transitions use the
-// correct source status regardless of how far setup progressed.
+// correct source status regardless of how far setup progressed. After
+// terminal transitions, the auth lock is released.
+//
+// Sandbox teardown is handled by the deferred destroySandboxBestEffort in
+// executeAttempt, so this method does not need to destroy the sandbox.
 //
 // Cleanup uses context.Background() with a timeout so it can complete even
 // when the parent context is already canceled (e.g., during graceful shutdown).
-func (p *WorkerPipeline) handleSetupFailure(_ context.Context, runID, attemptID string, fromRunStatus RunStatus, stage string, cause error) {
+func (p *WorkerPipeline) handleSetupFailure(_ context.Context, runID, attemptID, authProfileID string, fromRunStatus RunStatus, stage string, cause error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
@@ -444,6 +467,9 @@ func (p *WorkerPipeline) handleSetupFailure(_ context.Context, runID, attemptID 
 
 	// Transition run from its current status to failed.
 	_ = p.store.TransitionRun(ctx, runID, fromRunStatus, RunStatusFailed)
+
+	// Release auth lock -- tolerate ErrNotFound (lock may have expired or been released).
+	_ = p.releaseAuthLockBestEffort(ctx, authProfileID, runID)
 }
 
 // prContext carries PR-related metadata from executeAttempt to
@@ -468,9 +494,12 @@ type prContext struct {
 // persists the snapshot via SnapshotService before terminal transitions.
 // PR creation is gated by workflow kind (auto/review only) and PREnabled.
 //
+// After terminal transitions, the auth lock is released. Sandbox teardown is
+// handled by the deferred destroySandboxBestEffort in executeAttempt.
+//
 // Cleanup uses context.Background() with a timeout so it can complete even
 // when the parent context is already canceled (e.g., during graceful shutdown).
-func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attemptID, sandboxID, authProfileID string, workflowKind WorkflowKind, exitCode int, prc *prContext) {
+func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attemptID, authProfileID string, workflowKind WorkflowKind, exitCode int, prc *prContext) {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
@@ -478,7 +507,10 @@ func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attempt
 
 	if exitCode == 0 {
 		// Finalize: collect, compress, hash, and persist final snapshot.
-		_ = p.finalizeSnapshot(ctx, runID, attemptID, sandboxID, workflowKind)
+		// The sandboxID is carried inside prContext for snapshot collection.
+		if prc != nil {
+			_ = p.finalizeSnapshot(ctx, runID, attemptID, prc.sandboxID, workflowKind)
+		}
 
 		// PR creation: only for auto/review workflows when enabled.
 		_ = p.maybeCreatePR(ctx, runID, attemptID, workflowKind, prc)
@@ -493,6 +525,9 @@ func (p *WorkerPipeline) handleExecutionResult(_ context.Context, runID, attempt
 		_ = p.store.TransitionAttempt(ctx, attemptID, AttemptStatusFailed, now, &errCode, &errMsg)
 		_ = p.store.TransitionRun(ctx, runID, RunStatusRunning, RunStatusFailed)
 	}
+
+	// Release auth lock -- tolerate ErrNotFound (lock may have expired or been released).
+	_ = p.releaseAuthLockBestEffort(ctx, authProfileID, runID)
 }
 
 // maybeCreatePR invokes PR creation when the workflow kind is auto or review
@@ -584,6 +619,19 @@ func (p *WorkerPipeline) finalizeSnapshot(ctx context.Context, runID, attemptID,
 	return nil
 }
 
+// destroySandboxBestEffort destroys a sandbox if the ID is non-empty. It uses
+// a background context with timeout so it can complete even after the parent
+// context is canceled (e.g., during graceful shutdown). Errors are ignored —
+// the sandbox may have already been destroyed or may not exist.
+func (p *WorkerPipeline) destroySandboxBestEffort(sandboxID string) {
+	if sandboxID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	_ = p.runner.DestroySandbox(ctx, sandboxID)
+}
+
 // releaseAuthLockBestEffort releases the auth lock for a run, treating
 // ErrNotFound as non-fatal (the lock may have already been released or
 // expired). Non-ErrNotFound errors are returned with wrapped context.
@@ -594,6 +642,13 @@ func (p *WorkerPipeline) releaseAuthLockBestEffort(ctx context.Context, authProf
 		return fmt.Errorf("releasing auth lock for profile %s run %s: %w", authProfileID, runID, err)
 	}
 	return nil
+}
+
+// reportError invokes the configured OnError callback if non-nil.
+func (p *WorkerPipeline) reportError(err error) {
+	if p.onError != nil {
+		p.onError(err)
+	}
 }
 
 // RunLoopConfig holds the interval settings for the worker loop.
@@ -631,18 +686,20 @@ func (p *WorkerPipeline) RunLoop(ctx context.Context, cfg RunLoopConfig) {
 		case <-ctx.Done():
 			return
 		case <-pollTicker.C:
-			err := p.ProcessOne(ctx)
-			if err != nil && !IsNoWork(err) {
-				// Log operational errors but continue looping.
-				_ = err
+			if err := p.ProcessOne(ctx); err != nil && !IsNoWork(err) {
+				p.reportError(fmt.Errorf("ProcessOne: %w", err))
 			}
 		case <-reconcileTicker.C:
 			if p.reconciler != nil {
-				_, _ = p.reconciler.Reconcile(ctx, time.Now().UTC())
+				if _, err := p.reconciler.Reconcile(ctx, time.Now().UTC()); err != nil {
+					p.reportError(fmt.Errorf("Reconcile: %w", err))
+				}
 			}
 		case <-timeoutTicker.C:
 			if p.timeout != nil {
-				_, _ = p.timeout.EnforceTimeouts(ctx, time.Now().UTC())
+				if _, err := p.timeout.EnforceTimeouts(ctx, time.Now().UTC()); err != nil {
+					p.reportError(fmt.Errorf("EnforceTimeouts: %w", err))
+				}
 			}
 		}
 	}
