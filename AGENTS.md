@@ -144,6 +144,7 @@
 - Keep the lifecycle integration invocation centralized in `make test-integration-cloud-lifecycle` and have CI pull-request checks call that target directly to prevent command drift.
 - For worker lifecycle integration suites, use a shared `runWorkerLifecycleAdapterMatrix` helper with adapter fixtures (`postgres`, `turso`) and `adapter/scenario` subtest names; each case should create its own `setupCloudLifecycleIntegrationHarness(t)` and register teardown via `t.Cleanup` to avoid cross-adapter global factory leakage.
 - Success-path worker lifecycle scenarios can stay deterministic without a live worker by seeding harness state in order (`TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt`, then `PutSnapshot` for the latest artifacts before `UpdateRunSnapshotRefs`) and asserting through harness query helpers (`RunTransitions`, `AttemptTerminalizations`, `SnapshotRefs`) plus pull restoration checks.
+- Cancel-path worker lifecycle scenarios should seed a `running` run with one active attempt before invoking `cloud cancel`, then record exactly one terminal `TransitionAttempt(..., canceled, ...)` and assert both `AttemptTerminalizationCount(runID) == 1` and persisted `cancel_requested/status=canceled` invariants.
 
 ## Patterns from hal/cloud-worker-orchestration-pipeline (2026-02-13)
 

@@ -10,6 +10,7 @@
 - For cross-adapter lifecycle integration, define `workerLifecycleAdapterFixtures` once (`postgres`, `turso`) and run scenarios through a shared `runWorkerLifecycleAdapterMatrix` helper with `adapter/scenario` subtest names and per-case harness teardown via `t.Cleanup`.
 - Worker lifecycle harness stores should override `TransitionRun` + `TransitionAttempt` and expose query helpers (`RunTransitions`, `AttemptTerminalizations`, `AttemptTerminalizationCount`, `SnapshotRefs`) so scenarios can assert lifecycle invariants deterministically without poking raw maps.
 - For deterministic success-path worker lifecycle scenarios without a live worker loop, seed harness state in order: `TransitionRun` queued→claimed→running→succeeded, `CreateAttempt` + terminal `TransitionAttempt(succeeded)`, then persist a latest snapshot (`PutSnapshot`) before `UpdateRunSnapshotRefs`; this keeps `cloud pull` assertions deterministic and restorable from harness state.
+- For deterministic cancel-path worker lifecycle scenarios, seed run state to `running` with one active attempt before `cloud cancel`; then record exactly one terminal `TransitionAttempt(..., canceled, ...)` and assert both persisted `cancel_requested/status=canceled` and `AttemptTerminalizationCount(runID) == 1`.
 - Use `h.SeedTimelineEvents(t, runID, ...)` for lifecycle log fixtures instead of direct `h.Store.InsertEvent` calls — it centralizes default event IDs/run wiring and keeps payload pointers cloned for mutation-safe assertions.
 - Capture/restore package-level lifecycle factories with `snapshotCloudLifecycleHarnessFactories` + `restoreCloudLifecycleHarnessFactories`; harness setup must register teardown via `t.Cleanup` to prevent global factory leakage across integration subtests.
 - `TransitionRun(claimed -> queued)` is valid for re-queuing runs in tests to simulate retry scenarios.
@@ -608,4 +609,19 @@
   - Worker lifecycle pull scenarios need an explicit latest snapshot (`PutSnapshot`) in harness state; `UpdateRunSnapshotRefs` alone is not enough for `GetLatestSnapshot`-driven pull checks.
   - Re-run pull assertions per artifact group from `cloud.WorkflowArtifactGroups(workflowKind)` to keep run/auto/review expectations aligned with workflow contracts.
   - Delete expected target files before each pull execution so restoration assertions prove pull behavior rather than pre-existing workspace state.
+---
+
+## 2026-02-13 14:36 CST - T-008
+- Implemented deterministic worker lifecycle cancel scenarios across run/auto/review workflows and Postgres/Turso adapters.
+- Added cancel-path state seeding (`queued->claimed->running` + active attempt), cancel command assertions, post-cancel status assertions, and persisted run invariant checks (`cancel_requested=true`, terminal `canceled`).
+- Added exactly-once attempt terminalization assertions by recording one terminal `TransitionAttempt(..., canceled, ...)` per scenario and validating `AttemptTerminalizationCount(runID) == 1`.
+- Files changed:
+  - `cmd/cloud_worker_lifecycle_cancel_scenario_integration_test.go`
+  - `AGENTS.md`
+  - `.hal/auto-prd.json`
+  - `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - For worker cancel scenarios without a live worker loop, seed a running run with an active attempt before invoking `cloud cancel`; this keeps cancel/status assertions deterministic.
+  - Keep cancel assertions split across command output and harness persistence: validate JSON `runId/cancelRequested/status` plus persisted `run.Status`, `run.CancelRequested`, and final run transition.
+  - Use one explicit terminal `TransitionAttempt(..., canceled, ...)` per scenario so attempt-terminalization invariants remain precise and easy to debug.
 ---
