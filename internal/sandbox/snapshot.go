@@ -33,6 +33,20 @@ func CreateSnapshot(ctx context.Context, client *daytona.Client, name, dockerfil
 	return snapshot.ID, nil
 }
 
+// DeleteSnapshot deletes a Daytona snapshot by ID.
+func DeleteSnapshot(ctx context.Context, client *daytona.Client, snapshotID string) error {
+	snapshot, err := client.Snapshot.Get(ctx, snapshotID)
+	if err != nil {
+		return fmt.Errorf("getting snapshot %q: %w", snapshotID, err)
+	}
+
+	if err := client.Snapshot.Delete(ctx, snapshot); err != nil {
+		return fmt.Errorf("deleting snapshot %q: %w", snapshotID, err)
+	}
+
+	return nil
+}
+
 // ReadDockerfile reads the Dockerfile at the given path and returns its content.
 // Returns a descriptive error if the file does not exist.
 func ReadDockerfile(path string) (string, error) {

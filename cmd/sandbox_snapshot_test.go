@@ -199,6 +199,169 @@ func TestRunSnapshotCreate(t *testing.T) {
 	}
 }
 
+// fakeSnapshotDeleter returns a snapshotDeleter that captures the call args and returns the given error.
+func fakeSnapshotDeleter(returnErr error) (snapshotDeleter, *snapshotDeleteCall) {
+	call := &snapshotDeleteCall{}
+	fn := func(ctx context.Context, apiKey, serverURL, snapshotID string) error {
+		call.apiKey = apiKey
+		call.serverURL = serverURL
+		call.snapshotID = snapshotID
+		call.called = true
+		return returnErr
+	}
+	return fn, call
+}
+
+type snapshotDeleteCall struct {
+	called     bool
+	apiKey     string
+	serverURL  string
+	snapshotID string
+}
+
+func TestRunSnapshotDelete(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, dir string)
+		snapshotID string
+		deleterErr error
+		wantErr    string
+		wantOutput string
+		checkFn    func(t *testing.T, call *snapshotDeleteCall)
+	}{
+		{
+			name: "deletes snapshot by ID",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "test-key", "https://api.example.com")
+			},
+			snapshotID: "snap-123",
+			wantOutput: "Snapshot \"snap-123\" deleted.",
+			checkFn: func(t *testing.T, call *snapshotDeleteCall) {
+				if !call.called {
+					t.Error("deleter was not called")
+				}
+				if call.apiKey != "test-key" {
+					t.Errorf("apiKey = %q, want %q", call.apiKey, "test-key")
+				}
+				if call.serverURL != "https://api.example.com" {
+					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://api.example.com")
+				}
+				if call.snapshotID != "snap-123" {
+					t.Errorf("snapshotID = %q, want %q", call.snapshotID, "snap-123")
+				}
+			},
+		},
+		{
+			name: "passes credentials to deleter",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "my-api-key", "https://custom.server.com")
+			},
+			snapshotID: "snap-456",
+			wantOutput: "Snapshot \"snap-456\" deleted.",
+			checkFn: func(t *testing.T, call *snapshotDeleteCall) {
+				if call.apiKey != "my-api-key" {
+					t.Errorf("apiKey = %q, want %q", call.apiKey, "my-api-key")
+				}
+				if call.serverURL != "https://custom.server.com" {
+					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://custom.server.com")
+				}
+			},
+		},
+		{
+			name: "error when .hal/ does not exist",
+			setup: func(t *testing.T, dir string) {
+				// don't create .hal/
+			},
+			snapshotID: "snap-123",
+			wantErr:    ".hal/ not found",
+		},
+		{
+			name: "error when snapshot ID is empty",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "key", "")
+			},
+			snapshotID: "",
+			wantErr:    "snapshot ID is required",
+		},
+		{
+			name: "error when snapshot deletion fails",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "key2", "")
+			},
+			snapshotID: "snap-bad",
+			deleterErr: fmt.Errorf("API error: not found"),
+			wantErr:    "snapshot deletion failed",
+		},
+		{
+			name: "prints deleting message",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "key3", "")
+			},
+			snapshotID: "snap-abc",
+			wantOutput: "Deleting snapshot \"snap-abc\"...",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			if tt.setup != nil {
+				tt.setup(t, dir)
+			}
+
+			deleter, call := fakeSnapshotDeleter(tt.deleterErr)
+			var out bytes.Buffer
+
+			err := runSnapshotDelete(dir, tt.snapshotID, &out, deleter)
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantOutput != "" && !strings.Contains(out.String(), tt.wantOutput) {
+				t.Errorf("output %q does not contain %q", out.String(), tt.wantOutput)
+			}
+
+			if tt.checkFn != nil {
+				tt.checkFn(t, call)
+			}
+		})
+	}
+}
+
+func TestRunSnapshotDelete_EnsureAuthCalled(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+	// Save empty API key to config
+	cfg := &compound.DaytonaConfig{APIKey: "", ServerURL: ""}
+	if err := compound.SaveConfig(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	deleter, _ := fakeSnapshotDeleter(nil)
+	var out bytes.Buffer
+
+	err := runSnapshotDelete(dir, "snap-123", &out, deleter)
+
+	// Should fail because EnsureAuth will try interactive setup with os.Stdin
+	// which doesn't have data, but the key will remain empty
+	if err == nil {
+		t.Fatal("expected error for empty API key, got nil")
+	}
+}
+
 func TestRunSnapshotCreate_EnsureAuthCalled(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)
