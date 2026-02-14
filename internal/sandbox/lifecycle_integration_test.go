@@ -249,3 +249,75 @@ func TestIntegrationSandboxExec(t *testing.T) {
 		t.Logf("Exec 'false': exitCode=%d output=%q", failResult.ExitCode, failResult.Output)
 	}
 }
+
+func TestIntegrationSandboxDeleteCleanup(t *testing.T) {
+	client := newIntegrationClient(t)
+	halDir := integrationHalDir(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Create a snapshot to start a sandbox from
+	var snapOut bytes.Buffer
+	snapshotID, err := CreateSnapshot(ctx, client, "inttest-delete-cleanup", "ubuntu:22.04", &snapOut)
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	t.Logf("Created snapshot: %s", snapshotID)
+
+	// Cleanup: delete snapshot even if sandbox deletion fails
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cleanupCancel()
+		if snapshotID != "" {
+			_ = DeleteSnapshot(cleanupCtx, client, snapshotID)
+		}
+	})
+
+	// Start a sandbox from the snapshot
+	var startOut bytes.Buffer
+	result, err := CreateSandbox(ctx, client, "inttest-delete-cleanup", snapshotID, &startOut)
+	if err != nil {
+		t.Fatalf("CreateSandbox failed: %v", err)
+	}
+	t.Logf("Created sandbox: name=%s id=%s status=%s", result.Name, result.ID, result.Status)
+
+	// Save state to sandbox.json
+	state := &SandboxState{
+		Name:        result.Name,
+		SnapshotID:  snapshotID,
+		WorkspaceID: result.ID,
+		Status:      result.Status,
+		CreatedAt:   time.Now(),
+	}
+	if err := SaveState(halDir, state); err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+
+	// Verify state file was created
+	if _, err := LoadState(halDir); err != nil {
+		t.Fatalf("LoadState before delete failed: %v", err)
+	}
+
+	// Delete the sandbox
+	var deleteOut bytes.Buffer
+	if err := DeleteSandbox(ctx, client, result.Name, &deleteOut); err != nil {
+		t.Fatalf("DeleteSandbox failed: %v", err)
+	}
+	t.Log("Deleted sandbox successfully")
+
+	// Remove state file
+	if err := RemoveState(halDir); err != nil {
+		t.Fatalf("RemoveState failed: %v", err)
+	}
+
+	// Verify sandbox.json no longer exists on disk
+	_, err = LoadState(halDir)
+	if err == nil {
+		t.Fatal("LoadState after removal returned nil error, want error containing 'does not exist'")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("LoadState error = %q, want it to contain %q", err.Error(), "does not exist")
+	}
+	t.Logf("State file cleanup verified: %v", err)
+}
