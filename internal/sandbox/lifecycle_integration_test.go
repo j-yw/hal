@@ -5,10 +5,28 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+var integrationNameCounter uint64
+
+func integrationResourceName(prefix string) string {
+	n := atomic.AddUint64(&integrationNameCounter, 1)
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UTC().UnixNano(), n)
+}
+
+func isExpectedNonZeroExitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "exit") &&
+		(strings.Contains(msg, "status") || strings.Contains(msg, "code"))
+}
 
 func TestIntegrationSandboxStartStatus(t *testing.T) {
 	client := newIntegrationClient(t)
@@ -18,8 +36,10 @@ func TestIntegrationSandboxStartStatus(t *testing.T) {
 	defer cancel()
 
 	// Create a snapshot to start a sandbox from
+	snapshotName := integrationResourceName("inttest-start-status-snap")
+	sandboxRequestName := integrationResourceName("inttest-start-status-sb")
 	var snapOut bytes.Buffer
-	snapshotID, err := CreateSnapshot(ctx, client, "inttest-start-status", "ubuntu:22.04", &snapOut)
+	snapshotID, err := CreateSnapshot(ctx, client, snapshotName, "ubuntu:22.04", &snapOut)
 	if err != nil {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
@@ -40,7 +60,7 @@ func TestIntegrationSandboxStartStatus(t *testing.T) {
 
 	// Start a sandbox from the snapshot
 	var startOut bytes.Buffer
-	result, err := CreateSandbox(ctx, client, "inttest-start-status", snapshotID, &startOut)
+	result, err := CreateSandbox(ctx, client, sandboxRequestName, snapshotID, &startOut)
 	if err != nil {
 		t.Fatalf("CreateSandbox failed: %v", err)
 	}
@@ -110,8 +130,10 @@ func TestIntegrationSandboxStopState(t *testing.T) {
 	defer cancel()
 
 	// Create a snapshot to start a sandbox from
+	snapshotName := integrationResourceName("inttest-stop-state-snap")
+	sandboxRequestName := integrationResourceName("inttest-stop-state-sb")
 	var snapOut bytes.Buffer
-	snapshotID, err := CreateSnapshot(ctx, client, "inttest-stop-state", "ubuntu:22.04", &snapOut)
+	snapshotID, err := CreateSnapshot(ctx, client, snapshotName, "ubuntu:22.04", &snapOut)
 	if err != nil {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
@@ -132,7 +154,7 @@ func TestIntegrationSandboxStopState(t *testing.T) {
 
 	// Start a sandbox from the snapshot
 	var startOut bytes.Buffer
-	result, err := CreateSandbox(ctx, client, "inttest-stop-state", snapshotID, &startOut)
+	result, err := CreateSandbox(ctx, client, sandboxRequestName, snapshotID, &startOut)
 	if err != nil {
 		t.Fatalf("CreateSandbox failed: %v", err)
 	}
@@ -195,8 +217,10 @@ func TestIntegrationSandboxExec(t *testing.T) {
 	defer cancel()
 
 	// Create a snapshot to start a sandbox from
+	snapshotName := integrationResourceName("inttest-exec-snap")
+	sandboxRequestName := integrationResourceName("inttest-exec-sb")
 	var snapOut bytes.Buffer
-	snapshotID, err := CreateSnapshot(ctx, client, "inttest-exec", "ubuntu:22.04", &snapOut)
+	snapshotID, err := CreateSnapshot(ctx, client, snapshotName, "ubuntu:22.04", &snapOut)
 	if err != nil {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
@@ -217,7 +241,7 @@ func TestIntegrationSandboxExec(t *testing.T) {
 
 	// Start a sandbox from the snapshot
 	var startOut bytes.Buffer
-	result, err := CreateSandbox(ctx, client, "inttest-exec", snapshotID, &startOut)
+	result, err := CreateSandbox(ctx, client, sandboxRequestName, snapshotID, &startOut)
 	if err != nil {
 		t.Fatalf("CreateSandbox failed: %v", err)
 	}
@@ -240,14 +264,16 @@ func TestIntegrationSandboxExec(t *testing.T) {
 	// Test 2: Execute a failing command and verify non-zero exit code
 	failResult, err := ExecCommand(ctx, client, sandboxName, "false")
 	if err != nil {
-		// Some SDKs return an error for non-zero exit codes; that's acceptable
-		t.Logf("ExecCommand('false') returned error (acceptable): %v", err)
-	} else {
-		if failResult.ExitCode == 0 {
-			t.Error("ExecCommand('false') ExitCode = 0, want non-zero")
+		if !isExpectedNonZeroExitError(err) {
+			t.Fatalf("ExecCommand('false') failed unexpectedly: %v", err)
 		}
-		t.Logf("Exec 'false': exitCode=%d output=%q", failResult.ExitCode, failResult.Output)
+		t.Logf("ExecCommand('false') returned expected non-zero-exit error: %v", err)
+		return
 	}
+	if failResult.ExitCode == 0 {
+		t.Fatal("ExecCommand('false') ExitCode = 0, want non-zero")
+	}
+	t.Logf("Exec 'false': exitCode=%d output=%q", failResult.ExitCode, failResult.Output)
 }
 
 func TestIntegrationSandboxDeleteCleanup(t *testing.T) {
@@ -258,17 +284,23 @@ func TestIntegrationSandboxDeleteCleanup(t *testing.T) {
 	defer cancel()
 
 	// Create a snapshot to start a sandbox from
+	snapshotName := integrationResourceName("inttest-delete-cleanup-snap")
+	sandboxRequestName := integrationResourceName("inttest-delete-cleanup-sb")
 	var snapOut bytes.Buffer
-	snapshotID, err := CreateSnapshot(ctx, client, "inttest-delete-cleanup", "ubuntu:22.04", &snapOut)
+	snapshotID, err := CreateSnapshot(ctx, client, snapshotName, "ubuntu:22.04", &snapOut)
 	if err != nil {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
 	t.Logf("Created snapshot: %s", snapshotID)
 
-	// Cleanup: delete snapshot even if sandbox deletion fails
+	// Cleanup: delete sandbox + snapshot regardless of outcome
+	var sandboxName string
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cleanupCancel()
+		if sandboxName != "" {
+			_ = DeleteSandbox(cleanupCtx, client, sandboxName, &bytes.Buffer{})
+		}
 		if snapshotID != "" {
 			_ = DeleteSnapshot(cleanupCtx, client, snapshotID)
 		}
@@ -276,10 +308,11 @@ func TestIntegrationSandboxDeleteCleanup(t *testing.T) {
 
 	// Start a sandbox from the snapshot
 	var startOut bytes.Buffer
-	result, err := CreateSandbox(ctx, client, "inttest-delete-cleanup", snapshotID, &startOut)
+	result, err := CreateSandbox(ctx, client, sandboxRequestName, snapshotID, &startOut)
 	if err != nil {
 		t.Fatalf("CreateSandbox failed: %v", err)
 	}
+	sandboxName = result.Name
 	t.Logf("Created sandbox: name=%s id=%s status=%s", result.Name, result.ID, result.Status)
 
 	// Save state to sandbox.json
@@ -304,6 +337,7 @@ func TestIntegrationSandboxDeleteCleanup(t *testing.T) {
 	if err := DeleteSandbox(ctx, client, result.Name, &deleteOut); err != nil {
 		t.Fatalf("DeleteSandbox failed: %v", err)
 	}
+	sandboxName = ""
 	t.Log("Deleted sandbox successfully")
 
 	// Remove state file

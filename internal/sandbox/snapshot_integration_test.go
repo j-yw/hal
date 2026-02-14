@@ -25,9 +25,10 @@ func TestIntegrationSnapshotCreateDelete(t *testing.T) {
 	})
 
 	// Create a snapshot from a lightweight public image
+	snapshotName := integrationResourceName("inttest-snapshot-create-delete-snap")
 	var out bytes.Buffer
 	var err error
-	snapshotID, err = CreateSnapshot(ctx, client, "integration-test-snapshot", "ubuntu:22.04", &out)
+	snapshotID, err = CreateSnapshot(ctx, client, snapshotName, "ubuntu:22.04", &out)
 	if err != nil {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
