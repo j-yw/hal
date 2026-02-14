@@ -78,6 +78,25 @@ release-check:
 version: build
 	@./$(BINARY_NAME) version
 
+## Build sandbox Docker image (native platform)
+sandbox-build:
+	@echo "==> Building sandbox image..."
+	@docker build -f sandbox/Dockerfile -t hal-sandbox .
+
+## Build sandbox for Daytona (linux/amd64)
+sandbox-build-amd64:
+	@echo "==> Building sandbox image (linux/amd64)..."
+	@docker build --platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox:amd64 .
+
+## Run sandbox smoke tests
+sandbox-test: sandbox-build
+	@echo "==> Running sandbox smoke tests..."
+	@docker run --rm hal-sandbox /test.sh
+
+## Interactive sandbox shell
+sandbox-shell: sandbox-build
+	@docker run --rm -it $$([ -f sandbox/.env ] && echo "--env-file sandbox/.env") hal-sandbox
+
 ## Show help
 help:
 	@echo "Hal Makefile"
@@ -95,6 +114,9 @@ help:
 	@echo "  make version          Show version info"
 	@echo "  make release-dry-run  Snapshot release locally (no publish)"
 	@echo "  make release-check    Validate GoReleaser config"
+	@echo "  make sandbox-build    Build sandbox Docker image"
+	@echo "  make sandbox-test     Run sandbox smoke tests"
+	@echo "  make sandbox-shell    Interactive sandbox shell"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make install"
