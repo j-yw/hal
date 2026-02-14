@@ -17,11 +17,11 @@ import (
 // fakeSnapshotCreator returns a snapshotCreator that captures the call args and returns the given values.
 func fakeSnapshotCreator(returnID string, returnErr error) (snapshotCreator, *snapshotCreateCall) {
 	call := &snapshotCreateCall{}
-	fn := func(ctx context.Context, apiKey, serverURL, name, dockerfileContent string, out io.Writer) (string, error) {
+	fn := func(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error) {
 		call.apiKey = apiKey
 		call.serverURL = serverURL
 		call.name = name
-		call.dockerfileContent = dockerfileContent
+		call.imageRef = imageRef
 		call.called = true
 		return returnID, returnErr
 	}
@@ -29,11 +29,11 @@ func fakeSnapshotCreator(returnID string, returnErr error) (snapshotCreator, *sn
 }
 
 type snapshotCreateCall struct {
-	called            bool
-	apiKey            string
-	serverURL         string
-	name              string
-	dockerfileContent string
+	called    bool
+	apiKey    string
+	serverURL string
+	name      string
+	imageRef  string
 }
 
 func setupSnapshotTest(t *testing.T, dir string, apiKey, serverURL string) {
@@ -46,20 +46,11 @@ func setupSnapshotTest(t *testing.T, dir string, apiKey, serverURL string) {
 	}
 }
 
-func writeDockerfile(t *testing.T, dir, relPath, content string) {
-	t.Helper()
-	fullPath := filepath.Join(dir, relPath)
-	os.MkdirAll(filepath.Dir(fullPath), 0755)
-	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestRunSnapshotCreate(t *testing.T) {
 	tests := []struct {
 		name       string
 		setup      func(t *testing.T, dir string)
-		dockerfile string
+		imageRef   string
 		snapName   string
 		creatorID  string
 		creatorErr error
@@ -68,10 +59,9 @@ func TestRunSnapshotCreate(t *testing.T) {
 		checkFn    func(t *testing.T, call *snapshotCreateCall)
 	}{
 		{
-			name: "creates snapshot with default Dockerfile path",
+			name: "creates snapshot with default image ref",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "test-key", "https://api.example.com")
-				writeDockerfile(t, dir, defaultDockerfilePath, "FROM ubuntu:22.04\nRUN echo hello")
 			},
 			creatorID:  "snap-123",
 			wantOutput: "Snapshot created: snap-123",
@@ -85,29 +75,28 @@ func TestRunSnapshotCreate(t *testing.T) {
 				if call.serverURL != "https://api.example.com" {
 					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://api.example.com")
 				}
-				if call.name != "sandbox" {
-					t.Errorf("name = %q, want %q", call.name, "sandbox")
+				if call.name != "hal-sandbox" {
+					t.Errorf("name = %q, want %q (derived from default image ref)", call.name, "hal-sandbox")
 				}
-				if !strings.Contains(call.dockerfileContent, "FROM ubuntu:22.04") {
-					t.Errorf("dockerfileContent does not contain FROM line: %q", call.dockerfileContent)
+				if call.imageRef != defaultImageRef {
+					t.Errorf("imageRef = %q, want %q", call.imageRef, defaultImageRef)
 				}
 			},
 		},
 		{
-			name: "creates snapshot with custom Dockerfile path",
+			name: "creates snapshot with custom registry image",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key2", "https://api2.example.com")
-				writeDockerfile(t, dir, "custom/Dockerfile.dev", "FROM node:18\nRUN npm install")
 			},
-			dockerfile: "custom/Dockerfile.dev",
+			imageRef:   "ghcr.io/jywlabs/hal-sandbox:0.1",
 			creatorID:  "snap-456",
 			wantOutput: "Snapshot created: snap-456",
 			checkFn: func(t *testing.T, call *snapshotCreateCall) {
-				if call.name != "custom" {
-					t.Errorf("name = %q, want %q (derived from directory)", call.name, "custom")
+				if call.name != "hal-sandbox" {
+					t.Errorf("name = %q, want %q (derived from image ref)", call.name, "hal-sandbox")
 				}
-				if !strings.Contains(call.dockerfileContent, "FROM node:18") {
-					t.Errorf("dockerfileContent does not contain FROM line: %q", call.dockerfileContent)
+				if call.imageRef != "ghcr.io/jywlabs/hal-sandbox:0.1" {
+					t.Errorf("imageRef = %q, want %q", call.imageRef, "ghcr.io/jywlabs/hal-sandbox:0.1")
 				}
 			},
 		},
@@ -115,8 +104,8 @@ func TestRunSnapshotCreate(t *testing.T) {
 			name: "uses explicit snapshot name",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key3", "")
-				writeDockerfile(t, dir, defaultDockerfilePath, "FROM alpine")
 			},
+			imageRef:   "ubuntu:22.04",
 			snapName:   "my-snapshot",
 			creatorID:  "snap-789",
 			wantOutput: "Snapshot created: snap-789",
@@ -134,28 +123,20 @@ func TestRunSnapshotCreate(t *testing.T) {
 			wantErr: ".hal/ not found",
 		},
 		{
-			name: "error when Dockerfile does not exist",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key4", "")
-				// don't create Dockerfile
-			},
-			wantErr: "Dockerfile not found",
-		},
-		{
 			name: "error when snapshot creation fails",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key5", "")
-				writeDockerfile(t, dir, defaultDockerfilePath, "FROM ubuntu:22.04")
 			},
+			imageRef:   "ubuntu:22.04",
 			creatorErr: fmt.Errorf("API error: quota exceeded"),
 			wantErr:    "snapshot creation failed",
 		},
 		{
-			name: "prints creating message with Dockerfile path",
+			name: "prints creating message with image ref",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key6", "")
-				writeDockerfile(t, dir, defaultDockerfilePath, "FROM ubuntu:22.04")
 			},
+			imageRef:   "hal-sandbox:latest",
 			creatorID:  "snap-abc",
 			wantOutput: "Creating snapshot",
 		},
@@ -172,7 +153,7 @@ func TestRunSnapshotCreate(t *testing.T) {
 			creator, call := fakeSnapshotCreator(tt.creatorID, tt.creatorErr)
 			var out bytes.Buffer
 
-			err := runSnapshotCreate(dir, tt.dockerfile, tt.snapName, &out, creator)
+			err := runSnapshotCreate(dir, tt.imageRef, tt.snapName, &out, creator)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -194,6 +175,30 @@ func TestRunSnapshotCreate(t *testing.T) {
 
 			if tt.checkFn != nil {
 				tt.checkFn(t, call)
+			}
+		})
+	}
+}
+
+func TestImageNameFromRef(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want string
+	}{
+		{"hal-sandbox:latest", "hal-sandbox"},
+		{"hal-sandbox:0.1", "hal-sandbox"},
+		{"hal-sandbox", "hal-sandbox"},
+		{"ghcr.io/jywlabs/hal-sandbox:latest", "hal-sandbox"},
+		{"docker.io/library/ubuntu:22.04", "ubuntu"},
+		{"ubuntu:22.04", "ubuntu"},
+		{"ubuntu", "ubuntu"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got := imageNameFromRef(tt.ref)
+			if got != tt.want {
+				t.Errorf("imageNameFromRef(%q) = %q, want %q", tt.ref, got, tt.want)
 			}
 		})
 	}
@@ -372,11 +377,10 @@ func TestRunSnapshotCreate_EnsureAuthCalled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeDockerfile(t, dir, defaultDockerfilePath, "FROM ubuntu:22.04")
 	creator, _ := fakeSnapshotCreator("snap-id", nil)
 	var out bytes.Buffer
 
-	err := runSnapshotCreate(dir, "", "", &out, creator)
+	err := runSnapshotCreate(dir, "ubuntu:22.04", "", &out, creator)
 
 	// Should fail because EnsureAuth will try interactive setup with os.Stdin
 	// which doesn't have data, but the key will remain empty

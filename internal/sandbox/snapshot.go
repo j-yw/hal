@@ -10,10 +10,11 @@ import (
 	"github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 )
 
-// CreateSnapshot creates a Daytona snapshot from Dockerfile content.
+// CreateSnapshot creates a Daytona snapshot from a pre-built Docker image reference.
+// The image must be pushed to a registry accessible by Daytona (e.g., Docker Hub, GHCR).
 // It streams build logs to the provided writer and returns the snapshot ID on success.
-func CreateSnapshot(ctx context.Context, client *daytona.Client, name, dockerfileContent string, out io.Writer) (string, error) {
-	image := daytona.FromDockerfile(dockerfileContent)
+func CreateSnapshot(ctx context.Context, client *daytona.Client, name, imageRef string, out io.Writer) (string, error) {
+	image := daytona.Base(imageRef)
 
 	params := &types.CreateSnapshotParams{
 		Name:  name,

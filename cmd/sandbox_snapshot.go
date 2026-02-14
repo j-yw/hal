@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -13,12 +14,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultDockerfilePath = "sandbox/Dockerfile"
+const defaultImageRef = "hal-sandbox:latest"
 
 var snapshotCmd = &cobra.Command{
 	Use:   "snapshot",
 	Short: "Manage sandbox snapshots",
-	Long:  `Create and manage Daytona sandbox snapshots from Dockerfiles.`,
+	Long:  `Create and manage Daytona sandbox snapshots from Docker images.`,
 }
 
 var snapshotDeleteCmd = &cobra.Command{
@@ -35,21 +36,25 @@ Requires --id flag specifying the snapshot ID to delete.`,
 
 var snapshotCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a snapshot from a Dockerfile",
-	Long: `Build a Daytona snapshot from a Dockerfile.
+	Short: "Create a snapshot from a Docker image",
+	Long: `Create a Daytona snapshot from a pre-built Docker image.
 
-By default reads sandbox/Dockerfile. Use --dockerfile to specify a different path.
-The snapshot name defaults to the Dockerfile directory name.`,
+The image must be pushed to a registry accessible by Daytona (Docker Hub, GHCR, etc.).
+Build and push your image first:
+
+  docker build --platform=linux/amd64 -f sandbox/Dockerfile -t <registry>/hal-sandbox:latest .
+  docker push <registry>/hal-sandbox:latest
+  hal sandbox snapshot create --image <registry>/hal-sandbox:latest --name hal-dev`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dockerfile, _ := cmd.Flags().GetString("dockerfile")
+		imageRef, _ := cmd.Flags().GetString("image")
 		name, _ := cmd.Flags().GetString("name")
-		return runSnapshotCreate(".", dockerfile, name, os.Stdout, nil)
+		return runSnapshotCreate(".", imageRef, name, os.Stdout, nil)
 	},
 }
 
 func init() {
-	snapshotCreateCmd.Flags().String("dockerfile", defaultDockerfilePath, "path to the Dockerfile")
-	snapshotCreateCmd.Flags().String("name", "", "snapshot name (defaults to directory name)")
+	snapshotCreateCmd.Flags().String("image", defaultImageRef, "Docker image reference (e.g., registry/image:tag)")
+	snapshotCreateCmd.Flags().String("name", "", "snapshot name (defaults to image name)")
 
 	snapshotDeleteCmd.Flags().String("id", "", "snapshot ID to delete (required)")
 
@@ -58,23 +63,23 @@ func init() {
 	sandboxCmd.AddCommand(snapshotCmd)
 }
 
-// snapshotClientCreator is a function that creates a Daytona client and calls CreateSnapshot.
+// snapshotCreator is a function that creates a Daytona snapshot from a Docker image reference.
 // Injected in tests to avoid real SDK calls.
-type snapshotCreator func(ctx context.Context, apiKey, serverURL, name, dockerfileContent string, out io.Writer) (string, error)
+type snapshotCreator func(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error)
 
 // defaultSnapshotCreator creates a real Daytona client and calls CreateSnapshot.
-func defaultSnapshotCreator(ctx context.Context, apiKey, serverURL, name, dockerfileContent string, out io.Writer) (string, error) {
+func defaultSnapshotCreator(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error) {
 	client, err := sandbox.NewClient(apiKey, serverURL)
 	if err != nil {
 		return "", fmt.Errorf("creating Daytona client: %w", err)
 	}
-	return sandbox.CreateSnapshot(ctx, client, name, dockerfileContent, out)
+	return sandbox.CreateSnapshot(ctx, client, name, imageRef, out)
 }
 
 // runSnapshotCreate contains the testable logic for the snapshot create command.
 // dir is the project root directory (containing .hal/).
 // If creator is nil, the real SDK client is used.
-func runSnapshotCreate(dir, dockerfile, name string, out io.Writer, creator snapshotCreator) error {
+func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapshotCreator) error {
 	halDir := filepath.Join(dir, template.HalDir)
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
@@ -104,24 +109,18 @@ func runSnapshotCreate(dir, dockerfile, name string, out io.Writer, creator snap
 		return fmt.Errorf("reloading config: %w", err)
 	}
 
-	// Resolve Dockerfile path
-	if dockerfile == "" {
-		dockerfile = defaultDockerfilePath
-	}
-	dockerfilePath := filepath.Join(dir, dockerfile)
-
-	// Read Dockerfile
-	content, err := sandbox.ReadDockerfile(dockerfilePath)
-	if err != nil {
-		return err
+	if imageRef == "" {
+		imageRef = defaultImageRef
 	}
 
-	// Resolve snapshot name
+	// Resolve snapshot name from image reference if not provided
 	if name == "" {
-		name = filepath.Base(filepath.Dir(dockerfilePath))
+		// Use image name without registry prefix and tag
+		// e.g., "ghcr.io/jywlabs/hal-sandbox:latest" -> "hal-sandbox"
+		name = imageNameFromRef(imageRef)
 	}
 
-	fmt.Fprintf(out, "Creating snapshot %q from %s...\n", name, dockerfile)
+	fmt.Fprintf(out, "Creating snapshot %q from image %s...\n", name, imageRef)
 
 	// Create snapshot
 	if creator == nil {
@@ -129,13 +128,29 @@ func runSnapshotCreate(dir, dockerfile, name string, out io.Writer, creator snap
 	}
 
 	ctx := context.Background()
-	snapshotID, err := creator(ctx, cfg.APIKey, cfg.ServerURL, name, content, out)
+	snapshotID, err := creator(ctx, cfg.APIKey, cfg.ServerURL, name, imageRef, out)
 	if err != nil {
 		return fmt.Errorf("snapshot creation failed: %w", err)
 	}
 
 	fmt.Fprintf(out, "Snapshot created: %s\n", snapshotID)
 	return nil
+}
+
+// imageNameFromRef extracts a short name from a Docker image reference.
+// e.g., "ghcr.io/jywlabs/hal-sandbox:latest" -> "hal-sandbox"
+// e.g., "hal-sandbox:0.1" -> "hal-sandbox"
+// e.g., "ubuntu:22.04" -> "ubuntu"
+func imageNameFromRef(ref string) string {
+	// Strip tag
+	if idx := strings.LastIndex(ref, ":"); idx != -1 {
+		ref = ref[:idx]
+	}
+	// Take last path component
+	if idx := strings.LastIndex(ref, "/"); idx != -1 {
+		ref = ref[idx+1:]
+	}
+	return ref
 }
 
 // snapshotDeleter is a function that deletes a Daytona snapshot by ID.
