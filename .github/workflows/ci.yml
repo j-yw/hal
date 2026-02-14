@@ -78,3 +78,54 @@ jobs:
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  sandbox-test:
+    runs-on: ubuntu-latest
+    needs: sandbox-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for sandbox changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            sandbox:
+              - 'sandbox/**'
+              - 'Makefile'
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.sandbox == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        if: steps.changes.outputs.sandbox == 'true'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('sandbox/Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build sandbox image
+        if: steps.changes.outputs.sandbox == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sandbox/Dockerfile
+          platforms: linux/amd64
+          tags: hal-sandbox:amd64
+          push: false
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Run smoke tests
+        if: steps.changes.outputs.sandbox == 'true'
+        run: docker run --rm hal-sandbox:amd64 /test.sh
+
+      - name: Move cache
+        if: steps.changes.outputs.sandbox == 'true'
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
