@@ -1,0 +1,29 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Runtime / local state
+.hal
+.env
+sandbox/.env
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Build artifacts (we rebuild inside the container)
+hal
+
+# Docs and metadata not needed in image
+agent-os/
+.goreleaser.yaml
+README.md
+LICENSE
+AGENTS.md
+.pi/
