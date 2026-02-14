@@ -102,3 +102,11 @@
 - For cmd package behavior with side effects, extract a run<Feature> helper that accepts io.Writer (like refreshTemplates) and keep Cobra handlers focused on flag binding and delegation.
 - Template text migrations belong in migrateTemplates via replaceFileContent, normalizing multiple legacy prompt variants into one canonical guidance line.
 - In cmd tests, reuse shared helpers from archive_test.go (writeFile/writePRD) and validate timestamped backup artifacts with filepath.Glob(filename+".*.bak").
+
+## Patterns from hal/sandbox-implementation (2026-02-14)
+
+- Extract command behavior into `run<Command>` helpers (accepting `dir`, `io.Reader`/`io.Writer`, and injected function types), and keep Cobra `RunE` focused on flags and delegation.
+- Use `compound.LoadDaytonaConfig(dir)` and `compound.SaveConfig(dir, cfg)` with project-root `dir` (not `.hal/`), relying on map-based YAML round-trip to preserve unrelated config sections.
+- Enforce auth via `sandbox.EnsureAuth(apiKey, setupFn, reloadFn)` callbacks from `cmd` to `internal/sandbox` to avoid circular dependencies while still supporting interactive setup.
+- Treat `.hal/sandbox.json` as authoritative runtime state through `sandbox.SaveState/LoadState/RemoveState` and template constants; remove state only after successful remote delete.
+- For PTY shell integration, use one read path (`PtyHandle.Read` or `DataChan`) and pair it with OS-specific resize handlers (`shell_resize_unix.go`/`shell_resize_windows.go`).
