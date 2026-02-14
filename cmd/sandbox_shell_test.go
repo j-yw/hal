@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,24 @@ func fakeShellConnector(returnConn *sandbox.ShellConnection, returnErr error) (s
 	return fn, call
 }
 
+type forwardCall struct {
+	called bool
+	conn   *sandbox.ShellConnection
+}
+
+func fakeShellForwarder(result *sandbox.ForwardShellIOResult, returnErr error) (shellForwarder, *forwardCall) {
+	call := &forwardCall{}
+	fn := func(ctx context.Context, conn *sandbox.ShellConnection, stdin io.Reader, stdout io.Writer) (*sandbox.ForwardShellIOResult, error) {
+		call.called = true
+		call.conn = conn
+		if returnErr != nil {
+			return nil, returnErr
+		}
+		return result, nil
+	}
+	return fn, call
+}
+
 func setupShellTest(t *testing.T, dir string, apiKey, serverURL string) {
 	t.Helper()
 	halDir := filepath.Join(dir, template.HalDir)
@@ -63,9 +82,11 @@ func TestRunSandboxShell(t *testing.T) {
 		shellName  string
 		connResult *sandbox.ShellConnection
 		connErr    error
+		fwdResult  *sandbox.ForwardShellIOResult
+		fwdErr     error
 		wantErr    string
 		wantOutput string
-		checkFn    func(t *testing.T, dir string, call *shellConnectCall)
+		checkFn    func(t *testing.T, dir string, call *shellConnectCall, fwd *forwardCall)
 	}{
 		{
 			name: "connects to sandbox from state file",
@@ -79,8 +100,9 @@ func TestRunSandboxShell(t *testing.T) {
 				})
 			},
 			connResult: &sandbox.ShellConnection{SandboxName: "hal-feature-auth"},
+			fwdResult:  &sandbox.ForwardShellIOResult{ExitCode: 0},
 			wantOutput: `Connected to sandbox "hal-feature-auth"`,
-			checkFn: func(t *testing.T, dir string, call *shellConnectCall) {
+			checkFn: func(t *testing.T, dir string, call *shellConnectCall, fwd *forwardCall) {
 				if !call.called {
 					t.Error("connector was not called")
 				}
@@ -108,8 +130,9 @@ func TestRunSandboxShell(t *testing.T) {
 			},
 			shellName:  "custom-sandbox",
 			connResult: &sandbox.ShellConnection{SandboxName: "custom-sandbox"},
+			fwdResult:  &sandbox.ForwardShellIOResult{ExitCode: 0},
 			wantOutput: `Connected to sandbox "custom-sandbox"`,
-			checkFn: func(t *testing.T, dir string, call *shellConnectCall) {
+			checkFn: func(t *testing.T, dir string, call *shellConnectCall, fwd *forwardCall) {
 				if call.nameOrID != "custom-sandbox" {
 					t.Errorf("nameOrID = %q, want %q", call.nameOrID, "custom-sandbox")
 				}
@@ -169,6 +192,7 @@ func TestRunSandboxShell(t *testing.T) {
 				})
 			},
 			connResult: &sandbox.ShellConnection{SandboxName: "my-box"},
+			fwdResult:  &sandbox.ForwardShellIOResult{ExitCode: 0},
 			wantOutput: `Connecting to sandbox "my-box"`,
 		},
 		{
@@ -183,7 +207,8 @@ func TestRunSandboxShell(t *testing.T) {
 				})
 			},
 			connResult: &sandbox.ShellConnection{SandboxName: "creds-test"},
-			checkFn: func(t *testing.T, dir string, call *shellConnectCall) {
+			fwdResult:  &sandbox.ForwardShellIOResult{ExitCode: 0},
+			checkFn: func(t *testing.T, dir string, call *shellConnectCall, fwd *forwardCall) {
 				if call.apiKey != "my-api-key" {
 					t.Errorf("apiKey = %q, want %q", call.apiKey, "my-api-key")
 				}
@@ -191,6 +216,76 @@ func TestRunSandboxShell(t *testing.T) {
 					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://custom.api.io")
 				}
 			},
+		},
+		{
+			name: "forwarder is called with connection",
+			setup: func(t *testing.T, dir string) {
+				setupShellTestWithState(t, dir, "key7", "", &sandbox.SandboxState{
+					Name:        "fwd-test",
+					SnapshotID:  "snap-ccc",
+					WorkspaceID: "sb-006",
+					Status:      "started",
+					CreatedAt:   time.Now(),
+				})
+			},
+			connResult: &sandbox.ShellConnection{SandboxName: "fwd-test"},
+			fwdResult:  &sandbox.ForwardShellIOResult{ExitCode: 0},
+			checkFn: func(t *testing.T, dir string, call *shellConnectCall, fwd *forwardCall) {
+				if !fwd.called {
+					t.Error("forwarder was not called")
+				}
+				if fwd.conn == nil {
+					t.Error("forwarder received nil connection")
+				}
+				if fwd.conn.SandboxName != "fwd-test" {
+					t.Errorf("forwarder conn name = %q, want %q", fwd.conn.SandboxName, "fwd-test")
+				}
+			},
+		},
+		{
+			name: "session closed prints message and returns error",
+			setup: func(t *testing.T, dir string) {
+				setupShellTestWithState(t, dir, "key8", "", &sandbox.SandboxState{
+					Name:        "closed-test",
+					SnapshotID:  "snap-ddd",
+					WorkspaceID: "sb-007",
+					Status:      "started",
+					CreatedAt:   time.Now(),
+				})
+			},
+			connResult: &sandbox.ShellConnection{SandboxName: "closed-test"},
+			fwdResult:  &sandbox.ForwardShellIOResult{ExitCode: 1, SessionClosed: true},
+			wantErr:    "exit code 1",
+			wantOutput: "session closed",
+		},
+		{
+			name: "forwarder error is propagated",
+			setup: func(t *testing.T, dir string) {
+				setupShellTestWithState(t, dir, "key9", "", &sandbox.SandboxState{
+					Name:        "err-test",
+					SnapshotID:  "snap-eee",
+					WorkspaceID: "sb-008",
+					Status:      "started",
+					CreatedAt:   time.Now(),
+				})
+			},
+			connResult: &sandbox.ShellConnection{SandboxName: "err-test"},
+			fwdErr:     fmt.Errorf("PTY read error"),
+			wantErr:    "shell session error",
+		},
+		{
+			name: "clean disconnect returns no error",
+			setup: func(t *testing.T, dir string) {
+				setupShellTestWithState(t, dir, "key10", "", &sandbox.SandboxState{
+					Name:        "clean-test",
+					SnapshotID:  "snap-fff",
+					WorkspaceID: "sb-009",
+					Status:      "started",
+					CreatedAt:   time.Now(),
+				})
+			},
+			connResult: &sandbox.ShellConnection{SandboxName: "clean-test"},
+			fwdResult:  &sandbox.ForwardShellIOResult{ExitCode: 0, SessionClosed: false},
 		},
 	}
 
@@ -202,10 +297,18 @@ func TestRunSandboxShell(t *testing.T) {
 				tt.setup(t, dir)
 			}
 
-			connector, call := fakeShellConnector(tt.connResult, tt.connErr)
+			connector, connCall := fakeShellConnector(tt.connResult, tt.connErr)
+			forwarder, fwdCall := fakeShellForwarder(tt.fwdResult, tt.fwdErr)
 			var out bytes.Buffer
 
-			err := runSandboxShell(dir, tt.shellName, &out, connector)
+			err := runSandboxShell(dir, tt.shellName, strings.NewReader(""), &out, connector, forwarder)
+
+			// For session closed case, check output before error assertion
+			if tt.wantOutput != "" && strings.Contains(out.String(), tt.wantOutput) {
+				// output check passed
+			} else if tt.wantOutput != "" {
+				t.Errorf("output %q does not contain %q", out.String(), tt.wantOutput)
+			}
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -221,12 +324,8 @@ func TestRunSandboxShell(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			if tt.wantOutput != "" && !strings.Contains(out.String(), tt.wantOutput) {
-				t.Errorf("output %q does not contain %q", out.String(), tt.wantOutput)
-			}
-
 			if tt.checkFn != nil {
-				tt.checkFn(t, dir, call)
+				tt.checkFn(t, dir, connCall, fwdCall)
 			}
 		})
 	}
@@ -243,9 +342,10 @@ func TestRunSandboxShell_EnsureAuthCalled(t *testing.T) {
 	}
 
 	connector, _ := fakeShellConnector(&sandbox.ShellConnection{SandboxName: "test"}, nil)
+	forwarder, _ := fakeShellForwarder(&sandbox.ForwardShellIOResult{ExitCode: 0}, nil)
 	var out bytes.Buffer
 
-	err := runSandboxShell(dir, "test-sandbox", &out, connector)
+	err := runSandboxShell(dir, "test-sandbox", strings.NewReader(""), &out, connector, forwarder)
 
 	// Should fail because EnsureAuth will try interactive setup with os.Stdin
 	// which doesn't have data, but the key will remain empty

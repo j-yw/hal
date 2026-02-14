@@ -22,7 +22,7 @@ Reads the sandbox name from .hal/sandbox.json unless --name is specified.
 The sandbox must be in the running (started) state.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
-		return runSandboxShell(".", name, os.Stdout, nil)
+		return runSandboxShell(".", name, os.Stdin, os.Stdout, nil, nil)
 	},
 }
 
@@ -36,6 +36,10 @@ func init() {
 // Injected in tests to avoid real SDK calls.
 type shellConnector func(ctx context.Context, apiKey, serverURL, nameOrID string) (*sandbox.ShellConnection, error)
 
+// shellForwarder is a function that runs bidirectional I/O forwarding.
+// Injected in tests to avoid real terminal/PTY operations.
+type shellForwarder func(ctx context.Context, conn *sandbox.ShellConnection, stdin io.Reader, stdout io.Writer) (*sandbox.ForwardShellIOResult, error)
+
 // defaultShellConnector creates a real Daytona client and calls ConnectShell.
 func defaultShellConnector(ctx context.Context, apiKey, serverURL, nameOrID string) (*sandbox.ShellConnection, error) {
 	client, err := sandbox.NewClient(apiKey, serverURL)
@@ -48,7 +52,8 @@ func defaultShellConnector(ctx context.Context, apiKey, serverURL, nameOrID stri
 // runSandboxShell contains the testable logic for the sandbox shell command.
 // dir is the project root directory (containing .hal/).
 // If connector is nil, the real SDK client is used.
-func runSandboxShell(dir, name string, out io.Writer, connector shellConnector) error {
+// If forwarder is nil, the real ForwardShellIO is used.
+func runSandboxShell(dir, name string, stdin io.Reader, out io.Writer, connector shellConnector, forwarder shellForwarder) error {
 	halDir := filepath.Join(dir, template.HalDir)
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
@@ -101,9 +106,18 @@ func runSandboxShell(dir, name string, out io.Writer, connector shellConnector) 
 
 	fmt.Fprintf(out, "Connected to sandbox %q.\n", conn.SandboxName)
 
-	// Disconnect the PTY handle — US-012 will add full I/O forwarding
-	if conn.PtyHandle != nil {
-		conn.PtyHandle.Disconnect()
+	if forwarder == nil {
+		forwarder = sandbox.ForwardShellIO
+	}
+
+	result, err := forwarder(ctx, conn, stdin, out)
+	if err != nil {
+		return fmt.Errorf("shell session error: %w", err)
+	}
+
+	if result.SessionClosed {
+		fmt.Fprintln(out, "session closed")
+		return fmt.Errorf("exit code %d", result.ExitCode)
 	}
 
 	return nil
