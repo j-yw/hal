@@ -51,6 +51,25 @@ type codexReviewIssue struct {
 	SuggestedFix string `json:"suggestedFix"`
 }
 
+type codexFixResponse struct {
+	Summary string          `json:"summary"`
+	Issues  []codexFixIssue `json:"issues"`
+}
+
+type codexFixIssue struct {
+	ID     string `json:"id"`
+	Valid  *bool  `json:"valid"`
+	Reason string `json:"reason"`
+	Fixed  *bool  `json:"fixed"`
+}
+
+type codexFixOutcome struct {
+	Summary       string
+	ValidIssues   int
+	InvalidIssues int
+	FixesApplied  int
+}
+
 func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
 	baseBranch = strings.TrimSpace(baseBranch)
 	if baseBranch == "" {
@@ -85,19 +104,19 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		return nil, fmt.Errorf("failed to diff against base branch %q: %w", baseBranch, err)
 	}
 
-	prompt := buildCodexReviewPrompt(baseBranch, currentBranch, diff)
-	response, err := deps.prompt(ctx, prompt)
+	reviewPrompt := buildCodexReviewPrompt(baseBranch, currentBranch, diff)
+	reviewResponse, err := deps.prompt(ctx, reviewPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("codex review failed: %w", err)
 	}
 
-	parsed, err := parseCodexReviewResponse(response)
+	parsedReview, err := parseCodexReviewResponse(reviewResponse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse codex review output: %w", err)
 	}
 
-	issuesFound := len(parsed.Issues)
-	summary := strings.TrimSpace(parsed.Summary)
+	issuesFound := len(parsedReview.Issues)
+	summary := strings.TrimSpace(parsedReview.Summary)
 	if summary == "" {
 		if issuesFound == 0 {
 			summary = "No issues found"
@@ -106,14 +125,45 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		}
 	}
 
+	validIssues := issuesFound
+	invalidIssues := 0
+	fixesApplied := 0
+	status := "reviewed"
+
+	if issuesFound > 0 {
+		fixPrompt, err := buildCodexFixPrompt(baseBranch, currentBranch, parsedReview.Issues)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build codex fix prompt: %w", err)
+		}
+
+		fixResponse, err := deps.prompt(ctx, fixPrompt)
+		if err != nil {
+			return nil, fmt.Errorf("codex fix step failed: %w", err)
+		}
+
+		parsedFix, err := parseCodexFixResponse(fixResponse, parsedReview.Issues)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse codex fix output: %w", err)
+		}
+
+		validIssues = parsedFix.ValidIssues
+		invalidIssues = parsedFix.InvalidIssues
+		fixesApplied = parsedFix.FixesApplied
+		status = "fixed"
+
+		if strings.TrimSpace(parsedFix.Summary) != "" {
+			summary = strings.TrimSpace(parsedFix.Summary)
+		}
+	}
+
 	iteration := ReviewLoopIteration{
 		Iteration:     1,
 		IssuesFound:   issuesFound,
-		ValidIssues:   issuesFound,
-		InvalidIssues: 0,
-		FixesApplied:  0,
+		ValidIssues:   validIssues,
+		InvalidIssues: invalidIssues,
+		FixesApplied:  fixesApplied,
 		Summary:       summary,
-		Status:        "reviewed",
+		Status:        status,
 	}
 
 	endedAt := deps.now()
@@ -129,22 +179,36 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		EndedAt:             endedAt,
 		Totals: ReviewLoopTotals{
 			IssuesFound:   issuesFound,
-			ValidIssues:   issuesFound,
-			InvalidIssues: 0,
-			FixesApplied:  0,
+			ValidIssues:   validIssues,
+			InvalidIssues: invalidIssues,
+			FixesApplied:  fixesApplied,
 		},
 		Iterations: []ReviewLoopIteration{iteration},
 	}, nil
 }
 
 func gitDiffAgainstBaseBranch(baseBranch string) (string, error) {
-	cmd := exec.Command("git", "diff", baseBranch+"...HEAD")
+	mergeBaseCmd := exec.Command("git", "merge-base", baseBranch, "HEAD")
+	var mergeBaseStdout, mergeBaseStderr bytes.Buffer
+	mergeBaseCmd.Stdout = &mergeBaseStdout
+	mergeBaseCmd.Stderr = &mergeBaseStderr
+
+	if err := mergeBaseCmd.Run(); err != nil {
+		return "", fmt.Errorf("git merge-base %s HEAD failed: %w (stderr: %s)", baseBranch, err, strings.TrimSpace(mergeBaseStderr.String()))
+	}
+
+	mergeBase := strings.TrimSpace(mergeBaseStdout.String())
+	if mergeBase == "" {
+		return "", fmt.Errorf("git merge-base %s HEAD returned empty output", baseBranch)
+	}
+
+	cmd := exec.Command("git", "diff", mergeBase)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git diff %s...HEAD failed: %w (stderr: %s)", baseBranch, err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("git diff %s failed: %w (stderr: %s)", mergeBase, err, strings.TrimSpace(stderr.String()))
 	}
 
 	return stdout.String(), nil
@@ -190,6 +254,46 @@ Rules:
 	return sb.String()
 }
 
+func buildCodexFixPrompt(baseBranch, currentBranch string, issues []codexReviewIssue) (string, error) {
+	issueJSON, err := json.MarshalIndent(issues, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal review issues: %w", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You previously reviewed this branch and identified candidate issues. Validate each issue, then fix only the valid ones.\n\n")
+	sb.WriteString(fmt.Sprintf("Base branch: %s\n", baseBranch))
+	sb.WriteString(fmt.Sprintf("Current branch: %s\n\n", currentBranch))
+	sb.WriteString("Issues to validate and fix:\n")
+	sb.Write(issueJSON)
+	sb.WriteString("\n\n")
+
+	sb.WriteString(`Instructions:
+- Validate each issue against the current repository state.
+- Apply code changes only for valid issues.
+- Invalid issues must not be fixed.
+- Do NOT ask for confirmation; apply fixes directly.
+- Return ONLY valid JSON (no markdown fences, no prose) with this schema:
+{
+  "summary": "short summary of validation and fixes",
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "valid": true,
+      "reason": "why this issue is valid or invalid",
+      "fixed": true
+    }
+  ]
+}
+
+Rules:
+- Include every input issue exactly once in the output "issues" array.
+- Use fixed=false for every issue where valid=false.
+`)
+
+	return sb.String(), nil
+}
+
 func truncateReviewDiff(diff string, maxLen int) string {
 	if len(diff) <= maxLen {
 		return diff
@@ -198,15 +302,10 @@ func truncateReviewDiff(diff string, maxLen int) string {
 }
 
 func parseCodexReviewResponse(response string) (*codexReviewResponse, error) {
-	response = strings.TrimSpace(response)
-
-	jsonStart := strings.Index(response, "{")
-	jsonEnd := strings.LastIndex(response, "}")
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd < jsonStart {
-		return nil, fmt.Errorf("no JSON object found in response")
+	jsonStr, err := extractJSONObject(response)
+	if err != nil {
+		return nil, err
 	}
-
-	jsonStr := response[jsonStart : jsonEnd+1]
 
 	var parsed codexReviewResponse
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
@@ -220,6 +319,74 @@ func parseCodexReviewResponse(response string) (*codexReviewResponse, error) {
 	}
 
 	return &parsed, nil
+}
+
+func parseCodexFixResponse(response string, reviewedIssues []codexReviewIssue) (*codexFixOutcome, error) {
+	if len(reviewedIssues) == 0 {
+		return &codexFixOutcome{}, nil
+	}
+
+	jsonStr, err := extractJSONObject(response)
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed codexFixResponse
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	reviewedByID := make(map[string]struct{}, len(reviewedIssues))
+	for _, issue := range reviewedIssues {
+		reviewedByID[issue.ID] = struct{}{}
+	}
+
+	fixByID := make(map[string]codexFixIssue, len(parsed.Issues))
+	for i, issue := range parsed.Issues {
+		if err := validateCodexFixIssue(i, issue); err != nil {
+			return nil, err
+		}
+		if _, ok := reviewedByID[issue.ID]; !ok {
+			return nil, fmt.Errorf("issue[%d] references unknown review issue id %q", i, issue.ID)
+		}
+		if _, exists := fixByID[issue.ID]; exists {
+			return nil, fmt.Errorf("duplicate fix result for issue id %q", issue.ID)
+		}
+		fixByID[issue.ID] = issue
+	}
+
+	outcome := &codexFixOutcome{Summary: strings.TrimSpace(parsed.Summary)}
+	for _, reviewed := range reviewedIssues {
+		fixIssue, ok := fixByID[reviewed.ID]
+		if !ok {
+			outcome.InvalidIssues++
+			continue
+		}
+
+		if fixIssue.Valid != nil && *fixIssue.Valid {
+			outcome.ValidIssues++
+			if fixIssue.Fixed != nil && *fixIssue.Fixed {
+				outcome.FixesApplied++
+			}
+			continue
+		}
+
+		outcome.InvalidIssues++
+	}
+
+	return outcome, nil
+}
+
+func extractJSONObject(response string) (string, error) {
+	response = strings.TrimSpace(response)
+
+	jsonStart := strings.Index(response, "{")
+	jsonEnd := strings.LastIndex(response, "}")
+	if jsonStart == -1 || jsonEnd == -1 || jsonEnd < jsonStart {
+		return "", fmt.Errorf("no JSON object found in response")
+	}
+
+	return response[jsonStart : jsonEnd+1], nil
 }
 
 func validateCodexReviewIssue(index int, issue codexReviewIssue) error {
@@ -243,6 +410,23 @@ func validateCodexReviewIssue(index int, issue codexReviewIssue) error {
 	}
 	if strings.TrimSpace(issue.SuggestedFix) == "" {
 		return fmt.Errorf("issue[%d] missing required field: suggestedFix", index)
+	}
+
+	return nil
+}
+
+func validateCodexFixIssue(index int, issue codexFixIssue) error {
+	if strings.TrimSpace(issue.ID) == "" {
+		return fmt.Errorf("issue[%d] missing required field: id", index)
+	}
+	if issue.Valid == nil {
+		return fmt.Errorf("issue[%d] missing required field: valid", index)
+	}
+	if strings.TrimSpace(issue.Reason) == "" {
+		return fmt.Errorf("issue[%d] missing required field: reason", index)
+	}
+	if issue.Fixed == nil {
+		return fmt.Errorf("issue[%d] missing required field: fixed", index)
 	}
 
 	return nil

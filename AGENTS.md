@@ -111,3 +111,5 @@
 - Preserve legacy CLI output via a focused renderer helper (e.g., success + summary/recommendations) so renamed commands keep user-facing behavior stable during migrations.
 - For `hal review` argument work, keep parsing/validation in a dedicated helper (`parseReviewRequest`) and inject branch checks via deps (`runReviewWithDeps`) so tests can verify invalid iteration and missing-branch errors without invoking real git refs.
 - For review-loop iterations, keep git/codex interactions behind injectable deps (`runCodexReviewLoopWithDeps`, `reviewIterationDeps`) so tests can verify diff usage, prompt schema, and parsed counts without invoking real CLIs.
+- Review-loop iteration execution now uses a two-step Codex contract: first emit strict review JSON (`issues[]` with id/title/severity/file/line/rationale/suggestedFix), then send a fixed follow-up prompt for validation+autofix JSON (`issues[]` with id/valid/reason/fixed`) and derive valid/invalid/fixes counts from issue IDs.
+- Use `git merge-base <base> HEAD` + `git diff <merge-base>` for iteration diff context so uncommitted fixes from the previous iteration remain visible in the next review pass.

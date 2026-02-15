@@ -24,7 +24,9 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	}
 
 	var gotDiffBase string
-	var gotPrompt string
+	var reviewPrompt string
+	var fixPrompt string
+	promptCalls := 0
 
 	deps := reviewIterationDeps{
 		now:           nowFn,
@@ -34,31 +36,58 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 			return "diff --git a/cmd/review.go b/cmd/review.go\n+new line", nil
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
-			gotPrompt = prompt
-			return `{
-				"summary": "Found two actionable issues",
-				"issues": [
-					{
-						"id": "ISSUE-001",
-						"title": "Missing nil check",
-						"severity": "high",
-						"file": "cmd/review.go",
-						"line": 88,
-						"rationale": "Can panic on nil dep",
-						"suggestedFix": "Guard with nil check"
-					},
-					{
-						"id": "ISSUE-002",
-						"title": "Unwrapped error",
-						"severity": "medium",
-						"file": "internal/compound/review_loop.go",
-						"line": 121,
-						"rationale": "Loses root cause",
-						"suggestedFix": "Wrap with %w"
-					}
-				]
-			}`,
-				nil
+			promptCalls++
+			switch promptCalls {
+			case 1:
+				reviewPrompt = prompt
+				return `{
+					"summary": "Found two candidate issues",
+					"issues": [
+						{
+							"id": "ISSUE-001",
+							"title": "Missing nil check",
+							"severity": "high",
+							"file": "cmd/review.go",
+							"line": 88,
+							"rationale": "Can panic on nil dep",
+							"suggestedFix": "Guard with nil check"
+						},
+						{
+							"id": "ISSUE-002",
+							"title": "Unwrapped error",
+							"severity": "medium",
+							"file": "internal/compound/review_loop.go",
+							"line": 121,
+							"rationale": "Loses root cause",
+							"suggestedFix": "Wrap with %w"
+						}
+					]
+				}`,
+					nil
+			case 2:
+				fixPrompt = prompt
+				return `{
+					"summary": "Applied 1 fix and skipped 1 invalid issue",
+					"issues": [
+						{
+							"id": "ISSUE-001",
+							"valid": true,
+							"reason": "Issue is reproducible in current code",
+							"fixed": true
+						},
+						{
+							"id": "ISSUE-002",
+							"valid": false,
+							"reason": "False positive after inspecting actual error wrapping",
+							"fixed": false
+						}
+					]
+				}`,
+					nil
+			default:
+				t.Fatalf("prompt called %d times, want 2", promptCalls)
+				return "", nil
+			}
 		},
 	}
 
@@ -70,11 +99,21 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	if gotDiffBase != "develop" {
 		t.Fatalf("diff base branch = %q, want %q", gotDiffBase, "develop")
 	}
+	if promptCalls != 2 {
+		t.Fatalf("prompt calls = %d, want %d", promptCalls, 2)
+	}
 
-	requiredPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\""}
-	for _, snippet := range requiredPromptSnippets {
-		if !strings.Contains(gotPrompt, snippet) {
-			t.Fatalf("prompt missing required schema snippet %q", snippet)
+	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\""}
+	for _, snippet := range reviewPromptSnippets {
+		if !strings.Contains(reviewPrompt, snippet) {
+			t.Fatalf("review prompt missing required schema snippet %q", snippet)
+		}
+	}
+
+	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation"}
+	for _, snippet := range fixPromptSnippets {
+		if !strings.Contains(fixPrompt, snippet) {
+			t.Fatalf("fix prompt missing required schema snippet %q", snippet)
 		}
 	}
 
@@ -108,21 +147,24 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	if iteration.IssuesFound != 2 {
 		t.Fatalf("IssuesFound = %d, want %d", iteration.IssuesFound, 2)
 	}
-	if iteration.ValidIssues != 2 {
-		t.Fatalf("ValidIssues = %d, want %d", iteration.ValidIssues, 2)
+	if iteration.ValidIssues != 1 {
+		t.Fatalf("ValidIssues = %d, want %d", iteration.ValidIssues, 1)
 	}
-	if iteration.InvalidIssues != 0 {
-		t.Fatalf("InvalidIssues = %d, want %d", iteration.InvalidIssues, 0)
+	if iteration.InvalidIssues != 1 {
+		t.Fatalf("InvalidIssues = %d, want %d", iteration.InvalidIssues, 1)
 	}
-	if iteration.FixesApplied != 0 {
-		t.Fatalf("FixesApplied = %d, want %d", iteration.FixesApplied, 0)
+	if iteration.FixesApplied != 1 {
+		t.Fatalf("FixesApplied = %d, want %d", iteration.FixesApplied, 1)
 	}
-	if iteration.Summary != "Found two actionable issues" {
-		t.Fatalf("Summary = %q, want %q", iteration.Summary, "Found two actionable issues")
+	if iteration.Summary != "Applied 1 fix and skipped 1 invalid issue" {
+		t.Fatalf("Summary = %q, want %q", iteration.Summary, "Applied 1 fix and skipped 1 invalid issue")
+	}
+	if iteration.Status != "fixed" {
+		t.Fatalf("Status = %q, want %q", iteration.Status, "fixed")
 	}
 
-	if result.Totals.IssuesFound != 2 || result.Totals.ValidIssues != 2 {
-		t.Fatalf("Totals = %+v, want IssuesFound=2 ValidIssues=2", result.Totals)
+	if result.Totals.IssuesFound != 2 || result.Totals.ValidIssues != 1 || result.Totals.InvalidIssues != 1 || result.Totals.FixesApplied != 1 {
+		t.Fatalf("Totals = %+v, want IssuesFound=2 ValidIssues=1 InvalidIssues=1 FixesApplied=1", result.Totals)
 	}
 }
 
@@ -144,6 +186,46 @@ func TestRunSingleReviewIterationCodexFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "codex review failed: codex command failed") {
 		t.Fatalf("error %q does not contain expected codex failure message", err.Error())
+	}
+}
+
+func TestRunSingleReviewIterationFixStepFailure(t *testing.T) {
+	promptCalls := 0
+	deps := reviewIterationDeps{
+		now:           time.Now,
+		currentBranch: func() (string, error) { return "feature/test", nil },
+		diffAgainstBase: func(baseBranch string) (string, error) {
+			return "diff --git a/file b/file", nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalls++
+			if promptCalls == 1 {
+				return `{
+					"summary": "Found one issue",
+					"issues": [
+						{
+							"id": "ISSUE-001",
+							"title": "Bug",
+							"severity": "high",
+							"file": "file.go",
+							"line": 1,
+							"rationale": "reason",
+							"suggestedFix": "fix"
+						}
+					]
+				}`,
+					nil
+			}
+			return "", errors.New("fix prompt failed")
+		},
+	}
+
+	_, err := runSingleReviewIteration(context.Background(), "develop", 1, deps)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "codex fix step failed: fix prompt failed") {
+		t.Fatalf("error %q does not contain expected fix-step failure message", err.Error())
 	}
 }
 
@@ -194,6 +276,90 @@ func TestParseCodexReviewResponse(t *testing.T) {
 	}
 }
 
+func TestParseCodexFixResponse(t *testing.T) {
+	reviewedIssues := []codexReviewIssue{
+		{
+			ID:           "ISSUE-1",
+			Title:        "Title 1",
+			Severity:     "high",
+			File:         "a.go",
+			Line:         10,
+			Rationale:    "why",
+			SuggestedFix: "fix",
+		},
+		{
+			ID:           "ISSUE-2",
+			Title:        "Title 2",
+			Severity:     "medium",
+			File:         "b.go",
+			Line:         20,
+			Rationale:    "why",
+			SuggestedFix: "fix",
+		},
+	}
+
+	tests := []struct {
+		name        string
+		input       string
+		wantValid   int
+		wantInvalid int
+		wantFixes   int
+		wantErr     string
+	}{
+		{
+			name: "valid response",
+			input: `{
+				"summary": "Applied one fix",
+				"issues": [
+					{"id":"ISSUE-1","valid":true,"reason":"real bug","fixed":true},
+					{"id":"ISSUE-2","valid":false,"reason":"false positive","fixed":false}
+				]
+			}`,
+			wantValid:   1,
+			wantInvalid: 1,
+			wantFixes:   1,
+		},
+		{
+			name:    "missing valid field",
+			input:   `{"summary":"bad","issues":[{"id":"ISSUE-1","reason":"r","fixed":true}]}`,
+			wantErr: "missing required field: valid",
+		},
+		{
+			name:    "unknown issue id",
+			input:   `{"summary":"bad","issues":[{"id":"ISSUE-999","valid":true,"reason":"r","fixed":true}]}`,
+			wantErr: "unknown review issue id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := parseCodexFixResponse(tt.input, reviewedIssues)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if parsed.ValidIssues != tt.wantValid {
+				t.Fatalf("ValidIssues = %d, want %d", parsed.ValidIssues, tt.wantValid)
+			}
+			if parsed.InvalidIssues != tt.wantInvalid {
+				t.Fatalf("InvalidIssues = %d, want %d", parsed.InvalidIssues, tt.wantInvalid)
+			}
+			if parsed.FixesApplied != tt.wantFixes {
+				t.Fatalf("FixesApplied = %d, want %d", parsed.FixesApplied, tt.wantFixes)
+			}
+		})
+	}
+}
+
 func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 	prompt := buildCodexReviewPrompt("develop", "feature/test", "diff --git a/a.go b/a.go")
 
@@ -202,6 +368,32 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 		quoted := "\"" + field + "\""
 		if !strings.Contains(prompt, quoted) {
 			t.Fatalf("prompt missing required issue field %q", quoted)
+		}
+	}
+}
+
+func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
+	issues := []codexReviewIssue{
+		{
+			ID:           "ISSUE-1",
+			Title:        "Title",
+			Severity:     "high",
+			File:         "cmd/review.go",
+			Line:         42,
+			Rationale:    "Why",
+			SuggestedFix: "Fix",
+		},
+	}
+
+	prompt, err := buildCodexFixPrompt("develop", "feature/test", issues)
+	if err != nil {
+		t.Fatalf("buildCodexFixPrompt() unexpected error: %v", err)
+	}
+
+	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation"}
+	for _, field := range required {
+		if !strings.Contains(prompt, field) {
+			t.Fatalf("prompt missing required fix field or instruction %q", field)
 		}
 	}
 }
