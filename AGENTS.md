@@ -107,3 +107,5 @@
 
 - Review-loop output schema should stay centralized in `internal/compound/types.go` (`ReviewLoopResult`, `ReviewLoopTotals`, `ReviewLoopIteration`) so command output and report artifacts share one contract.
 - For contract tests, assert both JSON key names and marshal/unmarshal round-trip to prevent accidental JSON tag regressions.
+- For command splits, keep legacy behavior in its own command and extract execution into a `run<Command>WithDeps` helper so tests can stub engine/review dependencies without spawning real CLIs.
+- Preserve legacy CLI output via a focused renderer helper (e.g., success + summary/recommendations) so renamed commands keep user-facing behavior stable during migrations.
