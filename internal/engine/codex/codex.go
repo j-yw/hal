@@ -345,25 +345,112 @@ func (h *textCollectingStreamHandler) collectText(line []byte) {
 	}
 
 	eventType, _ := raw["type"].(string)
-	// Codex uses item.completed for completed agent messages
-	if eventType != "item.completed" {
+	var text string
+
+	switch eventType {
+	case "item.completed":
+		text = extractItemCompletedAgentMessage(raw)
+	case "response_item":
+		text = extractResponseItemAssistantText(raw)
+	case "event_msg":
+		text = extractEventMessageText(raw)
+	default:
 		return
 	}
 
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+
+	if h.text.Len() > 0 {
+		h.text.WriteByte('\n')
+	}
+	h.text.WriteString(text)
+}
+
+func extractItemCompletedAgentMessage(raw map[string]interface{}) string {
 	item, ok := raw["item"].(map[string]interface{})
 	if !ok {
-		return
+		return ""
 	}
 
 	itemType, _ := item["type"].(string)
 	if itemType != "agent_message" {
-		return
+		return ""
 	}
 
-	// Extract text from agent_message
-	if text, _ := item["text"].(string); text != "" {
-		h.text.WriteString(text)
+	text, _ := item["text"].(string)
+	return text
+}
+
+func extractResponseItemAssistantText(raw map[string]interface{}) string {
+	payload, ok := raw["payload"].(map[string]interface{})
+	if !ok {
+		return ""
 	}
+
+	payloadType, _ := payload["type"].(string)
+	if payloadType != "message" {
+		return ""
+	}
+
+	role, _ := payload["role"].(string)
+	if role != "assistant" {
+		return ""
+	}
+
+	phase, _ := payload["phase"].(string)
+	if phase == "commentary" {
+		return ""
+	}
+
+	content, ok := payload["content"].([]interface{})
+	if !ok {
+		return ""
+	}
+
+	parts := make([]string, 0, len(content))
+	for _, entry := range content {
+		part, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		partType, _ := part["type"].(string)
+		if partType != "output_text" {
+			continue
+		}
+		if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func extractEventMessageText(raw map[string]interface{}) string {
+	payload, ok := raw["payload"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	payloadType, _ := payload["type"].(string)
+	if payloadType != "agent_message" {
+		return ""
+	}
+
+	message, _ := payload["message"].(string)
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+
+	// Ignore commentary updates; keep only likely machine-readable payloads.
+	if strings.HasPrefix(message, "{") || strings.HasPrefix(message, "[") {
+		return message
+	}
+
+	return ""
 }
 
 func (h *textCollectingStreamHandler) Flush() {

@@ -366,6 +366,52 @@ func TestEngine_parseSuccess_ItemFailureWithoutTurnCompleted(t *testing.T) {
 	}
 }
 
+func TestTextCollectingStreamHandler_collectText_ItemCompletedAgentMessage(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	line := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"{\"summary\":\"ok\",\"issues\":[]}"}}`)
+
+	h.collectText(line)
+
+	if got := h.text.String(); got != `{"summary":"ok","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"ok","issues":[]}`)
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_ResponseItemAssistantMessage(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	line := []byte(`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"summary\":\"ok\",\"issues\":[]}"}]}}`)
+
+	h.collectText(line)
+
+	if got := h.text.String(); got != `{"summary":"ok","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"ok","issues":[]}`)
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_ResponseItemCommentaryIgnored(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	line := []byte(`{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"working..."}]}}`)
+
+	h.collectText(line)
+
+	if got := h.text.String(); got != "" {
+		t.Fatalf("collected text = %q, want empty", got)
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_EventMessageJSONOnly(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	nonJSONLine := []byte(`{"type":"event_msg","payload":{"type":"agent_message","message":"working..."}}`)
+	jsonLine := []byte(`{"type":"event_msg","payload":{"type":"agent_message","message":"{\"summary\":\"ok\",\"issues\":[]}"}}`)
+
+	h.collectText(nonJSONLine)
+	h.collectText(jsonLine)
+
+	if got := h.text.String(); got != `{"summary":"ok","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"ok","issues":[]}`)
+	}
+}
+
 // Helper function tests
 
 func TestExtractCommand(t *testing.T) {

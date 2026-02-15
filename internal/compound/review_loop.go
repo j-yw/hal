@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/skills"
 )
 
 const reviewLoopDiffMaxLen = 20000
@@ -25,7 +26,11 @@ func RunCodexReviewLoop(ctx context.Context, eng engine.Engine, baseBranch strin
 		now:             time.Now,
 		currentBranch:   CurrentBranch,
 		diffAgainstBase: gitDiffAgainstBaseBranch,
-		prompt:          eng.Prompt,
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			// Use StreamPrompt (JSON mode for Codex) to avoid no-TTY hangs when
+			// running via detached sessions.
+			return eng.StreamPrompt(ctx, prompt, nil)
+		},
 	})
 }
 
@@ -40,7 +45,11 @@ func RunSingleReviewIteration(ctx context.Context, eng engine.Engine, baseBranch
 		now:             time.Now,
 		currentBranch:   CurrentBranch,
 		diffAgainstBase: gitDiffAgainstBaseBranch,
-		prompt:          eng.Prompt,
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			// Use StreamPrompt (JSON mode for Codex) to avoid no-TTY hangs when
+			// running via detached sessions.
+			return eng.StreamPrompt(ctx, prompt, nil)
+		},
 	})
 }
 
@@ -293,10 +302,23 @@ func gitDiffAgainstBaseBranch(baseBranch string) (string, error) {
 	return stdout.String(), nil
 }
 
+func reviewLoopSkillPreamble() string {
+	content, err := skills.LoadSkill("review-loop")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(content)
+}
+
 func buildCodexReviewPrompt(baseBranch, currentBranch, diff string) string {
 	var sb strings.Builder
 
-	sb.WriteString("You are a strict code reviewer. Review the current branch changes against the base branch and return machine-readable findings.\n\n")
+	if preamble := reviewLoopSkillPreamble(); preamble != "" {
+		sb.WriteString(preamble)
+		sb.WriteString("\n\n")
+	}
+
+	sb.WriteString("You are a strict static analyzer. Evaluate the current branch changes against the base branch and return machine-readable findings.\n\n")
 	sb.WriteString(fmt.Sprintf("Base branch: %s\n", baseBranch))
 	sb.WriteString(fmt.Sprintf("Current branch: %s\n\n", currentBranch))
 
@@ -305,7 +327,7 @@ func buildCodexReviewPrompt(baseBranch, currentBranch, diff string) string {
 		diff = "(No diff found between base branch and current branch.)"
 	}
 
-	sb.WriteString("Diff to review:\n```diff\n")
+	sb.WriteString("Diff to analyze:\n```diff\n")
 	sb.WriteString(truncateReviewDiff(diff, reviewLoopDiffMaxLen))
 	sb.WriteString("\n```\n\n")
 
@@ -328,6 +350,7 @@ func buildCodexReviewPrompt(baseBranch, currentBranch, diff string) string {
 Rules:
 - Include every detected issue in the issues array.
 - If there are no issues, return "issues": [] and explain that in summary.
+- Do not run any tools or shell commands. Evaluate only the provided diff context.
 `)
 
 	return sb.String()
@@ -340,6 +363,11 @@ func buildCodexFixPrompt(baseBranch, currentBranch string, issues []codexReviewI
 	}
 
 	var sb strings.Builder
+	if preamble := reviewLoopSkillPreamble(); preamble != "" {
+		sb.WriteString(preamble)
+		sb.WriteString("\n\n")
+	}
+
 	sb.WriteString("You previously reviewed this branch and identified candidate issues. Validate each issue, then fix only the valid ones.\n\n")
 	sb.WriteString(fmt.Sprintf("Base branch: %s\n", baseBranch))
 	sb.WriteString(fmt.Sprintf("Current branch: %s\n\n", currentBranch))
