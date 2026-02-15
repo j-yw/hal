@@ -331,7 +331,7 @@ func (fakeReviewLoopEngine) StreamPrompt(ctx context.Context, prompt string, dis
 	return "", nil
 }
 
-func TestRunCodexReviewLoopWithDeps(t *testing.T) {
+func TestRunReviewLoopWithDeps(t *testing.T) {
 	tests := []struct {
 		name                string
 		req                 reviewRequest
@@ -509,7 +509,7 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 			runResult := &compound.ReviewLoopResult{Command: "hal review against develop 1"}
 			var out bytes.Buffer
 
-			deps := codexReviewLoopDeps{
+			deps := reviewLoopDeps{
 				newEngine: func(name string) (engine.Engine, error) {
 					gotEngineName = name
 					if tt.newEngineErr != nil {
@@ -565,7 +565,7 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 				},
 			}
 
-			err := runCodexReviewLoopWithDeps(context.Background(), tt.req, &out, deps)
+			err := runReviewLoopWithDeps(context.Background(), tt.req, &out, deps)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -644,7 +644,7 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 	}
 }
 
-func TestRunCodexReviewLoopWithDepsOutputModes(t *testing.T) {
+func TestRunReviewLoopWithDepsOutputModes(t *testing.T) {
 	tests := []struct {
 		name         string
 		mode         string
@@ -691,7 +691,7 @@ func TestRunCodexReviewLoopWithDepsOutputModes(t *testing.T) {
 			var renderCalled bool
 			var out bytes.Buffer
 
-			deps := codexReviewLoopDeps{
+			deps := reviewLoopDeps{
 				newEngine: func(name string) (engine.Engine, error) {
 					return fakeReviewLoopEngine{}, nil
 				},
@@ -716,7 +716,7 @@ func TestRunCodexReviewLoopWithDepsOutputModes(t *testing.T) {
 				},
 			}
 
-			err := runCodexReviewLoopWithDeps(context.Background(), reviewRequest{
+			err := runReviewLoopWithDeps(context.Background(), reviewRequest{
 				BaseBranch: "develop",
 				Iterations: 2,
 				OutputMode: tt.mode,

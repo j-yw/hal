@@ -38,7 +38,7 @@ type reviewDeps struct {
 
 var defaultReviewDeps = reviewDeps{
 	baseBranchExists: gitBranchResolvable,
-	runLoop:          runCodexReviewLoop,
+	runLoop:          runReviewLoopCommand,
 }
 
 var reviewOutputFlag string
@@ -104,7 +104,7 @@ func runReviewWithDeps(ctx context.Context, args []string, outputMode, engineNam
 	return deps.runLoop(ctx, req)
 }
 
-type codexReviewLoopDeps struct {
+type reviewLoopDeps struct {
 	newEngine           func(name string) (engine.Engine, error)
 	runLoop             func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
 	writeJSONReport     func(dir string, result *compound.ReviewLoopResult) (string, error)
@@ -113,25 +113,25 @@ type codexReviewLoopDeps struct {
 	renderMarkdown      func(markdown string) (string, error)
 }
 
-var defaultCodexReviewLoopDeps = codexReviewLoopDeps{
+var defaultReviewLoopDeps = reviewLoopDeps{
 	newEngine:           newEngine,
-	runLoop:             compound.RunCodexReviewLoop,
+	runLoop:             compound.RunReviewLoop,
 	writeJSONReport:     compound.WriteReviewLoopJSONReport,
 	writeMarkdownReport: compound.WriteReviewLoopMarkdownReport,
 	buildMarkdown:       compound.ReviewLoopMarkdown,
 	renderMarkdown:      renderMarkdownWithGlamour,
 }
 
-func runCodexReviewLoop(ctx context.Context, req reviewRequest) error {
-	return runCodexReviewLoopWithDeps(ctx, req, os.Stdout, defaultCodexReviewLoopDeps)
+func runReviewLoopCommand(ctx context.Context, req reviewRequest) error {
+	return runReviewLoopWithDeps(ctx, req, os.Stdout, defaultReviewLoopDeps)
 }
 
-func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer, deps codexReviewLoopDeps) error {
+func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer, deps reviewLoopDeps) error {
 	if deps.newEngine == nil {
 		deps.newEngine = newEngine
 	}
 	if deps.runLoop == nil {
-		deps.runLoop = compound.RunCodexReviewLoop
+		deps.runLoop = compound.RunReviewLoop
 	}
 	if deps.writeJSONReport == nil {
 		deps.writeJSONReport = compound.WriteReviewLoopJSONReport

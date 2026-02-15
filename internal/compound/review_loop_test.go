@@ -322,8 +322,8 @@ func TestRunSingleReviewIterationCodexFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "codex review failed: codex command failed") {
-		t.Fatalf("error %q does not contain expected codex failure message", err.Error())
+	if !strings.Contains(err.Error(), "review step failed: codex command failed") {
+		t.Fatalf("error %q does not contain expected review-step failure message", err.Error())
 	}
 }
 
@@ -362,7 +362,7 @@ func TestRunSingleReviewIterationFixStepFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "codex fix step failed: fix prompt failed") {
+	if !strings.Contains(err.Error(), "fix step failed: fix prompt failed") {
 		t.Fatalf("error %q does not contain expected fix-step failure message", err.Error())
 	}
 }
@@ -533,5 +533,92 @@ func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
 		if !strings.Contains(prompt, field) {
 			t.Fatalf("prompt missing required fix field or instruction %q", field)
 		}
+	}
+}
+
+func TestPromptWithRetryRetriesTransientErrors(t *testing.T) {
+	promptCalls := 0
+	sleepCalls := 0
+	deps := reviewIterationDeps{
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalls++
+			if promptCalls < 3 {
+				return "", errors.New("rate limit exceeded")
+			}
+			return "ok", nil
+		},
+		sleep: func(ctx context.Context, d time.Duration) error {
+			sleepCalls++
+			return nil
+		},
+		maxRetries: 2,
+		retryDelay: 10 * time.Millisecond,
+	}
+
+	got, err := promptWithRetry(context.Background(), deps, "prompt")
+	if err != nil {
+		t.Fatalf("promptWithRetry() unexpected error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("promptWithRetry() = %q, want %q", got, "ok")
+	}
+	if promptCalls != 3 {
+		t.Fatalf("prompt calls = %d, want %d", promptCalls, 3)
+	}
+	if sleepCalls != 2 {
+		t.Fatalf("sleep calls = %d, want %d", sleepCalls, 2)
+	}
+}
+
+func TestParseReviewResponseWithRepair(t *testing.T) {
+	deps := reviewIterationDeps{
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			return `{"summary":"repaired","issues":[{"id":"ISSUE-1","title":"t","severity":"low","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"}]}`,
+				nil
+		},
+		sleep:      func(ctx context.Context, d time.Duration) error { return nil },
+		maxRetries: 0,
+		retryDelay: time.Millisecond,
+	}
+
+	parsed, err := parseReviewResponseWithRepair(context.Background(), deps, "not-json")
+	if err != nil {
+		t.Fatalf("parseReviewResponseWithRepair() unexpected error: %v", err)
+	}
+	if parsed.Summary != "repaired" {
+		t.Fatalf("summary = %q, want %q", parsed.Summary, "repaired")
+	}
+	if len(parsed.Issues) != 1 {
+		t.Fatalf("len(issues) = %d, want %d", len(parsed.Issues), 1)
+	}
+}
+
+func TestParseFixResponseWithRepair(t *testing.T) {
+	reviewed := []codexReviewIssue{{
+		ID:           "ISSUE-1",
+		Title:        "t",
+		Severity:     "low",
+		File:         "f.go",
+		Line:         1,
+		Rationale:    "why",
+		SuggestedFix: "fix",
+	}}
+
+	deps := reviewIterationDeps{
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			return `{"summary":"repaired fix","issues":[{"id":"ISSUE-1","valid":true,"reason":"real","fixed":true}]}`,
+				nil
+		},
+		sleep:      func(ctx context.Context, d time.Duration) error { return nil },
+		maxRetries: 0,
+		retryDelay: time.Millisecond,
+	}
+
+	parsed, err := parseFixResponseWithRepair(context.Background(), deps, "invalid", reviewed)
+	if err != nil {
+		t.Fatalf("parseFixResponseWithRepair() unexpected error: %v", err)
+	}
+	if parsed.ValidIssues != 1 || parsed.FixesApplied != 1 || parsed.InvalidIssues != 0 {
+		t.Fatalf("parsed = %+v, want Valid=1 Invalid=0 Fixes=1", parsed)
 	}
 }

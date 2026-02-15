@@ -94,6 +94,7 @@ For iterative branch-vs-branch review/fix loops, use:
 
 ```bash
 hal review against <base-branch> [iterations]
+hal review against <base-branch> [iterations] -e codex
 ```
 
 **Getting started:** Run the manual workflow first (`hal plan` → `hal run`), then `hal report` to generate your first report. Or place a report directly in `.hal/reports/`.
@@ -105,7 +106,7 @@ State is saved after each step — use `hal auto --resume` to continue from inte
 The old `hal review` reporting workflow moved to `hal report`.
 
 - Use `hal report` for legacy session reporting and report generation.
-- Use `hal review against <base-branch> [iterations]` for the new iterative Codex review loop.
+- Use `hal review against <base-branch> [iterations]` for the new iterative review/fix loop (select engine with `-e`).
 
 ## Commands
 
@@ -124,7 +125,7 @@ The old `hal review` reporting workflow moved to `hal report`.
 | Command | Description |
 |---------|-------------|
 | `hal report` | Legacy session reporting: generate report → `.hal/reports/`, update AGENTS.md |
-| `hal review against <base-branch> [iterations]` | Iterative Codex review/fix loop against a base branch |
+| `hal review against <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e` to select engine) |
 | `hal auto` | Run full pipeline using latest report |
 | `hal analyze [report]` | Analyze a report to find priority item |
 | `hal explode <prd.md>` | Break PRD into 8-15 granular tasks |

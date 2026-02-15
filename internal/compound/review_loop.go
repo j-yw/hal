@@ -13,30 +13,41 @@ import (
 	"github.com/jywlabs/hal/internal/skills"
 )
 
-const reviewLoopDiffMaxLen = 20000
+const (
+	reviewLoopDiffMaxLen    = 20000
+	reviewPromptMaxRetries  = 2
+	reviewPromptBaseBackoff = 2 * time.Second
+)
 
-// RunCodexReviewLoop executes review iterations up to requestedIterations.
+// RunReviewLoop executes review iterations up to requestedIterations.
 // It stops early when an iteration reports zero valid issues.
-func RunCodexReviewLoop(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+func RunReviewLoop(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
 	if eng == nil {
 		return nil, fmt.Errorf("engine is required")
 	}
 
-	return runCodexReviewLoop(ctx, baseBranch, requestedIterations, reviewIterationDeps{
+	return runReviewLoop(ctx, baseBranch, requestedIterations, reviewIterationDeps{
 		now:             time.Now,
 		currentBranch:   CurrentBranch,
 		diffAgainstBase: gitDiffAgainstBaseBranch,
 		prompt: func(ctx context.Context, prompt string) (string, error) {
-			// Use StreamPrompt (JSON mode for Codex) to avoid no-TTY hangs when
-			// running via detached sessions.
+			// Use StreamPrompt to avoid no-TTY hangs in detached runs and keep
+			// event handling behavior consistent with other command flows.
 			return eng.StreamPrompt(ctx, prompt, nil)
 		},
+		maxRetries: reviewPromptMaxRetries,
+		retryDelay: reviewPromptBaseBackoff,
 	})
 }
 
-// RunSingleReviewIteration executes one Codex review iteration and records the
-// parsed output into the shared ReviewLoopResult contract.
-func RunSingleReviewIteration(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+// RunCodexReviewLoop is kept for compatibility with older callers.
+func RunCodexReviewLoop(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+	return RunReviewLoop(ctx, eng, baseBranch, requestedIterations)
+}
+
+// RunReviewIteration executes one review iteration and records the parsed output
+// into the shared ReviewLoopResult contract.
+func RunReviewIteration(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
 	if eng == nil {
 		return nil, fmt.Errorf("engine is required")
 	}
@@ -46,11 +57,18 @@ func RunSingleReviewIteration(ctx context.Context, eng engine.Engine, baseBranch
 		currentBranch:   CurrentBranch,
 		diffAgainstBase: gitDiffAgainstBaseBranch,
 		prompt: func(ctx context.Context, prompt string) (string, error) {
-			// Use StreamPrompt (JSON mode for Codex) to avoid no-TTY hangs when
-			// running via detached sessions.
+			// Use StreamPrompt to avoid no-TTY hangs in detached runs and keep
+			// event handling behavior consistent with other command flows.
 			return eng.StreamPrompt(ctx, prompt, nil)
 		},
+		maxRetries: reviewPromptMaxRetries,
+		retryDelay: reviewPromptBaseBackoff,
 	})
+}
+
+// RunSingleReviewIteration is kept for compatibility with older callers.
+func RunSingleReviewIteration(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+	return RunReviewIteration(ctx, eng, baseBranch, requestedIterations)
 }
 
 type reviewIterationDeps struct {
@@ -58,6 +76,9 @@ type reviewIterationDeps struct {
 	currentBranch   func() (string, error)
 	diffAgainstBase func(baseBranch string) (string, error)
 	prompt          func(ctx context.Context, prompt string) (string, error)
+	sleep           func(ctx context.Context, d time.Duration) error
+	maxRetries      int
+	retryDelay      time.Duration
 }
 
 type codexReviewResponse struct {
@@ -94,7 +115,7 @@ type codexFixOutcome struct {
 	FixesApplied  int
 }
 
-func runCodexReviewLoop(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
+func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
 	baseBranch, deps, err := normalizeReviewLoopDeps(baseBranch, requestedIterations, deps)
 	if err != nil {
 		return nil, err
@@ -144,6 +165,11 @@ func runCodexReviewLoop(ctx context.Context, baseBranch string, requestedIterati
 	return result, nil
 }
 
+// runCodexReviewLoop is kept for compatibility with older tests/callers.
+func runCodexReviewLoop(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
+	return runReviewLoop(ctx, baseBranch, requestedIterations, deps)
+}
+
 func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
 	baseBranch, deps, err := normalizeReviewLoopDeps(baseBranch, requestedIterations, deps)
 	if err != nil {
@@ -191,14 +217,14 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 	}
 
 	reviewPrompt := buildCodexReviewPrompt(baseBranch, currentBranch, diff)
-	reviewResponse, err := deps.prompt(ctx, reviewPrompt)
+	reviewResponse, err := promptWithRetry(ctx, deps, reviewPrompt)
 	if err != nil {
-		return ReviewLoopIteration{}, fmt.Errorf("codex review failed: %w", err)
+		return ReviewLoopIteration{}, fmt.Errorf("review step failed: %w", err)
 	}
 
-	parsedReview, err := parseCodexReviewResponse(reviewResponse)
+	parsedReview, err := parseReviewResponseWithRepair(ctx, deps, reviewResponse)
 	if err != nil {
-		return ReviewLoopIteration{}, fmt.Errorf("failed to parse codex review output: %w", err)
+		return ReviewLoopIteration{}, fmt.Errorf("failed to parse review output: %w", err)
 	}
 
 	issuesFound := len(parsedReview.Issues)
@@ -226,17 +252,17 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 
 	fixPrompt, err := buildCodexFixPrompt(baseBranch, currentBranch, parsedReview.Issues)
 	if err != nil {
-		return ReviewLoopIteration{}, fmt.Errorf("failed to build codex fix prompt: %w", err)
+		return ReviewLoopIteration{}, fmt.Errorf("failed to build fix prompt: %w", err)
 	}
 
-	fixResponse, err := deps.prompt(ctx, fixPrompt)
+	fixResponse, err := promptWithRetry(ctx, deps, fixPrompt)
 	if err != nil {
-		return ReviewLoopIteration{}, fmt.Errorf("codex fix step failed: %w", err)
+		return ReviewLoopIteration{}, fmt.Errorf("fix step failed: %w", err)
 	}
 
-	parsedFix, err := parseCodexFixResponse(fixResponse, parsedReview.Issues)
+	parsedFix, err := parseFixResponseWithRepair(ctx, deps, fixResponse, parsedReview.Issues)
 	if err != nil {
-		return ReviewLoopIteration{}, fmt.Errorf("failed to parse codex fix output: %w", err)
+		return ReviewLoopIteration{}, fmt.Errorf("failed to parse fix output: %w", err)
 	}
 
 	iteration.ValidIssues = parsedFix.ValidIssues
@@ -271,8 +297,195 @@ func normalizeReviewLoopDeps(baseBranch string, requestedIterations int, deps re
 	if deps.prompt == nil {
 		return "", deps, fmt.Errorf("prompt function is required")
 	}
+	if deps.sleep == nil {
+		deps.sleep = sleepWithContext
+	}
+	if deps.maxRetries < 0 {
+		return "", deps, fmt.Errorf("max retries must be greater than or equal to 0")
+	}
+	if deps.retryDelay <= 0 {
+		deps.retryDelay = reviewPromptBaseBackoff
+	}
 
 	return baseBranch, deps, nil
+}
+
+func promptWithRetry(ctx context.Context, deps reviewIterationDeps, prompt string) (string, error) {
+	attempts := deps.maxRetries + 1
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		response, err := deps.prompt(ctx, prompt)
+		if err == nil {
+			return response, nil
+		}
+
+		lastErr = err
+		if !isRetryablePromptError(err) || attempt == attempts-1 {
+			break
+		}
+
+		delay := retryBackoff(deps.retryDelay, attempt)
+		if err := deps.sleep(ctx, delay); err != nil {
+			return "", err
+		}
+	}
+
+	return "", lastErr
+}
+
+func parseReviewResponseWithRepair(ctx context.Context, deps reviewIterationDeps, response string) (*codexReviewResponse, error) {
+	parsed, err := parseCodexReviewResponse(response)
+	if err == nil {
+		return parsed, nil
+	}
+
+	repairPrompt := buildReviewRepairPrompt(response)
+	repaired, repairErr := promptWithRetry(ctx, deps, repairPrompt)
+	if repairErr != nil {
+		return nil, fmt.Errorf("initial parse error (%v); JSON repair failed: %w", err, repairErr)
+	}
+
+	repairedParsed, repairParseErr := parseCodexReviewResponse(repaired)
+	if repairParseErr != nil {
+		return nil, fmt.Errorf("initial parse error (%v); repaired output parse failed: %w", err, repairParseErr)
+	}
+
+	return repairedParsed, nil
+}
+
+func parseFixResponseWithRepair(ctx context.Context, deps reviewIterationDeps, response string, reviewedIssues []codexReviewIssue) (*codexFixOutcome, error) {
+	parsed, err := parseCodexFixResponse(response, reviewedIssues)
+	if err == nil {
+		return parsed, nil
+	}
+
+	repairPrompt, repairPromptErr := buildFixRepairPrompt(reviewedIssues, response)
+	if repairPromptErr != nil {
+		return nil, fmt.Errorf("initial parse error (%v); failed to build JSON repair prompt: %w", err, repairPromptErr)
+	}
+
+	repaired, repairErr := promptWithRetry(ctx, deps, repairPrompt)
+	if repairErr != nil {
+		return nil, fmt.Errorf("initial parse error (%v); JSON repair failed: %w", err, repairErr)
+	}
+
+	repairedParsed, repairParseErr := parseCodexFixResponse(repaired, reviewedIssues)
+	if repairParseErr != nil {
+		return nil, fmt.Errorf("initial parse error (%v); repaired output parse failed: %w", err, repairParseErr)
+	}
+
+	return repairedParsed, nil
+}
+
+func buildReviewRepairPrompt(rawResponse string) string {
+	return fmt.Sprintf(`The previous response did not match the required JSON schema for review findings.
+
+Previous response:
+%s
+
+Return ONLY valid JSON (no markdown fences, no prose) with this exact shape:
+{
+  "summary": "short summary of findings",
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "title": "brief issue title",
+      "severity": "low|medium|high|critical",
+      "file": "relative/path/to/file.go",
+      "line": 42,
+      "rationale": "why this matters",
+      "suggestedFix": "specific fix guidance"
+    }
+  ]
+}
+
+If there are no issues, return "issues": [] and explain that in summary.`, truncateForPrompt(rawResponse, reviewLoopDiffMaxLen))
+}
+
+func buildFixRepairPrompt(reviewedIssues []codexReviewIssue, rawResponse string) (string, error) {
+	issuesJSON, err := json.MarshalIndent(reviewedIssues, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal reviewed issues: %w", err)
+	}
+
+	return fmt.Sprintf(`The previous response did not match the required JSON schema for fix validation.
+
+Input issues (must be preserved by id):
+%s
+
+Previous response:
+%s
+
+Return ONLY valid JSON (no markdown fences, no prose) with this exact shape:
+{
+  "summary": "short summary of validation and fixes",
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "valid": true,
+      "reason": "why this issue is valid or invalid",
+      "fixed": true
+    }
+  ]
+}
+
+Rules:
+- Include every input issue id exactly once in output issues[]
+- Set fixed=false whenever valid=false`, string(issuesJSON), truncateForPrompt(rawResponse, reviewLoopDiffMaxLen)), nil
+}
+
+func retryBackoff(base time.Duration, attempt int) time.Duration {
+	delay := base * time.Duration(1<<attempt)
+	if delay > 2*time.Minute {
+		return 2 * time.Minute
+	}
+	return delay
+}
+
+func isRetryablePromptError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	retryablePatterns := []string{
+		"rate limit",
+		"timeout",
+		"timed out",
+		"connection",
+		"temporary",
+		"overloaded",
+		"503",
+		"429",
+	}
+	for _, pattern := range retryablePatterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+func truncateForPrompt(content string, maxLen int) string {
+	trimmed := strings.TrimSpace(content)
+	if len(trimmed) <= maxLen {
+		return trimmed
+	}
+	return trimmed[:maxLen] + "\n... (truncated)"
 }
 
 func gitDiffAgainstBaseBranch(baseBranch string) (string, error) {
