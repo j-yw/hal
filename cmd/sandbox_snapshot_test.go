@@ -192,6 +192,10 @@ func TestImageNameFromRef(t *testing.T) {
 		{"docker.io/library/ubuntu:22.04", "ubuntu"},
 		{"ubuntu:22.04", "ubuntu"},
 		{"ubuntu", "ubuntu"},
+		{"localhost:5000/hal-sandbox", "hal-sandbox"},
+		{"localhost:5000/hal-sandbox:1.0", "hal-sandbox"},
+		{"localhost:5000/jywlabs/hal-sandbox:latest", "hal-sandbox"},
+		{"ghcr.io/jywlabs/hal-sandbox@sha256:abcdef", "hal-sandbox"},
 	}
 
 	for _, tt := range tests {

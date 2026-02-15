@@ -142,13 +142,17 @@ func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapsh
 // e.g., "hal-sandbox:0.1" -> "hal-sandbox"
 // e.g., "ubuntu:22.04" -> "ubuntu"
 func imageNameFromRef(ref string) string {
-	// Strip tag
-	if idx := strings.LastIndex(ref, ":"); idx != -1 {
+	// Strip digest.
+	if idx := strings.Index(ref, "@"); idx != -1 {
 		ref = ref[:idx]
 	}
-	// Take last path component
+	// Take last path component.
 	if idx := strings.LastIndex(ref, "/"); idx != -1 {
 		ref = ref[idx+1:]
+	}
+	// Strip tag from image component only.
+	if idx := strings.LastIndex(ref, ":"); idx != -1 {
+		ref = ref[:idx]
 	}
 	return ref
 }
