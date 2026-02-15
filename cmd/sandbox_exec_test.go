@@ -372,3 +372,40 @@ func TestRunSandboxExec_EnsureAuthCalled(t *testing.T) {
 		t.Fatal("expected error for empty API key, got nil")
 	}
 }
+
+func TestSandboxExecCobra_AllowsRemoteFlagsWithoutDoubleDash(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("os.Chdir() error: %v", err)
+	}
+
+	origOut := rootCmd.OutOrStdout()
+	origErr := rootCmd.ErrOrStderr()
+	t.Cleanup(func() {
+		rootCmd.SetOut(origOut)
+		rootCmd.SetErr(origErr)
+		rootCmd.SetArgs(nil)
+	})
+
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"sandbox", "exec", "grep", "-r", "TODO", "/workspace"})
+
+	err = rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error because .hal/ is missing, got nil")
+	}
+	if strings.Contains(err.Error(), "unknown shorthand flag") {
+		t.Fatalf("remote flag was parsed as local flag: %v", err)
+	}
+	if !strings.Contains(err.Error(), ".hal/ not found") {
+		t.Fatalf("expected .hal/ missing error, got: %v", err)
+	}
+}

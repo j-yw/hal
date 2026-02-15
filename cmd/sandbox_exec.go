@@ -40,6 +40,9 @@ The exit code from the remote command is propagated as the local exit code.`,
 
 func init() {
 	sandboxExecCmd.Flags().String("name", "", "sandbox name (defaults to active sandbox from sandbox.json)")
+	// Stop flag parsing after the remote command token so options like "-r"
+	// are forwarded to the sandbox command instead of treated as local flags.
+	sandboxExecCmd.Flags().SetInterspersed(false)
 
 	sandboxCmd.AddCommand(sandboxExecCmd)
 }
