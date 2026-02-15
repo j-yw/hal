@@ -276,7 +276,7 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	cmd.SysProcAttr = newSysProcAttr()
 	setupProcessCleanup(cmd)
 
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 	parser := NewParser()
 	collector := &textCollectingStreamHandler{
 		parser:       parser,
@@ -284,7 +284,9 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 		lastActivity: time.Now(),
 	}
 
-	cmd.Stdout = io.MultiWriter(collector, &stdout)
+	// Stream directly into the collector/display to avoid buffering the entire
+	// JSONL stream in memory during long review sessions.
+	cmd.Stdout = collector
 	cmd.Stderr = &stderr
 
 	err := runCommandWithInactivityWatch(cmd, collector, codexStreamInactivityTimeout)
