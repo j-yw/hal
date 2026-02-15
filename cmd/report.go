@@ -65,24 +65,39 @@ func init() {
 }
 
 func runReport(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	if cmd != nil && cmd.Context() != nil {
+		ctx = cmd.Context()
+	}
+
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+
 	return runReportWithDeps(
-		context.Background(),
+		ctx,
 		".",
 		reportDryRunFlag,
 		reportSkipAgentsFlag,
 		reportEngineFlag,
-		os.Stdout,
+		out,
 		defaultReportDeps,
 	)
 }
 
 func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents bool, engineName string, out io.Writer, deps reportDeps) error {
-	eng, err := deps.newEngine(engineName)
-	if err != nil {
-		return fmt.Errorf("failed to create engine: %w", err)
+	display := deps.newDisplay(out)
+
+	var eng engine.Engine
+	if !dryRun {
+		var err error
+		eng, err = deps.newEngine(engineName)
+		if err != nil {
+			return fmt.Errorf("failed to create engine: %w", err)
+		}
 	}
 
-	display := deps.newDisplay(out)
 	display.ShowCommandHeader("Review", "work session", deps.buildHeaderCtx(engineName))
 
 	result, err := deps.runReview(ctx, eng, display, dir, compound.ReviewOptions{
@@ -93,16 +108,22 @@ func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents 
 		return err
 	}
 
+	if !dryRun && (result == nil || result.ReportPath == "") {
+		return fmt.Errorf("review did not produce a report path")
+	}
+
 	showReviewResult(out, display, result)
 	return nil
 }
 
 func showReviewResult(out io.Writer, display *engine.Display, result *compound.ReviewResult) {
-	if result == nil || result.ReportPath == "" {
+	if result == nil {
 		return
 	}
 
-	display.ShowCommandSuccess("Review complete", result.ReportPath)
+	if result.ReportPath != "" {
+		display.ShowCommandSuccess("Review complete", result.ReportPath)
+	}
 
 	if result.Summary != "" {
 		fmt.Fprintln(out)

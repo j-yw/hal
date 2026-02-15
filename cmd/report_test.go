@@ -9,6 +9,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/spf13/cobra"
 )
 
 type fakeReportEngine struct{}
@@ -62,6 +63,10 @@ func TestReportCommandFlags(t *testing.T) {
 }
 
 func TestRunReportWithDeps(t *testing.T) {
+	type contextKey string
+	const reviewContextKey contextKey = "report-test-key"
+	const reviewContextValue = "report-test-value"
+
 	tests := []struct {
 		name             string
 		dryRun           bool
@@ -70,7 +75,9 @@ func TestRunReportWithDeps(t *testing.T) {
 		newEngineErr     error
 		reviewErr        error
 		result           *compound.ReviewResult
+		expectEngineCall bool
 		expectReviewCall bool
+		expectNilEngine  bool
 		wantErr          string
 		wantOutput       []string
 		wantMissing      []string
@@ -85,7 +92,9 @@ func TestRunReportWithDeps(t *testing.T) {
 				Summary:         "Implemented report split",
 				Recommendations: []string{"Run hal report regularly", "Document migration for teams"},
 			},
+			expectEngineCall: false,
 			expectReviewCall: true,
+			expectNilEngine:  true,
 			wantOutput: []string{
 				"Review complete",
 				"Summary: Implemented report split",
@@ -95,7 +104,7 @@ func TestRunReportWithDeps(t *testing.T) {
 			},
 		},
 		{
-			name:       "missing report path keeps quiet like legacy review",
+			name:       "missing report path returns error for non-dry-run",
 			dryRun:     false,
 			skipAgents: false,
 			engineName: "claude",
@@ -103,11 +112,30 @@ func TestRunReportWithDeps(t *testing.T) {
 				Summary:         "ignored without report path",
 				Recommendations: []string{"ignored"},
 			},
+			expectEngineCall: true,
 			expectReviewCall: true,
+			expectNilEngine:  false,
+			wantErr:          "review did not produce a report path",
+		},
+		{
+			name:       "missing report path is allowed in dry-run",
+			dryRun:     true,
+			skipAgents: false,
+			engineName: "claude",
+			result: &compound.ReviewResult{
+				Summary:         "shown without report path",
+				Recommendations: []string{"still shown in dry-run"},
+			},
+			expectEngineCall: false,
+			expectReviewCall: true,
+			expectNilEngine:  true,
+			wantOutput: []string{
+				"Summary: shown without report path",
+				"Recommendations:",
+				"1. still shown in dry-run",
+			},
 			wantMissing: []string{
 				"Review complete",
-				"Summary:",
-				"Recommendations:",
 			},
 		},
 		{
@@ -116,8 +144,25 @@ func TestRunReportWithDeps(t *testing.T) {
 			skipAgents:       false,
 			engineName:       "pi",
 			newEngineErr:     errors.New("engine unavailable"),
+			expectEngineCall: true,
 			expectReviewCall: false,
 			wantErr:          "failed to create engine: engine unavailable",
+		},
+		{
+			name:         "dry-run skips engine creation failure",
+			dryRun:       true,
+			skipAgents:   false,
+			engineName:   "pi",
+			newEngineErr: errors.New("engine unavailable"),
+			result: &compound.ReviewResult{
+				Summary: "dry-run preview works without engine",
+			},
+			expectEngineCall: false,
+			expectReviewCall: true,
+			expectNilEngine:  true,
+			wantOutput: []string{
+				"Summary: dry-run preview works without engine",
+			},
 		},
 		{
 			name:             "review failure bubbles up",
@@ -125,7 +170,9 @@ func TestRunReportWithDeps(t *testing.T) {
 			skipAgents:       true,
 			engineName:       "codex",
 			reviewErr:        errors.New("review failed"),
+			expectEngineCall: true,
 			expectReviewCall: true,
+			expectNilEngine:  false,
 			wantErr:          "review failed",
 		},
 	}
@@ -134,12 +181,16 @@ func TestRunReportWithDeps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
 			var reviewCalled bool
+			var engineCalled bool
 			var gotEngineName string
 			var gotDir string
 			var gotOpts compound.ReviewOptions
+			var gotCtx context.Context
+			var gotReviewEngine engine.Engine
 
 			deps := reportDeps{
 				newEngine: func(name string) (engine.Engine, error) {
+					engineCalled = true
 					gotEngineName = name
 					if tt.newEngineErr != nil {
 						return nil, tt.newEngineErr
@@ -152,6 +203,8 @@ func TestRunReportWithDeps(t *testing.T) {
 				},
 				runReview: func(ctx context.Context, eng engine.Engine, display *engine.Display, dir string, opts compound.ReviewOptions) (*compound.ReviewResult, error) {
 					reviewCalled = true
+					gotReviewEngine = eng
+					gotCtx = ctx
 					gotDir = dir
 					gotOpts = opts
 					if tt.reviewErr != nil {
@@ -161,7 +214,8 @@ func TestRunReportWithDeps(t *testing.T) {
 				},
 			}
 
-			err := runReportWithDeps(context.Background(), "project-dir", tt.dryRun, tt.skipAgents, tt.engineName, &out, deps)
+			inputCtx := context.WithValue(context.Background(), reviewContextKey, reviewContextValue)
+			err := runReportWithDeps(inputCtx, "project-dir", tt.dryRun, tt.skipAgents, tt.engineName, &out, deps)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -178,11 +232,21 @@ func TestRunReportWithDeps(t *testing.T) {
 				t.Fatalf("reviewCalled = %v, want %v", reviewCalled, tt.expectReviewCall)
 			}
 
-			if gotEngineName != tt.engineName {
+			if engineCalled != tt.expectEngineCall {
+				t.Fatalf("engineCalled = %v, want %v", engineCalled, tt.expectEngineCall)
+			}
+
+			if engineCalled && gotEngineName != tt.engineName {
 				t.Fatalf("newEngine called with %q, want %q", gotEngineName, tt.engineName)
 			}
 
 			if tt.expectReviewCall {
+				if gotCtx == nil {
+					t.Fatal("expected context to be passed to runReview")
+				}
+				if gotCtx.Value(reviewContextKey) != reviewContextValue {
+					t.Fatalf("context value = %v, want %v", gotCtx.Value(reviewContextKey), reviewContextValue)
+				}
 				if gotDir != "project-dir" {
 					t.Fatalf("review dir = %q, want %q", gotDir, "project-dir")
 				}
@@ -191,6 +255,12 @@ func TestRunReportWithDeps(t *testing.T) {
 				}
 				if gotOpts.SkipAgents != tt.skipAgents {
 					t.Fatalf("SkipAgents = %v, want %v", gotOpts.SkipAgents, tt.skipAgents)
+				}
+				if tt.expectNilEngine && gotReviewEngine != nil {
+					t.Fatal("expected runReview to receive nil engine")
+				}
+				if !tt.expectNilEngine && gotReviewEngine == nil {
+					t.Fatal("expected runReview to receive non-nil engine")
 				}
 			}
 
@@ -206,6 +276,107 @@ func TestRunReportWithDeps(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunReportUsesCommandContext(t *testing.T) {
+	originalDeps := defaultReportDeps
+	originalDryRun := reportDryRunFlag
+	originalSkipAgents := reportSkipAgentsFlag
+	originalEngine := reportEngineFlag
+
+	t.Cleanup(func() {
+		defaultReportDeps = originalDeps
+		reportDryRunFlag = originalDryRun
+		reportSkipAgentsFlag = originalSkipAgents
+		reportEngineFlag = originalEngine
+	})
+
+	type contextKey string
+	const key contextKey = "command-context-key"
+	const value = "command-context-value"
+
+	var gotCtx context.Context
+	defaultReportDeps = reportDeps{
+		newEngine: func(name string) (engine.Engine, error) {
+			return fakeReportEngine{}, nil
+		},
+		newDisplay: engine.NewDisplay,
+		buildHeaderCtx: func(engineName string) engine.HeaderContext {
+			return engine.HeaderContext{Engine: engineName}
+		},
+		runReview: func(ctx context.Context, eng engine.Engine, display *engine.Display, dir string, opts compound.ReviewOptions) (*compound.ReviewResult, error) {
+			gotCtx = ctx
+			return &compound.ReviewResult{}, nil
+		},
+	}
+
+	reportDryRunFlag = true
+	reportSkipAgentsFlag = false
+	reportEngineFlag = "codex"
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.WithValue(context.Background(), key, value))
+
+	if err := runReport(cmd, nil); err != nil {
+		t.Fatalf("runReport returned error: %v", err)
+	}
+
+	if gotCtx == nil {
+		t.Fatal("expected runReview to receive a context")
+	}
+	if gotCtx.Value(key) != value {
+		t.Fatalf("runReview context value = %v, want %v", gotCtx.Value(key), value)
+	}
+}
+
+func TestRunReportUsesCommandOutputWriter(t *testing.T) {
+	originalDeps := defaultReportDeps
+	originalDryRun := reportDryRunFlag
+	originalSkipAgents := reportSkipAgentsFlag
+	originalEngine := reportEngineFlag
+
+	t.Cleanup(func() {
+		defaultReportDeps = originalDeps
+		reportDryRunFlag = originalDryRun
+		reportSkipAgentsFlag = originalSkipAgents
+		reportEngineFlag = originalEngine
+	})
+
+	defaultReportDeps = reportDeps{
+		newEngine: func(name string) (engine.Engine, error) {
+			return fakeReportEngine{}, nil
+		},
+		newDisplay: engine.NewDisplay,
+		buildHeaderCtx: func(engineName string) engine.HeaderContext {
+			return engine.HeaderContext{Engine: engineName}
+		},
+		runReview: func(ctx context.Context, eng engine.Engine, display *engine.Display, dir string, opts compound.ReviewOptions) (*compound.ReviewResult, error) {
+			return &compound.ReviewResult{
+				ReportPath: ".hal/reports/review-20260215.md",
+				Summary:    "captured by command output",
+			}, nil
+		},
+	}
+
+	reportDryRunFlag = true
+	reportSkipAgentsFlag = false
+	reportEngineFlag = "codex"
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := runReport(cmd, nil); err != nil {
+		t.Fatalf("runReport returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Review complete") {
+		t.Fatalf("output %q does not contain review success line", output)
+	}
+	if !strings.Contains(output, "Summary: captured by command output") {
+		t.Fatalf("output %q does not contain summary", output)
 	}
 }
 
