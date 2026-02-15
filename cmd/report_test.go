@@ -206,12 +206,4 @@ func TestReviewCommandLegacyFlagsRemoved(t *testing.T) {
 	if reviewCmd.Flags().Lookup("engine") != nil {
 		t.Fatal("review command should not expose legacy --engine flag")
 	}
-
-	err := runReview(nil, nil)
-	if err == nil {
-		t.Fatal("expected runReview to return guidance error")
-	}
-	if !strings.Contains(err.Error(), "hal report") {
-		t.Fatalf("error %q does not direct users to hal report", err.Error())
-	}
 }
