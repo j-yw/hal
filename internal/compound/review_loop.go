@@ -591,6 +591,7 @@ func buildReviewLoopPrompt(baseBranch, currentBranch, diff string) string {
 	}
 
 	sb.WriteString("You are a strict static analyzer. Evaluate the current branch changes against the base branch and return machine-readable findings.\n\n")
+	sb.WriteString("Start with the provided diff, then inspect related repository files and context before finalizing findings.\n\n")
 	sb.WriteString(fmt.Sprintf("Base branch: %s\n", baseBranch))
 	sb.WriteString(fmt.Sprintf("Current branch: %s\n\n", currentBranch))
 
@@ -620,9 +621,12 @@ func buildReviewLoopPrompt(baseBranch, currentBranch, diff string) string {
 }
 
 Rules:
+- Use repository tools and shell commands to inspect code and validate findings.
+- Keep analysis diff-driven: start with files in the diff, then inspect only directly related code paths as needed.
+- Avoid broad or expensive commands (for example: avoid full-repo sweeps and go test ./...).
+- In this review step, do not edit or write files.
 - Include every detected issue in the issues array.
 - If there are no issues, return "issues": [] and explain that in summary.
-- Do not run any tools or shell commands. Evaluate only the provided diff context.
 `)
 
 	return sb.String()
@@ -649,8 +653,12 @@ func buildReviewLoopFixPrompt(baseBranch, currentBranch string, issues []reviewL
 
 	sb.WriteString(`Instructions:
 - Validate each issue against the current repository state.
+- Use repository tools and shell commands as needed to validate or reproduce each issue.
+- Keep validation targeted to files/functions tied to each issue.
+- Avoid broad or expensive commands (for example: avoid go test ./...).
 - Apply code changes only for valid issues.
 - Invalid issues must not be fixed.
+- After applying fixes, run focused checks relevant to changed files/packages.
 - Do NOT ask for confirmation; apply fixes directly.
 - Return ONLY valid JSON (no markdown fences, no prose) with this schema:
 {

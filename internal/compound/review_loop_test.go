@@ -103,14 +103,17 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("prompt calls = %d, want %d", promptCalls, 2)
 	}
 
-	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\""}
+	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Use repository tools and shell commands", "go test ./..."}
 	for _, snippet := range reviewPromptSnippets {
 		if !strings.Contains(reviewPrompt, snippet) {
 			t.Fatalf("review prompt missing required schema snippet %q", snippet)
 		}
 	}
+	if strings.Contains(reviewPrompt, "Do not run any tools or shell commands") {
+		t.Fatalf("review prompt should allow tool usage, got: %q", reviewPrompt)
+	}
 
-	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation"}
+	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "go test ./..."}
 	for _, snippet := range fixPromptSnippets {
 		if !strings.Contains(fixPrompt, snippet) {
 			t.Fatalf("fix prompt missing required schema snippet %q", snippet)
@@ -557,6 +560,16 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 			t.Fatalf("prompt missing required issue field %q", quoted)
 		}
 	}
+
+	if !strings.Contains(prompt, "Use repository tools and shell commands") {
+		t.Fatalf("prompt should allow tool usage, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "go test ./...") {
+		t.Fatalf("prompt should constrain expensive commands, got: %q", prompt)
+	}
+	if strings.Contains(prompt, "Do not run any tools or shell commands") {
+		t.Fatalf("prompt should not forbid tools, got: %q", prompt)
+	}
 }
 
 func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
@@ -577,7 +590,7 @@ func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
 		t.Fatalf("buildReviewLoopFixPrompt() unexpected error: %v", err)
 	}
 
-	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation"}
+	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "go test ./..."}
 	for _, field := range required {
 		if !strings.Contains(prompt, field) {
 			t.Fatalf("prompt missing required fix field or instruction %q", field)
