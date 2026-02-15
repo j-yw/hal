@@ -168,7 +168,7 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	}
 }
 
-func TestRunCodexReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
+func TestRunReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
 	start := time.Date(2026, 2, 15, 10, 0, 0, 0, time.UTC)
 	end := start.Add(10 * time.Second)
 	times := []time.Time{start, end}
@@ -211,9 +211,9 @@ func TestRunCodexReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
 		},
 	}
 
-	result, err := runCodexReviewLoop(context.Background(), "develop", 5, deps)
+	result, err := runReviewLoop(context.Background(), "develop", 5, deps)
 	if err != nil {
-		t.Fatalf("runCodexReviewLoop() unexpected error: %v", err)
+		t.Fatalf("runReviewLoop() unexpected error: %v", err)
 	}
 
 	if diffCalls != 2 {
@@ -254,7 +254,7 @@ func TestRunCodexReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
 	}
 }
 
-func TestRunCodexReviewLoopStopsAtMaxIterations(t *testing.T) {
+func TestRunReviewLoopStopsAtMaxIterations(t *testing.T) {
 	diffCalls := 0
 	promptCalls := 0
 	deps := reviewIterationDeps{
@@ -280,9 +280,9 @@ func TestRunCodexReviewLoopStopsAtMaxIterations(t *testing.T) {
 		},
 	}
 
-	result, err := runCodexReviewLoop(context.Background(), "develop", 2, deps)
+	result, err := runReviewLoop(context.Background(), "develop", 2, deps)
 	if err != nil {
-		t.Fatalf("runCodexReviewLoop() unexpected error: %v", err)
+		t.Fatalf("runReviewLoop() unexpected error: %v", err)
 	}
 
 	if diffCalls != 2 {
@@ -393,7 +393,7 @@ func TestParseCodexReviewResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parsed, err := parseCodexReviewResponse(tt.input)
+			parsed, err := parseReviewLoopResponse(tt.input)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -415,7 +415,7 @@ func TestParseCodexReviewResponse(t *testing.T) {
 }
 
 func TestParseCodexFixResponse(t *testing.T) {
-	reviewedIssues := []codexReviewIssue{
+	reviewedIssues := []reviewLoopIssue{
 		{
 			ID:           "ISSUE-1",
 			Title:        "Title 1",
@@ -471,7 +471,7 @@ func TestParseCodexFixResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parsed, err := parseCodexFixResponse(tt.input, reviewedIssues)
+			parsed, err := parseReviewLoopFixResponse(tt.input, reviewedIssues)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -499,7 +499,7 @@ func TestParseCodexFixResponse(t *testing.T) {
 }
 
 func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
-	prompt := buildCodexReviewPrompt("develop", "feature/test", "diff --git a/a.go b/a.go")
+	prompt := buildReviewLoopPrompt("develop", "feature/test", "diff --git a/a.go b/a.go")
 
 	required := []string{"id", "title", "severity", "file", "line", "rationale", "suggestedFix"}
 	for _, field := range required {
@@ -511,7 +511,7 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 }
 
 func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
-	issues := []codexReviewIssue{
+	issues := []reviewLoopIssue{
 		{
 			ID:           "ISSUE-1",
 			Title:        "Title",
@@ -523,9 +523,9 @@ func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
 		},
 	}
 
-	prompt, err := buildCodexFixPrompt("develop", "feature/test", issues)
+	prompt, err := buildReviewLoopFixPrompt("develop", "feature/test", issues)
 	if err != nil {
-		t.Fatalf("buildCodexFixPrompt() unexpected error: %v", err)
+		t.Fatalf("buildReviewLoopFixPrompt() unexpected error: %v", err)
 	}
 
 	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation"}
@@ -594,7 +594,7 @@ func TestParseReviewResponseWithRepair(t *testing.T) {
 }
 
 func TestParseFixResponseWithRepair(t *testing.T) {
-	reviewed := []codexReviewIssue{{
+	reviewed := []reviewLoopIssue{{
 		ID:           "ISSUE-1",
 		Title:        "t",
 		Severity:     "low",

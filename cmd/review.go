@@ -86,7 +86,7 @@ func runReviewWithDeps(ctx context.Context, args []string, engineName string, de
 
 type reviewLoopDeps struct {
 	newEngine           func(name string) (engine.Engine, error)
-	runLoop             func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
+	runLoop             func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
 	writeJSONReport     func(dir string, result *compound.ReviewLoopResult) (string, error)
 	writeMarkdownReport func(dir string, result *compound.ReviewLoopResult) (string, error)
 	buildMarkdown       func(result *compound.ReviewLoopResult) (string, error)
@@ -95,7 +95,7 @@ type reviewLoopDeps struct {
 
 var defaultReviewLoopDeps = reviewLoopDeps{
 	newEngine:           newEngine,
-	runLoop:             compound.RunReviewLoop,
+	runLoop:             compound.RunReviewLoopWithDisplay,
 	writeJSONReport:     compound.WriteReviewLoopJSONReport,
 	writeMarkdownReport: compound.WriteReviewLoopMarkdownReport,
 	buildMarkdown:       compound.ReviewLoopMarkdown,
@@ -111,7 +111,7 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 		deps.newEngine = newEngine
 	}
 	if deps.runLoop == nil {
-		deps.runLoop = compound.RunReviewLoop
+		deps.runLoop = compound.RunReviewLoopWithDisplay
 	}
 	if deps.writeJSONReport == nil {
 		deps.writeJSONReport = compound.WriteReviewLoopJSONReport
@@ -132,14 +132,13 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 		return fmt.Errorf("failed to create %s engine: %w", engineName, err)
 	}
 
-	runEngine := eng
+	var display *engine.Display
 	if shouldShowInteractiveReviewProgress(out) {
-		display := engine.NewDisplay(out)
+		display = engine.NewDisplay(out)
 		display.ShowCommandHeader("Review", fmt.Sprintf("against %s (%d iterations)", req.BaseBranch, req.Iterations), buildHeaderCtx(engineName))
-		runEngine = streamDisplayEngine{Engine: eng, display: display}
 	}
 
-	result, err := deps.runLoop(ctx, runEngine, req.BaseBranch, req.Iterations)
+	result, err := deps.runLoop(ctx, eng, display, req.BaseBranch, req.Iterations)
 	if err != nil {
 		return fmt.Errorf("review loop failed with %s: %w", engineName, err)
 	}
@@ -200,20 +199,6 @@ func shouldShowInteractiveReviewProgress(out io.Writer) bool {
 		return false
 	}
 	return file == os.Stdout
-}
-
-// streamDisplayEngine injects a command-level display into StreamPrompt calls
-// when the caller does not provide one.
-type streamDisplayEngine struct {
-	engine.Engine
-	display *engine.Display
-}
-
-func (e streamDisplayEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
-	if display == nil {
-		display = e.display
-	}
-	return e.Engine.StreamPrompt(ctx, prompt, display)
 }
 
 func parseReviewRequest(args []string, branchExistsFn func(branch string) (bool, error)) (reviewRequest, error) {

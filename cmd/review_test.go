@@ -398,7 +398,7 @@ func TestRunReviewLoopWithDeps(t *testing.T) {
 					}
 					return fakeReviewLoopEngine{}, nil
 				},
-				runLoop: func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error) {
+				runLoop: func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error) {
 					runCalled = true
 					gotBase = baseBranch
 					gotIterations = requestedIterations
