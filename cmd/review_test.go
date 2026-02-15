@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -178,29 +179,40 @@ func (fakeReviewLoopEngine) StreamPrompt(ctx context.Context, prompt string, dis
 
 func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 	tests := []struct {
-		name              string
-		req               reviewRequest
-		newEngineErr      error
-		runLoopErr        error
-		writeReportErr    error
-		wantErr           string
-		expectRun         bool
-		expectReportWrite bool
-		wantBase          string
-		wantIters         int
-		wantEngine        string
+		name                string
+		req                 reviewRequest
+		newEngineErr        error
+		runLoopErr          error
+		writeJSONErr        error
+		writeMarkdownErr    error
+		buildMarkdownErr    error
+		renderMarkdownErr   error
+		wantErr             string
+		expectRun           bool
+		expectJSONWrite     bool
+		expectMarkdownWrite bool
+		expectMarkdownBuild bool
+		expectRender        bool
+		wantBase            string
+		wantIters           int
+		wantEngine          string
+		wantOutput          string
 	}{
 		{
-			name: "runs codex review loop",
+			name: "runs codex review loop and renders markdown",
 			req: reviewRequest{
 				BaseBranch: "develop",
 				Iterations: 4,
 			},
-			expectRun:         true,
-			expectReportWrite: true,
-			wantBase:          "develop",
-			wantIters:         4,
-			wantEngine:        "codex",
+			expectRun:           true,
+			expectJSONWrite:     true,
+			expectMarkdownWrite: true,
+			expectMarkdownBuild: true,
+			expectRender:        true,
+			wantBase:            "develop",
+			wantIters:           4,
+			wantEngine:          "codex",
+			wantOutput:          "rendered output",
 		},
 		{
 			name: "engine creation failure",
@@ -227,18 +239,66 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 			wantEngine: "codex",
 		},
 		{
-			name: "report write failure is clear",
+			name: "json report write failure is clear",
 			req: reviewRequest{
 				BaseBranch: "develop",
 				Iterations: 3,
 			},
-			writeReportErr:    errors.New("disk full"),
-			wantErr:           "failed to write review loop JSON report: disk full",
-			expectRun:         true,
-			expectReportWrite: true,
-			wantBase:          "develop",
-			wantIters:         3,
-			wantEngine:        "codex",
+			writeJSONErr:    errors.New("disk full"),
+			wantErr:         "failed to write review loop JSON report: disk full",
+			expectRun:       true,
+			expectJSONWrite: true,
+			wantBase:        "develop",
+			wantIters:       3,
+			wantEngine:      "codex",
+		},
+		{
+			name: "markdown report write failure is clear",
+			req: reviewRequest{
+				BaseBranch: "develop",
+				Iterations: 3,
+			},
+			writeMarkdownErr:    errors.New("permission denied"),
+			wantErr:             "failed to write review loop markdown report: permission denied",
+			expectRun:           true,
+			expectJSONWrite:     true,
+			expectMarkdownWrite: true,
+			wantBase:            "develop",
+			wantIters:           3,
+			wantEngine:          "codex",
+		},
+		{
+			name: "markdown build failure is clear",
+			req: reviewRequest{
+				BaseBranch: "develop",
+				Iterations: 3,
+			},
+			buildMarkdownErr:    errors.New("missing fields"),
+			wantErr:             "failed to build review loop markdown summary: missing fields",
+			expectRun:           true,
+			expectJSONWrite:     true,
+			expectMarkdownWrite: true,
+			expectMarkdownBuild: true,
+			wantBase:            "develop",
+			wantIters:           3,
+			wantEngine:          "codex",
+		},
+		{
+			name: "markdown render failure is clear",
+			req: reviewRequest{
+				BaseBranch: "develop",
+				Iterations: 3,
+			},
+			renderMarkdownErr:   errors.New("renderer failed"),
+			wantErr:             "failed to render review loop markdown summary: renderer failed",
+			expectRun:           true,
+			expectJSONWrite:     true,
+			expectMarkdownWrite: true,
+			expectMarkdownBuild: true,
+			expectRender:        true,
+			wantBase:            "develop",
+			wantIters:           3,
+			wantEngine:          "codex",
 		},
 	}
 
@@ -248,11 +308,19 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 			var runCalled bool
 			var gotBase string
 			var gotIterations int
-			var reportWriteCalled bool
-			var gotReportDir string
-			var gotReportResult *compound.ReviewLoopResult
+			var jsonWriteCalled bool
+			var markdownWriteCalled bool
+			var markdownBuildCalled bool
+			var renderCalled bool
+			var gotJSONReportDir string
+			var gotMarkdownReportDir string
+			var gotJSONReportResult *compound.ReviewLoopResult
+			var gotMarkdownReportResult *compound.ReviewLoopResult
+			var gotBuildResult *compound.ReviewLoopResult
+			var gotRenderInput string
 
 			runResult := &compound.ReviewLoopResult{Command: "hal review against develop 1"}
+			var out bytes.Buffer
 
 			deps := codexReviewLoopDeps{
 				newEngine: func(name string) (engine.Engine, error) {
@@ -272,17 +340,45 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 					return runResult, nil
 				},
 				writeJSONReport: func(dir string, result *compound.ReviewLoopResult) (string, error) {
-					reportWriteCalled = true
-					gotReportDir = dir
-					gotReportResult = result
-					if tt.writeReportErr != nil {
-						return "", tt.writeReportErr
+					jsonWriteCalled = true
+					gotJSONReportDir = dir
+					gotJSONReportResult = result
+					if tt.writeJSONErr != nil {
+						return "", tt.writeJSONErr
 					}
 					return ".hal/reports/review-loop-2026-02-15-180000-000.json", nil
 				},
+				writeMarkdownReport: func(dir string, result *compound.ReviewLoopResult) (string, error) {
+					markdownWriteCalled = true
+					gotMarkdownReportDir = dir
+					gotMarkdownReportResult = result
+					if tt.writeMarkdownErr != nil {
+						return "", tt.writeMarkdownErr
+					}
+					return ".hal/reports/review-loop-2026-02-15-180000-000.md", nil
+				},
+				buildMarkdown: func(result *compound.ReviewLoopResult) (string, error) {
+					markdownBuildCalled = true
+					gotBuildResult = result
+					if tt.buildMarkdownErr != nil {
+						return "", tt.buildMarkdownErr
+					}
+					return "# Review Loop Summary\n\ncontent", nil
+				},
+				renderMarkdown: func(markdown string) (string, error) {
+					renderCalled = true
+					gotRenderInput = markdown
+					if tt.renderMarkdownErr != nil {
+						return "", tt.renderMarkdownErr
+					}
+					if tt.wantOutput != "" {
+						return tt.wantOutput, nil
+					}
+					return "rendered output", nil
+				},
 			}
 
-			err := runCodexReviewLoopWithDeps(context.Background(), tt.req, deps)
+			err := runCodexReviewLoopWithDeps(context.Background(), tt.req, &out, deps)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -310,15 +406,51 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 				}
 			}
 
-			if reportWriteCalled != tt.expectReportWrite {
-				t.Fatalf("reportWriteCalled = %v, want %v", reportWriteCalled, tt.expectReportWrite)
+			if jsonWriteCalled != tt.expectJSONWrite {
+				t.Fatalf("jsonWriteCalled = %v, want %v", jsonWriteCalled, tt.expectJSONWrite)
 			}
-			if tt.expectReportWrite {
-				if gotReportDir != "." {
-					t.Fatalf("writeJSONReport dir = %q, want %q", gotReportDir, ".")
+			if tt.expectJSONWrite {
+				if gotJSONReportDir != "." {
+					t.Fatalf("writeJSONReport dir = %q, want %q", gotJSONReportDir, ".")
 				}
-				if gotReportResult != runResult {
+				if gotJSONReportResult != runResult {
 					t.Fatalf("writeJSONReport result pointer mismatch")
+				}
+			}
+
+			if markdownWriteCalled != tt.expectMarkdownWrite {
+				t.Fatalf("markdownWriteCalled = %v, want %v", markdownWriteCalled, tt.expectMarkdownWrite)
+			}
+			if tt.expectMarkdownWrite {
+				if gotMarkdownReportDir != "." {
+					t.Fatalf("writeMarkdownReport dir = %q, want %q", gotMarkdownReportDir, ".")
+				}
+				if gotMarkdownReportResult != runResult {
+					t.Fatalf("writeMarkdownReport result pointer mismatch")
+				}
+			}
+
+			if markdownBuildCalled != tt.expectMarkdownBuild {
+				t.Fatalf("markdownBuildCalled = %v, want %v", markdownBuildCalled, tt.expectMarkdownBuild)
+			}
+			if tt.expectMarkdownBuild {
+				if gotBuildResult != runResult {
+					t.Fatalf("buildMarkdown result pointer mismatch")
+				}
+			}
+
+			if renderCalled != tt.expectRender {
+				t.Fatalf("renderCalled = %v, want %v", renderCalled, tt.expectRender)
+			}
+			if tt.expectRender {
+				if !strings.Contains(gotRenderInput, "# Review Loop Summary") {
+					t.Fatalf("render input = %q, want markdown summary heading", gotRenderInput)
+				}
+			}
+
+			if tt.wantErr == "" && tt.wantOutput != "" {
+				if out.String() != tt.wantOutput {
+					t.Fatalf("stdout = %q, want %q", out.String(), tt.wantOutput)
 				}
 			}
 		})

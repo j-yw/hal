@@ -116,3 +116,4 @@
 - Keep loop orchestration separate from per-iteration execution (`runCodexReviewLoop` vs `runReviewIteration`) so stop conditions can evolve without touching prompt/diff parsing internals.
 - `ReviewLoopResult.StopReason` currently uses `no_valid_issues` (early stop when an iteration reports `ValidIssues == 0`) and `max_iterations` (requested cap reached); tests should cover both paths and verify `CompletedIterations` exactly matches executed iterations.
 - Review-loop JSON artifacts are written via `compound.WriteReviewLoopJSONReport`; keep timestamp-dependent tests deterministic by using the internal `writeReviewLoopJSONReport(..., nowFn)` helper instead of stubbing wall-clock time globally.
+- Keep review-loop human output in two steps: generate markdown from `compound.ReviewLoopMarkdown` (also persisted via `WriteReviewLoopMarkdownReport`) and render it at the command layer with Glamour so file artifacts and terminal output stay in sync.

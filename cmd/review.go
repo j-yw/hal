@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
@@ -67,22 +70,28 @@ func runReviewWithDeps(ctx context.Context, args []string, deps reviewDeps) erro
 }
 
 type codexReviewLoopDeps struct {
-	newEngine       func(name string) (engine.Engine, error)
-	runLoop         func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
-	writeJSONReport func(dir string, result *compound.ReviewLoopResult) (string, error)
+	newEngine           func(name string) (engine.Engine, error)
+	runLoop             func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
+	writeJSONReport     func(dir string, result *compound.ReviewLoopResult) (string, error)
+	writeMarkdownReport func(dir string, result *compound.ReviewLoopResult) (string, error)
+	buildMarkdown       func(result *compound.ReviewLoopResult) (string, error)
+	renderMarkdown      func(markdown string) (string, error)
 }
 
 var defaultCodexReviewLoopDeps = codexReviewLoopDeps{
-	newEngine:       newEngine,
-	runLoop:         compound.RunCodexReviewLoop,
-	writeJSONReport: compound.WriteReviewLoopJSONReport,
+	newEngine:           newEngine,
+	runLoop:             compound.RunCodexReviewLoop,
+	writeJSONReport:     compound.WriteReviewLoopJSONReport,
+	writeMarkdownReport: compound.WriteReviewLoopMarkdownReport,
+	buildMarkdown:       compound.ReviewLoopMarkdown,
+	renderMarkdown:      renderMarkdownWithGlamour,
 }
 
 func runCodexReviewLoop(ctx context.Context, req reviewRequest) error {
-	return runCodexReviewLoopWithDeps(ctx, req, defaultCodexReviewLoopDeps)
+	return runCodexReviewLoopWithDeps(ctx, req, os.Stdout, defaultCodexReviewLoopDeps)
 }
 
-func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, deps codexReviewLoopDeps) error {
+func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer, deps codexReviewLoopDeps) error {
 	if deps.newEngine == nil {
 		deps.newEngine = newEngine
 	}
@@ -91,6 +100,15 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, deps cod
 	}
 	if deps.writeJSONReport == nil {
 		deps.writeJSONReport = compound.WriteReviewLoopJSONReport
+	}
+	if deps.writeMarkdownReport == nil {
+		deps.writeMarkdownReport = compound.WriteReviewLoopMarkdownReport
+	}
+	if deps.buildMarkdown == nil {
+		deps.buildMarkdown = compound.ReviewLoopMarkdown
+	}
+	if deps.renderMarkdown == nil {
+		deps.renderMarkdown = renderMarkdownWithGlamour
 	}
 
 	eng, err := deps.newEngine("codex")
@@ -107,7 +125,39 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, deps cod
 		return fmt.Errorf("failed to write review loop JSON report: %w", err)
 	}
 
+	if _, err := deps.writeMarkdownReport(".", result); err != nil {
+		return fmt.Errorf("failed to write review loop markdown report: %w", err)
+	}
+
+	markdown, err := deps.buildMarkdown(result)
+	if err != nil {
+		return fmt.Errorf("failed to build review loop markdown summary: %w", err)
+	}
+
+	rendered, err := deps.renderMarkdown(markdown)
+	if err != nil {
+		return fmt.Errorf("failed to render review loop markdown summary: %w", err)
+	}
+
+	if out != nil {
+		fmt.Fprint(out, rendered)
+	}
+
 	return nil
+}
+
+func renderMarkdownWithGlamour(markdown string) (string, error) {
+	renderer, err := glamour.NewTermRenderer(glamour.WithAutoStyle())
+	if err != nil {
+		return "", fmt.Errorf("failed to create glamour renderer: %w", err)
+	}
+
+	rendered, err := renderer.Render(markdown)
+	if err != nil {
+		return "", fmt.Errorf("failed to render markdown with glamour: %w", err)
+	}
+
+	return rendered, nil
 }
 
 func parseReviewRequest(args []string, branchExistsFn func(branch string) (bool, error)) (reviewRequest, error) {
