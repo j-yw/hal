@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/spf13/cobra"
 )
 
 func TestReviewCommandUsageAndExamples(t *testing.T) {
@@ -67,8 +69,8 @@ func TestRunReviewWithDeps(t *testing.T) {
 		name               string
 		args               []string
 		engineName         string
-		branchExists       bool
-		branchErr          error
+		resolvedBranch     string
+		resolveErr         error
 		runErr             error
 		wantErr            string
 		wantRun            bool
@@ -79,7 +81,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 		{
 			name:               "valid args default iterations",
 			args:               []string{"against", "develop"},
-			branchExists:       true,
+			resolvedBranch:     "develop",
 			wantRun:            true,
 			expectBranchLookup: true,
 			wantBranch:         "develop",
@@ -92,7 +94,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 		{
 			name:               "valid args explicit iterations",
 			args:               []string{"against", "origin/main", "5"},
-			branchExists:       true,
+			resolvedBranch:     "origin/main",
 			wantRun:            true,
 			expectBranchLookup: true,
 			wantBranch:         "origin/main",
@@ -106,7 +108,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 			name:               "normalizes engine name",
 			args:               []string{"against", "develop"},
 			engineName:         "  ClAuDe  ",
-			branchExists:       true,
+			resolvedBranch:     "develop",
 			wantRun:            true,
 			expectBranchLookup: true,
 			wantBranch:         "develop",
@@ -119,7 +121,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 		{
 			name:               "missing branch",
 			args:               []string{"against", "missing-branch"},
-			branchExists:       false,
+			resolvedBranch:     "",
 			wantErr:            "base branch missing-branch not found",
 			expectBranchLookup: true,
 			wantBranch:         "missing-branch",
@@ -137,7 +139,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 		{
 			name:               "base branch check failure",
 			args:               []string{"against", "develop"},
-			branchErr:          errors.New("git unavailable"),
+			resolveErr:         errors.New("git unavailable"),
 			wantErr:            "failed to verify base branch \"develop\": git unavailable",
 			expectBranchLookup: true,
 			wantBranch:         "develop",
@@ -150,7 +152,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 		{
 			name:               "run loop failure bubbles up",
 			args:               []string{"against", "develop"},
-			branchExists:       true,
+			resolvedBranch:     "develop",
 			runErr:             errors.New("loop failed"),
 			wantErr:            "loop failed",
 			wantRun:            true,
@@ -158,6 +160,19 @@ func TestRunReviewWithDeps(t *testing.T) {
 			wantBranch:         "develop",
 			wantRequest: reviewRequest{
 				BaseBranch: "develop",
+				Iterations: 10,
+				Engine:     "codex",
+			},
+		},
+		{
+			name:               "uses resolved remote branch when local is missing",
+			args:               []string{"against", "develop"},
+			resolvedBranch:     "origin/develop",
+			wantRun:            true,
+			expectBranchLookup: true,
+			wantBranch:         "develop",
+			wantRequest: reviewRequest{
+				BaseBranch: "origin/develop",
 				Iterations: 10,
 				Engine:     "codex",
 			},
@@ -172,19 +187,23 @@ func TestRunReviewWithDeps(t *testing.T) {
 			var gotRequest reviewRequest
 
 			deps := reviewDeps{
-				baseBranchExists: func(branch string) (bool, error) {
+				resolveBaseBranch: func(branch string) (string, error) {
 					branchChecked = true
 					gotBranch = branch
-					return tt.branchExists, tt.branchErr
+					return tt.resolvedBranch, tt.resolveErr
 				},
-				runLoop: func(ctx context.Context, req reviewRequest) error {
+				runLoop: func(ctx context.Context, req reviewRequest, out io.Writer) error {
 					runCalled = true
 					gotRequest = req
+					if out == nil {
+						t.Fatal("runLoop received nil output writer")
+					}
 					return tt.runErr
 				},
 			}
 
-			err := runReviewWithDeps(context.Background(), tt.args, tt.engineName, deps)
+			var out bytes.Buffer
+			err := runReviewWithDeps(context.Background(), tt.args, tt.engineName, &out, deps)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -205,12 +224,71 @@ func TestRunReviewWithDeps(t *testing.T) {
 			}
 
 			if tt.expectBranchLookup && gotBranch != tt.wantBranch {
-				t.Fatalf("baseBranchExists called with %q, want %q", gotBranch, tt.wantBranch)
+				t.Fatalf("resolveBaseBranch called with %q, want %q", gotBranch, tt.wantBranch)
 			}
 			if tt.wantRun && gotRequest != tt.wantRequest {
 				t.Fatalf("request = %+v, want %+v", gotRequest, tt.wantRequest)
 			}
 		})
+	}
+}
+
+func TestRunReviewUsesCommandContext(t *testing.T) {
+	originalDeps := defaultReviewDeps
+	t.Cleanup(func() { defaultReviewDeps = originalDeps })
+
+	type ctxKey string
+	const key ctxKey = "trace"
+	const value = "ctx-value"
+
+	var gotCtx context.Context
+	var gotRequest reviewRequest
+	var gotOut io.Writer
+	defaultReviewDeps = reviewDeps{
+		resolveBaseBranch: func(branch string) (string, error) {
+			return branch, nil
+		},
+		runLoop: func(ctx context.Context, req reviewRequest, out io.Writer) error {
+			gotCtx = ctx
+			gotRequest = req
+			gotOut = out
+			if out == nil {
+				t.Fatal("runLoop output writer was nil")
+			}
+			return nil
+		},
+	}
+
+	cmd := &cobra.Command{Use: "review"}
+	cmd.Flags().String("engine", "codex", "engine")
+	if err := cmd.Flags().Set("engine", "  ClAuDe  "); err != nil {
+		t.Fatalf("failed to set engine flag: %v", err)
+	}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetContext(context.WithValue(context.Background(), key, value))
+
+	if err := runReview(cmd, []string{"against", "develop", "3"}); err != nil {
+		t.Fatalf("runReview() unexpected error: %v", err)
+	}
+
+	if gotCtx == nil {
+		t.Fatal("runLoop context was nil")
+	}
+	if got := gotCtx.Value(key); got != value {
+		t.Fatalf("runLoop context value = %v, want %v", got, value)
+	}
+	if gotRequest.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want %q", gotRequest.BaseBranch, "develop")
+	}
+	if gotRequest.Iterations != 3 {
+		t.Fatalf("Iterations = %d, want %d", gotRequest.Iterations, 3)
+	}
+	if gotRequest.Engine != "claude" {
+		t.Fatalf("Engine = %q, want %q", gotRequest.Engine, "claude")
+	}
+	if gotOut != cmd.OutOrStdout() {
+		t.Fatal("runLoop output writer did not match command output writer")
 	}
 }
 

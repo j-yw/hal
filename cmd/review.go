@@ -25,13 +25,13 @@ type reviewRequest struct {
 }
 
 type reviewDeps struct {
-	baseBranchExists func(branch string) (bool, error)
-	runLoop          func(ctx context.Context, req reviewRequest) error
+	resolveBaseBranch func(branch string) (string, error)
+	runLoop           func(ctx context.Context, req reviewRequest, out io.Writer) error
 }
 
 var defaultReviewDeps = reviewDeps{
-	baseBranchExists: gitBranchResolvable,
-	runLoop:          runReviewLoopCommand,
+	resolveBaseBranch: gitResolveBranchRef,
+	runLoop:           runReviewLoopCommand,
 }
 
 var reviewEngineFlag string
@@ -57,33 +57,42 @@ func init() {
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
 	engineName := reviewEngineFlag
+	out := io.Writer(os.Stdout)
 	if cmd != nil {
+		if cmd.Context() != nil {
+			ctx = cmd.Context()
+		}
 		var err error
 		engineName, err = cmd.Flags().GetString("engine")
 		if err != nil {
 			return err
 		}
+		out = cmd.OutOrStdout()
 	}
 
-	return runReviewWithDeps(context.Background(), args, engineName, defaultReviewDeps)
+	return runReviewWithDeps(ctx, args, engineName, out, defaultReviewDeps)
 }
 
-func runReviewWithDeps(ctx context.Context, args []string, engineName string, deps reviewDeps) error {
-	if deps.baseBranchExists == nil {
-		deps.baseBranchExists = gitBranchResolvable
+func runReviewWithDeps(ctx context.Context, args []string, engineName string, out io.Writer, deps reviewDeps) error {
+	if deps.resolveBaseBranch == nil {
+		deps.resolveBaseBranch = gitResolveBranchRef
 	}
 	if deps.runLoop == nil {
 		deps.runLoop = defaultReviewDeps.runLoop
 	}
+	if out == nil {
+		out = os.Stdout
+	}
 
-	req, err := parseReviewRequest(args, deps.baseBranchExists)
+	req, err := parseReviewRequest(args, deps.resolveBaseBranch)
 	if err != nil {
 		return err
 	}
 	req.Engine = normalizeReviewEngine(engineName)
 
-	return deps.runLoop(ctx, req)
+	return deps.runLoop(ctx, req, out)
 }
 
 type reviewLoopDeps struct {
@@ -104,8 +113,11 @@ var defaultReviewLoopDeps = reviewLoopDeps{
 	renderMarkdown:      renderMarkdownWithGlamour,
 }
 
-func runReviewLoopCommand(ctx context.Context, req reviewRequest) error {
-	return runReviewLoopWithDeps(ctx, req, os.Stdout, defaultReviewLoopDeps)
+func runReviewLoopCommand(ctx context.Context, req reviewRequest, out io.Writer) error {
+	if out == nil {
+		out = os.Stdout
+	}
+	return runReviewLoopWithDeps(ctx, req, out, defaultReviewLoopDeps)
 }
 
 func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer, deps reviewLoopDeps) error {
@@ -203,7 +215,7 @@ func shouldShowInteractiveReviewProgress(out io.Writer) bool {
 	return file == os.Stdout
 }
 
-func parseReviewRequest(args []string, branchExistsFn func(branch string) (bool, error)) (reviewRequest, error) {
+func parseReviewRequest(args []string, resolveBranchFn func(branch string) (string, error)) (reviewRequest, error) {
 	if len(args) < 2 || len(args) > 3 || args[0] != "against" {
 		return reviewRequest{}, fmt.Errorf(reviewUsage)
 	}
@@ -222,40 +234,52 @@ func parseReviewRequest(args []string, branchExistsFn func(branch string) (bool,
 		iterations = parsedIterations
 	}
 
-	if branchExistsFn == nil {
-		branchExistsFn = gitBranchResolvable
+	if resolveBranchFn == nil {
+		resolveBranchFn = gitResolveBranchRef
 	}
 
-	exists, err := branchExistsFn(baseBranch)
+	resolvedBaseBranch, err := resolveBranchFn(baseBranch)
 	if err != nil {
 		return reviewRequest{}, fmt.Errorf("failed to verify base branch %q: %w", baseBranch, err)
 	}
-	if !exists {
+	if strings.TrimSpace(resolvedBaseBranch) == "" {
 		return reviewRequest{}, fmt.Errorf("base branch %s not found", baseBranch)
 	}
 
 	return reviewRequest{
-		BaseBranch: baseBranch,
+		BaseBranch: resolvedBaseBranch,
 		Iterations: iterations,
 	}, nil
 }
 
-func gitBranchResolvable(branch string) (bool, error) {
+func gitResolveBranchRef(branch string) (string, error) {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
-		return false, nil
+		return "", nil
 	}
 
 	exists, err := gitRefExists(branch)
-	if err != nil || exists {
-		return exists, err
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return branch, nil
 	}
 
 	if strings.Contains(branch, "/") {
-		return false, nil
+		return "", nil
 	}
 
-	return gitRefExists("origin/" + branch)
+	remoteBranch := "origin/" + branch
+	exists, err = gitRefExists(remoteBranch)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return remoteBranch, nil
+	}
+
+	return "", nil
 }
 
 func gitRefExists(ref string) (bool, error) {
