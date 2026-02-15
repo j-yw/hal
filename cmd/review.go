@@ -157,7 +157,14 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 		return fmt.Errorf("failed to create %s engine: %w", engineName, err)
 	}
 
-	result, err := deps.runLoop(ctx, eng, req.BaseBranch, req.Iterations)
+	runEngine := eng
+	if shouldShowInteractiveReviewProgress(out, outputMode) {
+		display := engine.NewDisplay(out)
+		display.ShowCommandHeader("Review", fmt.Sprintf("against %s (%d iterations)", req.BaseBranch, req.Iterations), buildHeaderCtx(engineName))
+		runEngine = streamDisplayEngine{Engine: eng, display: display}
+	}
+
+	result, err := deps.runLoop(ctx, runEngine, req.BaseBranch, req.Iterations)
 	if err != nil {
 		return fmt.Errorf("review loop failed with %s: %w", engineName, err)
 	}
@@ -246,6 +253,31 @@ func writeReviewLoopJSONOutput(out io.Writer, result *compound.ReviewLoopResult)
 	}
 
 	return nil
+}
+
+func shouldShowInteractiveReviewProgress(out io.Writer, outputMode string) bool {
+	if out == nil || outputMode == reviewOutputJSON {
+		return false
+	}
+	file, ok := out.(*os.File)
+	if !ok {
+		return false
+	}
+	return file == os.Stdout
+}
+
+// streamDisplayEngine injects a command-level display into StreamPrompt calls
+// when the caller does not provide one.
+type streamDisplayEngine struct {
+	engine.Engine
+	display *engine.Display
+}
+
+func (e streamDisplayEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
+	if display == nil {
+		display = e.display
+	}
+	return e.Engine.StreamPrompt(ctx, prompt, display)
 }
 
 func parseReviewRequest(args []string, branchExistsFn func(branch string) (bool, error)) (reviewRequest, error) {
