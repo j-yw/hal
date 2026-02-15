@@ -78,13 +78,21 @@ func runSandboxStop(dir, name string, out io.Writer, stopper sandboxStopper) err
 		return fmt.Errorf("reloading config: %w", err)
 	}
 
-	// Resolve sandbox name from state file if not provided
+	// Resolve sandbox name from state file if not provided.
+	// Track active state (if any) so we only update it when stopping that sandbox.
+	var activeState *sandbox.SandboxState
 	if name == "" {
 		state, err := sandbox.LoadState(halDir)
 		if err != nil {
 			return err
 		}
+		activeState = state
 		name = state.Name
+	} else {
+		state, err := sandbox.LoadState(halDir)
+		if err == nil {
+			activeState = state
+		}
 	}
 
 	fmt.Fprintf(out, "Stopping sandbox %q...\n", name)
@@ -98,11 +106,10 @@ func runSandboxStop(dir, name string, out io.Writer, stopper sandboxStopper) err
 		return fmt.Errorf("sandbox stop failed: %w", err)
 	}
 
-	// Update state file to reflect stopped status
-	state, err := sandbox.LoadState(halDir)
-	if err == nil {
-		state.Status = "STOPPED"
-		if err := sandbox.SaveState(halDir, state); err != nil {
+	// Update sandbox.json only when stopping the tracked active sandbox.
+	if activeState != nil && (activeState.Name == name || activeState.WorkspaceID == name) {
+		activeState.Status = "STOPPED"
+		if err := sandbox.SaveState(halDir, activeState); err != nil {
 			return fmt.Errorf("updating sandbox state: %w", err)
 		}
 	}

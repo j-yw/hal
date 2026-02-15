@@ -101,7 +101,7 @@ func TestRunSandboxStop(t *testing.T) {
 			},
 		},
 		{
-			name: "stops sandbox with explicit --name flag",
+			name: "stops sandbox with explicit --name flag without mutating active state",
 			setup: func(t *testing.T, dir string) {
 				setupStopTestWithState(t, dir, "key2", "", &sandbox.SandboxState{
 					Name:        "hal-feature-auth",
@@ -116,6 +116,41 @@ func TestRunSandboxStop(t *testing.T) {
 			checkFn: func(t *testing.T, dir string, call *sandboxStopCall) {
 				if call.nameOrID != "my-custom-sandbox" {
 					t.Errorf("nameOrID = %q, want %q", call.nameOrID, "my-custom-sandbox")
+				}
+				halDir := filepath.Join(dir, template.HalDir)
+				state, err := sandbox.LoadState(halDir)
+				if err != nil {
+					t.Fatalf("failed to load state: %v", err)
+				}
+				if state.Status != "STARTED" {
+					t.Errorf("state.Status = %q, want %q", state.Status, "STARTED")
+				}
+			},
+		},
+		{
+			name: "stops sandbox with explicit workspace id and updates active state",
+			setup: func(t *testing.T, dir string) {
+				setupStopTestWithState(t, dir, "key2", "", &sandbox.SandboxState{
+					Name:        "hal-feature-auth",
+					SnapshotID:  "snap-123",
+					WorkspaceID: "sb-001",
+					Status:      "STARTED",
+					CreatedAt:   time.Now(),
+				})
+			},
+			stopName:   "sb-001",
+			wantOutput: `Sandbox "sb-001" stopped.`,
+			checkFn: func(t *testing.T, dir string, call *sandboxStopCall) {
+				if call.nameOrID != "sb-001" {
+					t.Errorf("nameOrID = %q, want %q", call.nameOrID, "sb-001")
+				}
+				halDir := filepath.Join(dir, template.HalDir)
+				state, err := sandbox.LoadState(halDir)
+				if err != nil {
+					t.Fatalf("failed to load state: %v", err)
+				}
+				if state.Status != "STOPPED" {
+					t.Errorf("state.Status = %q, want %q", state.Status, "STOPPED")
 				}
 			},
 		},
