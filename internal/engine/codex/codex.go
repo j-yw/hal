@@ -27,7 +27,9 @@ type Engine struct {
 	model   string
 }
 
-const codexStreamInactivityTimeout = 2 * time.Minute
+// codexStreamInactivityTimeout is deliberately longer than short CLI stalls
+// because xhigh reasoning can pause output for extended periods.
+const codexStreamInactivityTimeout = 10 * time.Minute
 
 var errStreamStalled = errors.New("codex stream stalled")
 
@@ -63,7 +65,6 @@ func (e *Engine) BuildArgs() []string {
 	args := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
-		"-c", "model_reasoning_effort=\"medium\"",
 		"--json",
 	}
 	if e.model != "" {
@@ -78,7 +79,6 @@ func (e *Engine) BuildArgsNoJSON() []string {
 	args := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
-		"-c", "model_reasoning_effort=\"medium\"",
 	}
 	if e.model != "" {
 		args = append(args, "--model", e.model)

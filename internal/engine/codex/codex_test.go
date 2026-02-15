@@ -37,7 +37,6 @@ func TestBuildArgs(t *testing.T) {
 	expected := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
-		"-c", "model_reasoning_effort=\"medium\"",
 		"--json",
 		"-",
 	}
@@ -60,7 +59,6 @@ func TestBuildArgsNoJSON(t *testing.T) {
 	expected := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
-		"-c", "model_reasoning_effort=\"medium\"",
 		"-",
 	}
 
