@@ -306,6 +306,55 @@ func TestRunReviewLoopStopsAtMaxIterations(t *testing.T) {
 	}
 }
 
+func TestRunReviewLoopCallsIterationCallbacks(t *testing.T) {
+	type startCall struct {
+		current int
+		max     int
+	}
+
+	var starts []startCall
+	var completes []int
+	deps := reviewIterationDeps{
+		now:           time.Now,
+		currentBranch: func() (string, error) { return "feature/test", nil },
+		diffAgainstBase: func(baseBranch string) (string, error) {
+			return "diff --git a/file.go b/file.go", nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			return `{"summary":"No issues","issues":[]}`,
+				nil
+		},
+		onIterationStart: func(current, max int) {
+			starts = append(starts, startCall{current: current, max: max})
+		},
+		onIterationComplete: func(current int) {
+			completes = append(completes, current)
+		},
+	}
+
+	result, err := runReviewLoop(context.Background(), "develop", 3, deps)
+	if err != nil {
+		t.Fatalf("runReviewLoop() unexpected error: %v", err)
+	}
+	if result.CompletedIterations != 1 {
+		t.Fatalf("CompletedIterations = %d, want %d", result.CompletedIterations, 1)
+	}
+
+	if len(starts) != 1 {
+		t.Fatalf("start callbacks = %d, want %d", len(starts), 1)
+	}
+	if starts[0].current != 1 || starts[0].max != 3 {
+		t.Fatalf("start callback = %+v, want current=1 max=3", starts[0])
+	}
+
+	if len(completes) != 1 {
+		t.Fatalf("complete callbacks = %d, want %d", len(completes), 1)
+	}
+	if completes[0] != 1 {
+		t.Fatalf("complete callback = %d, want %d", completes[0], 1)
+	}
+}
+
 func TestRunSingleReviewIterationCodexFailure(t *testing.T) {
 	deps := reviewIterationDeps{
 		now:           time.Now,
@@ -593,6 +642,35 @@ func TestParseReviewResponseWithRepair(t *testing.T) {
 	}
 }
 
+func TestParseReviewResponseWithRepairIncompleteOutput(t *testing.T) {
+	promptCalled := false
+	deps := reviewIterationDeps{
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalled = true
+			return "", nil
+		},
+		sleep:      func(ctx context.Context, d time.Duration) error { return nil },
+		maxRetries: 0,
+		retryDelay: time.Millisecond,
+	}
+
+	_, err := parseReviewResponseWithRepair(context.Background(), deps, "  \n\t")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var incompleteErr *IncompleteReviewOutputError
+	if !errors.As(err, &incompleteErr) {
+		t.Fatalf("expected IncompleteReviewOutputError, got %T (%v)", err, err)
+	}
+	if incompleteErr.Stage != "review" {
+		t.Fatalf("Stage = %q, want %q", incompleteErr.Stage, "review")
+	}
+	if promptCalled {
+		t.Fatal("repair prompt should not run for incomplete output")
+	}
+}
+
 func TestParseFixResponseWithRepair(t *testing.T) {
 	reviewed := []reviewLoopIssue{{
 		ID:           "ISSUE-1",
@@ -620,5 +698,44 @@ func TestParseFixResponseWithRepair(t *testing.T) {
 	}
 	if parsed.ValidIssues != 1 || parsed.FixesApplied != 1 || parsed.InvalidIssues != 0 {
 		t.Fatalf("parsed = %+v, want Valid=1 Invalid=0 Fixes=1", parsed)
+	}
+}
+
+func TestParseFixResponseWithRepairIncompleteOutput(t *testing.T) {
+	reviewed := []reviewLoopIssue{{
+		ID:           "ISSUE-1",
+		Title:        "t",
+		Severity:     "low",
+		File:         "f.go",
+		Line:         1,
+		Rationale:    "why",
+		SuggestedFix: "fix",
+	}}
+
+	promptCalled := false
+	deps := reviewIterationDeps{
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalled = true
+			return "", nil
+		},
+		sleep:      func(ctx context.Context, d time.Duration) error { return nil },
+		maxRetries: 0,
+		retryDelay: time.Millisecond,
+	}
+
+	_, err := parseFixResponseWithRepair(context.Background(), deps, "\n\t", reviewed)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var incompleteErr *IncompleteReviewOutputError
+	if !errors.As(err, &incompleteErr) {
+		t.Fatalf("expected IncompleteReviewOutputError, got %T (%v)", err, err)
+	}
+	if incompleteErr.Stage != "fix" {
+		t.Fatalf("Stage = %q, want %q", incompleteErr.Stage, "fix")
+	}
+	if promptCalled {
+		t.Fatal("repair prompt should not run for incomplete output")
 	}
 }

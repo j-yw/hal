@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
@@ -24,6 +26,10 @@ type Engine struct {
 	Timeout time.Duration
 	model   string
 }
+
+const codexStreamInactivityTimeout = 2 * time.Minute
+
+var errStreamStalled = errors.New("codex stream stalled")
 
 // New creates a new Codex engine.
 func New(cfg *engine.EngineConfig) *Engine {
@@ -261,7 +267,7 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Use BuildArgs which includes --json flag for streaming, prompt via stdin
+	// Use BuildArgs which includes --json flag for streaming, prompt via stdin.
 	args := e.BuildArgs()
 	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
 	cmd.Stdin = strings.NewReader(prompt)
@@ -271,14 +277,15 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	var stdout, stderr bytes.Buffer
 	parser := NewParser()
 	collector := &textCollectingStreamHandler{
-		parser:  parser,
-		display: display,
+		parser:       parser,
+		display:      display,
+		lastActivity: time.Now(),
 	}
 
 	cmd.Stdout = io.MultiWriter(collector, &stdout)
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := runCommandWithInactivityWatch(cmd, collector, codexStreamInactivityTimeout)
 	collector.Flush()
 
 	if display != nil {
@@ -286,6 +293,9 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	}
 
 	if err != nil {
+		if errors.Is(err, errStreamStalled) {
+			return "", fmt.Errorf("prompt stalled: no output for %s", codexStreamInactivityTimeout)
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("prompt timed out after %s", timeout)
 		}
@@ -295,16 +305,71 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	return collector.Text(), nil
 }
 
+func runCommandWithInactivityWatch(cmd *exec.Cmd, collector *textCollectingStreamHandler, idleTimeout time.Duration) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	if idleTimeout <= 0 {
+		return <-waitCh
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-waitCh:
+			return err
+		case <-ticker.C:
+			if collector == nil {
+				continue
+			}
+			if collector.idleFor(time.Now()) < idleTimeout {
+				continue
+			}
+
+			terminateCommand(cmd)
+			<-waitCh
+			return fmt.Errorf("%w: no output for %s", errStreamStalled, idleTimeout)
+		}
+	}
+}
+
+func terminateCommand(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if cmd.Cancel != nil {
+		_ = cmd.Cancel()
+		return
+	}
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}
+
 // textCollectingStreamHandler streams events to the display while
 // collecting text content from Codex agent_message events.
 type textCollectingStreamHandler struct {
-	parser  *Parser
-	display *engine.Display
-	buffer  []byte
-	text    strings.Builder
+	parser       *Parser
+	display      *engine.Display
+	buffer       []byte
+	text         strings.Builder
+	activityMu   sync.Mutex
+	lastActivity time.Time
 }
 
 func (h *textCollectingStreamHandler) Write(p []byte) (n int, err error) {
+	if len(p) > 0 {
+		h.touchActivity()
+	}
+
 	h.buffer = append(h.buffer, p...)
 
 	for {
@@ -453,10 +518,29 @@ func extractEventMessageText(raw map[string]interface{}) string {
 	return ""
 }
 
+func (h *textCollectingStreamHandler) touchActivity() {
+	h.activityMu.Lock()
+	h.lastActivity = time.Now()
+	h.activityMu.Unlock()
+}
+
+func (h *textCollectingStreamHandler) idleFor(now time.Time) time.Duration {
+	h.activityMu.Lock()
+	last := h.lastActivity
+	h.activityMu.Unlock()
+
+	if last.IsZero() {
+		return 0
+	}
+
+	return now.Sub(last)
+}
+
 func (h *textCollectingStreamHandler) Flush() {
 	if len(h.buffer) > 0 {
 		h.processLine(h.buffer)
 		h.buffer = nil
+		h.touchActivity()
 	}
 }
 

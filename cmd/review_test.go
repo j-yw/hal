@@ -20,6 +20,8 @@ func TestReviewCommandUsageAndExamples(t *testing.T) {
 		"hal review against develop",
 		"hal review against origin/main 5",
 		"hal review against develop 3 -e codex",
+		"hal review -e pi against develop 3",
+		"hal review -e claude against develop 3",
 	}
 	for _, example := range examples {
 		if !strings.Contains(reviewCmd.Example, example) {

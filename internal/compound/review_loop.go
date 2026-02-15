@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -18,6 +19,22 @@ const (
 	reviewPromptMaxRetries  = 2
 	reviewPromptBaseBackoff = 2 * time.Second
 )
+
+var errNoJSONObject = errors.New("no JSON object found in response")
+
+// IncompleteReviewOutputError indicates the model stream ended without
+// returning a parseable JSON payload for the current review stage.
+type IncompleteReviewOutputError struct {
+	Stage string
+}
+
+func (e *IncompleteReviewOutputError) Error() string {
+	stage := strings.TrimSpace(e.Stage)
+	if stage == "" {
+		stage = "review"
+	}
+	return fmt.Sprintf("%s output was incomplete: stream ended without a JSON payload (likely interrupted upstream session; retry the command)", stage)
+}
 
 // RunReviewLoop executes review iterations up to requestedIterations.
 // It stops early when an iteration reports zero valid issues.
@@ -62,7 +79,7 @@ func RunSingleReviewIteration(ctx context.Context, eng engine.Engine, baseBranch
 }
 
 func newReviewIterationDeps(eng engine.Engine, display *engine.Display) reviewIterationDeps {
-	return reviewIterationDeps{
+	deps := reviewIterationDeps{
 		now:             time.Now,
 		currentBranch:   CurrentBranch,
 		diffAgainstBase: gitDiffAgainstBaseBranch,
@@ -74,16 +91,29 @@ func newReviewIterationDeps(eng engine.Engine, display *engine.Display) reviewIt
 		maxRetries: reviewPromptMaxRetries,
 		retryDelay: reviewPromptBaseBackoff,
 	}
+
+	if display != nil {
+		deps.onIterationStart = func(current, max int) {
+			display.ShowIterationHeader(current, max, nil)
+		}
+		deps.onIterationComplete = func(current int) {
+			display.ShowIterationComplete(current)
+		}
+	}
+
+	return deps
 }
 
 type reviewIterationDeps struct {
-	now             func() time.Time
-	currentBranch   func() (string, error)
-	diffAgainstBase func(baseBranch string) (string, error)
-	prompt          func(ctx context.Context, prompt string) (string, error)
-	sleep           func(ctx context.Context, d time.Duration) error
-	maxRetries      int
-	retryDelay      time.Duration
+	now                 func() time.Time
+	currentBranch       func() (string, error)
+	diffAgainstBase     func(baseBranch string) (string, error)
+	prompt              func(ctx context.Context, prompt string) (string, error)
+	sleep               func(ctx context.Context, d time.Duration) error
+	onIterationStart    func(current, max int)
+	onIterationComplete func(current int)
+	maxRetries          int
+	retryDelay          time.Duration
 }
 
 type reviewLoopResponse struct {
@@ -143,8 +173,11 @@ func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations i
 	}
 
 	for i := 1; i <= requestedIterations; i++ {
+		deps.onIterationStart(i, requestedIterations)
+
 		iteration, err := runReviewIteration(ctx, baseBranch, currentBranch, deps)
 		if err != nil {
+			deps.onIterationComplete(i)
 			return nil, fmt.Errorf("iteration %d failed: %w", i, err)
 		}
 		iteration.Iteration = i
@@ -155,6 +188,8 @@ func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations i
 		result.Totals.ValidIssues += iteration.ValidIssues
 		result.Totals.InvalidIssues += iteration.InvalidIssues
 		result.Totals.FixesApplied += iteration.FixesApplied
+
+		deps.onIterationComplete(i)
 
 		if iteration.ValidIssues == 0 {
 			result.StopReason = "no_valid_issues"
@@ -183,11 +218,15 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		return nil, fmt.Errorf("failed to determine current branch: %w", err)
 	}
 
+	deps.onIterationStart(1, requestedIterations)
+
 	iteration, err := runReviewIteration(ctx, baseBranch, currentBranch, deps)
 	if err != nil {
+		deps.onIterationComplete(1)
 		return nil, err
 	}
 	iteration.Iteration = 1
+	deps.onIterationComplete(1)
 
 	endedAt := deps.now()
 
@@ -306,6 +345,12 @@ func normalizeReviewLoopDeps(baseBranch string, requestedIterations int, deps re
 	if deps.retryDelay <= 0 {
 		deps.retryDelay = reviewPromptBaseBackoff
 	}
+	if deps.onIterationStart == nil {
+		deps.onIterationStart = func(current, max int) {}
+	}
+	if deps.onIterationComplete == nil {
+		deps.onIterationComplete = func(current int) {}
+	}
 
 	return baseBranch, deps, nil
 }
@@ -343,6 +388,10 @@ func parseReviewResponseWithRepair(ctx context.Context, deps reviewIterationDeps
 		return parsed, nil
 	}
 
+	if isIncompleteReviewOutput(response, err) {
+		return nil, &IncompleteReviewOutputError{Stage: "review"}
+	}
+
 	repairPrompt := buildReviewRepairPrompt(response)
 	repaired, repairErr := promptWithRetry(ctx, deps, repairPrompt)
 	if repairErr != nil {
@@ -351,6 +400,9 @@ func parseReviewResponseWithRepair(ctx context.Context, deps reviewIterationDeps
 
 	repairedParsed, repairParseErr := parseReviewLoopResponse(repaired)
 	if repairParseErr != nil {
+		if isIncompleteReviewOutput(repaired, repairParseErr) {
+			return nil, &IncompleteReviewOutputError{Stage: "review"}
+		}
 		return nil, fmt.Errorf("initial parse error (%v); repaired output parse failed: %w", err, repairParseErr)
 	}
 
@@ -361,6 +413,10 @@ func parseFixResponseWithRepair(ctx context.Context, deps reviewIterationDeps, r
 	parsed, err := parseReviewLoopFixResponse(response, reviewedIssues)
 	if err == nil {
 		return parsed, nil
+	}
+
+	if isIncompleteReviewOutput(response, err) {
+		return nil, &IncompleteReviewOutputError{Stage: "fix"}
 	}
 
 	repairPrompt, repairPromptErr := buildFixRepairPrompt(reviewedIssues, response)
@@ -375,6 +431,9 @@ func parseFixResponseWithRepair(ctx context.Context, deps reviewIterationDeps, r
 
 	repairedParsed, repairParseErr := parseReviewLoopFixResponse(repaired, reviewedIssues)
 	if repairParseErr != nil {
+		if isIncompleteReviewOutput(repaired, repairParseErr) {
+			return nil, &IncompleteReviewOutputError{Stage: "fix"}
+		}
 		return nil, fmt.Errorf("initial parse error (%v); repaired output parse failed: %w", err, repairParseErr)
 	}
 
@@ -697,13 +756,23 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 	return outcome, nil
 }
 
+func isIncompleteReviewOutput(response string, parseErr error) bool {
+	if parseErr == nil {
+		return false
+	}
+	if strings.TrimSpace(response) != "" {
+		return false
+	}
+	return errors.Is(parseErr, errNoJSONObject)
+}
+
 func extractJSONObject(response string) (string, error) {
 	response = strings.TrimSpace(response)
 
 	jsonStart := strings.Index(response, "{")
 	jsonEnd := strings.LastIndex(response, "}")
 	if jsonStart == -1 || jsonEnd == -1 || jsonEnd < jsonStart {
-		return "", fmt.Errorf("no JSON object found in response")
+		return "", errNoJSONObject
 	}
 
 	return response[jsonStart : jsonEnd+1], nil
