@@ -19,7 +19,7 @@ var sandboxDeleteCmd = &cobra.Command{
 	Long: `Permanently delete a Daytona sandbox.
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
-After successful deletion, sandbox.json is removed.`,
+After successful deletion, sandbox.json is removed if it matches the deleted sandbox.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return runSandboxDelete(".", name, os.Stdout, nil)
@@ -78,13 +78,21 @@ func runSandboxDelete(dir, name string, out io.Writer, deleter sandboxDeleter) e
 		return fmt.Errorf("reloading config: %w", err)
 	}
 
-	// Resolve sandbox name from state file if not provided
+	// Resolve sandbox name from state file if not provided.
+	// Track active state (if any) so we only clear it when deleting that sandbox.
+	var activeState *sandbox.SandboxState
 	if name == "" {
 		state, err := sandbox.LoadState(halDir)
 		if err != nil {
 			return err
 		}
+		activeState = state
 		name = state.Name
+	} else {
+		state, err := sandbox.LoadState(halDir)
+		if err == nil {
+			activeState = state
+		}
 	}
 
 	fmt.Fprintf(out, "Deleting sandbox %q...\n", name)
@@ -98,9 +106,11 @@ func runSandboxDelete(dir, name string, out io.Writer, deleter sandboxDeleter) e
 		return fmt.Errorf("sandbox delete failed: %w", err)
 	}
 
-	// Remove sandbox.json after successful deletion
-	if err := sandbox.RemoveState(halDir); err != nil {
-		return fmt.Errorf("removing sandbox state: %w", err)
+	// Remove sandbox.json only when deleting the tracked active sandbox.
+	if activeState != nil && (activeState.Name == name || activeState.WorkspaceID == name) {
+		if err := sandbox.RemoveState(halDir); err != nil {
+			return fmt.Errorf("removing sandbox state: %w", err)
+		}
 	}
 
 	fmt.Fprintf(out, "Sandbox %q deleted.\n", name)

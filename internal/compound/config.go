@@ -214,7 +214,7 @@ func LoadDaytonaConfig(dir string) (*DaytonaConfig, error) {
 // writes back the result.
 func SaveConfig(dir string, daytona *DaytonaConfig) error {
 	halDir := filepath.Join(dir, template.HalDir)
-	configPath := filepath.Join(halDir, "config.yaml")
+	configPath := filepath.Join(halDir, template.ConfigFile)
 
 	// Ensure .hal directory exists
 	if err := os.MkdirAll(halDir, 0755); err != nil {
@@ -244,8 +244,13 @@ func SaveConfig(dir string, daytona *DaytonaConfig) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 
-	if err := os.WriteFile(configPath, out, 0644); err != nil {
+	if err := os.WriteFile(configPath, out, 0600); err != nil {
 		return fmt.Errorf("writing config: %w", err)
+	}
+	// Ensure existing files are tightened as well (WriteFile does not change mode
+	// when truncating an existing file).
+	if err := os.Chmod(configPath, 0600); err != nil {
+		return fmt.Errorf("setting config permissions: %w", err)
 	}
 
 	return nil

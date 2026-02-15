@@ -3,6 +3,7 @@ package compound
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -461,6 +462,39 @@ func TestSaveConfig(t *testing.T) {
 		}
 		if cfg.ServerURL != "https://new.server" {
 			t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "https://new.server")
+		}
+	})
+
+	t.Run("tightens existing config.yaml permissions", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("permission bits are not portable on Windows")
+		}
+
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+
+		configPath := filepath.Join(halDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("engine: claude\n"), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		daytona := &DaytonaConfig{
+			APIKey:    "saved-key",
+			ServerURL: "https://saved.server",
+		}
+		if err := SaveConfig(dir, daytona); err != nil {
+			t.Fatalf("SaveConfig() unexpected error: %v", err)
+		}
+
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatalf("Failed to stat config.yaml: %v", err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Errorf("config.yaml permissions = %o, want %o", info.Mode().Perm(), 0600)
 		}
 	})
 

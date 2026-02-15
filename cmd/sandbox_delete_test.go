@@ -98,7 +98,7 @@ func TestRunSandboxDelete(t *testing.T) {
 			},
 		},
 		{
-			name: "deletes sandbox with explicit --name flag",
+			name: "keeps active state when deleting a different sandbox with --name",
 			setup: func(t *testing.T, dir string) {
 				setupDeleteTestWithState(t, dir, "key2", "", &sandbox.SandboxState{
 					Name:        "hal-feature-auth",
@@ -114,7 +114,34 @@ func TestRunSandboxDelete(t *testing.T) {
 				if call.nameOrID != "my-custom-sandbox" {
 					t.Errorf("nameOrID = %q, want %q", call.nameOrID, "my-custom-sandbox")
 				}
-				// sandbox.json should still be removed
+				// sandbox.json should be preserved because the active sandbox is different.
+				halDir := filepath.Join(dir, template.HalDir)
+				state, err := sandbox.LoadState(halDir)
+				if err != nil {
+					t.Fatalf("expected sandbox.json to be preserved, but LoadState failed: %v", err)
+				}
+				if state.Name != "hal-feature-auth" {
+					t.Errorf("state.Name = %q, want %q", state.Name, "hal-feature-auth")
+				}
+			},
+		},
+		{
+			name: "removes active state when deleting by explicit workspace ID",
+			setup: func(t *testing.T, dir string) {
+				setupDeleteTestWithState(t, dir, "key2", "", &sandbox.SandboxState{
+					Name:        "hal-feature-auth",
+					SnapshotID:  "snap-123",
+					WorkspaceID: "sb-001",
+					Status:      "STARTED",
+					CreatedAt:   time.Now(),
+				})
+			},
+			deleteName: "sb-001",
+			wantOutput: `Sandbox "sb-001" deleted.`,
+			checkFn: func(t *testing.T, dir string, call *sandboxDeleteCall) {
+				if call.nameOrID != "sb-001" {
+					t.Errorf("nameOrID = %q, want %q", call.nameOrID, "sb-001")
+				}
 				halDir := filepath.Join(dir, template.HalDir)
 				_, err := sandbox.LoadState(halDir)
 				if err == nil {
