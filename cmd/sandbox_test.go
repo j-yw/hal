@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,5 +196,50 @@ func TestRunSandboxSetup_PromptOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "Server URL [https://app.daytona.io/api]:") {
 		t.Errorf("output should contain server URL prompt with default, got: %q", output)
+	}
+}
+
+func TestRunSandboxSetup_NonTerminalFileInputFallsBackToPlaintext(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, template.HalDir), 0755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	inputFile, err := os.CreateTemp(t.TempDir(), "sandbox-stdin-*")
+	if err != nil {
+		t.Fatalf("CreateTemp() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = inputFile.Close()
+	})
+
+	if _, err := inputFile.WriteString("piped-api-key\n\n"); err != nil {
+		t.Fatalf("WriteString() error: %v", err)
+	}
+	if _, err := inputFile.Seek(0, 0); err != nil {
+		t.Fatalf("Seek() error: %v", err)
+	}
+
+	readPasswordCalled := false
+	readPassword := func(_ int) ([]byte, error) {
+		readPasswordCalled = true
+		return nil, fmt.Errorf("should not call readPassword for non-terminal stdin")
+	}
+
+	var out bytes.Buffer
+	if err := runSandboxSetup(dir, inputFile, &out, readPassword); err != nil {
+		t.Fatalf("runSandboxSetup() error: %v", err)
+	}
+
+	if readPasswordCalled {
+		t.Fatal("readPassword was called for non-terminal *os.File input")
+	}
+
+	cfg, err := compound.LoadDaytonaConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadDaytonaConfig() error: %v", err)
+	}
+	if cfg.APIKey != "piped-api-key" {
+		t.Errorf("APIKey = %q, want %q", cfg.APIKey, "piped-api-key")
 	}
 }

@@ -76,12 +76,18 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	var apiKey string
 	if readPassword != nil {
 		if f, ok := in.(*os.File); ok {
-			pass, err := readPassword(int(f.Fd()))
-			fmt.Fprintln(out) // newline after masked input
-			if err != nil {
-				return fmt.Errorf("reading API key: %w", err)
+			if term.IsTerminal(int(f.Fd())) {
+				pass, err := readPassword(int(f.Fd()))
+				fmt.Fprintln(out) // newline after masked input
+				if err != nil {
+					return fmt.Errorf("reading API key: %w", err)
+				}
+				apiKey = string(pass)
+			} else {
+				// Non-terminal file input (e.g., piped stdin) — read as plain text.
+				line, _ := reader.ReadString('\n')
+				apiKey = strings.TrimRight(line, "\r\n")
 			}
-			apiKey = string(pass)
 		} else {
 			// Non-terminal input (e.g., tests) — read as plain text
 			line, _ := reader.ReadString('\n')
