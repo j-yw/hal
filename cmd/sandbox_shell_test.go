@@ -331,6 +331,32 @@ func TestRunSandboxShell(t *testing.T) {
 	}
 }
 
+func TestRunSandboxShell_NonZeroExitWithoutSessionClosedReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	setupShellTestWithState(t, dir, "key", "https://api.example.com", &sandbox.SandboxState{
+		Name:        "nonzero-exit-test",
+		SnapshotID:  "snap-nonzero",
+		WorkspaceID: "sb-nonzero",
+		Status:      "started",
+		CreatedAt:   time.Now(),
+	})
+
+	connector, _ := fakeShellConnector(&sandbox.ShellConnection{SandboxName: "nonzero-exit-test"}, nil)
+	forwarder, _ := fakeShellForwarder(&sandbox.ForwardShellIOResult{ExitCode: 2, SessionClosed: false}, nil)
+	var out bytes.Buffer
+
+	err := runSandboxShell(dir, "", strings.NewReader(""), &out, connector, forwarder)
+	if err == nil {
+		t.Fatal("expected non-zero exit code error, got nil")
+	}
+	if !strings.Contains(err.Error(), "exit code 2") {
+		t.Errorf("error %q does not contain %q", err.Error(), "exit code 2")
+	}
+	if strings.Contains(out.String(), "session closed") {
+		t.Errorf("output should not contain session closed message, got %q", out.String())
+	}
+}
+
 func TestRunSandboxShell_EnsureAuthCalled(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)

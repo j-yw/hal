@@ -115,8 +115,10 @@ func runSandboxShell(dir, name string, stdin io.Reader, out io.Writer, connector
 		return fmt.Errorf("shell session error: %w", err)
 	}
 
-	if result.SessionClosed {
-		fmt.Fprintln(out, "session closed")
+	if result.ExitCode != 0 {
+		if result.SessionClosed {
+			fmt.Fprintln(out, "session closed")
+		}
 		return fmt.Errorf("exit code %d", result.ExitCode)
 	}
 
