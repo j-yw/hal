@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -623,8 +624,12 @@ func buildReviewLoopPrompt(baseBranch, currentBranch, diff string) string {
 Rules:
 - Use repository tools and shell commands to inspect code and validate findings.
 - Keep analysis diff-driven: start with files in the diff, then inspect only directly related code paths as needed.
+- Hard limit for this step: at most 8 total tool/command calls.
+- Do not run hal commands or go run . commands.
 - Avoid broad or expensive commands (for example: avoid full-repo sweeps and go test ./...).
+- If tests are needed, run at most one focused test command for a specific package/file.
 - In this review step, do not edit or write files.
+- After gathering enough evidence (or hitting the tool limit), return final JSON immediately and stop exploring.
 - Include every detected issue in the issues array.
 - If there are no issues, return "issues": [] and explain that in summary.
 `)
@@ -655,10 +660,12 @@ func buildReviewLoopFixPrompt(baseBranch, currentBranch string, issues []reviewL
 - Validate each issue against the current repository state.
 - Use repository tools and shell commands as needed to validate or reproduce each issue.
 - Keep validation targeted to files/functions tied to each issue.
+- Hard limit for this step: at most 12 total tool/command calls.
+- Do not run hal commands or go run . commands.
 - Avoid broad or expensive commands (for example: avoid go test ./...).
 - Apply code changes only for valid issues.
 - Invalid issues must not be fixed.
-- After applying fixes, run focused checks relevant to changed files/packages.
+- After applying fixes, run at most one focused check relevant to changed files/packages.
 - Do NOT ask for confirmation; apply fixes directly.
 - Return ONLY valid JSON (no markdown fences, no prose) with this schema:
 {
@@ -676,6 +683,7 @@ func buildReviewLoopFixPrompt(baseBranch, currentBranch string, issues []reviewL
 Rules:
 - Include every input issue exactly once in the output "issues" array.
 - Use fixed=false for every issue where valid=false.
+- After all issues are decided/fixed, return final JSON immediately and stop exploring.
 `)
 
 	return sb.String(), nil
@@ -694,8 +702,13 @@ func parseReviewLoopResponse(response string) (*reviewLoopResponse, error) {
 		return nil, err
 	}
 
+	jsonBytes := []byte(jsonStr)
+	if err := validateTopLevelJSONFields(jsonBytes, "summary", "issues"); err != nil {
+		return nil, err
+	}
+
 	var parsed reviewLoopResponse
-	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -718,8 +731,13 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 		return nil, err
 	}
 
+	jsonBytes := []byte(jsonStr)
+	if err := validateTopLevelJSONFields(jsonBytes, "summary", "issues"); err != nil {
+		return nil, err
+	}
+
 	var parsed reviewLoopFixResponse
-	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -742,14 +760,20 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 		fixByID[issue.ID] = issue
 	}
 
+	var missingIDs []string
+	for _, reviewed := range reviewedIssues {
+		if _, ok := fixByID[reviewed.ID]; !ok {
+			missingIDs = append(missingIDs, reviewed.ID)
+		}
+	}
+	if len(missingIDs) > 0 {
+		sort.Strings(missingIDs)
+		return nil, fmt.Errorf("missing fix result for review issue ids: %s", strings.Join(missingIDs, ", "))
+	}
+
 	outcome := &reviewLoopFixOutcome{Summary: strings.TrimSpace(parsed.Summary)}
 	for _, reviewed := range reviewedIssues {
-		fixIssue, ok := fixByID[reviewed.ID]
-		if !ok {
-			outcome.InvalidIssues++
-			continue
-		}
-
+		fixIssue := fixByID[reviewed.ID]
 		if fixIssue.Valid != nil && *fixIssue.Valid {
 			outcome.ValidIssues++
 			if fixIssue.Fixed != nil && *fixIssue.Fixed {
@@ -762,6 +786,25 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 	}
 
 	return outcome, nil
+}
+
+func validateTopLevelJSONFields(jsonBytes []byte, fields ...string) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(jsonBytes, &top); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	for _, field := range fields {
+		value, ok := top[field]
+		if !ok {
+			return fmt.Errorf("missing required top-level field: %s", field)
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("top-level field %q must not be null", field)
+		}
+	}
+
+	return nil
 }
 
 func isIncompleteReviewOutput(response string, parseErr error) bool {
@@ -793,8 +836,14 @@ func validateReviewLoopIssue(index int, issue reviewLoopIssue) error {
 	if strings.TrimSpace(issue.Title) == "" {
 		return fmt.Errorf("issue[%d] missing required field: title", index)
 	}
-	if strings.TrimSpace(issue.Severity) == "" {
+	severity := strings.TrimSpace(issue.Severity)
+	if severity == "" {
 		return fmt.Errorf("issue[%d] missing required field: severity", index)
+	}
+	switch severity {
+	case "low", "medium", "high", "critical":
+	default:
+		return fmt.Errorf("issue[%d] severity must be one of low, medium, high, critical", index)
 	}
 	if strings.TrimSpace(issue.File) == "" {
 		return fmt.Errorf("issue[%d] missing required field: file", index)
@@ -824,6 +873,9 @@ func validateReviewLoopFixIssue(index int, issue reviewLoopFixIssue) error {
 	}
 	if issue.Fixed == nil {
 		return fmt.Errorf("issue[%d] missing required field: fixed", index)
+	}
+	if issue.Valid != nil && issue.Fixed != nil && !*issue.Valid && *issue.Fixed {
+		return fmt.Errorf("issue[%d] fixed must be false when valid is false", index)
 	}
 
 	return nil

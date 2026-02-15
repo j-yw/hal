@@ -103,7 +103,7 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("prompt calls = %d, want %d", promptCalls, 2)
 	}
 
-	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Use repository tools and shell commands", "go test ./..."}
+	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Use repository tools and shell commands", "Hard limit for this step: at most 8", "Do not run hal commands or go run . commands", "go test ./..."}
 	for _, snippet := range reviewPromptSnippets {
 		if !strings.Contains(reviewPrompt, snippet) {
 			t.Fatalf("review prompt missing required schema snippet %q", snippet)
@@ -113,7 +113,7 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("review prompt should allow tool usage, got: %q", reviewPrompt)
 	}
 
-	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "go test ./..."}
+	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "Do not run hal commands or go run . commands", "go test ./..."}
 	for _, snippet := range fixPromptSnippets {
 		if !strings.Contains(fixPrompt, snippet) {
 			t.Fatalf("fix prompt missing required schema snippet %q", snippet)
@@ -432,9 +432,19 @@ func TestParseCodexReviewResponse(t *testing.T) {
 			wantIssues: 1,
 		},
 		{
+			name:    "missing top-level issues field",
+			input:   `{"summary":"ok"}`,
+			wantErr: "missing required top-level field: issues",
+		},
+		{
 			name:    "missing issue id",
 			input:   `{"summary":"bad","issues":[{"title":"t","severity":"high","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"}]}`,
 			wantErr: "missing required field: id",
+		},
+		{
+			name:    "unknown severity",
+			input:   `{"summary":"bad","issues":[{"id":"ISSUE-1","title":"t","severity":"urgent","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"}]}`,
+			wantErr: "severity must be one of low, medium, high, critical",
 		},
 		{
 			name:    "missing json object",
@@ -499,15 +509,20 @@ func TestParseCodexFixResponse(t *testing.T) {
 		{
 			name: "valid response",
 			input: `{
-				"summary": "Applied one fix",
-				"issues": [
-					{"id":"ISSUE-1","valid":true,"reason":"real bug","fixed":true},
-					{"id":"ISSUE-2","valid":false,"reason":"false positive","fixed":false}
-				]
-			}`,
+					"summary": "Applied one fix",
+					"issues": [
+						{"id":"ISSUE-1","valid":true,"reason":"real bug","fixed":true},
+						{"id":"ISSUE-2","valid":false,"reason":"false positive","fixed":false}
+					]
+				}`,
 			wantValid:   1,
 			wantInvalid: 1,
 			wantFixes:   1,
+		},
+		{
+			name:    "missing top-level issues field",
+			input:   `{"summary":"bad"}`,
+			wantErr: "missing required top-level field: issues",
 		},
 		{
 			name:    "missing valid field",
@@ -515,9 +530,25 @@ func TestParseCodexFixResponse(t *testing.T) {
 			wantErr: "missing required field: valid",
 		},
 		{
+			name:    "missing fix result for reviewed issue",
+			input:   `{"summary":"partial","issues":[{"id":"ISSUE-1","valid":true,"reason":"r","fixed":true}]}`,
+			wantErr: "missing fix result for review issue ids: ISSUE-2",
+		},
+		{
 			name:    "unknown issue id",
 			input:   `{"summary":"bad","issues":[{"id":"ISSUE-999","valid":true,"reason":"r","fixed":true}]}`,
 			wantErr: "unknown review issue id",
+		},
+		{
+			name: "invalid issue cannot be marked fixed",
+			input: `{
+					"summary":"bad",
+					"issues":[
+						{"id":"ISSUE-1","valid":false,"reason":"not a bug","fixed":true},
+						{"id":"ISSUE-2","valid":true,"reason":"real bug","fixed":false}
+					]
+				}`,
+			wantErr: "fixed must be false when valid is false",
 		},
 	}
 
@@ -564,6 +595,12 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 	if !strings.Contains(prompt, "Use repository tools and shell commands") {
 		t.Fatalf("prompt should allow tool usage, got: %q", prompt)
 	}
+	if !strings.Contains(prompt, "Hard limit for this step: at most 8") {
+		t.Fatalf("prompt should enforce a review command budget, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do not run hal commands or go run . commands") {
+		t.Fatalf("prompt should block recursive hal/go-run commands, got: %q", prompt)
+	}
 	if !strings.Contains(prompt, "go test ./...") {
 		t.Fatalf("prompt should constrain expensive commands, got: %q", prompt)
 	}
@@ -590,7 +627,7 @@ func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
 		t.Fatalf("buildReviewLoopFixPrompt() unexpected error: %v", err)
 	}
 
-	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "go test ./..."}
+	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "Do not run hal commands or go run . commands", "go test ./..."}
 	for _, field := range required {
 		if !strings.Contains(prompt, field) {
 			t.Fatalf("prompt missing required fix field or instruction %q", field)

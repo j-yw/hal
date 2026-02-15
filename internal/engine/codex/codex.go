@@ -63,6 +63,7 @@ func (e *Engine) BuildArgs() []string {
 	args := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
+		"-c", "model_reasoning_effort=\"medium\"",
 		"--json",
 	}
 	if e.model != "" {
@@ -77,6 +78,7 @@ func (e *Engine) BuildArgsNoJSON() []string {
 	args := []string{
 		"exec",
 		"--dangerously-bypass-approvals-and-sandbox",
+		"-c", "model_reasoning_effort=\"medium\"",
 	}
 	if e.model != "" {
 		args = append(args, "--model", e.model)
