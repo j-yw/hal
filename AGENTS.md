@@ -102,3 +102,8 @@
 - For cmd package behavior with side effects, extract a run<Feature> helper that accepts io.Writer (like refreshTemplates) and keep Cobra handlers focused on flag binding and delegation.
 - Template text migrations belong in migrateTemplates via replaceFileContent, normalizing multiple legacy prompt variants into one canonical guidance line.
 - In cmd tests, reuse shared helpers from archive_test.go (writeFile/writePRD) and validate timestamped backup artifacts with filepath.Glob(filename+".*.bak").
+
+## Patterns from hal/report-review-split (2026-02-15)
+
+- Review-loop output schema should stay centralized in `internal/compound/types.go` (`ReviewLoopResult`, `ReviewLoopTotals`, `ReviewLoopIteration`) so command output and report artifacts share one contract.
+- For contract tests, assert both JSON key names and marshal/unmarshal round-trip to prevent accidental JSON tag regressions.
