@@ -313,9 +313,23 @@ func (d *Display) ShowEvent(e *Event) {
 		}
 
 	case EventText:
-		d.clearThinkingState()
-		// Text events are usually the final response, we don't show them inline
-		// But start a spinner to show we're still working
+		if d.isThinking {
+			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.thinkingStart))
+			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), thinkMsg)
+			d.clearThinkingState()
+		}
+
+		textDetail := strings.TrimSpace(e.Detail)
+		if textDetail != "" {
+			message := "assistant response received"
+			if !strings.HasPrefix(textDetail, "{") && !strings.HasPrefix(textDetail, "[") {
+				message = truncate(textDetail, GetTerminalWidth()/2)
+			}
+			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), StyleMuted.Render(message))
+		}
+
+		// Text events are usually the final response payload.
+		// Keep a working spinner while the engine finalizes completion events.
 		startSpinnerMsg = randomHalWord(HalWorkingWords)
 	}
 
