@@ -19,8 +19,10 @@ var (
 
 var reportCmd = &cobra.Command{
 	Use:   "report",
-	Short: "Review completed work and generate a report",
-	Long: `Review the completed work session and generate a summary report.
+	Short: "Run legacy session reporting for completed work",
+	Long: `Run legacy session reporting for the completed work session and generate a summary report.
+
+This command preserves the workflow that previously lived under 'hal review'.
 
 The review process:
   1. Gathers context (progress log, git diff, commits, PRD)

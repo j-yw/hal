@@ -32,6 +32,13 @@ func TestReportCommandFlags(t *testing.T) {
 		t.Fatalf("reportCmd.Use = %q, want %q", reportCmd.Use, "report")
 	}
 
+	if !strings.Contains(strings.ToLower(reportCmd.Short), "legacy session reporting") {
+		t.Fatalf("reportCmd.Short = %q, want to contain %q", reportCmd.Short, "legacy session reporting")
+	}
+	if !strings.Contains(strings.ToLower(reportCmd.Long), "legacy session reporting") {
+		t.Fatalf("reportCmd.Long should mention legacy session reporting")
+	}
+
 	if reportCmd.Flags().Lookup("dry-run") == nil {
 		t.Fatal("report command missing --dry-run flag")
 	}

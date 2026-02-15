@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,11 +17,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const reviewUsage = "usage: hal review against <base-branch> [iterations]"
+const (
+	reviewUsage       = "usage: hal review against <base-branch> [iterations]"
+	reviewOutputJSON  = "json"
+	reviewOutputHuman = "human"
+	reviewOutputBoth  = "both"
+)
 
 type reviewRequest struct {
 	BaseBranch string
 	Iterations int
+	OutputMode string
 }
 
 type reviewDeps struct {
@@ -32,6 +39,8 @@ var defaultReviewDeps = reviewDeps{
 	baseBranchExists: gitBranchResolvable,
 	runLoop:          runCodexReviewLoop,
 }
+
+var reviewOutputFlag string
 
 var reviewCmd = &cobra.Command{
 	Use:   "review against <base-branch> [iterations]",
@@ -46,14 +55,24 @@ Use 'hal report' for legacy session reporting.`,
 }
 
 func init() {
+	reviewCmd.Flags().StringVar(&reviewOutputFlag, "output", reviewOutputBoth, "Output mode: human, json, both")
 	rootCmd.AddCommand(reviewCmd)
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
-	return runReviewWithDeps(context.Background(), args, defaultReviewDeps)
+	outputMode := reviewOutputFlag
+	if cmd != nil {
+		var err error
+		outputMode, err = cmd.Flags().GetString("output")
+		if err != nil {
+			return err
+		}
+	}
+
+	return runReviewWithDeps(context.Background(), args, outputMode, defaultReviewDeps)
 }
 
-func runReviewWithDeps(ctx context.Context, args []string, deps reviewDeps) error {
+func runReviewWithDeps(ctx context.Context, args []string, outputMode string, deps reviewDeps) error {
 	if deps.baseBranchExists == nil {
 		deps.baseBranchExists = gitBranchResolvable
 	}
@@ -61,10 +80,16 @@ func runReviewWithDeps(ctx context.Context, args []string, deps reviewDeps) erro
 		deps.runLoop = defaultReviewDeps.runLoop
 	}
 
+	normalizedOutputMode, err := normalizeReviewOutputMode(outputMode)
+	if err != nil {
+		return err
+	}
+
 	req, err := parseReviewRequest(args, deps.baseBranchExists)
 	if err != nil {
 		return err
 	}
+	req.OutputMode = normalizedOutputMode
 
 	return deps.runLoop(ctx, req)
 }
@@ -111,6 +136,11 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.W
 		deps.renderMarkdown = renderMarkdownWithGlamour
 	}
 
+	outputMode, err := normalizeReviewOutputMode(req.OutputMode)
+	if err != nil {
+		return err
+	}
+
 	eng, err := deps.newEngine("codex")
 	if err != nil {
 		return fmt.Errorf("failed to create codex engine: %w", err)
@@ -129,18 +159,26 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.W
 		return fmt.Errorf("failed to write review loop markdown report: %w", err)
 	}
 
-	markdown, err := deps.buildMarkdown(result)
-	if err != nil {
-		return fmt.Errorf("failed to build review loop markdown summary: %w", err)
-	}
+	switch outputMode {
+	case reviewOutputJSON:
+		if err := writeReviewLoopJSONOutput(out, result); err != nil {
+			return err
+		}
+		return nil
+	case reviewOutputHuman, reviewOutputBoth:
+		markdown, err := deps.buildMarkdown(result)
+		if err != nil {
+			return fmt.Errorf("failed to build review loop markdown summary: %w", err)
+		}
 
-	rendered, err := deps.renderMarkdown(markdown)
-	if err != nil {
-		return fmt.Errorf("failed to render review loop markdown summary: %w", err)
-	}
+		rendered, err := deps.renderMarkdown(markdown)
+		if err != nil {
+			return fmt.Errorf("failed to render review loop markdown summary: %w", err)
+		}
 
-	if out != nil {
-		fmt.Fprint(out, rendered)
+		if out != nil {
+			fmt.Fprint(out, rendered)
+		}
 	}
 
 	return nil
@@ -158,6 +196,37 @@ func renderMarkdownWithGlamour(markdown string) (string, error) {
 	}
 
 	return rendered, nil
+}
+
+func normalizeReviewOutputMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", reviewOutputBoth:
+		return reviewOutputBoth, nil
+	case reviewOutputHuman:
+		return reviewOutputHuman, nil
+	case reviewOutputJSON:
+		return reviewOutputJSON, nil
+	default:
+		return "", fmt.Errorf("output must be one of: human, json, both")
+	}
+}
+
+func writeReviewLoopJSONOutput(out io.Writer, result *compound.ReviewLoopResult) error {
+	if out == nil {
+		return nil
+	}
+
+	payload, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal review loop result JSON output: %w", err)
+	}
+	payload = append(payload, '\n')
+
+	if _, err := out.Write(payload); err != nil {
+		return fmt.Errorf("failed to write review loop JSON output: %w", err)
+	}
+
+	return nil
 }
 
 func parseReviewRequest(args []string, branchExistsFn func(branch string) (bool, error)) (reviewRequest, error) {
