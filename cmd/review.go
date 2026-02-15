@@ -67,13 +67,15 @@ func runReviewWithDeps(ctx context.Context, args []string, deps reviewDeps) erro
 }
 
 type codexReviewLoopDeps struct {
-	newEngine func(name string) (engine.Engine, error)
-	runLoop   func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
+	newEngine       func(name string) (engine.Engine, error)
+	runLoop         func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
+	writeJSONReport func(dir string, result *compound.ReviewLoopResult) (string, error)
 }
 
 var defaultCodexReviewLoopDeps = codexReviewLoopDeps{
-	newEngine: newEngine,
-	runLoop:   compound.RunCodexReviewLoop,
+	newEngine:       newEngine,
+	runLoop:         compound.RunCodexReviewLoop,
+	writeJSONReport: compound.WriteReviewLoopJSONReport,
 }
 
 func runCodexReviewLoop(ctx context.Context, req reviewRequest) error {
@@ -87,15 +89,22 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, deps cod
 	if deps.runLoop == nil {
 		deps.runLoop = compound.RunCodexReviewLoop
 	}
+	if deps.writeJSONReport == nil {
+		deps.writeJSONReport = compound.WriteReviewLoopJSONReport
+	}
 
 	eng, err := deps.newEngine("codex")
 	if err != nil {
 		return fmt.Errorf("failed to create codex engine: %w", err)
 	}
 
-	_, err = deps.runLoop(ctx, eng, req.BaseBranch, req.Iterations)
+	result, err := deps.runLoop(ctx, eng, req.BaseBranch, req.Iterations)
 	if err != nil {
 		return fmt.Errorf("codex review loop failed: %w", err)
+	}
+
+	if _, err := deps.writeJSONReport(".", result); err != nil {
+		return fmt.Errorf("failed to write review loop JSON report: %w", err)
 	}
 
 	return nil

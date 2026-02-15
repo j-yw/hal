@@ -178,15 +178,17 @@ func (fakeReviewLoopEngine) StreamPrompt(ctx context.Context, prompt string, dis
 
 func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 	tests := []struct {
-		name         string
-		req          reviewRequest
-		newEngineErr error
-		runLoopErr   error
-		wantErr      string
-		expectRun    bool
-		wantBase     string
-		wantIters    int
-		wantEngine   string
+		name              string
+		req               reviewRequest
+		newEngineErr      error
+		runLoopErr        error
+		writeReportErr    error
+		wantErr           string
+		expectRun         bool
+		expectReportWrite bool
+		wantBase          string
+		wantIters         int
+		wantEngine        string
 	}{
 		{
 			name: "runs codex review loop",
@@ -194,10 +196,11 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 				BaseBranch: "develop",
 				Iterations: 4,
 			},
-			expectRun:  true,
-			wantBase:   "develop",
-			wantIters:  4,
-			wantEngine: "codex",
+			expectRun:         true,
+			expectReportWrite: true,
+			wantBase:          "develop",
+			wantIters:         4,
+			wantEngine:        "codex",
 		},
 		{
 			name: "engine creation failure",
@@ -223,6 +226,20 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 			wantIters:  1,
 			wantEngine: "codex",
 		},
+		{
+			name: "report write failure is clear",
+			req: reviewRequest{
+				BaseBranch: "develop",
+				Iterations: 3,
+			},
+			writeReportErr:    errors.New("disk full"),
+			wantErr:           "failed to write review loop JSON report: disk full",
+			expectRun:         true,
+			expectReportWrite: true,
+			wantBase:          "develop",
+			wantIters:         3,
+			wantEngine:        "codex",
+		},
 	}
 
 	for _, tt := range tests {
@@ -231,6 +248,11 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 			var runCalled bool
 			var gotBase string
 			var gotIterations int
+			var reportWriteCalled bool
+			var gotReportDir string
+			var gotReportResult *compound.ReviewLoopResult
+
+			runResult := &compound.ReviewLoopResult{Command: "hal review against develop 1"}
 
 			deps := codexReviewLoopDeps{
 				newEngine: func(name string) (engine.Engine, error) {
@@ -247,7 +269,16 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 					if tt.runLoopErr != nil {
 						return nil, tt.runLoopErr
 					}
-					return &compound.ReviewLoopResult{}, nil
+					return runResult, nil
+				},
+				writeJSONReport: func(dir string, result *compound.ReviewLoopResult) (string, error) {
+					reportWriteCalled = true
+					gotReportDir = dir
+					gotReportResult = result
+					if tt.writeReportErr != nil {
+						return "", tt.writeReportErr
+					}
+					return ".hal/reports/review-loop-2026-02-15-180000-000.json", nil
 				},
 			}
 
@@ -276,6 +307,18 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 				}
 				if gotIterations != tt.wantIters {
 					t.Fatalf("runLoop requestedIterations = %d, want %d", gotIterations, tt.wantIters)
+				}
+			}
+
+			if reportWriteCalled != tt.expectReportWrite {
+				t.Fatalf("reportWriteCalled = %v, want %v", reportWriteCalled, tt.expectReportWrite)
+			}
+			if tt.expectReportWrite {
+				if gotReportDir != "." {
+					t.Fatalf("writeJSONReport dir = %q, want %q", gotReportDir, ".")
+				}
+				if gotReportResult != runResult {
+					t.Fatalf("writeJSONReport result pointer mismatch")
 				}
 			}
 		})

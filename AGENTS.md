@@ -115,3 +115,4 @@
 - Use `git merge-base <base> HEAD` + `git diff <merge-base>` for iteration diff context so uncommitted fixes from the previous iteration remain visible in the next review pass.
 - Keep loop orchestration separate from per-iteration execution (`runCodexReviewLoop` vs `runReviewIteration`) so stop conditions can evolve without touching prompt/diff parsing internals.
 - `ReviewLoopResult.StopReason` currently uses `no_valid_issues` (early stop when an iteration reports `ValidIssues == 0`) and `max_iterations` (requested cap reached); tests should cover both paths and verify `CompletedIterations` exactly matches executed iterations.
+- Review-loop JSON artifacts are written via `compound.WriteReviewLoopJSONReport`; keep timestamp-dependent tests deterministic by using the internal `writeReviewLoopJSONReport(..., nowFn)` helper instead of stubbing wall-clock time globally.
