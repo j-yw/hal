@@ -168,6 +168,144 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	}
 }
 
+func TestRunCodexReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
+	start := time.Date(2026, 2, 15, 10, 0, 0, 0, time.UTC)
+	end := start.Add(10 * time.Second)
+	times := []time.Time{start, end}
+	timeIndex := 0
+
+	nowFn := func() time.Time {
+		if timeIndex >= len(times) {
+			return times[len(times)-1]
+		}
+		current := times[timeIndex]
+		timeIndex++
+		return current
+	}
+
+	diffCalls := 0
+	promptCalls := 0
+	deps := reviewIterationDeps{
+		now:           nowFn,
+		currentBranch: func() (string, error) { return "hal/report-review-split", nil },
+		diffAgainstBase: func(baseBranch string) (string, error) {
+			diffCalls++
+			return "diff --git a/file.go b/file.go", nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalls++
+			switch promptCalls {
+			case 1:
+				return `{"summary":"Found one issue","issues":[{"id":"ISSUE-001","title":"Bug","severity":"high","file":"file.go","line":10,"rationale":"reason","suggestedFix":"fix"}]}`,
+					nil
+			case 2:
+				return `{"summary":"Applied the valid fix","issues":[{"id":"ISSUE-001","valid":true,"reason":"real issue","fixed":true}]}`,
+					nil
+			case 3:
+				return `{"summary":"No issues remain","issues":[]}`,
+					nil
+			default:
+				t.Fatalf("prompt called %d times, want 3", promptCalls)
+				return "", nil
+			}
+		},
+	}
+
+	result, err := runCodexReviewLoop(context.Background(), "develop", 5, deps)
+	if err != nil {
+		t.Fatalf("runCodexReviewLoop() unexpected error: %v", err)
+	}
+
+	if diffCalls != 2 {
+		t.Fatalf("diff calls = %d, want %d", diffCalls, 2)
+	}
+	if promptCalls != 3 {
+		t.Fatalf("prompt calls = %d, want %d", promptCalls, 3)
+	}
+
+	if result.RequestedIterations != 5 {
+		t.Fatalf("RequestedIterations = %d, want %d", result.RequestedIterations, 5)
+	}
+	if result.CompletedIterations != 2 {
+		t.Fatalf("CompletedIterations = %d, want %d", result.CompletedIterations, 2)
+	}
+	if result.StopReason != "no_valid_issues" {
+		t.Fatalf("StopReason = %q, want %q", result.StopReason, "no_valid_issues")
+	}
+	if result.StartedAt != start {
+		t.Fatalf("StartedAt = %v, want %v", result.StartedAt, start)
+	}
+	if result.EndedAt != end {
+		t.Fatalf("EndedAt = %v, want %v", result.EndedAt, end)
+	}
+	if len(result.Iterations) != 2 {
+		t.Fatalf("len(Iterations) = %d, want %d", len(result.Iterations), 2)
+	}
+
+	if result.Iterations[0].ValidIssues != 1 {
+		t.Fatalf("iteration[0].ValidIssues = %d, want %d", result.Iterations[0].ValidIssues, 1)
+	}
+	if result.Iterations[1].ValidIssues != 0 {
+		t.Fatalf("iteration[1].ValidIssues = %d, want %d", result.Iterations[1].ValidIssues, 0)
+	}
+
+	if result.Totals.IssuesFound != 1 || result.Totals.ValidIssues != 1 || result.Totals.InvalidIssues != 0 || result.Totals.FixesApplied != 1 {
+		t.Fatalf("Totals = %+v, want IssuesFound=1 ValidIssues=1 InvalidIssues=0 FixesApplied=1", result.Totals)
+	}
+}
+
+func TestRunCodexReviewLoopStopsAtMaxIterations(t *testing.T) {
+	diffCalls := 0
+	promptCalls := 0
+	deps := reviewIterationDeps{
+		now:           time.Now,
+		currentBranch: func() (string, error) { return "hal/report-review-split", nil },
+		diffAgainstBase: func(baseBranch string) (string, error) {
+			diffCalls++
+			return "diff --git a/file.go b/file.go", nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalls++
+			switch promptCalls {
+			case 1, 3:
+				return `{"summary":"Found one issue","issues":[{"id":"ISSUE-001","title":"Bug","severity":"high","file":"file.go","line":10,"rationale":"reason","suggestedFix":"fix"}]}`,
+					nil
+			case 2, 4:
+				return `{"summary":"Applied fix","issues":[{"id":"ISSUE-001","valid":true,"reason":"real issue","fixed":true}]}`,
+					nil
+			default:
+				t.Fatalf("prompt called %d times, want 4", promptCalls)
+				return "", nil
+			}
+		},
+	}
+
+	result, err := runCodexReviewLoop(context.Background(), "develop", 2, deps)
+	if err != nil {
+		t.Fatalf("runCodexReviewLoop() unexpected error: %v", err)
+	}
+
+	if diffCalls != 2 {
+		t.Fatalf("diff calls = %d, want %d", diffCalls, 2)
+	}
+	if promptCalls != 4 {
+		t.Fatalf("prompt calls = %d, want %d", promptCalls, 4)
+	}
+
+	if result.CompletedIterations != 2 {
+		t.Fatalf("CompletedIterations = %d, want %d", result.CompletedIterations, 2)
+	}
+	if result.StopReason != "max_iterations" {
+		t.Fatalf("StopReason = %q, want %q", result.StopReason, "max_iterations")
+	}
+	if len(result.Iterations) != 2 {
+		t.Fatalf("len(Iterations) = %d, want %d", len(result.Iterations), 2)
+	}
+	if result.Totals.IssuesFound != 2 || result.Totals.ValidIssues != 2 || result.Totals.InvalidIssues != 0 || result.Totals.FixesApplied != 2 {
+		t.Fatalf("Totals = %+v, want IssuesFound=2 ValidIssues=2 InvalidIssues=0 FixesApplied=2", result.Totals)
+	}
+}
+
 func TestRunSingleReviewIterationCodexFailure(t *testing.T) {
 	deps := reviewIterationDeps{
 		now:           time.Now,

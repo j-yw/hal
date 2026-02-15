@@ -178,26 +178,26 @@ func (fakeReviewLoopEngine) StreamPrompt(ctx context.Context, prompt string, dis
 
 func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 	tests := []struct {
-		name            string
-		req             reviewRequest
-		newEngineErr    error
-		runIterationErr error
-		wantErr         string
-		expectRun       bool
-		wantBaseBranch  string
-		wantIterations  int
-		wantEngineName  string
+		name         string
+		req          reviewRequest
+		newEngineErr error
+		runLoopErr   error
+		wantErr      string
+		expectRun    bool
+		wantBase     string
+		wantIters    int
+		wantEngine   string
 	}{
 		{
-			name: "runs codex single iteration",
+			name: "runs codex review loop",
 			req: reviewRequest{
 				BaseBranch: "develop",
 				Iterations: 4,
 			},
-			expectRun:      true,
-			wantBaseBranch: "develop",
-			wantIterations: 4,
-			wantEngineName: "codex",
+			expectRun:  true,
+			wantBase:   "develop",
+			wantIters:  4,
+			wantEngine: "codex",
 		},
 		{
 			name: "engine creation failure",
@@ -205,10 +205,10 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 				BaseBranch: "develop",
 				Iterations: 2,
 			},
-			newEngineErr:   errors.New("missing codex"),
-			wantErr:        "failed to create codex engine: missing codex",
-			expectRun:      false,
-			wantEngineName: "codex",
+			newEngineErr: errors.New("missing codex"),
+			wantErr:      "failed to create codex engine: missing codex",
+			expectRun:    false,
+			wantEngine:   "codex",
 		},
 		{
 			name: "codex invocation failure is clear",
@@ -216,12 +216,12 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 				BaseBranch: "origin/main",
 				Iterations: 1,
 			},
-			runIterationErr: errors.New("codex prompt crashed"),
-			wantErr:         "codex review iteration failed: codex prompt crashed",
-			expectRun:       true,
-			wantBaseBranch:  "origin/main",
-			wantIterations:  1,
-			wantEngineName:  "codex",
+			runLoopErr: errors.New("codex prompt crashed"),
+			wantErr:    "codex review loop failed: codex prompt crashed",
+			expectRun:  true,
+			wantBase:   "origin/main",
+			wantIters:  1,
+			wantEngine: "codex",
 		},
 	}
 
@@ -240,12 +240,12 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 					}
 					return fakeReviewLoopEngine{}, nil
 				},
-				runIteration: func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error) {
+				runLoop: func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error) {
 					runCalled = true
 					gotBase = baseBranch
 					gotIterations = requestedIterations
-					if tt.runIterationErr != nil {
-						return nil, tt.runIterationErr
+					if tt.runLoopErr != nil {
+						return nil, tt.runLoopErr
 					}
 					return &compound.ReviewLoopResult{}, nil
 				},
@@ -263,19 +263,19 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			if gotEngineName != tt.wantEngineName {
-				t.Fatalf("newEngine called with %q, want %q", gotEngineName, tt.wantEngineName)
+			if gotEngineName != tt.wantEngine {
+				t.Fatalf("newEngine called with %q, want %q", gotEngineName, tt.wantEngine)
 			}
 
 			if runCalled != tt.expectRun {
 				t.Fatalf("runCalled = %v, want %v", runCalled, tt.expectRun)
 			}
 			if tt.expectRun {
-				if gotBase != tt.wantBaseBranch {
-					t.Fatalf("runIteration baseBranch = %q, want %q", gotBase, tt.wantBaseBranch)
+				if gotBase != tt.wantBase {
+					t.Fatalf("runLoop baseBranch = %q, want %q", gotBase, tt.wantBase)
 				}
-				if gotIterations != tt.wantIterations {
-					t.Fatalf("runIteration requestedIterations = %d, want %d", gotIterations, tt.wantIterations)
+				if gotIterations != tt.wantIters {
+					t.Fatalf("runLoop requestedIterations = %d, want %d", gotIterations, tt.wantIters)
 				}
 			}
 		})

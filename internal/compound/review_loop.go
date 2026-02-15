@@ -14,6 +14,21 @@ import (
 
 const reviewLoopDiffMaxLen = 20000
 
+// RunCodexReviewLoop executes review iterations up to requestedIterations.
+// It stops early when an iteration reports zero valid issues.
+func RunCodexReviewLoop(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+	if eng == nil {
+		return nil, fmt.Errorf("engine is required")
+	}
+
+	return runCodexReviewLoop(ctx, baseBranch, requestedIterations, reviewIterationDeps{
+		now:             time.Now,
+		currentBranch:   CurrentBranch,
+		diffAgainstBase: gitDiffAgainstBaseBranch,
+		prompt:          eng.Prompt,
+	})
+}
+
 // RunSingleReviewIteration executes one Codex review iteration and records the
 // parsed output into the shared ReviewLoopResult contract.
 func RunSingleReviewIteration(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
@@ -70,26 +85,10 @@ type codexFixOutcome struct {
 	FixesApplied  int
 }
 
-func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
-	baseBranch = strings.TrimSpace(baseBranch)
-	if baseBranch == "" {
-		return nil, fmt.Errorf("base branch is required")
-	}
-	if requestedIterations <= 0 {
-		return nil, fmt.Errorf("requested iterations must be a positive integer")
-	}
-
-	if deps.now == nil {
-		deps.now = time.Now
-	}
-	if deps.currentBranch == nil {
-		deps.currentBranch = CurrentBranch
-	}
-	if deps.diffAgainstBase == nil {
-		deps.diffAgainstBase = gitDiffAgainstBaseBranch
-	}
-	if deps.prompt == nil {
-		return nil, fmt.Errorf("prompt function is required")
+func runCodexReviewLoop(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
+	baseBranch, deps, err := normalizeReviewLoopDeps(baseBranch, requestedIterations, deps)
+	if err != nil {
+		return nil, err
 	}
 
 	startedAt := deps.now()
@@ -99,72 +98,61 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		return nil, fmt.Errorf("failed to determine current branch: %w", err)
 	}
 
-	diff, err := deps.diffAgainstBase(baseBranch)
-	if err != nil {
-		return nil, fmt.Errorf("failed to diff against base branch %q: %w", baseBranch, err)
+	result := &ReviewLoopResult{
+		Command:             fmt.Sprintf("hal review against %s %d", baseBranch, requestedIterations),
+		BaseBranch:          baseBranch,
+		CurrentBranch:       currentBranch,
+		RequestedIterations: requestedIterations,
+		StartedAt:           startedAt,
+		Iterations:          make([]ReviewLoopIteration, 0, requestedIterations),
 	}
 
-	reviewPrompt := buildCodexReviewPrompt(baseBranch, currentBranch, diff)
-	reviewResponse, err := deps.prompt(ctx, reviewPrompt)
-	if err != nil {
-		return nil, fmt.Errorf("codex review failed: %w", err)
-	}
-
-	parsedReview, err := parseCodexReviewResponse(reviewResponse)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse codex review output: %w", err)
-	}
-
-	issuesFound := len(parsedReview.Issues)
-	summary := strings.TrimSpace(parsedReview.Summary)
-	if summary == "" {
-		if issuesFound == 0 {
-			summary = "No issues found"
-		} else {
-			summary = fmt.Sprintf("Found %d issues", issuesFound)
-		}
-	}
-
-	validIssues := issuesFound
-	invalidIssues := 0
-	fixesApplied := 0
-	status := "reviewed"
-
-	if issuesFound > 0 {
-		fixPrompt, err := buildCodexFixPrompt(baseBranch, currentBranch, parsedReview.Issues)
+	for i := 1; i <= requestedIterations; i++ {
+		iteration, err := runReviewIteration(ctx, baseBranch, currentBranch, deps)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build codex fix prompt: %w", err)
+			return nil, fmt.Errorf("iteration %d failed: %w", i, err)
 		}
+		iteration.Iteration = i
 
-		fixResponse, err := deps.prompt(ctx, fixPrompt)
-		if err != nil {
-			return nil, fmt.Errorf("codex fix step failed: %w", err)
-		}
+		result.Iterations = append(result.Iterations, iteration)
+		result.CompletedIterations = i
+		result.Totals.IssuesFound += iteration.IssuesFound
+		result.Totals.ValidIssues += iteration.ValidIssues
+		result.Totals.InvalidIssues += iteration.InvalidIssues
+		result.Totals.FixesApplied += iteration.FixesApplied
 
-		parsedFix, err := parseCodexFixResponse(fixResponse, parsedReview.Issues)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse codex fix output: %w", err)
-		}
-
-		validIssues = parsedFix.ValidIssues
-		invalidIssues = parsedFix.InvalidIssues
-		fixesApplied = parsedFix.FixesApplied
-		status = "fixed"
-
-		if strings.TrimSpace(parsedFix.Summary) != "" {
-			summary = strings.TrimSpace(parsedFix.Summary)
+		if iteration.ValidIssues == 0 {
+			result.StopReason = "no_valid_issues"
+			break
 		}
 	}
 
-	iteration := ReviewLoopIteration{
-		Iteration:     1,
-		IssuesFound:   issuesFound,
-		ValidIssues:   validIssues,
-		InvalidIssues: invalidIssues,
-		FixesApplied:  fixesApplied,
-		Summary:       summary,
-		Status:        status,
+	if result.StopReason == "" {
+		result.StopReason = "max_iterations"
 	}
+
+	result.EndedAt = deps.now()
+	return result, nil
+}
+
+func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
+	baseBranch, deps, err := normalizeReviewLoopDeps(baseBranch, requestedIterations, deps)
+	if err != nil {
+		return nil, err
+	}
+
+	startedAt := deps.now()
+
+	currentBranch, err := deps.currentBranch()
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine current branch: %w", err)
+	}
+
+	iteration, err := runReviewIteration(ctx, baseBranch, currentBranch, deps)
+	if err != nil {
+		return nil, err
+	}
+	iteration.Iteration = 1
 
 	endedAt := deps.now()
 
@@ -178,13 +166,104 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		StartedAt:           startedAt,
 		EndedAt:             endedAt,
 		Totals: ReviewLoopTotals{
-			IssuesFound:   issuesFound,
-			ValidIssues:   validIssues,
-			InvalidIssues: invalidIssues,
-			FixesApplied:  fixesApplied,
+			IssuesFound:   iteration.IssuesFound,
+			ValidIssues:   iteration.ValidIssues,
+			InvalidIssues: iteration.InvalidIssues,
+			FixesApplied:  iteration.FixesApplied,
 		},
 		Iterations: []ReviewLoopIteration{iteration},
 	}, nil
+}
+
+func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, deps reviewIterationDeps) (ReviewLoopIteration, error) {
+	diff, err := deps.diffAgainstBase(baseBranch)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to diff against base branch %q: %w", baseBranch, err)
+	}
+
+	reviewPrompt := buildCodexReviewPrompt(baseBranch, currentBranch, diff)
+	reviewResponse, err := deps.prompt(ctx, reviewPrompt)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("codex review failed: %w", err)
+	}
+
+	parsedReview, err := parseCodexReviewResponse(reviewResponse)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to parse codex review output: %w", err)
+	}
+
+	issuesFound := len(parsedReview.Issues)
+	summary := strings.TrimSpace(parsedReview.Summary)
+	if summary == "" {
+		if issuesFound == 0 {
+			summary = "No issues found"
+		} else {
+			summary = fmt.Sprintf("Found %d issues", issuesFound)
+		}
+	}
+
+	iteration := ReviewLoopIteration{
+		IssuesFound:   issuesFound,
+		ValidIssues:   issuesFound,
+		InvalidIssues: 0,
+		FixesApplied:  0,
+		Summary:       summary,
+		Status:        "reviewed",
+	}
+
+	if issuesFound == 0 {
+		return iteration, nil
+	}
+
+	fixPrompt, err := buildCodexFixPrompt(baseBranch, currentBranch, parsedReview.Issues)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to build codex fix prompt: %w", err)
+	}
+
+	fixResponse, err := deps.prompt(ctx, fixPrompt)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("codex fix step failed: %w", err)
+	}
+
+	parsedFix, err := parseCodexFixResponse(fixResponse, parsedReview.Issues)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to parse codex fix output: %w", err)
+	}
+
+	iteration.ValidIssues = parsedFix.ValidIssues
+	iteration.InvalidIssues = parsedFix.InvalidIssues
+	iteration.FixesApplied = parsedFix.FixesApplied
+	iteration.Status = "fixed"
+	if strings.TrimSpace(parsedFix.Summary) != "" {
+		iteration.Summary = strings.TrimSpace(parsedFix.Summary)
+	}
+
+	return iteration, nil
+}
+
+func normalizeReviewLoopDeps(baseBranch string, requestedIterations int, deps reviewIterationDeps) (string, reviewIterationDeps, error) {
+	baseBranch = strings.TrimSpace(baseBranch)
+	if baseBranch == "" {
+		return "", deps, fmt.Errorf("base branch is required")
+	}
+	if requestedIterations <= 0 {
+		return "", deps, fmt.Errorf("requested iterations must be a positive integer")
+	}
+
+	if deps.now == nil {
+		deps.now = time.Now
+	}
+	if deps.currentBranch == nil {
+		deps.currentBranch = CurrentBranch
+	}
+	if deps.diffAgainstBase == nil {
+		deps.diffAgainstBase = gitDiffAgainstBaseBranch
+	}
+	if deps.prompt == nil {
+		return "", deps, fmt.Errorf("prompt function is required")
+	}
+
+	return baseBranch, deps, nil
 }
 
 func gitDiffAgainstBaseBranch(baseBranch string) (string, error) {

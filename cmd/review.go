@@ -67,13 +67,13 @@ func runReviewWithDeps(ctx context.Context, args []string, deps reviewDeps) erro
 }
 
 type codexReviewLoopDeps struct {
-	newEngine    func(name string) (engine.Engine, error)
-	runIteration func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
+	newEngine func(name string) (engine.Engine, error)
+	runLoop   func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
 }
 
 var defaultCodexReviewLoopDeps = codexReviewLoopDeps{
-	newEngine:    newEngine,
-	runIteration: compound.RunSingleReviewIteration,
+	newEngine: newEngine,
+	runLoop:   compound.RunCodexReviewLoop,
 }
 
 func runCodexReviewLoop(ctx context.Context, req reviewRequest) error {
@@ -84,8 +84,8 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, deps cod
 	if deps.newEngine == nil {
 		deps.newEngine = newEngine
 	}
-	if deps.runIteration == nil {
-		deps.runIteration = compound.RunSingleReviewIteration
+	if deps.runLoop == nil {
+		deps.runLoop = compound.RunCodexReviewLoop
 	}
 
 	eng, err := deps.newEngine("codex")
@@ -93,9 +93,9 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, deps cod
 		return fmt.Errorf("failed to create codex engine: %w", err)
 	}
 
-	_, err = deps.runIteration(ctx, eng, req.BaseBranch, req.Iterations)
+	_, err = deps.runLoop(ctx, eng, req.BaseBranch, req.Iterations)
 	if err != nil {
-		return fmt.Errorf("codex review iteration failed: %w", err)
+		return fmt.Errorf("codex review loop failed: %w", err)
 	}
 
 	return nil
