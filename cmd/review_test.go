@@ -20,6 +20,7 @@ func TestReviewCommandUsageAndExamples(t *testing.T) {
 	examples := []string{
 		"hal review against develop",
 		"hal review against origin/main 5",
+		"hal review against develop 3 -e codex",
 	}
 	for _, example := range examples {
 		if !strings.Contains(reviewCmd.Example, example) {
@@ -33,6 +34,14 @@ func TestReviewCommandUsageAndExamples(t *testing.T) {
 	}
 	if outputFlag.DefValue != reviewOutputBoth {
 		t.Fatalf("--output default = %q, want %q", outputFlag.DefValue, reviewOutputBoth)
+	}
+
+	engineFlag := reviewCmd.Flags().Lookup("engine")
+	if engineFlag == nil {
+		t.Fatal("review command should expose --engine flag")
+	}
+	if engineFlag.DefValue != "codex" {
+		t.Fatalf("--engine default = %q, want %q", engineFlag.DefValue, "codex")
 	}
 }
 
@@ -99,11 +108,32 @@ func TestNormalizeReviewOutputMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeReviewEngine(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty defaults to codex", in: "", want: "codex"},
+		{name: "trim and lowercase", in: "  ClAuDe  ", want: "claude"},
+		{name: "already normalized", in: "pi", want: "pi"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeReviewEngine(tt.in); got != tt.want {
+				t.Fatalf("normalizeReviewEngine(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunReviewWithDeps(t *testing.T) {
 	tests := []struct {
 		name               string
 		args               []string
 		outputMode         string
+		engineName         string
 		branchExists       bool
 		branchErr          error
 		runErr             error
@@ -125,6 +155,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 				BaseBranch: "develop",
 				Iterations: 10,
 				OutputMode: reviewOutputBoth,
+				Engine:     "codex",
 			},
 		},
 		{
@@ -139,6 +170,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 				BaseBranch: "origin/main",
 				Iterations: 5,
 				OutputMode: reviewOutputJSON,
+				Engine:     "codex",
 			},
 		},
 		{
@@ -153,6 +185,23 @@ func TestRunReviewWithDeps(t *testing.T) {
 				BaseBranch: "develop",
 				Iterations: 10,
 				OutputMode: reviewOutputHuman,
+				Engine:     "codex",
+			},
+		},
+		{
+			name:               "normalizes engine name",
+			args:               []string{"against", "develop"},
+			outputMode:         reviewOutputBoth,
+			engineName:         "  ClAuDe  ",
+			branchExists:       true,
+			wantRun:            true,
+			expectBranchLookup: true,
+			wantBranch:         "develop",
+			wantRequest: reviewRequest{
+				BaseBranch: "develop",
+				Iterations: 10,
+				OutputMode: reviewOutputBoth,
+				Engine:     "claude",
 			},
 		},
 		{
@@ -211,6 +260,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 				BaseBranch: "develop",
 				Iterations: 10,
 				OutputMode: reviewOutputBoth,
+				Engine:     "codex",
 			},
 		},
 	}
@@ -235,7 +285,7 @@ func TestRunReviewWithDeps(t *testing.T) {
 				},
 			}
 
-			err := runReviewWithDeps(context.Background(), tt.args, tt.outputMode, deps)
+			err := runReviewWithDeps(context.Background(), tt.args, tt.outputMode, tt.engineName, deps)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -320,6 +370,23 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 			wantOutput:          "rendered output",
 		},
 		{
+			name: "uses requested engine",
+			req: reviewRequest{
+				BaseBranch: "develop",
+				Iterations: 2,
+				OutputMode: reviewOutputBoth,
+				Engine:     "claude",
+			},
+			expectRun:           true,
+			expectJSONWrite:     true,
+			expectMarkdownWrite: true,
+			expectMarkdownBuild: true,
+			expectRender:        true,
+			wantBase:            "develop",
+			wantIters:           2,
+			wantEngine:          "claude",
+		},
+		{
 			name: "engine creation failure",
 			req: reviewRequest{
 				BaseBranch: "develop",
@@ -341,14 +408,14 @@ func TestRunCodexReviewLoopWithDeps(t *testing.T) {
 			wantErr: "output must be one of: human, json, both",
 		},
 		{
-			name: "codex invocation failure is clear",
+			name: "engine invocation failure is clear",
 			req: reviewRequest{
 				BaseBranch: "origin/main",
 				Iterations: 1,
 				OutputMode: reviewOutputBoth,
 			},
-			runLoopErr: errors.New("codex prompt crashed"),
-			wantErr:    "codex review loop failed: codex prompt crashed",
+			runLoopErr: errors.New("prompt crashed"),
+			wantErr:    "review loop failed with codex: prompt crashed",
 			expectRun:  true,
 			wantBase:   "origin/main",
 			wantIters:  1,

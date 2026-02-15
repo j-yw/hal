@@ -28,6 +28,7 @@ type reviewRequest struct {
 	BaseBranch string
 	Iterations int
 	OutputMode string
+	Engine     string
 }
 
 type reviewDeps struct {
@@ -41,6 +42,7 @@ var defaultReviewDeps = reviewDeps{
 }
 
 var reviewOutputFlag string
+var reviewEngineFlag string
 
 var reviewCmd = &cobra.Command{
 	Use:   "review against <base-branch> [iterations]",
@@ -50,29 +52,36 @@ var reviewCmd = &cobra.Command{
 This command powers branch-vs-branch review loops.
 Use 'hal report' for legacy session reporting.`,
 	Example: `  hal review against develop
-  hal review against origin/main 5`,
+  hal review against origin/main 5
+  hal review against develop 3 -e codex`,
 	RunE: runReview,
 }
 
 func init() {
 	reviewCmd.Flags().StringVar(&reviewOutputFlag, "output", reviewOutputBoth, "Output mode: human, json, both")
+	reviewCmd.Flags().StringVarP(&reviewEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
 	outputMode := reviewOutputFlag
+	engineName := reviewEngineFlag
 	if cmd != nil {
 		var err error
 		outputMode, err = cmd.Flags().GetString("output")
 		if err != nil {
 			return err
 		}
+		engineName, err = cmd.Flags().GetString("engine")
+		if err != nil {
+			return err
+		}
 	}
 
-	return runReviewWithDeps(context.Background(), args, outputMode, defaultReviewDeps)
+	return runReviewWithDeps(context.Background(), args, outputMode, engineName, defaultReviewDeps)
 }
 
-func runReviewWithDeps(ctx context.Context, args []string, outputMode string, deps reviewDeps) error {
+func runReviewWithDeps(ctx context.Context, args []string, outputMode, engineName string, deps reviewDeps) error {
 	if deps.baseBranchExists == nil {
 		deps.baseBranchExists = gitBranchResolvable
 	}
@@ -90,6 +99,7 @@ func runReviewWithDeps(ctx context.Context, args []string, outputMode string, de
 		return err
 	}
 	req.OutputMode = normalizedOutputMode
+	req.Engine = normalizeReviewEngine(engineName)
 
 	return deps.runLoop(ctx, req)
 }
@@ -141,14 +151,15 @@ func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.W
 		return err
 	}
 
-	eng, err := deps.newEngine("codex")
+	engineName := normalizeReviewEngine(req.Engine)
+	eng, err := deps.newEngine(engineName)
 	if err != nil {
-		return fmt.Errorf("failed to create codex engine: %w", err)
+		return fmt.Errorf("failed to create %s engine: %w", engineName, err)
 	}
 
 	result, err := deps.runLoop(ctx, eng, req.BaseBranch, req.Iterations)
 	if err != nil {
-		return fmt.Errorf("codex review loop failed: %w", err)
+		return fmt.Errorf("review loop failed with %s: %w", engineName, err)
 	}
 
 	if _, err := deps.writeJSONReport(".", result); err != nil {
@@ -209,6 +220,14 @@ func normalizeReviewOutputMode(mode string) (string, error) {
 	default:
 		return "", fmt.Errorf("output must be one of: human, json, both")
 	}
+}
+
+func normalizeReviewEngine(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return "codex"
+	}
+	return normalized
 }
 
 func writeReviewLoopJSONOutput(out io.Writer, result *compound.ReviewLoopResult) error {

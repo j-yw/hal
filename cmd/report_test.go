@@ -31,6 +31,12 @@ func TestReportCommandFlags(t *testing.T) {
 	if reportCmd.Use != "report" {
 		t.Fatalf("reportCmd.Use = %q, want %q", reportCmd.Use, "report")
 	}
+	if reportCmd.Args == nil {
+		t.Fatal("report command should reject positional arguments")
+	}
+	if err := reportCmd.Args(reportCmd, []string{"unexpected"}); err == nil {
+		t.Fatal("report command should return an error for positional arguments")
+	}
 
 	if !strings.Contains(strings.ToLower(reportCmd.Short), "legacy session reporting") {
 		t.Fatalf("reportCmd.Short = %q, want to contain %q", reportCmd.Short, "legacy session reporting")
@@ -209,8 +215,5 @@ func TestReviewCommandLegacyFlagsRemoved(t *testing.T) {
 	}
 	if reviewCmd.Flags().Lookup("skip-agents") != nil {
 		t.Fatal("review command should not expose legacy --skip-agents flag")
-	}
-	if reviewCmd.Flags().Lookup("engine") != nil {
-		t.Fatal("review command should not expose legacy --engine flag")
 	}
 }
