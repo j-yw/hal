@@ -10,6 +10,11 @@ import (
 	"golang.org/x/term"
 )
 
+type ptyStatus interface {
+	ExitCode() *int
+	Error() *string
+}
+
 // ForwardShellIOResult contains the outcome of a shell I/O session.
 type ForwardShellIOResult struct {
 	// ExitCode from the remote process. 0 for clean disconnect.
@@ -59,8 +64,6 @@ func ForwardShellIO(ctx context.Context, conn *ShellConnection, stdin io.Reader,
 		})
 	}
 
-	errCh := make(chan error, 2)
-
 	// PTY → stdout (output forwarding)
 	go func() {
 		_, err := io.Copy(stdout, pty)
@@ -68,30 +71,38 @@ func ForwardShellIO(ctx context.Context, conn *ShellConnection, stdin io.Reader,
 			setSessionClosed()
 		}
 		cancel()
-		errCh <- err
 	}()
 
 	// stdin → PTY (input forwarding)
 	go func() {
-		_, err := io.Copy(pty, stdin)
+		_, _ = io.Copy(pty, stdin)
 		cancel()
-		errCh <- err
 	}()
 
 	// Wait for context cancellation (triggered by either goroutine finishing)
 	<-ctx.Done()
 
-	// Check PTY exit code
-	if code := pty.ExitCode(); code != nil {
-		result.ExitCode = *code
-	}
+	applyPtyStatus(result, pty)
 
 	// Clean up the PTY connection
 	pty.Disconnect()
 
-	if result.SessionClosed {
+	if result.SessionClosed && result.ExitCode == 0 {
 		result.ExitCode = 1
 	}
 
 	return result, nil
+}
+
+func applyPtyStatus(result *ForwardShellIOResult, pty ptyStatus) {
+	if code := pty.ExitCode(); code != nil {
+		result.ExitCode = *code
+	}
+
+	if ptyErr := pty.Error(); ptyErr != nil {
+		result.SessionClosed = true
+		if result.ExitCode == 0 {
+			result.ExitCode = 1
+		}
+	}
 }

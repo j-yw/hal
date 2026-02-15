@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+type fakePtyStatus struct {
+	exitCode *int
+	err      *string
+}
+
+func (f fakePtyStatus) ExitCode() *int {
+	return f.exitCode
+}
+
+func (f fakePtyStatus) Error() *string {
+	return f.err
+}
+
 func TestForwardShellIOResult_Fields(t *testing.T) {
 	result := ForwardShellIOResult{
 		ExitCode:      42,
@@ -64,5 +77,48 @@ func TestForwardShellIOResult_SessionClosed(t *testing.T) {
 
 	if !result.SessionClosed {
 		t.Error("SessionClosed should be true when sandbox disconnects")
+	}
+}
+
+func TestApplyPtyStatus_SetsFailureOnTransportError(t *testing.T) {
+	result := &ForwardShellIOResult{}
+	errMsg := "websocket read failed"
+
+	applyPtyStatus(result, fakePtyStatus{err: &errMsg})
+
+	if !result.SessionClosed {
+		t.Fatal("SessionClosed should be true when PTY has an error")
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1 when PTY has no exit code and transport failed", result.ExitCode)
+	}
+}
+
+func TestApplyPtyStatus_PreservesNonZeroExitCode(t *testing.T) {
+	exitCode := 127
+	errMsg := "connection dropped"
+	result := &ForwardShellIOResult{}
+
+	applyPtyStatus(result, fakePtyStatus{exitCode: &exitCode, err: &errMsg})
+
+	if !result.SessionClosed {
+		t.Fatal("SessionClosed should be true when PTY has an error")
+	}
+	if result.ExitCode != 127 {
+		t.Fatalf("ExitCode = %d, want 127", result.ExitCode)
+	}
+}
+
+func TestApplyPtyStatus_CleanExit(t *testing.T) {
+	exitCode := 0
+	result := &ForwardShellIOResult{}
+
+	applyPtyStatus(result, fakePtyStatus{exitCode: &exitCode})
+
+	if result.SessionClosed {
+		t.Fatal("SessionClosed should be false on clean exit")
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
 	}
 }

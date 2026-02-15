@@ -247,6 +247,26 @@ func TestRunSandboxExec(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "preserves argument boundaries with shell quoting",
+			setup: func(t *testing.T, dir string) {
+				setupExecTestWithState(t, dir, "key9", "", &sandbox.SandboxState{
+					Name:        "quoted-args-test",
+					SnapshotID:  "snap-eee",
+					WorkspaceID: "sb-008",
+					Status:      "started",
+					CreatedAt:   time.Now(),
+				})
+			},
+			args:       []string{"printf", "%s", "hello world; rm -rf /", "it's ok"},
+			execResult: &sandbox.ExecResult{ExitCode: 0, Output: "ignored\n"},
+			checkFn: func(t *testing.T, call *execCall) {
+				want := "printf %s 'hello world; rm -rf /' 'it'\"'\"'s ok'"
+				if call.command != want {
+					t.Errorf("command = %q, want %q", call.command, want)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -288,6 +308,44 @@ func TestRunSandboxExec(t *testing.T) {
 
 			if tt.checkFn != nil {
 				tt.checkFn(t, execCallResult)
+			}
+		})
+	}
+}
+
+func TestShellCommandFromArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "keeps safe args unquoted",
+			args: []string{"grep", "-r", "TODO", "/workspace"},
+			want: "grep -r TODO /workspace",
+		},
+		{
+			name: "quotes args with spaces",
+			args: []string{"echo", "hello world"},
+			want: "echo 'hello world'",
+		},
+		{
+			name: "quotes single quote safely",
+			args: []string{"echo", "it's"},
+			want: "echo 'it'\"'\"'s'",
+		},
+		{
+			name: "quotes empty args",
+			args: []string{"printf", "%s", ""},
+			want: "printf %s ''",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellCommandFromArgs(tt.args)
+			if got != tt.want {
+				t.Fatalf("shellCommandFromArgs(%v) = %q, want %q", tt.args, got, tt.want)
 			}
 		})
 	}

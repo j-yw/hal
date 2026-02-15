@@ -100,8 +100,7 @@ func runSandboxExec(dir, name string, args []string, out io.Writer, executor san
 		name = state.Name
 	}
 
-	// Join args into a single command string
-	command := strings.Join(args, " ")
+	command := shellCommandFromArgs(args)
 
 	if executor == nil {
 		executor = defaultSandboxExecutor
@@ -119,4 +118,34 @@ func runSandboxExec(dir, name string, args []string, out io.Writer, executor san
 	}
 
 	return result.ExitCode, nil
+}
+
+// shellCommandFromArgs builds a shell-safe command string that preserves original
+// argument boundaries.
+func shellCommandFromArgs(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = shellQuoteArg(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuoteArg(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if isSafeShellArg(arg) {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
+}
+
+func isSafeShellArg(arg string) bool {
+	const safeChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
+	for _, r := range arg {
+		if !strings.ContainsRune(safeChars, r) {
+			return false
+		}
+	}
+	return true
 }

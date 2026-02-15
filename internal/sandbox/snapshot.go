@@ -10,10 +10,34 @@ import (
 	"github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 )
 
+const snapshotStateActive = "active"
+
+type snapshotCreateFn func(ctx context.Context, params *types.CreateSnapshotParams) (*types.Snapshot, <-chan string, error)
+type snapshotGetFn func(ctx context.Context, nameOrID string) (*types.Snapshot, error)
+
 // CreateSnapshot creates a Daytona snapshot from a pre-built Docker image reference.
 // The image must be pushed to a registry accessible by Daytona (e.g., Docker Hub, GHCR).
 // It streams build logs to the provided writer and returns the snapshot ID on success.
 func CreateSnapshot(ctx context.Context, client *daytona.Client, name, imageRef string, out io.Writer) (string, error) {
+	return createSnapshot(
+		ctx,
+		name,
+		imageRef,
+		out,
+		func(ctx context.Context, params *types.CreateSnapshotParams) (*types.Snapshot, <-chan string, error) {
+			return client.Snapshot.Create(ctx, params)
+		},
+		func(ctx context.Context, nameOrID string) (*types.Snapshot, error) {
+			return client.Snapshot.Get(ctx, nameOrID)
+		},
+	)
+}
+
+func createSnapshot(ctx context.Context, name, imageRef string, out io.Writer, createFn snapshotCreateFn, getFn snapshotGetFn) (string, error) {
+	if out == nil {
+		out = io.Discard
+	}
+
 	image := daytona.Base(imageRef)
 
 	params := &types.CreateSnapshotParams{
@@ -21,14 +45,31 @@ func CreateSnapshot(ctx context.Context, client *daytona.Client, name, imageRef 
 		Image: image,
 	}
 
-	snapshot, logChan, err := client.Snapshot.Create(ctx, params)
+	snapshot, logChan, err := createFn(ctx, params)
 	if err != nil {
 		return "", fmt.Errorf("creating snapshot: %w", err)
+	}
+	if snapshot == nil {
+		return "", fmt.Errorf("creating snapshot: empty snapshot response")
 	}
 
 	// Stream build logs
 	for line := range logChan {
 		fmt.Fprintln(out, line)
+	}
+
+	latestSnapshot, err := getFn(ctx, snapshot.ID)
+	if err != nil {
+		return "", fmt.Errorf("checking snapshot %q status: %w", snapshot.ID, err)
+	}
+	if latestSnapshot == nil {
+		return "", fmt.Errorf("checking snapshot %q status: empty snapshot response", snapshot.ID)
+	}
+	if latestSnapshot.State != snapshotStateActive {
+		if latestSnapshot.ErrorReason != nil && *latestSnapshot.ErrorReason != "" {
+			return "", fmt.Errorf("snapshot %q finished in state %s: %s", latestSnapshot.ID, latestSnapshot.State, *latestSnapshot.ErrorReason)
+		}
+		return "", fmt.Errorf("snapshot %q finished in state %s", latestSnapshot.ID, latestSnapshot.State)
 	}
 
 	return snapshot.ID, nil
