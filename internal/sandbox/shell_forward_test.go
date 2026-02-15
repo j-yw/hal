@@ -1,7 +1,10 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -120,5 +123,71 @@ func TestApplyPtyStatus_CleanExit(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
+	}
+}
+
+type chunkWriter struct {
+	maxChunk int
+	buf      bytes.Buffer
+}
+
+func (w *chunkWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	n := len(p)
+	if w.maxChunk > 0 && n > w.maxChunk {
+		n = w.maxChunk
+	}
+	return w.buf.Write(p[:n])
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (w *failingWriter) Write(_ []byte) (int, error) {
+	return 0, w.err
+}
+
+func TestForwardPTYOutput_WritesFullFrames(t *testing.T) {
+	ch := make(chan []byte, 2)
+	ch <- bytes.Repeat([]byte("A"), 1024)
+	ch <- bytes.Repeat([]byte("B"), 8192)
+	close(ch)
+
+	writer := &chunkWriter{maxChunk: 17}
+	if err := forwardPTYOutput(writer, ch); err != nil {
+		t.Fatalf("forwardPTYOutput returned error: %v", err)
+	}
+
+	want := append(bytes.Repeat([]byte("A"), 1024), bytes.Repeat([]byte("B"), 8192)...)
+	if !bytes.Equal(writer.buf.Bytes(), want) {
+		t.Fatalf("forwardPTYOutput output length = %d, want %d", writer.buf.Len(), len(want))
+	}
+}
+
+func TestForwardPTYOutput_PropagatesWriteError(t *testing.T) {
+	ch := make(chan []byte, 1)
+	ch <- []byte("hello")
+	close(ch)
+
+	writeErr := errors.New("write failed")
+	err := forwardPTYOutput(&failingWriter{err: writeErr}, ch)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("forwardPTYOutput error = %v, want %v", err, writeErr)
+	}
+}
+
+type zeroWriter struct{}
+
+func (w *zeroWriter) Write(_ []byte) (int, error) {
+	return 0, nil
+}
+
+func TestWriteAll_ReturnsShortWriteError(t *testing.T) {
+	err := writeAll(&zeroWriter{}, []byte("x"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeAll error = %v, want io.ErrShortWrite", err)
 	}
 }

@@ -66,7 +66,7 @@ func ForwardShellIO(ctx context.Context, conn *ShellConnection, stdin io.Reader,
 
 	// PTY → stdout (output forwarding)
 	go func() {
-		_, err := io.Copy(stdout, pty)
+		err := forwardPTYOutput(stdout, pty.DataChan())
 		if err != nil {
 			setSessionClosed()
 		}
@@ -105,4 +105,27 @@ func applyPtyStatus(result *ForwardShellIOResult, pty ptyStatus) {
 			result.ExitCode = 1
 		}
 	}
+}
+
+func forwardPTYOutput(stdout io.Writer, dataCh <-chan []byte) error {
+	for data := range dataCh {
+		if err := writeAll(stdout, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeAll(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
 }
