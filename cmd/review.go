@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -25,9 +27,7 @@ type reviewDeps struct {
 
 var defaultReviewDeps = reviewDeps{
 	baseBranchExists: gitBranchResolvable,
-	runLoop: func(ctx context.Context, req reviewRequest) error {
-		return fmt.Errorf("review loop is not implemented yet")
-	},
+	runLoop:          runCodexReviewLoop,
 }
 
 var reviewCmd = &cobra.Command{
@@ -64,6 +64,41 @@ func runReviewWithDeps(ctx context.Context, args []string, deps reviewDeps) erro
 	}
 
 	return deps.runLoop(ctx, req)
+}
+
+type codexReviewLoopDeps struct {
+	newEngine    func(name string) (engine.Engine, error)
+	runIteration func(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
+}
+
+var defaultCodexReviewLoopDeps = codexReviewLoopDeps{
+	newEngine:    newEngine,
+	runIteration: compound.RunSingleReviewIteration,
+}
+
+func runCodexReviewLoop(ctx context.Context, req reviewRequest) error {
+	return runCodexReviewLoopWithDeps(ctx, req, defaultCodexReviewLoopDeps)
+}
+
+func runCodexReviewLoopWithDeps(ctx context.Context, req reviewRequest, deps codexReviewLoopDeps) error {
+	if deps.newEngine == nil {
+		deps.newEngine = newEngine
+	}
+	if deps.runIteration == nil {
+		deps.runIteration = compound.RunSingleReviewIteration
+	}
+
+	eng, err := deps.newEngine("codex")
+	if err != nil {
+		return fmt.Errorf("failed to create codex engine: %w", err)
+	}
+
+	_, err = deps.runIteration(ctx, eng, req.BaseBranch, req.Iterations)
+	if err != nil {
+		return fmt.Errorf("codex review iteration failed: %w", err)
+	}
+
+	return nil
 }
 
 func parseReviewRequest(args []string, branchExistsFn func(branch string) (bool, error)) (reviewRequest, error) {

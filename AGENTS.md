@@ -110,3 +110,4 @@
 - For command splits, keep legacy behavior in its own command and extract execution into a `run<Command>WithDeps` helper so tests can stub engine/review dependencies without spawning real CLIs.
 - Preserve legacy CLI output via a focused renderer helper (e.g., success + summary/recommendations) so renamed commands keep user-facing behavior stable during migrations.
 - For `hal review` argument work, keep parsing/validation in a dedicated helper (`parseReviewRequest`) and inject branch checks via deps (`runReviewWithDeps`) so tests can verify invalid iteration and missing-branch errors without invoking real git refs.
+- For review-loop iterations, keep git/codex interactions behind injectable deps (`runCodexReviewLoopWithDeps`, `reviewIterationDeps`) so tests can verify diff usage, prompt schema, and parsed counts without invoking real CLIs.
