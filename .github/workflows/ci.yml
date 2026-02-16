@@ -107,7 +107,7 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false)
     steps:
       - uses: actions/checkout@v4
 
@@ -130,7 +130,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run integration tests
-        if: steps.changes.outputs.integration == 'true'
+        if: steps.changes.outputs.integration == 'true' && secrets.DAYTONA_API_KEY != '' && secrets.DAYTONA_SERVER_URL != ''
         env:
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}

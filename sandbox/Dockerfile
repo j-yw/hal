@@ -11,6 +11,9 @@ FROM ubuntu:22.04
 # -- Build args (pin versions to match local machine) ------------------------
 ARG GO_VERSION=1.25.7
 ARG NODE_MAJOR=22
+ARG CLAUDE_CODE_VERSION=2.1.42
+ARG PI_CODING_AGENT_VERSION=0.52.10
+ARG CODEX_VERSION=0.101.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -52,9 +55,9 @@ ENV GOPATH="/root/go"
 
 # -- npm global tools: Claude Code, Pi, Codex --------------------------------
 RUN npm install -g \
-    @anthropic-ai/claude-code@latest \
-    @mariozechner/pi-coding-agent@0.52.10 \
-    @openai/codex@latest
+    @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    @mariozechner/pi-coding-agent@${PI_CODING_AGENT_VERSION} \
+    @openai/codex@${CODEX_VERSION}
 
 # -- Build hal from source ----------------------------------------------------
 WORKDIR /tmp/hal-build
