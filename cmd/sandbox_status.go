@@ -73,7 +73,7 @@ func runSandboxStatus(dir, name string, out io.Writer, fetcher sandboxStatusFetc
 	}
 
 	if err := sandbox.EnsureAuth(cfg.APIKey, func() error {
-		return runSandboxSetup(dir, os.Stdin, out, readPasswordFromTerminal)
+		return runSandboxAutoSetup(dir, out)
 	}, func() (string, error) {
 		reloaded, err := compound.LoadDaytonaConfig(dir)
 		if err != nil {

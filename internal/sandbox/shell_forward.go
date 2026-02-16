@@ -91,11 +91,12 @@ func ForwardShellIO(ctx context.Context, conn *ShellConnection, stdin io.Reader,
 	// Wait for context cancellation (triggered by either goroutine finishing)
 	<-ctx.Done()
 
-	applyPtyStatus(result, pty)
-
 	// Clean up the PTY connection
 	pty.Disconnect()
 	wg.Wait()
+
+	// Derive final status only after goroutines have stopped mutating result.
+	applyPtyStatus(result, pty)
 
 	if result.SessionClosed && result.ExitCode == 0 {
 		result.ExitCode = 1
