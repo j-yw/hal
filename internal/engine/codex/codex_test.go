@@ -412,6 +412,32 @@ func TestParser_ParseLine_EventMsgTaskCompleteWithTokenCount(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_DuplicateTerminalResultIgnored(t *testing.T) {
+	p := NewParser()
+	failLine := `{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1}}`
+	taskCompleteLine := `{"type":"event_msg","payload":{"type":"task_complete"}}`
+	turnCompletedLine := `{"type":"turn.completed","usage":{"input_tokens":1}}`
+
+	if event := p.ParseLine([]byte(failLine)); event == nil || event.Type != engine.EventError {
+		t.Fatalf("expected command failure event before terminal result, got %+v", event)
+	}
+
+	first := p.ParseLine([]byte(taskCompleteLine))
+	if first == nil {
+		t.Fatal("expected first terminal result, got nil")
+	}
+	if first.Type != engine.EventResult {
+		t.Fatalf("expected first terminal type=EventResult, got %v", first.Type)
+	}
+	if first.Data.Success {
+		t.Fatal("expected first terminal Success=false, got true")
+	}
+
+	if second := p.ParseLine([]byte(turnCompletedLine)); second != nil {
+		t.Fatalf("expected duplicate terminal result to be ignored, got %+v", second)
+	}
+}
+
 func TestParser_ParseLine_ResponseItemAssistantFinalAnswer(t *testing.T) {
 	p := NewParser()
 	line := `{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"done"}]}}`
@@ -443,6 +469,17 @@ func TestEngine_parseSuccess_ItemFailureWithoutTurnCompleted(t *testing.T) {
 
 	if e.parseSuccess(output) {
 		t.Error("expected parseSuccess to return false for failed item output")
+	}
+}
+
+func TestEngine_parseSuccess_DuplicateTerminalResultDoesNotMaskFailure(t *testing.T) {
+	e := New(nil)
+	output := `{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1}}
+{"type":"event_msg","payload":{"type":"task_complete"}}
+{"type":"turn.completed","usage":{"input_tokens":1}}`
+
+	if e.parseSuccess(output) {
+		t.Error("expected parseSuccess to return false when duplicate terminal results follow a failure")
 	}
 }
 

@@ -9,10 +9,11 @@ import (
 
 // Parser parses Codex CLI JSONL output format.
 type Parser struct {
-	commandFailed  bool
-	turnFailed     bool
-	thinkingActive bool
-	lastTokenCount int
+	commandFailed      bool
+	turnFailed         bool
+	thinkingActive     bool
+	lastTokenCount     int
+	terminalResultSeen bool
 }
 
 // NewParser creates a new Codex output parser.
@@ -167,10 +168,20 @@ func (p *Parser) parseTurnCompleted(raw map[string]interface{}) *engine.Event {
 		}
 	}
 
+	return p.parseTerminalResult(tokens)
+}
+
+func (p *Parser) parseTerminalResult(tokens int) *engine.Event {
+	if p.terminalResultSeen {
+		return nil
+	}
+
+	p.terminalResultSeen = true
 	success := !(p.commandFailed || p.turnFailed)
 	p.commandFailed = false
 	p.turnFailed = false
 	p.thinkingActive = false
+	p.lastTokenCount = 0
 
 	return &engine.Event{
 		Type: engine.EventResult,
@@ -207,6 +218,8 @@ func (p *Parser) parseEventMessage(raw map[string]interface{}) *engine.Event {
 	switch messageType {
 	case "task_started":
 		p.thinkingActive = false
+		p.terminalResultSeen = false
+		p.lastTokenCount = 0
 		return &engine.Event{Type: engine.EventInit}
 	case "agent_reasoning":
 		if !p.thinkingActive {
@@ -231,18 +244,8 @@ func (p *Parser) parseEventMessage(raw map[string]interface{}) *engine.Event {
 		return nil
 	case "task_complete":
 		p.thinkingActive = false
-		success := !(p.commandFailed || p.turnFailed)
 		tokens := p.lastTokenCount
-		p.lastTokenCount = 0
-		p.commandFailed = false
-		p.turnFailed = false
-		return &engine.Event{
-			Type: engine.EventResult,
-			Data: engine.EventData{
-				Success: success,
-				Tokens:  tokens,
-			},
-		}
+		return p.parseTerminalResult(tokens)
 	case "task_failed", "task_error":
 		p.turnFailed = true
 		message := extractErrorMessage(payload)

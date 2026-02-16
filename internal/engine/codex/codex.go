@@ -338,6 +338,13 @@ func runCommandWithInactivityWatch(cmd *exec.Cmd, collector *textCollectingStrea
 				continue
 			}
 
+			// Prefer command completion over synthetic stall errors when both are ready.
+			select {
+			case err := <-waitCh:
+				return err
+			default:
+			}
+
 			terminateCommand(cmd)
 			<-waitCh
 			return fmt.Errorf("%w: no output for %s", errStreamStalled, idleTimeout)
@@ -511,12 +518,12 @@ func extractResponseItemAssistantText(raw map[string]interface{}) string {
 		if partType != "output_text" {
 			continue
 		}
-		if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+		if text, ok := part["text"].(string); ok {
 			parts = append(parts, text)
 		}
 	}
 
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "")
 }
 
 func extractEventMessageText(raw map[string]interface{}) string {
