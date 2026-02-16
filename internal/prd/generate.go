@@ -105,6 +105,7 @@ Generate 3-5 clarifying questions with A/B/C/D options to understand:
 - Key functionality and boundaries
 - Success criteria
 
+IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
 Return ONLY a JSON object (no markdown, no explanation):
 {
   "questions": [
@@ -329,7 +330,8 @@ Generate a complete PRD following the skill format. Requirements:
 - Include "Verify in browser using agent-browser skill (skip if no dev server running)" for UI stories
 - Order: schema changes → backend → frontend
 
-Return ONLY the markdown PRD content (no JSON, no code blocks wrapping it).`, skill, projectInfo, description, answerText.String())
+IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
+File saving is handled by the caller. Return ONLY the markdown PRD content (no JSON, no code blocks wrapping it).`, skill, projectInfo, description, answerText.String())
 
 	if display != nil {
 		return eng.StreamPrompt(ctx, prompt, display)
@@ -348,6 +350,7 @@ func convertPRDToJSON(ctx context.Context, eng engine.Engine, skill, prdContent 
 %s
 </markdown>
 
+IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
 Return ONLY the JSON (no markdown code blocks, no explanation).
 Format must match:
 {

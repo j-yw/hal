@@ -80,3 +80,23 @@ func TestShowEvent_ToolKeepsSpinnerAndUpdatesMessage(t *testing.T) {
 
 	d.StopSpinner()
 }
+
+func TestShowEvent_ToolAfterThinkingShowsReasoningCompleteLine(t *testing.T) {
+	var out bytes.Buffer
+	d := NewDisplay(&out)
+
+	d.isThinking = true
+	d.thinkingStart = time.Now().Add(-2 * time.Second)
+	d.StartSpinner("thinking...")
+	d.ShowEvent(&Event{Type: EventTool, Tool: "run", Detail: "git status"})
+
+	plain := ansiRegex.ReplaceAllString(out.String(), "")
+	if !strings.Contains(plain, "reasoning complete") {
+		t.Fatalf("expected reasoning completion line in output, got %q", plain)
+	}
+	if !strings.Contains(plain, "run git status") {
+		t.Fatalf("expected tool line in output, got %q", plain)
+	}
+
+	d.StopSpinner()
+}

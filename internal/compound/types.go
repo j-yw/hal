@@ -51,3 +51,36 @@ type ReviewOptions struct {
 	DryRun     bool
 	SkipAgents bool
 }
+
+// ReviewLoopResult contains the output of a hal review loop run.
+type ReviewLoopResult struct {
+	Command             string                `json:"command"`
+	BaseBranch          string                `json:"baseBranch"`
+	CurrentBranch       string                `json:"currentBranch"`
+	RequestedIterations int                   `json:"requestedIterations"`
+	CompletedIterations int                   `json:"completedIterations"`
+	StopReason          string                `json:"stopReason"`
+	StartedAt           time.Time             `json:"startedAt"`
+	EndedAt             time.Time             `json:"endedAt"`
+	Totals              ReviewLoopTotals      `json:"totals"`
+	Iterations          []ReviewLoopIteration `json:"iterations"`
+}
+
+// ReviewLoopTotals tracks aggregate counts for a review loop run.
+type ReviewLoopTotals struct {
+	IssuesFound   int `json:"issuesFound"`
+	ValidIssues   int `json:"validIssues"`
+	InvalidIssues int `json:"invalidIssues"`
+	FixesApplied  int `json:"fixesApplied"`
+}
+
+// ReviewLoopIteration contains per-iteration review/fix statistics.
+type ReviewLoopIteration struct {
+	Iteration     int    `json:"iteration"`
+	IssuesFound   int    `json:"issuesFound"`
+	ValidIssues   int    `json:"validIssues"`
+	InvalidIssues int    `json:"invalidIssues"`
+	FixesApplied  int    `json:"fixesApplied"`
+	Summary       string `json:"summary"`
+	Status        string `json:"status"`
+}

@@ -16,6 +16,7 @@ import (
 type mockEngine struct {
 	promptResponse string
 	promptError    error
+	promptHook     func() error
 }
 
 func (m *mockEngine) Name() string {

@@ -78,21 +78,35 @@ hal init → hal plan → hal convert → hal validate → hal run
 ### Compound Pipeline (Fully Automated)
 
 ```
-hal review → hal auto → hal review → hal auto → ...
+hal report → hal auto → hal report → hal auto → ...
 ```
 
 The compound pipeline creates a continuous development cycle:
 
-1. **`hal review`** — Analyzes completed work and generates a report with recommendations for next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
+1. **`hal report`** — Runs **legacy session reporting** (the behavior that previously lived under `hal review`). It analyzes completed work and generates a report with recommendations for next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
 
 2. **`hal auto`** — Reads the latest report, identifies the priority item, and runs the full pipeline:
    - **Analyze** → **Branch** → **PRD** → **Explode** → **Loop** → **PR**
 
-3. **Repeat** — After the PR merges, run `hal review` again to generate the next report.
+3. **Repeat** — After the PR merges, run `hal report` again to generate the next report.
 
-**Getting started:** Run the manual workflow first (`hal plan` → `hal run`), then `hal review` to generate your first report. Or place a report directly in `.hal/reports/`.
+For iterative branch-vs-branch review/fix loops, use:
+
+```bash
+hal review against <base-branch> [iterations]
+hal review against <base-branch> [iterations] -e codex
+```
+
+**Getting started:** Run the manual workflow first (`hal plan` → `hal run`), then `hal report` to generate your first report. Or place a report directly in `.hal/reports/`.
 
 State is saved after each step — use `hal auto --resume` to continue from interruptions.
+
+### Migration Note
+
+The old `hal review` reporting workflow moved to `hal report`.
+
+- Use `hal report` for legacy session reporting and report generation.
+- Use `hal review against <base-branch> [iterations]` for the new iterative review/fix loop (select engine with `-e`).
 
 ## Commands
 
@@ -110,7 +124,8 @@ State is saved after each step — use `hal auto --resume` to continue from inte
 
 | Command | Description |
 |---------|-------------|
-| `hal review` | Generate report → `.hal/reports/`, update AGENTS.md |
+| `hal report` | Legacy session reporting: generate report → `.hal/reports/`, update AGENTS.md |
+| `hal review against <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e` to select engine) |
 | `hal auto` | Run full pipeline using latest report |
 | `hal analyze [report]` | Analyze a report to find priority item |
 | `hal explode <prd.md>` | Break PRD into 8-15 granular tasks |
