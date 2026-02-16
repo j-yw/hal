@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,11 +70,12 @@ func TestSaveState(t *testing.T) {
 
 func TestLoadState(t *testing.T) {
 	tests := []struct {
-		name       string
-		setup      func(t *testing.T, halDir string)
-		wantErr    string
-		wantName   string
-		wantStatus string
+		name         string
+		setup        func(t *testing.T, halDir string)
+		wantErr      string
+		wantName     string
+		wantStatus   string
+		wantNotExist bool
 	}{
 		{
 			name: "loads valid state",
@@ -91,9 +94,10 @@ func TestLoadState(t *testing.T) {
 			wantStatus: "running",
 		},
 		{
-			name:    "returns descriptive error when file does not exist",
-			setup:   func(t *testing.T, halDir string) {},
-			wantErr: "no active sandbox",
+			name:         "returns descriptive error when file does not exist",
+			setup:        func(t *testing.T, halDir string) {},
+			wantErr:      "no active sandbox",
+			wantNotExist: true,
 		},
 		{
 			name: "returns error for invalid JSON",
@@ -102,6 +106,14 @@ func TestLoadState(t *testing.T) {
 				os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte("{invalid"), 0644)
 			},
 			wantErr: "failed to parse sandbox state",
+		},
+		{
+			name: "returns error when required name field is missing",
+			setup: func(t *testing.T, halDir string) {
+				t.Helper()
+				os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte("{}"), 0644)
+			},
+			wantErr: `invalid sandbox state: required field "name" is empty`,
 		},
 	}
 
@@ -119,6 +131,9 @@ func TestLoadState(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				if tt.wantNotExist && !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("expected error to wrap fs.ErrNotExist, got %v", err)
 				}
 				return
 			}

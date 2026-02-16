@@ -54,6 +54,23 @@ func runSandboxStop(dir, name string, out io.Writer, stopper sandboxStopper) err
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
 	}
 
+	// Resolve sandbox name from state file if not provided.
+	// Track active state (if any) so we only update it when stopping that sandbox.
+	var activeState *sandbox.SandboxState
+	if name == "" {
+		state, err := sandbox.LoadState(halDir)
+		if err != nil {
+			return err
+		}
+		activeState = state
+		name = state.Name
+	} else {
+		state, err := sandbox.LoadState(halDir)
+		if err == nil {
+			activeState = state
+		}
+	}
+
 	// Load config and ensure auth
 	cfg, err := compound.LoadDaytonaConfig(dir)
 	if err != nil {
@@ -76,23 +93,6 @@ func runSandboxStop(dir, name string, out io.Writer, stopper sandboxStopper) err
 	cfg, err = compound.LoadDaytonaConfig(dir)
 	if err != nil {
 		return fmt.Errorf("reloading config: %w", err)
-	}
-
-	// Resolve sandbox name from state file if not provided.
-	// Track active state (if any) so we only update it when stopping that sandbox.
-	var activeState *sandbox.SandboxState
-	if name == "" {
-		state, err := sandbox.LoadState(halDir)
-		if err != nil {
-			return err
-		}
-		activeState = state
-		name = state.Name
-	} else {
-		state, err := sandbox.LoadState(halDir)
-		if err == nil {
-			activeState = state
-		}
 	}
 
 	fmt.Fprintf(out, "Stopping sandbox %q...\n", name)

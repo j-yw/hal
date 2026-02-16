@@ -54,8 +54,20 @@ func createSnapshot(ctx context.Context, name, imageRef string, out io.Writer, c
 	}
 
 	// Stream build logs
-	for line := range logChan {
-		fmt.Fprintln(out, line)
+	if logChan != nil {
+		streaming := true
+		for streaming {
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("streaming snapshot %q logs: %w", snapshot.ID, ctx.Err())
+			case line, ok := <-logChan:
+				if !ok {
+					streaming = false
+					continue
+				}
+				fmt.Fprintln(out, line)
+			}
+		}
 	}
 
 	latestSnapshot, err := getFn(ctx, snapshot.ID)

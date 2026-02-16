@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -36,7 +37,7 @@ func LoadState(halDir string) (*SandboxState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no active sandbox: %s does not exist (run 'hal sandbox start' first)", template.SandboxFile)
+			return nil, fmt.Errorf("no active sandbox: %s does not exist (run 'hal sandbox start' first): %w", template.SandboxFile, err)
 		}
 		return nil, fmt.Errorf("failed to read sandbox state: %w", err)
 	}
@@ -44,6 +45,9 @@ func LoadState(halDir string) (*SandboxState, error) {
 	var state SandboxState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to parse sandbox state: %w", err)
+	}
+	if strings.TrimSpace(state.Name) == "" {
+		return nil, fmt.Errorf("invalid sandbox state: required field %q is empty", "name")
 	}
 	return &state, nil
 }

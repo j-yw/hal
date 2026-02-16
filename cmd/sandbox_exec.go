@@ -70,6 +70,15 @@ func runSandboxExec(dir, name string, args []string, out io.Writer, executor san
 		return 0, fmt.Errorf(".hal/ not found - run 'hal init' first")
 	}
 
+	// Resolve sandbox name from state file before auth checks.
+	if name == "" {
+		state, err := sandbox.LoadState(halDir)
+		if err != nil {
+			return 0, err
+		}
+		name = state.Name
+	}
+
 	// Load config and ensure auth
 	cfg, err := compound.LoadDaytonaConfig(dir)
 	if err != nil {
@@ -92,15 +101,6 @@ func runSandboxExec(dir, name string, args []string, out io.Writer, executor san
 	cfg, err = compound.LoadDaytonaConfig(dir)
 	if err != nil {
 		return 0, fmt.Errorf("reloading config: %w", err)
-	}
-
-	// Resolve sandbox name from state file if not provided
-	if name == "" {
-		state, err := sandbox.LoadState(halDir)
-		if err != nil {
-			return 0, err
-		}
-		name = state.Name
 	}
 
 	command := shellCommandFromArgs(args)

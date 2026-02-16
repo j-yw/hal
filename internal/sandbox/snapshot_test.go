@@ -190,3 +190,23 @@ func TestCreateSnapshot_FailsWhenStatusLookupFails(t *testing.T) {
 		t.Fatalf("error %q does not contain status-check prefix", err.Error())
 	}
 }
+
+func TestCreateSnapshot_SucceedsWhenLogChannelIsNil(t *testing.T) {
+	t.Helper()
+
+	createFn := func(ctx context.Context, params *types.CreateSnapshotParams) (*types.Snapshot, <-chan string, error) {
+		return &types.Snapshot{ID: "snap-nil-log"}, nil, nil
+	}
+
+	getFn := func(ctx context.Context, nameOrID string) (*types.Snapshot, error) {
+		return &types.Snapshot{ID: "snap-nil-log", State: snapshotStateActive}, nil
+	}
+
+	gotID, err := createSnapshot(context.Background(), "nil-log", "ubuntu:22.04", &bytes.Buffer{}, createFn, getFn)
+	if err != nil {
+		t.Fatalf("createSnapshot returned error: %v", err)
+	}
+	if gotID != "snap-nil-log" {
+		t.Fatalf("snapshot ID = %q, want %q", gotID, "snap-nil-log")
+	}
+}

@@ -19,7 +19,8 @@ var sandboxStatusCmd = &cobra.Command{
 	Long: `Show the current status of a Daytona sandbox.
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
-Fetches live status from the Daytona API and displays Name, Status, SnapshotID, and CreatedAt.`,
+Fetches live status from the Daytona API and displays Name and Status.
+When local sandbox state is used, also displays SnapshotID and CreatedAt.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return runSandboxStatus(".", name, os.Stdout, nil)
@@ -54,6 +55,17 @@ func runSandboxStatus(dir, name string, out io.Writer, fetcher sandboxStatusFetc
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
 	}
 
+	// Resolve sandbox name and local state before auth checks.
+	var localState *sandbox.SandboxState
+	if name == "" {
+		state, err := sandbox.LoadState(halDir)
+		if err != nil {
+			return err
+		}
+		localState = state
+		name = state.Name
+	}
+
 	// Load config and ensure auth
 	cfg, err := compound.LoadDaytonaConfig(dir)
 	if err != nil {
@@ -76,17 +88,6 @@ func runSandboxStatus(dir, name string, out io.Writer, fetcher sandboxStatusFetc
 	cfg, err = compound.LoadDaytonaConfig(dir)
 	if err != nil {
 		return fmt.Errorf("reloading config: %w", err)
-	}
-
-	// Resolve sandbox name and local state
-	var localState *sandbox.SandboxState
-	if name == "" {
-		state, err := sandbox.LoadState(halDir)
-		if err != nil {
-			return err
-		}
-		localState = state
-		name = state.Name
 	}
 
 	if fetcher == nil {
