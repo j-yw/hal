@@ -492,6 +492,21 @@ func TestTextCollectingStreamHandler_collectText_EventMessageJSONOnly(t *testing
 	}
 }
 
+func TestTextCollectingStreamHandler_collectText_PrefersLatestMachinePayload(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	first := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"{\"summary\":\"first\",\"issues\":[]}"}}`)
+	second := []byte(`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"summary\":\"second\",\"issues\":[]}"}]}}`)
+	trailing := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`)
+
+	h.collectText(first)
+	h.collectText(second)
+	h.collectText(trailing)
+
+	if got := h.Text(); got != `{"summary":"second","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"second","issues":[]}`)
+	}
+}
+
 // Helper function tests
 
 func TestExtractCommand(t *testing.T) {

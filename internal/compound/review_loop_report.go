@@ -11,7 +11,7 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
-const reviewLoopReportTimestampFormat = "2006-01-02-150405-000"
+const reviewLoopReportTimestampFormat = "2006-01-02-150405.000"
 
 // WriteReviewLoopJSONReport writes a review loop result artifact under
 // .hal/reports/review-loop-<timestamp>.json.

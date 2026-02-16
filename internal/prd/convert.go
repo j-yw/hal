@@ -1,6 +1,7 @@
 package prd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,7 +59,12 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 
 	prompt := buildConversionPrompt(halSkill, string(mdContent))
 
-	// Execute prompt — AI returns JSON text, hal writes the file deterministically.
+	beforeOutput, err := readOutputSnapshot(outPath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect output file before conversion: %w", err)
+	}
+
+	// Execute prompt — AI returns JSON text, but some engines may write the output file directly.
 	var response string
 	var err2 error
 	if display != nil {
@@ -70,10 +76,17 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		return fmt.Errorf("engine prompt failed: %w", err2)
 	}
 
-	// Parse and validate JSON from text response
-	prdJSON, err := extractJSONFromResponse(response)
-	if err != nil {
-		return fmt.Errorf("failed to extract JSON from response: %w", err)
+	// Parse and validate JSON from text response.
+	prdJSON, parseErr := extractJSONFromResponse(response)
+	if parseErr != nil {
+		fallbackJSON, usedFallback, fallbackErr := fallbackJSONFromOutput(outPath, beforeOutput)
+		if fallbackErr != nil {
+			return fmt.Errorf("failed to extract JSON from response (%v) and output fallback failed: %w", parseErr, fallbackErr)
+		}
+		if !usedFallback {
+			return fmt.Errorf("failed to extract JSON from response: %w", parseErr)
+		}
+		prdJSON = fallbackJSON
 	}
 
 	// Ensure output directory exists
@@ -172,6 +185,68 @@ func extractJSONFromResponse(response string) (string, error) {
 	}
 
 	return string(formatted), nil
+}
+
+type outputSnapshot struct {
+	modTime time.Time
+	size    int64
+	data    []byte
+}
+
+func readOutputSnapshot(path string) (*outputSnapshot, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	return &outputSnapshot{
+		modTime: info.ModTime(),
+		size:    info.Size(),
+		data:    data,
+	}, nil
+}
+
+func fallbackJSONFromOutput(outPath string, before *outputSnapshot) (string, bool, error) {
+	after, err := readOutputSnapshot(outPath)
+	if err != nil {
+		return "", false, err
+	}
+	if !outputWasUpdated(before, after) {
+		return "", false, nil
+	}
+
+	var prd engine.PRD
+	if err := json.Unmarshal(after.data, &prd); err != nil {
+		return "", true, fmt.Errorf("invalid JSON in output file: %w", err)
+	}
+
+	formatted, err := json.MarshalIndent(prd, "", "  ")
+	if err != nil {
+		return "", true, err
+	}
+
+	return string(formatted), true, nil
+}
+
+func outputWasUpdated(before, after *outputSnapshot) bool {
+	if after == nil {
+		return false
+	}
+	if before == nil {
+		return true
+	}
+	if !after.modTime.Equal(before.modTime) || after.size != before.size {
+		return true
+	}
+	return !bytes.Equal(after.data, before.data)
 }
 
 func halDirForOutput(outPath string) (string, bool) {

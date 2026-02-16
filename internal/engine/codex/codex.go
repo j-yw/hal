@@ -361,12 +361,13 @@ func terminateCommand(cmd *exec.Cmd) {
 // textCollectingStreamHandler streams events to the display while
 // collecting text content from Codex agent_message events.
 type textCollectingStreamHandler struct {
-	parser       *Parser
-	display      *engine.Display
-	buffer       []byte
-	text         strings.Builder
-	activityMu   sync.Mutex
-	lastActivity time.Time
+	parser            *Parser
+	display           *engine.Display
+	buffer            []byte
+	text              strings.Builder
+	hasMachinePayload bool
+	activityMu        sync.Mutex
+	lastActivity      time.Time
 }
 
 func (h *textCollectingStreamHandler) Write(p []byte) (n int, err error) {
@@ -432,10 +433,31 @@ func (h *textCollectingStreamHandler) collectText(line []byte) {
 		return
 	}
 
+	if isMachineReadableJSON(text) {
+		h.hasMachinePayload = true
+		h.text.Reset()
+		h.text.WriteString(text)
+		return
+	}
+
+	if h.hasMachinePayload {
+		return
+	}
+
 	if h.text.Len() > 0 {
 		h.text.WriteByte('\n')
 	}
 	h.text.WriteString(text)
+}
+
+func isMachineReadableJSON(text string) bool {
+	if text == "" {
+		return false
+	}
+	if !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "[") {
+		return false
+	}
+	return json.Valid([]byte(text))
 }
 
 func extractItemCompletedAgentMessage(raw map[string]interface{}) string {

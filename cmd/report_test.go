@@ -279,6 +279,41 @@ func TestRunReportWithDeps(t *testing.T) {
 	}
 }
 
+func TestRunReportWithDepsNormalizesEngineName(t *testing.T) {
+	var out bytes.Buffer
+	var gotEngineName string
+	var gotHeaderEngineName string
+
+	deps := reportDeps{
+		newEngine: func(name string) (engine.Engine, error) {
+			gotEngineName = name
+			return fakeReportEngine{}, nil
+		},
+		newDisplay: engine.NewDisplay,
+		buildHeaderCtx: func(engineName string) engine.HeaderContext {
+			gotHeaderEngineName = engineName
+			return engine.HeaderContext{Engine: engineName}
+		},
+		runReview: func(ctx context.Context, eng engine.Engine, display *engine.Display, dir string, opts compound.ReviewOptions) (*compound.ReviewResult, error) {
+			return &compound.ReviewResult{
+				ReportPath: ".hal/reports/review-20260215.md",
+			}, nil
+		},
+	}
+
+	err := runReportWithDeps(context.Background(), ".", false, false, " Claude ", &out, deps)
+	if err != nil {
+		t.Fatalf("runReportWithDeps returned error: %v", err)
+	}
+
+	if gotEngineName != "claude" {
+		t.Fatalf("newEngine called with %q, want %q", gotEngineName, "claude")
+	}
+	if gotHeaderEngineName != "claude" {
+		t.Fatalf("buildHeaderCtx called with %q, want %q", gotHeaderEngineName, "claude")
+	}
+}
+
 func TestRunReportUsesCommandContext(t *testing.T) {
 	originalDeps := defaultReportDeps
 	originalDryRun := reportDryRunFlag

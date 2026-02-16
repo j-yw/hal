@@ -266,7 +266,7 @@ func gitResolveBranchRef(branch string) (string, error) {
 		return branch, nil
 	}
 
-	if strings.Contains(branch, "/") {
+	if strings.HasPrefix(branch, "origin/") {
 		return "", nil
 	}
 

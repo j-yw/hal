@@ -442,6 +442,11 @@ func TestParseCodexReviewResponse(t *testing.T) {
 			wantErr: "missing required field: id",
 		},
 		{
+			name: "duplicate issue ids are rejected",
+			input: `{"summary":"bad","issues":[{"id":"ISSUE-1","title":"t1","severity":"high","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"},{"id":" ISSUE-1 ","title":"t2","severity":"medium","file":"g.go","line":2,"rationale":"why","suggestedFix":"fix"}]}`,
+			wantErr: "duplicate review issue id",
+		},
+		{
 			name:    "unknown severity",
 			input:   `{"summary":"bad","issues":[{"id":"ISSUE-1","title":"t","severity":"urgent","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"}]}`,
 			wantErr: "severity must be one of low, medium, high, critical",
@@ -473,6 +478,20 @@ func TestParseCodexReviewResponse(t *testing.T) {
 				t.Fatalf("len(parsed.Issues) = %d, want %d", len(parsed.Issues), tt.wantIssues)
 			}
 		})
+	}
+}
+
+func TestParseCodexReviewResponseTrimsIssueIDs(t *testing.T) {
+	parsed, err := parseReviewLoopResponse(`{"summary":"ok","issues":[{"id":" ISSUE-1 ","title":"t","severity":"low","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"}]}`)
+	if err != nil {
+		t.Fatalf("parseReviewLoopResponse() unexpected error: %v", err)
+	}
+
+	if len(parsed.Issues) != 1 {
+		t.Fatalf("len(parsed.Issues) = %d, want 1", len(parsed.Issues))
+	}
+	if parsed.Issues[0].ID != "ISSUE-1" {
+		t.Fatalf("parsed.Issues[0].ID = %q, want ISSUE-1", parsed.Issues[0].ID)
 	}
 }
 
@@ -512,6 +531,19 @@ func TestParseCodexFixResponse(t *testing.T) {
 					"summary": "Applied one fix",
 					"issues": [
 						{"id":"ISSUE-1","valid":true,"reason":"real bug","fixed":true},
+						{"id":"ISSUE-2","valid":false,"reason":"false positive","fixed":false}
+					]
+				}`,
+			wantValid:   1,
+			wantInvalid: 1,
+			wantFixes:   1,
+		},
+		{
+			name: "ids are matched after trimming whitespace",
+			input: `{
+					"summary": "Applied one fix",
+					"issues": [
+						{"id":" ISSUE-1 ","valid":true,"reason":"real bug","fixed":true},
 						{"id":"ISSUE-2","valid":false,"reason":"false positive","fixed":false}
 					]
 				}`,

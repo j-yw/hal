@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sort"
 	"strings"
@@ -712,10 +713,18 @@ func parseReviewLoopResponse(response string) (*reviewLoopResponse, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
+	seenIDs := make(map[string]struct{}, len(parsed.Issues))
 	for i, issue := range parsed.Issues {
 		if err := validateReviewLoopIssue(i, issue); err != nil {
 			return nil, err
 		}
+
+		id := strings.TrimSpace(issue.ID)
+		parsed.Issues[i].ID = id
+		if _, exists := seenIDs[id]; exists {
+			return nil, fmt.Errorf("duplicate review issue id %q", id)
+		}
+		seenIDs[id] = struct{}{}
 	}
 
 	return &parsed, nil
@@ -743,7 +752,7 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 
 	reviewedByID := make(map[string]struct{}, len(reviewedIssues))
 	for _, issue := range reviewedIssues {
-		reviewedByID[issue.ID] = struct{}{}
+		reviewedByID[strings.TrimSpace(issue.ID)] = struct{}{}
 	}
 
 	fixByID := make(map[string]reviewLoopFixIssue, len(parsed.Issues))
@@ -751,19 +760,24 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 		if err := validateReviewLoopFixIssue(i, issue); err != nil {
 			return nil, err
 		}
-		if _, ok := reviewedByID[issue.ID]; !ok {
+
+		id := strings.TrimSpace(issue.ID)
+		parsed.Issues[i].ID = id
+		issue.ID = id
+		if _, ok := reviewedByID[id]; !ok {
 			return nil, fmt.Errorf("issue[%d] references unknown review issue id %q", i, issue.ID)
 		}
-		if _, exists := fixByID[issue.ID]; exists {
+		if _, exists := fixByID[id]; exists {
 			return nil, fmt.Errorf("duplicate fix result for issue id %q", issue.ID)
 		}
-		fixByID[issue.ID] = issue
+		fixByID[id] = issue
 	}
 
 	var missingIDs []string
 	for _, reviewed := range reviewedIssues {
-		if _, ok := fixByID[reviewed.ID]; !ok {
-			missingIDs = append(missingIDs, reviewed.ID)
+		id := strings.TrimSpace(reviewed.ID)
+		if _, ok := fixByID[id]; !ok {
+			missingIDs = append(missingIDs, id)
 		}
 	}
 	if len(missingIDs) > 0 {
@@ -773,7 +787,7 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 
 	outcome := &reviewLoopFixOutcome{Summary: strings.TrimSpace(parsed.Summary)}
 	for _, reviewed := range reviewedIssues {
-		fixIssue := fixByID[reviewed.ID]
+		fixIssue := fixByID[strings.TrimSpace(reviewed.ID)]
 		if fixIssue.Valid != nil && *fixIssue.Valid {
 			outcome.ValidIssues++
 			if fixIssue.Fixed != nil && *fixIssue.Fixed {
@@ -811,10 +825,39 @@ func isIncompleteReviewOutput(response string, parseErr error) bool {
 	if parseErr == nil {
 		return false
 	}
-	if strings.TrimSpace(response) != "" {
+
+	trimmed := strings.TrimSpace(response)
+	if trimmed == "" {
+		return errors.Is(parseErr, errNoJSONObject)
+	}
+
+	if isUnexpectedEndOfJSONError(parseErr) {
+		return true
+	}
+
+	if errors.Is(parseErr, errNoJSONObject) {
+		return strings.Contains(trimmed, "{") && !strings.Contains(trimmed, "}")
+	}
+
+	return false
+}
+
+func isUnexpectedEndOfJSONError(err error) bool {
+	if err == nil {
 		return false
 	}
-	return errors.Is(parseErr, errNoJSONObject)
+
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) && strings.Contains(strings.ToLower(syntaxErr.Error()), "unexpected end of json input") {
+		return true
+	}
+
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "unexpected end of json input") || strings.Contains(errMsg, "unexpected eof")
 }
 
 func extractJSONObject(response string) (string, error) {

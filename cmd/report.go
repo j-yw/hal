@@ -71,34 +71,90 @@ func runReport(cmd *cobra.Command, args []string) error {
 	}
 
 	out := io.Writer(os.Stdout)
+	dryRun := reportDryRunFlag
+	skipAgents := reportSkipAgentsFlag
+	engineName := reportEngineFlag
+
 	if cmd != nil {
 		out = cmd.OutOrStdout()
+
+		if cmd.Flags().Lookup("dry-run") != nil {
+			value, err := cmd.Flags().GetBool("dry-run")
+			if err != nil {
+				return fmt.Errorf("failed to read dry-run flag: %w", err)
+			}
+			dryRun = value
+		}
+		if cmd.Flags().Lookup("skip-agents") != nil {
+			value, err := cmd.Flags().GetBool("skip-agents")
+			if err != nil {
+				return fmt.Errorf("failed to read skip-agents flag: %w", err)
+			}
+			skipAgents = value
+		}
+		if cmd.Flags().Lookup("engine") != nil {
+			value, err := cmd.Flags().GetString("engine")
+			if err != nil {
+				return fmt.Errorf("failed to read engine flag: %w", err)
+			}
+			engineName = value
+		}
 	}
 
 	return runReportWithDeps(
 		ctx,
 		".",
-		reportDryRunFlag,
-		reportSkipAgentsFlag,
-		reportEngineFlag,
+		dryRun,
+		skipAgents,
+		engineName,
 		out,
 		defaultReportDeps,
 	)
 }
 
 func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents bool, engineName string, out io.Writer, deps reportDeps) error {
+	if deps.newEngine == nil {
+		deps.newEngine = defaultReportDeps.newEngine
+	}
+	if deps.newDisplay == nil {
+		deps.newDisplay = defaultReportDeps.newDisplay
+	}
+	if deps.buildHeaderCtx == nil {
+		deps.buildHeaderCtx = defaultReportDeps.buildHeaderCtx
+	}
+	if deps.runReview == nil {
+		deps.runReview = defaultReportDeps.runReview
+	}
+
+	if deps.newDisplay == nil {
+		return fmt.Errorf("missing report dependency: newDisplay")
+	}
+	if deps.buildHeaderCtx == nil {
+		return fmt.Errorf("missing report dependency: buildHeaderCtx")
+	}
+	if deps.runReview == nil {
+		return fmt.Errorf("missing report dependency: runReview")
+	}
+	if !dryRun && deps.newEngine == nil {
+		return fmt.Errorf("missing report dependency: newEngine")
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+
 	display := deps.newDisplay(out)
+	normalizedEngineName := normalizeReviewEngine(engineName)
 
 	var eng engine.Engine
 	if !dryRun {
 		var err error
-		eng, err = deps.newEngine(engineName)
+		eng, err = deps.newEngine(normalizedEngineName)
 		if err != nil {
 			return fmt.Errorf("failed to create engine: %w", err)
 		}
 	}
 
-	display.ShowCommandHeader("Review", "work session", deps.buildHeaderCtx(engineName))
+	display.ShowCommandHeader("Review", "work session", deps.buildHeaderCtx(normalizedEngineName))
 
 	result, err := deps.runReview(ctx, eng, display, dir, compound.ReviewOptions{
 		DryRun:     dryRun,

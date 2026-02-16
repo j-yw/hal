@@ -48,7 +48,7 @@ func TestWriteReviewLoopJSONReportCreatesFileWithRequiredFields(t *testing.T) {
 		t.Fatalf("writeReviewLoopJSONReport() unexpected error: %v", err)
 	}
 
-	wantPath := filepath.Join(dir, template.HalDir, "reports", "review-loop-2026-02-15-180405-000.json")
+	wantPath := filepath.Join(dir, template.HalDir, "reports", "review-loop-2026-02-15-180405.123.json")
 	if reportPath != wantPath {
 		t.Fatalf("reportPath = %q, want %q", reportPath, wantPath)
 	}
@@ -151,7 +151,7 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 		t.Fatalf("writeReviewLoopMarkdownReport() unexpected error: %v", err)
 	}
 
-	wantPath := filepath.Join(dir, template.HalDir, "reports", "review-loop-2026-02-15-180405-000.md")
+	wantPath := filepath.Join(dir, template.HalDir, "reports", "review-loop-2026-02-15-180405.000.md")
 	if reportPath != wantPath {
 		t.Fatalf("reportPath = %q, want %q", reportPath, wantPath)
 	}
