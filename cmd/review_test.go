@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -231,6 +232,44 @@ func TestRunReviewWithDeps(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGitRefExists(t *testing.T) {
+	t.Run("missing ref returns false without error", func(t *testing.T) {
+		exists, err := gitRefExists("definitely-missing-branch-xyz")
+		if err != nil {
+			t.Fatalf("gitRefExists() unexpected error: %v", err)
+		}
+		if exists {
+			t.Fatal("gitRefExists() = true, want false")
+		}
+	})
+
+	t.Run("outside git repo returns actionable error", func(t *testing.T) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("os.Getwd() error = %v", err)
+		}
+
+		tempDir := t.TempDir()
+		if err := os.Chdir(tempDir); err != nil {
+			t.Fatalf("os.Chdir(%q) error = %v", tempDir, err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chdir(cwd)
+		})
+
+		exists, err := gitRefExists("develop")
+		if err == nil {
+			t.Fatal("gitRefExists() error = nil, want non-nil")
+		}
+		if exists {
+			t.Fatal("gitRefExists() = true, want false")
+		}
+		if !strings.Contains(err.Error(), "not a git repository") {
+			t.Fatalf("gitRefExists() error = %q, want to contain %q", err.Error(), "not a git repository")
+		}
+	})
 }
 
 func TestRunReviewUsesCommandContext(t *testing.T) {
@@ -605,6 +644,84 @@ func TestRunReviewLoopWithDeps(t *testing.T) {
 	}
 }
 
+func TestRunReviewLoopWithDepsUsesWriteReportsWhenConfigured(t *testing.T) {
+	req := reviewRequest{
+		BaseBranch: "develop",
+		Iterations: 2,
+	}
+
+	runResult := &compound.ReviewLoopResult{Command: "hal review against develop 2"}
+	var writeReportsCalled bool
+	var writeJSONCalled bool
+	var writeMarkdownCalled bool
+	var out bytes.Buffer
+
+	deps := reviewLoopDeps{
+		newEngine: func(name string) (engine.Engine, error) {
+			if name != "codex" {
+				t.Fatalf("newEngine called with %q, want %q", name, "codex")
+			}
+			return fakeReviewLoopEngine{}, nil
+		},
+		runLoop: func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error) {
+			if baseBranch != req.BaseBranch {
+				t.Fatalf("baseBranch = %q, want %q", baseBranch, req.BaseBranch)
+			}
+			if requestedIterations != req.Iterations {
+				t.Fatalf("requestedIterations = %d, want %d", requestedIterations, req.Iterations)
+			}
+			return runResult, nil
+		},
+		writeReports: func(dir string, result *compound.ReviewLoopResult) (string, string, error) {
+			writeReportsCalled = true
+			if dir != "." {
+				t.Fatalf("writeReports dir = %q, want %q", dir, ".")
+			}
+			if result != runResult {
+				t.Fatal("writeReports result pointer mismatch")
+			}
+			return ".hal/reports/review-loop-2026-02-15-180000.000.json", ".hal/reports/review-loop-2026-02-15-180000.000.md", nil
+		},
+		writeJSONReport: func(dir string, result *compound.ReviewLoopResult) (string, error) {
+			writeJSONCalled = true
+			return "", nil
+		},
+		writeMarkdownReport: func(dir string, result *compound.ReviewLoopResult) (string, error) {
+			writeMarkdownCalled = true
+			return "", nil
+		},
+		buildMarkdown: func(result *compound.ReviewLoopResult) (string, error) {
+			if result != runResult {
+				t.Fatal("buildMarkdown result pointer mismatch")
+			}
+			return "# Review Loop Summary\n\ncontent", nil
+		},
+		renderMarkdown: func(markdown string) (string, error) {
+			if !strings.Contains(markdown, "# Review Loop Summary") {
+				t.Fatalf("render input = %q, want summary heading", markdown)
+			}
+			return "rendered output", nil
+		},
+	}
+
+	if err := runReviewLoopWithDeps(context.Background(), req, &out, deps); err != nil {
+		t.Fatalf("runReviewLoopWithDeps() unexpected error: %v", err)
+	}
+
+	if !writeReportsCalled {
+		t.Fatal("expected writeReports to be called")
+	}
+	if writeJSONCalled {
+		t.Fatal("expected writeJSONReport to be skipped when writeReports is configured")
+	}
+	if writeMarkdownCalled {
+		t.Fatal("expected writeMarkdownReport to be skipped when writeReports is configured")
+	}
+	if out.String() != "rendered output" {
+		t.Fatalf("stdout = %q, want %q", out.String(), "rendered output")
+	}
+}
+
 func TestShouldShowInteractiveReviewProgress(t *testing.T) {
 	if shouldShowInteractiveReviewProgress(nil) {
 		t.Fatal("expected nil writer to disable interactive progress")
@@ -613,5 +730,21 @@ func TestShouldShowInteractiveReviewProgress(t *testing.T) {
 	var buf bytes.Buffer
 	if shouldShowInteractiveReviewProgress(&buf) {
 		t.Fatal("expected non-stdout writer to disable interactive progress")
+	}
+
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	origStdout := os.Stdout
+	os.Stdout = writePipe
+	t.Cleanup(func() {
+		os.Stdout = origStdout
+		_ = readPipe.Close()
+		_ = writePipe.Close()
+	})
+
+	if shouldShowInteractiveReviewProgress(os.Stdout) {
+		t.Fatal("expected redirected stdout to disable interactive progress")
 	}
 }

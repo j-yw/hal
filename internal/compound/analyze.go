@@ -30,8 +30,8 @@ func FindLatestReport(reportsDir string) (string, error) {
 		if entry.IsDir() {
 			continue
 		}
-		// Skip hidden files and .gitkeep
-		if strings.HasPrefix(entry.Name(), ".") {
+		name := entry.Name()
+		if !isReportCandidate(name) {
 			continue
 		}
 
@@ -41,7 +41,7 @@ func FindLatestReport(reportsDir string) (string, error) {
 		}
 
 		if latestPath == "" || info.ModTime().After(latestTime) {
-			latestPath = filepath.Join(reportsDir, entry.Name())
+			latestPath = filepath.Join(reportsDir, name)
 			latestTime = info.ModTime()
 		}
 	}
@@ -51,6 +51,17 @@ func FindLatestReport(reportsDir string) (string, error) {
 	}
 
 	return latestPath, nil
+}
+
+func isReportCandidate(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return false
+	}
+	if !strings.HasSuffix(strings.ToLower(name), ".md") {
+		return false
+	}
+	// Keep review-loop artifacts out of auto-report discovery.
+	return !strings.HasPrefix(name, "review-loop-")
 }
 
 // FindRecentPRDs returns PRD files created in the last N days.

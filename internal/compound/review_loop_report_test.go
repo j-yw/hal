@@ -193,6 +193,45 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 	}
 }
 
+func TestWriteReviewLoopReportsUsesSharedTimestampForArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	firstNow := time.Date(2026, 2, 15, 20, 30, 40, 321000000, time.UTC)
+	secondNow := firstNow.Add(2 * time.Second)
+	callCount := 0
+
+	result := &ReviewLoopResult{
+		Command:             "hal review against develop 3",
+		BaseBranch:          "develop",
+		CurrentBranch:       "hal/report-review-split",
+		RequestedIterations: 3,
+	}
+
+	jsonPath, markdownPath, err := writeReviewLoopReports(dir, result, func() time.Time {
+		callCount++
+		if callCount == 1 {
+			return firstNow
+		}
+		return secondNow
+	})
+	if err != nil {
+		t.Fatalf("writeReviewLoopReports() unexpected error: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Fatalf("now() call count = %d, want %d", callCount, 1)
+	}
+
+	wantJSONPath := filepath.Join(dir, template.HalDir, "reports", "review-loop-2026-02-15-203040.321.json")
+	if jsonPath != wantJSONPath {
+		t.Fatalf("jsonPath = %q, want %q", jsonPath, wantJSONPath)
+	}
+
+	wantMarkdownPath := filepath.Join(dir, template.HalDir, "reports", "review-loop-2026-02-15-203040.321.md")
+	if markdownPath != wantMarkdownPath {
+		t.Fatalf("markdownPath = %q, want %q", markdownPath, wantMarkdownPath)
+	}
+}
+
 func TestWriteReviewLoopJSONReportNilResult(t *testing.T) {
 	_, err := writeReviewLoopJSONReport(t.TempDir(), nil, time.Now)
 	if err == nil {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 const reviewUsage = "usage: hal review against <base-branch> [iterations]"
@@ -98,6 +100,7 @@ func runReviewWithDeps(ctx context.Context, args []string, engineName string, ou
 type reviewLoopDeps struct {
 	newEngine           func(name string) (engine.Engine, error)
 	runLoop             func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*compound.ReviewLoopResult, error)
+	writeReports        func(dir string, result *compound.ReviewLoopResult) (jsonPath string, markdownPath string, err error)
 	writeJSONReport     func(dir string, result *compound.ReviewLoopResult) (string, error)
 	writeMarkdownReport func(dir string, result *compound.ReviewLoopResult) (string, error)
 	buildMarkdown       func(result *compound.ReviewLoopResult) (string, error)
@@ -107,6 +110,7 @@ type reviewLoopDeps struct {
 var defaultReviewLoopDeps = reviewLoopDeps{
 	newEngine:           newEngine,
 	runLoop:             compound.RunReviewLoopWithDisplay,
+	writeReports:        compound.WriteReviewLoopReports,
 	writeJSONReport:     compound.WriteReviewLoopJSONReport,
 	writeMarkdownReport: compound.WriteReviewLoopMarkdownReport,
 	buildMarkdown:       compound.ReviewLoopMarkdown,
@@ -126,6 +130,9 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 	}
 	if deps.runLoop == nil {
 		deps.runLoop = compound.RunReviewLoopWithDisplay
+	}
+	if deps.writeReports == nil && deps.writeJSONReport == nil && deps.writeMarkdownReport == nil {
+		deps.writeReports = compound.WriteReviewLoopReports
 	}
 	if deps.writeJSONReport == nil {
 		deps.writeJSONReport = compound.WriteReviewLoopJSONReport
@@ -157,12 +164,18 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 		return fmt.Errorf("review loop failed with %s: %w", engineName, err)
 	}
 
-	if _, err := deps.writeJSONReport(".", result); err != nil {
-		return fmt.Errorf("failed to write review loop JSON report: %w", err)
-	}
+	if deps.writeReports != nil {
+		if _, _, err := deps.writeReports(".", result); err != nil {
+			return fmt.Errorf("failed to write review loop reports: %w", err)
+		}
+	} else {
+		if _, err := deps.writeJSONReport(".", result); err != nil {
+			return fmt.Errorf("failed to write review loop JSON report: %w", err)
+		}
 
-	if _, err := deps.writeMarkdownReport(".", result); err != nil {
-		return fmt.Errorf("failed to write review loop markdown report: %w", err)
+		if _, err := deps.writeMarkdownReport(".", result); err != nil {
+			return fmt.Errorf("failed to write review loop markdown report: %w", err)
+		}
 	}
 
 	markdown, err := deps.buildMarkdown(result)
@@ -212,7 +225,7 @@ func shouldShowInteractiveReviewProgress(out io.Writer) bool {
 	if !ok {
 		return false
 	}
-	return file == os.Stdout
+	return term.IsTerminal(int(file.Fd()))
 }
 
 func parseReviewRequest(args []string, resolveBranchFn func(branch string) (string, error)) (reviewRequest, error) {
@@ -284,6 +297,9 @@ func gitResolveBranchRef(branch string) (string, error) {
 
 func gitRefExists(ref string) (bool, error) {
 	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
@@ -291,8 +307,15 @@ func gitRefExists(ref string) (bool, error) {
 
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return false, nil
+		if exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+
+		stderrMsg := strings.TrimSpace(stderr.String())
+		if stderrMsg != "" {
+			return false, fmt.Errorf("git rev-parse --verify %q failed: %s", ref, stderrMsg)
+		}
 	}
 
-	return false, err
+	return false, fmt.Errorf("git rev-parse --verify %q failed: %w", ref, err)
 }

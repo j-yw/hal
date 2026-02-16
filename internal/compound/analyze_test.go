@@ -53,6 +53,37 @@ func TestFindLatestReport(t *testing.T) {
 		}
 	})
 
+	t.Run("review-loop markdown artifacts are skipped", func(t *testing.T) {
+		dir := t.TempDir()
+
+		legacyReport := filepath.Join(dir, "review-legacy.md")
+		reviewLoopReport := filepath.Join(dir, "review-loop-2026-02-15-180000.000.md")
+
+		if err := os.WriteFile(legacyReport, []byte("# legacy"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(reviewLoopReport, []byte("# review loop"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		newTime := time.Now()
+		oldTime := newTime.Add(-time.Hour)
+		if err := os.Chtimes(legacyReport, oldTime, oldTime); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(reviewLoopReport, newTime, newTime); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := FindLatestReport(dir)
+		if err != nil {
+			t.Fatalf("FindLatestReport() unexpected error: %v", err)
+		}
+		if got != legacyReport {
+			t.Errorf("FindLatestReport() = %q, want %q", got, legacyReport)
+		}
+	})
+
 	t.Run("empty directory with only gitkeep returns error", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, ".gitkeep"), []byte{}, 0644); err != nil {

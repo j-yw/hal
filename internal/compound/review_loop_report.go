@@ -19,6 +19,36 @@ func WriteReviewLoopJSONReport(dir string, result *ReviewLoopResult) (string, er
 	return writeReviewLoopJSONReport(dir, result, time.Now)
 }
 
+// WriteReviewLoopReports writes paired review-loop JSON and markdown artifacts
+// using one shared timestamp stem so paths can be reliably matched.
+func WriteReviewLoopReports(dir string, result *ReviewLoopResult) (jsonPath string, markdownPath string, err error) {
+	return writeReviewLoopReports(dir, result, time.Now)
+}
+
+func writeReviewLoopReports(dir string, result *ReviewLoopResult, now func() time.Time) (jsonPath string, markdownPath string, err error) {
+	if result == nil {
+		return "", "", fmt.Errorf("review loop result is required")
+	}
+	if now == nil {
+		now = time.Now
+	}
+
+	timestamp := now()
+	fixedNow := func() time.Time { return timestamp }
+
+	jsonPath, err = writeReviewLoopJSONReport(dir, result, fixedNow)
+	if err != nil {
+		return "", "", fmt.Errorf("write JSON report: %w", err)
+	}
+
+	markdownPath, err = writeReviewLoopMarkdownReport(dir, result, fixedNow)
+	if err != nil {
+		return "", "", fmt.Errorf("write markdown report: %w", err)
+	}
+
+	return jsonPath, markdownPath, nil
+}
+
 func writeReviewLoopJSONReport(dir string, result *ReviewLoopResult, now func() time.Time) (string, error) {
 	if result == nil {
 		return "", fmt.Errorf("review loop result is required")
@@ -32,7 +62,7 @@ func writeReviewLoopJSONReport(dir string, result *ReviewLoopResult, now func() 
 		return "", fmt.Errorf("failed to create reports directory: %w", err)
 	}
 
-	timestamp := now().Format(reviewLoopReportTimestampFormat)
+	timestamp := reviewLoopReportTimestamp(result, now)
 	reportPath := filepath.Join(reportsDir, fmt.Sprintf("review-loop-%s.json", timestamp))
 
 	payload, err := json.MarshalIndent(result, "", "  ")
@@ -67,7 +97,7 @@ func writeReviewLoopMarkdownReport(dir string, result *ReviewLoopResult, now fun
 		return "", fmt.Errorf("failed to create reports directory: %w", err)
 	}
 
-	timestamp := now().Format(reviewLoopReportTimestampFormat)
+	timestamp := reviewLoopReportTimestamp(result, now)
 	reportPath := filepath.Join(reportsDir, fmt.Sprintf("review-loop-%s.md", timestamp))
 
 	markdown, err := ReviewLoopMarkdown(result)
@@ -80,6 +110,14 @@ func writeReviewLoopMarkdownReport(dir string, result *ReviewLoopResult, now fun
 	}
 
 	return reportPath, nil
+}
+
+func reviewLoopReportTimestamp(result *ReviewLoopResult, now func() time.Time) string {
+	timestamp := now()
+	if timestamp.IsZero() {
+		timestamp = result.StartedAt
+	}
+	return timestamp.Format(reviewLoopReportTimestampFormat)
 }
 
 // ReviewLoopMarkdown builds a human-readable markdown summary for a review loop result.
