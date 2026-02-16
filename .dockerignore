@@ -18,7 +18,7 @@ sandbox/.env
 Thumbs.db
 
 # Build artifacts (we rebuild inside the container)
-hal
+/hal
 
 # Docs and metadata not needed in image
 agent-os/
