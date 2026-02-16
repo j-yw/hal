@@ -2,10 +2,12 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -22,6 +24,8 @@ type ForwardShellIOResult struct {
 	// SessionClosed is true if the sandbox disconnected during the session.
 	SessionClosed bool
 }
+
+const stdinReadDeadline = 200 * time.Millisecond
 
 // ForwardShellIO runs bidirectional terminal I/O between the local terminal and
 // the sandbox PTY. It sets the local terminal to raw mode, forwards
@@ -64,9 +68,13 @@ func ForwardShellIO(ctx context.Context, conn *ShellConnection, stdin io.Reader,
 		})
 	}
 
+	var wg sync.WaitGroup
+	wg.Add(2)
+
 	// PTY → stdout (output forwarding)
 	go func() {
-		err := forwardPTYOutput(stdout, pty.DataChan())
+		defer wg.Done()
+		err := forwardPTYOutputWithContext(ctx, stdout, pty.DataChan())
 		if err != nil {
 			setSessionClosed()
 		}
@@ -75,7 +83,8 @@ func ForwardShellIO(ctx context.Context, conn *ShellConnection, stdin io.Reader,
 
 	// stdin → PTY (input forwarding)
 	go func() {
-		_, _ = io.Copy(pty, stdin)
+		defer wg.Done()
+		forwardPTYInput(ctx, pty, stdin)
 		cancel()
 	}()
 
@@ -86,6 +95,7 @@ func ForwardShellIO(ctx context.Context, conn *ShellConnection, stdin io.Reader,
 
 	// Clean up the PTY connection
 	pty.Disconnect()
+	wg.Wait()
 
 	if result.SessionClosed && result.ExitCode == 0 {
 		result.ExitCode = 1
@@ -108,12 +118,100 @@ func applyPtyStatus(result *ForwardShellIOResult, pty ptyStatus) {
 }
 
 func forwardPTYOutput(stdout io.Writer, dataCh <-chan []byte) error {
-	for data := range dataCh {
-		if err := writeAll(stdout, data); err != nil {
+	return forwardPTYOutputWithContext(context.Background(), stdout, dataCh)
+}
+
+func forwardPTYOutputWithContext(ctx context.Context, stdout io.Writer, dataCh <-chan []byte) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case data, ok := <-dataCh:
+			if !ok {
+				return nil
+			}
+			if err := writeAll(stdout, data); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func forwardPTYInput(ctx context.Context, pty io.Writer, stdin io.Reader) {
+	if file, ok := stdin.(*os.File); ok {
+		_ = forwardFileInput(ctx, pty, file)
+		return
+	}
+
+	if rc, ok := stdin.(io.ReadCloser); ok {
+		copyWithCancelableReadCloser(ctx, pty, rc)
+		return
+	}
+
+	_, _ = io.Copy(pty, stdin)
+}
+
+func copyWithCancelableReadCloser(ctx context.Context, dst io.Writer, src io.ReadCloser) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = src.Close()
+		case <-done:
+		}
+	}()
+
+	_, _ = io.Copy(dst, src)
+	close(done)
+}
+
+func forwardFileInput(ctx context.Context, pty io.Writer, file *os.File) error {
+	// Use short read deadlines so blocked terminal reads can observe cancellation.
+	if err := file.SetReadDeadline(time.Now().Add(stdinReadDeadline)); err != nil {
+		_, copyErr := io.Copy(pty, file)
+		return copyErr
+	}
+	defer file.SetReadDeadline(time.Time{})
+
+	buf := make([]byte, 32*1024)
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		_ = file.SetReadDeadline(time.Now().Add(stdinReadDeadline))
+		n, err := file.Read(buf)
+		if n > 0 {
+			if writeErr := writeAll(pty, buf[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			if isTimeoutError(err) {
+				continue
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 	}
-	return nil
+}
+
+func isTimeoutError(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+
+	type timeout interface {
+		Timeout() bool
+	}
+	var timeoutErr timeout
+	return errors.As(err, &timeoutErr) && timeoutErr.Timeout()
 }
 
 func writeAll(w io.Writer, data []byte) error {

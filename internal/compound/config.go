@@ -130,7 +130,7 @@ func LoadConfig(dir string) (*AutoConfig, error) {
 // LoadEngineConfig reads per-engine configuration from .hal/config.yaml.
 // Returns nil if no engine-specific config is set (engine uses its own defaults).
 func LoadEngineConfig(dir, engineName string) *engine.EngineConfig {
-	configPath := filepath.Join(dir, template.HalDir, "config.yaml")
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -182,7 +182,7 @@ func DefaultDaytonaConfig() DaytonaConfig {
 // LoadDaytonaConfig reads the daytona: section from .hal/config.yaml.
 // If the file or section is missing, zero-value defaults are returned (no error).
 func LoadDaytonaConfig(dir string) (*DaytonaConfig, error) {
-	configPath := filepath.Join(dir, template.HalDir, "config.yaml")
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {

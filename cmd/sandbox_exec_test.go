@@ -143,6 +143,21 @@ func TestRunSandboxExec(t *testing.T) {
 			wantExit:   1,
 		},
 		{
+			name: "propagates non-zero exit code from SDK error",
+			setup: func(t *testing.T, dir string) {
+				setupExecTestWithState(t, dir, "key3b", "", &sandbox.SandboxState{
+					Name:        "exit-test-error",
+					SnapshotID:  "snap-456b",
+					WorkspaceID: "sb-002b",
+					Status:      "started",
+					CreatedAt:   time.Now(),
+				})
+			},
+			args:    []string{"false"},
+			execErr: fmt.Errorf("executing command in sandbox \"exit-test-error\": process exited with status 17"),
+			wantExit: 17,
+		},
+		{
 			name: "streams stderr output",
 			setup: func(t *testing.T, dir string) {
 				setupExecTestWithState(t, dir, "key4", "", &sandbox.SandboxState{
@@ -346,6 +361,43 @@ func TestShellCommandFromArgs(t *testing.T) {
 			got := shellCommandFromArgs(tt.args)
 			if got != tt.want {
 				t.Fatalf("shellCommandFromArgs(%v) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNonZeroExitCodeFromError(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantCode int
+		wantOK  bool
+	}{
+		{
+			name:    "parses exit status",
+			err:     fmt.Errorf("Daytona error: exit status 9"),
+			wantCode: 9,
+			wantOK:  true,
+		},
+		{
+			name:    "parses exit code",
+			err:     fmt.Errorf("command failed with exit code: 23"),
+			wantCode: 23,
+			wantOK:  true,
+		},
+		{
+			name:    "ignores non-exit errors",
+			err:     fmt.Errorf("API timeout"),
+			wantCode: 0,
+			wantOK:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCode, gotOK := nonZeroExitCodeFromError(tt.err)
+			if gotCode != tt.wantCode || gotOK != tt.wantOK {
+				t.Fatalf("nonZeroExitCodeFromError(%v) = (%d, %t), want (%d, %t)", tt.err, gotCode, gotOK, tt.wantCode, tt.wantOK)
 			}
 		})
 	}

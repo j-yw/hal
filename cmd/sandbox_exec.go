@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -50,6 +52,11 @@ func init() {
 // sandboxExecutor is a function that executes a command in a Daytona sandbox.
 // Injected in tests to avoid real SDK calls.
 type sandboxExecutor func(ctx context.Context, apiKey, serverURL, nameOrID, command string) (*sandbox.ExecResult, error)
+
+var nonZeroExitCodePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bexit\s+(?:status|code)\s*[:=]?\s*(\d+)\b`),
+	regexp.MustCompile(`(?i)\bexited\s+with\s+status\s*[:=]?\s*(\d+)\b`),
+}
 
 // defaultSandboxExecutor creates a real Daytona client and calls ExecCommand.
 func defaultSandboxExecutor(ctx context.Context, apiKey, serverURL, nameOrID, command string) (*sandbox.ExecResult, error) {
@@ -112,7 +119,13 @@ func runSandboxExec(dir, name string, args []string, out io.Writer, executor san
 	ctx := context.Background()
 	result, err := executor(ctx, cfg.APIKey, cfg.ServerURL, name, command)
 	if err != nil {
+		if exitCode, ok := nonZeroExitCodeFromError(err); ok {
+			return exitCode, nil
+		}
 		return 0, fmt.Errorf("exec failed: %w", err)
+	}
+	if result == nil {
+		return 0, fmt.Errorf("exec failed: missing command result")
 	}
 
 	// Stream output to terminal
@@ -121,6 +134,26 @@ func runSandboxExec(dir, name string, args []string, out io.Writer, executor san
 	}
 
 	return result.ExitCode, nil
+}
+
+func nonZeroExitCodeFromError(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+
+	msg := err.Error()
+	for _, pattern := range nonZeroExitCodePatterns {
+		matches := pattern.FindStringSubmatch(msg)
+		if len(matches) != 2 {
+			continue
+		}
+		exitCode, convErr := strconv.Atoi(matches[1])
+		if convErr == nil && exitCode > 0 {
+			return exitCode, true
+		}
+	}
+
+	return 0, false
 }
 
 // shellCommandFromArgs builds a shell-safe command string that preserves original
