@@ -129,8 +129,22 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Check Daytona integration secrets
+        id: daytona_secrets
+        if: steps.changes.outputs.integration == 'true'
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}
+        run: |
+          if [ -n "$DAYTONA_API_KEY" ] && [ -n "$DAYTONA_SERVER_URL" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping integration tests because Daytona secrets are not configured."
+          fi
+
       - name: Run integration tests
-        if: steps.changes.outputs.integration == 'true' && secrets.DAYTONA_API_KEY != '' && secrets.DAYTONA_SERVER_URL != ''
+        if: steps.changes.outputs.integration == 'true' && steps.daytona_secrets.outputs.available == 'true'
         env:
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}
