@@ -62,6 +62,11 @@ jobs:
               - 'sandbox/**'
               - 'Makefile'
               - '.dockerignore'
+              - 'go.mod'
+              - 'go.sum'
+              - 'main.go'
+              - 'cmd/**'
+              - 'internal/**'
 
       - name: Set up Docker Buildx
         if: steps.changes.outputs.sandbox == 'true'
@@ -106,11 +111,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check for integration test changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            integration:
+              - '.github/workflows/ci.yml'
+              - 'go.mod'
+              - 'go.sum'
+              - 'internal/sandbox/**'
+              - 'internal/compound/**'
+              - 'internal/template/**'
+
       - uses: actions/setup-go@v5
+        if: steps.changes.outputs.integration == 'true'
         with:
           go-version-file: go.mod
 
       - name: Run integration tests
+        if: steps.changes.outputs.integration == 'true'
         env:
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}
