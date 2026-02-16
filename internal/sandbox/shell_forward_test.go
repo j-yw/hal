@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakePtyStatus struct {
@@ -189,5 +191,31 @@ func TestWriteAll_ReturnsShortWriteError(t *testing.T) {
 	err := writeAll(&zeroWriter{}, []byte("x"))
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("writeAll error = %v, want io.ErrShortWrite", err)
+	}
+}
+
+func TestForwardFileInputWithoutDeadline_StopsOnContextCancel(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- forwardFileInputWithoutDeadline(ctx, io.Discard, r)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("forwardFileInputWithoutDeadline returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("forwardFileInputWithoutDeadline did not return after context cancellation")
 	}
 }

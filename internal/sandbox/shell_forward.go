@@ -168,8 +168,7 @@ func copyWithCancelableReadCloser(ctx context.Context, dst io.Writer, src io.Rea
 func forwardFileInput(ctx context.Context, pty io.Writer, file *os.File) error {
 	// Use short read deadlines so blocked terminal reads can observe cancellation.
 	if err := file.SetReadDeadline(time.Now().Add(stdinReadDeadline)); err != nil {
-		_, copyErr := io.Copy(pty, file)
-		return copyErr
+		return forwardFileInputWithoutDeadline(ctx, pty, file)
 	}
 	defer file.SetReadDeadline(time.Time{})
 
@@ -198,6 +197,57 @@ func forwardFileInput(ctx context.Context, pty io.Writer, file *os.File) error {
 				return nil
 			}
 			return err
+		}
+	}
+}
+
+func forwardFileInputWithoutDeadline(ctx context.Context, pty io.Writer, file *os.File) error {
+	type readResult struct {
+		data []byte
+		err  error
+	}
+
+	readCh := make(chan readResult, 1)
+
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := file.Read(buf)
+
+			var data []byte
+			if n > 0 {
+				data = append([]byte(nil), buf[:n]...)
+			}
+
+			select {
+			case readCh <- readResult{data: data, err: err}:
+			case <-ctx.Done():
+				return
+			}
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case res := <-readCh:
+			if len(res.data) > 0 {
+				if writeErr := writeAll(pty, res.data); writeErr != nil {
+					return writeErr
+				}
+			}
+
+			if res.err != nil {
+				if errors.Is(res.err, io.EOF) || ctx.Err() != nil {
+					return nil
+				}
+				return res.err
+			}
 		}
 	}
 }
