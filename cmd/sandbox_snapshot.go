@@ -14,8 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultImageRef = "hal-sandbox:latest"
-
 var snapshotCmd = &cobra.Command{
 	Use:   "snapshot",
 	Short: "Manage sandbox snapshots",
@@ -53,8 +51,9 @@ Build and push your image first:
 }
 
 func init() {
-	snapshotCreateCmd.Flags().String("image", defaultImageRef, "Docker image reference (e.g., registry/image:tag)")
+	snapshotCreateCmd.Flags().String("image", "", "Docker image reference (required, e.g., ghcr.io/org/image:tag)")
 	snapshotCreateCmd.Flags().String("name", "", "snapshot name (defaults to image name)")
+	_ = snapshotCreateCmd.MarkFlagRequired("image")
 
 	snapshotDeleteCmd.Flags().String("id", "", "snapshot ID to delete (required)")
 
@@ -85,6 +84,14 @@ func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapsh
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
 	}
 
+	imageRef = strings.TrimSpace(imageRef)
+	if imageRef == "" {
+		return fmt.Errorf("image reference is required - use --image <registry>/<image>:<tag>")
+	}
+	if !isRegistryQualifiedImageRef(imageRef) {
+		return fmt.Errorf("image reference %q must include a registry host (for example ghcr.io/org/image:tag)", imageRef)
+	}
+
 	// Load config and ensure auth
 	cfg, err := compound.LoadDaytonaConfig(dir)
 	if err != nil {
@@ -92,7 +99,7 @@ func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapsh
 	}
 
 	if err := sandbox.EnsureAuth(cfg.APIKey, func() error {
-		return runSandboxSetup(dir, os.Stdin, out, readPasswordFromTerminal)
+		return runSandboxAutoSetup(dir, out)
 	}, func() (string, error) {
 		reloaded, err := compound.LoadDaytonaConfig(dir)
 		if err != nil {
@@ -107,10 +114,6 @@ func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapsh
 	cfg, err = compound.LoadDaytonaConfig(dir)
 	if err != nil {
 		return fmt.Errorf("reloading config: %w", err)
-	}
-
-	if imageRef == "" {
-		imageRef = defaultImageRef
 	}
 
 	// Resolve snapshot name from image reference if not provided
@@ -157,6 +160,24 @@ func imageNameFromRef(ref string) string {
 	return ref
 }
 
+func isRegistryQualifiedImageRef(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+
+	firstComponent := ref
+	if idx := strings.Index(firstComponent, "/"); idx != -1 {
+		firstComponent = firstComponent[:idx]
+	} else {
+		return false
+	}
+
+	return firstComponent == "localhost" ||
+		strings.Contains(firstComponent, ".") ||
+		strings.Contains(firstComponent, ":")
+}
+
 // snapshotDeleter is a function that deletes a Daytona snapshot by ID.
 // Injected in tests to avoid real SDK calls.
 type snapshotDeleter func(ctx context.Context, apiKey, serverURL, snapshotID string) error
@@ -190,7 +211,7 @@ func runSnapshotDelete(dir, snapshotID string, out io.Writer, deleter snapshotDe
 	}
 
 	if err := sandbox.EnsureAuth(cfg.APIKey, func() error {
-		return runSandboxSetup(dir, os.Stdin, out, readPasswordFromTerminal)
+		return runSandboxAutoSetup(dir, out)
 	}, func() (string, error) {
 		reloaded, err := compound.LoadDaytonaConfig(dir)
 		if err != nil {

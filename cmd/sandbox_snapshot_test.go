@@ -59,10 +59,11 @@ func TestRunSnapshotCreate(t *testing.T) {
 		checkFn    func(t *testing.T, call *snapshotCreateCall)
 	}{
 		{
-			name: "creates snapshot with default image ref",
+			name: "creates snapshot with explicit registry image",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "test-key", "https://api.example.com")
 			},
+			imageRef:   "ghcr.io/jywlabs/hal-sandbox:latest",
 			creatorID:  "snap-123",
 			wantOutput: "Snapshot created: snap-123",
 			checkFn: func(t *testing.T, call *snapshotCreateCall) {
@@ -76,10 +77,10 @@ func TestRunSnapshotCreate(t *testing.T) {
 					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://api.example.com")
 				}
 				if call.name != "hal-sandbox" {
-					t.Errorf("name = %q, want %q (derived from default image ref)", call.name, "hal-sandbox")
+					t.Errorf("name = %q, want %q (derived from image ref)", call.name, "hal-sandbox")
 				}
-				if call.imageRef != defaultImageRef {
-					t.Errorf("imageRef = %q, want %q", call.imageRef, defaultImageRef)
+				if call.imageRef != "ghcr.io/jywlabs/hal-sandbox:latest" {
+					t.Errorf("imageRef = %q, want %q", call.imageRef, "ghcr.io/jywlabs/hal-sandbox:latest")
 				}
 			},
 		},
@@ -105,7 +106,7 @@ func TestRunSnapshotCreate(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key3", "")
 			},
-			imageRef:   "ubuntu:22.04",
+			imageRef:   "docker.io/library/ubuntu:22.04",
 			snapName:   "my-snapshot",
 			creatorID:  "snap-789",
 			wantOutput: "Snapshot created: snap-789",
@@ -123,11 +124,26 @@ func TestRunSnapshotCreate(t *testing.T) {
 			wantErr: ".hal/ not found",
 		},
 		{
+			name: "error when image ref is empty",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "key-empty", "")
+			},
+			wantErr: "image reference is required",
+		},
+		{
+			name: "error when image ref is not registry-qualified",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "key-local", "")
+			},
+			imageRef: "hal-sandbox:latest",
+			wantErr:  "must include a registry host",
+		},
+		{
 			name: "error when snapshot creation fails",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key5", "")
 			},
-			imageRef:   "ubuntu:22.04",
+			imageRef:   "ghcr.io/library/ubuntu:22.04",
 			creatorErr: fmt.Errorf("API error: quota exceeded"),
 			wantErr:    "snapshot creation failed",
 		},
@@ -136,7 +152,7 @@ func TestRunSnapshotCreate(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key6", "")
 			},
-			imageRef:   "hal-sandbox:latest",
+			imageRef:   "ghcr.io/jywlabs/hal-sandbox:latest",
 			creatorID:  "snap-abc",
 			wantOutput: "Creating snapshot",
 		},
@@ -203,6 +219,31 @@ func TestImageNameFromRef(t *testing.T) {
 			got := imageNameFromRef(tt.ref)
 			if got != tt.want {
 				t.Errorf("imageNameFromRef(%q) = %q, want %q", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsRegistryQualifiedImageRef(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want bool
+	}{
+		{"ghcr.io/jywlabs/hal-sandbox:latest", true},
+		{"docker.io/library/ubuntu:22.04", true},
+		{"localhost:5000/hal-sandbox:1.0", true},
+		{"localhost/hal-sandbox:1.0", true},
+		{"hal-sandbox:latest", false},
+		{"ubuntu:22.04", false},
+		{"ubuntu", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got := isRegistryQualifiedImageRef(tt.ref)
+			if got != tt.want {
+				t.Errorf("isRegistryQualifiedImageRef(%q) = %v, want %v", tt.ref, got, tt.want)
 			}
 		})
 	}
@@ -384,7 +425,7 @@ func TestRunSnapshotCreate_EnsureAuthCalled(t *testing.T) {
 	creator, _ := fakeSnapshotCreator("snap-id", nil)
 	var out bytes.Buffer
 
-	err := runSnapshotCreate(dir, "ubuntu:22.04", "", &out, creator)
+	err := runSnapshotCreate(dir, "docker.io/library/ubuntu:22.04", "", &out, creator)
 
 	// Should fail because EnsureAuth will try interactive setup with os.Stdin
 	// which doesn't have data, but the key will remain empty
