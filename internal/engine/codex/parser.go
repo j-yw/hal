@@ -9,8 +9,11 @@ import (
 
 // Parser parses Codex CLI JSONL output format.
 type Parser struct {
-	commandFailed bool
-	turnFailed    bool
+	commandFailed      bool
+	turnFailed         bool
+	thinkingActive     bool
+	lastTokenCount     int
+	terminalResultSeen bool
 }
 
 // NewParser creates a new Codex output parser.
@@ -43,6 +46,10 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 		return p.parseFailureEvent(raw, "turn failed")
 	case "error":
 		return p.parseFailureEvent(raw, "codex error")
+	case "event_msg":
+		return p.parseEventMessage(raw)
+	case "response_item":
+		return p.parseResponseItem(raw)
 	default:
 		return nil
 	}
@@ -161,9 +168,20 @@ func (p *Parser) parseTurnCompleted(raw map[string]interface{}) *engine.Event {
 		}
 	}
 
+	return p.parseTerminalResult(tokens)
+}
+
+func (p *Parser) parseTerminalResult(tokens int) *engine.Event {
+	if p.terminalResultSeen {
+		return nil
+	}
+
+	p.terminalResultSeen = true
 	success := !(p.commandFailed || p.turnFailed)
 	p.commandFailed = false
 	p.turnFailed = false
+	p.thinkingActive = false
+	p.lastTokenCount = 0
 
 	return &engine.Event{
 		Type: engine.EventResult,
@@ -190,11 +208,112 @@ func (p *Parser) parseFailureEvent(raw map[string]interface{}, fallback string) 
 	}
 }
 
+func (p *Parser) parseEventMessage(raw map[string]interface{}) *engine.Event {
+	payload, ok := raw["payload"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	messageType, _ := payload["type"].(string)
+	switch messageType {
+	case "task_started":
+		p.thinkingActive = false
+		p.terminalResultSeen = false
+		p.lastTokenCount = 0
+		return &engine.Event{Type: engine.EventInit}
+	case "agent_reasoning":
+		if !p.thinkingActive {
+			p.thinkingActive = true
+			return &engine.Event{Type: engine.EventThinking, Data: engine.EventData{Message: "start"}}
+		}
+		return &engine.Event{Type: engine.EventThinking, Data: engine.EventData{Message: "delta"}}
+	case "agent_message":
+		p.thinkingActive = false
+		text := extractEventMessageText(raw)
+		if strings.TrimSpace(text) == "" {
+			text, _ = payload["message"].(string)
+		}
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		return &engine.Event{Type: engine.EventText, Detail: truncate(text, 80)}
+	case "token_count":
+		if tokens, ok := extractTotalTokenCount(payload); ok {
+			p.lastTokenCount = tokens
+		}
+		return nil
+	case "task_complete":
+		p.thinkingActive = false
+		tokens := p.lastTokenCount
+		return p.parseTerminalResult(tokens)
+	case "task_failed", "task_error":
+		p.turnFailed = true
+		message := extractErrorMessage(payload)
+		if message == "" {
+			message = "task failed"
+		}
+		return &engine.Event{
+			Type: engine.EventError,
+			Data: engine.EventData{Message: message},
+		}
+	default:
+		return nil
+	}
+}
+
+func (p *Parser) parseResponseItem(raw map[string]interface{}) *engine.Event {
+	payload, ok := raw["payload"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	payloadType, _ := payload["type"].(string)
+	switch payloadType {
+	case "reasoning":
+		if !p.thinkingActive {
+			p.thinkingActive = true
+			return &engine.Event{Type: engine.EventThinking, Data: engine.EventData{Message: "start"}}
+		}
+		return &engine.Event{Type: engine.EventThinking, Data: engine.EventData{Message: "delta"}}
+	case "message":
+		if text := extractResponseItemAssistantText(raw); strings.TrimSpace(text) != "" {
+			p.thinkingActive = false
+			return &engine.Event{Type: engine.EventText, Detail: truncate(text, 80)}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
 func (p *Parser) HasFailure() bool {
 	return p.commandFailed || p.turnFailed
 }
 
 // Helper functions
+
+func extractTotalTokenCount(payload map[string]interface{}) (int, bool) {
+	info, ok := payload["info"].(map[string]interface{})
+	if !ok || info == nil {
+		return 0, false
+	}
+
+	totalUsage, ok := info["total_token_usage"].(map[string]interface{})
+	if ok {
+		if total, ok := totalUsage["total_tokens"].(float64); ok {
+			return int(total), true
+		}
+	}
+
+	lastUsage, ok := info["last_token_usage"].(map[string]interface{})
+	if ok {
+		if total, ok := lastUsage["total_tokens"].(float64); ok {
+			return int(total), true
+		}
+	}
+
+	return 0, false
+}
 
 func trimSpace(b []byte) []byte {
 	start, end := 0, len(b)

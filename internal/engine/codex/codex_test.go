@@ -348,6 +348,112 @@ func TestParser_ParseLine_UnknownItemType_FailedStatus(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_EventMsgTaskStarted(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"event_msg","payload":{"type":"task_started"}}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventInit {
+		t.Errorf("expected Type=EventInit, got %v", event.Type)
+	}
+}
+
+func TestParser_ParseLine_EventMsgReasoningStartAndDelta(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"event_msg","payload":{"type":"agent_reasoning","text":"thinking"}}`
+
+	first := p.ParseLine([]byte(line))
+	if first == nil {
+		t.Fatal("expected first event, got nil")
+	}
+	if first.Type != engine.EventThinking {
+		t.Fatalf("first.Type = %v, want %v", first.Type, engine.EventThinking)
+	}
+	if first.Data.Message != "start" {
+		t.Fatalf("first.Data.Message = %q, want %q", first.Data.Message, "start")
+	}
+
+	second := p.ParseLine([]byte(line))
+	if second == nil {
+		t.Fatal("expected second event, got nil")
+	}
+	if second.Type != engine.EventThinking {
+		t.Fatalf("second.Type = %v, want %v", second.Type, engine.EventThinking)
+	}
+	if second.Data.Message != "delta" {
+		t.Fatalf("second.Data.Message = %q, want %q", second.Data.Message, "delta")
+	}
+}
+
+func TestParser_ParseLine_EventMsgTaskCompleteWithTokenCount(t *testing.T) {
+	p := NewParser()
+	tokenLine := `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1234}}}}`
+	completeLine := `{"type":"event_msg","payload":{"type":"task_complete"}}`
+
+	if event := p.ParseLine([]byte(tokenLine)); event != nil {
+		t.Fatalf("expected nil for token_count event, got %+v", event)
+	}
+
+	event := p.ParseLine([]byte(completeLine))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventResult {
+		t.Fatalf("expected Type=EventResult, got %v", event.Type)
+	}
+	if !event.Data.Success {
+		t.Fatal("expected Success=true, got false")
+	}
+	if event.Data.Tokens != 1234 {
+		t.Fatalf("expected Tokens=1234, got %d", event.Data.Tokens)
+	}
+}
+
+func TestParser_ParseLine_DuplicateTerminalResultIgnored(t *testing.T) {
+	p := NewParser()
+	failLine := `{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1}}`
+	taskCompleteLine := `{"type":"event_msg","payload":{"type":"task_complete"}}`
+	turnCompletedLine := `{"type":"turn.completed","usage":{"input_tokens":1}}`
+
+	if event := p.ParseLine([]byte(failLine)); event == nil || event.Type != engine.EventError {
+		t.Fatalf("expected command failure event before terminal result, got %+v", event)
+	}
+
+	first := p.ParseLine([]byte(taskCompleteLine))
+	if first == nil {
+		t.Fatal("expected first terminal result, got nil")
+	}
+	if first.Type != engine.EventResult {
+		t.Fatalf("expected first terminal type=EventResult, got %v", first.Type)
+	}
+	if first.Data.Success {
+		t.Fatal("expected first terminal Success=false, got true")
+	}
+
+	if second := p.ParseLine([]byte(turnCompletedLine)); second != nil {
+		t.Fatalf("expected duplicate terminal result to be ignored, got %+v", second)
+	}
+}
+
+func TestParser_ParseLine_ResponseItemAssistantFinalAnswer(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"done"}]}}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventText {
+		t.Fatalf("expected Type=EventText, got %v", event.Type)
+	}
+	if event.Detail != "done" {
+		t.Fatalf("expected Detail=%q, got %q", "done", event.Detail)
+	}
+}
+
 func TestEngine_parseSuccess_FailureWithoutTurnCompleted(t *testing.T) {
 	e := New(nil)
 	output := `{"type":"error","message":"auth failed"}`
@@ -363,6 +469,78 @@ func TestEngine_parseSuccess_ItemFailureWithoutTurnCompleted(t *testing.T) {
 
 	if e.parseSuccess(output) {
 		t.Error("expected parseSuccess to return false for failed item output")
+	}
+}
+
+func TestEngine_parseSuccess_DuplicateTerminalResultDoesNotMaskFailure(t *testing.T) {
+	e := New(nil)
+	output := `{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1}}
+{"type":"event_msg","payload":{"type":"task_complete"}}
+{"type":"turn.completed","usage":{"input_tokens":1}}`
+
+	if e.parseSuccess(output) {
+		t.Error("expected parseSuccess to return false when duplicate terminal results follow a failure")
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_ItemCompletedAgentMessage(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	line := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"{\"summary\":\"ok\",\"issues\":[]}"}}`)
+
+	h.collectText(line)
+
+	if got := h.text.String(); got != `{"summary":"ok","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"ok","issues":[]}`)
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_ResponseItemAssistantMessage(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	line := []byte(`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"summary\":\"ok\",\"issues\":[]}"}]}}`)
+
+	h.collectText(line)
+
+	if got := h.text.String(); got != `{"summary":"ok","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"ok","issues":[]}`)
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_ResponseItemCommentaryIgnored(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	line := []byte(`{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"working..."}]}}`)
+
+	h.collectText(line)
+
+	if got := h.text.String(); got != "" {
+		t.Fatalf("collected text = %q, want empty", got)
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_EventMessageJSONOnly(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	nonJSONLine := []byte(`{"type":"event_msg","payload":{"type":"agent_message","message":"working..."}}`)
+	jsonLine := []byte(`{"type":"event_msg","payload":{"type":"agent_message","message":"{\"summary\":\"ok\",\"issues\":[]}"}}`)
+
+	h.collectText(nonJSONLine)
+	h.collectText(jsonLine)
+
+	if got := h.text.String(); got != `{"summary":"ok","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"ok","issues":[]}`)
+	}
+}
+
+func TestTextCollectingStreamHandler_collectText_PrefersLatestMachinePayload(t *testing.T) {
+	h := &textCollectingStreamHandler{}
+	first := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"{\"summary\":\"first\",\"issues\":[]}"}}`)
+	second := []byte(`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"summary\":\"second\",\"issues\":[]}"}]}}`)
+	trailing := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`)
+
+	h.collectText(first)
+	h.collectText(second)
+	h.collectText(trailing)
+
+	if got := h.Text(); got != `{"summary":"second","issues":[]}` {
+		t.Fatalf("collected text = %q, want %q", got, `{"summary":"second","issues":[]}`)
 	}
 }
 

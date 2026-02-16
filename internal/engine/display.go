@@ -172,6 +172,23 @@ func (d *Display) clearThinkingState() {
 	d.thinkingStart = time.Time{}
 }
 
+// emitThinkingCompleteLine writes an immutable history line when a thinking
+// phase ends (or is interrupted by tools/results), then clears thinking state.
+// Caller must hold d.mu.
+func (d *Display) emitThinkingCompleteLine() {
+	if !d.isThinking {
+		return
+	}
+
+	if d.isTTY && d.isThinkingSpinnerActive() {
+		fmt.Fprint(d.out, "\r\033[2K")
+	}
+
+	thinkMsg := StyleMuted.Render(formatThinkingComplete(d.thinkingStart))
+	fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), thinkMsg)
+	d.clearThinkingState()
+}
+
 // spinnerDisplayMessage returns the message shown on the spinner line.
 // Caller must hold d.mu.
 func (d *Display) spinnerDisplayMessage(base string) string {
@@ -221,7 +238,7 @@ func (d *Display) ShowEvent(e *Event) {
 
 	switch e.Type {
 	case EventInit:
-		d.clearThinkingState()
+		d.emitThinkingCompleteLine()
 		if e.Data.Model != "" && !d.modelShown {
 			modelText := StyleMuted.Render(fmt.Sprintf("   model: %s", e.Data.Model))
 			fmt.Fprintln(d.out, modelText)
@@ -230,7 +247,7 @@ func (d *Display) ShowEvent(e *Event) {
 		startSpinnerMsg = randomHalWord(HalThinkingWords)
 
 	case EventTool:
-		d.clearThinkingState()
+		d.emitThinkingCompleteLine()
 		// Avoid duplicate consecutive tool messages
 		toolKey := e.Tool + e.Detail
 		if toolKey == d.lastTool {
@@ -268,7 +285,7 @@ func (d *Display) ShowEvent(e *Event) {
 		startSpinnerMsg = truncate(e.Tool+detail, GetTerminalWidth()/2)
 
 	case EventResult:
-		d.clearThinkingState()
+		d.emitThinkingCompleteLine()
 		duration := int(e.Data.DurationMs / 1000)
 		var statusBadge string
 		if e.Data.Success {
@@ -288,7 +305,7 @@ func (d *Display) ShowEvent(e *Event) {
 		fmt.Fprintln(d.out)
 
 	case EventError:
-		d.clearThinkingState()
+		d.emitThinkingCompleteLine()
 		errorBadge := StyleError.Render("[!!]")
 		errorMsg := StyleError.Render(e.Data.Message)
 		fmt.Fprintf(d.out, "   %s %s\n", errorBadge, errorMsg)
@@ -306,16 +323,23 @@ func (d *Display) ShowEvent(e *Event) {
 				startSpinnerMsg = randomHalWord(HalThinkingWords)
 			}
 		case "end":
-			thinkMsg := StyleMuted.Render(formatThinkingComplete(d.thinkingStart))
-			d.clearThinkingState()
-			// Keep tool/completion history lines on the angled marker.
-			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), thinkMsg)
+			d.emitThinkingCompleteLine()
 		}
 
 	case EventText:
-		d.clearThinkingState()
-		// Text events are usually the final response, we don't show them inline
-		// But start a spinner to show we're still working
+		d.emitThinkingCompleteLine()
+
+		textDetail := strings.TrimSpace(e.Detail)
+		if textDetail != "" {
+			message := "assistant response received"
+			if !strings.HasPrefix(textDetail, "{") && !strings.HasPrefix(textDetail, "[") {
+				message = truncate(textDetail, GetTerminalWidth()/2)
+			}
+			fmt.Fprintf(d.out, "   %s %s\n", StyleToolArrow.Render(), StyleMuted.Render(message))
+		}
+
+		// Text events are usually the final response payload.
+		// Keep a working spinner while the engine finalizes completion events.
 		startSpinnerMsg = randomHalWord(HalWorkingWords)
 	}
 
