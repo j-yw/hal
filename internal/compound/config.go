@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
@@ -85,7 +86,7 @@ func (c *AutoConfig) Validate() error {
 // LoadConfig reads configuration from .hal/config.yaml in the given directory.
 // If the config file doesn't exist or the auto section is missing, sensible defaults are returned.
 func LoadConfig(dir string) (*AutoConfig, error) {
-	configPath := filepath.Join(dir, template.HalDir, "config.yaml")
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
 
 	// Check if config file exists
 	data, err := os.ReadFile(configPath)
@@ -125,6 +126,34 @@ func LoadConfig(dir string) (*AutoConfig, error) {
 	}
 
 	return &autoConfig, nil
+}
+
+// LoadDefaultEngine reads the top-level engine setting from .hal/config.yaml.
+// If the config file does not exist or engine is empty, codex is returned.
+func LoadDefaultEngine(dir string) (string, error) {
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "codex", nil
+		}
+		return "", err
+	}
+
+	var raw struct {
+		Engine string `yaml:"engine"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return "", err
+	}
+
+	engineName := strings.ToLower(strings.TrimSpace(raw.Engine))
+	if engineName == "" {
+		return "codex", nil
+	}
+
+	return engineName, nil
 }
 
 // LoadEngineConfig reads per-engine configuration from .hal/config.yaml.

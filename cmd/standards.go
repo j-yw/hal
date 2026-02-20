@@ -28,6 +28,7 @@ Use 'hal standards list' to see what's currently configured.`,
 var standardsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List configured standards",
+	Args:  noArgsValidation(),
 	Long: `Show all standards currently configured for this project.
 
 Reads .hal/standards/index.yml and displays the catalog of standards
@@ -38,6 +39,7 @@ organized by domain. If no index exists, lists the .md files found.`,
 var standardsDiscoverCmd = &cobra.Command{
 	Use:   "discover",
 	Short: "Discover and document standards from your codebase",
+	Args:  noArgsValidation(),
 	Long: `Interactively discover tribal knowledge and coding patterns from your codebase
 and document them as standards.
 

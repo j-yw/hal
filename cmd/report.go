@@ -20,7 +20,7 @@ var (
 var reportCmd = &cobra.Command{
 	Use:   "report",
 	Short: "Run legacy session reporting for completed work",
-	Args:  cobra.NoArgs,
+	Args:  noArgsValidation(),
 	Long: `Run legacy session reporting for the completed work session and generate a summary report.
 
 This command preserves the workflow that previously lived under 'hal review'.
@@ -101,12 +101,17 @@ func runReport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	return runReportWithDeps(
 		ctx,
 		".",
 		dryRun,
 		skipAgents,
-		engineName,
+		resolvedEngine,
 		out,
 		defaultReportDeps,
 	)

@@ -26,6 +26,7 @@ const (
 var sandboxStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Create and start a sandbox",
+	Args:  noArgsValidation(),
 	Long: `Create and start a Daytona sandbox.
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
@@ -60,7 +61,7 @@ When neither --snapshot nor --image is set, hal will create a snapshot from sand
 }
 
 func init() {
-	sandboxStartCmd.Flags().String("name", "", "sandbox name (defaults to current git branch)")
+	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
 	sandboxStartCmd.Flags().String("snapshot", "", "snapshot ID or name to provision from")
 	sandboxStartCmd.Flags().String("image", "", "Docker image reference to create a snapshot from (alternative to --snapshot)")
 	sandboxStartCmd.Flags().String("snapshot-name", "", "snapshot name when creating from --image or --dockerfile (defaults to derived name)")

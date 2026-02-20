@@ -17,6 +17,7 @@ var (
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version info",
+	Args:  noArgsValidation(),
 	Long:  `Show Hal version, commit hash, and build information.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("hal %s\n", Version)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -33,19 +34,27 @@ and is used by the auto pipeline (not the manual run command).
 Examples:
   hal explode .hal/prd-feature.md                    # Explode a PRD
   hal explode .hal/prd-feature.md --branch feature   # Set branch name
-  hal explode .hal/prd-feature.md --engine claude     # Use specific engine`,
-	Args: cobra.ExactArgs(1),
+  hal explode .hal/prd-feature.md --engine codex      # Use specific engine`,
+	Args: exactArgsValidation(1),
 	RunE: runExplode,
 }
 
 func init() {
-	explodeCmd.Flags().StringVarP(&explodeBranchFlag, "branch", "b", "", "Branch name for output auto-prd.json")
-	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
+	explodeCmd.Flags().StringVar(&explodeBranchFlag, "branch", "", "Branch name that sets output PRD branchName")
+	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(explodeCmd)
 }
 
 func runExplode(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		if cmd.Context() != nil {
+			ctx = cmd.Context()
+		}
+		out = cmd.OutOrStdout()
+	}
+
 	prdPath := args[0]
 
 	// Verify PRD file exists
@@ -65,17 +74,22 @@ func runExplode(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load explode skill: %w", err)
 	}
 
+	engineName, err := resolveEngine(cmd, "engine", explodeEngineFlag, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	// Create engine
-	eng, err := newEngine(explodeEngineFlag)
+	eng, err := newEngine(engineName)
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
 
 	// Create display
-	display := engine.NewDisplay(os.Stdout)
+	display := engine.NewDisplay(out)
 
 	// Show command header
-	display.ShowCommandHeader("Explode", filepath.Base(prdPath), buildHeaderCtx(explodeEngineFlag))
+	display.ShowCommandHeader("Explode", filepath.Base(prdPath), buildHeaderCtx(engineName))
 
 	// Determine branch name
 	branchName := explodeBranchFlag

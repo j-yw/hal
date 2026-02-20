@@ -17,31 +17,36 @@ import (
 )
 
 var sandboxExecCmd = &cobra.Command{
-	Use:   "exec [command...]",
+	Use:   "exec [-n NAME] [--] <command...>",
 	Short: "Execute a command in a sandbox",
 	Long: `Execute a non-interactive command in a running Daytona sandbox.
 
-Reads the sandbox name from .hal/sandbox.json unless --name is specified.
+Reads the sandbox name from .hal/sandbox.json unless --name/-n is specified.
 The sandbox must be in the running (started) state.
+
+Use '--' when the remote command starts with flags, for example:
+  hal sandbox exec -- -n foo
 
 stdout and stderr from the remote command are streamed to the local terminal.
 The exit code from the remote command is propagated as the local exit code.`,
-	Args: cobra.MinimumNArgs(1),
+	Args: minArgsValidation(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
-		exitCode, err := runSandboxExec(".", name, args, os.Stdout, nil)
+		exitCode, err := sandboxExecRunner(".", name, args, cmd.OutOrStdout(), nil)
 		if err != nil {
 			return err
 		}
 		if exitCode != 0 {
-			os.Exit(exitCode)
+			return exitWithCode(cmd, exitCode, nil)
 		}
 		return nil
 	},
 }
 
+var sandboxExecRunner = runSandboxExec
+
 func init() {
-	sandboxExecCmd.Flags().String("name", "", "sandbox name (defaults to active sandbox from sandbox.json)")
+	sandboxExecCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to active sandbox from sandbox.json)")
 	// Stop flag parsing after the remote command token so options like "-r"
 	// are forwarded to the sandbox command instead of treated as local flags.
 	sandboxExecCmd.Flags().SetInterspersed(false)

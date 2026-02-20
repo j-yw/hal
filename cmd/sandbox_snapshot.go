@@ -25,6 +25,7 @@ var snapshotCmd = &cobra.Command{
 var snapshotListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List snapshots",
+	Args:  noArgsValidation(),
 	Long:  `List Daytona snapshots available to the configured account.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSnapshotList(".", os.Stdout, nil)
@@ -34,6 +35,7 @@ var snapshotListCmd = &cobra.Command{
 var snapshotDeleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "Delete a snapshot",
+	Args:  noArgsValidation(),
 	Long: `Delete a Daytona sandbox snapshot.
 
 Requires --id flag specifying the snapshot ID to delete.`,
@@ -46,6 +48,7 @@ Requires --id flag specifying the snapshot ID to delete.`,
 var snapshotCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a snapshot from a Docker image",
+	Args:  noArgsValidation(),
 	Long: `Create a Daytona snapshot from a Docker image reference.
 
 Examples:
@@ -60,7 +63,7 @@ Examples:
 
 func init() {
 	snapshotCreateCmd.Flags().String("image", "", "Docker image reference (required, e.g., ghcr.io/org/image:tag)")
-	snapshotCreateCmd.Flags().String("name", "", "snapshot name (defaults to image name)")
+	snapshotCreateCmd.Flags().StringP("name", "n", "", "snapshot name (defaults to image name)")
 	_ = snapshotCreateCmd.MarkFlagRequired("image")
 
 	snapshotDeleteCmd.Flags().String("id", "", "snapshot ID to delete (required)")

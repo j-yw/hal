@@ -38,12 +38,12 @@ Examples:
   hal convert .hal/prd.md -o custom.json  # Custom output path
   hal convert .hal/prd.md --validate      # Also validate after conversion
   hal convert .hal/prd.md -e claude       # Use Claude engine`,
-	Args: cobra.MaximumNArgs(1),
+	Args: maxArgsValidation(1),
 	RunE: runConvert,
 }
 
 func init() {
-	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
+	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	convertCmd.Flags().StringVarP(&convertOutputFlag, "output", "o", "", "Output path (default: .hal/prd.json)")
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
 	rootCmd.AddCommand(convertCmd)
@@ -66,8 +66,13 @@ func runConvert(cmd *cobra.Command, args []string) error {
 		outPath = filepath.Join(template.HalDir, template.PRDFile)
 	}
 
+	engineName, err := resolveEngine(cmd, "engine", convertEngineFlag, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	// Create engine
-	eng, err := newEngine(convertEngineFlag)
+	eng, err := newEngine(engineName)
 	if err != nil {
 		return err
 	}
@@ -76,7 +81,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	hctx := buildHeaderCtx(convertEngineFlag)
+	hctx := buildHeaderCtx(engineName)
 	if mdPath != "" {
 		display.ShowCommandHeader("Convert", fmt.Sprintf("%s → prd.json", mdPath), hctx)
 	} else {
@@ -112,7 +117,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 				warnings[i] = engine.ValidationIssue{StoryID: w.StoryID, Field: w.Field, Message: w.Message}
 			}
 			display.ShowCommandError("Validation failed", errors, warnings)
-			os.Exit(1)
+			return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("validation failed"))
 		}
 	}
 

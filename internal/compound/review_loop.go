@@ -166,7 +166,7 @@ func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations i
 	}
 
 	result := &ReviewLoopResult{
-		Command:             fmt.Sprintf("hal review against %s %d", baseBranch, requestedIterations),
+		Command:             fmt.Sprintf("hal review --base %s --iterations %d", baseBranch, requestedIterations),
 		BaseBranch:          baseBranch,
 		CurrentBranch:       currentBranch,
 		RequestedIterations: requestedIterations,
@@ -233,7 +233,7 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 	endedAt := deps.now()
 
 	return &ReviewLoopResult{
-		Command:             fmt.Sprintf("hal review against %s %d", baseBranch, requestedIterations),
+		Command:             fmt.Sprintf("hal review --base %s --iterations %d", baseBranch, requestedIterations),
 		BaseBranch:          baseBranch,
 		CurrentBranch:       currentBranch,
 		RequestedIterations: requestedIterations,

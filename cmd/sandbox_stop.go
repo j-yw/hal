@@ -16,6 +16,7 @@ import (
 var sandboxStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop a running sandbox",
+	Args:  noArgsValidation(),
 	Long: `Stop a running Daytona sandbox.
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
@@ -27,7 +28,7 @@ The sandbox state file is updated to reflect the stopped status.`,
 }
 
 func init() {
-	sandboxStopCmd.Flags().String("name", "", "sandbox name (defaults to active sandbox from sandbox.json)")
+	sandboxStopCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to active sandbox from sandbox.json)")
 
 	sandboxCmd.AddCommand(sandboxStopCmd)
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -22,6 +23,7 @@ var (
 var autoCmd = &cobra.Command{
 	Use:   "auto",
 	Short: "Run the full compound engineering pipeline",
+	Args:  noArgsValidation(),
 	Long: `Execute the complete compound engineering automation pipeline.
 
 The pipeline steps are:
@@ -50,14 +52,72 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoResumeFlag, "resume", false, "Continue from last saved state")
 	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "Skip PR creation at end")
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
-	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
-	autoCmd.Flags().StringVar(&autoBaseFlag, "base", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
+	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
+	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
 	rootCmd.AddCommand(autoCmd)
 }
 
 func runAuto(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
+	out := io.Writer(os.Stdout)
 	dir := "."
+
+	dryRun := autoDryRunFlag
+	resume := autoResumeFlag
+	skipPR := autoSkipPRFlag
+	reportPath := autoReportFlag
+	engineName := autoEngineFlag
+	baseBranch := autoBaseFlag
+
+	if cmd != nil {
+		if cmd.Context() != nil {
+			ctx = cmd.Context()
+		}
+		out = cmd.OutOrStdout()
+
+		if cmd.Flags().Lookup("dry-run") != nil {
+			value, err := cmd.Flags().GetBool("dry-run")
+			if err != nil {
+				return err
+			}
+			dryRun = value
+		}
+		if cmd.Flags().Lookup("resume") != nil {
+			value, err := cmd.Flags().GetBool("resume")
+			if err != nil {
+				return err
+			}
+			resume = value
+		}
+		if cmd.Flags().Lookup("skip-pr") != nil {
+			value, err := cmd.Flags().GetBool("skip-pr")
+			if err != nil {
+				return err
+			}
+			skipPR = value
+		}
+		if cmd.Flags().Lookup("report") != nil {
+			value, err := cmd.Flags().GetString("report")
+			if err != nil {
+				return err
+			}
+			reportPath = value
+		}
+		if cmd.Flags().Lookup("engine") != nil {
+			value, err := cmd.Flags().GetString("engine")
+			if err != nil {
+				return err
+			}
+			engineName = value
+		}
+		if cmd.Flags().Lookup("base") != nil {
+			value, err := cmd.Flags().GetString("base")
+			if err != nil {
+				return err
+			}
+			baseBranch = value
+		}
+	}
 
 	// Load config
 	config, err := compound.LoadConfig(dir)
@@ -65,37 +125,42 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, dir)
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	// Create engine with per-engine config
-	engineCfg := compound.LoadEngineConfig(dir, autoEngineFlag)
-	eng, err := engine.NewWithConfig(autoEngineFlag, engineCfg)
+	engineCfg := compound.LoadEngineConfig(dir, resolvedEngine)
+	eng, err := engine.NewWithConfig(resolvedEngine, engineCfg)
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
 
 	// Create display
-	display := engine.NewDisplay(os.Stdout)
+	display := engine.NewDisplay(out)
 
 	// Show command header
-	display.ShowCommandHeader("Auto", "compound pipeline", buildHeaderCtx(autoEngineFlag))
+	display.ShowCommandHeader("Auto", "compound pipeline", buildHeaderCtx(resolvedEngine))
 
 	// Create pipeline (pass same config for inner loop engine creation)
 	pipeline := compound.NewPipeline(config, eng, display, dir)
 	pipeline.SetEngineConfig(engineCfg)
 
 	// Check for reports before starting (unless resuming or report specified)
-	if !autoResumeFlag && autoReportFlag == "" {
+	if !resume && reportPath == "" {
 		_, err := compound.FindLatestReport(config.ReportsDir)
 		if err != nil {
-			fmt.Println("No reports found.")
-			fmt.Println()
-			fmt.Printf("Place your reports in %s/ and run this command again.\n", config.ReportsDir)
-			fmt.Println("Reports can be markdown files, text files, or any format the AI can analyze.")
+			fmt.Fprintln(out, "No reports found.")
+			fmt.Fprintln(out)
+			fmt.Fprintf(out, "Place your reports in %s/ and run this command again.\n", config.ReportsDir)
+			fmt.Fprintln(out, "Reports can be markdown files, text files, or any format the AI can analyze.")
 			return nil
 		}
 	}
 
 	// Check if resuming
-	if autoResumeFlag {
+	if resume {
 		if !pipeline.HasState() {
 			return fmt.Errorf("no saved state to resume from")
 		}
@@ -106,11 +171,11 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	// Run options
 	opts := compound.RunOptions{
-		Resume:     autoResumeFlag,
-		DryRun:     autoDryRunFlag,
-		SkipPR:     autoSkipPRFlag,
-		ReportPath: autoReportFlag,
-		BaseBranch: autoBaseFlag,
+		Resume:     resume,
+		DryRun:     dryRun,
+		SkipPR:     skipPR,
+		ReportPath: reportPath,
+		BaseBranch: baseBranch,
 	}
 
 	// Run the pipeline

@@ -16,6 +16,7 @@ import (
 var sandboxShellCmd = &cobra.Command{
 	Use:   "shell",
 	Short: "Open an interactive shell in a sandbox",
+	Args:  noArgsValidation(),
 	Long: `Open an interactive shell session in a running Daytona sandbox.
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
@@ -27,7 +28,7 @@ The sandbox must be in the running (started) state.`,
 }
 
 func init() {
-	sandboxShellCmd.Flags().String("name", "", "sandbox name (defaults to active sandbox from sandbox.json)")
+	sandboxShellCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to active sandbox from sandbox.json)")
 
 	sandboxCmd.AddCommand(sandboxShellCmd)
 }

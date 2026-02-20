@@ -16,6 +16,7 @@ import (
 var sandboxDeleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "Delete a sandbox permanently",
+	Args:  noArgsValidation(),
 	Long: `Permanently delete a Daytona sandbox.
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
@@ -27,7 +28,7 @@ After successful deletion, sandbox.json is removed if it matches the deleted san
 }
 
 func init() {
-	sandboxDeleteCmd.Flags().String("name", "", "sandbox name (defaults to active sandbox from sandbox.json)")
+	sandboxDeleteCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to active sandbox from sandbox.json)")
 
 	sandboxCmd.AddCommand(sandboxDeleteCmd)
 }

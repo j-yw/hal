@@ -16,6 +16,7 @@ import (
 var sandboxStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show sandbox status",
+	Args:  noArgsValidation(),
 	Long: `Show the current status of a Daytona sandbox.
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
@@ -28,7 +29,7 @@ When local sandbox state is used, also displays SnapshotID and CreatedAt.`,
 }
 
 func init() {
-	sandboxStatusCmd.Flags().String("name", "", "sandbox name (defaults to active sandbox from sandbox.json)")
+	sandboxStatusCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to active sandbox from sandbox.json)")
 
 	sandboxCmd.AddCommand(sandboxStatusCmd)
 }

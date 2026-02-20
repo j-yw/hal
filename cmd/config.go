@@ -19,8 +19,9 @@ otherwise shows default values.`,
 }
 
 var addRuleCmd = &cobra.Command{
-	Use:   "add-rule <name>",
-	Short: "Add a rule to config",
+	Use:        "add-rule <name>",
+	Short:      "Add a rule to config",
+	Deprecated: "deprecated in v0.2.0; will be removed in v1.0.0. Use 'hal standards discover' and 'hal standards list' instead.",
 	Long: `Add a new rule to the .hal/rules/ directory.
 
 Rules are markdown files that provide additional context or
@@ -28,7 +29,7 @@ instructions for task execution.
 
 Example:
   hal config add-rule testing     # Creates .hal/rules/testing.md`,
-	Args: cobra.ExactArgs(1),
+	Args: exactArgsValidation(1),
 	RunE: runAddRule,
 }
 
@@ -38,6 +39,12 @@ func init() {
 }
 
 func runConfig(cmd *cobra.Command, args []string) error {
+	return runParentCommand(cmd, args, func() error {
+		return runConfigShow()
+	})
+}
+
+func runConfigShow() error {
 	configPath := filepath.Join(".hal", "config.yaml")
 
 	// Check if config exists
@@ -112,7 +119,7 @@ Describe what this rule is for.
 }
 
 func printDefaults() {
-	fmt.Println("  engine: claude          # Options: claude, codex, pi")
+	fmt.Println("  engine: codex           # Options: claude, codex, pi")
 	fmt.Println("  maxIterations: 10")
 	fmt.Println("  retryDelay: 30s")
 	fmt.Println("  maxRetries: 3")

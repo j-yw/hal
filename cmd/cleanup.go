@@ -15,6 +15,7 @@ var cleanupDryRun bool
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
 	Short: "Remove orphaned files from .hal/",
+	Args:  noArgsValidation(),
 	Long: `Remove orphaned files from .hal/ that are no longer used.
 
 This command removes:

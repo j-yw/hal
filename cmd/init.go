@@ -26,6 +26,7 @@ const (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize .hal/ directory",
+	Args:  noArgsValidation(),
 	Long: `Initialize the .hal/ directory in the current project.
 
 If an existing .goralph/ directory is detected and no .hal/ directory exists,

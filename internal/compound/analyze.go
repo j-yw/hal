@@ -3,6 +3,7 @@ package compound
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 )
+
+var ErrNoReportsFound = errors.New("no reports found")
 
 // FindLatestReport returns the most recently modified file in the reports directory.
 // Returns an error if the directory doesn't exist or contains no files.
@@ -47,7 +50,7 @@ func FindLatestReport(reportsDir string) (string, error) {
 	}
 
 	if latestPath == "" {
-		return "", fmt.Errorf("no reports found in %s", reportsDir)
+		return "", fmt.Errorf("%w in %s", ErrNoReportsFound, reportsDir)
 	}
 
 	return latestPath, nil

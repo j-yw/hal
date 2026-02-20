@@ -33,6 +33,7 @@ Subcommands:
 var sandboxSetupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure Daytona API credentials",
+	Args:  noArgsValidation(),
 	Long: `Configure Daytona API key and server URL.
 
 Prompts for API key (masked input) and server URL (with default).
