@@ -12,7 +12,7 @@ func TestReviewLoopResultJSONRoundTrip(t *testing.T) {
 	endedAt := startedAt.Add(5 * time.Minute)
 
 	want := ReviewLoopResult{
-		Command:             "hal review against develop 5",
+		Command:             "hal review --base develop --iterations 5",
 		BaseBranch:          "develop",
 		CurrentBranch:       "hal/report-review-split",
 		RequestedIterations: 5,

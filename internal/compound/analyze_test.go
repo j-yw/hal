@@ -1,6 +1,7 @@
 package compound
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,6 +95,9 @@ func TestFindLatestReport(t *testing.T) {
 		if err == nil {
 			t.Fatal("FindLatestReport() expected error, got nil")
 		}
+		if !errors.Is(err, ErrNoReportsFound) {
+			t.Fatalf("error %q should wrap ErrNoReportsFound", err.Error())
+		}
 		if !strings.Contains(err.Error(), "no reports") {
 			t.Errorf("error = %q, want substring %q", err.Error(), "no reports")
 		}
@@ -120,6 +124,9 @@ func TestFindLatestReport(t *testing.T) {
 		_, err := FindLatestReport(dir)
 		if err == nil {
 			t.Fatal("FindLatestReport() expected error when only hidden files, got nil")
+		}
+		if !errors.Is(err, ErrNoReportsFound) {
+			t.Fatalf("error %q should wrap ErrNoReportsFound", err.Error())
 		}
 		if !strings.Contains(err.Error(), "no reports") {
 			t.Errorf("error = %q, want substring %q", err.Error(), "no reports")

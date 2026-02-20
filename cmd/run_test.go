@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
@@ -50,7 +53,8 @@ func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 		dryRunFlag = false
 		storyFlag = ""
 		runBaseFlag = ""
-		engineFlag = "claude"
+		runIterationsFlag = 10
+		engineFlag = "codex"
 		maxRetries = 3
 		retryDelay = 5 * time.Second
 	})
@@ -61,7 +65,8 @@ func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 	dryRunFlag = true
 	storyFlag = ""
 	runBaseFlag = ""
-	engineFlag = "claude"
+	runIterationsFlag = 10
+	engineFlag = "codex"
 	maxRetries = 1
 	retryDelay = 10 * time.Millisecond
 
@@ -141,7 +146,8 @@ func TestRunRun_DryRun_AllowsDetachedHeadWithoutBase(t *testing.T) {
 		dryRunFlag = false
 		storyFlag = ""
 		runBaseFlag = ""
-		engineFlag = "claude"
+		runIterationsFlag = 10
+		engineFlag = "codex"
 		maxRetries = 3
 		retryDelay = 5 * time.Second
 	})
@@ -152,11 +158,111 @@ func TestRunRun_DryRun_AllowsDetachedHeadWithoutBase(t *testing.T) {
 	dryRunFlag = true
 	storyFlag = ""
 	runBaseFlag = ""
-	engineFlag = "claude"
+	runIterationsFlag = 10
+	engineFlag = "codex"
 	maxRetries = 1
 	retryDelay = 10 * time.Millisecond
 
 	if err := runRun(nil, nil); err != nil {
 		t.Fatalf("runRun should succeed on detached HEAD without --base, got: %v", err)
 	}
+}
+
+func TestRunRunWithWriter_IterationContract(t *testing.T) {
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "run"}
+		cmd.Flags().String("engine", "codex", "")
+		cmd.Flags().Int("iterations", 10, "")
+		cmd.Flags().String("base", "", "")
+		cmd.Flags().Int("retries", 3, "")
+		cmd.Flags().Duration("retry-delay", 5*time.Second, "")
+		cmd.Flags().Bool("dry-run", false, "")
+		cmd.Flags().String("story", "", "")
+		return cmd
+	}
+
+	isValidationErr := func(err error) bool {
+		var exitErr *ExitCodeError
+		return errors.As(err, &exitErr) && exitErr.Code == ExitCodeValidation
+	}
+
+	t.Run("positional iterations accepted", func(t *testing.T) {
+		err := runRunWithWriter(newCmd(), []string{"3"}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), ".hal/ not found") {
+			t.Fatalf("expected .hal missing error after parsing positional iterations, got: %v", err)
+		}
+	})
+
+	t.Run("--iterations accepted", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("iterations", "4"); err != nil {
+			t.Fatalf("set iterations flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), ".hal/ not found") {
+			t.Fatalf("expected .hal missing error after parsing --iterations, got: %v", err)
+		}
+	})
+
+	t.Run("positional and --iterations conflict", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("iterations", "4"); err != nil {
+			t.Fatalf("set iterations flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, []string{"3"}, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "iterations provided both positionally and via --iterations") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("zero iterations rejected", func(t *testing.T) {
+		err := runRunWithWriter(newCmd(), []string{"0"}, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "iterations must be a positive integer") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("negative --iterations rejected", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("iterations", "-2"); err != nil {
+			t.Fatalf("set iterations flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "iterations must be a positive integer") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("-b/--base accepted", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("base", "develop"); err != nil {
+			t.Fatalf("set base flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), ".hal/ not found") {
+			t.Fatalf("expected .hal missing error after parsing --base, got: %v", err)
+		}
+	})
 }

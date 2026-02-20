@@ -301,6 +301,89 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultEngine(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, dir string)
+		want    string
+		wantErr string
+	}{
+		{
+			name: "missing config falls back to codex",
+			setup: func(t *testing.T, dir string) {
+				_ = dir
+			},
+			want: "codex",
+		},
+		{
+			name: "empty engine falls back to codex",
+			setup: func(t *testing.T, dir string) {
+				halDir := filepath.Join(dir, ".hal")
+				if err := os.MkdirAll(halDir, 0755); err != nil {
+					t.Fatalf("mkdir .hal: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("engine: \"\"\n"), 0644); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			},
+			want: "codex",
+		},
+		{
+			name: "reads configured engine",
+			setup: func(t *testing.T, dir string) {
+				halDir := filepath.Join(dir, ".hal")
+				if err := os.MkdirAll(halDir, 0755); err != nil {
+					t.Fatalf("mkdir .hal: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("engine: Claude\n"), 0644); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			},
+			want: "claude",
+		},
+		{
+			name: "invalid yaml returns error",
+			setup: func(t *testing.T, dir string) {
+				halDir := filepath.Join(dir, ".hal")
+				if err := os.MkdirAll(halDir, 0755); err != nil {
+					t.Fatalf("mkdir .hal: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(":::invalid"), 0644); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			},
+			wantErr: "cannot unmarshal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.setup != nil {
+				tt.setup(t, dir)
+			}
+
+			got, err := LoadDefaultEngine(dir)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("engine = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultDaytonaConfig(t *testing.T) {
 	cfg := DefaultDaytonaConfig()
 	if cfg.APIKey != "" {

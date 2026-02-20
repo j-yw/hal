@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -153,8 +155,8 @@ func TestRunSandboxExec(t *testing.T) {
 					CreatedAt:   time.Now(),
 				})
 			},
-			args:    []string{"false"},
-			execErr: fmt.Errorf("executing command in sandbox \"exit-test-error\": process exited with status 17"),
+			args:     []string{"false"},
+			execErr:  fmt.Errorf("executing command in sandbox \"exit-test-error\": process exited with status 17"),
 			wantExit: 17,
 		},
 		{
@@ -368,28 +370,28 @@ func TestShellCommandFromArgs(t *testing.T) {
 
 func TestNonZeroExitCodeFromError(t *testing.T) {
 	tests := []struct {
-		name    string
-		err     error
+		name     string
+		err      error
 		wantCode int
-		wantOK  bool
+		wantOK   bool
 	}{
 		{
-			name:    "parses exit status",
-			err:     fmt.Errorf("Daytona error: exit status 9"),
+			name:     "parses exit status",
+			err:      fmt.Errorf("Daytona error: exit status 9"),
 			wantCode: 9,
-			wantOK:  true,
+			wantOK:   true,
 		},
 		{
-			name:    "parses exit code",
-			err:     fmt.Errorf("command failed with exit code: 23"),
+			name:     "parses exit code",
+			err:      fmt.Errorf("command failed with exit code: 23"),
 			wantCode: 23,
-			wantOK:  true,
+			wantOK:   true,
 		},
 		{
-			name:    "ignores non-exit errors",
-			err:     fmt.Errorf("API timeout"),
+			name:     "ignores non-exit errors",
+			err:      fmt.Errorf("API timeout"),
 			wantCode: 0,
-			wantOK:  false,
+			wantOK:   false,
 		},
 	}
 
@@ -422,6 +424,75 @@ func TestRunSandboxExec_EnsureAuthCalled(t *testing.T) {
 	// which doesn't have data, but the key will remain empty
 	if err == nil {
 		t.Fatal("expected error for empty API key, got nil")
+	}
+}
+
+func TestSandboxExecCobra_PassthroughWithDoubleDash(t *testing.T) {
+	originalRunner := sandboxExecRunner
+	t.Cleanup(func() { sandboxExecRunner = originalRunner })
+
+	var gotName string
+	var gotArgs []string
+	sandboxExecRunner = func(dir, name string, args []string, out io.Writer, executor sandboxExecutor) (int, error) {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return 0, nil
+	}
+
+	origOut := rootCmd.OutOrStdout()
+	origErr := rootCmd.ErrOrStderr()
+	t.Cleanup(func() {
+		rootCmd.SetOut(origOut)
+		rootCmd.SetErr(origErr)
+		rootCmd.SetArgs(nil)
+	})
+
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"sandbox", "exec", "--", "-n", "foo"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("root execute failed: %v", err)
+	}
+
+	if gotName != "" {
+		t.Fatalf("name = %q, want empty (remote -n must be passthrough)", gotName)
+	}
+	if !reflect.DeepEqual(gotArgs, []string{"-n", "foo"}) {
+		t.Fatalf("args = %#v, want %#v", gotArgs, []string{"-n", "foo"})
+	}
+}
+
+func TestSandboxExecCobra_LegacyNoDoubleDashStillWorks(t *testing.T) {
+	originalRunner := sandboxExecRunner
+	t.Cleanup(func() { sandboxExecRunner = originalRunner })
+
+	var gotArgs []string
+	sandboxExecRunner = func(dir, name string, args []string, out io.Writer, executor sandboxExecutor) (int, error) {
+		gotArgs = append([]string(nil), args...)
+		return 0, nil
+	}
+
+	origOut := rootCmd.OutOrStdout()
+	origErr := rootCmd.ErrOrStderr()
+	t.Cleanup(func() {
+		rootCmd.SetOut(origOut)
+		rootCmd.SetErr(origErr)
+		rootCmd.SetArgs(nil)
+	})
+
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"sandbox", "exec", "grep", "-n", "foo"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("root execute failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(gotArgs, []string{"grep", "-n", "foo"}) {
+		t.Fatalf("args = %#v, want %#v", gotArgs, []string{"grep", "-n", "foo"})
 	}
 }
 

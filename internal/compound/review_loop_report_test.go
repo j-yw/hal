@@ -16,7 +16,7 @@ func TestWriteReviewLoopJSONReportCreatesFileWithRequiredFields(t *testing.T) {
 	now := time.Date(2026, 2, 15, 18, 4, 5, 123000000, time.UTC)
 
 	result := &ReviewLoopResult{
-		Command:             "hal review against develop 3",
+		Command:             "hal review --base develop --iterations 3",
 		BaseBranch:          "develop",
 		CurrentBranch:       "hal/report-review-split",
 		RequestedIterations: 3,
@@ -110,7 +110,7 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 	now := time.Date(2026, 2, 15, 18, 4, 5, 0, time.UTC)
 
 	result := &ReviewLoopResult{
-		Command:             "hal review against develop 3",
+		Command:             "hal review --base develop --iterations 3",
 		BaseBranch:          "develop",
 		CurrentBranch:       "hal/report-review-split",
 		RequestedIterations: 3,
@@ -200,7 +200,7 @@ func TestWriteReviewLoopReportsUsesSharedTimestampForArtifacts(t *testing.T) {
 	callCount := 0
 
 	result := &ReviewLoopResult{
-		Command:             "hal review against develop 3",
+		Command:             "hal review --base develop --iterations 3",
 		BaseBranch:          "develop",
 		CurrentBranch:       "hal/report-review-split",
 		RequestedIterations: 3,

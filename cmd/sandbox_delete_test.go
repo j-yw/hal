@@ -138,30 +138,30 @@ func TestRunSandboxDelete(t *testing.T) {
 				}
 			},
 		},
-			{
-				name: "deletes sandbox with --name when sandbox state is malformed",
-				setup: func(t *testing.T, dir string) {
-					setupDeleteTest(t, dir, "key2", "")
-					halDir := filepath.Join(dir, template.HalDir)
-					if err := os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte("{invalid"), 0644); err != nil {
-						t.Fatal(err)
-					}
-				},
-				deleteName: "my-custom-sandbox",
-				wantOutput: `Sandbox "my-custom-sandbox" deleted.`,
-				checkFn: func(t *testing.T, dir string, call *sandboxDeleteCall) {
-					if !call.called {
-						t.Error("deleter was not called")
-					}
-					if call.nameOrID != "my-custom-sandbox" {
-						t.Errorf("nameOrID = %q, want %q", call.nameOrID, "my-custom-sandbox")
-					}
-					halDir := filepath.Join(dir, template.HalDir)
-					if _, err := os.Stat(filepath.Join(halDir, template.SandboxFile)); err != nil {
-						t.Fatalf("expected malformed sandbox.json to remain, stat failed: %v", err)
-					}
-				},
+		{
+			name: "deletes sandbox with --name when sandbox state is malformed",
+			setup: func(t *testing.T, dir string) {
+				setupDeleteTest(t, dir, "key2", "")
+				halDir := filepath.Join(dir, template.HalDir)
+				if err := os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte("{invalid"), 0644); err != nil {
+					t.Fatal(err)
+				}
 			},
+			deleteName: "my-custom-sandbox",
+			wantOutput: `Sandbox "my-custom-sandbox" deleted.`,
+			checkFn: func(t *testing.T, dir string, call *sandboxDeleteCall) {
+				if !call.called {
+					t.Error("deleter was not called")
+				}
+				if call.nameOrID != "my-custom-sandbox" {
+					t.Errorf("nameOrID = %q, want %q", call.nameOrID, "my-custom-sandbox")
+				}
+				halDir := filepath.Join(dir, template.HalDir)
+				if _, err := os.Stat(filepath.Join(halDir, template.SandboxFile)); err != nil {
+					t.Fatalf("expected malformed sandbox.json to remain, stat failed: %v", err)
+				}
+			},
+		},
 		{
 			name: "removes active state when deleting by explicit workspace ID",
 			setup: func(t *testing.T, dir string) {

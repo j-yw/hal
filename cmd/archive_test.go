@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -340,4 +341,125 @@ func TestRunArchiveRestoreFn(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestArchiveCLIContracts(t *testing.T) {
+	assertValidationErr := func(t *testing.T, err error, contains string) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		var exitErr *ExitCodeError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("expected ExitCodeError, got %T (%v)", err, err)
+		}
+		if exitErr.Code != ExitCodeValidation {
+			t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+		}
+		if !strings.Contains(err.Error(), contains) {
+			t.Fatalf("error %q does not contain %q", err.Error(), contains)
+		}
+	}
+
+	execRoot := func(t *testing.T, dir string, stdin string, args ...string) (string, string, error) {
+		t.Helper()
+
+		origDir, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("getwd: %v", err)
+		}
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("chdir: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		origOut := rootCmd.OutOrStdout()
+		origErr := rootCmd.ErrOrStderr()
+		origIn := rootCmd.InOrStdin()
+		t.Cleanup(func() {
+			rootCmd.SetOut(origOut)
+			rootCmd.SetErr(origErr)
+			rootCmd.SetIn(origIn)
+			rootCmd.SetArgs(nil)
+		})
+
+		if flag := archiveCmd.PersistentFlags().Lookup("name"); flag != nil {
+			_ = flag.Value.Set("")
+			flag.Changed = false
+		}
+		archiveNameFlag = ""
+		if flag := archiveListCmd.Flags().Lookup("verbose"); flag != nil {
+			_ = flag.Value.Set("false")
+			flag.Changed = false
+		}
+		archiveVerboseFlag = false
+
+		var stdout, stderr bytes.Buffer
+		rootCmd.SetOut(&stdout)
+		rootCmd.SetErr(&stderr)
+		rootCmd.SetIn(strings.NewReader(stdin))
+		rootCmd.SetArgs(args)
+
+		err = rootCmd.Execute()
+		return stdout.String(), stderr.String(), err
+	}
+
+	setupState := func(t *testing.T, dir string) {
+		t.Helper()
+		halDir := filepath.Join(dir, template.HalDir)
+		if err := os.MkdirAll(filepath.Join(halDir, "archive"), 0755); err != nil {
+			t.Fatalf("mkdir archive: %v", err)
+		}
+		writePRD(t, halDir, "hal/test-feature")
+	}
+
+	t.Run("hal archive -n works", func(t *testing.T) {
+		dir := t.TempDir()
+		setupState(t, dir)
+
+		stdout, _, err := execRoot(t, dir, "", "archive", "-n", "foo")
+		if err != nil {
+			t.Fatalf("archive command failed: %v", err)
+		}
+		if !strings.Contains(stdout, "archived to") {
+			t.Fatalf("stdout %q does not contain archive success", stdout)
+		}
+	})
+
+	t.Run("hal archive create -n works", func(t *testing.T) {
+		dir := t.TempDir()
+		setupState(t, dir)
+
+		stdout, _, err := execRoot(t, dir, "", "archive", "create", "-n", "foo")
+		if err != nil {
+			t.Fatalf("archive create command failed: %v", err)
+		}
+		if !strings.Contains(stdout, "archived to") {
+			t.Fatalf("stdout %q does not contain archive success", stdout)
+		}
+	})
+
+	t.Run("non-interactive no name fails", func(t *testing.T) {
+		dir := t.TempDir()
+		setupState(t, dir)
+
+		_, _, err := execRoot(t, dir, "", "archive")
+		assertValidationErr(t, err, "archive name is required in non-interactive mode; pass --name/-n")
+	})
+
+	t.Run("archive list rejects inherited --name", func(t *testing.T) {
+		dir := t.TempDir()
+		setupState(t, dir)
+
+		_, _, err := execRoot(t, dir, "", "archive", "list", "-n", "x")
+		assertValidationErr(t, err, "--name/-n is only valid with 'hal archive' or 'hal archive create'")
+	})
+
+	t.Run("archive restore rejects inherited --name", func(t *testing.T) {
+		dir := t.TempDir()
+		setupState(t, dir)
+
+		_, _, err := execRoot(t, dir, "", "archive", "restore", "2026-01-15-foo", "-n", "x")
+		assertValidationErr(t, err, "--name/-n is only valid with 'hal archive' or 'hal archive create'")
+	})
 }

@@ -258,11 +258,11 @@ func TestRunSandboxShell(t *testing.T) {
 			wantErr:    "exit code 1",
 			wantOutput: "session closed",
 		},
-			{
-				name: "forwarder error is propagated",
-				setup: func(t *testing.T, dir string) {
-					setupShellTestWithState(t, dir, "key9", "", &sandbox.SandboxState{
-						Name:        "err-test",
+		{
+			name: "forwarder error is propagated",
+			setup: func(t *testing.T, dir string) {
+				setupShellTestWithState(t, dir, "key9", "", &sandbox.SandboxState{
+					Name:        "err-test",
 					SnapshotID:  "snap-eee",
 					WorkspaceID: "sb-008",
 					Status:      "started",
@@ -270,32 +270,32 @@ func TestRunSandboxShell(t *testing.T) {
 				})
 			},
 			connResult: &sandbox.ShellConnection{SandboxName: "err-test"},
-				fwdErr:     fmt.Errorf("PTY read error"),
-				wantErr:    "shell session error",
+			fwdErr:     fmt.Errorf("PTY read error"),
+			wantErr:    "shell session error",
+		},
+		{
+			name: "nil forwarder result returns error",
+			setup: func(t *testing.T, dir string) {
+				setupShellTestWithState(t, dir, "key10", "", &sandbox.SandboxState{
+					Name:        "nil-result-test",
+					SnapshotID:  "snap-ggg",
+					WorkspaceID: "sb-010",
+					Status:      "started",
+					CreatedAt:   time.Now(),
+				})
 			},
-			{
-				name: "nil forwarder result returns error",
-				setup: func(t *testing.T, dir string) {
-					setupShellTestWithState(t, dir, "key10", "", &sandbox.SandboxState{
-						Name:        "nil-result-test",
-						SnapshotID:  "snap-ggg",
-						WorkspaceID: "sb-010",
-						Status:      "started",
-						CreatedAt:   time.Now(),
-					})
-				},
-				connResult: &sandbox.ShellConnection{SandboxName: "nil-result-test"},
-				fwdResult:  nil,
-				wantErr:    "shell session returned no result",
-			},
-			{
-				name: "clean disconnect returns no error",
-				setup: func(t *testing.T, dir string) {
-					setupShellTestWithState(t, dir, "key11", "", &sandbox.SandboxState{
-						Name:        "clean-test",
-						SnapshotID:  "snap-fff",
-						WorkspaceID: "sb-009",
-						Status:      "started",
+			connResult: &sandbox.ShellConnection{SandboxName: "nil-result-test"},
+			fwdResult:  nil,
+			wantErr:    "shell session returned no result",
+		},
+		{
+			name: "clean disconnect returns no error",
+			setup: func(t *testing.T, dir string) {
+				setupShellTestWithState(t, dir, "key11", "", &sandbox.SandboxState{
+					Name:        "clean-test",
+					SnapshotID:  "snap-fff",
+					WorkspaceID: "sb-009",
+					Status:      "started",
 					CreatedAt:   time.Now(),
 				})
 			},
