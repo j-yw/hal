@@ -239,8 +239,11 @@ func TestRunSandboxStart_FailsWhenTemplateSnapshotUnusable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "exists but is in state building") {
+	if !strings.Contains(err.Error(), "currently in state building") {
 		t.Fatalf("error %q does not contain expected state message", err.Error())
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "delete") {
+		t.Fatalf("error %q should not suggest deletion for in-progress snapshots", err.Error())
 	}
 	if startCall.called {
 		t.Fatal("sandbox starter should not be called")

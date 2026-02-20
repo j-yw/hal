@@ -155,13 +155,13 @@ func TestRunSnapshotCreate(t *testing.T) {
 			wantErr: ".hal/ not found",
 		},
 		{
-			name: "errors when template snapshot is not active",
+			name: "errors when template snapshot is still building",
 			setup: func(t *testing.T, dir string) string {
 				setupSnapshotTest(t, dir, "key3", "")
 				return ""
 			},
 			snapshots: []*daytonatypes.Snapshot{{ID: "snap-building", Name: sandboxTemplateSnapshotName, State: "building"}},
-			wantErr:   "exists but is in state building",
+			wantErr:   "currently in state building",
 		},
 		{
 			name: "errors when dockerfile is missing",
@@ -449,6 +449,31 @@ func TestRunSnapshotCreate_EnsureAuthCalled(t *testing.T) {
 	err := runSnapshotCreate(dir, &out, lister, creator)
 	if err == nil {
 		t.Fatal("expected error for empty API key, got nil")
+	}
+}
+
+func TestTemplateSnapshotStateError_InProgressSuggestsRetry(t *testing.T) {
+	err := templateSnapshotStateError(&daytonatypes.Snapshot{ID: "snap-building", Name: sandboxTemplateSnapshotName, State: "building"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "wait for it to become active and retry") {
+		t.Fatalf("error %q missing retry guidance", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "delete") {
+		t.Fatalf("error %q should not suggest deletion for in-progress snapshots", msg)
+	}
+}
+
+func TestTemplateSnapshotStateError_TerminalStateSuggestsDelete(t *testing.T) {
+	err := templateSnapshotStateError(&daytonatypes.Snapshot{ID: "snap-error", Name: sandboxTemplateSnapshotName, State: "error"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "delete it with 'hal sandbox snapshot delete --id snap-error' and retry") {
+		t.Fatalf("error %q missing delete guidance", msg)
 	}
 }
 

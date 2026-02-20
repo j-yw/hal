@@ -139,10 +139,32 @@ func templateSnapshotStateError(snapshot *daytonatypes.Snapshot) error {
 	if snapshot == nil {
 		return fmt.Errorf("template snapshot %q is in an invalid state", sandboxTemplateSnapshotName)
 	}
-	if strings.TrimSpace(snapshot.ID) == "" {
-		return fmt.Errorf("template snapshot %q exists but is in state %s; delete it in Daytona and retry", sandboxTemplateSnapshotName, snapshot.State)
+
+	state := strings.TrimSpace(snapshot.State)
+	if state == "" {
+		state = "unknown"
 	}
-	return fmt.Errorf("template snapshot %q exists but is in state %s; delete it with 'hal sandbox snapshot delete --id %s' and retry", sandboxTemplateSnapshotName, snapshot.State, snapshot.ID)
+
+	if isSnapshotInProgressState(state) {
+		if strings.TrimSpace(snapshot.ID) == "" {
+			return fmt.Errorf("template snapshot %q is currently in state %s; wait for it to become active and retry", sandboxTemplateSnapshotName, state)
+		}
+		return fmt.Errorf("template snapshot %q is currently in state %s (id: %s); wait for it to become active and retry", sandboxTemplateSnapshotName, state, snapshot.ID)
+	}
+
+	if strings.TrimSpace(snapshot.ID) == "" {
+		return fmt.Errorf("template snapshot %q exists but is in state %s; delete it in Daytona and retry", sandboxTemplateSnapshotName, state)
+	}
+	return fmt.Errorf("template snapshot %q exists but is in state %s; delete it with 'hal sandbox snapshot delete --id %s' and retry", sandboxTemplateSnapshotName, state, snapshot.ID)
+}
+
+func isSnapshotInProgressState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "building", "pending", "creating", "queued", "initializing":
+		return true
+	default:
+		return false
+	}
 }
 
 func latestSnapshotByName(snapshots []*daytonatypes.Snapshot, name string) *daytonatypes.Snapshot {
