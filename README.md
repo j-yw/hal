@@ -38,8 +38,8 @@ make install    # Installs to ~/.local/bin
 
 - Go 1.22+ (for building from source)
 - One of the following AI coding agents:
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (default engine)
-  - [Codex](https://github.com/openai/codex) CLI
+  - [Codex](https://github.com/openai/codex) CLI (default engine)
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
   - [Pi](https://github.com/mariozechner/pi-coding-agent) CLI
 
 ## Quick Start
@@ -93,8 +93,8 @@ The compound pipeline creates a continuous development cycle:
 For iterative branch-vs-branch review/fix loops, use:
 
 ```bash
-hal review against <base-branch> [iterations]
-hal review against <base-branch> [iterations] -e codex
+hal review --base <base-branch> [iterations]
+hal review --base <base-branch> --iterations <n> -e codex
 ```
 
 **Getting started:** Run the manual workflow first (`hal plan` → `hal run`), then `hal report` to generate your first report. Or place a report directly in `.hal/reports/`.
@@ -106,7 +106,10 @@ State is saved after each step — use `hal auto --resume` to continue from inte
 The old `hal review` reporting workflow moved to `hal report`.
 
 - Use `hal report` for legacy session reporting and report generation.
-- Use `hal review against <base-branch> [iterations]` for the new iterative review/fix loop (select engine with `-e`).
+- Use `hal review --base <base-branch> [iterations]` for the new iterative review/fix loop (select engine with `-e`).
+- `hal review against <base-branch> [iterations]` remains as a deprecated alias.
+- `hal explode --branch <name>` is long-only (`-b` removed) and sets output PRD `branchName`.
+- Deprecation timeline: deprecated in `v0.2.0`, removed in `v1.0.0`.
 
 ## Commands
 
@@ -118,17 +121,17 @@ The old `hal review` reporting workflow moved to `hal report`.
 | `hal plan [description]` | Generate PRD (opens editor if no args) |
 | `hal convert <prd.md>` | Convert markdown PRD to JSON |
 | `hal validate [prd.json]` | Validate PRD against quality rules |
-| `hal run [iterations]` | Execute stories autonomously (default: 10) |
+| `hal run [iterations]` | Execute stories autonomously (default: 10; do not combine positional iterations with `-i/--iterations`) |
 
 ### Compound Pipeline
 
 | Command | Description |
 |---------|-------------|
 | `hal report` | Legacy session reporting: generate report → `.hal/reports/`, update AGENTS.md |
-| `hal review against <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e` to select engine) |
+| `hal review --base <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e`; do not combine positional iterations with `-i/--iterations`) |
 | `hal auto` | Run full pipeline using latest report |
-| `hal analyze [report]` | Analyze a report to find priority item |
-| `hal explode <prd.md>` | Break PRD into 8-15 granular tasks |
+| `hal analyze [report] --format text\|json` | Analyze a report to find priority item (`--output` is deprecated) |
+| `hal explode <prd.md> --branch <name>` | Break PRD into 8-15 granular tasks and set output PRD `branchName` |
 
 ### Standards
 
@@ -141,18 +144,45 @@ The old `hal review` reporting workflow moved to `hal report`.
 
 | Command | Description |
 |---------|-------------|
-| `hal archive` | Archive current feature state |
-| `hal archive list` | List all archived features |
-| `hal archive restore <name>` | Restore an archived feature |
+| `hal archive` | Archive current feature state (alias of `hal archive create`) |
+| `hal archive create` | Archive current feature state explicitly |
+| `hal archive list` | List all archived features (`--name/-n` is invalid here) |
+| `hal archive restore <name>` | Restore an archived feature (`--name/-n` is invalid here) |
+
+Archive contract details:
+- `hal archive` is the create alias
+- `--name/-n` is only valid for `hal archive` and `hal archive create`
+- If no name is provided and stdin is non-interactive, the command fails and asks for `--name/-n`
 
 ### Utilities
 
 | Command | Description |
 |---------|-------------|
 | `hal config` | Show current configuration |
-| `hal config add-rule <name>` | Create a custom rule template |
+| `hal config add-rule <name>` | Create a custom rule template (deprecated in v0.2.0, removed in v1.0.0; use standards workflow) |
 | `hal cleanup` | Remove orphaned legacy files (supports `--dry-run`) |
 | `hal version` | Show version information |
+
+### Analyze Output Contract
+
+```bash
+hal analyze --format text
+hal analyze --format json
+hal analyze --output json   # deprecated in v0.2.0, removed in v1.0.0
+```
+
+`--output/-o` and `--format/-f` cannot be used together.
+
+### Sandbox Name and Exec Passthrough
+
+Most sandbox subcommands accept `--name/-n`.
+
+For remote commands that start with flags, use `--`:
+
+```bash
+hal sandbox exec -n my-sandbox -- npm test
+hal sandbox exec -- -n foo      # passes '-n foo' to remote command unchanged
+```
 
 ## Planning a Feature
 
@@ -184,13 +214,17 @@ hal plan "notifications" --format json      # Outputs .hal/prd.json directly
 ## Running the Loop
 
 ```bash
-hal run              # Run 10 iterations (default)
-hal run 5            # Run 5 iterations
-hal run 1 -s US-001  # Run a specific story
-hal run --dry-run    # Preview without executing
-hal run -e codex     # Use Codex engine
-hal run -e pi        # Use Pi engine
+hal run                      # Run 10 iterations (default)
+hal run 5                    # Run 5 iterations (positional)
+hal run -i 5                 # Run 5 iterations (flag)
+hal run 1 -s US-001          # Run a specific story
+hal run --base develop       # Set base branch explicitly
+hal run --dry-run            # Preview without executing
+hal run -e codex             # Use Codex engine
+hal run -e pi                # Use Pi engine
 ```
+
+`hal run [iterations]` and `hal run --iterations/-i <n>` are mutually exclusive.
 
 Each iteration:
 1. Reads `prd.json` and `progress.txt`
@@ -344,7 +378,7 @@ Engine-specific symlinks are created during `hal init`:
 Edit `.hal/config.yaml`:
 
 ```yaml
-engine: claude              # or codex, pi
+engine: codex               # or claude, pi
 maxIterations: 10
 retryDelay: 30s
 maxRetries: 3
@@ -360,14 +394,21 @@ engines:
     provider: openrouter
 ```
 
+Engine resolution order:
+1. explicit `--engine` (if provided)
+2. top-level `engine` in `.hal/config.yaml`
+3. fallback to `codex`
+
+If an explicit `--engine` is blank (for example `--engine "   "`), hal exits with a validation error.
+
 ## Engines
 
 Hal supports multiple AI coding agents:
 
 | Engine | CLI Command | Install |
 |--------|-------------|---------|
-| Claude (default) | `claude` | [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) |
-| Codex | `codex` | [Codex repo](https://github.com/openai/codex) |
+| Codex (default) | `codex` | [Codex repo](https://github.com/openai/codex) |
+| Claude | `claude` | [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) |
 | Pi | `pi` | [Pi repo](https://github.com/mariozechner/pi-coding-agent) |
 
 Switch engines with `-e`:
