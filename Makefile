@@ -9,7 +9,7 @@ LDFLAGS := -ldflags "-X github.com/jywlabs/hal/cmd.Version=$(VERSION) -X github.
 GOCACHE ?= /tmp/hal-gocache
 export GOCACHE
 
-.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check
+.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell
 
 ## Default target
 all: build
