@@ -394,6 +394,8 @@ engines:
     provider: openrouter
 ```
 
+> Note: `hal init` preserves existing `.hal/config.yaml` files. If your project was initialized earlier, it may still have `engine: claude`. Update it to `engine: codex` if you want codex as the default runtime engine.
+
 Engine resolution order:
 1. explicit `--engine` (if provided)
 2. top-level `engine` in `.hal/config.yaml`
