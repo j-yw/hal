@@ -210,3 +210,48 @@ func TestCreateSnapshot_SucceedsWhenLogChannelIsNil(t *testing.T) {
 		t.Fatalf("snapshot ID = %q, want %q", gotID, "snap-nil-log")
 	}
 }
+
+func TestPrepareSnapshotContext_SkipsSymlinkDirectories(t *testing.T) {
+	src := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(src, "main.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("write main file: %v", err)
+	}
+
+	realDir := filepath.Join(src, "real")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatalf("create real dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "nested.txt"), []byte("nested"), 0644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	linksDir := filepath.Join(src, "links")
+	if err := os.MkdirAll(linksDir, 0755); err != nil {
+		t.Fatalf("create links dir: %v", err)
+	}
+
+	symlinkPath := filepath.Join(linksDir, "to-real")
+	if err := os.Symlink("../real", symlinkPath); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+
+	var out bytes.Buffer
+	preparedDir, cleanup, err := prepareSnapshotContext(src, &out)
+	if err != nil {
+		t.Fatalf("prepareSnapshotContext returned error: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(filepath.Join(preparedDir, "main.txt")); err != nil {
+		t.Fatalf("expected main file in prepared context: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(preparedDir, "links", "to-real")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlinked directory to be skipped, got err=%v", err)
+	}
+
+	if !strings.Contains(out.String(), "Skipping symlinked directory in build context") {
+		t.Fatalf("expected skip message in output, got: %q", out.String())
+	}
+}

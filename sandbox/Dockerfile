@@ -72,8 +72,8 @@ RUN make build \
 RUN mkdir -p /root/.claude/skills /root/.claude/agents
 COPY sandbox/claude/settings.json /root/.claude/settings.json
 COPY sandbox/claude/agents/        /root/.claude/agents/
-# Skills dir may be empty; use a wildcard to avoid COPY failure
-COPY sandbox/claude/skill[s]/ /root/.claude/skills/
+# Copy skills directory (include a placeholder file if you ever need to keep it empty)
+COPY sandbox/claude/skills/ /root/.claude/skills/
 
 # -- Cleanup build tree -------------------------------------------------------
 RUN rm -rf /tmp/hal-build

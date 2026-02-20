@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	daytonatypes "github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
@@ -18,6 +20,15 @@ var snapshotCmd = &cobra.Command{
 	Use:   "snapshot",
 	Short: "Manage sandbox snapshots",
 	Long:  `Create and manage Daytona sandbox snapshots from Docker images.`,
+}
+
+var snapshotListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List snapshots",
+	Long:  `List Daytona snapshots available to the configured account.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSnapshotList(".", os.Stdout, nil)
+	},
 }
 
 var snapshotDeleteCmd = &cobra.Command{
@@ -35,14 +46,11 @@ Requires --id flag specifying the snapshot ID to delete.`,
 var snapshotCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a snapshot from a Docker image",
-	Long: `Create a Daytona snapshot from a pre-built Docker image.
+	Long: `Create a Daytona snapshot from a Docker image reference.
 
-The image must be pushed to a registry accessible by Daytona (Docker Hub, GHCR, etc.).
-Build and push your image first:
-
-  docker build --platform=linux/amd64 -f sandbox/Dockerfile -t <registry>/hal-sandbox:latest .
-  docker push <registry>/hal-sandbox:latest
-  hal sandbox snapshot create --image <registry>/hal-sandbox:latest --name hal-dev`,
+Examples:
+  hal sandbox snapshot create --image ubuntu:22.04 --name base-ubuntu
+  hal sandbox snapshot create --image ghcr.io/org/hal-sandbox:latest --name hal-dev`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		imageRef, _ := cmd.Flags().GetString("image")
 		name, _ := cmd.Flags().GetString("name")
@@ -57,6 +65,7 @@ func init() {
 
 	snapshotDeleteCmd.Flags().String("id", "", "snapshot ID to delete (required)")
 
+	snapshotCmd.AddCommand(snapshotListCmd)
 	snapshotCmd.AddCommand(snapshotCreateCmd)
 	snapshotCmd.AddCommand(snapshotDeleteCmd)
 	sandboxCmd.AddCommand(snapshotCmd)
@@ -66,6 +75,10 @@ func init() {
 // Injected in tests to avoid real SDK calls.
 type snapshotCreator func(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error)
 
+// snapshotLister is a function that lists Daytona snapshots.
+// Injected in tests to avoid real SDK calls.
+type snapshotLister func(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error)
+
 // defaultSnapshotCreator creates a real Daytona client and calls CreateSnapshot.
 func defaultSnapshotCreator(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error) {
 	client, err := sandbox.NewClient(apiKey, serverURL)
@@ -73,6 +86,15 @@ func defaultSnapshotCreator(ctx context.Context, apiKey, serverURL, name, imageR
 		return "", fmt.Errorf("creating Daytona client: %w", err)
 	}
 	return sandbox.CreateSnapshot(ctx, client, name, imageRef, out)
+}
+
+// defaultSnapshotLister creates a real Daytona client and lists snapshots.
+func defaultSnapshotLister(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error) {
+	client, err := sandbox.NewClient(apiKey, serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("creating Daytona client: %w", err)
+	}
+	return sandbox.ListSnapshots(ctx, client)
 }
 
 // runSnapshotCreate contains the testable logic for the snapshot create command.
@@ -86,10 +108,7 @@ func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapsh
 
 	imageRef = strings.TrimSpace(imageRef)
 	if imageRef == "" {
-		return fmt.Errorf("image reference is required - use --image <registry>/<image>:<tag>")
-	}
-	if !isRegistryQualifiedImageRef(imageRef) {
-		return fmt.Errorf("image reference %q must include a registry host (for example ghcr.io/org/image:tag)", imageRef)
+		return fmt.Errorf("image reference is required - use --image <image>")
 	}
 
 	// Load config and ensure auth
@@ -140,6 +159,71 @@ func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapsh
 	return nil
 }
 
+// runSnapshotList contains the testable logic for listing snapshots.
+// dir is the project root directory (containing .hal/).
+// If lister is nil, the real SDK client is used.
+func runSnapshotList(dir string, out io.Writer, lister snapshotLister) error {
+	halDir := filepath.Join(dir, template.HalDir)
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+	}
+
+	cfg, err := compound.LoadDaytonaConfig(dir)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	if err := sandbox.EnsureAuth(cfg.APIKey, func() error {
+		return runSandboxAutoSetup(dir, out)
+	}, func() (string, error) {
+		reloaded, err := compound.LoadDaytonaConfig(dir)
+		if err != nil {
+			return "", err
+		}
+		return reloaded.APIKey, nil
+	}); err != nil {
+		return err
+	}
+
+	cfg, err = compound.LoadDaytonaConfig(dir)
+	if err != nil {
+		return fmt.Errorf("reloading config: %w", err)
+	}
+
+	if lister == nil {
+		lister = defaultSnapshotLister
+	}
+
+	ctx := context.Background()
+	snapshots, err := lister(ctx, cfg.APIKey, cfg.ServerURL)
+	if err != nil {
+		return fmt.Errorf("listing snapshots failed: %w", err)
+	}
+
+	if len(snapshots) == 0 {
+		fmt.Fprintln(out, "No snapshots found.")
+		return nil
+	}
+
+	sort.Slice(snapshots, func(i, j int) bool {
+		if snapshots[i].UpdatedAt.Equal(snapshots[j].UpdatedAt) {
+			return snapshots[i].Name < snapshots[j].Name
+		}
+		return snapshots[i].UpdatedAt.After(snapshots[j].UpdatedAt)
+	})
+
+	fmt.Fprintln(out, "ID\tNAME\tSTATE\tUPDATED")
+	for _, snap := range snapshots {
+		updated := "-"
+		if !snap.UpdatedAt.IsZero() {
+			updated = snap.UpdatedAt.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", snap.ID, snap.Name, snap.State, updated)
+	}
+
+	return nil
+}
+
 // imageNameFromRef extracts a short name from a Docker image reference.
 // e.g., "ghcr.io/jywlabs/hal-sandbox:latest" -> "hal-sandbox"
 // e.g., "hal-sandbox:0.1" -> "hal-sandbox"
@@ -158,24 +242,6 @@ func imageNameFromRef(ref string) string {
 		ref = ref[:idx]
 	}
 	return ref
-}
-
-func isRegistryQualifiedImageRef(ref string) bool {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return false
-	}
-
-	firstComponent := ref
-	if idx := strings.Index(firstComponent, "/"); idx != -1 {
-		firstComponent = firstComponent[:idx]
-	} else {
-		return false
-	}
-
-	return firstComponent == "localhost" ||
-		strings.Contains(firstComponent, ".") ||
-		strings.Contains(firstComponent, ":")
 }
 
 // snapshotDeleter is a function that deletes a Daytona snapshot by ID.

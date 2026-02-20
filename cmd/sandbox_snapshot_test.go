@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	daytonatypes "github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -43,6 +45,117 @@ func setupSnapshotTest(t *testing.T, dir string, apiKey, serverURL string) {
 	cfg := &compound.DaytonaConfig{APIKey: apiKey, ServerURL: serverURL}
 	if err := compound.SaveConfig(dir, cfg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type snapshotListCall struct {
+	called    bool
+	apiKey    string
+	serverURL string
+}
+
+func fakeSnapshotLister(returnSnapshots []*daytonatypes.Snapshot, returnErr error) (snapshotLister, *snapshotListCall) {
+	call := &snapshotListCall{}
+	fn := func(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error) {
+		call.called = true
+		call.apiKey = apiKey
+		call.serverURL = serverURL
+		return returnSnapshots, returnErr
+	}
+	return fn, call
+}
+
+func TestRunSnapshotList(t *testing.T) {
+	now := time.Date(2026, 2, 20, 8, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		setup        func(t *testing.T, dir string)
+		snapshots    []*daytonatypes.Snapshot
+		listerErr    error
+		wantErr      string
+		wantContains []string
+		checkFn      func(t *testing.T, call *snapshotListCall)
+	}{
+		{
+			name: "lists snapshots",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "test-key", "https://api.example.com")
+			},
+			snapshots: []*daytonatypes.Snapshot{
+				{ID: "snap-old", Name: "old", State: "active", UpdatedAt: now.Add(-time.Hour)},
+				{ID: "snap-new", Name: "new", State: "active", UpdatedAt: now},
+			},
+			wantContains: []string{"ID\tNAME\tSTATE\tUPDATED", "snap-new", "snap-old", "new", "old"},
+			checkFn: func(t *testing.T, call *snapshotListCall) {
+				if !call.called {
+					t.Fatal("lister was not called")
+				}
+				if call.apiKey != "test-key" {
+					t.Fatalf("apiKey = %q, want %q", call.apiKey, "test-key")
+				}
+			},
+		},
+		{
+			name: "prints no snapshots message",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "key2", "")
+			},
+			snapshots:    []*daytonatypes.Snapshot{},
+			wantContains: []string{"No snapshots found."},
+		},
+		{
+			name: "error when .hal missing",
+			setup: func(t *testing.T, dir string) {
+				// no .hal setup
+			},
+			wantErr: ".hal/ not found",
+		},
+		{
+			name: "error when lister fails",
+			setup: func(t *testing.T, dir string) {
+				setupSnapshotTest(t, dir, "key3", "")
+			},
+			listerErr: fmt.Errorf("API unavailable"),
+			wantErr:   "listing snapshots failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.setup != nil {
+				tt.setup(t, dir)
+			}
+
+			lister, call := fakeSnapshotLister(tt.snapshots, tt.listerErr)
+			var out bytes.Buffer
+
+			err := runSnapshotList(dir, &out, lister)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("output %q does not contain %q", out.String(), want)
+				}
+			}
+
+			if tt.checkFn != nil {
+				tt.checkFn(t, call)
+			}
+		})
 	}
 }
 
@@ -131,14 +244,6 @@ func TestRunSnapshotCreate(t *testing.T) {
 			wantErr: "image reference is required",
 		},
 		{
-			name: "error when image ref is not registry-qualified",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key-local", "")
-			},
-			imageRef: "hal-sandbox:latest",
-			wantErr:  "must include a registry host",
-		},
-		{
 			name: "error when snapshot creation fails",
 			setup: func(t *testing.T, dir string) {
 				setupSnapshotTest(t, dir, "key5", "")
@@ -219,31 +324,6 @@ func TestImageNameFromRef(t *testing.T) {
 			got := imageNameFromRef(tt.ref)
 			if got != tt.want {
 				t.Errorf("imageNameFromRef(%q) = %q, want %q", tt.ref, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsRegistryQualifiedImageRef(t *testing.T) {
-	tests := []struct {
-		ref  string
-		want bool
-	}{
-		{"ghcr.io/jywlabs/hal-sandbox:latest", true},
-		{"docker.io/library/ubuntu:22.04", true},
-		{"localhost:5000/hal-sandbox:1.0", true},
-		{"localhost/hal-sandbox:1.0", true},
-		{"hal-sandbox:latest", false},
-		{"ubuntu:22.04", false},
-		{"ubuntu", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.ref, func(t *testing.T) {
-			got := isRegistryQualifiedImageRef(tt.ref)
-			if got != tt.want {
-				t.Errorf("isRegistryQualifiedImageRef(%q) = %v, want %v", tt.ref, got, tt.want)
 			}
 		})
 	}
