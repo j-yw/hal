@@ -1,6 +1,6 @@
 # Hal Dev Sandbox
 
-Docker image that mirrors the local dev environment for use with [Daytona](https://daytona.io) snapshots.
+Docker image that mirrors the local dev environment used to build the `hal` Daytona template snapshot (`hal sandbox snapshot create`).
 
 ## What's included
 
@@ -49,17 +49,28 @@ docker run --rm -it --env-file sandbox/.env \
   hal-sandbox
 ```
 
-### 4. Push to Daytona as a snapshot
+### 4. Create the template snapshot with hal
 
 ```bash
-# Build for amd64 first
-docker build --platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox:0.1 .
+# Initialize .hal once per repo
+hal init
 
-# Push to Daytona
-daytona snapshot push hal-sandbox:0.1 --name hal-dev --cpu 2 --memory 4 --disk 8
+# Configure Daytona credentials
+hal sandbox setup
 
-# Create a sandbox from the snapshot
-daytona snapshot create hal-dev --image hal-sandbox:0.1
+# Create or reuse template snapshot "hal" from sandbox/Dockerfile
+hal sandbox snapshot create
+
+# Start a sandbox from the template snapshot
+hal sandbox start -n my-box
+```
+
+If you update `sandbox/Dockerfile`, refresh the template snapshot:
+
+```bash
+hal sandbox snapshot list
+hal sandbox snapshot delete --id <hal-snapshot-id>
+hal sandbox snapshot create
 ```
 
 ## Runtime Environment Variables

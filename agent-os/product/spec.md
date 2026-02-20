@@ -127,11 +127,20 @@ hal archive list
 hal archive restore 2026-02-20-my-feature
 ```
 
-### Sandbox Naming and Exec Passthrough
+### Sandbox Template Snapshot Contract and Exec Passthrough
+
+Template snapshot contract:
+- template snapshot name is fixed to `hal`
+- template source is fixed to `sandbox/Dockerfile` with context `.`
+- `hal sandbox snapshot create` is idempotent:
+  - reuses active `hal`
+  - creates `hal` if missing
+  - returns actionable error if `hal` exists in a non-active state
+- `hal sandbox start [-n NAME]` always resolves template snapshot `hal`
+  - does not accept `--snapshot`, `--image`, `--snapshot-name`, `--dockerfile`, or `--context`
 
 `--name/-n` is available on:
 - `sandbox start/status/stop/delete/shell/exec`
-- `sandbox snapshot create`
 
 Exec usage:
 

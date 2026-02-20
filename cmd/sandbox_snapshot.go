@@ -19,7 +19,7 @@ import (
 var snapshotCmd = &cobra.Command{
 	Use:   "snapshot",
 	Short: "Manage sandbox snapshots",
-	Long:  `Create and manage Daytona sandbox snapshots from Docker images.`,
+	Long:  `Manage Daytona snapshots used by hal sandbox commands.`,
 }
 
 var snapshotListCmd = &cobra.Command{
@@ -47,25 +47,18 @@ Requires --id flag specifying the snapshot ID to delete.`,
 
 var snapshotCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a snapshot from a Docker image",
+	Short: "Create or reuse the template snapshot",
 	Args:  noArgsValidation(),
-	Long: `Create a Daytona snapshot from a Docker image reference.
+	Long: `Ensure the template snapshot used by 'hal sandbox start' exists.
 
-Examples:
-  hal sandbox snapshot create --image ubuntu:22.04 --name base-ubuntu
-  hal sandbox snapshot create --image ghcr.io/org/hal-sandbox:latest --name hal-dev`,
+The template snapshot name is fixed to "hal" and is built from sandbox/Dockerfile (context ".").
+If an active "hal" snapshot already exists, the command reuses it.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		imageRef, _ := cmd.Flags().GetString("image")
-		name, _ := cmd.Flags().GetString("name")
-		return runSnapshotCreate(".", imageRef, name, os.Stdout, nil)
+		return runSnapshotCreate(".", os.Stdout, nil, nil)
 	},
 }
 
 func init() {
-	snapshotCreateCmd.Flags().String("image", "", "Docker image reference (required, e.g., ghcr.io/org/image:tag)")
-	snapshotCreateCmd.Flags().StringP("name", "n", "", "snapshot name (defaults to image name)")
-	_ = snapshotCreateCmd.MarkFlagRequired("image")
-
 	snapshotDeleteCmd.Flags().String("id", "", "snapshot ID to delete (required)")
 
 	snapshotCmd.AddCommand(snapshotListCmd)
@@ -74,22 +67,9 @@ func init() {
 	sandboxCmd.AddCommand(snapshotCmd)
 }
 
-// snapshotCreator is a function that creates a Daytona snapshot from a Docker image reference.
-// Injected in tests to avoid real SDK calls.
-type snapshotCreator func(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error)
-
 // snapshotLister is a function that lists Daytona snapshots.
 // Injected in tests to avoid real SDK calls.
 type snapshotLister func(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error)
-
-// defaultSnapshotCreator creates a real Daytona client and calls CreateSnapshot.
-func defaultSnapshotCreator(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error) {
-	client, err := sandbox.NewClient(apiKey, serverURL)
-	if err != nil {
-		return "", fmt.Errorf("creating Daytona client: %w", err)
-	}
-	return sandbox.CreateSnapshot(ctx, client, name, imageRef, out)
-}
 
 // defaultSnapshotLister creates a real Daytona client and lists snapshots.
 func defaultSnapshotLister(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error) {
@@ -102,16 +82,11 @@ func defaultSnapshotLister(ctx context.Context, apiKey, serverURL string) ([]*da
 
 // runSnapshotCreate contains the testable logic for the snapshot create command.
 // dir is the project root directory (containing .hal/).
-// If creator is nil, the real SDK client is used.
-func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapshotCreator) error {
+// If lister or dockerfileCreator are nil, the real SDK client is used.
+func runSnapshotCreate(dir string, out io.Writer, lister snapshotLister, dockerfileCreator snapshotFromDockerfileCreator) error {
 	halDir := filepath.Join(dir, template.HalDir)
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
-	}
-
-	imageRef = strings.TrimSpace(imageRef)
-	if imageRef == "" {
-		return fmt.Errorf("image reference is required - use --image <image>")
 	}
 
 	// Load config and ensure auth
@@ -138,27 +113,12 @@ func runSnapshotCreate(dir, imageRef, name string, out io.Writer, creator snapsh
 		return fmt.Errorf("reloading config: %w", err)
 	}
 
-	// Resolve snapshot name from image reference if not provided
-	if name == "" {
-		// Use image name without registry prefix and tag
-		// e.g., "ghcr.io/jywlabs/hal-sandbox:latest" -> "hal-sandbox"
-		name = imageNameFromRef(imageRef)
-	}
-
-	fmt.Fprintf(out, "Creating snapshot %q from image %s...\n", name, imageRef)
-
-	// Create snapshot
-	if creator == nil {
-		creator = defaultSnapshotCreator
-	}
-
-	ctx := context.Background()
-	snapshotID, err := creator(ctx, cfg.APIKey, cfg.ServerURL, name, imageRef, out)
+	snapshotID, err := resolveTemplateSnapshot(dir, cfg.APIKey, cfg.ServerURL, out, lister, dockerfileCreator)
 	if err != nil {
-		return fmt.Errorf("snapshot creation failed: %w", err)
+		return fmt.Errorf("resolving template snapshot: %w", err)
 	}
 
-	fmt.Fprintf(out, "Snapshot created: %s\n", snapshotID)
+	fmt.Fprintf(out, "Template snapshot ready: %s\n", snapshotID)
 	return nil
 }
 
@@ -227,26 +187,6 @@ func runSnapshotList(dir string, out io.Writer, lister snapshotLister) error {
 	return nil
 }
 
-// imageNameFromRef extracts a short name from a Docker image reference.
-// e.g., "ghcr.io/jywlabs/hal-sandbox:latest" -> "hal-sandbox"
-// e.g., "hal-sandbox:0.1" -> "hal-sandbox"
-// e.g., "ubuntu:22.04" -> "ubuntu"
-func imageNameFromRef(ref string) string {
-	// Strip digest.
-	if idx := strings.Index(ref, "@"); idx != -1 {
-		ref = ref[:idx]
-	}
-	// Take last path component.
-	if idx := strings.LastIndex(ref, "/"); idx != -1 {
-		ref = ref[idx+1:]
-	}
-	// Strip tag from image component only.
-	if idx := strings.LastIndex(ref, ":"); idx != -1 {
-		ref = ref[:idx]
-	}
-	return ref
-}
-
 // snapshotDeleter is a function that deletes a Daytona snapshot by ID.
 // Injected in tests to avoid real SDK calls.
 type snapshotDeleter func(ctx context.Context, apiKey, serverURL, snapshotID string) error
@@ -269,6 +209,7 @@ func runSnapshotDelete(dir, snapshotID string, out io.Writer, deleter snapshotDe
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
 	}
 
+	snapshotID = strings.TrimSpace(snapshotID)
 	if snapshotID == "" {
 		return fmt.Errorf("snapshot ID is required - use --id flag")
 	}

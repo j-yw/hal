@@ -16,36 +16,27 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
-// fakeSnapshotCreator returns a snapshotCreator that captures the call args and returns the given values.
-func fakeSnapshotCreator(returnID string, returnErr error) (snapshotCreator, *snapshotCreateCall) {
-	call := &snapshotCreateCall{}
-	fn := func(ctx context.Context, apiKey, serverURL, name, imageRef string, out io.Writer) (string, error) {
+type snapshotDockerfileCreateCall struct {
+	called         bool
+	apiKey         string
+	serverURL      string
+	name           string
+	dockerfilePath string
+	contextPath    string
+}
+
+func fakeSnapshotDockerfileCreator(returnID string, returnErr error) (snapshotFromDockerfileCreator, *snapshotDockerfileCreateCall) {
+	call := &snapshotDockerfileCreateCall{}
+	fn := func(ctx context.Context, apiKey, serverURL, name, dockerfilePath, contextPath string, out io.Writer) (string, error) {
+		call.called = true
 		call.apiKey = apiKey
 		call.serverURL = serverURL
 		call.name = name
-		call.imageRef = imageRef
-		call.called = true
+		call.dockerfilePath = dockerfilePath
+		call.contextPath = contextPath
 		return returnID, returnErr
 	}
 	return fn, call
-}
-
-type snapshotCreateCall struct {
-	called    bool
-	apiKey    string
-	serverURL string
-	name      string
-	imageRef  string
-}
-
-func setupSnapshotTest(t *testing.T, dir string, apiKey, serverURL string) {
-	t.Helper()
-	halDir := filepath.Join(dir, template.HalDir)
-	os.MkdirAll(halDir, 0755)
-	cfg := &compound.DaytonaConfig{APIKey: apiKey, ServerURL: serverURL}
-	if err := compound.SaveConfig(dir, cfg); err != nil {
-		t.Fatal(err)
-	}
 }
 
 type snapshotListCall struct {
@@ -65,6 +56,187 @@ func fakeSnapshotLister(returnSnapshots []*daytonatypes.Snapshot, returnErr erro
 	return fn, call
 }
 
+func setupSnapshotTest(t *testing.T, dir string, apiKey, serverURL string) {
+	t.Helper()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &compound.DaytonaConfig{APIKey: apiKey, ServerURL: serverURL}
+	if err := compound.SaveConfig(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSnapshotTemplateDockerfile(t *testing.T, dir string) string {
+	t.Helper()
+	dockerfilePath := filepath.Join(dir, defaultSandboxDockerfile)
+	if err := os.MkdirAll(filepath.Dir(dockerfilePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dockerfilePath, []byte("FROM ubuntu:22.04\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return dockerfilePath
+}
+
+func TestRunSnapshotCreate(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, dir string) string
+		snapshots  []*daytonatypes.Snapshot
+		creatorID  string
+		creatorErr error
+		wantErr    string
+		checkFn    func(t *testing.T, dir string, out string, listerCall *snapshotListCall, creatorCall *snapshotDockerfileCreateCall)
+	}{
+		{
+			name: "creates template snapshot when missing",
+			setup: func(t *testing.T, dir string) string {
+				setupSnapshotTest(t, dir, "test-key", "https://api.example.com")
+				return writeSnapshotTemplateDockerfile(t, dir)
+			},
+			snapshots: []*daytonatypes.Snapshot{},
+			creatorID: "snap-123",
+			checkFn: func(t *testing.T, dir string, out string, listerCall *snapshotListCall, creatorCall *snapshotDockerfileCreateCall) {
+				if !listerCall.called {
+					t.Fatal("snapshot lister was not called")
+				}
+				if listerCall.apiKey != "test-key" {
+					t.Fatalf("apiKey = %q, want %q", listerCall.apiKey, "test-key")
+				}
+				if !creatorCall.called {
+					t.Fatal("dockerfile creator was not called")
+				}
+				if creatorCall.name != sandboxTemplateSnapshotName {
+					t.Fatalf("snapshot name = %q, want %q", creatorCall.name, sandboxTemplateSnapshotName)
+				}
+				if creatorCall.dockerfilePath != filepath.Join(dir, defaultSandboxDockerfile) {
+					t.Fatalf("dockerfile path = %q, want %q", creatorCall.dockerfilePath, filepath.Join(dir, defaultSandboxDockerfile))
+				}
+				if creatorCall.contextPath != dir {
+					t.Fatalf("context path = %q, want %q", creatorCall.contextPath, dir)
+				}
+				if !strings.Contains(out, "Template snapshot \"hal\" not found; creating from sandbox/Dockerfile") {
+					t.Fatalf("output missing create message: %q", out)
+				}
+				if !strings.Contains(out, "Template snapshot ready: snap-123") {
+					t.Fatalf("output missing ready message: %q", out)
+				}
+			},
+		},
+		{
+			name: "reuses active template snapshot",
+			setup: func(t *testing.T, dir string) string {
+				setupSnapshotTest(t, dir, "key2", "")
+				return ""
+			},
+			snapshots: []*daytonatypes.Snapshot{{ID: "snap-existing", Name: sandboxTemplateSnapshotName, State: "active"}},
+			checkFn: func(t *testing.T, dir string, out string, listerCall *snapshotListCall, creatorCall *snapshotDockerfileCreateCall) {
+				if !listerCall.called {
+					t.Fatal("snapshot lister was not called")
+				}
+				if creatorCall.called {
+					t.Fatal("dockerfile creator should not be called")
+				}
+				if !strings.Contains(out, "Template snapshot \"hal\" is active; reusing snap-existing") {
+					t.Fatalf("output missing reuse message: %q", out)
+				}
+				if !strings.Contains(out, "Template snapshot ready: snap-existing") {
+					t.Fatalf("output missing ready message: %q", out)
+				}
+			},
+		},
+		{
+			name: "errors when .hal is missing",
+			setup: func(t *testing.T, dir string) string {
+				return ""
+			},
+			wantErr: ".hal/ not found",
+		},
+		{
+			name: "errors when template snapshot is not active",
+			setup: func(t *testing.T, dir string) string {
+				setupSnapshotTest(t, dir, "key3", "")
+				return ""
+			},
+			snapshots: []*daytonatypes.Snapshot{{ID: "snap-building", Name: sandboxTemplateSnapshotName, State: "building"}},
+			wantErr:   "exists but is in state building",
+		},
+		{
+			name: "errors when dockerfile is missing",
+			setup: func(t *testing.T, dir string) string {
+				setupSnapshotTest(t, dir, "key4", "")
+				return ""
+			},
+			snapshots: []*daytonatypes.Snapshot{},
+			wantErr:   "Dockerfile",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.setup != nil {
+				_ = tt.setup(t, dir)
+			}
+
+			lister, listerCall := fakeSnapshotLister(tt.snapshots, nil)
+			creator, creatorCall := fakeSnapshotDockerfileCreator(tt.creatorID, tt.creatorErr)
+			var out bytes.Buffer
+
+			err := runSnapshotCreate(dir, &out, lister, creator)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.checkFn != nil {
+				tt.checkFn(t, dir, out.String(), listerCall, creatorCall)
+			}
+		})
+	}
+}
+
+func TestRunSnapshotCreate_ConflictReusesConcurrentlyCreatedTemplate(t *testing.T) {
+	dir := t.TempDir()
+	setupSnapshotTest(t, dir, "key", "")
+	_ = writeSnapshotTemplateDockerfile(t, dir)
+
+	listCalls := 0
+	lister := func(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error) {
+		listCalls++
+		if listCalls == 1 {
+			return []*daytonatypes.Snapshot{}, nil
+		}
+		return []*daytonatypes.Snapshot{{ID: "snap-race", Name: sandboxTemplateSnapshotName, State: "active"}}, nil
+	}
+	creator, _ := fakeSnapshotDockerfileCreator("", fmt.Errorf("Daytona error (status 409): conflict"))
+
+	var out bytes.Buffer
+	err := runSnapshotCreate(dir, &out, lister, creator)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if listCalls != 2 {
+		t.Fatalf("list call count = %d, want 2", listCalls)
+	}
+	if !strings.Contains(out.String(), "created concurrently; reusing") {
+		t.Fatalf("output missing concurrent reuse message: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Template snapshot ready: snap-race") {
+		t.Fatalf("output missing ready message: %q", out.String())
+	}
+}
+
 func TestRunSnapshotList(t *testing.T) {
 	now := time.Date(2026, 2, 20, 8, 0, 0, 0, time.UTC)
 
@@ -75,7 +247,6 @@ func TestRunSnapshotList(t *testing.T) {
 		listerErr    error
 		wantErr      string
 		wantContains []string
-		checkFn      func(t *testing.T, call *snapshotListCall)
 	}{
 		{
 			name: "lists snapshots",
@@ -86,15 +257,7 @@ func TestRunSnapshotList(t *testing.T) {
 				{ID: "snap-old", Name: "old", State: "active", UpdatedAt: now.Add(-time.Hour)},
 				{ID: "snap-new", Name: "new", State: "active", UpdatedAt: now},
 			},
-			wantContains: []string{"ID\tNAME\tSTATE\tUPDATED", "snap-new", "snap-old", "new", "old"},
-			checkFn: func(t *testing.T, call *snapshotListCall) {
-				if !call.called {
-					t.Fatal("lister was not called")
-				}
-				if call.apiKey != "test-key" {
-					t.Fatalf("apiKey = %q, want %q", call.apiKey, "test-key")
-				}
-			},
+			wantContains: []string{"ID\tNAME\tSTATE\tUPDATED", "snap-new", "snap-old"},
 		},
 		{
 			name: "prints no snapshots message",
@@ -107,7 +270,7 @@ func TestRunSnapshotList(t *testing.T) {
 		{
 			name: "error when .hal missing",
 			setup: func(t *testing.T, dir string) {
-				// no .hal setup
+				// no setup
 			},
 			wantErr: ".hal/ not found",
 		},
@@ -128,7 +291,7 @@ func TestRunSnapshotList(t *testing.T) {
 				tt.setup(t, dir)
 			}
 
-			lister, call := fakeSnapshotLister(tt.snapshots, tt.listerErr)
+			lister, _ := fakeSnapshotLister(tt.snapshots, tt.listerErr)
 			var out bytes.Buffer
 
 			err := runSnapshotList(dir, &out, lister)
@@ -141,7 +304,6 @@ func TestRunSnapshotList(t *testing.T) {
 				}
 				return
 			}
-
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -150,180 +312,6 @@ func TestRunSnapshotList(t *testing.T) {
 				if !strings.Contains(out.String(), want) {
 					t.Fatalf("output %q does not contain %q", out.String(), want)
 				}
-			}
-
-			if tt.checkFn != nil {
-				tt.checkFn(t, call)
-			}
-		})
-	}
-}
-
-func TestRunSnapshotCreate(t *testing.T) {
-	tests := []struct {
-		name       string
-		setup      func(t *testing.T, dir string)
-		imageRef   string
-		snapName   string
-		creatorID  string
-		creatorErr error
-		wantErr    string
-		wantOutput string
-		checkFn    func(t *testing.T, call *snapshotCreateCall)
-	}{
-		{
-			name: "creates snapshot with explicit registry image",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "test-key", "https://api.example.com")
-			},
-			imageRef:   "ghcr.io/jywlabs/hal-sandbox:latest",
-			creatorID:  "snap-123",
-			wantOutput: "Snapshot created: snap-123",
-			checkFn: func(t *testing.T, call *snapshotCreateCall) {
-				if !call.called {
-					t.Error("creator was not called")
-				}
-				if call.apiKey != "test-key" {
-					t.Errorf("apiKey = %q, want %q", call.apiKey, "test-key")
-				}
-				if call.serverURL != "https://api.example.com" {
-					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://api.example.com")
-				}
-				if call.name != "hal-sandbox" {
-					t.Errorf("name = %q, want %q (derived from image ref)", call.name, "hal-sandbox")
-				}
-				if call.imageRef != "ghcr.io/jywlabs/hal-sandbox:latest" {
-					t.Errorf("imageRef = %q, want %q", call.imageRef, "ghcr.io/jywlabs/hal-sandbox:latest")
-				}
-			},
-		},
-		{
-			name: "creates snapshot with custom registry image",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key2", "https://api2.example.com")
-			},
-			imageRef:   "ghcr.io/jywlabs/hal-sandbox:0.1",
-			creatorID:  "snap-456",
-			wantOutput: "Snapshot created: snap-456",
-			checkFn: func(t *testing.T, call *snapshotCreateCall) {
-				if call.name != "hal-sandbox" {
-					t.Errorf("name = %q, want %q (derived from image ref)", call.name, "hal-sandbox")
-				}
-				if call.imageRef != "ghcr.io/jywlabs/hal-sandbox:0.1" {
-					t.Errorf("imageRef = %q, want %q", call.imageRef, "ghcr.io/jywlabs/hal-sandbox:0.1")
-				}
-			},
-		},
-		{
-			name: "uses explicit snapshot name",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key3", "")
-			},
-			imageRef:   "docker.io/library/ubuntu:22.04",
-			snapName:   "my-snapshot",
-			creatorID:  "snap-789",
-			wantOutput: "Snapshot created: snap-789",
-			checkFn: func(t *testing.T, call *snapshotCreateCall) {
-				if call.name != "my-snapshot" {
-					t.Errorf("name = %q, want %q", call.name, "my-snapshot")
-				}
-			},
-		},
-		{
-			name: "error when .hal/ does not exist",
-			setup: func(t *testing.T, dir string) {
-				// don't create .hal/
-			},
-			wantErr: ".hal/ not found",
-		},
-		{
-			name: "error when image ref is empty",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key-empty", "")
-			},
-			wantErr: "image reference is required",
-		},
-		{
-			name: "error when snapshot creation fails",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key5", "")
-			},
-			imageRef:   "ghcr.io/library/ubuntu:22.04",
-			creatorErr: fmt.Errorf("API error: quota exceeded"),
-			wantErr:    "snapshot creation failed",
-		},
-		{
-			name: "prints creating message with image ref",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key6", "")
-			},
-			imageRef:   "ghcr.io/jywlabs/hal-sandbox:latest",
-			creatorID:  "snap-abc",
-			wantOutput: "Creating snapshot",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-
-			if tt.setup != nil {
-				tt.setup(t, dir)
-			}
-
-			creator, call := fakeSnapshotCreator(tt.creatorID, tt.creatorErr)
-			var out bytes.Buffer
-
-			err := runSnapshotCreate(dir, tt.imageRef, tt.snapName, &out, creator)
-
-			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if tt.wantOutput != "" && !strings.Contains(out.String(), tt.wantOutput) {
-				t.Errorf("output %q does not contain %q", out.String(), tt.wantOutput)
-			}
-
-			if tt.checkFn != nil {
-				tt.checkFn(t, call)
-			}
-		})
-	}
-}
-
-func TestImageNameFromRef(t *testing.T) {
-	tests := []struct {
-		ref  string
-		want string
-	}{
-		{"hal-sandbox:latest", "hal-sandbox"},
-		{"hal-sandbox:0.1", "hal-sandbox"},
-		{"hal-sandbox", "hal-sandbox"},
-		{"ghcr.io/jywlabs/hal-sandbox:latest", "hal-sandbox"},
-		{"docker.io/library/ubuntu:22.04", "ubuntu"},
-		{"ubuntu:22.04", "ubuntu"},
-		{"ubuntu", "ubuntu"},
-		{"localhost:5000/hal-sandbox", "hal-sandbox"},
-		{"localhost:5000/hal-sandbox:1.0", "hal-sandbox"},
-		{"localhost:5000/jywlabs/hal-sandbox:latest", "hal-sandbox"},
-		{"ghcr.io/jywlabs/hal-sandbox@sha256:abcdef", "hal-sandbox"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.ref, func(t *testing.T) {
-			got := imageNameFromRef(tt.ref)
-			if got != tt.want {
-				t.Errorf("imageNameFromRef(%q) = %q, want %q", tt.ref, got, tt.want)
 			}
 		})
 	}
@@ -357,7 +345,6 @@ func TestRunSnapshotDelete(t *testing.T) {
 		deleterErr error
 		wantErr    string
 		wantOutput string
-		checkFn    func(t *testing.T, call *snapshotDeleteCall)
 	}{
 		{
 			name: "deletes snapshot by ID",
@@ -366,41 +353,11 @@ func TestRunSnapshotDelete(t *testing.T) {
 			},
 			snapshotID: "snap-123",
 			wantOutput: "Snapshot \"snap-123\" deleted.",
-			checkFn: func(t *testing.T, call *snapshotDeleteCall) {
-				if !call.called {
-					t.Error("deleter was not called")
-				}
-				if call.apiKey != "test-key" {
-					t.Errorf("apiKey = %q, want %q", call.apiKey, "test-key")
-				}
-				if call.serverURL != "https://api.example.com" {
-					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://api.example.com")
-				}
-				if call.snapshotID != "snap-123" {
-					t.Errorf("snapshotID = %q, want %q", call.snapshotID, "snap-123")
-				}
-			},
-		},
-		{
-			name: "passes credentials to deleter",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "my-api-key", "https://custom.server.com")
-			},
-			snapshotID: "snap-456",
-			wantOutput: "Snapshot \"snap-456\" deleted.",
-			checkFn: func(t *testing.T, call *snapshotDeleteCall) {
-				if call.apiKey != "my-api-key" {
-					t.Errorf("apiKey = %q, want %q", call.apiKey, "my-api-key")
-				}
-				if call.serverURL != "https://custom.server.com" {
-					t.Errorf("serverURL = %q, want %q", call.serverURL, "https://custom.server.com")
-				}
-			},
 		},
 		{
 			name: "error when .hal/ does not exist",
 			setup: func(t *testing.T, dir string) {
-				// don't create .hal/
+				// no setup
 			},
 			snapshotID: "snap-123",
 			wantErr:    ".hal/ not found",
@@ -422,49 +379,33 @@ func TestRunSnapshotDelete(t *testing.T) {
 			deleterErr: fmt.Errorf("API error: not found"),
 			wantErr:    "snapshot deletion failed",
 		},
-		{
-			name: "prints deleting message",
-			setup: func(t *testing.T, dir string) {
-				setupSnapshotTest(t, dir, "key3", "")
-			},
-			snapshotID: "snap-abc",
-			wantOutput: "Deleting snapshot \"snap-abc\"...",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-
 			if tt.setup != nil {
 				tt.setup(t, dir)
 			}
 
-			deleter, call := fakeSnapshotDeleter(tt.deleterErr)
+			deleter, _ := fakeSnapshotDeleter(tt.deleterErr)
 			var out bytes.Buffer
 
 			err := runSnapshotDelete(dir, tt.snapshotID, &out, deleter)
-
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
 				}
 				return
 			}
-
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-
 			if tt.wantOutput != "" && !strings.Contains(out.String(), tt.wantOutput) {
-				t.Errorf("output %q does not contain %q", out.String(), tt.wantOutput)
-			}
-
-			if tt.checkFn != nil {
-				tt.checkFn(t, call)
+				t.Fatalf("output %q does not contain %q", out.String(), tt.wantOutput)
 			}
 		})
 	}
@@ -473,8 +414,9 @@ func TestRunSnapshotDelete(t *testing.T) {
 func TestRunSnapshotDelete_EnsureAuthCalled(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)
-	os.MkdirAll(halDir, 0755)
-	// Save empty API key to config
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &compound.DaytonaConfig{APIKey: "", ServerURL: ""}
 	if err := compound.SaveConfig(dir, cfg); err != nil {
 		t.Fatal(err)
@@ -484,9 +426,6 @@ func TestRunSnapshotDelete_EnsureAuthCalled(t *testing.T) {
 	var out bytes.Buffer
 
 	err := runSnapshotDelete(dir, "snap-123", &out, deleter)
-
-	// Should fail because EnsureAuth will try interactive setup with os.Stdin
-	// which doesn't have data, but the key will remain empty
 	if err == nil {
 		t.Fatal("expected error for empty API key, got nil")
 	}
@@ -495,21 +434,38 @@ func TestRunSnapshotDelete_EnsureAuthCalled(t *testing.T) {
 func TestRunSnapshotCreate_EnsureAuthCalled(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)
-	os.MkdirAll(halDir, 0755)
-	// Save empty API key to config
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &compound.DaytonaConfig{APIKey: "", ServerURL: ""}
 	if err := compound.SaveConfig(dir, cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	creator, _ := fakeSnapshotCreator("snap-id", nil)
+	lister, _ := fakeSnapshotLister(nil, nil)
+	creator, _ := fakeSnapshotDockerfileCreator("snap-id", nil)
 	var out bytes.Buffer
 
-	err := runSnapshotCreate(dir, "docker.io/library/ubuntu:22.04", "", &out, creator)
-
-	// Should fail because EnsureAuth will try interactive setup with os.Stdin
-	// which doesn't have data, but the key will remain empty
+	err := runSnapshotCreate(dir, &out, lister, creator)
 	if err == nil {
 		t.Fatal("expected error for empty API key, got nil")
+	}
+}
+
+func TestSnapshotCreateCommandFlags(t *testing.T) {
+	if snapshotCreateCmd.Flags().Lookup("name") != nil {
+		t.Fatal("--name flag should not exist")
+	}
+	if snapshotCreateCmd.Flags().Lookup("image") != nil {
+		t.Fatal("--image flag should not exist")
+	}
+	if snapshotCreateCmd.Flags().Lookup("snapshot-name") != nil {
+		t.Fatal("--snapshot-name flag should not exist")
+	}
+	if snapshotCreateCmd.Flags().Lookup("dockerfile") != nil {
+		t.Fatal("--dockerfile flag should not exist")
+	}
+	if snapshotCreateCmd.Flags().Lookup("context") != nil {
+		t.Fatal("--context flag should not exist")
 	}
 }

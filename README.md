@@ -173,9 +173,36 @@ hal analyze --output json   # deprecated in v0.2.0, removed in v1.0.0
 
 `--output/-o` and `--format/-f` cannot be used together.
 
+### Sandbox Template Workflow
+
+hal uses one template snapshot contract:
+
+- template snapshot name is fixed to `hal`
+- template source is fixed to `sandbox/Dockerfile` with build context `.`
+- `hal sandbox start [-n NAME]` always resolves snapshot `hal` (reuse if active, create if missing)
+
+```bash
+hal sandbox snapshot create      # create/reuse template snapshot "hal"
+hal sandbox start -n my-box      # start sandbox from template snapshot "hal"
+```
+
+After changing `sandbox/Dockerfile`, refresh the template snapshot:
+
+```bash
+hal sandbox snapshot list
+hal sandbox snapshot delete --id <hal-snapshot-id>
+hal sandbox snapshot create
+```
+
 ### Sandbox Name and Exec Passthrough
 
-Most sandbox subcommands accept `--name/-n`.
+`--name/-n` is available on:
+- `hal sandbox start`
+- `hal sandbox status`
+- `hal sandbox stop`
+- `hal sandbox delete`
+- `hal sandbox shell`
+- `hal sandbox exec`
 
 For remote commands that start with flags, use `--`:
 
