@@ -134,3 +134,4 @@
 - Add a global recursive metadata contract test (`cmd/docs_metadata_test.go`) that walks all in-scope commands from `cmd.Root()` and reports command path + missing fields for fast triage.
 - For family-level metadata contracts, recurse through in-scope descendants under each top-level command family (for example `archive`) and assert each command's `Example` includes its command path.
 - When a command family may not exist in every branch (for example `sandbox`), make that family optional in focused tests while keeping required families strict.
+- Keep a dedicated README `CLI Reference` section linking `docs/cli/` and `docs/cli/hal.md` so generated command docs are easy to discover.

@@ -108,6 +108,10 @@ The old `hal review` reporting workflow moved to `hal report`.
 - Use `hal report` for legacy session reporting and report generation.
 - Use `hal review against <base-branch> [iterations]` for the new iterative review/fix loop (select engine with `-e`).
 
+## CLI Reference
+
+Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) with the main entry page at [`docs/cli/hal.md`](docs/cli/hal.md).
+
 ## Commands
 
 ### Core Commands
