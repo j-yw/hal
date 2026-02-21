@@ -123,3 +123,6 @@
 
 - Use `cmd.Root()` as the public accessor to the runtime Cobra command tree for tooling/tests instead of relying on package-private `rootCmd`.
 - Keep CLI startup unchanged (`main.go` -> `cmd.Execute()`), and lock the accessor contract with a focused `cmd/root_test.go` test.
+- Implement CLI documentation generation as a separate tool (`internal/tools/docgen`) with a testable `run(args, root)` helper so flag parsing/validation can be unit-tested without executing the real command tree.
+- Set `root.DisableAutoGenTag = true` before invoking Cobra doc generators (`GenMarkdownTree`, `GenManTree`, `GenReSTTree`) to keep generated artifacts deterministic.
+- Restrict `-frontmatter` to markdown output and fail fast for invalid format combinations so docgen behavior is explicit and predictable.
