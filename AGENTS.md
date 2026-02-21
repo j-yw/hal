@@ -118,3 +118,8 @@
 - Review-loop JSON artifacts are written via `compound.WriteReviewLoopJSONReport`; keep timestamp-dependent tests deterministic by using the internal `writeReviewLoopJSONReport(..., nowFn)` helper instead of stubbing wall-clock time globally.
 - Keep review-loop human output in two steps: generate markdown from `compound.ReviewLoopMarkdown` (also persisted via `WriteReviewLoopMarkdownReport`) and render it at the command layer with Glamour so file artifacts and terminal output stay in sync.
 - For command-split migrations, keep Cobra help text and README workflow/command-table docs in sync, and add command tests that assert required help phrases/examples so docs don’t drift from CLI behavior.
+
+## Patterns from hal/cli-docgen-metadata-hardening (2026-02-21)
+
+- Use `cmd.Root()` as the public accessor to the runtime Cobra command tree for tooling/tests instead of relying on package-private `rootCmd`.
+- Keep CLI startup unchanged (`main.go` -> `cmd.Execute()`), and lock the accessor contract with a focused `cmd/root_test.go` test.
