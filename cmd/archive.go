@@ -30,6 +30,8 @@ and reports/* (non-hidden files).
 Never touches: config.yaml, prompt.md, skills/, rules/.
 
 Use --name to set the archive name, or you will be prompted interactively.`,
+	Example: `  hal archive
+  hal archive --name checkout-flow`,
 	RunE: runArchive,
 }
 
@@ -39,6 +41,8 @@ var archiveListCmd = &cobra.Command{
 	Long: `List all archived features with date, name, and completion stats.
 
 Use --verbose for detailed output including branch name and full path.`,
+	Example: `  hal archive list
+  hal archive list --verbose`,
 	RunE: runArchiveList,
 }
 
@@ -51,8 +55,9 @@ If there is current feature state, it will be auto-archived first.
 
 The name argument is the archive directory name (e.g., 2026-01-15-my-feature).
 Use 'hal archive list' to see available archives.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runArchiveRestore,
+	Example: `  hal archive restore 2026-01-15-checkout-flow`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runArchiveRestore,
 }
 
 func init() {
