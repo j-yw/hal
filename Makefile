@@ -80,20 +80,20 @@ release-check:
 docs-cli:
 	@echo "==> Generating CLI markdown docs..."
 	@tmp_dir="$(DOCS_CLI_DIR).tmp"; \
-		rm -rf "$$tmp_dir"; \
-		mkdir -p "$$tmp_dir"; \
-		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown; \
-		rm -rf "$(DOCS_CLI_DIR)"; \
-		mv "$$tmp_dir" "$(DOCS_CLI_DIR)"; \
+		rm -rf "$$tmp_dir" && \
+		mkdir -p "$$tmp_dir" && \
+		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown && \
+		rm -rf "$(DOCS_CLI_DIR)" && \
+		mv "$$tmp_dir" "$(DOCS_CLI_DIR)" && \
 		echo "    Generated $(DOCS_CLI_DIR)"
 
 ## Check for CLI docs drift against regenerated markdown output
 docs-check:
 	@echo "==> Checking CLI docs for drift..."
 	@tmp_dir="$(DOCS_CLI_DIR).check.tmp"; \
-		rm -rf "$$tmp_dir"; \
-		mkdir -p "$$tmp_dir"; \
-		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown; \
+		rm -rf "$$tmp_dir" && \
+		mkdir -p "$$tmp_dir" && \
+		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown && \
 		if ! diff -ru "$(DOCS_CLI_DIR)" "$$tmp_dir" >/dev/null; then \
 			echo "    CLI docs drift detected. Run: make docs-cli"; \
 			diff -ru "$(DOCS_CLI_DIR)" "$$tmp_dir" || true; \

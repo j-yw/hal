@@ -72,8 +72,6 @@ func TestCoreCommandsHaveCompleteMetadata(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			cmd, err := commandAtPath(root, tt.path...)
 			if err != nil {
 				t.Fatalf("failed to find command at path %v: %v", tt.path, err)
