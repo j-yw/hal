@@ -127,3 +127,4 @@
 - Set `root.DisableAutoGenTag = true` before invoking Cobra doc generators (`GenMarkdownTree`, `GenManTree`, `GenReSTTree`) to keep generated artifacts deterministic.
 - Restrict `-frontmatter` to markdown output and fail fast for invalid format combinations so docgen behavior is explicit and predictable.
 - Make `docs-cli` generate into a temporary directory (e.g., `docs/cli.tmp`) and replace `docs/cli` only after successful generation so stale command pages are removed safely.
+- Implement `docs-check` as clean temp generation + recursive diff against `docs/cli`; this catches both modified content and stale leftover doc files.
