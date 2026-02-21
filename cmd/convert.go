@@ -38,6 +38,9 @@ Examples:
   hal convert .hal/prd.md -o custom.json  # Custom output path
   hal convert .hal/prd.md --validate      # Also validate after conversion
   hal convert .hal/prd.md -e claude       # Use Claude engine`,
+	Example: `  hal convert
+  hal convert .hal/prd-auth.md --validate
+  hal convert .hal/prd-auth.md --engine codex`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runConvert,
 }

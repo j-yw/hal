@@ -15,9 +15,10 @@ var (
 )
 
 var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Show version info",
-	Long:  `Show Hal version, commit hash, and build information.`,
+	Use:     "version",
+	Short:   "Show version info",
+	Long:    `Show Hal version, commit hash, and build information.`,
+	Example: `  hal version`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("hal %s\n", Version)
 		fmt.Printf("  commit:  %s\n", Commit)

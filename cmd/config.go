@@ -15,6 +15,8 @@ var configCmd = &cobra.Command{
 
 Displays settings from .hal/config.yaml if present,
 otherwise shows default values.`,
+	Example: `  hal config
+  hal config add-rule testing`,
 	RunE: runConfig,
 }
 
@@ -28,8 +30,9 @@ instructions for task execution.
 
 Example:
   hal config add-rule testing     # Creates .hal/rules/testing.md`,
-	Args: cobra.ExactArgs(1),
-	RunE: runAddRule,
+	Example: `  hal config add-rule testing`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runAddRule,
 }
 
 func init() {
