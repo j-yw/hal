@@ -41,11 +41,33 @@ jobs:
       - name: Build hal
         run: go build -o hal .
 
-      - name: Fetch base branch
-        run: git fetch --no-tags --prune origin "${{ github.event.pull_request.base.ref }}:refs/remotes/origin/${{ github.event.pull_request.base.ref }}"
+      - name: Resolve base branch ref
+        id: base
+        run: |
+          set -euo pipefail
+          base_branch="${{ github.event.pull_request.base.ref }}"
+          resolved_ref=""
+
+          if git rev-parse --verify --quiet "origin/${base_branch}^{commit}" > /dev/null; then
+            resolved_ref="origin/${base_branch}"
+          elif git rev-parse --verify --quiet "${base_branch}^{commit}" > /dev/null; then
+            resolved_ref="${base_branch}"
+          else
+            git fetch --no-tags origin "refs/heads/${base_branch}:refs/remotes/origin/${base_branch}"
+            if git rev-parse --verify --quiet "origin/${base_branch}^{commit}" > /dev/null; then
+              resolved_ref="origin/${base_branch}"
+            fi
+          fi
+
+          if [ -z "${resolved_ref}" ]; then
+            echo "Base branch '${base_branch}' not found" >&2
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
 
       - name: Run hal review loop (10 iterations)
-        run: ./hal review against "origin/${{ github.event.pull_request.base.ref }}" 10 -e codex
+        run: ./hal review against "${{ steps.base.outputs.ref }}" 10 -e codex
 
       - name: Upload review loop artifacts
         if: always()
