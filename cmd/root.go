@@ -36,6 +36,10 @@ Quick Start:
   1. hal init
   2. hal plan "add user authentication" --format json
   3. hal run`,
+	Example: `  hal init
+  hal plan "add user authentication" --format json
+  hal validate
+  hal run`,
 }
 
 // Root returns the root cobra command for reuse by tooling.

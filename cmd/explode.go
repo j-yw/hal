@@ -34,6 +34,9 @@ Examples:
   hal explode .hal/prd-feature.md                    # Explode a PRD
   hal explode .hal/prd-feature.md --branch feature   # Set branch name
   hal explode .hal/prd-feature.md --engine claude     # Use specific engine`,
+	Example: `  hal explode .hal/prd-checkout.md
+  hal explode .hal/prd-checkout.md --branch checkout
+  hal explode .hal/prd-checkout.md --engine codex`,
 	Args: cobra.ExactArgs(1),
 	RunE: runExplode,
 }

@@ -39,6 +39,10 @@ Examples:
   hal analyze report.md                 # Analyze specific file
   hal analyze --reports-dir ./reports   # Use custom reports directory
   hal analyze --output json             # Output as JSON`,
+	Example: `  hal analyze
+  hal analyze .hal/reports/report.md
+  hal analyze --reports-dir ./reports
+  hal analyze --output json --engine codex`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAnalyze,
 }
