@@ -106,6 +106,10 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		prdJSON = fallbackJSON
 	}
 
+	if err := enforceBranchMismatchGuard(outPath, beforeOutput, prdJSON, opts); err != nil {
+		return err
+	}
+
 	// Ensure output directory exists
 	outDir := filepath.Dir(outPath)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
@@ -264,6 +268,51 @@ func outputWasUpdated(before, after *outputSnapshot) bool {
 		return true
 	}
 	return !bytes.Equal(after.data, before.data)
+}
+
+func enforceBranchMismatchGuard(outPath string, beforeOutput *outputSnapshot, prdJSON string, opts ConvertOptions) error {
+	if _, canonical := halDirForOutput(outPath); !canonical {
+		return nil
+	}
+
+	existingBranch := branchNameFromSnapshot(beforeOutput)
+	incomingBranch, err := branchNameFromPRDJSON(prdJSON)
+	if err != nil {
+		return fmt.Errorf("failed to inspect converted branchName: %w", err)
+	}
+
+	if existingBranch == "" || incomingBranch == "" {
+		return nil
+	}
+	if existingBranch == incomingBranch {
+		return nil
+	}
+	if opts.Archive || opts.Force {
+		return nil
+	}
+
+	return fmt.Errorf("branch changed from %s to %s; run 'hal convert --archive' or 'hal archive' first, or use --force", existingBranch, incomingBranch)
+}
+
+func branchNameFromSnapshot(snapshot *outputSnapshot) string {
+	if snapshot == nil || len(snapshot.data) == 0 {
+		return ""
+	}
+
+	var prd engine.PRD
+	if err := json.Unmarshal(snapshot.data, &prd); err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(prd.BranchName)
+}
+
+func branchNameFromPRDJSON(prdJSON string) (string, error) {
+	var prd engine.PRD
+	if err := json.Unmarshal([]byte(prdJSON), &prd); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(prd.BranchName), nil
 }
 
 func halDirForOutput(outPath string) (string, bool) {

@@ -77,6 +77,40 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+func readPRDBranchName(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read PRD %s: %v", path, err)
+	}
+
+	var prd engine.PRD
+	if err := json.Unmarshal(data, &prd); err != nil {
+		t.Fatalf("failed to parse PRD %s: %v", path, err)
+	}
+
+	return prd.BranchName
+}
+
+func promptResponseWithBranch(t *testing.T, branch string) string {
+	t.Helper()
+
+	payload := engine.PRD{
+		Project:     "test",
+		BranchName:  branch,
+		Description: "desc",
+		UserStories: []engine.UserStory{},
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal prompt response: %v", err)
+	}
+
+	return string(data)
+}
+
 func TestConvertWithEngine_ArchiveOptInArchivesExistingState(t *testing.T) {
 	tmpDir := t.TempDir()
 	halDir := filepath.Join(tmpDir, template.HalDir)
@@ -147,7 +181,7 @@ func TestConvertWithEngine_DefaultRunDoesNotArchiveExistingState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writePRDJSON(t, halDir, template.PRDFile, "hal/old")
+	writePRDJSON(t, halDir, template.PRDFile, "hal/new")
 	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 	mdPath := filepath.Join(halDir, "prd-new.md")
 	writeFile(t, mdPath, "# PRD")
@@ -253,6 +287,205 @@ func TestConvertWithEngine_ArchiveRequiresCanonicalOutput(t *testing.T) {
 	if len(archives) != 0 {
 		t.Fatalf("expected no archive side effects, got %d archives", len(archives))
 	}
+}
+
+func TestConvertWithEngine_CanonicalBranchMismatchWithoutFlagsFailsBeforeWrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(halDir, template.PRDFile)
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old-feature")
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
+	}
+
+	err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil)
+	if err == nil {
+		t.Fatal("expected branch mismatch error")
+	}
+
+	want := "branch changed from hal/old-feature to hal/new-feature; run 'hal convert --archive' or 'hal archive' first, or use --force"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := readPRDBranchName(t, outPath); got != "hal/old-feature" {
+		t.Fatalf("expected canonical PRD to remain unchanged, got branch %q", got)
+	}
+
+	archives, listErr := archive.List(halDir)
+	if listErr != nil {
+		t.Fatalf("failed to list archives: %v", listErr)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("expected no archive side effects, got %d archives", len(archives))
+	}
+}
+
+func TestConvertWithEngine_CanonicalBranchMismatchWithForceWritesWithoutArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(halDir, template.PRDFile)
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old-feature")
+	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Force: true}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	if got := readPRDBranchName(t, outPath); got != "hal/new-feature" {
+		t.Fatalf("unexpected output branchName: %s", got)
+	}
+
+	archives, listErr := archive.List(halDir)
+	if listErr != nil {
+		t.Fatalf("failed to list archives: %v", listErr)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("expected no archives when --force is used, got %d", len(archives))
+	}
+}
+
+func TestConvertWithEngine_CanonicalBranchMismatchWithArchiveArchivesThenWrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(halDir, template.PRDFile)
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old-feature")
+	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Archive: true}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	if got := readPRDBranchName(t, outPath); got != "hal/new-feature" {
+		t.Fatalf("unexpected output branchName: %s", got)
+	}
+
+	archives, err := archive.List(halDir)
+	if err != nil {
+		t.Fatalf("failed to list archives: %v", err)
+	}
+	if len(archives) != 1 {
+		t.Fatalf("expected one archive entry, got %d", len(archives))
+	}
+
+	archivedPRDPath := filepath.Join(archives[0].Dir, template.PRDFile)
+	if got := readPRDBranchName(t, archivedPRDPath); got != "hal/old-feature" {
+		t.Fatalf("expected archived PRD to retain old branch, got %q", got)
+	}
+}
+
+func TestConvertWithEngine_BranchGuardSkipsNonBlockingCases(t *testing.T) {
+	tests := []struct {
+		name           string
+		outPathFn      func(tmpDir, halDir string) string
+		existingBranch *string
+		incomingBranch string
+	}{
+		{
+			name: "non-canonical output bypasses mismatch guard",
+			outPathFn: func(tmpDir, halDir string) string {
+				return filepath.Join(tmpDir, "custom-prd.json")
+			},
+			existingBranch: strPtr("hal/old-feature"),
+			incomingBranch: "hal/new-feature",
+		},
+		{
+			name: "matching branch proceeds on canonical output",
+			outPathFn: func(tmpDir, halDir string) string {
+				return filepath.Join(halDir, template.PRDFile)
+			},
+			existingBranch: strPtr("hal/same-feature"),
+			incomingBranch: "hal/same-feature",
+		},
+		{
+			name: "missing canonical output proceeds",
+			outPathFn: func(tmpDir, halDir string) string {
+				return filepath.Join(halDir, template.PRDFile)
+			},
+			existingBranch: nil,
+			incomingBranch: "hal/new-feature",
+		},
+		{
+			name: "empty existing branch proceeds",
+			outPathFn: func(tmpDir, halDir string) string {
+				return filepath.Join(halDir, template.PRDFile)
+			},
+			existingBranch: strPtr(""),
+			incomingBranch: "hal/new-feature",
+		},
+		{
+			name: "empty incoming branch proceeds",
+			outPathFn: func(tmpDir, halDir string) string {
+				return filepath.Join(halDir, template.PRDFile)
+			},
+			existingBranch: strPtr("hal/old-feature"),
+			incomingBranch: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			halDir := filepath.Join(tmpDir, template.HalDir)
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+
+			if tt.existingBranch != nil {
+				writePRDJSON(t, halDir, template.PRDFile, *tt.existingBranch)
+			}
+
+			mdPath := filepath.Join(halDir, "prd-new.md")
+			writeFile(t, mdPath, "# PRD")
+
+			outPath := tt.outPathFn(tmpDir, halDir)
+			eng := &mockEngine{
+				promptResponse: promptResponseWithBranch(t, tt.incomingBranch),
+			}
+
+			if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
+				t.Fatalf("ConvertWithEngine failed: %v", err)
+			}
+
+			if got := readPRDBranchName(t, outPath); got != tt.incomingBranch {
+				t.Fatalf("output branchName = %q, want %q", got, tt.incomingBranch)
+			}
+		})
+	}
+}
+
+func strPtr(s string) *string {
+	return &s
 }
 
 func TestFindLatestPRDMarkdown(t *testing.T) {
