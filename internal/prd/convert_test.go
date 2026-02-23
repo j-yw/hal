@@ -28,10 +28,20 @@ func (m *mockEngine) Execute(ctx context.Context, prompt string, display *engine
 }
 
 func (m *mockEngine) Prompt(ctx context.Context, prompt string) (string, error) {
+	if m.promptHook != nil {
+		if err := m.promptHook(); err != nil {
+			return "", err
+		}
+	}
 	return m.promptResponse, m.promptError
 }
 
 func (m *mockEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
+	if m.promptHook != nil {
+		if err := m.promptHook(); err != nil {
+			return "", err
+		}
+	}
 	return m.promptResponse, m.promptError
 }
 
@@ -80,7 +90,7 @@ func TestConvertWithEngine_AutoArchivesExistingState(t *testing.T) {
 		promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
 	}
 
-	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, nil); err != nil {
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
 		t.Fatalf("ConvertWithEngine failed: %v", err)
 	}
 
@@ -140,7 +150,7 @@ func TestConvertWithEngine_SkipsAutoArchiveWhenOnlyMarkdown(t *testing.T) {
 		promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
 	}
 
-	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, nil); err != nil {
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
 		t.Fatalf("ConvertWithEngine failed: %v", err)
 	}
 
@@ -154,5 +164,33 @@ func TestConvertWithEngine_SkipsAutoArchiveWhenOnlyMarkdown(t *testing.T) {
 	}
 	if len(archives) != 0 {
 		t.Fatalf("expected no archives, got %d", len(archives))
+	}
+}
+
+func TestConvertWithEngine_ArchiveRequiresCanonicalOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+
+	outPath := filepath.Join(tmpDir, "custom-prd.json")
+	eng := &mockEngine{
+		promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
+	}
+
+	err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Archive: true}, nil)
+	if err == nil {
+		t.Fatal("expected error for --archive with non-canonical output path")
+	}
+	if !strings.Contains(err.Error(), "--archive is only supported when output is .hal/prd.json") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no output file to be written, stat error: %v", statErr)
 	}
 }

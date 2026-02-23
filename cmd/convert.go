@@ -16,6 +16,8 @@ var (
 	convertEngineFlag   string
 	convertOutputFlag   string
 	convertValidateFlag bool
+	convertArchiveFlag  bool
+	convertForceFlag    bool
 )
 
 var convertCmd = &cobra.Command{
@@ -46,10 +48,28 @@ func init() {
 	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
 	convertCmd.Flags().StringVarP(&convertOutputFlag, "output", "o", "", "Output path (default: .hal/prd.json)")
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
+	convertCmd.Flags().BoolVar(&convertArchiveFlag, "archive", false, "Archive existing feature state before writing canonical .hal/prd.json")
+	convertCmd.Flags().BoolVar(&convertForceFlag, "force", false, "Allow canonical overwrite without archive when branch mismatch protection would block")
 	rootCmd.AddCommand(convertCmd)
 }
 
+type convertDeps struct {
+	newEngine          func(string) (engine.Engine, error)
+	convertWithEngine  func(context.Context, engine.Engine, string, string, prd.ConvertOptions, *engine.Display) error
+	validateWithEngine func(context.Context, engine.Engine, string, *engine.Display) (*prd.ValidationResult, error)
+}
+
+var defaultConvertDeps = convertDeps{
+	newEngine:          newEngine,
+	convertWithEngine:  prd.ConvertWithEngine,
+	validateWithEngine: prd.ValidateWithEngine,
+}
+
 func runConvert(cmd *cobra.Command, args []string) error {
+	return runConvertWithDeps(cmd, args, defaultConvertDeps)
+}
+
+func runConvertWithDeps(cmd *cobra.Command, args []string, deps convertDeps) error {
 	var mdPath string
 	if len(args) > 0 {
 		mdPath = args[0]
@@ -67,7 +87,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engine
-	eng, err := newEngine(convertEngineFlag)
+	eng, err := deps.newEngine(convertEngineFlag)
 	if err != nil {
 		return err
 	}
@@ -83,9 +103,14 @@ func runConvert(cmd *cobra.Command, args []string) error {
 		display.ShowCommandHeader("Convert", "auto-discover → prd.json", hctx)
 	}
 
+	opts := prd.ConvertOptions{
+		Archive: convertArchiveFlag,
+		Force:   convertForceFlag,
+	}
+
 	// Convert
 	ctx := context.Background()
-	if err := prd.ConvertWithEngine(ctx, eng, mdPath, outPath, display); err != nil {
+	if err := deps.convertWithEngine(ctx, eng, mdPath, outPath, opts, display); err != nil {
 		return fmt.Errorf("conversion failed: %w", err)
 	}
 
@@ -95,7 +120,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	// Optionally validate
 	if convertValidateFlag {
 		display.ShowPhase(2, 2, "Validate")
-		result, err := prd.ValidateWithEngine(ctx, eng, outPath, display)
+		result, err := deps.validateWithEngine(ctx, eng, outPath, display)
 		if err != nil {
 			return fmt.Errorf("validation failed: %w", err)
 		}

@@ -17,9 +17,15 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
+// ConvertOptions controls safety behavior during conversion.
+type ConvertOptions struct {
+	Archive bool
+	Force   bool
+}
+
 // ConvertWithEngine converts a markdown PRD to JSON using the hal skill via an engine.
 // If mdPath is empty, the most recent prd-*.md in .hal/ is used.
-func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, display *engine.Display) error {
+func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, opts ConvertOptions, display *engine.Display) error {
 	// Load hal skill content
 	halSkill, err := skills.LoadSkill("hal")
 	if err != nil {
@@ -31,6 +37,12 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		mdSource, err = findLatestPRDMarkdown(template.HalDir)
 		if err != nil {
 			return err
+		}
+	}
+
+	if opts.Archive {
+		if _, ok := halDirForOutput(outPath); !ok {
+			return fmt.Errorf("--archive is only supported when output is .hal/prd.json")
 		}
 	}
 
