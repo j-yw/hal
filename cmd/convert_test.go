@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,9 +11,13 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/prd"
+	"github.com/jywlabs/hal/internal/template"
 )
 
-type fakeConvertEngine struct{}
+type fakeConvertEngine struct {
+	promptResponse string
+	promptErr      error
+}
 
 func (fakeConvertEngine) Name() string { return "fake" }
 
@@ -20,12 +25,12 @@ func (fakeConvertEngine) Execute(ctx context.Context, prompt string, display *en
 	return engine.Result{}
 }
 
-func (fakeConvertEngine) Prompt(ctx context.Context, prompt string) (string, error) {
-	return "", nil
+func (f fakeConvertEngine) Prompt(ctx context.Context, prompt string) (string, error) {
+	return f.promptResponse, f.promptErr
 }
 
-func (fakeConvertEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
-	return "", nil
+func (f fakeConvertEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
+	return f.promptResponse, f.promptErr
 }
 
 func preserveConvertFlags(t *testing.T) {
@@ -42,6 +47,34 @@ func preserveConvertFlags(t *testing.T) {
 		convertArchiveFlag = origArchive
 		convertForceFlag = origForce
 	})
+}
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stdout pipe: %v", err)
+	}
+
+	os.Stdout = w
+	runErr := fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("failed to close stdout writer: %v", err)
+	}
+	os.Stdout = origStdout
+
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("failed to read captured stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("failed to close stdout reader: %v", err)
+	}
+
+	return string(output), runErr
 }
 
 func TestConvertUsageIncludesSafetyFlags(t *testing.T) {
@@ -152,6 +185,135 @@ func TestRunConvertWithDeps_ArchiveCustomOutputReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--archive is only supported when output is .hal/prd.json") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunConvertWithDeps_FlagWiring(t *testing.T) {
+	tests := []struct {
+		name       string
+		outputFlag string
+		archive    bool
+		force      bool
+		wantOut    string
+	}{
+		{
+			name:       "explicit output passes archive and force options",
+			outputFlag: "custom-prd.json",
+			archive:    true,
+			force:      true,
+			wantOut:    "custom-prd.json",
+		},
+		{
+			name:       "empty output flag uses canonical default",
+			outputFlag: "",
+			archive:    false,
+			force:      false,
+			wantOut:    filepath.Join(template.HalDir, template.PRDFile),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preserveConvertFlags(t)
+
+			tmpDir := t.TempDir()
+			mdPath := filepath.Join(tmpDir, "prd.md")
+			if err := os.WriteFile(mdPath, []byte("# PRD"), 0644); err != nil {
+				t.Fatalf("failed to write markdown fixture: %v", err)
+			}
+
+			outputFlag := tt.outputFlag
+			wantOut := tt.wantOut
+			if outputFlag != "" {
+				outputFlag = filepath.Join(tmpDir, outputFlag)
+				wantOut = filepath.Join(tmpDir, wantOut)
+			}
+
+			convertEngineFlag = "claude"
+			convertOutputFlag = outputFlag
+			convertValidateFlag = false
+			convertArchiveFlag = tt.archive
+			convertForceFlag = tt.force
+
+			called := false
+			deps := convertDeps{
+				newEngine: func(name string) (engine.Engine, error) {
+					if name != "claude" {
+						t.Fatalf("newEngine called with %q, want %q", name, "claude")
+					}
+					return fakeConvertEngine{}, nil
+				},
+				convertWithEngine: func(ctx context.Context, eng engine.Engine, gotMDPath, gotOutPath string, opts prd.ConvertOptions, display *engine.Display) error {
+					called = true
+					if gotMDPath != mdPath {
+						t.Fatalf("mdPath = %q, want %q", gotMDPath, mdPath)
+					}
+					if gotOutPath != wantOut {
+						t.Fatalf("outPath = %q, want %q", gotOutPath, wantOut)
+					}
+					if opts.Archive != tt.archive {
+						t.Fatalf("opts.Archive = %v, want %v", opts.Archive, tt.archive)
+					}
+					if opts.Force != tt.force {
+						t.Fatalf("opts.Force = %v, want %v", opts.Force, tt.force)
+					}
+					if display == nil {
+						t.Fatal("display should not be nil")
+					}
+					return nil
+				},
+				validateWithEngine: func(ctx context.Context, eng engine.Engine, prdPath string, display *engine.Display) (*prd.ValidationResult, error) {
+					t.Fatal("validateWithEngine should not be called when --validate is false")
+					return nil, nil
+				},
+			}
+
+			if err := runConvertWithDeps(nil, []string{mdPath}, deps); err != nil {
+				t.Fatalf("runConvertWithDeps returned error: %v", err)
+			}
+			if !called {
+				t.Fatal("convertWithEngine was not called")
+			}
+		})
+	}
+}
+
+func TestRunConvertWithDeps_PrintsSelectedSourceMessage(t *testing.T) {
+	preserveConvertFlags(t)
+
+	tmpDir := t.TempDir()
+	mdPath := filepath.Join(tmpDir, "prd.md")
+	if err := os.WriteFile(mdPath, []byte("# PRD"), 0644); err != nil {
+		t.Fatalf("failed to write markdown fixture: %v", err)
+	}
+	outPath := filepath.Join(tmpDir, "out.json")
+
+	convertEngineFlag = "claude"
+	convertOutputFlag = outPath
+	convertValidateFlag = false
+	convertArchiveFlag = false
+	convertForceFlag = false
+
+	deps := convertDeps{
+		newEngine: func(name string) (engine.Engine, error) {
+			return fakeConvertEngine{
+				promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
+			}, nil
+		},
+		convertWithEngine: prd.ConvertWithEngine,
+		validateWithEngine: func(ctx context.Context, eng engine.Engine, prdPath string, display *engine.Display) (*prd.ValidationResult, error) {
+			return nil, nil
+		},
+	}
+
+	output, err := captureStdout(t, func() error {
+		return runConvertWithDeps(nil, []string{mdPath}, deps)
+	})
+	if err != nil {
+		t.Fatalf("runConvertWithDeps returned error: %v", err)
+	}
+	if !strings.Contains(output, "Using source: "+mdPath) {
+		t.Fatalf("expected selected-source message in output, got %q", output)
 	}
 }
 
