@@ -129,3 +129,4 @@
 - When archiving during convert, pass `archive.CreateOptions{ExcludePaths: []string{mdSource}}` so the markdown source being converted is not moved into the archive.
 - Canonical convert branch protection belongs in `internal/prd/convert.go`: compare existing `.hal/prd.json` `branchName` with converted output and block mismatches only when both are non-empty and neither `--archive` nor `--force` is set; keep the guard message exact (`branch changed from <old> to <new>; run 'hal convert --archive' or 'hal archive' first, or use --force`).
 - `runConvertWithDeps` writes display output through `os.Stdout`; command tests that need to assert streamed lines like `Using source: ...` should capture stdout (e.g., via `os.Pipe`) around the helper invocation.
+- When convert behavior changes, keep `cmd/convert.go` long help and README convert docs aligned, and add/update command help tests for required safety/source phrases to prevent documentation drift.

@@ -93,6 +93,25 @@ func TestConvertUsageIncludesSafetyFlags(t *testing.T) {
 	}
 }
 
+func TestConvertLongHelpDocumentsSourceSelectionAndSafety(t *testing.T) {
+	help := convertCmd.Long
+
+	checks := []string{
+		"Default convert does NOT archive existing state.",
+		"--archive is only supported when output is canonical .hal/prd.json.",
+		"scans .hal/prd-*.md and picks newest by modified time",
+		"picks lexicographically ascending filename",
+		"Using source: <path>",
+		"use --archive or --force to override",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(help, want) {
+			t.Fatalf("convert long help missing %q:\n%s", want, help)
+		}
+	}
+}
+
 func TestRunConvertWithDeps_DefaultSafetyFlagsAreFalse(t *testing.T) {
 	preserveConvertFlags(t)
 
