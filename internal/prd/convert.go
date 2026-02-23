@@ -42,10 +42,13 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		fmt.Fprintf(display.Writer(), "Using source: %s\n", mdSource)
 	}
 
+	archiveHalDir := ""
 	if opts.Archive {
-		if _, ok := halDirForOutput(outPath); !ok {
+		halDir, ok := halDirForOutput(outPath)
+		if !ok {
 			return fmt.Errorf("--archive is only supported when output is .hal/prd.json")
 		}
+		archiveHalDir = halDir
 	}
 
 	mdContent, err := os.ReadFile(mdSource)
@@ -53,9 +56,9 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		return fmt.Errorf("failed to read markdown PRD: %w", err)
 	}
 
-	if halDir, ok := halDirForOutput(outPath); ok {
-		opts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
-		hasState, err := archive.HasFeatureStateWithOptions(halDir, opts)
+	if opts.Archive {
+		archiveOpts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
+		hasState, err := archive.HasFeatureStateWithOptions(archiveHalDir, archiveOpts)
 		if err != nil {
 			return fmt.Errorf("failed to check existing feature state: %w", err)
 		}
@@ -65,7 +68,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 				out = display.Writer()
 			}
 			fmt.Fprintln(out, "  auto-archiving current state...")
-			if _, err := archive.CreateWithOptions(halDir, "auto-saved", out, opts); err != nil {
+			if _, err := archive.CreateWithOptions(archiveHalDir, "auto-saved", out, archiveOpts); err != nil {
 				return fmt.Errorf("failed to auto-archive current state: %w", err)
 			}
 		}

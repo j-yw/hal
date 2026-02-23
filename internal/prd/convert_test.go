@@ -77,7 +77,7 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestConvertWithEngine_AutoArchivesExistingState(t *testing.T) {
+func TestConvertWithEngine_ArchiveOptInArchivesExistingState(t *testing.T) {
 	tmpDir := t.TempDir()
 	halDir := filepath.Join(tmpDir, template.HalDir)
 	if err := os.MkdirAll(halDir, 0755); err != nil {
@@ -95,7 +95,7 @@ func TestConvertWithEngine_AutoArchivesExistingState(t *testing.T) {
 		promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
 	}
 
-	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Archive: true}, nil); err != nil {
 		t.Fatalf("ConvertWithEngine failed: %v", err)
 	}
 
@@ -140,14 +140,16 @@ func TestConvertWithEngine_AutoArchivesExistingState(t *testing.T) {
 	}
 }
 
-func TestConvertWithEngine_SkipsAutoArchiveWhenOnlyMarkdown(t *testing.T) {
+func TestConvertWithEngine_DefaultRunDoesNotArchiveExistingState(t *testing.T) {
 	tmpDir := t.TempDir()
 	halDir := filepath.Join(tmpDir, template.HalDir)
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 
-	mdPath := filepath.Join(halDir, "prd-only.md")
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old")
+	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+	mdPath := filepath.Join(halDir, "prd-new.md")
 	writeFile(t, mdPath, "# PRD")
 
 	outPath := filepath.Join(halDir, template.PRDFile)
@@ -159,16 +161,57 @@ func TestConvertWithEngine_SkipsAutoArchiveWhenOnlyMarkdown(t *testing.T) {
 		t.Fatalf("ConvertWithEngine failed: %v", err)
 	}
 
-	if _, err := os.Stat(mdPath); err != nil {
-		t.Fatalf("expected markdown PRD to remain, got error: %v", err)
-	}
-
 	archives, err := archive.List(halDir)
 	if err != nil {
 		t.Fatalf("failed to list archives: %v", err)
 	}
 	if len(archives) != 0 {
-		t.Fatalf("expected no archives, got %d", len(archives))
+		t.Fatalf("expected no archives for default convert, got %d", len(archives))
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("failed to read output prd.json: %v", err)
+	}
+	var prd engine.PRD
+	if err := json.Unmarshal(data, &prd); err != nil {
+		t.Fatalf("failed to parse output prd.json: %v", err)
+	}
+	if prd.BranchName != "hal/new" {
+		t.Fatalf("unexpected output branchName: %s", prd.BranchName)
+	}
+}
+
+func TestConvertWithEngine_CustomOutputWithoutArchiveSkipsArchiveSideEffects(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old")
+	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+	mdPath := filepath.Join(halDir, "prd-custom.md")
+	writeFile(t, mdPath, "# PRD")
+
+	outPath := filepath.Join(tmpDir, "custom-prd.json")
+	eng := &mockEngine{
+		promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("expected custom output to be written, got error: %v", err)
+	}
+	archives, err := archive.List(halDir)
+	if err != nil {
+		t.Fatalf("failed to list archives: %v", err)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("expected no archives for custom output default run, got %d", len(archives))
 	}
 }
 
@@ -179,6 +222,8 @@ func TestConvertWithEngine_ArchiveRequiresCanonicalOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old")
+	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 	mdPath := filepath.Join(halDir, "prd-new.md")
 	writeFile(t, mdPath, "# PRD")
 
@@ -194,9 +239,19 @@ func TestConvertWithEngine_ArchiveRequiresCanonicalOutput(t *testing.T) {
 	if !strings.Contains(err.Error(), "--archive is only supported when output is .hal/prd.json") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if eng.lastPrompt != "" {
+		t.Fatalf("expected engine not to run when --archive guard fails, got prompt %q", eng.lastPrompt)
+	}
 
 	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no output file to be written, stat error: %v", statErr)
+	}
+	archives, listErr := archive.List(halDir)
+	if listErr != nil {
+		t.Fatalf("failed to list archives: %v", listErr)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("expected no archive side effects, got %d archives", len(archives))
 	}
 }
 

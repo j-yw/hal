@@ -125,3 +125,5 @@
 - Conversion safety controls are passed through `prd.ConvertOptions`; when `Archive` is true and output is not canonical `.hal/prd.json`, return the exact guard error: `--archive is only supported when output is .hal/prd.json`.
 - Markdown source resolution for convert should stay deterministic in `internal/prd/convert.go`: newest `prd-*.md` by mtime wins, and equal mtimes must use lexicographic filename ascending as tie-break.
 - Missing auto-discovered markdown should return an actionable error (`run \`hal plan\` or pass an explicit markdown path`), and `ConvertWithEngine` should emit `Using source: <path>` via the display writer before prompting.
+- Convert archiving is strictly opt-in: only run `archive.HasFeatureStateWithOptions` / `archive.CreateWithOptions` when `ConvertOptions.Archive` is true; default convert runs must not create archive entries.
+- When archiving during convert, pass `archive.CreateOptions{ExcludePaths: []string{mdSource}}` so the markdown source being converted is not moved into the archive.
