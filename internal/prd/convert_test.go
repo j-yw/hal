@@ -1,12 +1,14 @@
 package prd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/archive"
 	"github.com/jywlabs/hal/internal/engine"
@@ -17,6 +19,7 @@ type mockEngine struct {
 	promptResponse string
 	promptError    error
 	promptHook     func() error
+	lastPrompt     string
 }
 
 func (m *mockEngine) Name() string {
@@ -28,6 +31,7 @@ func (m *mockEngine) Execute(ctx context.Context, prompt string, display *engine
 }
 
 func (m *mockEngine) Prompt(ctx context.Context, prompt string) (string, error) {
+	m.lastPrompt = prompt
 	if m.promptHook != nil {
 		if err := m.promptHook(); err != nil {
 			return "", err
@@ -37,6 +41,7 @@ func (m *mockEngine) Prompt(ctx context.Context, prompt string) (string, error) 
 }
 
 func (m *mockEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
+	m.lastPrompt = prompt
 	if m.promptHook != nil {
 		if err := m.promptHook(); err != nil {
 			return "", err
@@ -192,5 +197,189 @@ func TestConvertWithEngine_ArchiveRequiresCanonicalOutput(t *testing.T) {
 
 	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no output file to be written, stat error: %v", statErr)
+	}
+}
+
+func TestFindLatestPRDMarkdown(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(t *testing.T, halDir string)
+		wantBase string
+		wantErr  string
+	}{
+		{
+			name: "selects newest by modified time",
+			setup: func(t *testing.T, halDir string) {
+				t.Helper()
+				newer := filepath.Join(halDir, "prd-newer.md")
+				older := filepath.Join(halDir, "prd-older.md")
+				writeFile(t, newer, "# newer")
+				writeFile(t, older, "# older")
+
+				base := time.Date(2026, time.February, 23, 0, 0, 0, 0, time.UTC)
+				if err := os.Chtimes(older, base, base); err != nil {
+					t.Fatalf("failed to set mtime for %s: %v", older, err)
+				}
+				if err := os.Chtimes(newer, base.Add(time.Hour), base.Add(time.Hour)); err != nil {
+					t.Fatalf("failed to set mtime for %s: %v", newer, err)
+				}
+			},
+			wantBase: "prd-newer.md",
+		},
+		{
+			name: "uses lexicographic tie-break for equal modified times",
+			setup: func(t *testing.T, halDir string) {
+				t.Helper()
+				alpha := filepath.Join(halDir, "prd-alpha.md")
+				zeta := filepath.Join(halDir, "prd-zeta.md")
+				writeFile(t, alpha, "# alpha")
+				writeFile(t, zeta, "# zeta")
+
+				tie := time.Date(2026, time.February, 23, 1, 0, 0, 0, time.UTC)
+				if err := os.Chtimes(alpha, tie, tie); err != nil {
+					t.Fatalf("failed to set mtime for %s: %v", alpha, err)
+				}
+				if err := os.Chtimes(zeta, tie, tie); err != nil {
+					t.Fatalf("failed to set mtime for %s: %v", zeta, err)
+				}
+			},
+			wantBase: "prd-alpha.md",
+		},
+		{
+			name: "returns actionable error when no markdown sources exist",
+			setup: func(t *testing.T, halDir string) {
+				t.Helper()
+				if err := os.MkdirAll(halDir, 0755); err != nil {
+					t.Fatalf("failed to create hal dir: %v", err)
+				}
+			},
+			wantErr: "run `hal plan` or pass an explicit markdown path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			halDir := filepath.Join(tmpDir, template.HalDir)
+			if tt.setup != nil {
+				tt.setup(t, halDir)
+			}
+
+			got, err := findLatestPRDMarkdown(halDir)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if filepath.Base(got) != tt.wantBase {
+				t.Fatalf("selected %q, want %q", filepath.Base(got), tt.wantBase)
+			}
+		})
+	}
+}
+
+func TestConvertWithEngine_UsingSourceMessage(t *testing.T) {
+	tests := []struct {
+		name               string
+		setup              func(t *testing.T, tmpDir string) string
+		mdPath             string
+		wantSource         string
+		wantPromptContains string
+	}{
+		{
+			name: "auto-discovered source prints selected path",
+			setup: func(t *testing.T, tmpDir string) string {
+				t.Helper()
+				halDir := filepath.Join(tmpDir, template.HalDir)
+				writeFile(t, filepath.Join(halDir, "prd-auto.md"), "# AUTO SOURCE")
+				return filepath.Join(tmpDir, "out-auto.json")
+			},
+			mdPath:             "",
+			wantSource:         filepath.Join(template.HalDir, "prd-auto.md"),
+			wantPromptContains: "# AUTO SOURCE",
+		},
+		{
+			name: "explicit source prints provided path",
+			setup: func(t *testing.T, tmpDir string) string {
+				t.Helper()
+				writeFile(t, filepath.Join(tmpDir, "docs", "prd-explicit.md"), "# EXPLICIT SOURCE")
+				return filepath.Join(tmpDir, "out-explicit.json")
+			},
+			mdPath:             filepath.Join("docs", "prd-explicit.md"),
+			wantSource:         filepath.Join("docs", "prd-explicit.md"),
+			wantPromptContains: "# EXPLICIT SOURCE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			origDir, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("failed to get working directory: %v", err)
+			}
+			if err := os.Chdir(tmpDir); err != nil {
+				t.Fatalf("failed to chdir to temp dir: %v", err)
+			}
+			t.Cleanup(func() {
+				_ = os.Chdir(origDir)
+			})
+
+			outPath := tt.setup(t, tmpDir)
+			eng := &mockEngine{
+				promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
+			}
+
+			var output bytes.Buffer
+			display := engine.NewDisplay(&output)
+
+			if err := ConvertWithEngine(context.Background(), eng, tt.mdPath, outPath, ConvertOptions{}, display); err != nil {
+				t.Fatalf("ConvertWithEngine failed: %v", err)
+			}
+
+			if !strings.Contains(output.String(), "Using source: "+tt.wantSource) {
+				t.Fatalf("output %q does not contain source message for %q", output.String(), tt.wantSource)
+			}
+			if !strings.Contains(eng.lastPrompt, tt.wantPromptContains) {
+				t.Fatalf("prompt did not include expected markdown content %q", tt.wantPromptContains)
+			}
+		})
+	}
+}
+
+func TestConvertWithEngine_NoSourceMarkdownReturnsActionableError(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+	})
+
+	eng := &mockEngine{
+		promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
+	}
+
+	err = ConvertWithEngine(context.Background(), eng, "", filepath.Join(tmpDir, "out.json"), ConvertOptions{}, nil)
+	if err == nil {
+		t.Fatal("expected error when no markdown source exists")
+	}
+	if !strings.Contains(err.Error(), "run `hal plan` or pass an explicit markdown path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if eng.lastPrompt != "" {
+		t.Fatalf("expected engine not to be called, got prompt %q", eng.lastPrompt)
 	}
 }

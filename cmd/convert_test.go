@@ -154,3 +154,46 @@ func TestRunConvertWithDeps_ArchiveCustomOutputReturnsError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRunConvertWithDeps_ExplicitSourceMustExist(t *testing.T) {
+	preserveConvertFlags(t)
+
+	tmpDir := t.TempDir()
+	mdPath := filepath.Join(tmpDir, "missing-prd.md")
+
+	convertEngineFlag = "claude"
+	convertOutputFlag = filepath.Join(tmpDir, "out.json")
+	convertValidateFlag = false
+	convertArchiveFlag = false
+	convertForceFlag = false
+
+	newEngineCalled := false
+	convertCalled := false
+	deps := convertDeps{
+		newEngine: func(name string) (engine.Engine, error) {
+			newEngineCalled = true
+			return fakeConvertEngine{}, nil
+		},
+		convertWithEngine: func(ctx context.Context, eng engine.Engine, gotMDPath, gotOutPath string, opts prd.ConvertOptions, display *engine.Display) error {
+			convertCalled = true
+			return nil
+		},
+		validateWithEngine: func(ctx context.Context, eng engine.Engine, prdPath string, display *engine.Display) (*prd.ValidationResult, error) {
+			return nil, nil
+		},
+	}
+
+	err := runConvertWithDeps(nil, []string{mdPath}, deps)
+	if err == nil {
+		t.Fatal("expected an error for missing markdown source")
+	}
+	if !strings.Contains(err.Error(), "markdown PRD not found: "+mdPath) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if newEngineCalled {
+		t.Fatal("newEngine should not be called when markdown source is missing")
+	}
+	if convertCalled {
+		t.Fatal("convertWithEngine should not be called when markdown source is missing")
+	}
+}

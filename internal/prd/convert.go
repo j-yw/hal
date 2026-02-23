@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,12 +33,13 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		return fmt.Errorf("failed to load hal skill: %w", err)
 	}
 
-	mdSource := mdPath
-	if mdSource == "" {
-		mdSource, err = findLatestPRDMarkdown(template.HalDir)
-		if err != nil {
-			return err
-		}
+	mdSource, err := resolveMarkdownSource(mdPath, template.HalDir)
+	if err != nil {
+		return err
+	}
+
+	if display != nil {
+		fmt.Fprintf(display.Writer(), "Using source: %s\n", mdSource)
 	}
 
 	if opts.Archive {
@@ -273,31 +275,57 @@ func halDirForOutput(outPath string) (string, bool) {
 	return dir, true
 }
 
+func resolveMarkdownSource(mdPath, halDir string) (string, error) {
+	if mdPath != "" {
+		if _, err := os.Stat(mdPath); err != nil {
+			if os.IsNotExist(err) {
+				return "", fmt.Errorf("markdown PRD not found: %s", mdPath)
+			}
+			return "", fmt.Errorf("failed to inspect markdown PRD %s: %w", mdPath, err)
+		}
+		return mdPath, nil
+	}
+
+	return findLatestPRDMarkdown(halDir)
+}
+
+func missingMarkdownSourceError(halDir string) error {
+	return fmt.Errorf("no prd-*.md files found in %s; run `hal plan` or pass an explicit markdown path", halDir)
+}
+
 func findLatestPRDMarkdown(halDir string) (string, error) {
 	prdMDs, err := filepath.Glob(filepath.Join(halDir, "prd-*.md"))
 	if err != nil {
 		return "", fmt.Errorf("failed to scan PRD markdown files: %w", err)
 	}
 	if len(prdMDs) == 0 {
-		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
+		return "", missingMarkdownSourceError(halDir)
 	}
 
-	var latestPath string
-	var latestTime time.Time
+	type prdMDCandidate struct {
+		path    string
+		modTime time.Time
+	}
+
+	candidates := make([]prdMDCandidate, 0, len(prdMDs))
 	for _, path := range prdMDs {
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
 		}
-		if latestPath == "" || info.ModTime().After(latestTime) {
-			latestPath = path
-			latestTime = info.ModTime()
+		candidates = append(candidates, prdMDCandidate{path: path, modTime: info.ModTime()})
+	}
+
+	if len(candidates) == 0 {
+		return "", missingMarkdownSourceError(halDir)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].modTime.Equal(candidates[j].modTime) {
+			return filepath.Base(candidates[i].path) < filepath.Base(candidates[j].path)
 		}
-	}
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
 
-	if latestPath == "" {
-		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
-	}
-
-	return latestPath, nil
+	return candidates[0].path, nil
 }
