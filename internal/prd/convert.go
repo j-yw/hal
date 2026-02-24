@@ -95,6 +95,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 
 	// Parse and validate JSON from text response.
 	prdJSON, parseErr := extractJSONFromResponse(response)
+	usedOutputFallback := false
 	if parseErr != nil {
 		fallbackJSON, usedFallback, fallbackErr := fallbackJSONFromOutput(outPath, beforeOutput)
 		if fallbackErr != nil {
@@ -103,10 +104,16 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		if !usedFallback {
 			return fmt.Errorf("failed to extract JSON from response: %w", parseErr)
 		}
+		usedOutputFallback = true
 		prdJSON = fallbackJSON
 	}
 
 	if err := enforceBranchMismatchGuard(outPath, beforeOutput, prdJSON, opts); err != nil {
+		if usedOutputFallback {
+			if rollbackErr := restoreOutputSnapshot(outPath, beforeOutput); rollbackErr != nil {
+				return fmt.Errorf("%w (and failed to rollback output: %v)", err, rollbackErr)
+			}
+		}
 		return err
 	}
 
@@ -270,6 +277,27 @@ func outputWasUpdated(before, after *outputSnapshot) bool {
 	return !bytes.Equal(after.data, before.data)
 }
 
+func restoreOutputSnapshot(path string, before *outputSnapshot) error {
+	if before == nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, before.data, 0644); err != nil {
+		return err
+	}
+	if err := os.Chtimes(path, before.modTime, before.modTime); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func enforceBranchMismatchGuard(outPath string, beforeOutput *outputSnapshot, prdJSON string, opts ConvertOptions) error {
 	if _, canonical := halDirForOutput(outPath); !canonical {
 		return nil
@@ -317,6 +345,13 @@ func branchNameFromPRDJSON(prdJSON string) (string, error) {
 
 func halDirForOutput(outPath string) (string, bool) {
 	clean := filepath.Clean(outPath)
+	canonical := filepath.Join(template.HalDir, template.PRDFile)
+	if clean == canonical {
+		return template.HalDir, true
+	}
+	if !filepath.IsAbs(clean) {
+		return "", false
+	}
 	if filepath.Base(clean) != template.PRDFile {
 		return "", false
 	}

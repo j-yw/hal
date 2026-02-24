@@ -289,6 +289,46 @@ func TestConvertWithEngine_ArchiveRequiresCanonicalOutput(t *testing.T) {
 	}
 }
 
+func TestConvertWithEngine_ArchiveRejectsNestedHalOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old")
+	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+
+	outPath := filepath.Join("nested", template.HalDir, template.PRDFile)
+	eng := &mockEngine{
+		promptResponse: `{"project":"test","branchName":"hal/new","description":"desc","userStories":[]}`,
+	}
+
+	err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Archive: true}, nil)
+	if err == nil {
+		t.Fatal("expected error for --archive with nested .hal output path")
+	}
+	if !strings.Contains(err.Error(), "--archive is only supported when output is .hal/prd.json") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if eng.lastPrompt != "" {
+		t.Fatalf("expected engine not to run when --archive guard fails, got prompt %q", eng.lastPrompt)
+	}
+
+	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no output file to be written, stat error: %v", statErr)
+	}
+	archives, listErr := archive.List(halDir)
+	if listErr != nil {
+		t.Fatalf("failed to list archives: %v", listErr)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("expected no archive side effects, got %d archives", len(archives))
+	}
+}
+
 func TestConvertWithEngine_CanonicalBranchMismatchWithoutFlagsFailsBeforeWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	halDir := filepath.Join(tmpDir, template.HalDir)
@@ -326,6 +366,41 @@ func TestConvertWithEngine_CanonicalBranchMismatchWithoutFlagsFailsBeforeWrite(t
 	}
 	if len(archives) != 0 {
 		t.Fatalf("expected no archive side effects, got %d archives", len(archives))
+	}
+}
+
+func TestConvertWithEngine_CanonicalBranchMismatchFallbackDirectWriteRollsBack(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(halDir, template.PRDFile)
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old-feature")
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+
+	eng := &mockEngine{
+		promptResponse: "not-json",
+		promptHook: func() error {
+			return os.WriteFile(outPath, []byte(promptResponseWithBranch(t, "hal/new-feature")), 0644)
+		},
+	}
+
+	err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil)
+	if err == nil {
+		t.Fatal("expected branch mismatch error")
+	}
+
+	want := "branch changed from hal/old-feature to hal/new-feature; run 'hal convert --archive' or 'hal archive' first, or use --force"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := readPRDBranchName(t, outPath); got != "hal/old-feature" {
+		t.Fatalf("expected canonical PRD rollback to old branch, got %q", got)
 	}
 }
 
