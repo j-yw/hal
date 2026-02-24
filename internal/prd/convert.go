@@ -95,7 +95,6 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 
 	// Parse and validate JSON from text response.
 	prdJSON, parseErr := extractJSONFromResponse(response)
-	usedOutputFallback := false
 	if parseErr != nil {
 		fallbackJSON, usedFallback, fallbackErr := fallbackJSONFromOutput(outPath, beforeOutput)
 		if fallbackErr != nil {
@@ -104,12 +103,15 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		if !usedFallback {
 			return fmt.Errorf("failed to extract JSON from response: %w", parseErr)
 		}
-		usedOutputFallback = true
 		prdJSON = fallbackJSON
 	}
 
 	if err := enforceBranchMismatchGuard(outPath, beforeOutput, prdJSON, opts); err != nil {
-		if usedOutputFallback {
+		afterOutput, snapshotErr := readOutputSnapshot(outPath)
+		if snapshotErr != nil {
+			return fmt.Errorf("%w (and failed to inspect output for rollback: %v)", err, snapshotErr)
+		}
+		if outputWasUpdated(beforeOutput, afterOutput) {
 			if rollbackErr := restoreOutputSnapshot(outPath, beforeOutput); rollbackErr != nil {
 				return fmt.Errorf("%w (and failed to rollback output: %v)", err, rollbackErr)
 			}
@@ -349,17 +351,22 @@ func halDirForOutput(outPath string) (string, bool) {
 	if clean == canonical {
 		return template.HalDir, true
 	}
-	if !filepath.IsAbs(clean) {
+
+	outAbs, err := filepath.Abs(clean)
+	if err != nil {
 		return "", false
 	}
-	if filepath.Base(clean) != template.PRDFile {
+
+	canonicalAbs, err := filepath.Abs(canonical)
+	if err != nil {
 		return "", false
 	}
-	dir := filepath.Dir(clean)
-	if filepath.Base(dir) != template.HalDir {
+
+	if outAbs != canonicalAbs {
 		return "", false
 	}
-	return dir, true
+
+	return filepath.Dir(outAbs), true
 }
 
 func resolveMarkdownSource(mdPath, halDir string) (string, error) {
