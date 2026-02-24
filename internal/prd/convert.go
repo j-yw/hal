@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,21 +18,37 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
+// ConvertOptions controls safety behavior during conversion.
+type ConvertOptions struct {
+	Archive bool
+	Force   bool
+}
+
 // ConvertWithEngine converts a markdown PRD to JSON using the hal skill via an engine.
 // If mdPath is empty, the most recent prd-*.md in .hal/ is used.
-func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, display *engine.Display) error {
+func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath string, opts ConvertOptions, display *engine.Display) error {
 	// Load hal skill content
 	halSkill, err := skills.LoadSkill("hal")
 	if err != nil {
 		return fmt.Errorf("failed to load hal skill: %w", err)
 	}
 
-	mdSource := mdPath
-	if mdSource == "" {
-		mdSource, err = findLatestPRDMarkdown(template.HalDir)
-		if err != nil {
-			return err
+	mdSource, err := resolveMarkdownSource(mdPath, template.HalDir)
+	if err != nil {
+		return err
+	}
+
+	if display != nil {
+		fmt.Fprintf(display.Writer(), "Using source: %s\n", mdSource)
+	}
+
+	archiveHalDir := ""
+	if opts.Archive {
+		halDir, ok := halDirForOutput(outPath)
+		if !ok {
+			return fmt.Errorf("--archive is only supported when output is .hal/prd.json")
 		}
+		archiveHalDir = halDir
 	}
 
 	mdContent, err := os.ReadFile(mdSource)
@@ -39,9 +56,9 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		return fmt.Errorf("failed to read markdown PRD: %w", err)
 	}
 
-	if halDir, ok := halDirForOutput(outPath); ok {
-		opts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
-		hasState, err := archive.HasFeatureStateWithOptions(halDir, opts)
+	if opts.Archive {
+		archiveOpts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
+		hasState, err := archive.HasFeatureStateWithOptions(archiveHalDir, archiveOpts)
 		if err != nil {
 			return fmt.Errorf("failed to check existing feature state: %w", err)
 		}
@@ -51,7 +68,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 				out = display.Writer()
 			}
 			fmt.Fprintln(out, "  auto-archiving current state...")
-			if _, err := archive.CreateWithOptions(halDir, "auto-saved", out, opts); err != nil {
+			if _, err := archive.CreateWithOptions(archiveHalDir, "auto-saved", out, archiveOpts); err != nil {
 				return fmt.Errorf("failed to auto-archive current state: %w", err)
 			}
 		}
@@ -87,6 +104,19 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 			return fmt.Errorf("failed to extract JSON from response: %w", parseErr)
 		}
 		prdJSON = fallbackJSON
+	}
+
+	if err := enforceBranchMismatchGuard(outPath, beforeOutput, prdJSON, opts); err != nil {
+		afterOutput, snapshotErr := readOutputSnapshot(outPath)
+		if snapshotErr != nil {
+			return fmt.Errorf("%w (and failed to inspect output for rollback: %v)", err, snapshotErr)
+		}
+		if outputWasUpdated(beforeOutput, afterOutput) {
+			if rollbackErr := restoreOutputSnapshot(outPath, beforeOutput); rollbackErr != nil {
+				return fmt.Errorf("%w (and failed to rollback output: %v)", err, rollbackErr)
+			}
+		}
+		return err
 	}
 
 	// Ensure output directory exists
@@ -249,16 +279,112 @@ func outputWasUpdated(before, after *outputSnapshot) bool {
 	return !bytes.Equal(after.data, before.data)
 }
 
+func restoreOutputSnapshot(path string, before *outputSnapshot) error {
+	if before == nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, before.data, 0644); err != nil {
+		return err
+	}
+	if err := os.Chtimes(path, before.modTime, before.modTime); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func enforceBranchMismatchGuard(outPath string, beforeOutput *outputSnapshot, prdJSON string, opts ConvertOptions) error {
+	if _, canonical := halDirForOutput(outPath); !canonical {
+		return nil
+	}
+
+	existingBranch := branchNameFromSnapshot(beforeOutput)
+	incomingBranch, err := branchNameFromPRDJSON(prdJSON)
+	if err != nil {
+		return fmt.Errorf("failed to inspect converted branchName: %w", err)
+	}
+
+	if existingBranch == "" || incomingBranch == "" {
+		return nil
+	}
+	if existingBranch == incomingBranch {
+		return nil
+	}
+	if opts.Archive || opts.Force {
+		return nil
+	}
+
+	return fmt.Errorf("branch changed from %s to %s; run 'hal convert --archive' or 'hal archive' first, or use --force", existingBranch, incomingBranch)
+}
+
+func branchNameFromSnapshot(snapshot *outputSnapshot) string {
+	if snapshot == nil || len(snapshot.data) == 0 {
+		return ""
+	}
+
+	var prd engine.PRD
+	if err := json.Unmarshal(snapshot.data, &prd); err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(prd.BranchName)
+}
+
+func branchNameFromPRDJSON(prdJSON string) (string, error) {
+	var prd engine.PRD
+	if err := json.Unmarshal([]byte(prdJSON), &prd); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(prd.BranchName), nil
+}
+
 func halDirForOutput(outPath string) (string, bool) {
 	clean := filepath.Clean(outPath)
-	if filepath.Base(clean) != template.PRDFile {
+	canonical := filepath.Join(template.HalDir, template.PRDFile)
+	if clean == canonical {
+		return template.HalDir, true
+	}
+
+	outAbs, err := filepath.Abs(clean)
+	if err != nil {
 		return "", false
 	}
-	dir := filepath.Dir(clean)
-	if filepath.Base(dir) != template.HalDir {
+
+	canonicalAbs, err := filepath.Abs(canonical)
+	if err != nil {
 		return "", false
 	}
-	return dir, true
+
+	if outAbs != canonicalAbs {
+		return "", false
+	}
+
+	return filepath.Dir(outAbs), true
+}
+
+func resolveMarkdownSource(mdPath, halDir string) (string, error) {
+	if mdPath != "" {
+		if _, err := os.Stat(mdPath); err != nil {
+			if os.IsNotExist(err) {
+				return "", fmt.Errorf("markdown PRD not found: %s", mdPath)
+			}
+			return "", fmt.Errorf("failed to inspect markdown PRD %s: %w", mdPath, err)
+		}
+		return mdPath, nil
+	}
+
+	return findLatestPRDMarkdown(halDir)
+}
+
+func missingMarkdownSourceError(halDir string) error {
+	return fmt.Errorf("no prd-*.md files found in %s; run `hal plan` or pass an explicit markdown path", halDir)
 }
 
 func findLatestPRDMarkdown(halDir string) (string, error) {
@@ -267,25 +393,33 @@ func findLatestPRDMarkdown(halDir string) (string, error) {
 		return "", fmt.Errorf("failed to scan PRD markdown files: %w", err)
 	}
 	if len(prdMDs) == 0 {
-		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
+		return "", missingMarkdownSourceError(halDir)
 	}
 
-	var latestPath string
-	var latestTime time.Time
+	type prdMDCandidate struct {
+		path    string
+		modTime time.Time
+	}
+
+	candidates := make([]prdMDCandidate, 0, len(prdMDs))
 	for _, path := range prdMDs {
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
 		}
-		if latestPath == "" || info.ModTime().After(latestTime) {
-			latestPath = path
-			latestTime = info.ModTime()
+		candidates = append(candidates, prdMDCandidate{path: path, modTime: info.ModTime()})
+	}
+
+	if len(candidates) == 0 {
+		return "", missingMarkdownSourceError(halDir)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].modTime.Equal(candidates[j].modTime) {
+			return filepath.Base(candidates[i].path) < filepath.Base(candidates[j].path)
 		}
-	}
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
 
-	if latestPath == "" {
-		return "", fmt.Errorf("no prd-*.md files found in %s", halDir)
-	}
-
-	return latestPath, nil
+	return candidates[0].path, nil
 }
