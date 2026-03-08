@@ -20,13 +20,16 @@ var snapshotCmd = &cobra.Command{
 	Use:   "snapshot",
 	Short: "Manage sandbox snapshots",
 	Long:  `Manage Daytona snapshots used by hal sandbox commands.`,
+	Example: `  hal sandbox snapshot list
+  hal sandbox snapshot create`,
 }
 
 var snapshotListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List snapshots",
-	Args:  noArgsValidation(),
-	Long:  `List Daytona snapshots available to the configured account.`,
+	Use:     "list",
+	Short:   "List snapshots",
+	Args:    noArgsValidation(),
+	Long:    `List Daytona snapshots available to the configured account.`,
+	Example: `  hal sandbox snapshot list`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSnapshotList(".", os.Stdout, nil)
 	},
@@ -39,6 +42,7 @@ var snapshotDeleteCmd = &cobra.Command{
 	Long: `Delete a Daytona sandbox snapshot.
 
 Requires --id flag specifying the snapshot ID to delete.`,
+	Example: `  hal sandbox snapshot delete --id snap-123`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id, _ := cmd.Flags().GetString("id")
 		return runSnapshotDelete(".", id, os.Stdout, nil)
@@ -53,6 +57,7 @@ var snapshotCreateCmd = &cobra.Command{
 
 The template snapshot name is fixed to "hal" and is built from sandbox/Dockerfile (context ".").
 If an active "hal" snapshot already exists, the command reuses it.`,
+	Example: `  hal sandbox snapshot create`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSnapshotCreate(".", os.Stdout, nil, nil)
 	},

@@ -53,6 +53,10 @@ Examples:
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
 `,
+	Example: `  hal run
+  hal run 5
+  hal run --story US-001
+  hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
 	RunE: runRun,
 }

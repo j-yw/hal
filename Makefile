@@ -9,7 +9,9 @@ LDFLAGS := -ldflags "-X github.com/jywlabs/hal/cmd.Version=$(VERSION) -X github.
 GOCACHE ?= /tmp/hal-gocache
 export GOCACHE
 
-.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell
+DOCS_CLI_DIR := docs/cli
+
+.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check docs-cli docs-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell
 
 ## Default target
 all: build
@@ -74,6 +76,33 @@ release-check:
 	@echo "==> Checking GoReleaser config..."
 	@goreleaser check
 
+## Generate CLI markdown docs deterministically
+docs-cli:
+	@echo "==> Generating CLI markdown docs..."
+	@tmp_dir="$(DOCS_CLI_DIR).tmp"; \
+		rm -rf "$$tmp_dir" && \
+		mkdir -p "$$tmp_dir" && \
+		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown && \
+		rm -rf "$(DOCS_CLI_DIR)" && \
+		mv "$$tmp_dir" "$(DOCS_CLI_DIR)" && \
+		echo "    Generated $(DOCS_CLI_DIR)"
+
+## Check for CLI docs drift against regenerated markdown output
+docs-check:
+	@echo "==> Checking CLI docs for drift..."
+	@tmp_dir="$(DOCS_CLI_DIR).check.tmp"; \
+		rm -rf "$$tmp_dir" && \
+		mkdir -p "$$tmp_dir" && \
+		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown && \
+		if ! diff -ru "$(DOCS_CLI_DIR)" "$$tmp_dir" >/dev/null; then \
+			echo "    CLI docs drift detected. Run: make docs-cli"; \
+			diff -ru "$(DOCS_CLI_DIR)" "$$tmp_dir" || true; \
+			rm -rf "$$tmp_dir"; \
+			exit 1; \
+		fi; \
+		rm -rf "$$tmp_dir"; \
+		echo "    CLI docs are up to date"
+
 ## Show version info
 version: build
 	@./$(BINARY_NAME) version
@@ -111,6 +140,8 @@ help:
 	@echo "  make fmt              Format code"
 	@echo "  make lint             Run golangci-lint"
 	@echo "  make run              Build and run (use ARGS=... for args)"
+	@echo "  make docs-cli         Regenerate markdown CLI reference docs"
+	@echo "  make docs-check       Fail if committed CLI docs drift from regeneration"
 	@echo "  make version          Show version info"
 	@echo "  make release-dry-run  Snapshot release locally (no publish)"
 	@echo "  make release-check    Validate GoReleaser config"

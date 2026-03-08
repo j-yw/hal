@@ -51,8 +51,8 @@ hal init
 # Generate a PRD interactively
 hal plan "add user authentication"
 
-# Convert markdown PRD to JSON
-hal convert .hal/prd-user-authentication.md
+# Convert markdown PRD to JSON (auto-picks .hal/prd-*.md)
+hal convert
 
 # Validate the PRD
 hal validate
@@ -71,7 +71,7 @@ hal init → hal plan → hal convert → hal validate → hal run
 
 1. **init** — Set up `.hal/` directory with config, templates, skills, and commands
 2. **plan** — Generate a PRD through clarifying questions
-3. **convert** — Transform markdown PRD to structured JSON
+3. **convert** — Transform markdown PRD to structured JSON (default no archive; use `--archive` / `--force` for guarded canonical overwrites)
 4. **validate** — Check stories against quality rules
 5. **run** — Loop through stories: pick next, implement, commit, repeat
 
@@ -111,6 +111,10 @@ The old `hal review` reporting workflow moved to `hal report`.
 - `hal explode --branch <name>` is long-only (`-b` removed) and sets output PRD `branchName`.
 - Deprecation timeline: deprecated in `v0.2.0`, removed in `v1.0.0`.
 
+## CLI Reference
+
+Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) with the main entry page at [`docs/cli/hal.md`](docs/cli/hal.md).
+
 ## Commands
 
 ### Core Commands
@@ -119,7 +123,7 @@ The old `hal review` reporting workflow moved to `hal report`.
 |---------|-------------|
 | `hal init` | Initialize `.hal/` directory with config, skills, and commands |
 | `hal plan [description]` | Generate PRD (opens editor if no args) |
-| `hal convert <prd.md>` | Convert markdown PRD to JSON |
+| `hal convert [markdown-prd]` | Convert markdown PRD to JSON (auto-discover source when omitted) |
 | `hal validate [prd.json]` | Validate PRD against quality rules |
 | `hal run [iterations]` | Execute stories autonomously (default: 10; do not combine positional iterations with `-i/--iterations`) |
 
@@ -236,6 +240,44 @@ Good for quick, well-defined features.
 ```bash
 hal plan "notifications"                    # Outputs .hal/prd-notifications.md
 hal plan "notifications" --format json      # Outputs .hal/prd.json directly
+```
+
+## Converting PRDs Safely
+
+`hal convert` now defaults to a non-destructive workflow and makes stateful behavior explicit.
+
+### Source Selection
+
+- `hal convert` (no args) scans `.hal/prd-*.md`, picks the newest file by modified time, and uses lexicographic filename ascending as the tie-break when mtimes are equal.
+- `hal convert <path>` uses the explicit path as-is (and fails early if the file does not exist).
+- Once resolved, convert prints: `Using source: <path>`.
+
+### Safety Controls
+
+- Default convert **does not** archive existing feature state.
+- `--archive` archives existing feature state before writing canonical `.hal/prd.json`.
+- `--archive` is only supported when output is canonical `.hal/prd.json` (it is rejected with custom output paths).
+- Canonical writes are protected from accidental branch switches. If existing and incoming `branchName` values differ, convert stops with:
+  - `branch changed from <old> to <new>; run 'hal convert --archive' or 'hal archive' first, or use --force`
+- Use `--force` to bypass that branch-mismatch guard without creating an archive.
+
+### Convert Examples
+
+```bash
+# Default no-archive conversion (auto-select markdown source)
+hal convert
+
+# Explicit markdown source (still no archive unless requested)
+hal convert .hal/prd-authentication.md
+
+# Explicit archive flow before canonical overwrite
+hal convert --archive
+
+# Override canonical branch mismatch guard without archiving
+hal convert .hal/prd-authentication.md --force
+
+# Custom output path (archive disabled by design)
+hal convert .hal/prd-authentication.md -o /tmp/prd.json
 ```
 
 ## Running the Loop

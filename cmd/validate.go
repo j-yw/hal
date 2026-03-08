@@ -29,7 +29,10 @@ Checks:
 Examples:
   hal validate                    # Validate .hal/prd.json
   hal validate path/to/prd.json   # Validate specific file
-  hal validate -e codex           # Use Codex engine`,
+  hal validate -e claude          # Use Claude engine`,
+	Example: `  hal validate
+  hal validate .hal/prd.json
+  hal validate ./docs/prd.json --engine codex`,
 	Args: maxArgsValidation(1),
 	RunE: runValidate,
 }

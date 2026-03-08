@@ -21,6 +21,8 @@ var sandboxStopCmd = &cobra.Command{
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
 The sandbox state file is updated to reflect the stopped status.`,
+	Example: `  hal sandbox stop
+  hal sandbox stop --name hal-dev`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return runSandboxStop(".", name, os.Stdout, nil)

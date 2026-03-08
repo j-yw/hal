@@ -40,6 +40,10 @@ Examples:
   hal report --engine claude  # Use Claude instead
   hal report --dry-run        # Preview what would be reviewed
   hal report --skip-agents    # Skip AGENTS.md update`,
+	Example: `  hal report
+  hal report --engine claude
+  hal report --dry-run
+  hal report --skip-agents`,
 	RunE: runReport,
 }
 

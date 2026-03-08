@@ -29,6 +29,8 @@ Use '--' when the remote command starts with flags, for example:
 
 stdout and stderr from the remote command are streamed to the local terminal.
 The exit code from the remote command is propagated as the local exit code.`,
+	Example: `  hal sandbox exec -- pwd
+  hal sandbox exec --name hal-dev -- go test ./...`,
 	Args: minArgsValidation(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")

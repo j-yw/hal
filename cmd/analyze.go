@@ -59,6 +59,10 @@ Examples:
   hal analyze --reports-dir ./reports   # Use custom reports directory
   hal analyze --format json             # Output as JSON
   hal analyze --output json             # Deprecated alias for --format`,
+	Example: `  hal analyze
+  hal analyze .hal/reports/report.md
+  hal analyze --reports-dir ./reports
+  hal analyze --format json --engine codex`,
 	Args: maxArgsValidation(1),
 	RunE: runAnalyze,
 }

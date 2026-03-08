@@ -36,6 +36,10 @@ Examples:
   hal plan "user authentication"      # Interactive PRD generation
   hal plan "add dark mode" -f json    # Output directly to prd.json
   hal plan "notifications" -e claude  # Use Claude engine`,
+	Example: `  hal plan
+  hal plan "user authentication"
+  hal plan "add dark mode" --format json
+  hal plan "notifications" --engine codex`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runPlan,
 }

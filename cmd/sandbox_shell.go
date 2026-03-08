@@ -21,6 +21,8 @@ var sandboxShellCmd = &cobra.Command{
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
 The sandbox must be in the running (started) state.`,
+	Example: `  hal sandbox shell
+  hal sandbox shell --name hal-dev`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return runSandboxShell(".", name, os.Stdin, os.Stdout, nil, nil)

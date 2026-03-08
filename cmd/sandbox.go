@@ -28,6 +28,9 @@ Subcommands:
   shell       Open an interactive shell
   exec        Run a command in the sandbox
   snapshot    Manage sandbox snapshots`,
+	Example: `  hal sandbox setup
+  hal sandbox start
+  hal sandbox status`,
 }
 
 var sandboxSetupCmd = &cobra.Command{
@@ -40,7 +43,8 @@ Prompts for API key (masked input) and server URL (with default).
 Credentials are saved to the daytona: section of .hal/config.yaml.
 
 Re-running setup overwrites previous credentials.`,
-	RunE: runSandboxSetupCobra,
+	Example: `  hal sandbox setup`,
+	RunE:    runSandboxSetupCobra,
 }
 
 func init() {

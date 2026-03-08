@@ -22,6 +22,8 @@ var sandboxStatusCmd = &cobra.Command{
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
 Fetches live status from the Daytona API and displays Name and Status.
 When local sandbox state is used, also displays SnapshotID and CreatedAt.`,
+	Example: `  hal sandbox status
+  hal sandbox status --name hal-dev`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return runSandboxStatus(".", name, os.Stdout, nil)

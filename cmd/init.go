@@ -50,6 +50,9 @@ skill discovery.
 
 After init, create a prd.json with your user stories and run 'hal run'.
 Or use 'hal plan' to interactively generate a PRD.`,
+	Example: `  hal init
+  hal init --refresh-templates
+  hal init --refresh-templates --dry-run`,
 	RunE: runInit,
 }
 

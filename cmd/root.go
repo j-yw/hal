@@ -12,6 +12,9 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "hal",
 	Short: "Hal - Autonomous task executor using AI coding agents",
+	CompletionOptions: cobra.CompletionOptions{
+		DisableDefaultCmd: true,
+	},
 	Long: `Hal is a CLI tool that autonomously executes PRD-driven tasks
 using AI coding agents like Codex (default), Claude Code, and pi.
 
@@ -38,6 +41,15 @@ Quick Start:
   1. hal init
   2. hal plan "add user authentication" --format json
   3. hal run`,
+	Example: `  hal init
+  hal plan "add user authentication" --format json
+  hal validate
+  hal run`,
+}
+
+// Root returns the root cobra command for reuse by tooling.
+func Root() *cobra.Command {
+	return rootCmd
 }
 
 func init() {

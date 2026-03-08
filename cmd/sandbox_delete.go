@@ -21,6 +21,8 @@ var sandboxDeleteCmd = &cobra.Command{
 
 Reads the sandbox name from .hal/sandbox.json unless --name is specified.
 After successful deletion, sandbox.json is removed if it matches the deleted sandbox.`,
+	Example: `  hal sandbox delete
+  hal sandbox delete --name hal-dev`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return runSandboxDelete(".", name, os.Stdout, nil)

@@ -34,7 +34,10 @@ and is used by the auto pipeline (not the manual run command).
 Examples:
   hal explode .hal/prd-feature.md                    # Explode a PRD
   hal explode .hal/prd-feature.md --branch feature   # Set branch name
-  hal explode .hal/prd-feature.md --engine codex      # Use specific engine`,
+  hal explode .hal/prd-feature.md --engine claude    # Use specific engine`,
+	Example: `  hal explode .hal/prd-checkout.md
+  hal explode .hal/prd-checkout.md --branch checkout
+  hal explode .hal/prd-checkout.md --engine codex`,
 	Args: exactArgsValidation(1),
 	RunE: runExplode,
 }

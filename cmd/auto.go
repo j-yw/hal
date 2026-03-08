@@ -44,6 +44,10 @@ Examples:
   hal auto --resume            # Continue from last saved state
   hal auto --skip-pr           # Skip PR creation at the end
   hal auto --base develop      # Use develop as the base branch`,
+	Example: `  hal auto
+  hal auto --report .hal/reports/report.md
+  hal auto --resume
+  hal auto --engine codex --base develop`,
 	RunE: runAuto,
 }
 

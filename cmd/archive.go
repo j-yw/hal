@@ -32,6 +32,8 @@ Never touches: config.yaml, prompt.md, skills/, rules/.
 Use --name/-n to set the archive name, or you will be prompted interactively.
 
 'hal archive' is an alias for 'hal archive create'.`,
+	Example: `  hal archive
+  hal archive --name checkout-flow`,
 	RunE: runArchive,
 }
 
@@ -42,6 +44,8 @@ var archiveCreateCmd = &cobra.Command{
 	Long: `Archive all feature state files from .hal/ into .hal/archive/<date>-<name>/.
 
 Use --name/-n to set the archive name, or omit it to be prompted interactively.`,
+	Example: `  hal archive create
+  hal archive create --name checkout-flow`,
 	RunE: runArchiveCreateCommand,
 }
 
@@ -53,6 +57,8 @@ var archiveListCmd = &cobra.Command{
 	Long: `List all archived features with date, name, and completion stats.
 
 Use --verbose for detailed output including branch name and full path.`,
+	Example: `  hal archive list
+  hal archive list --verbose`,
 	RunE: runArchiveList,
 }
 
@@ -67,7 +73,8 @@ If there is current feature state, it will be auto-archived first.
 
 The name argument is the archive directory name (e.g., 2026-01-15-my-feature).
 Use 'hal archive list' to see available archives.`,
-	RunE: runArchiveRestore,
+	Example: `  hal archive restore 2026-01-15-checkout-flow`,
+	RunE:    runArchiveRestore,
 }
 
 func init() {

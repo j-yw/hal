@@ -26,6 +26,8 @@ Use --name to override the default name.
 
 hal always starts from the template snapshot "hal".
 If "hal" does not exist, it is created from sandbox/Dockerfile with context ".".`,
+	Example: `  hal sandbox start
+  hal sandbox start --name hal-dev`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		return runSandboxStartWithDeps(".", name, os.Stdout, nil, nil, nil, nil)

@@ -24,6 +24,8 @@ This command removes:
 Use --dry-run to preview what would be removed without making changes.
 
 This command is idempotent and safe to run multiple times.`,
+	Example: `  hal cleanup --dry-run
+  hal cleanup`,
 	RunE: runCleanup,
 }
 
