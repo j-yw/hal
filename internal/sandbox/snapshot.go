@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -221,7 +222,13 @@ func prepareSnapshotContext(sourceDir string, out io.Writer) (string, func(), er
 		_ = os.RemoveAll(tmpDir)
 	}
 
-	if err := copySnapshotContext(sourceDir, tmpDir, out); err != nil {
+	matcher, err := loadDockerIgnore(sourceDir)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+
+	if err := copySnapshotContext(sourceDir, tmpDir, out, matcher); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -229,7 +236,7 @@ func prepareSnapshotContext(sourceDir string, out io.Writer) (string, func(), er
 	return tmpDir, cleanup, nil
 }
 
-func copySnapshotContext(sourceDir, targetDir string, out io.Writer) error {
+func copySnapshotContext(sourceDir, targetDir string, out io.Writer, matcher dockerIgnoreMatcher) error {
 	return filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -240,6 +247,12 @@ func copySnapshotContext(sourceDir, targetDir string, out io.Writer) error {
 			return err
 		}
 		if rel == "." {
+			return nil
+		}
+		if matcher.ignored(rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -255,6 +268,11 @@ func copySnapshotContext(sourceDir, targetDir string, out io.Writer) error {
 				if out != nil {
 					fmt.Fprintf(out, "Skipping broken symlink in build context: %s\n", rel)
 				}
+				return nil
+			}
+			if ignored, err := matcher.ignoredSymlinkTarget(sourceDir, path, targetInfo.IsDir()); err != nil {
+				return err
+			} else if ignored {
 				return nil
 			}
 			if targetInfo.IsDir() {
@@ -314,4 +332,120 @@ func copyFile(src, dst string, perm os.FileMode) error {
 	}
 
 	return nil
+}
+
+type dockerIgnorePattern struct {
+	pattern string
+	negated bool
+}
+
+type dockerIgnoreMatcher []dockerIgnorePattern
+
+func loadDockerIgnore(sourceDir string) (dockerIgnoreMatcher, error) {
+	data, err := os.ReadFile(filepath.Join(sourceDir, ".dockerignore"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading .dockerignore: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	patterns := make(dockerIgnoreMatcher, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		pattern := dockerIgnorePattern{}
+		if strings.HasPrefix(line, "!") {
+			pattern.negated = true
+			line = strings.TrimSpace(strings.TrimPrefix(line, "!"))
+		}
+		line = filepath.ToSlash(filepath.Clean(strings.Trim(line, "/")))
+		if line == "." || line == "" {
+			continue
+		}
+		pattern.pattern = line
+		patterns = append(patterns, pattern)
+	}
+
+	return patterns, nil
+}
+
+func (m dockerIgnoreMatcher) ignored(rel string, isDir bool) bool {
+	if len(m) == 0 {
+		return false
+	}
+
+	rel = filepath.ToSlash(rel)
+	ignored := false
+	for _, pattern := range m {
+		if pattern.matches(rel, isDir) {
+			ignored = !pattern.negated
+		}
+	}
+
+	return ignored
+}
+
+func (m dockerIgnoreMatcher) ignoredSymlinkTarget(sourceDir, symlinkPath string, isDir bool) (bool, error) {
+	if len(m) == 0 {
+		return false, nil
+	}
+
+	resolved, err := filepath.EvalSymlinks(symlinkPath)
+	if err != nil {
+		return false, err
+	}
+
+	rel, err := filepath.Rel(sourceDir, resolved)
+	if err != nil {
+		return false, err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false, nil
+	}
+
+	return m.ignored(rel, isDir), nil
+}
+
+func (p dockerIgnorePattern) matches(rel string, isDir bool) bool {
+	rel = filepath.ToSlash(rel)
+	candidates := pathAncestors(rel)
+	for _, candidate := range candidates {
+		ok, err := path.Match(p.pattern, candidate)
+		if err == nil && ok {
+			return true
+		}
+	}
+
+	if strings.Contains(p.pattern, "/") {
+		return false
+	}
+
+	parts := strings.Split(rel, "/")
+	for _, part := range parts {
+		ok, err := path.Match(p.pattern, part)
+		if err == nil && ok {
+			return true
+		}
+	}
+
+	if isDir {
+		ok, err := path.Match(p.pattern, path.Base(rel))
+		return err == nil && ok
+	}
+
+	return false
+}
+
+func pathAncestors(rel string) []string {
+	parts := strings.Split(rel, "/")
+	ancestors := make([]string, 0, len(parts))
+	for i := 1; i <= len(parts); i++ {
+		ancestors = append(ancestors, strings.Join(parts[:i], "/"))
+	}
+	return ancestors
 }

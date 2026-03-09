@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,5 +254,54 @@ func TestPrepareSnapshotContext_SkipsSymlinkDirectories(t *testing.T) {
 
 	if !strings.Contains(out.String(), "Skipping symlinked directory in build context") {
 		t.Fatalf("expected skip message in output, got: %q", out.String())
+	}
+}
+
+func TestPrepareSnapshotContext_HonorsDockerignore(t *testing.T) {
+	src := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(src, ".dockerignore"), []byte(".hal\n.env\n.git\n"), 0644); err != nil {
+		t.Fatalf("write .dockerignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0644); err != nil {
+		t.Fatalf("write keep file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".env"), []byte("secret"), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	halDir := filepath.Join(src, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("create .hal dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("token: secret"), 0644); err != nil {
+		t.Fatalf("write .hal/config.yaml: %v", err)
+	}
+
+	gitDir := filepath.Join(src, ".git")
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main"), 0644); err != nil {
+		t.Fatalf("write .git/HEAD: %v", err)
+	}
+
+	preparedDir, cleanup, err := prepareSnapshotContext(src, io.Discard)
+	if err != nil {
+		t.Fatalf("prepareSnapshotContext returned error: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(filepath.Join(preparedDir, "keep.txt")); err != nil {
+		t.Fatalf("expected keep.txt in prepared context: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(preparedDir, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("expected .env to be excluded, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(preparedDir, ".hal")); !os.IsNotExist(err) {
+		t.Fatalf("expected .hal to be excluded, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(preparedDir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected .git to be excluded, got err=%v", err)
 	}
 }
