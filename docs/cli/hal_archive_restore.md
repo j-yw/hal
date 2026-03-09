@@ -27,13 +27,6 @@ hal archive restore <name> [flags]
   -h, --help   help for restore
 ```
 
-### Options inherited from parent commands
-
-```
-  -n, --name string   Archive name (default: derived from branch name)
-```
-
 ### SEE ALSO
 
 * [hal archive](hal_archive.md)	 - Archive current feature state
-

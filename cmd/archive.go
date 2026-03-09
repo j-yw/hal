@@ -78,7 +78,16 @@ Use 'hal archive list' to see available archives.`,
 }
 
 func init() {
-	archiveCmd.PersistentFlags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveCreateCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveListCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveRestoreCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	if err := archiveListCmd.Flags().MarkHidden("name"); err != nil {
+		panic(err)
+	}
+	if err := archiveRestoreCmd.Flags().MarkHidden("name"); err != nil {
+		panic(err)
+	}
 	archiveListCmd.Flags().BoolVarP(&archiveVerboseFlag, "verbose", "v", false, "Show detailed output")
 
 	archiveCmd.AddCommand(archiveCreateCmd)
