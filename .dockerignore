@@ -12,6 +12,7 @@
 .hal
 .env
 sandbox/.env
+daytona-runner/node_modules/
 
 # OS junk
 .DS_Store
