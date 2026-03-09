@@ -36,7 +36,7 @@ make install    # Installs to ~/.local/bin
 
 ### Requirements
 
-- Go 1.22+ (for building from source)
+- Go 1.25.7+ (for building from source)
 - One of the following AI coding agents:
   - [Codex](https://github.com/openai/codex) CLI (default engine)
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
