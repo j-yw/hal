@@ -76,7 +76,7 @@ else
   inc_fail
 fi
 
-SKILL_COUNT=$(find /root/.claude/skills -type f -name '*.md' 2>/dev/null | wc -l)
+SKILL_COUNT=$(find /root/.claude/skills -type f -iname '*.md' 2>/dev/null | wc -l)
 if [ "$SKILL_COUNT" -gt 0 ]; then
   echo -e "  ${GREEN}✓${NC} skills: ${SKILL_COUNT} skill files"
   inc_pass

@@ -14,6 +14,9 @@ ARG NODE_MAJOR=22
 ARG CLAUDE_CODE_VERSION=2.1.42
 ARG PI_CODING_AGENT_VERSION=0.52.10
 ARG CODEX_VERSION=0.101.0
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -64,7 +67,7 @@ WORKDIR /tmp/hal-build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN make build \
+RUN make build VERSION="${VERSION}" COMMIT="${COMMIT}" BUILD_DATE="${BUILD_DATE}" \
     && cp hal /usr/local/bin/hal
 
 # -- Claude Code configuration ------------------------------------------------

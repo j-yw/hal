@@ -110,12 +110,20 @@ version: build
 ## Build sandbox Docker image (native platform)
 sandbox-build:
 	@echo "==> Building sandbox image..."
-	@docker build -f sandbox/Dockerfile -t hal-sandbox .
+	@docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
+		-f sandbox/Dockerfile -t hal-sandbox .
 
 ## Build sandbox for Daytona (linux/amd64)
 sandbox-build-amd64:
 	@echo "==> Building sandbox image (linux/amd64)..."
-	@docker build --platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox:amd64 .
+	@docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
+		--platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox:amd64 .
 
 ## Run sandbox smoke tests
 sandbox-test: sandbox-build
