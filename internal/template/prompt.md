@@ -78,6 +78,9 @@ Only update AGENTS.md if you have **genuinely reusable knowledge** that would he
 - Never run commands that block indefinitely without a timeout
 - Before any browser verification, check if a dev server is running first
 - If no server is running, SKIP browser verification — rely on typecheck + build
+- Use `pinchtab` for browser verification
+- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build
+- Do NOT use `agent-browser` or `dev-browser`
 - Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)
 
 ## Quality Requirements
@@ -91,12 +94,14 @@ Only update AGENTS.md if you have **genuinely reusable knowledge** that would he
 
 For any story that changes UI, you MUST verify it works in the browser:
 
-1. Use browser automation tools available to you
+1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)
 2. Navigate to the relevant page
 3. Interact with elements and verify behavior
-4. Take screenshots if helpful
+4. Retry `pinchtab` up to 3 times if the tool fails transiently
+5. If all 3 attempts fail, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)
+6. Take screenshots if helpful
 
-A frontend story is NOT complete until browser verification passes.
+A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.
 
 ## Stop Condition
 
