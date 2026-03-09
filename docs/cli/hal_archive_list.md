@@ -29,3 +29,4 @@ hal archive list [flags]
 ### SEE ALSO
 
 * [hal archive](hal_archive.md)	 - Archive current feature state
+
