@@ -22,12 +22,7 @@ hal archive create [flags]
 ### Options
 
 ```
-  -h, --help   help for create
-```
-
-### Options inherited from parent commands
-
-```
+  -h, --help          help for create
   -n, --name string   Archive name (default: derived from branch name)
 ```
 
