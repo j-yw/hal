@@ -30,7 +30,7 @@ Full feature parity with the existing TypeScript implementation:
 - [ ] Markdown folder task source
 - [ ] Branch-per-task with automatic PR creation
 - [ ] Webhook notifications (Discord, Slack, custom)
-- [ ] Browser automation integration (agent-browser)
+- [ ] Browser automation integration (pinchtab)
 - [ ] Agent skills detection (`.opencode/skills`, `.claude/skills`, `.skills`)
 - [ ] Deferred task tracking for session resumption
 - [ ] Desktop notifications

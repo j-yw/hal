@@ -29,51 +29,119 @@ and reports/* (non-hidden files).
 
 Never touches: config.yaml, prompt.md, skills/, rules/.
 
-Use --name to set the archive name, or you will be prompted interactively.`,
+Use --name/-n to set the archive name, or you will be prompted interactively.
+
+'hal archive' is an alias for 'hal archive create'.`,
+	Example: `  hal archive
+  hal archive --name checkout-flow`,
 	RunE: runArchive,
 }
 
+var archiveCreateCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Archive current feature state",
+	Args:  noArgsValidation(),
+	Long: `Archive all feature state files from .hal/ into .hal/archive/<date>-<name>/.
+
+Use --name/-n to set the archive name, or omit it to be prompted interactively.`,
+	Example: `  hal archive create
+  hal archive create --name checkout-flow`,
+	RunE: runArchiveCreateCommand,
+}
+
 var archiveListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all archives",
+	Use:     "list",
+	Short:   "List all archives",
+	Args:    noArgsValidation(),
+	PreRunE: disallowArchiveNameFlagOnSubcommands,
 	Long: `List all archived features with date, name, and completion stats.
 
 Use --verbose for detailed output including branch name and full path.`,
+	Example: `  hal archive list
+  hal archive list --verbose`,
 	RunE: runArchiveList,
 }
 
 var archiveRestoreCmd = &cobra.Command{
-	Use:   "restore <name>",
-	Short: "Restore an archived feature",
+	Use:     "restore <name>",
+	Short:   "Restore an archived feature",
+	Args:    exactArgsValidation(1),
+	PreRunE: disallowArchiveNameFlagOnSubcommands,
 	Long: `Restore files from an archive directory back into .hal/.
 
 If there is current feature state, it will be auto-archived first.
 
 The name argument is the archive directory name (e.g., 2026-01-15-my-feature).
 Use 'hal archive list' to see available archives.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runArchiveRestore,
+	Example: `  hal archive restore 2026-01-15-checkout-flow`,
+	RunE:    runArchiveRestore,
 }
 
 func init() {
-	archiveCmd.Flags().StringVar(&archiveNameFlag, "name", "", "Archive name (default: derived from branch name)")
+	archiveCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveCreateCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveListCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveRestoreCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	if err := archiveListCmd.Flags().MarkHidden("name"); err != nil {
+		panic(err)
+	}
+	if err := archiveRestoreCmd.Flags().MarkHidden("name"); err != nil {
+		panic(err)
+	}
 	archiveListCmd.Flags().BoolVarP(&archiveVerboseFlag, "verbose", "v", false, "Show detailed output")
 
+	archiveCmd.AddCommand(archiveCreateCmd)
 	archiveCmd.AddCommand(archiveListCmd)
 	archiveCmd.AddCommand(archiveRestoreCmd)
 	rootCmd.AddCommand(archiveCmd)
 }
 
+func disallowArchiveNameFlagOnSubcommands(cmd *cobra.Command, args []string) error {
+	if cmd != nil && cmd.Flags().Changed("name") {
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--name/-n is only valid with 'hal archive' or 'hal archive create'"))
+	}
+	return nil
+}
+
 func runArchive(cmd *cobra.Command, args []string) error {
-	return runArchiveCreate(template.HalDir, archiveNameFlag, os.Stdin, os.Stdout)
+	return runParentCommand(cmd, args, func() error {
+		return runArchiveCreateWithIO(cmd, archiveNameFlag)
+	})
+}
+
+func runArchiveCreateCommand(cmd *cobra.Command, args []string) error {
+	return runArchiveCreateWithIO(cmd, archiveNameFlag)
+}
+
+func runArchiveCreateWithIO(cmd *cobra.Command, name string) error {
+	in := io.Reader(os.Stdin)
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		in = cmd.InOrStdin()
+		out = cmd.OutOrStdout()
+	}
+
+	if strings.TrimSpace(name) == "" && isNonInteractive(in) {
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("archive name is required in non-interactive mode; pass --name/-n"))
+	}
+
+	return runArchiveCreate(template.HalDir, name, in, out)
 }
 
 func runArchiveList(cmd *cobra.Command, args []string) error {
-	return runArchiveListFn(template.HalDir, archiveVerboseFlag, os.Stdout)
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+	return runArchiveListFn(template.HalDir, archiveVerboseFlag, out)
 }
 
 func runArchiveRestore(cmd *cobra.Command, args []string) error {
-	return runArchiveRestoreFn(template.HalDir, args[0], os.Stdout)
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+	return runArchiveRestoreFn(template.HalDir, args[0], out)
 }
 
 // runArchiveCreate contains the testable logic for the archive create command.

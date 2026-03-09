@@ -20,7 +20,7 @@ var (
 var reportCmd = &cobra.Command{
 	Use:   "report",
 	Short: "Run legacy session reporting for completed work",
-	Args:  cobra.NoArgs,
+	Args:  noArgsValidation(),
 	Long: `Run legacy session reporting for the completed work session and generate a summary report.
 
 This command preserves the workflow that previously lived under 'hal review'.
@@ -40,6 +40,10 @@ Examples:
   hal report --engine claude  # Use Claude instead
   hal report --dry-run        # Preview what would be reviewed
   hal report --skip-agents    # Skip AGENTS.md update`,
+	Example: `  hal report
+  hal report --engine claude
+  hal report --dry-run
+  hal report --skip-agents`,
 	RunE: runReport,
 }
 
@@ -101,12 +105,17 @@ func runReport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	return runReportWithDeps(
 		ctx,
 		".",
 		dryRun,
 		skipAgents,
-		engineName,
+		resolvedEngine,
 		out,
 		defaultReportDeps,
 	)

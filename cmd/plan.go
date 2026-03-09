@@ -36,12 +36,16 @@ Examples:
   hal plan "user authentication"      # Interactive PRD generation
   hal plan "add dark mode" -f json    # Output directly to prd.json
   hal plan "notifications" -e claude  # Use Claude engine`,
+	Example: `  hal plan
+  hal plan "user authentication"
+  hal plan "add dark mode" --format json
+  hal plan "notifications" --engine codex`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runPlan,
 }
 
 func init() {
-	planCmd.Flags().StringVarP(&planEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
+	planCmd.Flags().StringVarP(&planEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	planCmd.Flags().StringVarP(&planFormatFlag, "format", "f", "markdown", "Output format: markdown, json")
 	rootCmd.AddCommand(planCmd)
 }
@@ -63,8 +67,13 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		description = strings.Join(args, " ")
 	}
 
+	engineName, err := resolveEngine(cmd, "engine", planEngineFlag, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	// Create engine
-	eng, err := newEngine(planEngineFlag)
+	eng, err := newEngine(engineName)
 	if err != nil {
 		return err
 	}
@@ -73,7 +82,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Plan", description, buildHeaderCtx(planEngineFlag))
+	display.ShowCommandHeader("Plan", description, buildHeaderCtx(engineName))
 
 	// Generate PRD
 	ctx := context.Background()

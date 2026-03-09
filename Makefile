@@ -9,7 +9,9 @@ LDFLAGS := -ldflags "-X github.com/jywlabs/hal/cmd.Version=$(VERSION) -X github.
 GOCACHE ?= /tmp/hal-gocache
 export GOCACHE
 
-.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check
+DOCS_CLI_DIR := docs/cli
+
+.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check docs-cli docs-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell
 
 ## Default target
 all: build
@@ -74,9 +76,63 @@ release-check:
 	@echo "==> Checking GoReleaser config..."
 	@goreleaser check
 
+## Generate CLI markdown docs deterministically
+docs-cli:
+	@echo "==> Generating CLI markdown docs..."
+	@tmp_dir="$(DOCS_CLI_DIR).tmp"; \
+		rm -rf "$$tmp_dir" && \
+		mkdir -p "$$tmp_dir" && \
+		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown && \
+		rm -rf "$(DOCS_CLI_DIR)" && \
+		mv "$$tmp_dir" "$(DOCS_CLI_DIR)" && \
+		echo "    Generated $(DOCS_CLI_DIR)"
+
+## Check for CLI docs drift against regenerated markdown output
+docs-check:
+	@echo "==> Checking CLI docs for drift..."
+	@tmp_dir="$(DOCS_CLI_DIR).check.tmp"; \
+		rm -rf "$$tmp_dir" && \
+		mkdir -p "$$tmp_dir" && \
+		go run ./internal/tools/docgen -out "$$tmp_dir" -format markdown && \
+		if ! diff -ru "$(DOCS_CLI_DIR)" "$$tmp_dir" >/dev/null; then \
+			echo "    CLI docs drift detected. Run: make docs-cli"; \
+			diff -ru "$(DOCS_CLI_DIR)" "$$tmp_dir" || true; \
+			rm -rf "$$tmp_dir"; \
+			exit 1; \
+		fi; \
+		rm -rf "$$tmp_dir"; \
+		echo "    CLI docs are up to date"
+
 ## Show version info
 version: build
 	@./$(BINARY_NAME) version
+
+## Build sandbox Docker image (native platform)
+sandbox-build:
+	@echo "==> Building sandbox image..."
+	@docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
+		-f sandbox/Dockerfile -t hal-sandbox .
+
+## Build sandbox for Daytona (linux/amd64)
+sandbox-build-amd64:
+	@echo "==> Building sandbox image (linux/amd64)..."
+	@docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
+		--platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox:amd64 .
+
+## Run sandbox smoke tests
+sandbox-test: sandbox-build
+	@echo "==> Running sandbox smoke tests..."
+	@docker run --rm hal-sandbox /test.sh
+
+## Interactive sandbox shell
+sandbox-shell: sandbox-build
+	@docker run --rm -it $$([ -f sandbox/.env ] && echo "--env-file sandbox/.env") hal-sandbox
 
 ## Show help
 help:
@@ -92,9 +148,14 @@ help:
 	@echo "  make fmt              Format code"
 	@echo "  make lint             Run golangci-lint"
 	@echo "  make run              Build and run (use ARGS=... for args)"
+	@echo "  make docs-cli         Regenerate markdown CLI reference docs"
+	@echo "  make docs-check       Fail if committed CLI docs drift from regeneration"
 	@echo "  make version          Show version info"
 	@echo "  make release-dry-run  Snapshot release locally (no publish)"
 	@echo "  make release-check    Validate GoReleaser config"
+	@echo "  make sandbox-build    Build sandbox Docker image"
+	@echo "  make sandbox-test     Run sandbox smoke tests"
+	@echo "  make sandbox-shell    Interactive sandbox shell"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make install"

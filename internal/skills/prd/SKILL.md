@@ -57,7 +57,7 @@ Generate with these sections:
 **Acceptance Criteria:**
 - [ ] Specific verifiable criterion
 - [ ] Typecheck passes
-- [ ] [UI stories only] Verify in browser using agent-browser skill (skip if no dev server running)
+- [ ] [UI stories only] Verify in browser using pinchtab (skip if no dev server running)
 ```
 
 **Stories must be small** — completable in one focused session. If you can't describe the implementation in 2-3 sentences, split it.

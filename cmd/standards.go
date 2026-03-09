@@ -23,21 +23,26 @@ ensuring consistent code quality and pattern adherence.
 
 Use 'hal standards discover' to interactively extract standards from your codebase.
 Use 'hal standards list' to see what's currently configured.`,
+	Example: `  hal standards list
+  hal standards discover`,
 }
 
 var standardsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List configured standards",
+	Args:  noArgsValidation(),
 	Long: `Show all standards currently configured for this project.
 
 Reads .hal/standards/index.yml and displays the catalog of standards
 organized by domain. If no index exists, lists the .md files found.`,
-	RunE: runStandardsList,
+	Example: `  hal standards list`,
+	RunE:    runStandardsList,
 }
 
 var standardsDiscoverCmd = &cobra.Command{
 	Use:   "discover",
 	Short: "Discover and document standards from your codebase",
+	Args:  noArgsValidation(),
 	Long: `Interactively discover tribal knowledge and coding patterns from your codebase
 and document them as standards.
 
@@ -54,7 +59,8 @@ The discovery flow:
   2. Presents findings for each area
   3. For each standard: asks why, drafts, confirms, writes
   4. Updates the index`,
-	RunE: runStandardsDiscover,
+	Example: `  hal standards discover`,
+	RunE:    runStandardsDiscover,
 }
 
 func init() {

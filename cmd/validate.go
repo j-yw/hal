@@ -30,11 +30,15 @@ Examples:
   hal validate                    # Validate .hal/prd.json
   hal validate path/to/prd.json   # Validate specific file
   hal validate -e claude          # Use Claude engine`,
+	Example: `  hal validate
+  hal validate .hal/prd.json
+  hal validate ./docs/prd.json --engine codex`,
+	Args: maxArgsValidation(1),
 	RunE: runValidate,
 }
 
 func init() {
-	validateCmd.Flags().StringVarP(&validateEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
+	validateCmd.Flags().StringVarP(&validateEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(validateCmd)
 }
 
@@ -50,8 +54,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("PRD not found: %s", prdPath)
 	}
 
+	engineName, err := resolveEngine(cmd, "engine", validateEngineFlag, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	// Create engine
-	eng, err := newEngine(validateEngineFlag)
+	eng, err := newEngine(engineName)
 	if err != nil {
 		return err
 	}
@@ -60,7 +69,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	display.ShowCommandHeader("Validate", prdPath, buildHeaderCtx(validateEngineFlag))
+	display.ShowCommandHeader("Validate", prdPath, buildHeaderCtx(engineName))
 
 	// Validate
 	ctx := context.Background()
@@ -82,7 +91,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			warnings[i] = engine.ValidationIssue{StoryID: w.StoryID, Field: w.Field, Message: w.Message}
 		}
 		display.ShowCommandError("Validation failed", errors, warnings)
-		os.Exit(1)
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("validation failed"))
 	}
 
 	return nil

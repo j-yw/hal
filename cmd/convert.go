@@ -16,6 +16,8 @@ var (
 	convertEngineFlag   string
 	convertOutputFlag   string
 	convertValidateFlag bool
+	convertArchiveFlag  bool
+	convertForceFlag    bool
 )
 
 var convertCmd = &cobra.Command{
@@ -23,33 +25,61 @@ var convertCmd = &cobra.Command{
 	Short: "Convert markdown PRD to JSON",
 	Long: `Convert a markdown PRD file to prd.json format using the hal skill.
 
-Without arguments, automatically finds prd-*.md files in .hal/ directory.
-With a path argument, uses that file directly.
+Source selection:
+- With no argument, scans .hal/prd-*.md and picks newest by modified time.
+- If modified times tie, picks lexicographically ascending filename.
+- With an explicit argument, uses that exact path.
+- Prints "Using source: <path>" once the source is resolved.
 
-The conversion uses an AI engine to parse the markdown and generate
-properly-sized user stories with verifiable acceptance criteria.
-
-If existing feature state exists in .hal/, it will be
-archived to .hal/archive/ before the new one is written.
+Safety controls:
+- Default convert does NOT archive existing state.
+- --archive archives existing feature state before writing canonical .hal/prd.json.
+- --archive is only supported when output is canonical .hal/prd.json.
+- Canonical writes are protected from branchName switches; use --archive or --force to override.
 
 Examples:
-  hal convert                                  # Auto-discover PRD in .hal/
-  hal convert .hal/prd-auth.md            # Explicit path
-  hal convert .hal/prd.md -o custom.json  # Custom output path
-  hal convert .hal/prd.md --validate      # Also validate after conversion
-  hal convert .hal/prd.md -e claude       # Use Claude engine`,
-	Args: cobra.MaximumNArgs(1),
+  hal convert                                # Auto-discover source (no archive)
+  hal convert .hal/prd-auth.md              # Explicit source path
+  hal convert --archive                      # Archive before writing .hal/prd.json
+  hal convert .hal/prd.md --force           # Override branch mismatch guard
+  hal convert .hal/prd.md -o custom.json    # Custom output path (no archive)
+  hal convert .hal/prd.md --validate        # Also validate after conversion
+  hal convert .hal/prd.md -e claude         # Use Claude engine`,
+	Example: `  hal convert
+  hal convert --archive
+  hal convert .hal/prd-auth.md --validate
+  hal convert .hal/prd-auth.md --force
+  hal convert .hal/prd-auth.md --engine codex`,
+	Args: maxArgsValidation(1),
 	RunE: runConvert,
 }
 
 func init() {
-	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "claude", "Engine to use (claude, codex, pi)")
+	convertCmd.Flags().StringVarP(&convertEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	convertCmd.Flags().StringVarP(&convertOutputFlag, "output", "o", "", "Output path (default: .hal/prd.json)")
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
+	convertCmd.Flags().BoolVar(&convertArchiveFlag, "archive", false, "Archive existing feature state before writing canonical .hal/prd.json")
+	convertCmd.Flags().BoolVar(&convertForceFlag, "force", false, "Allow canonical overwrite without archive when branch mismatch protection would block")
 	rootCmd.AddCommand(convertCmd)
 }
 
+type convertDeps struct {
+	newEngine          func(string) (engine.Engine, error)
+	convertWithEngine  func(context.Context, engine.Engine, string, string, prd.ConvertOptions, *engine.Display) error
+	validateWithEngine func(context.Context, engine.Engine, string, *engine.Display) (*prd.ValidationResult, error)
+}
+
+var defaultConvertDeps = convertDeps{
+	newEngine:          newEngine,
+	convertWithEngine:  prd.ConvertWithEngine,
+	validateWithEngine: prd.ValidateWithEngine,
+}
+
 func runConvert(cmd *cobra.Command, args []string) error {
+	return runConvertWithDeps(cmd, args, defaultConvertDeps)
+}
+
+func runConvertWithDeps(cmd *cobra.Command, args []string, deps convertDeps) error {
 	var mdPath string
 	if len(args) > 0 {
 		mdPath = args[0]
@@ -66,8 +96,13 @@ func runConvert(cmd *cobra.Command, args []string) error {
 		outPath = filepath.Join(template.HalDir, template.PRDFile)
 	}
 
+	engineName, err := resolveEngine(cmd, "engine", convertEngineFlag, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	// Create engine
-	eng, err := newEngine(convertEngineFlag)
+	eng, err := deps.newEngine(engineName)
 	if err != nil {
 		return err
 	}
@@ -76,16 +111,21 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	display := engine.NewDisplay(os.Stdout)
 
 	// Show command header
-	hctx := buildHeaderCtx(convertEngineFlag)
+	hctx := buildHeaderCtx(engineName)
 	if mdPath != "" {
 		display.ShowCommandHeader("Convert", fmt.Sprintf("%s → prd.json", mdPath), hctx)
 	} else {
 		display.ShowCommandHeader("Convert", "auto-discover → prd.json", hctx)
 	}
 
+	opts := prd.ConvertOptions{
+		Archive: convertArchiveFlag,
+		Force:   convertForceFlag,
+	}
+
 	// Convert
 	ctx := context.Background()
-	if err := prd.ConvertWithEngine(ctx, eng, mdPath, outPath, display); err != nil {
+	if err := deps.convertWithEngine(ctx, eng, mdPath, outPath, opts, display); err != nil {
 		return fmt.Errorf("conversion failed: %w", err)
 	}
 
@@ -95,7 +135,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 	// Optionally validate
 	if convertValidateFlag {
 		display.ShowPhase(2, 2, "Validate")
-		result, err := prd.ValidateWithEngine(ctx, eng, outPath, display)
+		result, err := deps.validateWithEngine(ctx, eng, outPath, display)
 		if err != nil {
 			return fmt.Errorf("validation failed: %w", err)
 		}
@@ -112,7 +152,7 @@ func runConvert(cmd *cobra.Command, args []string) error {
 				warnings[i] = engine.ValidationIssue{StoryID: w.StoryID, Field: w.Field, Message: w.Message}
 			}
 			display.ShowCommandError("Validation failed", errors, warnings)
-			os.Exit(1)
+			return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("validation failed"))
 		}
 	}
 

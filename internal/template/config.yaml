@@ -7,8 +7,8 @@
 
 # Which AI engine to use for code generation.
 # Options: claude, codex, pi
-# Default: claude
-engine: claude
+# Default: codex
+engine: codex
 
 # Maximum number of iterations for the main loop.
 # The loop will stop after this many iterations even if tasks remain.
@@ -64,3 +64,13 @@ auto:
   # This is separate from the main maxIterations setting.
   # Default: 25
   maxIterations: 25
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Daytona Sandbox Settings (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# Configure credentials for Daytona sandbox integration.
+# Run `hal sandbox setup` to set these interactively.
+#
+# daytona:
+#   apiKey: ""        # API key for Daytona server
+#   serverURL: ""     # Server URL (empty = SDK default)

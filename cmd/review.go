@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
@@ -18,7 +17,10 @@ import (
 	"golang.org/x/term"
 )
 
-const reviewUsage = "usage: hal review against <base-branch> [iterations]"
+const (
+	reviewUsage        = "usage: hal review --base <base-branch> [iterations]"
+	reviewAgainstUsage = "usage: hal review against <base-branch> [iterations]"
+)
 
 type reviewRequest struct {
 	BaseBranch string
@@ -36,47 +38,84 @@ var defaultReviewDeps = reviewDeps{
 	runLoop:           runReviewLoopCommand,
 }
 
-var reviewEngineFlag string
+var (
+	reviewEngineFlag     string
+	reviewBaseFlag       string
+	reviewIterationsFlag int
+)
 
 var reviewCmd = &cobra.Command{
-	Use:   "review against <base-branch> [iterations]",
+	Use:   "review --base <base-branch> [iterations]",
 	Short: "Run an iterative review loop against a base branch",
 	Long: `Run an iterative review-and-fix loop against a base branch.
 
 This command powers branch-vs-branch review loops.
 Use 'hal report' for legacy session reporting.`,
-	Example: `  hal review against develop
-  hal review against origin/main 5
-  hal review against develop 3 -e codex
-  hal review -e pi against develop 3
-  hal review -e claude against develop 3`,
+	Example: `  hal review --base develop
+  hal review --base origin/main 5
+  hal review --base develop --iterations 3 -e codex
+  hal review against develop 3   # Deprecated alias`,
+	Args: cobra.ArbitraryArgs,
 	RunE: runReview,
 }
 
 func init() {
+	reviewCmd.Flags().StringVar(&reviewBaseFlag, "base", "", "Base branch to review against")
+	reviewCmd.Flags().IntVarP(&reviewIterationsFlag, "iterations", "i", 10, "Maximum review iterations")
 	reviewCmd.Flags().StringVarP(&reviewEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
-	engineName := reviewEngineFlag
 	out := io.Writer(os.Stdout)
+	errOut := io.Writer(os.Stderr)
+	engineName := reviewEngineFlag
+	baseBranch := reviewBaseFlag
+	iterations := reviewIterationsFlag
+	baseChanged := false
+	iterationsChanged := false
+
 	if cmd != nil {
 		if cmd.Context() != nil {
 			ctx = cmd.Context()
 		}
+		out = cmd.OutOrStdout()
+		errOut = cmd.ErrOrStderr()
+
 		var err error
 		engineName, err = cmd.Flags().GetString("engine")
 		if err != nil {
 			return err
 		}
-		out = cmd.OutOrStdout()
+		baseBranch, err = cmd.Flags().GetString("base")
+		if err != nil {
+			return err
+		}
+		iterations, err = cmd.Flags().GetInt("iterations")
+		if err != nil {
+			return err
+		}
+
+		baseChanged = cmd.Flags().Changed("base")
+		iterationsChanged = cmd.Flags().Changed("iterations")
 	}
 
-	return runReviewWithDeps(ctx, args, engineName, out, defaultReviewDeps)
+	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
+	req, err := parseReviewRequest(args, baseBranch, baseChanged, iterations, iterationsChanged, defaultReviewDeps.resolveBaseBranch, errOut)
+	if err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	req.Engine = resolvedEngine
+
+	return defaultReviewDeps.runLoop(ctx, req, out)
 }
 
+// runReviewWithDeps is a legacy helper used by tests to validate parsing and deps wiring.
 func runReviewWithDeps(ctx context.Context, args []string, engineName string, out io.Writer, deps reviewDeps) error {
 	if deps.resolveBaseBranch == nil {
 		deps.resolveBaseBranch = gitResolveBranchRef
@@ -88,7 +127,7 @@ func runReviewWithDeps(ctx context.Context, args []string, engineName string, ou
 		out = os.Stdout
 	}
 
-	req, err := parseReviewRequest(args, deps.resolveBaseBranch)
+	req, err := parseReviewRequest(args, "", false, 10, false, deps.resolveBaseBranch, nil)
 	if err != nil {
 		return err
 	}
@@ -228,21 +267,60 @@ func shouldShowInteractiveReviewProgress(out io.Writer) bool {
 	return term.IsTerminal(int(file.Fd()))
 }
 
-func parseReviewRequest(args []string, resolveBranchFn func(branch string) (string, error)) (reviewRequest, error) {
-	if len(args) < 2 || len(args) > 3 || args[0] != "against" {
-		return reviewRequest{}, fmt.Errorf(reviewUsage)
-	}
+func parseReviewRequest(
+	args []string,
+	baseFlag string,
+	baseFlagChanged bool,
+	iterationsFlag int,
+	iterationsFlagChanged bool,
+	resolveBranchFn func(branch string) (string, error),
+	warnW io.Writer,
+) (reviewRequest, error) {
+	var (
+		baseBranch string
+		iterations int
+	)
 
-	baseBranch := strings.TrimSpace(args[1])
-	if baseBranch == "" {
-		return reviewRequest{}, fmt.Errorf(reviewUsage)
-	}
+	if len(args) > 0 && args[0] == "against" {
+		if baseFlagChanged {
+			return reviewRequest{}, fmt.Errorf("cannot use --base with deprecated 'against' syntax")
+		}
+		if iterationsFlagChanged {
+			return reviewRequest{}, fmt.Errorf("cannot use --iterations with deprecated 'against' syntax")
+		}
+		if len(args) < 2 || len(args) > 3 {
+			return reviewRequest{}, fmt.Errorf(reviewAgainstUsage)
+		}
 
-	iterations := 10
-	if len(args) == 3 {
-		parsedIterations, err := strconv.Atoi(args[2])
-		if err != nil || parsedIterations <= 0 {
-			return reviewRequest{}, fmt.Errorf("iterations must be a positive integer")
+		baseBranch = strings.TrimSpace(args[1])
+		if baseBranch == "" {
+			return reviewRequest{}, fmt.Errorf(reviewAgainstUsage)
+		}
+
+		aliasIterations := []string{}
+		if len(args) == 3 {
+			aliasIterations = []string{args[2]}
+		}
+		parsedIterations, err := parseIterations(aliasIterations, 10, false, 10)
+		if err != nil {
+			return reviewRequest{}, err
+		}
+		iterations = parsedIterations
+
+		warnDeprecated(warnW, "'hal review against <base-branch> [iterations]' is deprecated; use 'hal review --base <base-branch> [iterations]'")
+	} else {
+		if len(args) > 1 {
+			return reviewRequest{}, fmt.Errorf(reviewUsage)
+		}
+
+		baseBranch = strings.TrimSpace(baseFlag)
+		if baseBranch == "" {
+			return reviewRequest{}, fmt.Errorf("--base is required (or use deprecated 'against' syntax)")
+		}
+
+		parsedIterations, err := parseIterations(args, iterationsFlag, iterationsFlagChanged, 10)
+		if err != nil {
+			return reviewRequest{}, err
 		}
 		iterations = parsedIterations
 	}

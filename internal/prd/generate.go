@@ -327,7 +327,7 @@ Generate a complete PRD following the skill format. Requirements:
 - Each user story must be small enough to complete in one iteration
 - Acceptance criteria must be verifiable (not vague)
 - Include "Typecheck passes" for all stories
-- Include "Verify in browser using agent-browser skill (skip if no dev server running)" for UI stories
+- Include "Verify in browser using pinchtab (skip if no dev server running)" for UI stories
 - Order: schema changes → backend → frontend
 
 IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.

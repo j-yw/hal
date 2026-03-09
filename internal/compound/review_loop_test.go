@@ -442,8 +442,8 @@ func TestParseCodexReviewResponse(t *testing.T) {
 			wantErr: "missing required field: id",
 		},
 		{
-			name: "duplicate issue ids are rejected",
-			input: `{"summary":"bad","issues":[{"id":"ISSUE-1","title":"t1","severity":"high","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"},{"id":" ISSUE-1 ","title":"t2","severity":"medium","file":"g.go","line":2,"rationale":"why","suggestedFix":"fix"}]}`,
+			name:    "duplicate issue ids are rejected",
+			input:   `{"summary":"bad","issues":[{"id":"ISSUE-1","title":"t1","severity":"high","file":"f.go","line":1,"rationale":"why","suggestedFix":"fix"},{"id":" ISSUE-1 ","title":"t2","severity":"medium","file":"g.go","line":2,"rationale":"why","suggestedFix":"fix"}]}`,
 			wantErr: "duplicate review issue id",
 		},
 		{

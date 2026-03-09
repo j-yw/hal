@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ const (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize .hal/ directory",
+	Args:  noArgsValidation(),
 	Long: `Initialize the .hal/ directory in the current project.
 
 If an existing .goralph/ directory is detected and no .hal/ directory exists,
@@ -49,6 +51,9 @@ skill discovery.
 
 After init, create a prd.json with your user stories and run 'hal run'.
 Or use 'hal plan' to interactively generate a PRD.`,
+	Example: `  hal init
+  hal init --refresh-templates
+  hal init --refresh-templates --dry-run`,
 	RunE: runInit,
 }
 
@@ -354,9 +359,14 @@ func updateMigratedFiles(configDir string) error {
 // migrateTemplates applies idempotent fixes to existing .hal/ files.
 // This runs on every `hal init` to ensure stale templates pick up fixes.
 func migrateTemplates(configDir string) error {
-	// Rename dev-browser → agent-browser in all skill files and prompt.md
+	// Normalize legacy browser skill references to pinchtab in skill files and prompt.md.
 	devBrowserMigration := func(content string) string {
-		return strings.ReplaceAll(content, "dev-browser skill", "agent-browser skill (skip if no dev server running)")
+		legacyVerification := regexp.MustCompile(`Verify in browser using [A-Za-z0-9_-]+-browser skill(?: \(skip if no dev server running\))?`)
+		content = legacyVerification.ReplaceAllString(content, "Verify in browser using pinchtab (skip if no dev server running)")
+
+		legacyBrowserSkill := regexp.MustCompile(`[A-Za-z0-9_-]+-browser skill`)
+		content = legacyBrowserSkill.ReplaceAllString(content, "pinchtab")
+		return content
 	}
 
 	// Migrate prompt.md
@@ -401,6 +411,9 @@ func migrateTemplates(configDir string) error {
 					"- Never run commands that block indefinitely without a timeout\n" +
 					"- Before any browser verification, check if a dev server is running first\n" +
 					"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+					"- Use `pinchtab` for browser verification\n" +
+					"- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
+					"- Do NOT use `agent-browser` or `dev-browser`\n" +
 					"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
 				return content[:idx] + section + content[idx:]
 			}
@@ -408,6 +421,48 @@ func migrateTemplates(configDir string) error {
 		}); err != nil {
 			return err
 		}
+	}
+
+	// Harden browser verification guidance in prompt.md.
+	if err := replaceFileContent(promptPath, func(content string) string {
+		oldCommandSafety := "- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+			"- Never run commands that block indefinitely without a timeout\n" +
+			"- Before any browser verification, check if a dev server is running first\n" +
+			"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+			"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)"
+		newCommandSafety := "- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+			"- Never run commands that block indefinitely without a timeout\n" +
+			"- Before any browser verification, check if a dev server is running first\n" +
+			"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+			"- Use `pinchtab` for browser verification\n" +
+			"- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
+			"- Do NOT use `agent-browser` or `dev-browser`\n" +
+			"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)"
+		content = strings.ReplaceAll(content, oldCommandSafety, newCommandSafety)
+
+		oldBrowserTesting := "## Browser Testing (Required for Frontend Stories)\n\n" +
+			"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+			"1. Use browser automation tools available to you\n" +
+			"2. Navigate to the relevant page\n" +
+			"3. Interact with elements and verify behavior\n" +
+			"4. Take screenshots if helpful\n\n" +
+			"A frontend story is NOT complete until browser verification passes."
+		newBrowserTesting := "## Browser Testing (Required for Frontend Stories)\n\n" +
+			"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+			"1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)\n" +
+			"2. Navigate to the relevant page\n" +
+			"3. Interact with elements and verify behavior\n" +
+			"4. Retry `pinchtab` up to 3 times if the tool fails transiently\n" +
+			"5. If all 3 attempts fail, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
+			"6. Take screenshots if helpful\n\n" +
+			"A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts."
+		content = strings.ReplaceAll(content, oldBrowserTesting, newBrowserTesting)
+
+		content = strings.ReplaceAll(content, "1. Use browser automation tools available to you", "1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)")
+		content = strings.ReplaceAll(content, "A frontend story is NOT complete until browser verification passes.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.")
+		return content
+	}); err != nil {
+		return err
 	}
 
 	// Add {{STANDARDS}} placeholder to prompt.md if missing

@@ -1,294 +1,171 @@
 # Hal Product Specification
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Command:** `hal`
 **License:** MIT
 
 ## Overview
 
-Hal is an autonomous AI coding loop orchestration CLI that executes AI agents on development tasks until completion. It coordinates 7 AI coding engines to work through task lists (PRDs) automatically.
+Hal is a PRD-driven autonomous coding CLI. It plans, validates, executes, reviews, and archives development work with AI coding engines.
 
 ## Supported Engines
 
-| Engine | CLI Command | Output Format |
-|--------|-------------|---------------|
-| Claude Code | `claude` | stream-json |
-| OpenCode | `opencode` | JSON |
-| Cursor Agent | `cursor` | text |
-| Codex | `codex` | text |
-| Qwen-Code | `qwen` | stream-json |
-| Factory Droid | `droid` | text |
-| GitHub Copilot | `github-copilot-cli` | text |
+| Engine | CLI Command | Default |
+|--------|-------------|---------|
+| Codex | `codex` | ✅ |
+| Claude Code | `claude` | |
+| Pi | `pi` | |
 
-## CLI Structure
+Engine resolution order for targeted commands:
+1. explicit `--engine` (when changed)
+2. `.hal/config.yaml` top-level `engine`
+3. fallback to `codex`
 
-### Commands
+Explicit blank engine values are rejected (`--engine must not be empty`).
 
-```
-hal run <target>     Run tasks from file or inline
-hal init             Initialize .hal/ config
-hal config           Show current configuration
-hal config add-rule  Add a rule to config
-hal version          Show version info
-```
+## Exit Codes
 
-### Run Command
+- `1`: generic/untyped failure
+- `2`: validation/expected user errors
+- `3`: `analyze --format json` with no reports found
+- `4`: reserved generic expected non-zero
+- `sandbox exec`: propagates exact remote non-zero exit code
 
-The primary command. Accepts a file path or inline task string.
+## Primary Workflows
 
-```bash
-# File sources (auto-detects format by extension)
-hal run tasks.md                    # Markdown PRD
-hal run tasks.yaml                  # YAML tasks
-
-# Inline task
-hal run "add user authentication"
-
-# GitHub issues as source
-hal run --github owner/repo -l "ai-task"
-
-# With options
-hal run tasks.md -e opencode        # Different engine
-hal run tasks.md -j 3               # Parallel with 3 workers
-hal run tasks.md -n                 # Dry run
-hal run tasks.md -v                 # Verbose output
-```
-
-### Init Command
-
-Initialize a new Hal project.
+### Manual
 
 ```bash
-hal init                            # Interactive setup
-hal init --defaults                 # Use defaults, no prompts
+hal init
+hal plan "feature description"
+hal convert
+hal validate
+hal run
 ```
 
-### Config Command
-
-Manage configuration.
+### Compound
 
 ```bash
-hal config                          # Show current config
-hal config add-rule "Always write tests"
+hal report
+hal auto
+hal review --base <base-branch> [iterations]
 ```
 
-## Flags Reference
+## Command Contracts
 
-### Global Flags
+### `hal run [iterations]`
 
-| Short | Long | Description |
-|-------|------|-------------|
-| `-v` | `--verbose` | Verbose output |
-| `-h` | `--help` | Help for command |
+- Supports positional iterations and `--iterations/-i`
+- Positional iterations and `-i` are mutually exclusive
+- Iterations must be `> 0`
+- Supports `--base/-b`
 
-### Run Flags
+Examples:
 
-#### Engine Selection
-
-| Short | Long | Description | Default |
-|-------|------|-------------|---------|
-| `-e` | `--engine` | Engine to use | `claude` |
-| `-m` | `--model` | Override default model | - |
-
-Available engines: `claude`, `opencode`, `cursor`, `codex`, `qwen`, `droid`, `copilot`
-
-#### Task Source
-
-| Short | Long | Description |
-|-------|------|-------------|
-| | `--github` | GitHub repo (owner/repo) |
-| `-l` | `--label` | Filter GitHub issues by label |
-
-#### Execution Control
-
-| Short | Long | Description | Default |
-|-------|------|-------------|---------|
-| `-n` | `--dry-run` | Show what would run | `false` |
-| | `--max-iterations` | Max iterations per task | `0` (unlimited) |
-| | `--max-retries` | Max retries on failure | `3` |
-| | `--retry-delay` | Base retry delay | `5s` |
-| | `--fast` | Skip tests and lint | `false` |
-| | `--no-tests` | Skip tests only | `false` |
-| | `--no-lint` | Skip lint only | `false` |
-
-#### Parallel Execution
-
-| Short | Long | Description | Default |
-|-------|------|-------------|---------|
-| `-j` | `--jobs` | Parallel workers (0=sequential) | `0` |
-| | `--sandbox` | Use sandboxes instead of worktrees | `false` |
-
-#### Git/Branching
-
-| Short | Long | Description | Default |
-|-------|------|-------------|---------|
-| `-b` | `--branch` | Base branch | current |
-| | `--branch-per-task` | Create branch per task | `false` |
-| | `--create-pr` | Create PR after completion | `false` |
-| | `--draft-pr` | Create as draft PR | `false` |
-| | `--no-commit` | Skip auto-commit | `false` |
-| | `--no-merge` | Skip auto-merge | `false` |
-
-#### Browser Automation
-
-| Long | Description | Default |
-|------|-------------|---------|
-| `--browser` | Enable agent-browser | `false` |
-| `--no-browser` | Disable agent-browser | - |
-
-## Configuration
-
-### File: `.hal/config.yaml`
-
-```yaml
-project:
-  name: "my-project"
-  language: "typescript"
-  framework: "next.js"
-  description: "Project description"
-
-commands:
-  test: "npm test"
-  lint: "npm run lint"
-  build: "npm run build"
-
-rules:
-  - "Use TypeScript strict mode"
-  - "Write tests for all new features"
-
-boundaries:
-  never_touch:
-    - ".env"
-    - "node_modules/"
-
-notifications:
-  discord_webhook: "https://..."
-  slack_webhook: "https://..."
-  custom_webhook: "https://..."
+```bash
+hal run
+hal run 5
+hal run -i 5
+hal run --base develop
 ```
 
-## Task Formats
+### `hal review --base <base-branch> [iterations]`
 
-### Markdown PRD
+Canonical syntax:
 
-```markdown
-- [ ] Add login page
-- [ ] Add logout button
-- [x] Create user model (completed)
+```bash
+hal review --base develop
+hal review --base origin/main 5
+hal review --base develop --iterations 3 -e codex
 ```
 
-### Parallel Groups (Markdown)
+Deprecated alias (warning emitted once):
 
-```markdown
-- [ ] [p1] Task A (parallel group 1)
-- [ ] [p1] Task B (parallel group 1)
-- [ ] [p2] Task C (runs after p1)
+```bash
+hal review against develop 3
 ```
 
-### YAML Tasks
+Conflicts:
+- alias + `--base` => error
+- alias + `--iterations/-i` => error
+- canonical positional iterations + `--iterations/-i` => error
 
-```yaml
-tasks:
-  - title: "Add feature"
-    completed: false
-    parallel_group: 1
-    description: "Optional details"
+### `hal analyze [report-path]`
+
+Canonical output flag:
+
+```bash
+hal analyze --format text
+hal analyze --format json
 ```
 
-## Prompt Construction
+Deprecated alias:
 
-Hal builds prompts with this structure:
-
-1. **Project Context** — From config `project` section
-2. **Rules** — "You MUST follow these"
-3. **Boundaries** — "Do NOT modify these files"
-4. **Agent Skills** — From `.opencode/skills`, `.claude/skills`, `.skills`
-5. **Browser Instructions** — If enabled
-6. **Task** — The actual task
-7. **Instructions** — Numbered steps (implement, test, lint, commit)
-8. **Final Notes** — Don't modify PRD, keep changes focused
-
-## Retry Logic
-
-- **Formula:** `delay = baseDelay * 2^(attempt-1) + jitter`
-- **Max delay:** 60 seconds
-- **Jitter:** 0-25% of delay
-
-### Retryable Errors
-
-- Rate limits (`429`, `rate limit`, `quota`)
-- Network (`timeout`, `connection`, `ECONNRESET`)
-- Server (`overloaded`)
-
-## Task Marking
-
-| Source | ID Format | Mark Complete |
-|--------|-----------|---------------|
-| Markdown | Line number | `[ ]` → `[x]` |
-| Markdown-Folder | `file.md:line` | Update specific file |
-| YAML | Task title | `completed: true` |
-| GitHub | `number:title` | Close issue via API |
-
-## Notifications
-
-### Discord
-
-```json
-{"embeds": [{"title": "Session Completed", "color": 2278109}]}
+```bash
+hal analyze --output json
 ```
 
-### Slack
+Rules:
+- `--format/-f` and `--output/-o` cannot be combined
+- JSON mode writes JSON payload only to stdout
+- warnings/deprecations/prose go to stderr
+- no reports in JSON mode returns exit code `3` with empty stdout
 
-```json
-{"text": "Hal session completed: 5/5 tasks succeeded"}
+### `hal archive`
+
+- `hal archive` is an alias of `hal archive create`
+- `--name/-n` valid only on `hal archive` or `hal archive create`
+- `hal archive list` / `hal archive restore` reject `--name/-n`
+- if name is missing and stdin is non-interactive, command fails with validation error
+
+Examples:
+
+```bash
+hal archive -n my-feature
+hal archive create -n my-feature
+hal archive list
+hal archive restore 2026-02-20-my-feature
 ```
 
-### Custom Webhook
+### Sandbox Template Snapshot Contract and Exec Passthrough
 
-```json
-{
-  "event": "session_complete",
-  "status": "completed",
-  "tasks_completed": 5,
-  "tasks_failed": 0
-}
+Template snapshot contract:
+- template snapshot name is fixed to `hal`
+- template source is fixed to `sandbox/Dockerfile` with context `.`
+- `hal sandbox snapshot create` is idempotent:
+  - reuses active `hal`
+  - creates `hal` if missing
+  - returns actionable error if `hal` exists in a non-active state
+- `hal sandbox start [-n NAME]` always resolves template snapshot `hal`
+  - does not accept `--snapshot`, `--image`, `--snapshot-name`, `--dockerfile`, or `--context`
+
+`--name/-n` is available on:
+- `sandbox start/status/stop/delete/shell/exec`
+
+Exec usage:
+
+```bash
+hal sandbox exec [-n NAME] [--] <command...>
 ```
 
-## Success/Failure Criteria
+Examples:
 
-### Task Success
+```bash
+hal sandbox exec -n my-box -- npm test
+hal sandbox exec -- -n foo
+```
 
-- Engine returns `success: true`
-- Exit code is 0
-- No error patterns in output
+### `hal explode <prd-path> --branch <name>`
 
-### Task Failure
+- `--branch` sets output PRD `branchName`
+- short `-b` is removed
 
-- Engine returns `success: false`
-- Non-zero exit code
-- Error detected (may retry if retryable)
-- Max retries exceeded
+## Deprecation Timeline
 
-### Retryable vs Non-Retryable
+- deprecated in `v0.2.0`
+- removed in `v1.0.0`
 
-| Retryable | Non-Retryable |
-|-----------|---------------|
-| Rate limits | Syntax errors |
-| Timeouts | Missing dependencies |
-| Network errors | Permission denied |
-| Server overload | Invalid configuration |
-
-## Environment Variables
-
-| Variable | Required For |
-|----------|--------------|
-| `GITHUB_TOKEN` | `--github` flag |
-
-## Known Limitations
-
-- No PRD JSON format (planned)
-- No web dashboard (planned)
-- No session persistence (planned)
-- No cross-engine cost estimation (planned)
-- Single repository only
-- Local execution only
+Applies to:
+- `hal review against ...`
+- `hal analyze --output ...`
+- `hal config add-rule ...`
