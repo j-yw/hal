@@ -288,6 +288,7 @@ hal run 5                    # Run 5 iterations (positional)
 hal run -i 5                 # Run 5 iterations (flag)
 hal run 1 -s US-001          # Run a specific story
 hal run --base develop       # Set base branch explicitly
+hal run --timeout 30m        # Raise the per-session engine timeout
 hal run --dry-run            # Preview without executing
 hal run -e codex             # Use Codex engine
 hal run -e pi                # Use Pi engine
@@ -419,6 +420,7 @@ Standards and commands in `.hal/` are committed to git (not ignored), while runt
 ├── skills/                 # Installed skills (auto-generated)
 │   ├── prd/                # PRD generation
 │   ├── hal/                # PRD-to-JSON conversion
+│   ├── hal-pinchtab/       # Browser verification
 │   ├── explode/            # Task breakdown
 │   ├── autospec/           # Non-interactive PRD generation
 │   └── review/             # Work review and patterns
@@ -458,10 +460,15 @@ auto:
   maxIterations: 25
 
 engines:
+  codex:
+    model: o3
+    timeout: 30m
   pi:
     model: anthropic/claude-sonnet-4-20250514
     provider: openrouter
 ```
+
+Use a higher `engines.codex.timeout` when Codex sessions do long reasoning or large edits. You can also override it ad hoc with `hal run --timeout 30m`.
 
 > Note: `hal init` preserves existing `.hal/config.yaml` files. If your project was initialized earlier, it may still have `engine: claude`. Update it to `engine: codex` if you want codex as the default runtime engine.
 

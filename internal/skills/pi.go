@@ -147,7 +147,7 @@ func (p *PiLinker) Link(projectDir string, skills []string) error {
 func (p *PiLinker) Unlink(projectDir string) error {
 	skillsDir := filepath.Join(projectDir, p.SkillsDir())
 
-	for _, skill := range SkillNames {
+	for _, skill := range ManagedSkillNames {
 		link := filepath.Join(skillsDir, skill)
 		os.RemoveAll(link)
 	}

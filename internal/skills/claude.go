@@ -70,7 +70,7 @@ func (c *ClaudeLinker) Link(projectDir string, skills []string) error {
 func (c *ClaudeLinker) Unlink(projectDir string) error {
 	skillsDir := filepath.Join(projectDir, c.SkillsDir())
 
-	for _, skill := range SkillNames {
+	for _, skill := range ManagedSkillNames {
 		link := filepath.Join(skillsDir, skill)
 		os.RemoveAll(link)
 	}

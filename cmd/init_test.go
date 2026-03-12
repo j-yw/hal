@@ -332,6 +332,118 @@ func TestRunInit(t *testing.T) {
 			t.Fatalf("prompt.md should not keep legacy 'create from main' guidance\ngot: %s", gotPrompt)
 		}
 	})
+
+	t.Run("installs hal-pinchtab skill", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("runInit() error: %v", err)
+		}
+
+		skillPath := filepath.Join(dir, template.HalDir, "skills", template.BrowserVerificationSkillName, "SKILL.md")
+		data, err := os.ReadFile(skillPath)
+		if err != nil {
+			t.Fatalf("%s skill should be installed: %v", template.BrowserVerificationSkillName, err)
+		}
+		if !strings.Contains(string(data), "name: "+template.BrowserVerificationSkillName) {
+			t.Fatalf("%s skill should contain frontmatter, got: %s", template.BrowserVerificationSkillName, string(data))
+		}
+	})
+}
+
+func TestMigrateTemplatesUpgradesHalPinchtabGuidance(t *testing.T) {
+	halDir := filepath.Join(t.TempDir(), template.HalDir)
+	if err := os.MkdirAll(filepath.Join(halDir, "skills", "prd"), 0755); err != nil {
+		t.Fatalf("failed to create skills dir: %v", err)
+	}
+
+	legacyPrompt := template.DefaultPrompt
+	legacyPrompt = strings.ReplaceAll(legacyPrompt, "- Use the `hal-pinchtab` skill for browser verification\n", "- Use `pinchtab` for browser verification\n")
+	legacyPrompt = strings.ReplaceAll(legacyPrompt, "- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n", "")
+	legacyPrompt = strings.ReplaceAll(legacyPrompt, "1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build", "1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)")
+	legacyPrompt = strings.ReplaceAll(legacyPrompt, "4. Retry Pinchtab up to 3 times if the tool fails transiently", "4. Retry `pinchtab` up to 3 times if the tool fails transiently")
+	legacyPrompt = strings.ReplaceAll(legacyPrompt, "A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.")
+	writeFile(t, halDir, template.PromptFile, legacyPrompt)
+
+	legacySkill := strings.ReplaceAll(template.BrowserVerificationCriterion, template.BrowserVerificationSkillName+" skill", "pinchtab")
+	legacySkill = strings.ReplaceAll(legacySkill, " or no "+template.BrowserVerificationSkillName+" skill installed", "")
+	writeFile(t, filepath.Join(halDir, "skills", "prd"), "SKILL.md", legacySkill+"\n")
+
+	if err := migrateTemplates(halDir); err != nil {
+		t.Fatalf("migrateTemplates() error: %v", err)
+	}
+
+	promptData, err := os.ReadFile(filepath.Join(halDir, template.PromptFile))
+	if err != nil {
+		t.Fatalf("failed to read migrated prompt: %v", err)
+	}
+	prompt := string(promptData)
+	if !strings.Contains(prompt, "Use the `hal-pinchtab` skill for browser verification") {
+		t.Fatalf("prompt should use hal-pinchtab skill guidance, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "If the `hal-pinchtab` skill is not installed, SKIP browser verification") {
+		t.Fatalf("prompt should allow skipping when hal-pinchtab skill is unavailable, got: %s", prompt)
+	}
+	if strings.Contains(prompt, "Use `pinchtab` for browser verification") {
+		t.Fatalf("prompt should not keep legacy bare pinchtab wording, got: %s", prompt)
+	}
+
+	skillData, err := os.ReadFile(filepath.Join(halDir, "skills", "prd", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("failed to read migrated skill: %v", err)
+	}
+	if !strings.Contains(string(skillData), template.BrowserVerificationCriterion) {
+		t.Fatalf("skill file should use canonical criterion, got: %s", string(skillData))
+	}
+}
+
+func TestMigrateTemplatesPreservesCanonicalBrowserVerificationCriterion(t *testing.T) {
+	halDir := filepath.Join(t.TempDir(), template.HalDir)
+	if err := os.MkdirAll(filepath.Join(halDir, "skills", "prd"), 0755); err != nil {
+		t.Fatalf("failed to create prd skill dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(halDir, "skills", "hal", "examples"), 0755); err != nil {
+		t.Fatalf("failed to create hal skill dir: %v", err)
+	}
+
+	writeFile(t, halDir, template.PromptFile, template.DefaultPrompt)
+	writeFile(t, filepath.Join(halDir, "skills", "prd"), "SKILL.md", "- [ ] [UI stories only] "+template.BrowserVerificationCriterion+"\n")
+	writeFile(t, filepath.Join(halDir, "skills", "hal"), "SKILL.md", "- UI changes: \""+template.BrowserVerificationCriterion+"\"\n")
+	writeFile(t, filepath.Join(halDir, "skills", "hal", "examples"), "prd-output.json", "{\n  \"acceptanceCriteria\": [\n    \""+template.BrowserVerificationCriterion+"\",\n    \""+template.BrowserVerificationCriterion+"\"\n  ]\n}\n")
+
+	assertCriterionCounts := func() {
+		t.Helper()
+		tests := []struct {
+			path      string
+			wantCount int
+		}{
+			{path: filepath.Join(halDir, "skills", "prd", "SKILL.md"), wantCount: 1},
+			{path: filepath.Join(halDir, "skills", "hal", "SKILL.md"), wantCount: 1},
+			{path: filepath.Join(halDir, "skills", "hal", "examples", "prd-output.json"), wantCount: 2},
+		}
+		for _, tt := range tests {
+			data, err := os.ReadFile(tt.path)
+			if err != nil {
+				t.Fatalf("failed to read %s: %v", tt.path, err)
+			}
+			if got := strings.Count(string(data), template.BrowserVerificationCriterion); got != tt.wantCount {
+				t.Fatalf("%s should contain canonical criterion %d time(s), got %d: %s", tt.path, tt.wantCount, got, string(data))
+			}
+		}
+	}
+
+	if err := migrateTemplates(halDir); err != nil {
+		t.Fatalf("first migrateTemplates() error: %v", err)
+	}
+	assertCriterionCounts()
+
+	if err := migrateTemplates(halDir); err != nil {
+		t.Fatalf("second migrateTemplates() error: %v", err)
+	}
+	assertCriterionCounts()
 }
 
 func TestEnsureGitignore(t *testing.T) {
