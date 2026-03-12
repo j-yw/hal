@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -21,6 +22,7 @@ var (
 	// Execution control
 	maxRetries int
 	retryDelay time.Duration
+	runTimeout time.Duration
 
 	// Iteration control
 	runIterationsFlag int
@@ -50,12 +52,14 @@ Examples:
   hal run -i 5                     # Run 5 iterations (flag)
   hal run 1 -s US-001              # Run single specific story
   hal run -e codex                 # Use Codex engine
+  hal run --timeout 30m            # Override per-session engine timeout
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
 `,
 	Example: `  hal run
   hal run 5
   hal run --story US-001
+  hal run --timeout 30m
   hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
 	RunE: runRun,
@@ -68,6 +72,7 @@ func init() {
 	// Execution control
 	runCmd.Flags().IntVar(&maxRetries, "retries", 3, "Max retries per iteration on failure")
 	runCmd.Flags().DurationVar(&retryDelay, "retry-delay", 5*time.Second, "Base retry delay")
+	runCmd.Flags().DurationVar(&runTimeout, "timeout", 0, "Per-engine session timeout override (e.g., 30m, 1h)")
 
 	// Iteration control
 	runCmd.Flags().IntVarP(&runIterationsFlag, "iterations", "i", 10, "Maximum iterations to run")
@@ -102,6 +107,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	baseFlag := runBaseFlag
 	retries := maxRetries
 	delay := retryDelay
+	timeoutOverride := runTimeout
 	dryRun := dryRunFlag
 	story := storyFlag
 
@@ -149,6 +155,14 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			delay = value
 		}
 
+		if flags.Lookup("timeout") != nil {
+			value, err := flags.GetDuration("timeout")
+			if err != nil {
+				return err
+			}
+			timeoutOverride = value
+		}
+
 		if flags.Lookup("dry-run") != nil {
 			value, err := flags.GetBool("dry-run")
 			if err != nil {
@@ -169,6 +183,9 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	iterations, err := parseIterations(args, iterationsFlag, iterationsChanged, 10)
 	if err != nil {
 		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	if timeoutOverride < 0 {
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--timeout must be greater than or equal to 0"))
 	}
 
 	// Check .hal directory exists
@@ -195,13 +212,17 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	if err != nil {
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
+	engineCfg := compound.LoadEngineConfig(".", resolvedEngine)
+	if timeoutOverride > 0 {
+		engineCfg = withTimeoutOverride(engineCfg, timeoutOverride)
+	}
 
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
 		Dir:           halDir,
 		MaxIterations: iterations,
 		Engine:        resolvedEngine,
-		EngineConfig:  compound.LoadEngineConfig(".", resolvedEngine),
+		EngineConfig:  engineCfg,
 		Logger:        out,
 		RetryDelay:    delay,
 		MaxRetries:    retries,
@@ -221,4 +242,19 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	}
 
 	return nil
+}
+
+func withTimeoutOverride(cfg *engine.EngineConfig, timeout time.Duration) *engine.EngineConfig {
+	if timeout <= 0 {
+		return cfg
+	}
+
+	merged := &engine.EngineConfig{Timeout: timeout}
+	if cfg == nil {
+		return merged
+	}
+
+	merged.Model = cfg.Model
+	merged.Provider = cfg.Provider
+	return merged
 }

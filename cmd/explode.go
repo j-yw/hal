@@ -113,12 +113,18 @@ func runExplode(cmd *cobra.Command, args []string) error {
 
 	// Execute prompt with streaming display
 	response, err := eng.StreamPrompt(ctx, prompt, display)
+	// Check if engine wrote the output file directly using tools
+	fileWritten := false
+	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
+		fileWritten = true
+	}
 	if err != nil {
-		return fmt.Errorf("engine prompt failed: %w", err)
+		if !fileWritten || !engine.RequiresOutputFallback(err) {
+			return fmt.Errorf("engine prompt failed: %w", err)
+		}
 	}
 
-	// Check if engine wrote the output file directly using tools
-	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
+	if fileWritten {
 		// Engine wrote the file - validate it
 		content, err := os.ReadFile(outPath)
 		if err != nil {

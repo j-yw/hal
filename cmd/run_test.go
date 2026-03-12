@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -57,6 +58,7 @@ func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 		engineFlag = "codex"
 		maxRetries = 3
 		retryDelay = 5 * time.Second
+		runTimeout = 0
 	})
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
@@ -69,6 +71,7 @@ func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 	engineFlag = "codex"
 	maxRetries = 1
 	retryDelay = 10 * time.Millisecond
+	runTimeout = 0
 
 	var stderr bytes.Buffer
 	if err := runRunWithWriter(nil, nil, &stderr); err != nil {
@@ -150,6 +153,7 @@ func TestRunRun_DryRun_AllowsDetachedHeadWithoutBase(t *testing.T) {
 		engineFlag = "codex"
 		maxRetries = 3
 		retryDelay = 5 * time.Second
+		runTimeout = 0
 	})
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
@@ -162,6 +166,7 @@ func TestRunRun_DryRun_AllowsDetachedHeadWithoutBase(t *testing.T) {
 	engineFlag = "codex"
 	maxRetries = 1
 	retryDelay = 10 * time.Millisecond
+	runTimeout = 0
 
 	if err := runRun(nil, nil); err != nil {
 		t.Fatalf("runRun should succeed on detached HEAD without --base, got: %v", err)
@@ -176,6 +181,7 @@ func TestRunRunWithWriter_IterationContract(t *testing.T) {
 		cmd.Flags().String("base", "", "")
 		cmd.Flags().Int("retries", 3, "")
 		cmd.Flags().Duration("retry-delay", 5*time.Second, "")
+		cmd.Flags().Duration("timeout", 0, "")
 		cmd.Flags().Bool("dry-run", false, "")
 		cmd.Flags().String("story", "", "")
 		return cmd
@@ -263,6 +269,61 @@ func TestRunRunWithWriter_IterationContract(t *testing.T) {
 		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), ".hal/ not found") {
 			t.Fatalf("expected .hal missing error after parsing --base, got: %v", err)
+		}
+	})
+
+	t.Run("negative --timeout rejected", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("timeout", "-1m"); err != nil {
+			t.Fatalf("set timeout flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "--timeout must be greater than or equal to 0") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+}
+
+func TestWithTimeoutOverride(t *testing.T) {
+	t.Run("creates config when nil", func(t *testing.T) {
+		cfg := withTimeoutOverride(nil, 30*time.Minute)
+		if cfg == nil {
+			t.Fatal("expected config, got nil")
+		}
+		if cfg.Timeout != 30*time.Minute {
+			t.Fatalf("Timeout = %v, want %v", cfg.Timeout, 30*time.Minute)
+		}
+	})
+
+	t.Run("preserves model and provider", func(t *testing.T) {
+		cfg := withTimeoutOverride(&engine.EngineConfig{
+			Model:    "o3",
+			Provider: "openai",
+			Timeout:  15 * time.Minute,
+		}, 45*time.Minute)
+		if cfg.Model != "o3" {
+			t.Fatalf("Model = %q, want %q", cfg.Model, "o3")
+		}
+		if cfg.Provider != "openai" {
+			t.Fatalf("Provider = %q, want %q", cfg.Provider, "openai")
+		}
+		if cfg.Timeout != 45*time.Minute {
+			t.Fatalf("Timeout = %v, want %v", cfg.Timeout, 45*time.Minute)
+		}
+	})
+
+	t.Run("ignores zero override", func(t *testing.T) {
+		original := &engine.EngineConfig{Model: "o3"}
+		cfg := withTimeoutOverride(original, 0)
+		if cfg != original {
+			t.Fatal("expected original config when override is zero")
 		}
 	})
 }

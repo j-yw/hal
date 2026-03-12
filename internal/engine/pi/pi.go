@@ -88,6 +88,17 @@ func (e *Engine) BuildArgsSimple() []string {
 	return args
 }
 
+func contextRunError(ctx context.Context, timeout time.Duration, operation string) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr == context.DeadlineExceeded {
+			return fmt.Errorf("%s timed out after %s", operation, timeout)
+		}
+		return fmt.Errorf("%s canceled: %w", operation, ctxErr)
+	}
+
+	return nil
+}
+
 // Execute runs the prompt using pi CLI with streaming JSON output.
 func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {
 	timeout := e.Timeout
@@ -129,13 +140,8 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 	// Handle errors
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return engine.Result{
-				Success:  false,
-				Output:   output,
-				Duration: duration,
-				Error:    fmt.Errorf("execution timed out after %s", timeout),
-			}
+		if result, recovered := e.recoverExecuteResult(ctx, timeout, output, duration, parser.TotalTokens()); recovered {
+			return result
 		}
 		return engine.Result{
 			Success:  false,
@@ -157,6 +163,21 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 		Tokens:   parser.TotalTokens(),
 		Error:    nil,
 	}
+}
+
+func (e *Engine) parseResultStatus(output string) (hasResult bool, success bool) {
+	parser := NewParser()
+	success = true
+
+	for _, line := range strings.Split(output, "\n") {
+		event := parser.ParseLine([]byte(line))
+		if event != nil && event.Type == engine.EventResult {
+			hasResult = true
+			success = event.Data.Success
+		}
+	}
+
+	return hasResult, success
 }
 
 // Prompt executes a single prompt and returns the text response.
@@ -228,13 +249,88 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		if text, recoverErr, recovered := e.recoverStreamPrompt(
+			ctx,
+			timeout,
+			err,
+			stdout.String(),
+			collector.Text(),
+			stderr.String(),
+		); recovered {
+			return text, recoverErr
 		}
 		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
 	}
 
 	return collector.Text(), nil
+}
+
+func (e *Engine) recoverExecuteResult(
+	ctx context.Context,
+	timeout time.Duration,
+	output string,
+	duration time.Duration,
+	tokens int,
+) (engine.Result, bool) {
+	if ctxErr := ctx.Err(); ctxErr == context.Canceled {
+		return engine.Result{
+			Success:  false,
+			Output:   output,
+			Duration: duration,
+			Error:    fmt.Errorf("execution canceled: %w", ctxErr),
+		}, true
+	}
+
+	if hasResult, success := e.parseResultStatus(output); hasResult && success {
+		complete := strings.Contains(output, "<promise>COMPLETE</promise>")
+		return engine.Result{
+			Success:  true,
+			Complete: complete,
+			Output:   output,
+			Duration: duration,
+			Tokens:   tokens,
+			Error:    nil,
+		}, true
+	}
+
+	if runErr := contextRunError(ctx, timeout, "execution"); runErr != nil {
+		return engine.Result{
+			Success:  false,
+			Output:   output,
+			Duration: duration,
+			Error:    runErr,
+		}, true
+	}
+
+	return engine.Result{}, false
+}
+
+func (e *Engine) recoverStreamPrompt(
+	ctx context.Context,
+	timeout time.Duration,
+	err error,
+	output string,
+	text string,
+	stderr string,
+) (string, error, bool) {
+	if ctxErr := ctx.Err(); ctxErr == context.Canceled {
+		return "", fmt.Errorf("prompt canceled: %w", ctxErr), true
+	}
+
+	if hasResult, success := e.parseResultStatus(output); hasResult && success {
+		if strings.TrimSpace(text) != "" {
+			return text, nil, true
+		}
+		return "", engine.NewOutputFallbackRequiredError(
+			fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr),
+		), true
+	}
+
+	if runErr := contextRunError(ctx, timeout, "prompt"); runErr != nil {
+		return "", runErr, true
+	}
+
+	return "", nil, false
 }
 
 // streamHandler processes output line by line for Execute.

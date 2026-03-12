@@ -80,4 +80,4 @@ type EngineConfig struct {
 }
 
 // DefaultTimeout for engine execution.
-const DefaultTimeout = 15 * time.Minute
+const DefaultTimeout = 30 * time.Minute

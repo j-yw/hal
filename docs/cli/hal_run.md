@@ -20,6 +20,7 @@ Examples:
   hal run -i 5                     # Run 5 iterations (flag)
   hal run 1 -s US-001              # Run single specific story
   hal run -e codex                 # Use Codex engine
+  hal run --timeout 30m            # Override per-session engine timeout
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
 
@@ -34,6 +35,7 @@ hal run [iterations] [flags]
   hal run
   hal run 5
   hal run --story US-001
+  hal run --timeout 30m
   hal run --engine codex --base develop
 ```
 
@@ -48,6 +50,7 @@ hal run [iterations] [flags]
       --retries int            Max retries per iteration on failure (default 3)
       --retry-delay duration   Base retry delay (default 5s)
   -s, --story string           Run specific story by ID (e.g., US-001)
+      --timeout duration       Per-engine session timeout override (e.g., 30m, 1h)
 ```
 
 ### SEE ALSO

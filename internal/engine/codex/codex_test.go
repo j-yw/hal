@@ -2,6 +2,7 @@ package codex
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
 )
@@ -83,6 +84,28 @@ func TestEngineRegistration(t *testing.T) {
 	}
 	if e.Name() != "codex" {
 		t.Errorf("expected Name()=\"codex\", got %q", e.Name())
+	}
+}
+
+func TestCodexStreamInactivityTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "uses default when zero", timeout: 0, want: 25 * time.Minute},
+		{name: "keeps grace below long timeout", timeout: 30 * time.Minute, want: 25 * time.Minute},
+		{name: "falls back to minimum for medium timeout", timeout: 15 * time.Minute, want: 10 * time.Minute},
+		{name: "never exceeds total timeout", timeout: 2 * time.Minute, want: 2 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codexStreamInactivityTimeout(tt.timeout)
+			if got != tt.want {
+				t.Fatalf("codexStreamInactivityTimeout(%v) = %v, want %v", tt.timeout, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -480,6 +503,20 @@ func TestEngine_parseSuccess_DuplicateTerminalResultDoesNotMaskFailure(t *testin
 
 	if e.parseSuccess(output) {
 		t.Error("expected parseSuccess to return false when duplicate terminal results follow a failure")
+	}
+}
+
+func TestEngine_parseResultStatus_UsesFinalParserState(t *testing.T) {
+	e := New(nil)
+	output := `{"type":"turn.completed","usage":{"input_tokens":1}}
+{"type":"event_msg","payload":{"type":"task_started"}}`
+
+	hasResult, success := e.parseResultStatus(output)
+	if hasResult {
+		t.Fatal("expected no final terminal result after task restart")
+	}
+	if success {
+		t.Fatal("expected success=false when no final terminal result exists")
 	}
 }
 

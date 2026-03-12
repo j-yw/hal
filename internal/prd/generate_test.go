@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -177,5 +178,103 @@ func TestGenerateQuestions_FallsBackOnNonTimeoutStreamError(t *testing.T) {
 	}
 	if eng.promptCalls != 1 {
 		t.Fatalf("Prompt() calls = %d, want 1 for stream fallback", eng.promptCalls)
+	}
+}
+
+func TestGenerateQuestions_DoesNotFallbackOnOutputFallbackRequired(t *testing.T) {
+	eng := &streamFallbackMockEngine{
+		streamErr:      engine.NewOutputFallbackRequiredError(fmt.Errorf("prompt failed")),
+		promptResponse: `{"questions":[{"number":1,"text":"Q?","options":[{"letter":"A","label":"Option A"},{"letter":"B","label":"Option B"},{"letter":"C","label":"Option C"},{"letter":"D","label":"Other (specify)"}]}]}`,
+	}
+
+	var buf bytes.Buffer
+	display := engine.NewDisplay(&buf)
+	_, err := generateQuestions(context.Background(), eng, "skill", "desc", "project", display)
+	if err == nil {
+		t.Fatal("generateQuestions() expected output fallback error, got nil")
+	}
+	if !engine.RequiresOutputFallback(err) {
+		t.Fatalf("generateQuestions() error = %v, want output fallback error", err)
+	}
+	if eng.promptCalls != 0 {
+		t.Fatalf("Prompt() calls = %d, want 0 when output fallback is required", eng.promptCalls)
+	}
+}
+
+func TestConvertPRDToJSON_UsesOutputFallbackWhenStreamRequiresFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+
+	outPath := filepath.Join(tmpDir, template.HalDir, template.PRDFile)
+	expectedJSON := promptResponseWithBranch(t, "hal/new-feature")
+	eng := &mockEngine{
+		promptError: engine.NewOutputFallbackRequiredError(fmt.Errorf("prompt failed")),
+		promptHook: func() error {
+			writeFile(t, outPath, expectedJSON)
+			return nil
+		},
+	}
+
+	var buf bytes.Buffer
+	display := engine.NewDisplay(&buf)
+	got, err := convertPRDToJSON(context.Background(), eng, "skill", "# PRD", outPath, display)
+	if err != nil {
+		t.Fatalf("convertPRDToJSON() error = %v, want nil", err)
+	}
+	want, err := extractJSONFromResponse(expectedJSON)
+	if err != nil {
+		t.Fatalf("extractJSONFromResponse() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("convertPRDToJSON() = %q, want %q", got, want)
+	}
+}
+
+func TestGenerateWithEngine_JSONOutputReplacesExistingCanonicalPRD(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(halDir, template.PRDFile)
+	writePRDJSON(t, halDir, template.PRDFile, "hal/old-feature")
+
+	stdinReader, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stdin pipe: %v", err)
+	}
+	if _, err := stdinWriter.WriteString("A\n"); err != nil {
+		t.Fatalf("failed to seed stdin: %v", err)
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatalf("failed to close stdin writer: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = stdinReader
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		_ = stdinReader.Close()
+	})
+
+	eng := &sequenceMockEngine{
+		promptResponses: []string{
+			`{"questions":[{"number":1,"text":"Goal?","options":[{"letter":"A","label":"Option A"},{"letter":"B","label":"Option B"},{"letter":"C","label":"Option C"},{"letter":"D","label":"Other (specify)"}]}]}`,
+			"# PRD: New Feature\n\n## Goal\nShip the new feature.",
+			promptResponseWithBranch(t, "hal/something-else"),
+		},
+	}
+
+	gotPath, err := GenerateWithEngine(context.Background(), eng, "new feature", "json", nil)
+	if err != nil {
+		t.Fatalf("GenerateWithEngine failed: %v", err)
+	}
+	if gotPath != filepath.Join(template.HalDir, template.PRDFile) {
+		t.Fatalf("output path = %q, want %q", gotPath, filepath.Join(template.HalDir, template.PRDFile))
+	}
+	if got := readPRDBranchName(t, outPath); got != "hal/new-feature" {
+		t.Fatalf("output branchName = %q, want %q", got, "hal/new-feature")
 	}
 }

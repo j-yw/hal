@@ -62,7 +62,7 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 		if err != nil {
 			return "", fmt.Errorf("failed to load hal skill: %w", err)
 		}
-		jsonContent, err := convertPRDToJSON(ctx, eng, halSkill, prdContent, display)
+		jsonContent, err := convertPRDToJSON(ctx, eng, halSkill, prdContent, outputPath, display)
 		if err != nil {
 			return "", fmt.Errorf("failed to convert PRD to JSON: %w", err)
 		}
@@ -184,6 +184,9 @@ Do not use markdown fences. Do not include explanation.`, description, response)
 
 func shouldFallbackFromStream(err error) bool {
 	if err == nil {
+		return false
+	}
+	if engine.RequiresOutputFallback(err) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -327,11 +330,11 @@ Generate a complete PRD following the skill format. Requirements:
 - Each user story must be small enough to complete in one iteration
 - Acceptance criteria must be verifiable (not vague)
 - Include "Typecheck passes" for all stories
-- Include "Verify in browser using pinchtab (skip if no dev server running)" for UI stories
+- Include "%s" for UI stories
 - Order: schema changes → backend → frontend
 
 IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
-File saving is handled by the caller. Return ONLY the markdown PRD content (no JSON, no code blocks wrapping it).`, skill, projectInfo, description, answerText.String())
+File saving is handled by the caller. Return ONLY the markdown PRD content (no JSON, no code blocks wrapping it).`, skill, projectInfo, description, answerText.String(), template.BrowserVerificationCriterion)
 
 	if display != nil {
 		return eng.StreamPrompt(ctx, prompt, display)
@@ -339,40 +342,71 @@ File saving is handled by the caller. Return ONLY the markdown PRD content (no J
 	return eng.Prompt(ctx, prompt)
 }
 
-func convertPRDToJSON(ctx context.Context, eng engine.Engine, skill, prdContent string, display *engine.Display) (string, error) {
-	prompt := fmt.Sprintf(`Convert this markdown PRD to JSON format.
+func convertPRDToJSON(ctx context.Context, eng engine.Engine, skill, prdContent, outPath string, display *engine.Display) (string, error) {
+	var (
+		beforeOutput     *outputSnapshot
+		err              error
+		branchResolution = resolveMarkdownBranch(prdContent)
+		targetBranchName = branchResolution.Name
+	)
 
-<skill>
-%s
-</skill>
+	if outPath != "" {
+		beforeOutput, err = readOutputSnapshot(outPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to inspect output file before conversion: %w", err)
+		}
+		targetBranchName = selectConvertBranchName(branchResolution)
+	}
 
-<markdown>
-%s
-</markdown>
-
-IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
-Return ONLY the JSON (no markdown code blocks, no explanation).
-Format must match:
-{
-  "project": "...",
-  "branchName": "hal/...",
-  "description": "...",
-  "userStories": [...]
-}`, skill, prdContent)
+	prompt := buildConversionPrompt(skill, prdContent, targetBranchName)
 
 	var response string
-	var err error
 	if display != nil {
 		response, err = eng.StreamPrompt(ctx, prompt, display)
 	} else {
 		response, err = eng.Prompt(ctx, prompt)
 	}
 	if err != nil {
-		return "", err
+		if engine.RequiresOutputFallback(err) {
+			fallbackJSON, usedFallback, fallbackErr := fallbackJSONFromOutput(outPath, beforeOutput)
+			if fallbackErr != nil {
+				return "", fmt.Errorf("engine prompt failed: %w (and output fallback failed: %v)", err, fallbackErr)
+			}
+			if usedFallback {
+				response = fallbackJSON
+			} else {
+				return "", err
+			}
+		} else {
+			return "", err
+		}
 	}
 
 	// Extract and validate JSON
-	return extractJSONFromResponse(response)
+	jsonContent, err := extractJSONFromResponse(response)
+	if err != nil {
+		if outPath == "" {
+			return "", err
+		}
+
+		fallbackJSON, usedFallback, fallbackErr := fallbackJSONFromOutput(outPath, beforeOutput)
+		if fallbackErr != nil {
+			return "", fmt.Errorf("failed to extract JSON from response (%v) and output fallback failed: %w", err, fallbackErr)
+		}
+		if !usedFallback {
+			return "", fmt.Errorf("failed to extract JSON from response: %w", err)
+		}
+		jsonContent = fallbackJSON
+	}
+
+	if targetBranchName != "" {
+		jsonContent, err = setPRDBranchName(jsonContent, targetBranchName)
+		if err != nil {
+			return "", fmt.Errorf("failed to pin converted branchName: %w", err)
+		}
+	}
+
+	return jsonContent, nil
 }
 
 func getProjectContext() string {

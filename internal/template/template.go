@@ -29,6 +29,12 @@ const (
 	CommandsDir   = "commands"     // Agent commands directory
 )
 
+// BrowserVerificationSkillName is the Hal-managed skill for Pinchtab browser checks.
+const BrowserVerificationSkillName = "hal-pinchtab"
+
+// BrowserVerificationCriterion is the canonical acceptance criterion for UI stories.
+const BrowserVerificationCriterion = "Verify in browser using " + BrowserVerificationSkillName + " skill (skip if no dev server running, no " + BrowserVerificationSkillName + " skill installed, or 3 Pinchtab attempts fail)"
+
 // DefaultFiles returns the default files to create in .hal/
 func DefaultFiles() map[string]string {
 	return map[string]string{
