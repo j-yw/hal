@@ -96,7 +96,7 @@ func (c *CodexLinker) Unlink(projectDir string) error {
 
 	// Unlink skills
 	skillsDir := c.SkillsDir()
-	for _, skill := range SkillNames {
+	for _, skill := range ManagedSkillNames {
 		link := filepath.Join(skillsDir, skill)
 		target := filepath.Join(absProjectDir, ".hal", "skills", skill)
 

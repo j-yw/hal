@@ -44,7 +44,7 @@ Add status tracking to tasks so users can mark progress. Tasks can be set to pen
 - [ ] Each task card shows colored status badge
 - [ ] Badge colors: gray=pending, blue=in_progress, green=done
 - [ ] Typecheck passes
-- [ ] Verify in browser using pinchtab (skip if no dev server running)
+- [ ] Verify in browser using hal-pinchtab skill (skip if no dev server running, no hal-pinchtab skill installed, or 3 Pinchtab attempts fail)
 
 ### T-003: Add status toggle to task rows
 **Description:** As a user, I want to change task status from the list.
@@ -53,7 +53,7 @@ Add status tracking to tasks so users can mark progress. Tasks can be set to pen
 - [ ] Each row has status dropdown
 - [ ] Changing status saves immediately
 - [ ] Typecheck passes
-- [ ] Verify in browser using pinchtab (skip if no dev server running)
+- [ ] Verify in browser using hal-pinchtab skill (skip if no dev server running, no hal-pinchtab skill installed, or 3 Pinchtab attempts fail)
 
 ### T-004: Filter tasks by status
 **Description:** As a user, I want to filter the list to focus on certain statuses.
@@ -62,7 +62,7 @@ Add status tracking to tasks so users can mark progress. Tasks can be set to pen
 - [ ] Filter dropdown: All | Pending | In Progress | Done
 - [ ] Filter persists in URL params
 - [ ] Typecheck passes
-- [ ] Verify in browser using pinchtab (skip if no dev server running)
+- [ ] Verify in browser using hal-pinchtab skill (skip if no dev server running, no hal-pinchtab skill installed, or 3 Pinchtab attempts fail)
 
 ## Functional Requirements
 

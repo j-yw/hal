@@ -14,6 +14,7 @@ type Parser struct {
 	thinkingActive     bool
 	lastTokenCount     int
 	terminalResultSeen bool
+	terminalSuccess    bool
 }
 
 // NewParser creates a new Codex output parser.
@@ -178,6 +179,7 @@ func (p *Parser) parseTerminalResult(tokens int) *engine.Event {
 
 	p.terminalResultSeen = true
 	success := !(p.commandFailed || p.turnFailed)
+	p.terminalSuccess = success
 	p.commandFailed = false
 	p.turnFailed = false
 	p.thinkingActive = false
@@ -219,6 +221,7 @@ func (p *Parser) parseEventMessage(raw map[string]interface{}) *engine.Event {
 	case "task_started":
 		p.thinkingActive = false
 		p.terminalResultSeen = false
+		p.terminalSuccess = false
 		p.lastTokenCount = 0
 		return &engine.Event{Type: engine.EventInit}
 	case "agent_reasoning":
@@ -288,6 +291,14 @@ func (p *Parser) parseResponseItem(raw map[string]interface{}) *engine.Event {
 
 func (p *Parser) HasFailure() bool {
 	return p.commandFailed || p.turnFailed
+}
+
+func (p *Parser) ResultStatus() (hasResult bool, success bool) {
+	if !p.terminalResultSeen {
+		return false, false
+	}
+
+	return true, p.terminalSuccess
 }
 
 // Helper functions

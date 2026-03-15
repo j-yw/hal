@@ -32,12 +32,14 @@ maxRetries: 3
 # engines:
 #   claude:
 #     model: claude-sonnet-4-20250514
-#     timeout: 15m    # Per-session timeout (default: 15m)
+#     timeout: 30m    # Per-session timeout (default: 30m)
 #   codex:
 #     model: o3
+#     timeout: 30m    # Raise this for long Codex sessions / xhigh reasoning
 #   pi:
 #     provider: anthropic
 #     model: claude-sonnet-4-20250514
+#     timeout: 30m
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto Pipeline Settings (hal auto)

@@ -27,9 +27,12 @@ type Engine struct {
 	model   string
 }
 
-// codexStreamInactivityTimeout is deliberately longer than short CLI stalls
-// because xhigh reasoning can pause output for extended periods.
-const codexStreamInactivityTimeout = 10 * time.Minute
+const (
+	// Keep a minimum idle threshold for short sessions, but otherwise allow
+	// long reasoning to use nearly the full configured session timeout.
+	codexMinStreamInactivityTimeout = 10 * time.Minute
+	codexStreamInactivityGrace      = 5 * time.Minute
+)
 
 var errStreamStalled = errors.New("codex stream stalled")
 
@@ -87,6 +90,17 @@ func (e *Engine) BuildArgsNoJSON() []string {
 	return args
 }
 
+func contextRunError(ctx context.Context, timeout time.Duration, operation string) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr == context.DeadlineExceeded {
+			return fmt.Errorf("%s timed out after %s", operation, timeout)
+		}
+		return fmt.Errorf("%s canceled: %w", operation, ctxErr)
+	}
+
+	return nil
+}
+
 // Execute runs the prompt using Codex CLI.
 func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {
 	timeout := e.Timeout
@@ -129,13 +143,8 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 	// Handle errors
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return engine.Result{
-				Success:  false,
-				Output:   output,
-				Duration: duration,
-				Error:    fmt.Errorf("execution timed out after %s", timeout),
-			}
+		if result, recovered := e.recoverExecuteResult(ctx, timeout, output, duration); recovered {
+			return result
 		}
 		return engine.Result{
 			Success:  false,
@@ -160,21 +169,14 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 // parseSuccess checks if the Codex JSON response indicates success.
 func (e *Engine) parseSuccess(output string) bool {
-	lines := strings.Split(output, "\n")
-	parser := NewParser()
-	sawResult := false
-	lastSuccess := true
-
-	for _, line := range lines {
-		event := parser.ParseLine([]byte(line))
-		if event != nil && event.Type == engine.EventResult {
-			sawResult = true
-			lastSuccess = event.Data.Success
-		}
+	hasResult, success := e.parseResultStatus(output)
+	if hasResult {
+		return success
 	}
 
-	if sawResult {
-		return lastSuccess
+	parser := NewParser()
+	for _, line := range strings.Split(output, "\n") {
+		parser.ParseLine([]byte(line))
 	}
 
 	if parser.HasFailure() {
@@ -183,6 +185,16 @@ func (e *Engine) parseSuccess(output string) bool {
 
 	// If we can't parse, assume success if no error
 	return true
+}
+
+func (e *Engine) parseResultStatus(output string) (hasResult bool, success bool) {
+	parser := NewParser()
+
+	for _, line := range strings.Split(output, "\n") {
+		parser.ParseLine([]byte(line))
+	}
+
+	return parser.ResultStatus()
 }
 
 // streamHandler processes output line by line.
@@ -283,13 +295,14 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 		display:      display,
 		lastActivity: time.Now(),
 	}
+	idleTimeout := codexStreamInactivityTimeout(timeout)
 
 	// Stream directly into the collector/display to avoid buffering the entire
 	// JSONL stream in memory during long review sessions.
 	cmd.Stdout = collector
 	cmd.Stderr = &stderr
 
-	err := runCommandWithInactivityWatch(cmd, collector, codexStreamInactivityTimeout)
+	err := runCommandWithInactivityWatch(cmd, collector, idleTimeout)
 	collector.Flush()
 
 	if display != nil {
@@ -297,16 +310,108 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 	}
 
 	if err != nil {
-		if errors.Is(err, errStreamStalled) {
-			return "", fmt.Errorf("prompt stalled: no output for %s", codexStreamInactivityTimeout)
-		}
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("prompt timed out after %s", timeout)
+		if text, recoverErr, recovered := recoverPromptError(
+			ctx,
+			timeout,
+			idleTimeout,
+			err,
+			collector.ResultStatus,
+			collector.Text(),
+			stderr.String(),
+		); recovered {
+			return text, recoverErr
 		}
 		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
 	}
 
 	return collector.Text(), nil
+}
+
+func codexStreamInactivityTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		timeout = engine.DefaultTimeout
+	}
+
+	idleTimeout := timeout - codexStreamInactivityGrace
+	if idleTimeout < codexMinStreamInactivityTimeout {
+		idleTimeout = codexMinStreamInactivityTimeout
+	}
+	if idleTimeout > timeout {
+		idleTimeout = timeout
+	}
+
+	return idleTimeout
+}
+
+func (e *Engine) recoverExecuteResult(
+	ctx context.Context,
+	timeout time.Duration,
+	output string,
+	duration time.Duration,
+) (engine.Result, bool) {
+	if ctxErr := ctx.Err(); ctxErr == context.Canceled {
+		return engine.Result{
+			Success:  false,
+			Output:   output,
+			Duration: duration,
+			Error:    fmt.Errorf("execution canceled: %w", ctxErr),
+		}, true
+	}
+
+	if hasResult, success := e.parseResultStatus(output); hasResult && success {
+		complete := strings.Contains(output, "<promise>COMPLETE</promise>")
+		return engine.Result{
+			Success:  true,
+			Complete: complete,
+			Output:   output,
+			Duration: duration,
+			Error:    nil,
+		}, true
+	}
+
+	if runErr := contextRunError(ctx, timeout, "execution"); runErr != nil {
+		return engine.Result{
+			Success:  false,
+			Output:   output,
+			Duration: duration,
+			Error:    runErr,
+		}, true
+	}
+
+	return engine.Result{}, false
+}
+
+func recoverPromptError(
+	ctx context.Context,
+	timeout time.Duration,
+	idleTimeout time.Duration,
+	err error,
+	resultStatus func() (hasResult bool, success bool),
+	text string,
+	stderr string,
+) (string, error, bool) {
+	if ctxErr := ctx.Err(); ctxErr == context.Canceled {
+		return "", fmt.Errorf("prompt canceled: %w", ctxErr), true
+	}
+
+	if hasResult, success := resultStatus(); hasResult && success {
+		if strings.TrimSpace(text) != "" {
+			return text, nil, true
+		}
+		return "", engine.NewOutputFallbackRequiredError(
+			fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr),
+		), true
+	}
+
+	if errors.Is(err, errStreamStalled) {
+		return "", fmt.Errorf("prompt stalled: no output for %s", idleTimeout), true
+	}
+
+	if runErr := contextRunError(ctx, timeout, "prompt"); runErr != nil {
+		return "", runErr, true
+	}
+
+	return "", nil, false
 }
 
 func runCommandWithInactivityWatch(cmd *exec.Cmd, collector *textCollectingStreamHandler, idleTimeout time.Duration) error {
@@ -579,4 +684,12 @@ func (h *textCollectingStreamHandler) Flush() {
 
 func (h *textCollectingStreamHandler) Text() string {
 	return h.text.String()
+}
+
+func (h *textCollectingStreamHandler) ResultStatus() (hasResult bool, success bool) {
+	if h == nil || h.parser == nil {
+		return false, false
+	}
+
+	return h.parser.ResultStatus()
 }

@@ -21,7 +21,7 @@ func LoadSkill(name string) (string, error) {
 // InstallSkills writes embedded skills to .hal/skills/ directory.
 // Existing files are preserved to keep user customizations.
 func InstallSkills(projectDir string) error {
-	skillsDir := filepath.Join(projectDir, ".hal", "skills")
+	skillsDir := filepath.Join(projectDir, template.HalDir, "skills")
 
 	return fs.WalkDir(skillsFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -94,7 +94,7 @@ func LinkAllCommands(projectDir string) error {
 func LinkAllEngines(projectDir string) error {
 	var lastErr error
 	for _, linker := range linkers {
-		if err := linker.Link(projectDir, SkillNames); err != nil {
+		if err := linker.Link(projectDir, ManagedSkillNames); err != nil {
 			// Log warning but continue with other engines
 			fmt.Fprintf(os.Stderr, "warning: failed to link skills for %s: %v\n", linker.Name(), err)
 			lastErr = err

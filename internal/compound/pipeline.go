@@ -370,12 +370,18 @@ Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisCont
 	// Execute prompt with streaming display
 	p.display.ShowInfo("   Generating PRD...\n")
 	response, err := p.engine.StreamPrompt(ctx, prompt, p.display)
+	// Check if engine wrote the output file directly using tools
+	fileWritten := false
+	if stat, err := os.Stat(prdPath); err == nil && stat.ModTime().After(preModTime) {
+		fileWritten = true
+	}
 	if err != nil {
-		return fmt.Errorf("engine prompt failed: %w", err)
+		if !fileWritten || !engine.RequiresOutputFallback(err) {
+			return fmt.Errorf("engine prompt failed: %w", err)
+		}
 	}
 
-	// Check if engine wrote the output file directly using tools
-	if stat, err := os.Stat(prdPath); err == nil && stat.ModTime().After(preModTime) {
+	if fileWritten {
 		// Engine wrote the file
 		state.PRDPath = prdPath
 		p.display.ShowInfo("   PRD generated: %s\n", filepath.Base(prdPath))
@@ -470,12 +476,18 @@ Write the JSON directly to %s using the Write tool.`, explodeSkill, string(prdCo
 	// Execute prompt with streaming display
 	p.display.ShowInfo("   Exploding PRD into tasks...\n")
 	response, err := p.engine.StreamPrompt(ctx, prompt, p.display)
+	// Check if engine wrote the output file directly using tools
+	fileWritten := false
+	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
+		fileWritten = true
+	}
 	if err != nil {
-		return fmt.Errorf("engine prompt failed: %w", err)
+		if !fileWritten || !engine.RequiresOutputFallback(err) {
+			return fmt.Errorf("engine prompt failed: %w", err)
+		}
 	}
 
-	// Check if engine wrote the output file directly using tools
-	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
+	if fileWritten {
 		// Engine wrote the file - validate and format it
 		content, err := os.ReadFile(outPath)
 		if err != nil {

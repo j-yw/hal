@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestCodexLinkerName(t *testing.T) {
@@ -97,6 +99,42 @@ func TestCodexLinkerLinkIdempotent(t *testing.T) {
 	}
 }
 
+func TestCodexLinkerLinkPreservesExistingPinchtabSkill(t *testing.T) {
+	projectDir := t.TempDir()
+	halSkillDir := filepath.Join(projectDir, ".hal", "skills", template.BrowserVerificationSkillName)
+	if err := os.MkdirAll(halSkillDir, 0755); err != nil {
+		t.Fatalf("failed to create %s skill dir: %v", template.BrowserVerificationSkillName, err)
+	}
+
+	codexSkillsDir := t.TempDir()
+	existingPinchtab := filepath.Join(codexSkillsDir, "pinchtab")
+	if err := os.WriteFile(existingPinchtab, []byte("user managed"), 0644); err != nil {
+		t.Fatalf("failed to create existing pinchtab skill: %v", err)
+	}
+
+	linker := &testCodexLinker{skillsDir: codexSkillsDir}
+	if err := linker.Link(projectDir, []string{template.BrowserVerificationSkillName}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+
+	data, err := os.ReadFile(existingPinchtab)
+	if err != nil {
+		t.Fatalf("existing pinchtab skill should be preserved: %v", err)
+	}
+	if string(data) != "user managed" {
+		t.Fatalf("existing pinchtab skill should not be overwritten, got: %s", string(data))
+	}
+
+	halPinchtabLink := filepath.Join(codexSkillsDir, template.BrowserVerificationSkillName)
+	info, err := os.Lstat(halPinchtabLink)
+	if err != nil {
+		t.Fatalf("expected %s link to exist: %v", template.BrowserVerificationSkillName, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s should be a symlink", template.BrowserVerificationSkillName)
+	}
+}
+
 func TestCodexLinkerUnlink(t *testing.T) {
 	projectDir := t.TempDir()
 	halSkillsDir := filepath.Join(projectDir, ".hal", "skills")
@@ -104,7 +142,7 @@ func TestCodexLinkerUnlink(t *testing.T) {
 		t.Fatalf("failed to create .hal/skills: %v", err)
 	}
 
-	// Use a skill name that's in SkillNames (e.g., "prd")
+	// Use a skill name that's in ManagedSkillNames (e.g., "prd")
 	testSkillDir := filepath.Join(halSkillsDir, "prd")
 	if err := os.MkdirAll(testSkillDir, 0755); err != nil {
 		t.Fatalf("failed to create test skill dir: %v", err)
@@ -223,7 +261,7 @@ func (c *testCodexLinker) Link(projectDir string, skills []string) error {
 func (c *testCodexLinker) Unlink(projectDir string) error {
 	absProjectDir, _ := filepath.Abs(projectDir)
 
-	for _, skill := range SkillNames {
+	for _, skill := range ManagedSkillNames {
 		link := filepath.Join(c.skillsDir, skill)
 		target := filepath.Join(absProjectDir, ".hal", "skills", skill)
 

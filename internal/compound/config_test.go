@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultAutoConfig(t *testing.T) {
@@ -148,6 +149,7 @@ func TestLoadEngineConfig(t *testing.T) {
 		wantNil      bool
 		wantModel    string
 		wantProvider string
+		wantTimeout  time.Duration
 	}{
 		{
 			name:       "no engines section returns nil",
@@ -170,10 +172,12 @@ func TestLoadEngineConfig(t *testing.T) {
   pi:
     provider: google
     model: gemini-2.5-pro
+    timeout: 30m
 `,
 			engineName:   "pi",
 			wantModel:    "gemini-2.5-pro",
 			wantProvider: "google",
+			wantTimeout:  30 * time.Minute,
 		},
 		{
 			name: "claude with model only",
@@ -192,6 +196,24 @@ func TestLoadEngineConfig(t *testing.T) {
 `,
 			engineName:   "pi",
 			wantProvider: "anthropic",
+		},
+		{
+			name: "codex with timeout only",
+			yaml: `engines:
+  codex:
+    timeout: 45m
+`,
+			engineName:  "codex",
+			wantTimeout: 45 * time.Minute,
+		},
+		{
+			name: "invalid timeout is ignored when no other settings exist",
+			yaml: `engines:
+  codex:
+    timeout: later
+`,
+			engineName: "codex",
+			wantNil:    true,
 		},
 		{
 			name: "empty values return nil",
@@ -233,6 +255,9 @@ func TestLoadEngineConfig(t *testing.T) {
 			}
 			if cfg.Provider != tt.wantProvider {
 				t.Errorf("Provider = %q, want %q", cfg.Provider, tt.wantProvider)
+			}
+			if cfg.Timeout != tt.wantTimeout {
+				t.Errorf("Timeout = %v, want %v", cfg.Timeout, tt.wantTimeout)
 			}
 		})
 	}

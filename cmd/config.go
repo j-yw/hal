@@ -129,9 +129,12 @@ func printDefaults() {
 	fmt.Println("  engines:                # Per-engine model/provider overrides")
 	fmt.Println("    claude:")
 	fmt.Println("      model: \"\"          # Use Claude's default")
+	fmt.Println("      timeout: 30m        # Per-session timeout")
 	fmt.Println("    codex:")
 	fmt.Println("      model: \"\"          # Use Codex's default")
+	fmt.Println("      timeout: 30m        # Raise for long xhigh reasoning sessions")
 	fmt.Println("    pi:")
 	fmt.Println("      provider: \"\"       # Use pi's default")
 	fmt.Println("      model: \"\"          # Use pi's default")
+	fmt.Println("      timeout: 30m        # Per-session timeout")
 }

@@ -359,13 +359,30 @@ func updateMigratedFiles(configDir string) error {
 // migrateTemplates applies idempotent fixes to existing .hal/ files.
 // This runs on every `hal init` to ensure stale templates pick up fixes.
 func migrateTemplates(configDir string) error {
-	// Normalize legacy browser skill references to pinchtab in skill files and prompt.md.
-	devBrowserMigration := func(content string) string {
-		legacyVerification := regexp.MustCompile(`Verify in browser using [A-Za-z0-9_-]+-browser skill(?: \(skip if no dev server running\))?`)
-		content = legacyVerification.ReplaceAllString(content, "Verify in browser using pinchtab (skip if no dev server running)")
+	commandSafety := "## Command Safety\n\n" +
+		"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+		"- Never run commands that block indefinitely without a timeout\n" +
+		"- Before any browser verification, check if a dev server is running first\n" +
+		"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+		"- Use the `hal-pinchtab` skill for browser verification\n" +
+		"- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n" +
+		"- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
+		"- Do NOT use `agent-browser` or `dev-browser`\n" +
+		"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
+	browserTesting := "## Browser Testing (Required for Frontend Stories)\n\n" +
+		"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+		"1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build\n" +
+		"2. Navigate to the relevant page\n" +
+		"3. Interact with elements and verify behavior\n" +
+		"4. Retry Pinchtab up to 3 times if the tool fails transiently\n" +
+		"5. If all 3 attempts fail, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
+		"6. Take screenshots if helpful\n\n" +
+		"A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed."
 
-		legacyBrowserSkill := regexp.MustCompile(`[A-Za-z0-9_-]+-browser skill`)
-		content = legacyBrowserSkill.ReplaceAllString(content, "pinchtab")
+	// Normalize legacy browser verification guidance in skill files and prompt.md.
+	devBrowserMigration := func(content string) string {
+		legacyVerification := regexp.MustCompile(`Verify in browser using (?:(?:` + regexp.QuoteMeta(template.BrowserVerificationSkillName) + `|pinchtab)(?: skill)?|[A-Za-z0-9_-]+-browser skill)(?: \([^)\r\n]*\))?`)
+		content = legacyVerification.ReplaceAllString(content, template.BrowserVerificationCriterion)
 		return content
 	}
 
@@ -377,22 +394,24 @@ func migrateTemplates(configDir string) error {
 	// Migrate skill files
 	skillsDir := filepath.Join(configDir, "skills")
 	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		return nil // skills dir may not exist yet
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		skillDir := filepath.Join(skillsDir, entry.Name())
-		// Walk all files in the skill directory (SKILL.md, examples/*)
-		_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
 			}
-			_ = replaceFileContent(path, devBrowserMigration) // best-effort per file
-			return nil
-		})
+			skillDir := filepath.Join(skillsDir, entry.Name())
+			// Walk all files in the skill directory (SKILL.md, examples/*)
+			_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return nil
+				}
+				_ = replaceFileContent(path, devBrowserMigration) // best-effort per file
+				return nil
+			})
+		}
 	}
 
 	// Ensure Command Safety section exists in prompt.md
@@ -406,16 +425,7 @@ func migrateTemplates(configDir string) error {
 			// Insert before Quality Requirements section
 			marker := "## Quality Requirements"
 			if idx := strings.Index(content, marker); idx >= 0 {
-				section := "## Command Safety\n\n" +
-					"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
-					"- Never run commands that block indefinitely without a timeout\n" +
-					"- Before any browser verification, check if a dev server is running first\n" +
-					"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
-					"- Use `pinchtab` for browser verification\n" +
-					"- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
-					"- Do NOT use `agent-browser` or `dev-browser`\n" +
-					"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
-				return content[:idx] + section + content[idx:]
+				return content[:idx] + commandSafety + content[idx:]
 			}
 			return content
 		}); err != nil {
@@ -425,41 +435,60 @@ func migrateTemplates(configDir string) error {
 
 	// Harden browser verification guidance in prompt.md.
 	if err := replaceFileContent(promptPath, func(content string) string {
-		oldCommandSafety := "- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
-			"- Never run commands that block indefinitely without a timeout\n" +
-			"- Before any browser verification, check if a dev server is running first\n" +
-			"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
-			"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)"
-		newCommandSafety := "- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
-			"- Never run commands that block indefinitely without a timeout\n" +
-			"- Before any browser verification, check if a dev server is running first\n" +
-			"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
-			"- Use `pinchtab` for browser verification\n" +
-			"- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
-			"- Do NOT use `agent-browser` or `dev-browser`\n" +
-			"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)"
-		content = strings.ReplaceAll(content, oldCommandSafety, newCommandSafety)
+		commandSafetyVariants := []string{
+			"## Command Safety\n\n" +
+				"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+				"- Never run commands that block indefinitely without a timeout\n" +
+				"- Before any browser verification, check if a dev server is running first\n" +
+				"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+				"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n",
+			"## Command Safety\n\n" +
+				"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+				"- Never run commands that block indefinitely without a timeout\n" +
+				"- Before any browser verification, check if a dev server is running first\n" +
+				"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+				"- Use `pinchtab` for browser verification\n" +
+				"- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
+				"- Do NOT use `agent-browser` or `dev-browser`\n" +
+				"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n",
+		}
+		for _, variant := range commandSafetyVariants {
+			content = strings.ReplaceAll(content, variant, commandSafety)
+		}
 
-		oldBrowserTesting := "## Browser Testing (Required for Frontend Stories)\n\n" +
-			"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
-			"1. Use browser automation tools available to you\n" +
-			"2. Navigate to the relevant page\n" +
-			"3. Interact with elements and verify behavior\n" +
-			"4. Take screenshots if helpful\n\n" +
-			"A frontend story is NOT complete until browser verification passes."
-		newBrowserTesting := "## Browser Testing (Required for Frontend Stories)\n\n" +
-			"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
-			"1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)\n" +
-			"2. Navigate to the relevant page\n" +
-			"3. Interact with elements and verify behavior\n" +
-			"4. Retry `pinchtab` up to 3 times if the tool fails transiently\n" +
-			"5. If all 3 attempts fail, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
-			"6. Take screenshots if helpful\n\n" +
-			"A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts."
-		content = strings.ReplaceAll(content, oldBrowserTesting, newBrowserTesting)
+		browserTestingVariants := []string{
+			"## Browser Testing (Required for Frontend Stories)\n\n" +
+				"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+				"1. Use browser automation tools available to you\n" +
+				"2. Navigate to the relevant page\n" +
+				"3. Interact with elements and verify behavior\n" +
+				"4. Take screenshots if helpful\n\n" +
+				"A frontend story is NOT complete until browser verification passes.",
+			"## Browser Testing (Required for Frontend Stories)\n\n" +
+				"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+				"1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)\n" +
+				"2. Navigate to the relevant page\n" +
+				"3. Interact with elements and verify behavior\n" +
+				"4. Retry `pinchtab` up to 3 times if the tool fails transiently\n" +
+				"5. If all 3 attempts fail, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
+				"6. Take screenshots if helpful\n\n" +
+				"A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.",
+		}
+		for _, variant := range browserTestingVariants {
+			content = strings.ReplaceAll(content, variant, browserTesting)
+		}
 
-		content = strings.ReplaceAll(content, "1. Use browser automation tools available to you", "1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)")
-		content = strings.ReplaceAll(content, "A frontend story is NOT complete until browser verification passes.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.")
+		content = strings.ReplaceAll(content, "- Use `pinchtab` for browser verification\n", "- Use the `hal-pinchtab` skill for browser verification\n")
+		content = strings.ReplaceAll(content, "- Use the `pinchtab` skill for browser verification\n", "- Use the `hal-pinchtab` skill for browser verification\n")
+		content = strings.ReplaceAll(content, "- Use the `hal-pinchtab` skill for browser verification\n- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n", "- Use the `hal-pinchtab` skill for browser verification\n- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n")
+		content = strings.ReplaceAll(content, "- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n", "- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n")
+		content = strings.ReplaceAll(content, "1. Use browser automation tools available to you", "1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build")
+		content = strings.ReplaceAll(content, "1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)", "1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build")
+		content = strings.ReplaceAll(content, "4. Retry `pinchtab` up to 3 times if the tool fails transiently", "4. Retry Pinchtab up to 3 times if the tool fails transiently")
+		content = strings.ReplaceAll(content, "`pinchtab` skill", "`hal-pinchtab` skill")
+		content = strings.ReplaceAll(content, "no pinchtab skill installed", "no hal-pinchtab skill installed")
+		content = strings.ReplaceAll(content, "A frontend story is NOT complete until browser verification passes.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed.")
+		content = strings.ReplaceAll(content, "A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed.")
 		return content
 	}); err != nil {
 		return err

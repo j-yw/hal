@@ -57,7 +57,7 @@ Generate with these sections:
 **Acceptance Criteria:**
 - [ ] Specific verifiable criterion
 - [ ] Typecheck passes
-- [ ] [UI stories only] Verify in browser using pinchtab (skip if no dev server running)
+- [ ] [UI stories only] Verify in browser using hal-pinchtab skill (skip if no dev server running, no hal-pinchtab skill installed, or 3 Pinchtab attempts fail)
 ```
 
 **Stories must be small** — completable in one focused session. If you can't describe the implementation in 2-3 sentences, split it.
