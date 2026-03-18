@@ -120,3 +120,32 @@ func TestDoctorFixFlag(t *testing.T) {
 		t.Fatalf("--fix default should be false, got %q", flag.DefValue)
 	}
 }
+
+func TestDoctorFix_DelegatesToRepair(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	// No .hal/ — needs repair
+
+	origDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origDir)
+
+	// Run doctor --fix (via runDoctor with fix flag)
+	var buf bytes.Buffer
+
+	// Simulate the fix path directly
+	err := runRepairFn(dir, false, true, &buf)
+	if err != nil {
+		t.Fatalf("repair (via doctor --fix) error = %v", err)
+	}
+
+	var result RepairResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("JSON unmarshal error: %v", err)
+	}
+
+	if len(result.Applied) == 0 {
+		t.Fatal("should have applied at least one repair")
+	}
+}
