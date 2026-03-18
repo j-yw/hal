@@ -25,7 +25,13 @@ type ReportResult struct {
 	OK              bool     `json:"ok"`
 	ReportPath      string   `json:"reportPath,omitempty"`
 	Summary         string   `json:"summary,omitempty"`
+	PatternsAdded   []string `json:"patternsAdded,omitempty"`
 	Recommendations []string `json:"recommendations,omitempty"`
+	NextAction      *struct {
+		ID          string `json:"id"`
+		Command     string `json:"command"`
+		Description string `json:"description"`
+	} `json:"nextAction,omitempty"`
 }
 
 var reportCmd = &cobra.Command{
@@ -214,7 +220,19 @@ func outputReportJSON(out io.Writer, result *compound.ReviewResult) error {
 	if result != nil {
 		jr.ReportPath = result.ReportPath
 		jr.Summary = result.Summary
+		jr.PatternsAdded = result.PatternsAdded
 		jr.Recommendations = result.Recommendations
+		if result.ReportPath != "" {
+			jr.NextAction = &struct {
+				ID          string `json:"id"`
+				Command     string `json:"command"`
+				Description string `json:"description"`
+			}{
+				ID:          "run_auto",
+				Command:     "hal auto",
+				Description: "Start compound execution from the generated report.",
+			}
+		}
 	}
 	data, err := json.MarshalIndent(jr, "", "  ")
 	if err != nil {
