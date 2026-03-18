@@ -356,6 +356,7 @@ func classifyCompound(halDir string, artifacts Artifacts) StatusResult {
 	autoStatePath := filepath.Join(halDir, template.AutoStateFile)
 
 	var compound *CompoundDetail
+	isDone := false
 	if data, err := os.ReadFile(autoStatePath); err == nil {
 		var state struct {
 			Step       string `json:"step"`
@@ -366,6 +367,26 @@ func classifyCompound(halDir string, artifacts Artifacts) StatusResult {
 				Step:       state.Step,
 				BranchName: state.BranchName,
 			}
+			isDone = state.Step == "done"
+		}
+	}
+
+	paths := &StatusPaths{AutoState: filepath.Join(template.HalDir, template.AutoStateFile)}
+
+	if isDone {
+		return StatusResult{
+			ContractVersion: ContractVersion,
+			WorkflowTrack:   TrackCompound,
+			State:           StateCompoundComplete,
+			Artifacts:       artifacts,
+			NextAction: NextAction{
+				ID:          ActionRunReport,
+				Command:     "hal report",
+				Description: "Compound pipeline completed. Generate a report.",
+			},
+			Compound: compound,
+			Paths:    paths,
+			Summary:  "Compound pipeline completed; generate a report.",
 		}
 	}
 
@@ -380,7 +401,7 @@ func classifyCompound(halDir string, artifacts Artifacts) StatusResult {
 			Description: "Resume the saved compound pipeline state.",
 		},
 		Compound: compound,
-		Paths:    &StatusPaths{AutoState: filepath.Join(template.HalDir, template.AutoStateFile)},
+		Paths:    paths,
 		Summary:  "Compound pipeline is active; resume with hal auto --resume.",
 	}
 }

@@ -458,3 +458,27 @@ func TestGet_ManualWithReviewLoopReport(t *testing.T) {
 		t.Fatal("reviewLoop detail should be present as supplementary info")
 	}
 }
+
+func TestGet_CompoundComplete(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	autoState := `{"step":"done","branchName":"compound/feature-x"}`
+	os.WriteFile(filepath.Join(halDir, template.AutoStateFile), []byte(autoState), 0644)
+
+	result := Get(dir)
+
+	if result.WorkflowTrack != TrackCompound {
+		t.Fatalf("workflowTrack = %q, want %q", result.WorkflowTrack, TrackCompound)
+	}
+	if result.State != StateCompoundComplete {
+		t.Fatalf("state = %q, want %q", result.State, StateCompoundComplete)
+	}
+	if result.NextAction.ID != ActionRunReport {
+		t.Fatalf("nextAction.id = %q, want %q", result.NextAction.ID, ActionRunReport)
+	}
+	if result.Compound == nil || result.Compound.Step != "done" {
+		t.Fatal("compound.step should be 'done'")
+	}
+}
