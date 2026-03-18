@@ -293,7 +293,7 @@ func TestMachineContractFields_LinksStatus(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
 
 	var buf bytes.Buffer
-	if err := runLinksStatusFn(dir, true, &buf); err != nil {
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
 		t.Fatalf("runLinksStatusFn error: %v", err)
 	}
 

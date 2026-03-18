@@ -23,7 +23,7 @@ func TestRunLinksStatusFn_JSONOutput(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := runLinksStatusFn(dir, true, &buf); err != nil {
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
 		t.Fatalf("runLinksStatusFn() error = %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestRunLinksStatusFn_HumanOutput(t *testing.T) {
 	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
 
 	var buf bytes.Buffer
-	if err := runLinksStatusFn(dir, false, &buf); err != nil {
+	if err := runLinksStatusFn(dir, false, "", &buf); err != nil {
 		t.Fatalf("runLinksStatusFn() error = %v", err)
 	}
 
@@ -80,7 +80,7 @@ func TestRunLinksStatusFn_DetectsMissing(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, ".claude", "skills"), 0755)
 
 	var buf bytes.Buffer
-	if err := runLinksStatusFn(dir, true, &buf); err != nil {
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
 		t.Fatalf("runLinksStatusFn() error = %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestRunLinksStatusFn_DetectsBroken(t *testing.T) {
 	os.Symlink("/nonexistent/target", filepath.Join(claudeSkills, "prd"))
 
 	var buf bytes.Buffer
-	if err := runLinksStatusFn(dir, true, &buf); err != nil {
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
 		t.Fatalf("runLinksStatusFn() error = %v", err)
 	}
 

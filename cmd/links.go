@@ -13,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var linksJSONFlag bool
+var (
+	linksJSONFlag   bool
+	linksEngineFlag string
+)
 
 // LinkStatus describes the state of links for one engine.
 type LinkStatus struct {
@@ -74,9 +77,11 @@ var linksStatusCmd = &cobra.Command{
 	Args:  noArgsValidation(),
 	Long: `Show the status of skill links for all registered engines.
 
-Checks that symlinks in engine directories point to the correct .hal/skills/ targets.`,
+Checks that symlinks in engine directories point to the correct .hal/skills/ targets.
+Use --engine to filter to a specific engine.`,
 	Example: `  hal links status
-  hal links status --json`,
+  hal links status --json
+  hal links status --engine codex`,
 	RunE: runLinksStatus,
 }
 
@@ -118,6 +123,7 @@ Use 'hal cleanup' for broader .hal/ file cleanup.`,
 
 func init() {
 	linksStatusCmd.Flags().BoolVar(&linksJSONFlag, "json", false, "Output machine-readable JSON")
+	linksStatusCmd.Flags().StringVarP(&linksEngineFlag, "engine", "e", "", "Filter to specific engine (claude, pi, codex)")
 	linksCmd.AddCommand(linksStatusCmd)
 	linksCmd.AddCommand(linksRefreshCmd)
 	linksCmd.AddCommand(linksCleanCmd)
@@ -127,22 +133,30 @@ func init() {
 func runLinksStatus(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
 	jsonMode := linksJSONFlag
+	engineFilter := linksEngineFlag
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 		if cmd.Flags().Lookup("json") != nil {
 			v, _ := cmd.Flags().GetBool("json")
 			jsonMode = v
 		}
+		if cmd.Flags().Lookup("engine") != nil {
+			v, _ := cmd.Flags().GetString("engine")
+			engineFilter = strings.ToLower(strings.TrimSpace(v))
+		}
 	}
-	return runLinksStatusFn(".", jsonMode, out)
+	return runLinksStatusFn(".", jsonMode, engineFilter, out)
 }
 
-func runLinksStatusFn(dir string, jsonMode bool, out io.Writer) error {
+func runLinksStatusFn(dir string, jsonMode bool, engineFilter string, out io.Writer) error {
 	absDir, _ := filepath.Abs(dir)
 	var engineStatuses []LinkStatus
 
 	// Check each registered engine linker
 	for _, name := range []string{"claude", "pi", "codex"} {
+		if engineFilter != "" && name != engineFilter {
+			continue
+		}
 		linker := skills.GetLinker(name)
 		if linker == nil {
 			continue
