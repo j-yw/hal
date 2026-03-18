@@ -121,3 +121,37 @@ func TestRepairCmdHelp(t *testing.T) {
 		t.Fatalf("Example missing 'hal repair': %s", repairCmd.Example)
 	}
 }
+
+func TestRunRepairFn_FixesUnhealthyRepo(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	// No .hal/ — repo is unhealthy
+
+	// First, verify it's unhealthy
+	var diagBuf bytes.Buffer
+	runDoctorFn(dir, true, &diagBuf)
+	if !strings.Contains(diagBuf.String(), `"fail"`) {
+		t.Fatalf("expected doctor to detect issues before repair")
+	}
+
+	// Run repair
+	var repairBuf bytes.Buffer
+	origDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origDir)
+	if err := runRepairFn(dir, false, false, &repairBuf); err != nil {
+		t.Fatalf("runRepairFn() error = %v", err)
+	}
+
+	output := repairBuf.String()
+	if !strings.Contains(output, "✓") || !strings.Contains(output, "hal init") {
+		t.Fatalf("repair should apply hal init\n%s", output)
+	}
+
+	// Verify it's now healthier (at least .hal/ exists)
+	halDir := filepath.Join(dir, template.HalDir)
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		t.Fatal(".hal/ should exist after repair")
+	}
+}
