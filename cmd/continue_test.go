@@ -103,3 +103,39 @@ func TestContinueCmdHelp(t *testing.T) {
 		t.Fatalf("Example missing 'hal continue': %s", cmd.Example)
 	}
 }
+
+func TestRunContinueFn_ReviewLoopComplete(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := filepath.Join(dir, template.HalDir)
+	reportsDir := filepath.Join(halDir, "reports")
+	os.MkdirAll(reportsDir, 0755)
+	os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644)
+	os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# Agent\n"), 0644)
+	os.WriteFile(filepath.Join(halDir, template.ProgressFile), []byte("## P\n"), 0644)
+	// Install skills and commands
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(halDir, "skills", name), 0755)
+		os.WriteFile(filepath.Join(halDir, "skills", name, "SKILL.md"), []byte("# "+name), 0644)
+	}
+	commandsDir := filepath.Join(halDir, template.CommandsDir)
+	os.MkdirAll(commandsDir, 0755)
+	for _, name := range skills.CommandNames {
+		os.WriteFile(filepath.Join(commandsDir, name+".md"), []byte("# "+name), 0644)
+	}
+	// Create review-loop report but no PRD
+	os.WriteFile(filepath.Join(reportsDir, "review-loop-20260318-120000.json"), []byte(`{}`), 0644)
+
+	var buf bytes.Buffer
+	if err := runContinueFn(dir, true, &buf); err != nil {
+		t.Fatalf("runContinueFn() error = %v", err)
+	}
+
+	var result ContinueResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	if result.Status.WorkflowTrack != "review_loop" {
+		t.Fatalf("workflowTrack = %q, want review_loop", result.Status.WorkflowTrack)
+	}
+}
