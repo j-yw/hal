@@ -555,3 +555,28 @@ func TestGet_NoPRDAtAll(t *testing.T) {
 		t.Fatalf("nextAction.command = %q, want %q", result.NextAction.Command, "hal plan")
 	}
 }
+
+func TestGet_ManualComplete_WithReports_SuggestsAuto(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	reportsDir := filepath.Join(halDir, "reports")
+	os.MkdirAll(reportsDir, 0755)
+
+	prd := map[string]interface{}{
+		"stories": []map[string]interface{}{
+			{"id": "US-001", "status": "passed"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+	os.WriteFile(filepath.Join(reportsDir, "review-2026-03-18.md"), []byte("report"), 0644)
+
+	result := Get(dir)
+
+	if result.State != StateManualComplete {
+		t.Fatalf("state = %q, want %q", result.State, StateManualComplete)
+	}
+	if result.NextAction.ID != ActionRunAuto {
+		t.Fatalf("nextAction.id = %q, want %q (should suggest auto when report exists)", result.NextAction.ID, ActionRunAuto)
+	}
+}

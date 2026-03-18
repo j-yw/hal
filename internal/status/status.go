@@ -334,20 +334,31 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 	paths := &StatusPaths{PRDJson: prdRelPath}
 
 	if total > 0 && completed >= total {
+		nextAction := NextAction{
+			ID:          ActionRunReport,
+			Command:     "hal report",
+			Description: "Generate a report for the completed manual work.",
+		}
+		summary := fmt.Sprintf("Manual workflow is complete (%d/%d stories); generate a report.", completed, total)
+		// If reports already exist, suggest auto pipeline
+		if artifacts.ReportAvailable {
+			nextAction = NextAction{
+				ID:          ActionRunAuto,
+				Command:     "hal auto",
+				Description: "Start the compound pipeline from the latest report.",
+			}
+			summary = fmt.Sprintf("Manual workflow is complete (%d/%d stories); report available, ready for auto pipeline.", completed, total)
+		}
 		return StatusResult{
 			ContractVersion: ContractVersion,
 			WorkflowTrack:   TrackManual,
 			State:           StateManualComplete,
 			Artifacts:       artifacts,
-			NextAction: NextAction{
-				ID:          ActionRunReport,
-				Command:     "hal report",
-				Description: "Generate a report for the completed manual work.",
-			},
-			Manual:     manual,
-			ReviewLoop: reviewLoop,
-			Paths:      paths,
-			Summary:    fmt.Sprintf("Manual workflow is complete (%d/%d stories); generate a report.", completed, total),
+			NextAction:      nextAction,
+			Manual:          manual,
+			ReviewLoop:      reviewLoop,
+			Paths:           paths,
+			Summary:         summary,
 		}
 	}
 
