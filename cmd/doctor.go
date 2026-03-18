@@ -81,7 +81,8 @@ func runDoctorFn(dir string, jsonMode bool, out io.Writer) error {
 	}
 
 	// Human-readable output
-	fmt.Fprintf(out, "Engine:   %s\n\n", engine)
+	fmt.Fprintf(out, "Engine:   %s\n", engine)
+	fmt.Fprintf(out, "Checks:   %d/%d passed\n\n", result.PassedChecks, result.TotalChecks)
 	for _, c := range result.Checks {
 		icon := "✓"
 		switch c.Status {
