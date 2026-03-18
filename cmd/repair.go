@@ -231,12 +231,9 @@ func executeRepairCommand(dir string, command string) error {
 	case "hal init --refresh-templates":
 		return runInitWithWriters(nil, nil, io.Discard, io.Discard)
 	case "hal links refresh":
-		if err := skills.LinkAllEngines(dir); err != nil {
-			_ = err
-		}
-		if err := skills.LinkAllCommands(dir); err != nil {
-			_ = err
-		}
+		// Link errors are non-fatal (some engines may not be available)
+		_ = skills.LinkAllEngines(dir)
+		_ = skills.LinkAllCommands(dir)
 		return nil
 	case "hal links clean":
 		return runLinksCleanFn(dir, io.Discard)

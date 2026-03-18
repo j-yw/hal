@@ -118,3 +118,4 @@
 {"run":117,"commit":"2be5d5a","metric":0,"metrics":{"total_tests":500,"vet_clean":1},"status":"keep","description":"test: add links status engine filter tests — verifies single-engine filtering and no-filter returns all engines (500th test!)","timestamp":1773831199971,"segment":0}
 {"run":118,"commit":"e7c6d07","metric":0,"metrics":{"total_tests":501,"vet_clean":1},"status":"keep","description":"test: verify doctor --fix flag exists with correct default","timestamp":1773831261505,"segment":0}
 {"run":119,"commit":"99ef674","metric":0,"metrics":{"total_tests":502,"vet_clean":1},"status":"keep","description":"test: prd audit handles missing .hal/ directory gracefully","timestamp":1773831310349,"segment":0}
+{"run":120,"commit":"fb5c875","metric":0,"metrics":{"total_tests":503,"vet_clean":1},"status":"keep","description":"test: verify continue ready field is correct for both healthy and unhealthy repos","timestamp":1773831354870,"segment":0}

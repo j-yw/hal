@@ -379,13 +379,9 @@ func runLinksRefresh(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Refresh all engines
-	if err := skills.LinkAllEngines(projectDir); err != nil {
-		_ = err // warnings logged internally
-	}
-	if err := skills.LinkAllCommands(projectDir); err != nil {
-		_ = err // warnings logged internally
-	}
+	// Refresh all engines (per-engine errors logged as warnings)
+	_ = skills.LinkAllEngines(projectDir)
+	_ = skills.LinkAllCommands(projectDir)
 	fmt.Fprintln(out, "Refreshed skill links for all engines.")
 	return nil
 }
