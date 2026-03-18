@@ -243,3 +243,52 @@ func TestRun_MissingConfigYAML(t *testing.T) {
 		t.Fatal("config_yaml check not found")
 	}
 }
+
+func TestRun_LegacyDebrisDetected(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	// Create legacy .goralph directory
+	os.MkdirAll(filepath.Join(dir, ".goralph"), 0755)
+	// Create deprecated ralph skill link
+	os.MkdirAll(filepath.Join(dir, ".claude", "skills"), 0755)
+	os.Symlink("../../.hal/skills/hal", filepath.Join(dir, ".claude", "skills", "ralph"))
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	found := false
+	for _, c := range result.Checks {
+		if c.ID == "legacy_debris" {
+			found = true
+			if c.Status != StatusWarn {
+				t.Fatalf("legacy_debris status = %q, want %q", c.Status, StatusWarn)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("legacy_debris check not found")
+	}
+}
+
+func TestRun_NoLegacyDebris(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "legacy_debris" {
+			if c.Status != StatusPass {
+				t.Fatalf("legacy_debris status = %q, want %q (no debris present)", c.Status, StatusPass)
+			}
+			return
+		}
+	}
+	t.Fatal("legacy_debris check not found")
+}

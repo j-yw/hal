@@ -138,6 +138,13 @@ func Run(opts Options) DoctorResult {
 		warnings = append(warnings, "codex_global_links")
 	}
 
+	// 8. Legacy migration debris
+	legacyCheck := checkLegacyDebris(dir)
+	checks = append(checks, legacyCheck)
+	if legacyCheck.Status == StatusWarn {
+		warnings = append(warnings, "legacy_debris")
+	}
+
 	// Determine overall status
 	overall := StatusPass
 	if len(failures) > 0 {
@@ -359,6 +366,48 @@ func checkCodexLinks(dir, engine string) Check {
 		Severity:      SeverityWarn,
 		RemediationID: RemediationRefreshCodexLinks,
 		Message:       "Codex global links are missing or stale and need refresh.",
+	}
+}
+
+func checkLegacyDebris(dir string) Check {
+	var debris []string
+
+	// Check for .goralph/ directory
+	if _, err := os.Stat(filepath.Join(dir, ".goralph")); err == nil {
+		debris = append(debris, ".goralph/")
+	}
+
+	// Check for deprecated ralph skill links
+	claudeSkills := filepath.Join(dir, ".claude", "skills", "ralph")
+	if _, err := os.Lstat(claudeSkills); err == nil {
+		debris = append(debris, ".claude/skills/ralph")
+	}
+	piSkills := filepath.Join(dir, ".pi", "skills", "ralph")
+	if _, err := os.Lstat(piSkills); err == nil {
+		debris = append(debris, ".pi/skills/ralph")
+	}
+
+	// Check for legacy rules/ directory (replaced by standards/)
+	if _, err := os.Stat(filepath.Join(dir, template.HalDir, "rules")); err == nil {
+		debris = append(debris, ".hal/rules/")
+	}
+
+	if len(debris) == 0 {
+		return Check{
+			ID:            "legacy_debris",
+			Status:        StatusPass,
+			Severity:      SeverityInfo,
+			RemediationID: RemediationNone,
+			Message:       "No legacy migration debris found.",
+		}
+	}
+
+	return Check{
+		ID:            "legacy_debris",
+		Status:        StatusWarn,
+		Severity:      SeverityWarn,
+		RemediationID: RemediationRunHalInit,
+		Message:       "Legacy debris found: " + strings.Join(debris, ", ") + ". Run hal cleanup.",
 	}
 }
 
