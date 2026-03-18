@@ -46,6 +46,8 @@ type DoctorResult struct {
 	OverallStatus      string       `json:"overallStatus"`
 	Engine             string       `json:"engine"`
 	Checks             []Check      `json:"checks"`
+	TotalChecks        int          `json:"totalChecks"`
+	PassedChecks       int          `json:"passedChecks"`
 	Failures           []string     `json:"failures"`
 	Warnings           []string     `json:"warnings"`
 	PrimaryRemediation *Remediation `json:"primaryRemediation,omitempty"`
@@ -113,11 +115,14 @@ func Run(opts Options) DoctorResult {
 		})
 
 		failures = append(failures, "hal_dir")
+		passed := countPassed(checks)
 		return DoctorResult{
 			ContractVersion:    ContractVersion,
 			OverallStatus:      StatusFail,
 			Engine:             engine,
 			Checks:             checks,
+			TotalChecks:        len(checks),
+			PassedChecks:       passed,
 			Failures:           failures,
 			Warnings:           warnings,
 			PrimaryRemediation: halCheck.Remediation,
@@ -232,16 +237,29 @@ func Run(opts Options) DoctorResult {
 		}
 	}
 
+	passed := countPassed(checks)
 	return DoctorResult{
 		ContractVersion:    ContractVersion,
 		OverallStatus:      overall,
 		Engine:             engine,
 		Checks:             checks,
+		TotalChecks:        len(checks),
+		PassedChecks:       passed,
 		Failures:           failures,
 		Warnings:           warnings,
 		PrimaryRemediation: primaryRemediation,
 		Summary:            summary,
 	}
+}
+
+func countPassed(checks []Check) int {
+	n := 0
+	for _, c := range checks {
+		if c.Status == StatusPass {
+			n++
+		}
+	}
+	return n
 }
 
 func checkGitRepo(dir string) Check {
