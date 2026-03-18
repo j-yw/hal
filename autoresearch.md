@@ -1,54 +1,40 @@
 # Autoresearch: HAL UX & Machine Readability Improvements
 
 ## Objective
-Improve HAL CLI's operational coherence: fix test failures, add machine-readable output (`--json`) to all core commands, fix test isolation, add status/doctor/continue commands, improve UX clarity, and reduce confusing surfaces.
+Improve HAL CLI's operational coherence: fix test failures, add machine-readable output (`--json`) to all core commands, fix test isolation, add status/doctor/continue commands, improve UX clarity.
 
-## Metrics
-- **Primary**: `test_failures` (count, lower is better)
-- **Secondary**: `total_tests` (count of passing tests), `vet_clean` (1 if `go vet` passes)
-
-## Results Summary
+## Results
 - **Baseline**: 3 test failures, ~387 tests
-- **Final**: 0 test failures, 442 tests, vet clean
-- **42 experiments**, all kept except 1 verification run
-- **4 new commands**: status, doctor, continue, (+ json on 16 total commands)
+- **Final**: 0 test failures, 445 tests, vet clean
+- **48 experiments**, 47 kept
+- **47 commits**, +4169/-95 lines, 45 files changed
+- **4 new commands**: status, doctor, continue, (archive create/list/restore --json)
 - **3 new packages**: `internal/status`, `internal/doctor`
+- **17+ commands** with `--json` flag
 
 ## Key Improvements
 
 ### New Commands
-- `hal status --json` — v1 workflow state machine (manual, compound, review_loop tracks)
-- `hal doctor --json` — v1 health/readiness (engine-aware, broken links, legacy debris, YAML validation)
-- `hal continue --json` — combines status + doctor into "what to do next"
+- `hal status --json` — Workflow state (7 states × 4 tracks), story counts, branch, paths
+- `hal doctor --json` — 11 health checks, engine-aware, remediation commands
+- `hal continue --json` — Combines status + doctor into "what to do next"
 
-### Machine-Readable JSON (16 commands)
-init, status, doctor, continue, run, report, auto, analyze, validate, convert, cleanup, config, standards list, review, archive list, version, explode
+### Machine-Readable JSON
+init, status, doctor, continue, run, report, auto, analyze, validate, convert, cleanup, config, standards list, review, archive list/create/restore, version, explode
 
-### Status Contract Richness
-- Story counts, nextStory, branchName, paths
-- Compound detail (step, branch), compound_complete state
-- Review-loop as first-class workflow track
-- userStories + stories key support
+### Doctor Checks (11 total)
+git_repo, hal_dir, config_yaml (YAML validation), default_engine_cli, prompt_md (content check), progress_file, hal_skills, hal_commands, codex_global_links, legacy_debris, broken_skill_links
 
-### Doctor Enhancements
-- Engine-aware (skips Codex for pi/claude), shows engine name
-- Legacy debris (.goralph, ralph, rules/) detection
-- Broken symlink detection in .claude/skills/ and .pi/skills/
-- YAML syntax validation for config.yaml
-- Actionable remediation commands with safe/command/primaryRemediation
-- Specific warning summaries ("run hal cleanup", "refresh Codex links")
+### Status States (7 total)
+not_initialized, hal_initialized_no_prd, manual_in_progress, manual_complete, compound_active, compound_complete, review_loop_complete
 
-### Test Reliability
-- Fixed 3 flaky engine tests (2s→10s timeout)
-- Fixed race condition in metadata tests (t.Parallel on shared Root())
-- Codex linker test isolation ($HOME env)
+### Test Fixes
+- 3 flaky engine timeouts (2s→10s)
+- Race condition in t.Parallel metadata tests
+- Codex linker $HOME isolation
 
-### UX Improvements
+### UX
 - Report: "legacy" → "Generate summary report"
-- Init help: separates repo-local/engine-local/global side effects
-- Root help: includes status/doctor/continue
-- Cleanup: removes deprecated ralph links and rules/
-
-### Contract Governance
-- Machine contract field-locking tests for status/doctor/continue
-- Core metadata tests lock all command metadata (Use/Short/Long/Example)
+- Init: separates repo-local/engine-local/global effects
+- Doctor: shows engine, specific warning summaries
+- README: updated with new commands

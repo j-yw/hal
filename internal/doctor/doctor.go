@@ -156,7 +156,14 @@ func Run(opts Options) DoctorResult {
 		failures = append(failures, "hal_commands")
 	}
 
-	// 7. Codex global links (only applicable for codex engine)
+	// 7. Engine-local skill links (.claude/skills, .pi/skills)
+	localLinksCheck := checkLocalSkillLinks(dir)
+	checks = append(checks, localLinksCheck)
+	if localLinksCheck.Status == StatusWarn {
+		warnings = append(warnings, "local_skill_links")
+	}
+
+	// 8. Codex global links (only applicable for codex engine)
 	codexCheck := checkCodexLinks(dir, engine)
 	checks = append(checks, codexCheck)
 	if codexCheck.Status == StatusWarn {
@@ -212,6 +219,8 @@ func Run(opts Options) DoctorResult {
 				warnParts = append(warnParts, "run hal cleanup")
 			case "broken_skill_links":
 				warnParts = append(warnParts, "run hal init to fix broken links")
+			case "local_skill_links":
+				warnParts = append(warnParts, "run hal init to refresh engine skill links")
 			default:
 				warnParts = append(warnParts, w)
 			}
@@ -565,6 +574,65 @@ func checkPromptMD(halDir string) Check {
 		Severity:      SeverityInfo,
 		RemediationID: RemediationNone,
 		Message:       "Loaded .hal/prompt.md.",
+	}
+}
+
+func checkLocalSkillLinks(dir string) Check {
+	// Check that .claude/skills/ and .pi/skills/ have correct symlinks to .hal/skills/
+	type engineDir struct {
+		name      string
+		skillsDir string
+		prefix    string // relative prefix to .hal/skills/
+	}
+	engineDirs := []engineDir{
+		{name: "claude", skillsDir: filepath.Join(dir, ".claude", "skills"), prefix: filepath.Join("..", "..", template.HalDir, "skills")},
+		{name: "pi", skillsDir: filepath.Join(dir, ".pi", "skills"), prefix: filepath.Join("..", "..", template.HalDir, "skills")},
+	}
+
+	var stale []string
+	for _, ed := range engineDirs {
+		for _, skill := range skills.ManagedSkillNames {
+			linkPath := filepath.Join(ed.skillsDir, skill)
+			info, err := os.Lstat(linkPath)
+			if os.IsNotExist(err) {
+				// Link doesn't exist — may not have been linked yet (acceptable after fresh init)
+				continue
+			}
+			if err != nil {
+				continue
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				stale = append(stale, filepath.Join("."+ed.name, "skills", skill))
+				continue
+			}
+			target, err := os.Readlink(linkPath)
+			if err != nil {
+				continue
+			}
+			expected := filepath.Join(ed.prefix, skill)
+			if target != expected {
+				stale = append(stale, filepath.Join("."+ed.name, "skills", skill))
+			}
+		}
+	}
+
+	if len(stale) == 0 {
+		return Check{
+			ID:            "local_skill_links",
+			Status:        StatusPass,
+			Severity:      SeverityInfo,
+			RemediationID: RemediationNone,
+			Message:       "Engine-local skill links are correct.",
+		}
+	}
+
+	return Check{
+		ID:            "local_skill_links",
+		Status:        StatusWarn,
+		Severity:      SeverityWarn,
+		RemediationID: RemediationRunHalInit,
+		Message:       "Stale engine-local skill links: " + strings.Join(stale, ", ") + ". Run hal init to refresh.",
+		Remediation:   &Remediation{Command: "hal init", Safe: true},
 	}
 }
 
