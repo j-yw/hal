@@ -9,7 +9,7 @@ import (
 )
 
 func TestCoreCommandsHaveCompleteMetadata(t *testing.T) {
-	t.Parallel()
+	// Not parallel: walks shared global Root() command tree
 
 	root := Root()
 	tests := []struct {

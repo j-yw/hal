@@ -15,7 +15,7 @@ import (
 // JSON contracts. If a field name changes, this test catches the regression so
 // downstream consumers don't silently break.
 func TestMachineContractFields(t *testing.T) {
-	t.Parallel()
+	// Not parallel: some sub-tests share global command tree state
 
 	t.Run("status contract v1 fields", func(t *testing.T) {
 		dir := t.TempDir()
