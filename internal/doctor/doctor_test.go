@@ -531,3 +531,44 @@ func TestRun_Deterministic(t *testing.T) {
 		t.Fatalf("passedChecks not deterministic: %d vs %d", result1.PassedChecks, result2.PassedChecks)
 	}
 }
+
+func TestRun_ScopeAndApplicability(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.Scope == "" {
+			t.Errorf("check %q missing scope", c.ID)
+		}
+		if c.Applicability == "" {
+			t.Errorf("check %q missing applicability", c.ID)
+		}
+	}
+
+	// Codex check should be not_applicable for pi engine
+	for _, c := range result.Checks {
+		if c.ID == "codex_global_links" {
+			if c.Applicability != ApplicabilityNotApplicable {
+				t.Fatalf("codex_global_links applicability = %q, want %q for pi engine",
+					c.Applicability, ApplicabilityNotApplicable)
+			}
+			if c.Scope != ScopeEngineGlobal {
+				t.Fatalf("codex_global_links scope = %q, want %q", c.Scope, ScopeEngineGlobal)
+			}
+		}
+	}
+
+	// Legacy debris should be migration scope
+	for _, c := range result.Checks {
+		if c.ID == "legacy_debris" {
+			if c.Scope != ScopeMigration {
+				t.Fatalf("legacy_debris scope = %q, want %q", c.Scope, ScopeMigration)
+			}
+		}
+	}
+}
