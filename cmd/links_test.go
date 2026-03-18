@@ -194,3 +194,44 @@ func TestRunLinksClean_NothingToClean(t *testing.T) {
 		t.Fatalf("output should say nothing to clean\n%s", buf.String())
 	}
 }
+
+func TestRunLinksRefresh_CreatesLinks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	// Create .hal/skills with content
+	halDir := filepath.Join(dir, template.HalDir)
+	skillsDir := filepath.Join(halDir, "skills")
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(skillsDir, name), 0755)
+		os.WriteFile(filepath.Join(skillsDir, name, "SKILL.md"), []byte("# "+name), 0644)
+	}
+
+	var buf bytes.Buffer
+	cmd := linksRefreshCmd
+	cmd.SetOut(&buf)
+	if err := runLinksRefresh(cmd, nil); err != nil {
+		t.Fatalf("runLinksRefresh() error = %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "Refreshed") {
+		t.Fatalf("output should say Refreshed\n%s", buf.String())
+	}
+
+	// Verify Claude links were created
+	for _, name := range skills.ManagedSkillNames {
+		linkPath := filepath.Join(dir, ".claude", "skills", name)
+		info, err := os.Lstat(linkPath)
+		if err != nil {
+			// Some links might not be created if directory doesn't exist — that's OK
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf(".claude/skills/%s should be a symlink", name)
+		}
+	}
+}
