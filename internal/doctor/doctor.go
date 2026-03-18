@@ -513,21 +513,25 @@ func checkCodexLinks(dir, engine string) Check {
 	skillsDir := linker.SkillsDir()
 	absDir, _ := filepath.Abs(dir)
 
-	var broken []string
+	var missing, otherRepo []string
+	var otherTarget string
 	for _, name := range skills.ManagedSkillNames {
 		link := filepath.Join(skillsDir, name)
 		target, err := os.Readlink(link)
 		if err != nil {
-			broken = append(broken, name)
+			missing = append(missing, name)
 			continue
 		}
 		expectedTarget := filepath.Join(absDir, template.HalDir, "skills", name)
 		if target != expectedTarget {
-			broken = append(broken, name)
+			otherRepo = append(otherRepo, name)
+			if otherTarget == "" {
+				otherTarget = target
+			}
 		}
 	}
 
-	if len(broken) == 0 {
+	if len(missing) == 0 && len(otherRepo) == 0 {
 		return Check{
 			ID:            "codex_global_links",
 			Status:        StatusPass,
@@ -537,12 +541,21 @@ func checkCodexLinks(dir, engine string) Check {
 		}
 	}
 
+	msg := "Codex global links need refresh."
+	if len(otherRepo) > 0 && len(missing) == 0 {
+		// All links point to another project
+		msg = "Codex global links point to a different project (" + otherTarget + "). Run hal links refresh codex to claim."
+	} else if len(missing) > 0 {
+		msg = "Codex global links are missing or stale. Run hal links refresh codex."
+	}
+
 	return Check{
 		ID:            "codex_global_links",
 		Status:        StatusWarn,
 		Severity:      SeverityWarn,
 		RemediationID: RemediationRefreshCodexLinks,
-		Message:       "Codex global links are missing or stale and need refresh.",
+		Message:       msg,
+		Remediation:   &Remediation{Command: "hal links refresh codex", Safe: true},
 	}
 }
 
