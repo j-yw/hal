@@ -181,9 +181,31 @@ func Run(opts Options) DoctorResult {
 
 	summary := "Hal is ready to use."
 	if overall == StatusFail {
-		summary = "Hal is not ready yet: run hal init."
+		if len(failures) == 1 && failures[0] == "hal_dir" {
+			summary = "Hal is not initialized. Run hal init."
+		} else {
+			summary = "Hal is not ready yet: run hal init."
+		}
 	} else if overall == StatusWarn {
-		summary = "Hal is usable with warnings."
+		// Build specific warning summary
+		warnParts := make([]string, 0, len(warnings))
+		for _, w := range warnings {
+			switch w {
+			case "codex_global_links":
+				warnParts = append(warnParts, "refresh Codex global links")
+			case "legacy_debris":
+				warnParts = append(warnParts, "run hal cleanup")
+			case "broken_skill_links":
+				warnParts = append(warnParts, "run hal init to fix broken links")
+			default:
+				warnParts = append(warnParts, w)
+			}
+		}
+		if len(warnParts) > 0 {
+			summary = "Hal is usable with warnings: " + strings.Join(warnParts, "; ") + "."
+		} else {
+			summary = "Hal is usable with warnings."
+		}
 	}
 
 	return DoctorResult{
