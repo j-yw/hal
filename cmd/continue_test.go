@@ -235,3 +235,23 @@ func TestRunContinueFn_ReadyField(t *testing.T) {
 		})
 	}
 }
+
+func TestRunContinueFn_NoRedundantThen(t *testing.T) {
+	// When doctor fix == workflow next, don't show "Then:"
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	// No .hal/ — fix is hal init, next is also hal init
+
+	var buf bytes.Buffer
+	if err := runContinueFn(dir, false, &buf); err != nil {
+		t.Fatalf("runContinueFn() error = %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "Then:") {
+		t.Fatalf("should not show 'Then:' when fix == next action\n%s", output)
+	}
+	if !strings.Contains(output, "Fix:") {
+		t.Fatalf("should show 'Fix:'\n%s", output)
+	}
+}
