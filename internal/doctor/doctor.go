@@ -54,11 +54,28 @@ type DoctorResult struct {
 	Summary            string       `json:"summary"`
 }
 
+// Applicability values for checks.
+const (
+	ApplicabilityRequired      = "required"
+	ApplicabilityOptional      = "optional"
+	ApplicabilityNotApplicable = "not_applicable"
+)
+
+// Scope values for checks.
+const (
+	ScopeRepo        = "repo"
+	ScopeEngineLocal = "engine_local"
+	ScopeEngineGlobal = "engine_global"
+	ScopeMigration   = "migration"
+)
+
 // Check is a single health check result.
 type Check struct {
 	ID            string `json:"id"`
 	Status        string `json:"status"`
 	Severity      string `json:"severity"`
+	Scope         string `json:"scope,omitempty"`
+	Applicability string `json:"applicability,omitempty"`
 	RemediationID string `json:"remediationId"`
 	Message       string `json:"message"`
 	// Remediation provides an actionable command to fix the issue.
@@ -110,6 +127,8 @@ func Run(opts Options) DoctorResult {
 			ID:            "config_yaml",
 			Status:        StatusSkip,
 			Severity:      SeverityInfo,
+			Scope:         ScopeRepo,
+			Applicability: ApplicabilityRequired,
 			RemediationID: RemediationNone,
 			Message:       "Skipped: .hal/ directory not found.",
 		})
@@ -195,6 +214,32 @@ func Run(opts Options) DoctorResult {
 		overall = StatusFail
 	} else if len(warnings) > 0 {
 		overall = StatusWarn
+	}
+
+	// Set scope and applicability for all checks
+	for i := range checks {
+		c := &checks[i]
+		switch c.ID {
+		case "git_repo", "hal_dir", "config_yaml", "prompt_md", "progress_file", "hal_skills", "hal_commands":
+			c.Scope = ScopeRepo
+			c.Applicability = ApplicabilityRequired
+		case "default_engine_cli":
+			c.Scope = ScopeRepo
+			c.Applicability = ApplicabilityRequired
+		case "local_skill_links":
+			c.Scope = ScopeEngineLocal
+			c.Applicability = ApplicabilityOptional
+		case "codex_global_links":
+			c.Scope = ScopeEngineGlobal
+			if engine == "codex" {
+				c.Applicability = ApplicabilityOptional
+			} else {
+				c.Applicability = ApplicabilityNotApplicable
+			}
+		case "legacy_debris", "broken_skill_links":
+			c.Scope = ScopeMigration
+			c.Applicability = ApplicabilityOptional
+		}
 	}
 
 	// Find primary remediation from first failing/warning check with a command
