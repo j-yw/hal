@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +16,17 @@ var (
 	reportDryRunFlag     bool
 	reportSkipAgentsFlag bool
 	reportEngineFlag     string
+	reportJSONFlag       bool
 )
+
+// ReportResult is the machine-readable output of hal report --json.
+type ReportResult struct {
+	ContractVersion int      `json:"contractVersion"`
+	OK              bool     `json:"ok"`
+	ReportPath      string   `json:"reportPath,omitempty"`
+	Summary         string   `json:"summary,omitempty"`
+	Recommendations []string `json:"recommendations,omitempty"`
+}
 
 var reportCmd = &cobra.Command{
 	Use:   "report",
@@ -36,9 +47,11 @@ the next priority item to work on.
 Examples:
   hal report                  # Generate report with codex engine (default)
   hal report --engine claude  # Use Claude instead
+  hal report --json           # Machine-readable JSON output
   hal report --dry-run        # Preview what would be reported
   hal report --skip-agents    # Skip AGENTS.md update`,
 	Example: `  hal report
+  hal report --json
   hal report --engine claude
   hal report --dry-run
   hal report --skip-agents`,
@@ -63,6 +76,7 @@ func init() {
 	reportCmd.Flags().BoolVar(&reportDryRunFlag, "dry-run", false, "Preview without executing")
 	reportCmd.Flags().BoolVar(&reportSkipAgentsFlag, "skip-agents", false, "Skip AGENTS.md update")
 	reportCmd.Flags().StringVarP(&reportEngineFlag, "engine", "e", "codex", "Engine to use (codex, claude, pi)")
+	reportCmd.Flags().BoolVar(&reportJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(reportCmd)
 }
 
@@ -76,6 +90,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 	dryRun := reportDryRunFlag
 	skipAgents := reportSkipAgentsFlag
 	engineName := reportEngineFlag
+	jsonMode := reportJSONFlag
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
@@ -101,6 +116,13 @@ func runReport(cmd *cobra.Command, args []string) error {
 			}
 			engineName = value
 		}
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return fmt.Errorf("failed to read json flag: %w", err)
+			}
+			jsonMode = value
+		}
 	}
 
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
@@ -113,13 +135,14 @@ func runReport(cmd *cobra.Command, args []string) error {
 		".",
 		dryRun,
 		skipAgents,
+		jsonMode,
 		resolvedEngine,
 		out,
 		defaultReportDeps,
 	)
 }
 
-func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents bool, engineName string, out io.Writer, deps reportDeps) error {
+func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents bool, jsonMode bool, engineName string, out io.Writer, deps reportDeps) error {
 	if deps.newEngine == nil {
 		deps.newEngine = defaultReportDeps.newEngine
 	}
@@ -175,7 +198,29 @@ func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents 
 		return fmt.Errorf("review did not produce a report path")
 	}
 
+	if jsonMode {
+		return outputReportJSON(out, result)
+	}
+
 	showReviewResult(out, display, result)
+	return nil
+}
+
+func outputReportJSON(out io.Writer, result *compound.ReviewResult) error {
+	jr := ReportResult{
+		ContractVersion: 1,
+		OK:              true,
+	}
+	if result != nil {
+		jr.ReportPath = result.ReportPath
+		jr.Summary = result.Summary
+		jr.Recommendations = result.Recommendations
+	}
+	data, err := json.MarshalIndent(jr, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal report result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
 	return nil
 }
 

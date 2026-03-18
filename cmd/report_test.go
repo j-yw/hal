@@ -215,7 +215,7 @@ func TestRunReportWithDeps(t *testing.T) {
 			}
 
 			inputCtx := context.WithValue(context.Background(), reviewContextKey, reviewContextValue)
-			err := runReportWithDeps(inputCtx, "project-dir", tt.dryRun, tt.skipAgents, tt.engineName, &out, deps)
+			err := runReportWithDeps(inputCtx, "project-dir", tt.dryRun, tt.skipAgents, false, tt.engineName, &out, deps)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -301,7 +301,7 @@ func TestRunReportWithDepsNormalizesEngineName(t *testing.T) {
 		},
 	}
 
-	err := runReportWithDeps(context.Background(), ".", false, false, " Claude ", &out, deps)
+	err := runReportWithDeps(context.Background(), ".", false, false, false, " Claude ", &out, deps)
 	if err != nil {
 		t.Fatalf("runReportWithDeps returned error: %v", err)
 	}
