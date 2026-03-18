@@ -111,6 +111,14 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 		fmt.Fprintln(out)
 	}
 
+	// Show review-loop detail
+	if result.ReviewLoop != nil {
+		if result.ReviewLoop.LatestReport != "" {
+			fmt.Fprintf(out, "Review:   %s\n", result.ReviewLoop.LatestReport)
+		}
+		fmt.Fprintln(out)
+	}
+
 	fmt.Fprintln(out, "Artifacts:")
 	printArtifact(out, "  .hal/ directory", result.Artifacts.HalDir)
 	printArtifact(out, "  Markdown PRD", result.Artifacts.MarkdownPRD)
