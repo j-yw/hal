@@ -308,3 +308,25 @@ func TestMachineContractFields_LinksStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestMachineContractFields_PRDAudit(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	var buf bytes.Buffer
+	if err := runPRDAuditFn(dir, true, &buf); err != nil {
+		t.Fatalf("runPRDAuditFn error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON parse error: %v\n%s", err, buf.String())
+	}
+
+	for _, field := range []string{"contractVersion", "ok", "jsonExists", "markdownExists", "summary"} {
+		if _, ok := raw[field]; !ok {
+			t.Errorf("prd audit JSON missing field %q", field)
+		}
+	}
+}
