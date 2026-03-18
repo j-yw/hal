@@ -212,3 +212,56 @@ func TestMachineContractFields_StatusDetail(t *testing.T) {
 		t.Fatal("paths.prdJson should be a string")
 	}
 }
+
+func TestMachineContractFields_DoctorChecksHaveScopeAndApplicability(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	os.MkdirAll(halDir, 0755)
+	os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644)
+	os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# Agent\n"), 0644)
+	os.WriteFile(filepath.Join(halDir, template.ProgressFile), []byte("## Patterns\n"), 0644)
+	skillsDir := filepath.Join(halDir, "skills")
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(skillsDir, name), 0755)
+		os.WriteFile(filepath.Join(skillsDir, name, "SKILL.md"), []byte("# "+name), 0644)
+	}
+	commandsDir := filepath.Join(halDir, template.CommandsDir)
+	os.MkdirAll(commandsDir, 0755)
+	for _, name := range skills.CommandNames {
+		os.WriteFile(filepath.Join(commandsDir, name+".md"), []byte("# "+name), 0644)
+	}
+
+	var buf bytes.Buffer
+	if err := runDoctorFn(dir, true, &buf); err != nil {
+		t.Fatalf("runDoctorFn error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON parse error: %v", err)
+	}
+
+	checks, ok := raw["checks"].([]interface{})
+	if !ok {
+		t.Fatal("checks should be an array")
+	}
+
+	for _, c := range checks {
+		check, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id := check["id"].(string)
+
+		scope, hasScope := check["scope"].(string)
+		applicability, hasApplicability := check["applicability"].(string)
+
+		if !hasScope || scope == "" {
+			t.Errorf("check %q missing scope", id)
+		}
+		if !hasApplicability || applicability == "" {
+			t.Errorf("check %q missing applicability", id)
+		}
+	}
+}
