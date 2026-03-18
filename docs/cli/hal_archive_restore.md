@@ -19,12 +19,14 @@ hal archive restore <name> [flags]
 
 ```
   hal archive restore 2026-01-15-checkout-flow
+  hal archive restore 2026-01-15-checkout-flow --json
 ```
 
 ### Options
 
 ```
   -h, --help   help for restore
+      --json   Output machine-readable JSON result
 ```
 
 ### SEE ALSO

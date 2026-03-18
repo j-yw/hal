@@ -9,6 +9,8 @@ Show the current Hal configuration.
 Displays settings from .hal/config.yaml if present,
 otherwise shows default values.
 
+With --json, outputs the configuration as JSON.
+
 ```
 hal config [flags]
 ```
@@ -17,6 +19,7 @@ hal config [flags]
 
 ```
   hal config
+  hal config --json
   hal config add-rule testing
 ```
 
@@ -24,6 +27,7 @@ hal config [flags]
 
 ```
   -h, --help   help for config
+      --json   Output configuration as JSON
 ```
 
 ### SEE ALSO

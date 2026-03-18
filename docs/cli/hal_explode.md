@@ -35,6 +35,7 @@ hal explode [prd-path] [flags]
       --branch string   Branch name that sets output PRD branchName
   -e, --engine string   Engine to use (claude, codex, pi) (default "codex")
   -h, --help            help for explode
+      --json            Output machine-readable JSON result
 ```
 
 ### SEE ALSO
