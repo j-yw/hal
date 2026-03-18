@@ -482,3 +482,40 @@ func TestGet_CompoundComplete(t *testing.T) {
 		t.Fatal("compound.step should be 'done'")
 	}
 }
+
+func TestGet_Deterministic(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test",
+		"stories": []map[string]interface{}{
+			{"id": "US-001", "title": "A", "status": "passed"},
+			{"id": "US-002", "title": "B", "status": "pending"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	r1 := Get(dir)
+	r2 := Get(dir)
+
+	if r1.State != r2.State {
+		t.Fatalf("state not deterministic: %q vs %q", r1.State, r2.State)
+	}
+	if r1.WorkflowTrack != r2.WorkflowTrack {
+		t.Fatalf("track not deterministic: %q vs %q", r1.WorkflowTrack, r2.WorkflowTrack)
+	}
+	if r1.Summary != r2.Summary {
+		t.Fatalf("summary not deterministic: %q vs %q", r1.Summary, r2.Summary)
+	}
+	if r1.Manual != nil && r2.Manual != nil {
+		if r1.Manual.TotalStories != r2.Manual.TotalStories {
+			t.Fatalf("totalStories not deterministic")
+		}
+		if r1.Manual.CompletedStories != r2.Manual.CompletedStories {
+			t.Fatalf("completedStories not deterministic")
+		}
+	}
+}
