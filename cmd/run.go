@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -37,14 +38,22 @@ var (
 
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
-	ContractVersion int    `json:"contractVersion"`
-	OK              bool   `json:"ok"`
-	Iterations      int    `json:"iterations"`
-	Complete        bool   `json:"complete"`
-	StoryID         string `json:"storyId,omitempty"`
-	DryRun          bool   `json:"dryRun,omitempty"`
-	Error           string `json:"error,omitempty"`
-	Summary         string `json:"summary"`
+	ContractVersion int          `json:"contractVersion"`
+	OK              bool         `json:"ok"`
+	Iterations      int          `json:"iterations"`
+	Complete        bool         `json:"complete"`
+	StoryID         string       `json:"storyId,omitempty"`
+	DryRun          bool         `json:"dryRun,omitempty"`
+	PRD             *RunPRDInfo  `json:"prd,omitempty"`
+	Error           string       `json:"error,omitempty"`
+	Summary         string       `json:"summary"`
+}
+
+// RunPRDInfo provides PRD state at the time the run completed.
+type RunPRDInfo struct {
+	Path             string `json:"path"`
+	CompletedStories int    `json:"completedStories"`
+	TotalStories     int    `json:"totalStories"`
 }
 
 var runCmd = &cobra.Command{
@@ -318,6 +327,17 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		StoryID:         storyID,
 		DryRun:          dryRun,
 		Complete:        result.Complete,
+	}
+
+	// Try to read PRD state post-loop
+	prdPath := filepath.Join(template.HalDir, template.PRDFile)
+	if prd, err := engine.LoadPRDFile(template.HalDir, template.PRDFile); err == nil {
+		completed, total := prd.Progress()
+		jr.PRD = &RunPRDInfo{
+			Path:             prdPath,
+			CompletedStories: completed,
+			TotalStories:     total,
+		}
 	}
 
 	if result.Error != nil {
