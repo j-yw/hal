@@ -113,3 +113,39 @@ func TestLinksCmdHelp(t *testing.T) {
 		t.Fatalf("links refresh Example missing 'hal links refresh': %s", linksRefreshCmd.Example)
 	}
 }
+
+func TestRunLinksStatusFn_DetectsBroken(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
+
+	// Create engine dir with broken symlink
+	claudeSkills := filepath.Join(dir, ".claude", "skills")
+	os.MkdirAll(claudeSkills, 0755)
+	os.Symlink("/nonexistent/target", filepath.Join(claudeSkills, "prd"))
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	for _, es := range result.Engines {
+		if es.Engine == "claude" {
+			if es.Status != "warn" {
+				t.Fatalf("claude status = %q, want %q (broken link)", es.Status, "warn")
+			}
+			// Check detail for broken link
+			for _, link := range es.Links {
+				if link.Name == "prd" && link.Status != "broken" {
+					t.Fatalf("prd link status = %q, want %q", link.Status, "broken")
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("claude engine not found")
+}
