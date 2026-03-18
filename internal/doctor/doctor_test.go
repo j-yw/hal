@@ -497,3 +497,37 @@ func TestRun_ValidPromptMD(t *testing.T) {
 	}
 	t.Fatal("prompt_md check not found")
 }
+
+func TestRun_Deterministic(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	opts := Options{Dir: dir, Engine: "pi"}
+
+	result1 := Run(opts)
+	result2 := Run(opts)
+
+	if result1.OverallStatus != result2.OverallStatus {
+		t.Fatalf("overallStatus not deterministic: %q vs %q", result1.OverallStatus, result2.OverallStatus)
+	}
+	if len(result1.Checks) != len(result2.Checks) {
+		t.Fatalf("check count not deterministic: %d vs %d", len(result1.Checks), len(result2.Checks))
+	}
+	for i := range result1.Checks {
+		if result1.Checks[i].ID != result2.Checks[i].ID {
+			t.Fatalf("check[%d].ID not deterministic: %q vs %q", i, result1.Checks[i].ID, result2.Checks[i].ID)
+		}
+		if result1.Checks[i].Status != result2.Checks[i].Status {
+			t.Fatalf("check[%d].Status not deterministic: %q vs %q", i, result1.Checks[i].ID, result2.Checks[i].Status)
+		}
+	}
+	if result1.TotalChecks != result2.TotalChecks {
+		t.Fatalf("totalChecks not deterministic: %d vs %d", result1.TotalChecks, result2.TotalChecks)
+	}
+	if result1.PassedChecks != result2.PassedChecks {
+		t.Fatalf("passedChecks not deterministic: %d vs %d", result1.PassedChecks, result2.PassedChecks)
+	}
+}
