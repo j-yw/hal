@@ -60,7 +60,11 @@ Use 'hal links status' to inspect link health.
 Use 'hal links refresh' to recreate all links.`,
 	Example: `  hal links status
   hal links status --json
-  hal links refresh`,
+  hal links refresh
+  hal links refresh codex`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	},
 }
 
 var linksStatusCmd = &cobra.Command{

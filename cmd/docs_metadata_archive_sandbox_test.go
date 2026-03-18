@@ -30,6 +30,11 @@ func TestArchiveAndSandboxCommandFamiliesHaveCompleteMetadata(t *testing.T) {
 			family:   "sandbox",
 			required: false,
 		},
+		{
+			name:     "links command family",
+			family:   "links",
+			required: true,
+		},
 	}
 
 	for _, tt := range tests {
