@@ -24,6 +24,10 @@ func setupHalDir(t *testing.T, dir string) string {
 	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# Agent Instructions\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// Create progress.txt
+	if err := os.WriteFile(filepath.Join(halDir, template.ProgressFile), []byte("## Codebase Patterns\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	return halDir
 }
 

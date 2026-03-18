@@ -138,7 +138,11 @@ func Run(opts Options) DoctorResult {
 		warnings = append(warnings, "prompt_md")
 	}
 
-	// 6. Hal skills
+	// 6. Progress file
+	progressCheck := checkProgressFile(halDir)
+	checks = append(checks, progressCheck)
+
+	// 7. Hal skills
 	skillCheck := checkSkills(dir)
 	checks = append(checks, skillCheck)
 	if skillCheck.Status == StatusFail {
@@ -499,6 +503,27 @@ func checkLegacyDebris(dir string) Check {
 		RemediationID: RemediationRunHalInit,
 		Message:       "Legacy debris found: " + strings.Join(debris, ", ") + ". Run hal cleanup.",
 		Remediation:   &Remediation{Command: "hal cleanup", Safe: true},
+	}
+}
+
+func checkProgressFile(halDir string) Check {
+	progressPath := filepath.Join(halDir, template.ProgressFile)
+	if _, err := os.Stat(progressPath); os.IsNotExist(err) {
+		return Check{
+			ID:            "progress_file",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationRunHalInit,
+			Message:       "Missing .hal/progress.txt. Run history will not be tracked.",
+			Remediation:   &Remediation{Command: "hal init", Safe: true},
+		}
+	}
+	return Check{
+		ID:            "progress_file",
+		Status:        StatusPass,
+		Severity:      SeverityInfo,
+		RemediationID: RemediationNone,
+		Message:       "Found .hal/progress.txt.",
 	}
 }
 
