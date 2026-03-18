@@ -19,9 +19,12 @@ for agent orchestration and tooling integration.
 The doctor is engine-aware: Codex-specific checks are skipped when
 the configured engine is not codex.
 
+Use --fix to auto-apply safe remediations (equivalent to 'hal repair').
+
 Examples:
   hal doctor            # Human-readable check results
   hal doctor --json     # Machine-readable JSON contract
+  hal doctor --fix      # Check and auto-fix safe issues
 
 ```
 hal doctor [flags]
@@ -32,11 +35,13 @@ hal doctor [flags]
 ```
   hal doctor
   hal doctor --json
+  hal doctor --fix
 ```
 
 ### Options
 
 ```
+      --fix    Auto-fix safe issues (equivalent to hal repair)
   -h, --help   help for doctor
       --json   Output machine-readable JSON (v1 contract)
 ```
