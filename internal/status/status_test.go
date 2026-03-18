@@ -519,3 +519,39 @@ func TestGet_Deterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestGet_MarkdownPRDSuggestsConvert(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+	// Create markdown PRD but no JSON PRD
+	os.WriteFile(filepath.Join(halDir, "prd-feature.md"), []byte("# Feature"), 0644)
+
+	result := Get(dir)
+
+	if result.State != StateInitializedNoPRD {
+		t.Fatalf("state = %q, want %q", result.State, StateInitializedNoPRD)
+	}
+	if result.NextAction.Command != "hal convert" {
+		t.Fatalf("nextAction.command = %q, want %q", result.NextAction.Command, "hal convert")
+	}
+	if result.NextAction.ID != "run_convert" {
+		t.Fatalf("nextAction.id = %q, want %q", result.NextAction.ID, "run_convert")
+	}
+}
+
+func TestGet_NoPRDAtAll(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+	// No markdown or JSON PRD
+
+	result := Get(dir)
+
+	if result.State != StateInitializedNoPRD {
+		t.Fatalf("state = %q, want %q", result.State, StateInitializedNoPRD)
+	}
+	if result.NextAction.Command != "hal plan" {
+		t.Fatalf("nextAction.command = %q, want %q", result.NextAction.Command, "hal plan")
+	}
+}

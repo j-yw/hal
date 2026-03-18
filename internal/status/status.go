@@ -183,6 +183,21 @@ func Get(dir string) StatusResult {
 
 	// Manual workflow
 	if !artifacts.JSONPRD {
+		// If there's a markdown PRD but no JSON, suggest convert
+		if artifacts.MarkdownPRD {
+			return StatusResult{
+				ContractVersion: ContractVersion,
+				WorkflowTrack:   TrackManual,
+				State:           StateInitializedNoPRD,
+				Artifacts:       artifacts,
+				NextAction: NextAction{
+					ID:          "run_convert",
+					Command:     "hal convert",
+					Description: "Convert your markdown PRD to JSON for execution.",
+				},
+				Summary: "Markdown PRD found but no prd.json. Run hal convert.",
+			}
+		}
 		return StatusResult{
 			ContractVersion: ContractVersion,
 			WorkflowTrack:   TrackManual,
