@@ -82,6 +82,35 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	fmt.Fprintf(out, "State:    %s\n", result.State)
 	fmt.Fprintln(out)
 
+	// Show detail for manual workflows
+	if result.Manual != nil {
+		m := result.Manual
+		if m.BranchName != "" {
+			fmt.Fprintf(out, "Branch:   %s\n", m.BranchName)
+		}
+		fmt.Fprintf(out, "Stories:  %d/%d complete\n", m.CompletedStories, m.TotalStories)
+		if m.NextStory != nil {
+			label := m.NextStory.ID
+			if m.NextStory.Title != "" {
+				label += " — " + m.NextStory.Title
+			}
+			fmt.Fprintf(out, "Next:     %s\n", label)
+		}
+		fmt.Fprintln(out)
+	}
+
+	// Show detail for compound workflows
+	if result.Compound != nil {
+		c := result.Compound
+		if c.BranchName != "" {
+			fmt.Fprintf(out, "Branch:   %s\n", c.BranchName)
+		}
+		if c.Step != "" {
+			fmt.Fprintf(out, "Step:     %s\n", c.Step)
+		}
+		fmt.Fprintln(out)
+	}
+
 	fmt.Fprintln(out, "Artifacts:")
 	printArtifact(out, "  .hal/ directory", result.Artifacts.HalDir)
 	printArtifact(out, "  Markdown PRD", result.Artifacts.MarkdownPRD)
@@ -92,7 +121,7 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	fmt.Fprintln(out)
 
 	if result.NextAction.ID != "" {
-		fmt.Fprintf(out, "Next:     %s\n", result.NextAction.Command)
+		fmt.Fprintf(out, "Action:   %s\n", result.NextAction.Command)
 		fmt.Fprintf(out, "          %s\n", result.NextAction.Description)
 	}
 

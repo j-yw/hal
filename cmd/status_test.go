@@ -52,8 +52,40 @@ func TestRunStatusFn_HumanOutput(t *testing.T) {
 	if !strings.Contains(output, "State:") {
 		t.Fatalf("human output missing 'State:'\n%s", output)
 	}
-	if !strings.Contains(output, "Next:") {
-		t.Fatalf("human output missing 'Next:'\n%s", output)
+	if !strings.Contains(output, "Action:") {
+		t.Fatalf("human output missing 'Action:'\n%s", output)
+	}
+}
+
+func TestRunStatusFn_HumanOutput_WithStories(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test",
+		"stories": []map[string]interface{}{
+			{"id": "US-001", "title": "Setup", "status": "passed"},
+			{"id": "US-002", "title": "Build", "status": "pending"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	var buf bytes.Buffer
+	if err := runStatusFn(dir, false, &buf); err != nil {
+		t.Fatalf("runStatusFn() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Stories:  1/2 complete") {
+		t.Fatalf("human output missing story counts\n%s", output)
+	}
+	if !strings.Contains(output, "Branch:") {
+		t.Fatalf("human output missing branch\n%s", output)
+	}
+	if !strings.Contains(output, "US-002") {
+		t.Fatalf("human output missing next story ID\n%s", output)
 	}
 }
 
