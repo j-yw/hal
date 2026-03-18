@@ -128,6 +128,7 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 		fmt.Fprintf(out, "          %s\n", statusResult.NextAction.Description)
 	} else {
 		fmt.Fprintf(out, "Workflow: %s (%s)\n", statusResult.WorkflowTrack, statusResult.State)
+		fmt.Fprintf(out, "Health:   %d/%d checks passed\n", doctorResult.PassedChecks, doctorResult.TotalChecks)
 		if statusResult.Manual != nil {
 			fmt.Fprintf(out, "Stories:  %d/%d complete\n", statusResult.Manual.CompletedStories, statusResult.Manual.TotalStories)
 		}
