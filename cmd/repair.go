@@ -240,6 +240,15 @@ func executeRepairCommand(dir string, command string) error {
 		return nil
 	case "hal links clean":
 		return runLinksCleanFn(dir, io.Discard)
+	case "hal links refresh codex":
+		linker := skills.GetLinker("codex")
+		if linker == nil {
+			return fmt.Errorf("codex linker not available")
+		}
+		if err := linker.Link(dir, skills.ManagedSkillNames); err != nil {
+			return err
+		}
+		return linker.LinkCommands(dir)
 	default:
 		return fmt.Errorf("unknown repair command: %s", command)
 	}
