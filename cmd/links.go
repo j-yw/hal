@@ -98,10 +98,28 @@ Examples:
 	RunE: runLinksRefresh,
 }
 
+var linksCleanCmd = &cobra.Command{
+	Use:   "clean",
+	Short: "Remove deprecated and broken skill links",
+	Args:  noArgsValidation(),
+	Long: `Remove deprecated and broken skill links from engine directories.
+
+Removes:
+  - .claude/skills/ralph (deprecated alias)
+  - .pi/skills/ralph (deprecated alias)
+  - Any broken symlinks in engine skill directories
+
+This is a targeted cleanup for link-specific debris.
+Use 'hal cleanup' for broader .hal/ file cleanup.`,
+	Example: `  hal links clean`,
+	RunE:    runLinksClean,
+}
+
 func init() {
 	linksStatusCmd.Flags().BoolVar(&linksJSONFlag, "json", false, "Output machine-readable JSON")
 	linksCmd.AddCommand(linksStatusCmd)
 	linksCmd.AddCommand(linksRefreshCmd)
+	linksCmd.AddCommand(linksCleanCmd)
 	rootCmd.AddCommand(linksCmd)
 }
 
@@ -249,6 +267,66 @@ func inspectLinker(absDir, dir string, linker skills.EngineLinker) LinkStatus {
 	}
 
 	return es
+}
+
+func runLinksClean(cmd *cobra.Command, args []string) error {
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+
+	dir := "."
+	removed := 0
+
+	// Remove deprecated links
+	deprecated := []string{
+		filepath.Join(dir, ".claude", "skills", "ralph"),
+		filepath.Join(dir, ".pi", "skills", "ralph"),
+	}
+	for _, link := range deprecated {
+		if _, err := os.Lstat(link); os.IsNotExist(err) {
+			continue
+		}
+		if err := os.RemoveAll(link); err != nil {
+			fmt.Fprintf(out, "  ✗ failed to remove %s: %v\n", link, err)
+			continue
+		}
+		fmt.Fprintf(out, "  ✓ removed %s\n", link)
+		removed++
+	}
+
+	// Remove broken symlinks from engine skill dirs
+	engineDirs := []string{
+		filepath.Join(dir, ".claude", "skills"),
+		filepath.Join(dir, ".pi", "skills"),
+	}
+	for _, skillsDir := range engineDirs {
+		entries, err := os.ReadDir(skillsDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			linkPath := filepath.Join(skillsDir, entry.Name())
+			info, err := os.Lstat(linkPath)
+			if err != nil || info.Mode()&os.ModeSymlink == 0 {
+				continue
+			}
+			if _, err := os.Stat(linkPath); os.IsNotExist(err) {
+				if err := os.Remove(linkPath); err == nil {
+					fmt.Fprintf(out, "  ✓ removed broken link %s\n", linkPath)
+					removed++
+				}
+			}
+		}
+	}
+
+	if removed == 0 {
+		fmt.Fprintln(out, "No deprecated or broken links found.")
+	} else {
+		fmt.Fprintf(out, "\nCleaned %d link(s).\n", removed)
+	}
+
+	return nil
 }
 
 func runLinksRefresh(cmd *cobra.Command, args []string) error {
