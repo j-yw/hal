@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -31,7 +32,18 @@ var (
 	dryRunFlag  bool
 	storyFlag   string
 	runBaseFlag string
+	runJSONFlag bool
 )
+
+// RunResult is the machine-readable output of hal run --json.
+type RunResult struct {
+	ContractVersion int    `json:"contractVersion"`
+	OK              bool   `json:"ok"`
+	Iterations      int    `json:"iterations"`
+	Complete        bool   `json:"complete"`
+	Error           string `json:"error,omitempty"`
+	Summary         string `json:"summary"`
+}
 
 var runCmd = &cobra.Command{
 	Use:   "run [iterations]",
@@ -46,6 +58,9 @@ The loop spawns fresh AI instances that:
 5. Update prd.json to mark story complete
 6. Repeat until all stories pass or max iterations reached
 
+With --json, outputs a stable machine-readable result contract suitable
+for agent orchestration and tooling integration.
+
 Examples:
   hal run                          # Run with defaults (10 iterations)
   hal run 5                        # Run 5 iterations (positional)
@@ -55,11 +70,13 @@ Examples:
   hal run --timeout 30m            # Override per-session engine timeout
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
+  hal run --json                   # Machine-readable result output
 `,
 	Example: `  hal run
   hal run 5
   hal run --story US-001
   hal run --timeout 30m
+  hal run --json
   hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
 	RunE: runRun,
@@ -81,6 +98,7 @@ func init() {
 	runCmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "Show what would execute without running")
 	runCmd.Flags().StringVarP(&storyFlag, "story", "s", "", "Run specific story by ID (e.g., US-001)")
 	runCmd.Flags().StringVarP(&runBaseFlag, "base", "b", "", "Base branch for creating the PRD branch (default: current branch, or HEAD when detached)")
+	runCmd.Flags().BoolVar(&runJSONFlag, "json", false, "Output machine-readable JSON result")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -110,6 +128,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	timeoutOverride := runTimeout
 	dryRun := dryRunFlag
 	story := storyFlag
+	jsonMode := runJSONFlag
 
 	if cmd != nil {
 		flags := cmd.Flags()
@@ -178,6 +197,14 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			}
 			story = value
 		}
+
+		if flags.Lookup("json") != nil {
+			value, err := flags.GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
 	}
 
 	iterations, err := parseIterations(args, iterationsFlag, iterationsChanged, 10)
@@ -236,11 +263,43 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 
 	result := runner.Run(context.Background())
 
+	if jsonMode {
+		return outputRunJSON(out, result)
+	}
+
 	// Only return error if there was an actual failure
 	if result.Error != nil {
 		return fmt.Errorf("loop failed: %w", result.Error)
 	}
 
+	return nil
+}
+
+func outputRunJSON(out io.Writer, result loop.Result) error {
+	jr := RunResult{
+		ContractVersion: 1,
+		OK:              result.Success,
+		Iterations:      result.Iterations,
+		Complete:        result.Complete,
+	}
+
+	if result.Error != nil {
+		jr.Error = result.Error.Error()
+	}
+
+	if result.Complete {
+		jr.Summary = fmt.Sprintf("All stories complete after %d iteration(s).", result.Iterations)
+	} else if result.Success {
+		jr.Summary = fmt.Sprintf("Completed %d iteration(s). Stories remain.", result.Iterations)
+	} else {
+		jr.Summary = fmt.Sprintf("Failed after %d iteration(s).", result.Iterations)
+	}
+
+	data, err := json.MarshalIndent(jr, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal run result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
 	return nil
 }
 
