@@ -1,3 +1,4 @@
 {"type":"config","name":"HAL UX & Machine Readability Improvements","metricName":"test_failures","metricUnit":"","bestDirection":"lower"}
 {"run":1,"commit":"83e6fae","metric":3,"metrics":{"total_tests":0,"vet_clean":1},"status":"discard","description":"Baseline: 3 test failures (2 flaky engine tests with 2s timeout too tight). total_tests needs fix in script.","timestamp":1773822045462,"segment":0}
 {"run":2,"commit":"817b862","metric":0,"metrics":{"total_tests":387,"vet_clean":1},"status":"keep","description":"fix: increase engine test timeouts from 2s to 10s — fixes 3 flaky tests in claude/codex/pi","timestamp":1773822168093,"segment":0}
+{"run":3,"commit":"6e54e7d","metric":0,"metrics":{"total_tests":401,"vet_clean":1},"status":"keep","description":"feat: add hal status --json command with v1 workflow state machine contract (internal/status package + cmd/status.go + 14 new tests)","timestamp":1773822304753,"segment":0}
