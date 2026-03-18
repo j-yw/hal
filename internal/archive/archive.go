@@ -151,13 +151,13 @@ func sanitizeArchiveName(name string) string {
 
 // ArchiveInfo holds metadata about a single archive entry.
 type ArchiveInfo struct {
-	Name       string // Full directory name (e.g., "2026-02-04-my-feature")
-	Date       string // Parsed date portion
-	Feature    string // Parsed feature portion
-	Dir        string // Full path to archive directory
-	BranchName string // Branch name from prd.json
-	Completed  int    // Stories with passes=true
-	Total      int    // Total stories
+	Name       string `json:"name"`       // Full directory name (e.g., "2026-02-04-my-feature")
+	Date       string `json:"date"`       // Parsed date portion
+	Feature    string `json:"feature"`    // Parsed feature portion
+	Dir        string `json:"dir"`        // Full path to archive directory
+	BranchName string `json:"branchName"` // Branch name from prd.json
+	Completed  int    `json:"completed"`  // Stories with passes=true
+	Total      int    `json:"total"`      // Total stories
 }
 
 // List scans halDir/archive/ and returns metadata for each archive directory.

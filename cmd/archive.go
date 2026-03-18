@@ -18,6 +18,7 @@ import (
 
 var archiveNameFlag string
 var archiveVerboseFlag bool
+var archiveListJSONFlag bool
 
 var archiveCmd = &cobra.Command{
 	Use:   "archive",
@@ -56,9 +57,11 @@ var archiveListCmd = &cobra.Command{
 	PreRunE: disallowArchiveNameFlagOnSubcommands,
 	Long: `List all archived features with date, name, and completion stats.
 
-Use --verbose for detailed output including branch name and full path.`,
+Use --verbose for detailed output including branch name and full path.
+Use --json for machine-readable JSON output.`,
 	Example: `  hal archive list
-  hal archive list --verbose`,
+  hal archive list --verbose
+  hal archive list --json`,
 	RunE: runArchiveList,
 }
 
@@ -89,6 +92,7 @@ func init() {
 		panic(err)
 	}
 	archiveListCmd.Flags().BoolVarP(&archiveVerboseFlag, "verbose", "v", false, "Show detailed output")
+	archiveListCmd.Flags().BoolVar(&archiveListJSONFlag, "json", false, "Output as JSON")
 
 	archiveCmd.AddCommand(archiveCreateCmd)
 	archiveCmd.AddCommand(archiveListCmd)
@@ -133,7 +137,32 @@ func runArchiveList(cmd *cobra.Command, args []string) error {
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 	}
+	if archiveListJSONFlag {
+		return runArchiveListJSON(template.HalDir, out)
+	}
 	return runArchiveListFn(template.HalDir, archiveVerboseFlag, out)
+}
+
+func runArchiveListJSON(halDir string, out io.Writer) error {
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+	}
+
+	archives, err := archive.List(halDir)
+	if err != nil {
+		return err
+	}
+
+	if archives == nil {
+		archives = []archive.ArchiveInfo{}
+	}
+
+	data, err := json.MarshalIndent(archives, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal archive list: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
 }
 
 func runArchiveRestore(cmd *cobra.Command, args []string) error {
