@@ -42,6 +42,7 @@ Status / Health:
 Links:
   hal links status [--json]            Inspect engine skill links
   hal links refresh [engine]           Recreate skill links
+  hal links clean                      Remove deprecated/broken links
 
 Analyze:
   hal analyze --format text|json
