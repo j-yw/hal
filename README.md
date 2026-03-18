@@ -115,6 +115,14 @@ The old `hal review` reporting workflow moved to `hal report`.
 
 Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) with the main entry page at [`docs/cli/hal.md`](docs/cli/hal.md).
 
+## Machine Contracts
+
+Stable JSON contracts for agent integration:
+
+- [`docs/contracts/status-v1.md`](docs/contracts/status-v1.md) — Workflow state machine
+- [`docs/contracts/doctor-v1.md`](docs/contracts/doctor-v1.md) — Health/readiness checks
+- [`docs/contracts/continue-v1.md`](docs/contracts/continue-v1.md) — What to do next
+
 ## Commands
 
 ### Core Commands
