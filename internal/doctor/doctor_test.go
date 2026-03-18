@@ -636,3 +636,45 @@ func TestRun_NoPRDJSON(t *testing.T) {
 	}
 	t.Fatal("prd_json check not found")
 }
+
+func TestRun_CheckCount(t *testing.T) {
+	// A fully healthy repo should have exactly 13 checks
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte(`{"stories":[{"id":"US-001","status":"pending"}]}`), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	// Expected checks in order
+	expectedIDs := []string{
+		"git_repo",
+		"hal_dir",
+		"config_yaml",
+		"default_engine_cli",
+		"prompt_md",
+		"progress_file",
+		"prd_json",
+		"hal_skills",
+		"hal_commands",
+		"local_skill_links",
+		"codex_global_links",
+		"legacy_debris",
+		"broken_skill_links",
+	}
+
+	if result.TotalChecks != len(expectedIDs) {
+		t.Fatalf("totalChecks = %d, want %d", result.TotalChecks, len(expectedIDs))
+	}
+
+	for i, expected := range expectedIDs {
+		if i >= len(result.Checks) {
+			t.Fatalf("missing check at index %d: expected %q", i, expected)
+		}
+		if result.Checks[i].ID != expected {
+			t.Fatalf("check[%d].ID = %q, want %q", i, result.Checks[i].ID, expected)
+		}
+	}
+}
