@@ -235,3 +235,47 @@ func TestRunLinksRefresh_CreatesLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestRunLinksRefresh_SpecificEngine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	halDir := filepath.Join(dir, template.HalDir)
+	skillsDir := filepath.Join(halDir, "skills")
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(skillsDir, name), 0755)
+	}
+
+	var buf bytes.Buffer
+	cmd := linksRefreshCmd
+	cmd.SetOut(&buf)
+	if err := runLinksRefresh(cmd, []string{"pi"}); err != nil {
+		t.Fatalf("runLinksRefresh(pi) error = %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "pi") {
+		t.Fatalf("output should mention pi\n%s", buf.String())
+	}
+}
+
+func TestRunLinksRefresh_UnknownEngine(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
+
+	err := runLinksRefresh(nil, []string{"nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown engine")
+	}
+	if !strings.Contains(err.Error(), "unknown engine") {
+		t.Fatalf("error should mention unknown engine: %v", err)
+	}
+}
