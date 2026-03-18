@@ -120,3 +120,49 @@ func TestPRDCmdHelp(t *testing.T) {
 		t.Fatalf("audit Example missing 'hal prd audit': %s", prdAuditCmd.Example)
 	}
 }
+
+func TestRunPRDAuditFn_MissingBranchName(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	// PRD with no branchName
+	prd := `{"project":"test","userStories":[{"id":"US-001","passes":false}]}`
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte(prd), 0644)
+
+	var buf bytes.Buffer
+	runPRDAuditFn(dir, true, &buf)
+
+	var result PRDAuditResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	if result.OK {
+		t.Fatal("should not be OK when branchName is missing")
+	}
+
+	found := false
+	for _, issue := range result.Issues {
+		if strings.Contains(issue, "branchName") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("should detect missing branchName, issues: %v", result.Issues)
+	}
+}
+
+func TestRunPRDAuditFn_MarkdownOnly(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	os.WriteFile(filepath.Join(halDir, "prd-feature.md"), []byte("# My Feature"), 0644)
+
+	var buf bytes.Buffer
+	runPRDAuditFn(dir, false, &buf)
+
+	output := buf.String()
+	if !strings.Contains(output, "Markdown PRD") && !strings.Contains(output, "✓") {
+		t.Fatalf("should show markdown PRD found\n%s", output)
+	}
+}

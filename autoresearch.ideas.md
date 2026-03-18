@@ -1,14 +1,19 @@
 # Autoresearch Ideas Backlog
 
-## Remaining
-- **PRD sync audit** — `hal prd audit` for markdown↔JSON drift detection  
+All items from the original spec have been implemented. Remaining ideas for future sessions:
 
-## Done
-- ~~Consistent JSON exit codes~~ ✅ run, validate, auto wrap all errors in JSON body
-- Status/doctor/continue/repair/links commands ✅
+## Future Work
+- **hal prd audit --engine** — Use AI to do deep PRD quality analysis (scope, dependency ordering)
+- **hal doctor --fix** — Alias for `hal repair` for discoverability
+- **hal links status --engine** — Filter link status to specific engine
+- **Contract versioning bump policy** — Define when to increment contractVersion
+
+## Complete
+- Status/doctor/continue/repair/links/prd commands ✅
 - 20+ commands with --json ✅
+- Consistent JSON exit codes ✅
 - Contract docs + doc-code sync tests ✅
-- Test reliability + isolation ✅
 - Doctor with 13 checks, scope/applicability ✅
-- Multi-project Codex detection ✅
+- PRD sync audit ✅
+- Test reliability + isolation ✅
 - Self-repair ✅
