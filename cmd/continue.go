@@ -131,6 +131,14 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 		if statusResult.Manual != nil {
 			fmt.Fprintf(out, "Stories:  %d/%d complete\n", statusResult.Manual.CompletedStories, statusResult.Manual.TotalStories)
 		}
+		if statusResult.Compound != nil {
+			if statusResult.Compound.Step != "" {
+				fmt.Fprintf(out, "Step:     %s\n", statusResult.Compound.Step)
+			}
+			if statusResult.Compound.BranchName != "" {
+				fmt.Fprintf(out, "Branch:   %s\n", statusResult.Compound.BranchName)
+			}
+		}
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "Next:     %s\n", nextCmd)
 		fmt.Fprintf(out, "          %s\n", nextDesc)
