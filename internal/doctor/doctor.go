@@ -155,6 +155,13 @@ func Run(opts Options) DoctorResult {
 		warnings = append(warnings, "legacy_debris")
 	}
 
+	// 9. Broken symlinks in engine skill directories
+	brokenCheck := checkBrokenSkillLinks(dir)
+	checks = append(checks, brokenCheck)
+	if brokenCheck.Status == StatusWarn {
+		warnings = append(warnings, "broken_skill_links")
+	}
+
 	// Determine overall status
 	overall := StatusPass
 	if len(failures) > 0 {
@@ -433,6 +440,59 @@ func checkLegacyDebris(dir string) Check {
 		RemediationID: RemediationRunHalInit,
 		Message:       "Legacy debris found: " + strings.Join(debris, ", ") + ". Run hal cleanup.",
 		Remediation:   &Remediation{Command: "hal cleanup", Safe: true},
+	}
+}
+
+func checkBrokenSkillLinks(dir string) Check {
+	// Check project-local engine skill directories for broken symlinks
+	engineDirs := []string{
+		filepath.Join(dir, ".claude", "skills"),
+		filepath.Join(dir, ".pi", "skills"),
+	}
+
+	var broken []string
+	for _, skillsDir := range engineDirs {
+		entries, err := os.ReadDir(skillsDir)
+		if err != nil {
+			continue // dir may not exist
+		}
+		for _, entry := range entries {
+			linkPath := filepath.Join(skillsDir, entry.Name())
+			info, err := os.Lstat(linkPath)
+			if err != nil {
+				continue
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				continue // not a symlink
+			}
+			// Check if target exists
+			if _, err := os.Stat(linkPath); os.IsNotExist(err) {
+				rel, _ := filepath.Rel(dir, linkPath)
+				if rel == "" {
+					rel = linkPath
+				}
+				broken = append(broken, rel)
+			}
+		}
+	}
+
+	if len(broken) == 0 {
+		return Check{
+			ID:            "broken_skill_links",
+			Status:        StatusPass,
+			Severity:      SeverityInfo,
+			RemediationID: RemediationNone,
+			Message:       "No broken skill symlinks found.",
+		}
+	}
+
+	return Check{
+		ID:            "broken_skill_links",
+		Status:        StatusWarn,
+		Severity:      SeverityWarn,
+		RemediationID: RemediationRunHalInit,
+		Message:       "Broken skill symlinks: " + strings.Join(broken, ", ") + ". Run hal init to refresh.",
+		Remediation:   &Remediation{Command: "hal init", Safe: true},
 	}
 }
 

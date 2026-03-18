@@ -345,3 +345,51 @@ func TestRun_LegacyDebrisRemediationIsCleanup(t *testing.T) {
 		t.Fatalf("primaryRemediation.command = %q, want %q", result.PrimaryRemediation.Command, "hal cleanup")
 	}
 }
+
+func TestRun_BrokenSkillLinksDetected(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	// Create a broken symlink in .claude/skills/
+	claudeSkills := filepath.Join(dir, ".claude", "skills")
+	os.MkdirAll(claudeSkills, 0755)
+	os.Symlink("/nonexistent/path/that/does/not/exist", filepath.Join(claudeSkills, "broken-link"))
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	found := false
+	for _, c := range result.Checks {
+		if c.ID == "broken_skill_links" {
+			found = true
+			if c.Status != StatusWarn {
+				t.Fatalf("broken_skill_links status = %q, want %q", c.Status, StatusWarn)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("broken_skill_links check not found")
+	}
+}
+
+func TestRun_NoBrokenSkillLinks(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "broken_skill_links" {
+			if c.Status != StatusPass {
+				t.Fatalf("broken_skill_links status = %q, want %q", c.Status, StatusPass)
+			}
+			return
+		}
+	}
+	t.Fatal("broken_skill_links check not found")
+}
