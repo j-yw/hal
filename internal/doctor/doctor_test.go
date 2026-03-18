@@ -393,3 +393,32 @@ func TestRun_NoBrokenSkillLinks(t *testing.T) {
 	}
 	t.Fatal("broken_skill_links check not found")
 }
+
+func TestRun_InvalidYAMLConfig(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+	// Write invalid YAML
+	os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: [\ninvalid yaml"), 0644)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	found := false
+	for _, c := range result.Checks {
+		if c.ID == "config_yaml" {
+			found = true
+			if c.Status != StatusFail {
+				t.Fatalf("config_yaml status = %q, want %q for invalid YAML", c.Status, StatusFail)
+			}
+			if c.Remediation == nil {
+				t.Fatal("config_yaml should have remediation for invalid YAML")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("config_yaml check not found")
+	}
+}

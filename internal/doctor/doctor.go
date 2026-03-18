@@ -12,6 +12,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
+	"gopkg.in/yaml.v3"
 )
 
 // ContractVersion is the current version of the doctor contract.
@@ -265,22 +266,47 @@ func checkHalDir(halDir string) Check {
 
 func checkConfigYAML(halDir string) Check {
 	configPath := filepath.Join(halDir, template.ConfigFile)
-	if _, err := os.Stat(configPath); err == nil {
+	data, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
 		return Check{
 			ID:            "config_yaml",
-			Status:        StatusPass,
-			Severity:      SeverityInfo,
-			RemediationID: RemediationNone,
-			Message:       "Loaded .hal/config.yaml.",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationRunHalInit,
+			Message:       "Missing .hal/config.yaml. Using defaults.",
+			Remediation:   &Remediation{Command: "hal init", Safe: true},
 		}
 	}
+	if err != nil {
+		return Check{
+			ID:            "config_yaml",
+			Status:        StatusFail,
+			Severity:      SeverityError,
+			RemediationID: RemediationRunHalInit,
+			Message:       "Cannot read .hal/config.yaml: " + err.Error(),
+			Remediation:   &Remediation{Command: "hal init --refresh-templates", Safe: false},
+		}
+	}
+
+	// Validate YAML is parseable
+	var raw map[string]interface{}
+	if yamlErr := yaml.Unmarshal(data, &raw); yamlErr != nil {
+		return Check{
+			ID:            "config_yaml",
+			Status:        StatusFail,
+			Severity:      SeverityError,
+			RemediationID: RemediationRunHalInit,
+			Message:       "Invalid YAML in .hal/config.yaml: " + yamlErr.Error(),
+			Remediation:   &Remediation{Command: "hal init --refresh-templates", Safe: false},
+		}
+	}
+
 	return Check{
 		ID:            "config_yaml",
-		Status:        StatusWarn,
-		Severity:      SeverityWarn,
-		RemediationID: RemediationRunHalInit,
-		Message:       "Missing .hal/config.yaml. Using defaults.",
-		Remediation:   &Remediation{Command: "hal init", Safe: true},
+		Status:        StatusPass,
+		Severity:      SeverityInfo,
+		RemediationID: RemediationNone,
+		Message:       "Loaded .hal/config.yaml.",
 	}
 }
 
