@@ -76,6 +76,8 @@ Use --json for machine-readable JSON output.`,
 	RunE: runArchiveList,
 }
 
+var archiveRestoreJSONFlag bool
+
 var archiveRestoreCmd = &cobra.Command{
 	Use:     "restore <name>",
 	Short:   "Restore an archived feature",
@@ -87,7 +89,8 @@ If there is current feature state, it will be auto-archived first.
 
 The name argument is the archive directory name (e.g., 2026-01-15-my-feature).
 Use 'hal archive list' to see available archives.`,
-	Example: `  hal archive restore 2026-01-15-checkout-flow`,
+	Example: `  hal archive restore 2026-01-15-checkout-flow
+  hal archive restore 2026-01-15-checkout-flow --json`,
 	RunE:    runArchiveRestore,
 }
 
@@ -105,6 +108,7 @@ func init() {
 	}
 	archiveListCmd.Flags().BoolVarP(&archiveVerboseFlag, "verbose", "v", false, "Show detailed output")
 	archiveListCmd.Flags().BoolVar(&archiveListJSONFlag, "json", false, "Output as JSON")
+	archiveRestoreCmd.Flags().BoolVar(&archiveRestoreJSONFlag, "json", false, "Output machine-readable JSON result")
 
 	archiveCmd.AddCommand(archiveCreateCmd)
 	archiveCmd.AddCommand(archiveListCmd)
@@ -227,6 +231,23 @@ func runArchiveRestore(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
 	if cmd != nil {
 		out = cmd.OutOrStdout()
+	}
+	if archiveRestoreJSONFlag {
+		err := runArchiveRestoreFn(template.HalDir, args[0], io.Discard)
+		jr := map[string]interface{}{
+			"contractVersion": 1,
+			"ok":              err == nil,
+			"name":            args[0],
+		}
+		if err != nil {
+			jr["error"] = err.Error()
+			jr["summary"] = "Restore failed: " + err.Error()
+		} else {
+			jr["summary"] = fmt.Sprintf("Restored %s.", args[0])
+		}
+		data, _ := json.MarshalIndent(jr, "", "  ")
+		fmt.Fprintln(out, string(data))
+		return nil
 	}
 	return runArchiveRestoreFn(template.HalDir, args[0], out)
 }
