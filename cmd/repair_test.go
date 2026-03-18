@@ -155,3 +155,33 @@ func TestRunRepairFn_FixesUnhealthyRepo(t *testing.T) {
 		t.Fatal(".hal/ should exist after repair")
 	}
 }
+
+func TestRunRepairFn_ReRunsDoctor(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+
+	// First run: should apply hal init
+	var buf bytes.Buffer
+	origDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origDir)
+
+	if err := runRepairFn(dir, false, true, &buf); err != nil {
+		t.Fatalf("runRepairFn() error = %v", err)
+	}
+
+	var result RepairResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("JSON unmarshal error: %v", err)
+	}
+
+	if len(result.Applied) == 0 {
+		t.Fatal("should have applied at least one repair")
+	}
+
+	// The re-check should show improvement
+	if result.Summary == "" {
+		t.Fatal("summary should not be empty")
+	}
+}
