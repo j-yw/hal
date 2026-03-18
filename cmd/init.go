@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -52,6 +53,7 @@ skill discovery.
 After init, create a prd.json with your user stories and run 'hal run'.
 Or use 'hal plan' to interactively generate a PRD.`,
 	Example: `  hal init
+  hal init --json
   hal init --refresh-templates
   hal init --refresh-templates --dry-run`,
 	RunE: runInit,
@@ -65,6 +67,16 @@ func init() {
 func addInitFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
 	cmd.Flags().Bool("dry-run", false, "Preview template refresh actions (only applies with --refresh-templates; other init steps still run)")
+	cmd.Flags().Bool("json", false, "Output machine-readable JSON result")
+}
+
+// InitResult is the machine-readable output of hal init --json.
+type InitResult struct {
+	ContractVersion int      `json:"contractVersion"`
+	OK              bool     `json:"ok"`
+	Created         []string `json:"created,omitempty"`
+	Skipped         []string `json:"skipped,omitempty"`
+	Summary         string   `json:"summary"`
 }
 
 // ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
@@ -174,10 +186,11 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	projectDir := "."
 
 	// Read flags (cmd may be nil in tests)
-	var doRefresh, dryRun bool
+	var doRefresh, dryRun, jsonMode bool
 	if cmd != nil {
 		doRefresh, _ = cmd.Flags().GetBool("refresh-templates")
 		dryRun, _ = cmd.Flags().GetBool("dry-run")
+		jsonMode, _ = cmd.Flags().GetBool("json")
 	}
 
 	// Auto-migrate .goralph/ to .hal/ if applicable
@@ -266,6 +279,26 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	// Create symlinks from engine command directories to .hal/commands/
 	if err := skills.LinkAllCommands(projectDir); err != nil {
 		_ = err // Errors are logged as warnings in LinkAllCommands.
+	}
+
+	if jsonMode {
+		jr := InitResult{
+			ContractVersion: 1,
+			OK:              true,
+			Created:         created,
+			Skipped:         skipped,
+		}
+		if len(created) > 0 {
+			jr.Summary = fmt.Sprintf("Initialized .hal/ with %d new file(s).", len(created))
+		} else {
+			jr.Summary = "Initialized .hal/ — all files already exist."
+		}
+		data, err := json.MarshalIndent(jr, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal init result: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
 	}
 
 	fmt.Fprintln(out, "Initialized .hal/")
