@@ -185,3 +185,27 @@ func TestRunRepairFn_ReRunsDoctor(t *testing.T) {
 		t.Fatal("summary should not be empty")
 	}
 }
+
+func TestRunRepairFn_HealthyRepoJSON(t *testing.T) {
+	dir := setupHealthyDir(t)
+
+	var buf bytes.Buffer
+	if err := runRepairFn(dir, false, true, &buf); err != nil {
+		t.Fatalf("runRepairFn() error = %v", err)
+	}
+
+	var result RepairResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("JSON unmarshal error: %v", err)
+	}
+
+	if !result.OK {
+		t.Fatal("healthy repo repair should report OK")
+	}
+	if len(result.Applied) > 0 {
+		t.Fatalf("healthy repo should not apply repairs: %+v", result.Applied)
+	}
+	if !strings.Contains(result.Summary, "No repairs needed") {
+		t.Fatalf("summary should say no repairs needed: %q", result.Summary)
+	}
+}
