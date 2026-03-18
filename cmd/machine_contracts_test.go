@@ -3,10 +3,12 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -328,5 +330,46 @@ func TestMachineContractFields_PRDAudit(t *testing.T) {
 		if _, ok := raw[field]; !ok {
 			t.Errorf("prd audit JSON missing field %q", field)
 		}
+	}
+}
+
+func TestNextActionFieldsConsistent(t *testing.T) {
+	// Verify that nextAction fields in various commands use consistent ID values
+	// that match the status contract's action IDs
+	validActionIDs := map[string]bool{
+		"run_init":    true,
+		"run_plan":    true,
+		"run_convert": true,
+		"run_manual":  true,
+		"run_report":  true,
+		"run_auto":    true,
+		"resume_auto": true,
+	}
+
+	// Test RunResult nextActions
+	tests := []struct {
+		name   string
+		result loop.Result
+	}{
+		{"complete", loop.Result{Success: true, Complete: true, Iterations: 1}},
+		{"in_progress", loop.Result{Success: true, Complete: false, Iterations: 5}},
+		{"failed", loop.Result{Success: false, Iterations: 3, Error: fmt.Errorf("test")}},
+	}
+
+	for _, tt := range tests {
+		t.Run("run_"+tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := outputRunJSON(&buf, tt.result, "", false); err != nil {
+				t.Fatalf("outputRunJSON error: %v", err)
+			}
+			var jr RunResult
+			json.Unmarshal(buf.Bytes(), &jr)
+			if jr.NextAction == nil {
+				t.Fatal("nextAction should not be nil")
+			}
+			if !validActionIDs[jr.NextAction.ID] {
+				t.Fatalf("nextAction.id %q is not a recognized action ID", jr.NextAction.ID)
+			}
+		})
 	}
 }
