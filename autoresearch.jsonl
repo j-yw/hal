@@ -71,3 +71,4 @@
 {"run":70,"commit":"be1ae88","metric":0,"metrics":{"total_tests":467,"vet_clean":1},"status":"keep","description":"test: contract test verifies all doctor checks have scope and applicability fields in JSON output","timestamp":1773827728431,"segment":0}
 {"run":71,"commit":"ad686ff","metric":0,"metrics":{"total_tests":467,"vet_clean":1},"status":"keep","description":"docs: improve hal init next steps — now includes hal doctor as first step, cleaner aligned format","timestamp":1773827785709,"segment":0}
 {"run":72,"commit":"56adc5b","metric":0,"metrics":{"total_tests":467,"vet_clean":1},"status":"keep","description":"feat: add hal links clean subcommand — removes deprecated ralph links and broken symlinks from engine skill directories","timestamp":1773827852743,"segment":0}
+{"run":73,"commit":"f55edea","metric":0,"metrics":{"total_tests":467,"vet_clean":1},"status":"keep","description":"docs: add links clean to root help","timestamp":1773827895645,"segment":0}

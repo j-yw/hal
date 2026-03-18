@@ -149,3 +149,48 @@ func TestRunLinksStatusFn_DetectsBroken(t *testing.T) {
 	}
 	t.Fatal("claude engine not found")
 }
+
+func TestRunLinksClean_RemovesDeprecated(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	// Create deprecated ralph link
+	claudeSkills := filepath.Join(dir, ".claude", "skills")
+	os.MkdirAll(claudeSkills, 0755)
+	os.Symlink("../../.hal/skills/hal", filepath.Join(claudeSkills, "ralph"))
+
+	var buf bytes.Buffer
+	cmd := linksCleanCmd
+	cmd.SetOut(&buf)
+	if err := runLinksClean(cmd, nil); err != nil {
+		t.Fatalf("runLinksClean() error = %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(claudeSkills, "ralph")); !os.IsNotExist(err) {
+		t.Fatal("ralph link should be removed")
+	}
+
+	if !strings.Contains(buf.String(), "ralph") {
+		t.Fatalf("output should mention ralph\n%s", buf.String())
+	}
+}
+
+func TestRunLinksClean_NothingToClean(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	var buf bytes.Buffer
+	cmd := linksCleanCmd
+	cmd.SetOut(&buf)
+	if err := runLinksClean(cmd, nil); err != nil {
+		t.Fatalf("runLinksClean() error = %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "No deprecated") {
+		t.Fatalf("output should say nothing to clean\n%s", buf.String())
+	}
+}
