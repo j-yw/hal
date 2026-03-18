@@ -1,40 +1,36 @@
 # Autoresearch: HAL UX & Machine Readability Improvements
 
 ## Objective
-Improve HAL CLI's operational coherence: fix test failures, add machine-readable output (`--json`) to all core commands, fix test isolation, add status/doctor/continue commands, improve UX clarity.
+Improve HAL CLI's operational coherence: machine-readable output, workflow state, health checks, test reliability, UX clarity.
 
 ## Results
-- **Baseline**: 3 test failures, ~387 tests
-- **Final**: 0 test failures, 445 tests, vet clean
-- **48 experiments**, 47 kept
-- **47 commits**, +4169/-95 lines, 45 files changed
-- **4 new commands**: status, doctor, continue, (archive create/list/restore --json)
-- **3 new packages**: `internal/status`, `internal/doctor`
-- **17+ commands** with `--json` flag
+- **Baseline**: 3 test failures, ~387 tests, no status/doctor/continue commands, no --json
+- **Final**: 0 test failures, 445 tests, 50+ experiments, 50 commits
+- **+4300 lines** across 45 files
+- **4 new commands**: status, doctor, continue, 17+ with --json
+- **3 new packages**: internal/status, internal/doctor
 
-## Key Improvements
+## Key Deliverables
 
-### New Commands
-- `hal status --json` — Workflow state (7 states × 4 tracks), story counts, branch, paths
-- `hal doctor --json` — 11 health checks, engine-aware, remediation commands
-- `hal continue --json` — Combines status + doctor into "what to do next"
+### Workflow State Machine (`hal status --json`)
+7 states × 4 tracks: not_initialized, hal_initialized_no_prd, manual_in_progress, manual_complete, compound_active, compound_complete, review_loop_complete. Detail fields: story counts, nextStory, branchName, compound step, review-loop report.
 
-### Machine-Readable JSON
+### Health/Readiness (`hal doctor --json`)  
+12 checks: git_repo, hal_dir, config_yaml (YAML validation), prompt_md (content), progress_file, default_engine_cli, local_skill_links, hal_skills, hal_commands, codex_global_links (engine-aware), legacy_debris, broken_skill_links. Actionable remediation commands. Check pass rate.
+
+### "What to Do Next" (`hal continue --json`)
+Combines status + doctor. Doctor issues shown as blockers. Compound/manual detail.
+
+### Machine-Readable JSON (17+ commands)
 init, status, doctor, continue, run, report, auto, analyze, validate, convert, cleanup, config, standards list, review, archive list/create/restore, version, explode
 
-### Doctor Checks (11 total)
-git_repo, hal_dir, config_yaml (YAML validation), default_engine_cli, prompt_md (content check), progress_file, hal_skills, hal_commands, codex_global_links, legacy_debris, broken_skill_links
-
-### Status States (7 total)
-not_initialized, hal_initialized_no_prd, manual_in_progress, manual_complete, compound_active, compound_complete, review_loop_complete
-
-### Test Fixes
-- 3 flaky engine timeouts (2s→10s)
-- Race condition in t.Parallel metadata tests
-- Codex linker $HOME isolation
+### Test Reliability
+- 3 flaky engine timeouts fixed (2s→10s)
+- Race condition in t.Parallel metadata tests fixed
+- Codex linker $HOME isolation (tests no longer pollute ~/.codex)
 
 ### UX
 - Report: "legacy" → "Generate summary report"
-- Init: separates repo-local/engine-local/global effects
-- Doctor: shows engine, specific warning summaries
-- README: updated with new commands
+- Init: explicitly separates repo-local/engine-local/global side effects
+- Cleanup: removes deprecated ralph links and rules/
+- README updated with status/doctor/continue

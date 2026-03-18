@@ -10,6 +10,7 @@ package status
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -331,7 +332,7 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 			Manual:     manual,
 			ReviewLoop: reviewLoop,
 			Paths:      paths,
-			Summary:    "Manual workflow is complete; generate a report for the completed work.",
+			Summary:    fmt.Sprintf("Manual workflow is complete (%d/%d stories); generate a report.", completed, total),
 		}
 	}
 
@@ -348,7 +349,7 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 		Manual:     manual,
 		ReviewLoop: reviewLoop,
 		Paths:      paths,
-		Summary:    "Manual workflow is in progress; continue the run loop.",
+		Summary:    fmt.Sprintf("Manual workflow in progress (%d/%d stories complete).", completed, total),
 	}
 }
 
