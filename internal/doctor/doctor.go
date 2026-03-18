@@ -279,9 +279,9 @@ func Run(opts Options) DoctorResult {
 			case "legacy_debris":
 				warnParts = append(warnParts, "run hal cleanup")
 			case "broken_skill_links":
-				warnParts = append(warnParts, "run hal init to fix broken links")
+				warnParts = append(warnParts, "run hal links clean")
 			case "local_skill_links":
-				warnParts = append(warnParts, "run hal init to refresh engine skill links")
+				warnParts = append(warnParts, "run hal links refresh")
 			default:
 				warnParts = append(warnParts, w)
 			}
@@ -763,8 +763,8 @@ func checkLocalSkillLinks(dir string) Check {
 		Status:        StatusWarn,
 		Severity:      SeverityWarn,
 		RemediationID: RemediationRunHalInit,
-		Message:       "Stale engine-local skill links: " + strings.Join(stale, ", ") + ". Run hal init to refresh.",
-		Remediation:   &Remediation{Command: "hal init", Safe: true},
+		Message:       "Stale engine-local skill links: " + strings.Join(stale, ", ") + ". Run hal links refresh.",
+		Remediation:   &Remediation{Command: "hal links refresh", Safe: true},
 	}
 }
 
@@ -816,8 +816,8 @@ func checkBrokenSkillLinks(dir string) Check {
 		Status:        StatusWarn,
 		Severity:      SeverityWarn,
 		RemediationID: RemediationRunHalInit,
-		Message:       "Broken skill symlinks: " + strings.Join(broken, ", ") + ". Run hal init to refresh.",
-		Remediation:   &Remediation{Command: "hal init", Safe: true},
+		Message:       "Broken skill symlinks: " + strings.Join(broken, ", ") + ". Run hal links refresh.",
+		Remediation:   &Remediation{Command: "hal links clean", Safe: true},
 	}
 }
 

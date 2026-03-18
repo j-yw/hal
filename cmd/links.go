@@ -274,8 +274,10 @@ func runLinksClean(cmd *cobra.Command, args []string) error {
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 	}
+	return runLinksCleanFn(".", out)
+}
 
-	dir := "."
+func runLinksCleanFn(dir string, out io.Writer) error {
 	removed := 0
 
 	// Remove deprecated links

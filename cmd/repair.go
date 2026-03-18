@@ -9,7 +9,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/doctor"
-	_ "github.com/jywlabs/hal/internal/skills" // register linkers
+	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -230,6 +230,16 @@ func executeRepairCommand(dir string, command string) error {
 		return runCleanupFn(filepath.Join(dir, template.HalDir), false, io.Discard)
 	case "hal init --refresh-templates":
 		return runInitWithWriters(nil, nil, io.Discard, io.Discard)
+	case "hal links refresh":
+		if err := skills.LinkAllEngines(dir); err != nil {
+			_ = err
+		}
+		if err := skills.LinkAllCommands(dir); err != nil {
+			_ = err
+		}
+		return nil
+	case "hal links clean":
+		return runLinksCleanFn(dir, io.Discard)
 	default:
 		return fmt.Errorf("unknown repair command: %s", command)
 	}
