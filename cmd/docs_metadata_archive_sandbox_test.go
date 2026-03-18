@@ -8,7 +8,7 @@ import (
 )
 
 func TestArchiveAndSandboxCommandFamiliesHaveCompleteMetadata(t *testing.T) {
-	t.Parallel()
+	// Not parallel: walks shared global Root() command tree
 
 	root := Root()
 	if root == nil {
@@ -29,6 +29,16 @@ func TestArchiveAndSandboxCommandFamiliesHaveCompleteMetadata(t *testing.T) {
 			name:     "sandbox command family",
 			family:   "sandbox",
 			required: false,
+		},
+		{
+			name:     "links command family",
+			family:   "links",
+			required: true,
+		},
+		{
+			name:     "prd command family",
+			family:   "prd",
+			required: true,
 		},
 	}
 

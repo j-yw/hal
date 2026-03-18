@@ -229,6 +229,7 @@ func TestRunInit(t *testing.T) {
 
 	t.Run("creates reports directory and gitkeep", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("HOME", dir) // Isolate Codex linker from real ~/.codex
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -256,6 +257,7 @@ func TestRunInit(t *testing.T) {
 
 	t.Run("creates config.yaml matching template", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("HOME", dir)
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -277,6 +279,7 @@ func TestRunInit(t *testing.T) {
 
 	t.Run("second run does not overwrite existing config and migrates prompt branch guidance", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("HOME", dir)
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -335,6 +338,7 @@ func TestRunInit(t *testing.T) {
 
 	t.Run("installs hal-pinchtab skill", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("HOME", dir)
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -596,6 +600,7 @@ func TestRunInitAddsGitignore(t *testing.T) {
 
 	t.Run("adds .hal/* to new gitignore", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("HOME", dir)
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -622,6 +627,7 @@ func TestRunInitAddsGitignore(t *testing.T) {
 
 	t.Run("adds .hal/* to existing gitignore", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("HOME", dir)
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -650,6 +656,7 @@ func TestRunInitAddsGitignore(t *testing.T) {
 
 	t.Run("does not duplicate on second init", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("HOME", dir)
 		if err := os.Chdir(dir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -699,6 +706,7 @@ func TestInitRefreshTemplatesCobra(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(origDir) })
 
 	dir := t.TempDir()
+	t.Setenv("HOME", dir)
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
@@ -780,6 +788,7 @@ func TestInitDryRunCobra(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(origDir) })
 
 	dir := t.TempDir()
+	t.Setenv("HOME", dir)
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
@@ -863,6 +872,7 @@ func TestInitDryRunAffectsRefreshOnly(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(origDir) })
 
 	dir := t.TempDir()
+	t.Setenv("HOME", dir)
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}

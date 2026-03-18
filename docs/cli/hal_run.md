@@ -14,6 +14,9 @@ The loop spawns fresh AI instances that:
 5. Update prd.json to mark story complete
 6. Repeat until all stories pass or max iterations reached
 
+With --json, outputs a stable machine-readable result contract suitable
+for agent orchestration and tooling integration.
+
 Examples:
   hal run                          # Run with defaults (10 iterations)
   hal run 5                        # Run 5 iterations (positional)
@@ -23,6 +26,7 @@ Examples:
   hal run --timeout 30m            # Override per-session engine timeout
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
+  hal run --json                   # Machine-readable result output
 
 
 ```
@@ -36,6 +40,7 @@ hal run [iterations] [flags]
   hal run 5
   hal run --story US-001
   hal run --timeout 30m
+  hal run --json
   hal run --engine codex --base develop
 ```
 
@@ -47,6 +52,7 @@ hal run [iterations] [flags]
   -e, --engine string          Engine to use (claude, codex, pi) (default "codex")
   -h, --help                   help for run
   -i, --iterations int         Maximum iterations to run (default 10)
+      --json                   Output machine-readable JSON result
       --retries int            Max retries per iteration on failure (default 3)
       --retry-delay duration   Base retry delay (default 5s)
   -s, --story string           Run specific story by ID (e.g., US-001)

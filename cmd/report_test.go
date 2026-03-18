@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -39,11 +40,11 @@ func TestReportCommandFlags(t *testing.T) {
 		t.Fatal("report command should return an error for positional arguments")
 	}
 
-	if !strings.Contains(strings.ToLower(reportCmd.Short), "legacy session reporting") {
-		t.Fatalf("reportCmd.Short = %q, want to contain %q", reportCmd.Short, "legacy session reporting")
+	if !strings.Contains(strings.ToLower(reportCmd.Short), "report") {
+		t.Fatalf("reportCmd.Short = %q, want to contain %q", reportCmd.Short, "report")
 	}
-	if !strings.Contains(strings.ToLower(reportCmd.Long), "legacy session reporting") {
-		t.Fatalf("reportCmd.Long should mention legacy session reporting")
+	if !strings.Contains(strings.ToLower(reportCmd.Long), "summary report") {
+		t.Fatalf("reportCmd.Long should mention summary report, got %q", reportCmd.Long)
 	}
 
 	if reportCmd.Flags().Lookup("dry-run") == nil {
@@ -215,7 +216,7 @@ func TestRunReportWithDeps(t *testing.T) {
 			}
 
 			inputCtx := context.WithValue(context.Background(), reviewContextKey, reviewContextValue)
-			err := runReportWithDeps(inputCtx, "project-dir", tt.dryRun, tt.skipAgents, tt.engineName, &out, deps)
+			err := runReportWithDeps(inputCtx, "project-dir", tt.dryRun, tt.skipAgents, false, tt.engineName, &out, deps)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -301,7 +302,7 @@ func TestRunReportWithDepsNormalizesEngineName(t *testing.T) {
 		},
 	}
 
-	err := runReportWithDeps(context.Background(), ".", false, false, " Claude ", &out, deps)
+	err := runReportWithDeps(context.Background(), ".", false, false, false, " Claude ", &out, deps)
 	if err != nil {
 		t.Fatalf("runReportWithDeps returned error: %v", err)
 	}
@@ -421,5 +422,28 @@ func TestReviewCommandLegacyFlagsRemoved(t *testing.T) {
 	}
 	if reviewCmd.Flags().Lookup("skip-agents") != nil {
 		t.Fatal("review command should not expose legacy --skip-agents flag")
+	}
+}
+
+func TestOutputReportJSON_IncludesNextAction(t *testing.T) {
+	var buf bytes.Buffer
+	result := &compound.ReviewResult{
+		ReportPath: ".hal/reports/review.md",
+		Summary:    "Done",
+	}
+
+	if err := outputReportJSON(&buf, result); err != nil {
+		t.Fatalf("outputReportJSON error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	json.Unmarshal(buf.Bytes(), &raw)
+
+	na, ok := raw["nextAction"].(map[string]interface{})
+	if !ok {
+		t.Fatal("nextAction should be present when reportPath is set")
+	}
+	if na["command"] != "hal auto" {
+		t.Fatalf("nextAction.command = %q, want %q", na["command"], "hal auto")
 	}
 }

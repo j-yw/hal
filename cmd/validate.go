@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var validateEngineFlag string
+var (
+	validateEngineFlag string
+	validateJSONFlag   bool
+)
 
 var validateCmd = &cobra.Command{
 	Use:   "validate [prd-path]",
@@ -29,8 +33,10 @@ Checks:
 Examples:
   hal validate                    # Validate .hal/prd.json
   hal validate path/to/prd.json   # Validate specific file
+  hal validate --json             # Machine-readable JSON result
   hal validate -e claude          # Use Claude engine`,
 	Example: `  hal validate
+  hal validate --json
   hal validate .hal/prd.json
   hal validate ./docs/prd.json --engine codex`,
 	Args: maxArgsValidation(1),
@@ -39,6 +45,7 @@ Examples:
 
 func init() {
 	validateCmd.Flags().StringVarP(&validateEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
+	validateCmd.Flags().BoolVar(&validateJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(validateCmd)
 }
 
@@ -51,17 +58,26 @@ func runValidate(cmd *cobra.Command, args []string) error {
 
 	// Check PRD exists
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
+		if validateJSONFlag {
+			return outputValidateJSONError("PRD not found: " + prdPath)
+		}
 		return fmt.Errorf("PRD not found: %s", prdPath)
 	}
 
 	engineName, err := resolveEngine(cmd, "engine", validateEngineFlag, ".")
 	if err != nil {
+		if validateJSONFlag {
+			return outputValidateJSONError(err.Error())
+		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
 	// Create engine
 	eng, err := newEngine(engineName)
 	if err != nil {
+		if validateJSONFlag {
+			return outputValidateJSONError(err.Error())
+		}
 		return err
 	}
 
@@ -76,6 +92,16 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	result, err := prd.ValidateWithEngine(ctx, eng, prdPath, display)
 	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	// JSON output — always exit 0, encode result in body
+	if validateJSONFlag {
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal validation result: %w", err)
+		}
+		fmt.Fprintln(os.Stdout, string(data))
+		return nil
 	}
 
 	// Display result using styled display
@@ -94,5 +120,15 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("validation failed"))
 	}
 
+	return nil
+}
+
+func outputValidateJSONError(msg string) error {
+	result := &prd.ValidationResult{
+		Valid:  false,
+		Errors: []prd.Issue{{Message: msg, Severity: "error"}},
+	}
+	data, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Fprintln(os.Stdout, string(data))
 	return nil
 }

@@ -6,27 +6,26 @@ Initialize .hal/ directory
 
 Initialize the .hal/ directory in the current project.
 
-If an existing .goralph/ directory is detected and no .hal/ directory exists,
-it will be automatically renamed to .hal/ to preserve your configuration.
+Repo-local setup (always safe):
+  .hal/config.yaml      Configuration settings
+  .hal/prompt.md         Agent instructions template
+  .hal/progress.txt      Progress log
+  .hal/archive/          Archived runs
+  .hal/reports/          Analysis reports
+  .hal/skills/           Hal-managed skills (prd, hal, autospec, etc.)
+  .hal/commands/         Agent-invocable commands
+  .hal/standards/        Project standards (committed)
 
-Also adds .hal/ to .gitignore if not already present.
+Engine-local links (project-scoped):
+  .claude/skills/        Symlinks to .hal/skills/ for Claude Code
+  .pi/skills/            Symlinks to .hal/skills/ for Pi
 
-Creates:
-  .hal/
-    config.yaml    # Configuration settings
-    prompt.md      # Agent instructions template
-    progress.txt   # Progress log for learnings
-    archive/       # Archived runs
-    reports/       # Analysis reports for auto mode
-    skills/        # PRD and Hal skills
-      prd/         # PRD generation skill
-      hal/         # PRD-to-JSON conversion skill
+Global links (affects ~/.codex — only for Codex users):
+  ~/.codex/skills/       Symlinks for Codex skill discovery
+  ~/.codex/commands/     Symlinks for Codex commands
 
-Also creates .claude/skills/ with symlinks to .hal/skills/ for Claude Code
-skill discovery.
-
-After init, create a prd.json with your user stories and run 'hal run'.
-Or use 'hal plan' to interactively generate a PRD.
+Use 'hal doctor' to check environment health.
+Use 'hal status' to check workflow state.
 
 ```
 hal init [flags]
@@ -36,6 +35,7 @@ hal init [flags]
 
 ```
   hal init
+  hal init --json
   hal init --refresh-templates
   hal init --refresh-templates --dry-run
 ```
@@ -45,6 +45,7 @@ hal init [flags]
 ```
       --dry-run             Preview template refresh actions (only applies with --refresh-templates; other init steps still run)
   -h, --help                help for init
+      --json                Output machine-readable JSON result
       --refresh-templates   Backup and overwrite core templates with latest embedded versions
 ```
 

@@ -18,6 +18,18 @@ import (
 
 var archiveNameFlag string
 var archiveVerboseFlag bool
+var archiveListJSONFlag bool
+var archiveCreateJSONFlag bool
+
+// ArchiveCreateResult is the machine-readable output of hal archive create --json.
+type ArchiveCreateResult struct {
+	ContractVersion int    `json:"contractVersion"`
+	OK              bool   `json:"ok"`
+	ArchiveDir      string `json:"archiveDir,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Summary         string `json:"summary"`
+}
 
 var archiveCmd = &cobra.Command{
 	Use:   "archive",
@@ -56,11 +68,15 @@ var archiveListCmd = &cobra.Command{
 	PreRunE: disallowArchiveNameFlagOnSubcommands,
 	Long: `List all archived features with date, name, and completion stats.
 
-Use --verbose for detailed output including branch name and full path.`,
+Use --verbose for detailed output including branch name and full path.
+Use --json for machine-readable JSON output.`,
 	Example: `  hal archive list
-  hal archive list --verbose`,
+  hal archive list --verbose
+  hal archive list --json`,
 	RunE: runArchiveList,
 }
+
+var archiveRestoreJSONFlag bool
 
 var archiveRestoreCmd = &cobra.Command{
 	Use:     "restore <name>",
@@ -73,13 +89,15 @@ If there is current feature state, it will be auto-archived first.
 
 The name argument is the archive directory name (e.g., 2026-01-15-my-feature).
 Use 'hal archive list' to see available archives.`,
-	Example: `  hal archive restore 2026-01-15-checkout-flow`,
+	Example: `  hal archive restore 2026-01-15-checkout-flow
+  hal archive restore 2026-01-15-checkout-flow --json`,
 	RunE:    runArchiveRestore,
 }
 
 func init() {
 	archiveCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
 	archiveCreateCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveCreateCmd.Flags().BoolVar(&archiveCreateJSONFlag, "json", false, "Output machine-readable JSON result")
 	archiveListCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
 	archiveRestoreCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
 	if err := archiveListCmd.Flags().MarkHidden("name"); err != nil {
@@ -89,6 +107,8 @@ func init() {
 		panic(err)
 	}
 	archiveListCmd.Flags().BoolVarP(&archiveVerboseFlag, "verbose", "v", false, "Show detailed output")
+	archiveListCmd.Flags().BoolVar(&archiveListJSONFlag, "json", false, "Output as JSON")
+	archiveRestoreCmd.Flags().BoolVar(&archiveRestoreJSONFlag, "json", false, "Output machine-readable JSON result")
 
 	archiveCmd.AddCommand(archiveCreateCmd)
 	archiveCmd.AddCommand(archiveListCmd)
@@ -121,6 +141,16 @@ func runArchiveCreateWithIO(cmd *cobra.Command, name string) error {
 		out = cmd.OutOrStdout()
 	}
 
+	if archiveCreateJSONFlag {
+		if strings.TrimSpace(name) == "" {
+			name = deriveArchiveName(template.HalDir)
+		}
+		if strings.TrimSpace(name) == "" {
+			return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("archive name is required with --json; pass --name/-n"))
+		}
+		return runArchiveCreateJSON(template.HalDir, name, out)
+	}
+
 	if strings.TrimSpace(name) == "" && isNonInteractive(in) {
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("archive name is required in non-interactive mode; pass --name/-n"))
 	}
@@ -128,18 +158,96 @@ func runArchiveCreateWithIO(cmd *cobra.Command, name string) error {
 	return runArchiveCreate(template.HalDir, name, in, out)
 }
 
+func runArchiveCreateJSON(halDir string, name string, out io.Writer) error {
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		jr := ArchiveCreateResult{
+			ContractVersion: 1,
+			OK:              false,
+			Error:           ".hal/ not found",
+			Summary:         ".hal/ not found — run hal init first.",
+		}
+		data, _ := json.MarshalIndent(jr, "", "  ")
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	archiveDir, err := archive.Create(halDir, name, io.Discard)
+	jr := ArchiveCreateResult{
+		ContractVersion: 1,
+		Name:            name,
+	}
+	if err != nil {
+		jr.OK = false
+		jr.Error = err.Error()
+		jr.Summary = "Archive creation failed: " + err.Error()
+	} else {
+		jr.OK = true
+		jr.ArchiveDir = archiveDir
+		jr.Summary = fmt.Sprintf("Archived to %s.", archiveDir)
+	}
+
+	data, marshalErr := json.MarshalIndent(jr, "", "  ")
+	if marshalErr != nil {
+		return fmt.Errorf("failed to marshal archive result: %w", marshalErr)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
 func runArchiveList(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 	}
+	if archiveListJSONFlag {
+		return runArchiveListJSON(template.HalDir, out)
+	}
 	return runArchiveListFn(template.HalDir, archiveVerboseFlag, out)
+}
+
+func runArchiveListJSON(halDir string, out io.Writer) error {
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+	}
+
+	archives, err := archive.List(halDir)
+	if err != nil {
+		return err
+	}
+
+	if archives == nil {
+		archives = []archive.ArchiveInfo{}
+	}
+
+	data, err := json.MarshalIndent(archives, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal archive list: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
 }
 
 func runArchiveRestore(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
 	if cmd != nil {
 		out = cmd.OutOrStdout()
+	}
+	if archiveRestoreJSONFlag {
+		err := runArchiveRestoreFn(template.HalDir, args[0], io.Discard)
+		jr := map[string]interface{}{
+			"contractVersion": 1,
+			"ok":              err == nil,
+			"name":            args[0],
+		}
+		if err != nil {
+			jr["error"] = err.Error()
+			jr["summary"] = "Restore failed: " + err.Error()
+		} else {
+			jr["summary"] = fmt.Sprintf("Restored %s.", args[0])
+		}
+		data, _ := json.MarshalIndent(jr, "", "  ")
+		fmt.Fprintln(out, string(data))
+		return nil
 	}
 	return runArchiveRestoreFn(template.HalDir, args[0], out)
 }

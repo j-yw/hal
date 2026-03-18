@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -31,7 +33,36 @@ var (
 	dryRunFlag  bool
 	storyFlag   string
 	runBaseFlag string
+	runJSONFlag bool
 )
+
+// RunResult is the machine-readable output of hal run --json.
+type RunResult struct {
+	ContractVersion int          `json:"contractVersion"`
+	OK              bool         `json:"ok"`
+	Iterations      int          `json:"iterations"`
+	Complete        bool         `json:"complete"`
+	StoryID         string       `json:"storyId,omitempty"`
+	DryRun          bool         `json:"dryRun,omitempty"`
+	PRD             *RunPRDInfo    `json:"prd,omitempty"`
+	NextAction      *RunNextAction `json:"nextAction,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Summary         string         `json:"summary"`
+}
+
+// RunPRDInfo provides PRD state at the time the run completed.
+type RunPRDInfo struct {
+	Path             string `json:"path"`
+	CompletedStories int    `json:"completedStories"`
+	TotalStories     int    `json:"totalStories"`
+}
+
+// RunNextAction suggests what to do after the run.
+type RunNextAction struct {
+	ID          string `json:"id"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
 
 var runCmd = &cobra.Command{
 	Use:   "run [iterations]",
@@ -46,6 +77,9 @@ The loop spawns fresh AI instances that:
 5. Update prd.json to mark story complete
 6. Repeat until all stories pass or max iterations reached
 
+With --json, outputs a stable machine-readable result contract suitable
+for agent orchestration and tooling integration.
+
 Examples:
   hal run                          # Run with defaults (10 iterations)
   hal run 5                        # Run 5 iterations (positional)
@@ -55,11 +89,13 @@ Examples:
   hal run --timeout 30m            # Override per-session engine timeout
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
+  hal run --json                   # Machine-readable result output
 `,
 	Example: `  hal run
   hal run 5
   hal run --story US-001
   hal run --timeout 30m
+  hal run --json
   hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
 	RunE: runRun,
@@ -81,6 +117,7 @@ func init() {
 	runCmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "Show what would execute without running")
 	runCmd.Flags().StringVarP(&storyFlag, "story", "s", "", "Run specific story by ID (e.g., US-001)")
 	runCmd.Flags().StringVarP(&runBaseFlag, "base", "b", "", "Base branch for creating the PRD branch (default: current branch, or HEAD when detached)")
+	runCmd.Flags().BoolVar(&runJSONFlag, "json", false, "Output machine-readable JSON result")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -110,6 +147,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	timeoutOverride := runTimeout
 	dryRun := dryRunFlag
 	story := storyFlag
+	jsonMode := runJSONFlag
 
 	if cmd != nil {
 		flags := cmd.Flags()
@@ -178,25 +216,45 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			}
 			story = value
 		}
+
+		if flags.Lookup("json") != nil {
+			value, err := flags.GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
 	}
 
 	iterations, err := parseIterations(args, iterationsFlag, iterationsChanged, 10)
 	if err != nil {
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	if timeoutOverride < 0 {
+		if jsonMode {
+			return outputRunJSONError(out, "--timeout must be greater than or equal to 0")
+		}
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--timeout must be greater than or equal to 0"))
 	}
 
 	// Check .hal directory exists
 	halDir := template.HalDir
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		if jsonMode {
+			return outputRunJSONError(out, ".hal/ not found. Run 'hal init' first")
+		}
 		return fmt.Errorf(".hal/ not found. Run 'hal init' first")
 	}
 
 	// Check prd.json exists
 	prdPath := halDir + "/prd.json"
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
+		if jsonMode {
+			return outputRunJSONError(out, "prd.json not found at "+prdPath+". Create your task list first")
+		}
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
 
@@ -210,6 +268,9 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
 	if err != nil {
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	engineCfg := compound.LoadEngineConfig(".", resolvedEngine)
@@ -231,16 +292,94 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		BaseBranch:    baseBranch,
 	})
 	if err != nil {
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
 		return err
 	}
 
 	result := runner.Run(context.Background())
 
+	if jsonMode {
+		return outputRunJSON(out, result, story, dryRun)
+	}
+
 	// Only return error if there was an actual failure
 	if result.Error != nil {
+		if jsonMode {
+			return outputRunJSON(out, result, story, dryRun)
+		}
 		return fmt.Errorf("loop failed: %w", result.Error)
 	}
 
+	return nil
+}
+
+func outputRunJSONError(out io.Writer, errMsg string) error {
+	jr := RunResult{
+		ContractVersion: 1,
+		OK:              false,
+		Error:           errMsg,
+		Summary:         errMsg,
+	}
+	data, _ := json.MarshalIndent(jr, "", "  ")
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool) error {
+	jr := RunResult{
+		ContractVersion: 1,
+		OK:              result.Success,
+		Iterations:      result.Iterations,
+		StoryID:         storyID,
+		DryRun:          dryRun,
+		Complete:        result.Complete,
+	}
+
+	// Try to read PRD state post-loop
+	prdPath := filepath.Join(template.HalDir, template.PRDFile)
+	if prd, err := engine.LoadPRDFile(template.HalDir, template.PRDFile); err == nil {
+		completed, total := prd.Progress()
+		jr.PRD = &RunPRDInfo{
+			Path:             prdPath,
+			CompletedStories: completed,
+			TotalStories:     total,
+		}
+	}
+
+	if result.Error != nil {
+		jr.Error = result.Error.Error()
+	}
+
+	if result.Complete {
+		jr.Summary = fmt.Sprintf("All stories complete after %d iteration(s).", result.Iterations)
+		jr.NextAction = &RunNextAction{
+			ID:          "run_report",
+			Command:     "hal report",
+			Description: "Generate a report for the completed work.",
+		}
+	} else if result.Success {
+		jr.Summary = fmt.Sprintf("Completed %d iteration(s). Stories remain.", result.Iterations)
+		jr.NextAction = &RunNextAction{
+			ID:          "run_manual",
+			Command:     "hal run",
+			Description: "Continue executing the remaining stories.",
+		}
+	} else {
+		jr.Summary = fmt.Sprintf("Failed after %d iteration(s).", result.Iterations)
+		jr.NextAction = &RunNextAction{
+			ID:          "run_manual",
+			Command:     "hal run",
+			Description: "Retry the run.",
+		}
+	}
+
+	data, err := json.MarshalIndent(jr, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal run result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
 	return nil
 }
 

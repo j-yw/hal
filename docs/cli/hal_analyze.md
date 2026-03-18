@@ -20,7 +20,8 @@ Examples:
   hal analyze                           # Analyze latest report
   hal analyze report.md                 # Analyze specific file
   hal analyze --reports-dir ./reports   # Use custom reports directory
-  hal analyze --format json             # Output as JSON
+  hal analyze --json                     # Output as JSON (preferred)
+  hal analyze --format json             # Output as JSON (equivalent)
   hal analyze --output json             # Deprecated alias for --format
 
 ```
@@ -32,6 +33,7 @@ hal analyze [report-path] [flags]
 ```
   hal analyze
   hal analyze .hal/reports/report.md
+  hal analyze --json
   hal analyze --reports-dir ./reports
   hal analyze --format json --engine codex
 ```
@@ -42,6 +44,7 @@ hal analyze [report-path] [flags]
   -e, --engine string        Engine to use (claude, codex, pi) (default "codex")
   -f, --format string        Output format: text (default) or json (default "text")
   -h, --help                 help for analyze
+      --json                 Output as JSON (shorthand for --format json)
   -o, --output string        [deprecated] Alias for --format
       --reports-dir string   Directory containing reports (overrides config)
 ```

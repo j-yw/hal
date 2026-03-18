@@ -44,9 +44,9 @@ func TestRunCleanupFn_DryRun(t *testing.T) {
 		t.Error("auto-progress.txt should still exist after dry-run")
 	}
 
-	// Verify summary of how many files would be removed
-	if !strings.Contains(output, "Would remove 1 file(s)") {
-		t.Errorf("expected output to contain summary 'Would remove 1 file(s)', got: %s", output)
+	// Verify summary of how many items would be removed
+	if !strings.Contains(output, "Would remove 1 item(s)") {
+		t.Errorf("expected output to contain summary 'Would remove 1 item(s)', got: %s", output)
 	}
 }
 
@@ -91,9 +91,9 @@ func TestRunCleanupFn_ActualDeletion(t *testing.T) {
 		t.Error("auto-progress.txt should not exist after cleanup")
 	}
 
-	// Verify summary of how many files were removed
-	if !strings.Contains(output, "Removed 1 file(s)") {
-		t.Errorf("expected output to contain summary 'Removed 1 file(s)', got: %s", output)
+	// Verify summary of how many items were removed
+	if !strings.Contains(output, "Removed 1 item(s)") {
+		t.Errorf("expected output to contain summary 'Removed 1 item(s)', got: %s", output)
 	}
 }
 
@@ -128,5 +128,92 @@ func TestRunCleanupFn_NoOrphanedFiles(t *testing.T) {
 	// Verify config.yaml still exists (was not deleted)
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Error("config.yaml should still exist after cleanup")
+	}
+}
+
+func TestRunCleanupFn_OrphanedDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal directory: %v", err)
+	}
+
+	// Create rules/ directory (orphaned)
+	rulesDir := filepath.Join(halDir, "rules")
+	if err := os.MkdirAll(rulesDir, 0755); err != nil {
+		t.Fatalf("failed to create rules dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "test.md"), []byte("# Rule"), 0644); err != nil {
+		t.Fatalf("failed to write rule file: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runCleanupFn(halDir, false, &out); err != nil {
+		t.Fatalf("runCleanupFn() error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Removed:") {
+		t.Fatalf("expected 'Removed:' in output, got: %s", output)
+	}
+
+	if _, err := os.Stat(rulesDir); !os.IsNotExist(err) {
+		t.Fatal("rules/ directory should be removed after cleanup")
+	}
+}
+
+func TestRunCleanupFn_OrphanedDirectoryDryRun(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("failed to create .hal directory: %v", err)
+	}
+
+	rulesDir := filepath.Join(halDir, "rules")
+	if err := os.MkdirAll(rulesDir, 0755); err != nil {
+		t.Fatalf("failed to create rules dir: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runCleanupFn(halDir, true, &out); err != nil {
+		t.Fatalf("runCleanupFn() error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Would remove:") {
+		t.Fatalf("expected 'Would remove:' in output, got: %s", output)
+	}
+
+	// Directory should still exist after dry-run
+	if _, err := os.Stat(rulesDir); os.IsNotExist(err) {
+		t.Fatal("rules/ directory should still exist after dry-run")
+	}
+}
+
+func TestRunCleanupFn_DeprecatedSkillLinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create deprecated ralph link
+	claudeSkills := filepath.Join(tmpDir, ".claude", "skills")
+	os.MkdirAll(claudeSkills, 0755)
+	os.Symlink("../../.hal/skills/hal", filepath.Join(claudeSkills, "ralph"))
+
+	var out bytes.Buffer
+	if err := runCleanupFn(halDir, false, &out); err != nil {
+		t.Fatalf("runCleanupFn() error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "ralph") {
+		t.Fatalf("output should mention ralph removal\n%s", output)
+	}
+
+	// Verify link was removed
+	if _, err := os.Lstat(filepath.Join(claudeSkills, "ralph")); !os.IsNotExist(err) {
+		t.Fatal(".claude/skills/ralph should be removed after cleanup")
 	}
 }

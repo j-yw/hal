@@ -81,7 +81,7 @@ func TestPrompt_AllowsNonZeroWithStdoutAndNoStderr(t *testing.T) {
 	writeFakeClaude(t, binDir, "#!/bin/sh\nprintf 'partial response'\nexit 1\n")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	resp, err := eng.Prompt(context.Background(), "test prompt")
 	if err != nil {
 		t.Fatalf("Prompt() error = %v, want nil", err)

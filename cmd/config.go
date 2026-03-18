@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,14 +9,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var configJSONFlag bool
+
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Show current configuration",
 	Long: `Show the current Hal configuration.
 
 Displays settings from .hal/config.yaml if present,
-otherwise shows default values.`,
+otherwise shows default values.
+
+With --json, outputs the configuration as JSON.`,
 	Example: `  hal config
+  hal config --json
   hal config add-rule testing`,
 	RunE: runConfig,
 }
@@ -37,14 +43,40 @@ Example:
 }
 
 func init() {
+	configCmd.Flags().BoolVar(&configJSONFlag, "json", false, "Output configuration as JSON")
 	configCmd.AddCommand(addRuleCmd)
 	rootCmd.AddCommand(configCmd)
 }
 
 func runConfig(cmd *cobra.Command, args []string) error {
 	return runParentCommand(cmd, args, func() error {
+		if configJSONFlag {
+			return runConfigJSON()
+		}
 		return runConfigShow()
 	})
+}
+
+func runConfigJSON() error {
+	configPath := filepath.Join(".hal", "config.yaml")
+
+	result := map[string]interface{}{
+		"exists": false,
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err == nil {
+		result["exists"] = true
+		result["path"] = configPath
+		result["content"] = string(data)
+	}
+
+	jsonData, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	fmt.Println(string(jsonData))
+	return nil
 }
 
 func runConfigShow() error {

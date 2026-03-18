@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -30,28 +31,28 @@ var initCmd = &cobra.Command{
 	Args:  noArgsValidation(),
 	Long: `Initialize the .hal/ directory in the current project.
 
-If an existing .goralph/ directory is detected and no .hal/ directory exists,
-it will be automatically renamed to .hal/ to preserve your configuration.
+Repo-local setup (always safe):
+  .hal/config.yaml      Configuration settings
+  .hal/prompt.md         Agent instructions template
+  .hal/progress.txt      Progress log
+  .hal/archive/          Archived runs
+  .hal/reports/          Analysis reports
+  .hal/skills/           Hal-managed skills (prd, hal, autospec, etc.)
+  .hal/commands/         Agent-invocable commands
+  .hal/standards/        Project standards (committed)
 
-Also adds .hal/ to .gitignore if not already present.
+Engine-local links (project-scoped):
+  .claude/skills/        Symlinks to .hal/skills/ for Claude Code
+  .pi/skills/            Symlinks to .hal/skills/ for Pi
 
-Creates:
-  .hal/
-    config.yaml    # Configuration settings
-    prompt.md      # Agent instructions template
-    progress.txt   # Progress log for learnings
-    archive/       # Archived runs
-    reports/       # Analysis reports for auto mode
-    skills/        # PRD and Hal skills
-      prd/         # PRD generation skill
-      hal/         # PRD-to-JSON conversion skill
+Global links (affects ~/.codex — only for Codex users):
+  ~/.codex/skills/       Symlinks for Codex skill discovery
+  ~/.codex/commands/     Symlinks for Codex commands
 
-Also creates .claude/skills/ with symlinks to .hal/skills/ for Claude Code
-skill discovery.
-
-After init, create a prd.json with your user stories and run 'hal run'.
-Or use 'hal plan' to interactively generate a PRD.`,
+Use 'hal doctor' to check environment health.
+Use 'hal status' to check workflow state.`,
 	Example: `  hal init
+  hal init --json
   hal init --refresh-templates
   hal init --refresh-templates --dry-run`,
 	RunE: runInit,
@@ -65,6 +66,16 @@ func init() {
 func addInitFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
 	cmd.Flags().Bool("dry-run", false, "Preview template refresh actions (only applies with --refresh-templates; other init steps still run)")
+	cmd.Flags().Bool("json", false, "Output machine-readable JSON result")
+}
+
+// InitResult is the machine-readable output of hal init --json.
+type InitResult struct {
+	ContractVersion int      `json:"contractVersion"`
+	OK              bool     `json:"ok"`
+	Created         []string `json:"created,omitempty"`
+	Skipped         []string `json:"skipped,omitempty"`
+	Summary         string   `json:"summary"`
 }
 
 // ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
@@ -174,10 +185,11 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	projectDir := "."
 
 	// Read flags (cmd may be nil in tests)
-	var doRefresh, dryRun bool
+	var doRefresh, dryRun, jsonMode bool
 	if cmd != nil {
 		doRefresh, _ = cmd.Flags().GetBool("refresh-templates")
 		dryRun, _ = cmd.Flags().GetBool("dry-run")
+		jsonMode, _ = cmd.Flags().GetBool("json")
 	}
 
 	// Auto-migrate .goralph/ to .hal/ if applicable
@@ -268,6 +280,26 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		_ = err // Errors are logged as warnings in LinkAllCommands.
 	}
 
+	if jsonMode {
+		jr := InitResult{
+			ContractVersion: 1,
+			OK:              true,
+			Created:         created,
+			Skipped:         skipped,
+		}
+		if len(created) > 0 {
+			jr.Summary = fmt.Sprintf("Initialized .hal/ with %d new file(s).", len(created))
+		} else {
+			jr.Summary = "Initialized .hal/ — all files already exist."
+		}
+		data, err := json.MarshalIndent(jr, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal init result: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
 	fmt.Fprintln(out, "Initialized .hal/")
 	fmt.Fprintln(out)
 
@@ -292,9 +324,9 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	} else {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Next steps:")
-		fmt.Fprintln(out, "  1. Run: hal plan \"feature description\" to generate a PRD")
-		fmt.Fprintln(out, "  2. Or create .hal/prd.json manually")
-		fmt.Fprintln(out, "  3. Run: hal run")
+		fmt.Fprintln(out, "  1. hal doctor          Check environment health")
+		fmt.Fprintln(out, "  2. hal plan \"desc\"      Generate a PRD")
+		fmt.Fprintln(out, "  3. hal run             Execute stories")
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/loop"
 	"github.com/spf13/cobra"
 )
 
@@ -326,4 +328,91 @@ func TestWithTimeoutOverride(t *testing.T) {
 			t.Fatal("expected original config when override is zero")
 		}
 	})
+}
+
+func TestOutputRunJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   loop.Result
+		wantOK   bool
+		wantComp bool
+		wantErr  bool
+	}{
+		{
+			name:     "success complete",
+			result:   loop.Result{Success: true, Complete: true, Iterations: 5},
+			wantOK:   true,
+			wantComp: true,
+		},
+		{
+			name:     "success incomplete",
+			result:   loop.Result{Success: true, Complete: false, Iterations: 10},
+			wantOK:   true,
+			wantComp: false,
+		},
+		{
+			name:     "failure with error",
+			result:   loop.Result{Success: false, Iterations: 3, Error: errors.New("engine timeout")},
+			wantOK:   false,
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := outputRunJSON(&buf, tt.result, "", false); err != nil {
+				t.Fatalf("outputRunJSON() error = %v", err)
+			}
+
+			var jr RunResult
+			if err := json.Unmarshal(buf.Bytes(), &jr); err != nil {
+				t.Fatalf("JSON unmarshal error: %v\noutput: %s", err, buf.String())
+			}
+
+			if jr.ContractVersion != 1 {
+				t.Fatalf("contractVersion = %d, want 1", jr.ContractVersion)
+			}
+			if jr.OK != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", jr.OK, tt.wantOK)
+			}
+			if jr.Complete != tt.wantComp {
+				t.Fatalf("complete = %v, want %v", jr.Complete, tt.wantComp)
+			}
+			if tt.wantErr && jr.Error == "" {
+				t.Fatal("error should not be empty")
+			}
+			if !tt.wantErr && jr.Error != "" {
+				t.Fatalf("error should be empty, got %q", jr.Error)
+			}
+			if jr.Iterations != tt.result.Iterations {
+				t.Fatalf("iterations = %d, want %d", jr.Iterations, tt.result.Iterations)
+			}
+			if jr.Summary == "" {
+				t.Fatal("summary should not be empty")
+			}
+		})
+	}
+}
+
+func TestOutputRunJSONError(t *testing.T) {
+	var buf bytes.Buffer
+	if err := outputRunJSONError(&buf, "test error msg"); err != nil {
+		t.Fatalf("outputRunJSONError() error = %v", err)
+	}
+
+	var jr RunResult
+	if err := json.Unmarshal(buf.Bytes(), &jr); err != nil {
+		t.Fatalf("JSON unmarshal error: %v", err)
+	}
+
+	if jr.OK {
+		t.Fatal("ok should be false for error")
+	}
+	if jr.Error != "test error msg" {
+		t.Fatalf("error = %q, want %q", jr.Error, "test error msg")
+	}
+	if jr.ContractVersion != 1 {
+		t.Fatalf("contractVersion = %d, want 1", jr.ContractVersion)
+	}
 }

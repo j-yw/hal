@@ -7,6 +7,7 @@ List all archives
 List all archived features with date, name, and completion stats.
 
 Use --verbose for detailed output including branch name and full path.
+Use --json for machine-readable JSON output.
 
 ```
 hal archive list [flags]
@@ -17,12 +18,14 @@ hal archive list [flags]
 ```
   hal archive list
   hal archive list --verbose
+  hal archive list --json
 ```
 
 ### Options
 
 ```
   -h, --help      help for list
+      --json      Output as JSON
   -v, --verbose   Show detailed output
 ```
 

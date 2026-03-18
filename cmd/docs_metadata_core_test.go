@@ -9,7 +9,7 @@ import (
 )
 
 func TestCoreCommandsHaveCompleteMetadata(t *testing.T) {
-	t.Parallel()
+	// Not parallel: walks shared global Root() command tree
 
 	root := Root()
 	tests := []struct {
@@ -66,6 +66,41 @@ func TestCoreCommandsHaveCompleteMetadata(t *testing.T) {
 			name:            "validate command",
 			path:            []string{"validate"},
 			exampleContains: "hal validate",
+		},
+		{
+			name:            "status command",
+			path:            []string{"status"},
+			exampleContains: "hal status",
+		},
+		{
+			name:            "doctor command",
+			path:            []string{"doctor"},
+			exampleContains: "hal doctor",
+		},
+		{
+			name:            "cleanup command",
+			path:            []string{"cleanup"},
+			exampleContains: "hal cleanup",
+		},
+		{
+			name:            "convert command",
+			path:            []string{"convert"},
+			exampleContains: "hal convert",
+		},
+		{
+			name:            "continue command",
+			path:            []string{"continue"},
+			exampleContains: "hal continue",
+		},
+		{
+			name:            "version command",
+			path:            []string{"version"},
+			exampleContains: "hal version",
+		},
+		{
+			name:            "repair command",
+			path:            []string{"repair"},
+			exampleContains: "hal repair",
 		},
 	}
 
