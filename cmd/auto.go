@@ -148,11 +148,17 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Load config
 	config, err := compound.LoadConfig(dir)
 	if err != nil {
+		if jsonMode {
+			return outputAutoJSON(out, false, resume, "failed to load config: "+err.Error())
+		}
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, dir)
 	if err != nil {
+		if jsonMode {
+			return outputAutoJSON(out, false, resume, err.Error())
+		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
@@ -160,6 +166,9 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	engineCfg := compound.LoadEngineConfig(dir, resolvedEngine)
 	eng, err := engine.NewWithConfig(resolvedEngine, engineCfg)
 	if err != nil {
+		if jsonMode {
+			return outputAutoJSON(out, false, resume, "failed to create engine: "+err.Error())
+		}
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
 
