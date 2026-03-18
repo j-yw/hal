@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +19,16 @@ var (
 	autoReportFlag string
 	autoEngineFlag string
 	autoBaseFlag   string
+	autoJSONFlag   bool
 )
+
+// AutoResult is the machine-readable output of hal auto --json.
+type AutoResult struct {
+	ContractVersion int    `json:"contractVersion"`
+	OK              bool   `json:"ok"`
+	Error           string `json:"error,omitempty"`
+	Summary         string `json:"summary"`
+}
 
 var autoCmd = &cobra.Command{
 	Use:   "auto",
@@ -43,8 +53,10 @@ Examples:
   hal auto --dry-run           # Show what would happen without executing
   hal auto --resume            # Continue from last saved state
   hal auto --skip-pr           # Skip PR creation at the end
-  hal auto --base develop      # Use develop as the base branch`,
+  hal auto --base develop      # Use develop as the base branch
+  hal auto --json              # Machine-readable result output`,
 	Example: `  hal auto
+  hal auto --json
   hal auto --report .hal/reports/report.md
   hal auto --resume
   hal auto --engine codex --base develop`,
@@ -58,6 +70,7 @@ func init() {
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
+	autoCmd.Flags().BoolVar(&autoJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -72,6 +85,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	reportPath := autoReportFlag
 	engineName := autoEngineFlag
 	baseBranch := autoBaseFlag
+	jsonMode := autoJSONFlag
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -120,6 +134,13 @@ func runAuto(cmd *cobra.Command, args []string) error {
 				return err
 			}
 			baseBranch = value
+		}
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
 		}
 	}
 
@@ -184,11 +205,35 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	// Run the pipeline
 	if err := pipeline.Run(ctx, opts); err != nil {
+		if jsonMode {
+			return outputAutoJSON(out, false, err.Error())
+		}
 		return err
+	}
+
+	if jsonMode {
+		return outputAutoJSON(out, true, "Auto pipeline completed successfully.")
 	}
 
 	// Show success message
 	display.ShowCommandSuccess("Auto pipeline completed!", "")
 
+	return nil
+}
+
+func outputAutoJSON(out io.Writer, ok bool, summary string) error {
+	jr := AutoResult{
+		ContractVersion: 1,
+		OK:              ok,
+		Summary:         summary,
+	}
+	if !ok {
+		jr.Error = summary
+	}
+	data, err := json.MarshalIndent(jr, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal auto result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
 	return nil
 }
