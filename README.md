@@ -127,11 +127,19 @@ Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) w
 | `hal validate [prd.json]` | Validate PRD against quality rules |
 | `hal run [iterations]` | Execute stories autonomously (default: 10; do not combine positional iterations with `-i/--iterations`) |
 
+### Status & Health
+
+| Command | Description |
+|---------|-------------|
+| `hal status [--json]` | Show workflow state (manual, compound, review-loop) |
+| `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
+| `hal continue [--json]` | Show what to do next (combines status + doctor) |
+
 ### Compound Pipeline
 
 | Command | Description |
 |---------|-------------|
-| `hal report` | Legacy session reporting: generate report → `.hal/reports/`, update AGENTS.md |
+| `hal report` | Generate summary report → `.hal/reports/`, update AGENTS.md |
 | `hal review --base <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e`; do not combine positional iterations with `-i/--iterations`) |
 | `hal auto` | Run full pipeline using latest report |
 | `hal analyze [report] --format text\|json` | Analyze a report to find priority item (`--output` is deprecated) |
