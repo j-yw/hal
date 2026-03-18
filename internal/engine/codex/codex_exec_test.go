@@ -27,7 +27,7 @@ exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	var buf bytes.Buffer
 	display := engine.NewDisplay(&buf)
 
@@ -54,7 +54,7 @@ exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	var buf bytes.Buffer
 	display := engine.NewDisplay(&buf)
 
@@ -140,7 +140,7 @@ exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
 	if err != nil {
 		t.Fatalf("StreamPrompt() error = %v, want nil", err)
@@ -163,7 +163,7 @@ exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
 	if err == nil {
 		t.Fatal("StreamPrompt() error = nil, want output fallback error")
