@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/spf13/cobra"
 )
@@ -67,11 +68,22 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	return runStatusFn(".", jsonMode, out)
 }
 
+// statusWithEngine wraps StatusResult with the configured engine for JSON output.
+type statusWithEngine struct {
+	status.StatusResult
+	Engine string `json:"engine,omitempty"`
+}
+
 func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	result := status.Get(dir)
 
 	if jsonMode {
-		data, err := json.MarshalIndent(result, "", "  ")
+		engine, _ := compound.LoadDefaultEngine(dir)
+		wrapped := statusWithEngine{
+			StatusResult: result,
+			Engine:       engine,
+		}
+		data, err := json.MarshalIndent(wrapped, "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal status: %w", err)
 		}
