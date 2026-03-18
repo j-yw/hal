@@ -92,8 +92,12 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	}
 
 	// Human-readable output
+	engine, _ := compound.LoadDefaultEngine(dir)
 	fmt.Fprintf(out, "Workflow:  %s\n", result.WorkflowTrack)
 	fmt.Fprintf(out, "State:    %s\n", result.State)
+	if engine != "" {
+		fmt.Fprintf(out, "Engine:   %s\n", engine)
+	}
 	fmt.Fprintln(out)
 
 	// Show detail for manual workflows
