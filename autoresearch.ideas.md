@@ -8,15 +8,5 @@
 ## Medium Priority
 - **Doctor v2 applicability/scope** — per-check `applicability`/`scope` fields
 - **PRD sync audit** — `hal prd audit` for markdown↔JSON drift
-- **hal explode --json output wiring** — flag registered but not yet wired
+- **hal explode --json output wiring** — flag registered, output not yet wired
 - **Test isolation CI** — Smoke test for $HOME writes
-
-## Done
-- Status contract with story detail, compound detail, review-loop ✅
-- Doctor with 11 checks, remediation, engine awareness ✅
-- 17+ commands with --json ✅
-- hal continue ✅
-- Race condition fix ✅
-- Codex linker isolation ✅
-- Legacy/broken link detection+cleanup ✅
-- README updated ✅

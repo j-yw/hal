@@ -154,3 +154,61 @@ func TestMachineContractFields(t *testing.T) {
 		}
 	})
 }
+
+func TestMachineContractFields_StatusDetail(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/feature",
+		"stories": []map[string]interface{}{
+			{"id": "US-001", "title": "First", "status": "passed"},
+			{"id": "US-002", "title": "Second", "status": "pending"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	var buf bytes.Buffer
+	if err := runStatusFn(dir, true, &buf); err != nil {
+		t.Fatalf("runStatusFn error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON parse error: %v", err)
+	}
+
+	// Check manual detail
+	manual, ok := raw["manual"].(map[string]interface{})
+	if !ok {
+		t.Fatal("manual detail missing from in-progress status")
+	}
+
+	// Verify key fields exist and have correct types
+	if _, ok := manual["totalStories"].(float64); !ok {
+		t.Fatal("manual.totalStories should be a number")
+	}
+	if _, ok := manual["completedStories"].(float64); !ok {
+		t.Fatal("manual.completedStories should be a number")
+	}
+
+	// Verify nextStory
+	nextStory, ok := manual["nextStory"].(map[string]interface{})
+	if !ok {
+		t.Fatal("manual.nextStory should be present for in-progress workflow")
+	}
+	if _, ok := nextStory["id"].(string); !ok {
+		t.Fatal("manual.nextStory.id should be a string")
+	}
+
+	// Verify paths
+	paths, ok := raw["paths"].(map[string]interface{})
+	if !ok {
+		t.Fatal("paths should be present")
+	}
+	if _, ok := paths["prdJson"].(string); !ok {
+		t.Fatal("paths.prdJson should be a string")
+	}
+}
