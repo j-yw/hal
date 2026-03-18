@@ -195,3 +195,28 @@ func TestRunPRDAuditFn_AutoPRDConflict(t *testing.T) {
 		t.Fatalf("should detect auto-prd conflict, issues: %v", result.Issues)
 	}
 }
+
+func TestRunPRDAuditFn_NoHalDir(t *testing.T) {
+	dir := t.TempDir()
+	// No .hal/ at all
+
+	var buf bytes.Buffer
+	if err := runPRDAuditFn(dir, true, &buf); err != nil {
+		t.Fatalf("runPRDAuditFn() error = %v", err)
+	}
+
+	var result PRDAuditResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("JSON unmarshal error: %v", err)
+	}
+
+	if result.OK {
+		t.Fatal("should not be OK with no .hal/")
+	}
+	if result.JSONExists {
+		t.Fatal("jsonExists should be false")
+	}
+	if result.MarkdownExists {
+		t.Fatal("markdownExists should be false")
+	}
+}
