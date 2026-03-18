@@ -44,9 +44,10 @@ type RunResult struct {
 	Complete        bool         `json:"complete"`
 	StoryID         string       `json:"storyId,omitempty"`
 	DryRun          bool         `json:"dryRun,omitempty"`
-	PRD             *RunPRDInfo  `json:"prd,omitempty"`
-	Error           string       `json:"error,omitempty"`
-	Summary         string       `json:"summary"`
+	PRD             *RunPRDInfo    `json:"prd,omitempty"`
+	NextAction      *RunNextAction `json:"nextAction,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Summary         string         `json:"summary"`
 }
 
 // RunPRDInfo provides PRD state at the time the run completed.
@@ -54,6 +55,13 @@ type RunPRDInfo struct {
 	Path             string `json:"path"`
 	CompletedStories int    `json:"completedStories"`
 	TotalStories     int    `json:"totalStories"`
+}
+
+// RunNextAction suggests what to do after the run.
+type RunNextAction struct {
+	ID          string `json:"id"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
 }
 
 var runCmd = &cobra.Command{
@@ -346,10 +354,25 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 
 	if result.Complete {
 		jr.Summary = fmt.Sprintf("All stories complete after %d iteration(s).", result.Iterations)
+		jr.NextAction = &RunNextAction{
+			ID:          "run_report",
+			Command:     "hal report",
+			Description: "Generate a report for the completed work.",
+		}
 	} else if result.Success {
 		jr.Summary = fmt.Sprintf("Completed %d iteration(s). Stories remain.", result.Iterations)
+		jr.NextAction = &RunNextAction{
+			ID:          "run_manual",
+			Command:     "hal run",
+			Description: "Continue executing the remaining stories.",
+		}
 	} else {
 		jr.Summary = fmt.Sprintf("Failed after %d iteration(s).", result.Iterations)
+		jr.NextAction = &RunNextAction{
+			ID:          "run_manual",
+			Command:     "hal run",
+			Description: "Retry the run.",
+		}
 	}
 
 	data, err := json.MarshalIndent(jr, "", "  ")
