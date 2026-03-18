@@ -35,6 +35,11 @@ func TestArchiveAndSandboxCommandFamiliesHaveCompleteMetadata(t *testing.T) {
 			family:   "links",
 			required: true,
 		},
+		{
+			name:     "prd command family",
+			family:   "prd",
+			required: true,
+		},
 	}
 
 	for _, tt := range tests {

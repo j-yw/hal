@@ -14,6 +14,7 @@ Workflow:
   hal init                             Initialize project with skills
   hal plan "feature desc"              Generate PRD interactively
   hal convert                          Convert markdown PRD to JSON
+  hal prd audit [--json]               Audit PRD health and drift
   hal run --base develop [iterations]  Execute stories autonomously
   hal archive create                   Archive feature state when done
 
@@ -71,6 +72,7 @@ Quick Start:
 * [hal init](hal_init.md)	 - Initialize .hal/ directory
 * [hal links](hal_links.md)	 - Manage engine skill links
 * [hal plan](hal_plan.md)	 - Generate a PRD interactively
+* [hal prd](hal_prd.md)	 - Manage PRD files
 * [hal repair](hal_repair.md)	 - Auto-fix environment issues detected by doctor
 * [hal report](hal_report.md)	 - Generate a summary report for completed work
 * [hal review](hal_review.md)	 - Run an iterative review loop against a base branch
