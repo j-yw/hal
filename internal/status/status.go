@@ -54,6 +54,36 @@ type StatusResult struct {
 	Artifacts       Artifacts  `json:"artifacts"`
 	NextAction      NextAction `json:"nextAction"`
 	Summary         string     `json:"summary"`
+	// Optional detail fields (additive, omitempty for backward compat)
+	Manual   *ManualDetail   `json:"manual,omitempty"`
+	Compound *CompoundDetail `json:"compound,omitempty"`
+	Paths    *StatusPaths    `json:"paths,omitempty"`
+}
+
+// ManualDetail provides story-level detail for manual workflows.
+type ManualDetail struct {
+	BranchName      string     `json:"branchName,omitempty"`
+	TotalStories    int        `json:"totalStories"`
+	CompletedStories int       `json:"completedStories"`
+	NextStory       *StoryRef  `json:"nextStory,omitempty"`
+}
+
+// StoryRef identifies a single story.
+type StoryRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+}
+
+// CompoundDetail provides pipeline-level detail for compound workflows.
+type CompoundDetail struct {
+	Step       string `json:"step,omitempty"`
+	BranchName string `json:"branchName,omitempty"`
+}
+
+// StatusPaths lists canonical file paths relevant to the current state.
+type StatusPaths struct {
+	PRDJson   string `json:"prdJson,omitempty"`
+	AutoState string `json:"autoState,omitempty"`
 }
 
 // Artifacts describes which .hal/ files exist.
@@ -75,11 +105,22 @@ type NextAction struct {
 
 // prdJSON is the minimal structure to read pass/fail from prd.json.
 type prdJSON struct {
-	Stories []prdStory `json:"stories"`
+	BranchName string      `json:"branchName"`
+	Stories    []prdStory  `json:"stories"`
+	// Also accept "userStories" key used by some PRD formats
+	UserStories []prdStory `json:"userStories"`
+}
+
+func (p *prdJSON) allStories() []prdStory {
+	if len(p.Stories) > 0 {
+		return p.Stories
+	}
+	return p.UserStories
 }
 
 type prdStory struct {
 	ID     string `json:"id"`
+	Title  string `json:"title"`
 	Status string `json:"status"`
 }
 
@@ -106,7 +147,7 @@ func Get(dir string) StatusResult {
 
 	// Check compound/auto state first (higher precedence)
 	if artifacts.AutoState {
-		return classifyCompound(artifacts)
+		return classifyCompound(halDir, artifacts)
 	}
 
 	// Manual workflow
@@ -166,7 +207,7 @@ func detectArtifacts(dir, halDir string) Artifacts {
 }
 
 func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
-	// Read prd.json to check story completion
+	prdRelPath := filepath.Join(template.HalDir, template.PRDFile)
 	prdPath := filepath.Join(halDir, template.PRDFile)
 	data, err := os.ReadFile(prdPath)
 	if err != nil {
@@ -180,13 +221,13 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 				Command:     "hal run",
 				Description: "Execute the remaining PRD stories.",
 			},
+			Paths:   &StatusPaths{PRDJson: prdRelPath},
 			Summary: "Manual workflow is in progress.",
 		}
 	}
 
 	var prd prdJSON
 	if err := json.Unmarshal(data, &prd); err != nil {
-		// Can't parse — assume in progress
 		return StatusResult{
 			ContractVersion: ContractVersion,
 			WorkflowTrack:   TrackManual,
@@ -197,18 +238,30 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 				Command:     "hal run",
 				Description: "Execute the remaining PRD stories.",
 			},
+			Paths:   &StatusPaths{PRDJson: prdRelPath},
 			Summary: "Manual workflow is in progress.",
 		}
 	}
 
-	// Count completed stories
-	total := len(prd.Stories)
+	stories := prd.allStories()
+	total := len(stories)
 	completed := 0
-	for _, s := range prd.Stories {
+	var nextStory *StoryRef
+	for _, s := range stories {
 		if s.Status == "passed" {
 			completed++
+		} else if nextStory == nil {
+			nextStory = &StoryRef{ID: s.ID, Title: s.Title}
 		}
 	}
+
+	manual := &ManualDetail{
+		BranchName:       prd.BranchName,
+		TotalStories:     total,
+		CompletedStories: completed,
+		NextStory:        nextStory,
+	}
+	paths := &StatusPaths{PRDJson: prdRelPath}
 
 	if total > 0 && completed >= total {
 		return StatusResult{
@@ -221,6 +274,8 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 				Command:     "hal report",
 				Description: "Generate a report for the completed manual work.",
 			},
+			Manual:  manual,
+			Paths:   paths,
 			Summary: "Manual workflow is complete; generate a report for the completed work.",
 		}
 	}
@@ -235,11 +290,29 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 			Command:     "hal run",
 			Description: "Continue executing the remaining PRD stories.",
 		},
+		Manual:  manual,
+		Paths:   paths,
 		Summary: "Manual workflow is in progress; continue the run loop.",
 	}
 }
 
-func classifyCompound(artifacts Artifacts) StatusResult {
+func classifyCompound(halDir string, artifacts Artifacts) StatusResult {
+	autoStatePath := filepath.Join(halDir, template.AutoStateFile)
+
+	var compound *CompoundDetail
+	if data, err := os.ReadFile(autoStatePath); err == nil {
+		var state struct {
+			Step       string `json:"step"`
+			BranchName string `json:"branchName"`
+		}
+		if json.Unmarshal(data, &state) == nil {
+			compound = &CompoundDetail{
+				Step:       state.Step,
+				BranchName: state.BranchName,
+			}
+		}
+	}
+
 	return StatusResult{
 		ContractVersion: ContractVersion,
 		WorkflowTrack:   TrackCompound,
@@ -250,6 +323,8 @@ func classifyCompound(artifacts Artifacts) StatusResult {
 			Command:     "hal auto --resume",
 			Description: "Resume the saved compound pipeline state.",
 		},
-		Summary: "Compound pipeline is active; resume with hal auto --resume.",
+		Compound: compound,
+		Paths:    &StatusPaths{AutoState: filepath.Join(template.HalDir, template.AutoStateFile)},
+		Summary:  "Compound pipeline is active; resume with hal auto --resume.",
 	}
 }

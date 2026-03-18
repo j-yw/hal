@@ -237,3 +237,173 @@ func TestStatusResult_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("nextAction.id = %q, want %q", decoded.NextAction.ID, original.NextAction.ID)
 	}
 }
+
+func TestGet_ManualInProgress_DetailFields(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test-feature",
+		"stories": []map[string]interface{}{
+			{"id": "US-001", "title": "Setup DB", "status": "passed"},
+			{"id": "US-002", "title": "Add API", "status": "pending"},
+			{"id": "US-003", "title": "Add UI", "status": "pending"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.BranchName != "hal/test-feature" {
+		t.Fatalf("branchName = %q, want %q", result.Manual.BranchName, "hal/test-feature")
+	}
+	if result.Manual.TotalStories != 3 {
+		t.Fatalf("totalStories = %d, want 3", result.Manual.TotalStories)
+	}
+	if result.Manual.CompletedStories != 1 {
+		t.Fatalf("completedStories = %d, want 1", result.Manual.CompletedStories)
+	}
+	if result.Manual.NextStory == nil {
+		t.Fatal("nextStory should not be nil")
+	}
+	if result.Manual.NextStory.ID != "US-002" {
+		t.Fatalf("nextStory.id = %q, want %q", result.Manual.NextStory.ID, "US-002")
+	}
+	if result.Manual.NextStory.Title != "Add API" {
+		t.Fatalf("nextStory.title = %q, want %q", result.Manual.NextStory.Title, "Add API")
+	}
+	if result.Paths == nil || result.Paths.PRDJson == "" {
+		t.Fatal("paths.prdJson should be set")
+	}
+}
+
+func TestGet_ManualComplete_NoNextStory(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"stories": []map[string]interface{}{
+			{"id": "US-001", "title": "Done", "status": "passed"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.NextStory != nil {
+		t.Fatal("nextStory should be nil when all complete")
+	}
+	if result.Manual.CompletedStories != 1 {
+		t.Fatalf("completedStories = %d, want 1", result.Manual.CompletedStories)
+	}
+}
+
+func TestGet_CompoundActive_DetailFields(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	autoState := `{"step":"loop","branchName":"compound/my-feature"}`
+	os.WriteFile(filepath.Join(halDir, template.AutoStateFile), []byte(autoState), 0644)
+
+	result := Get(dir)
+
+	if result.Compound == nil {
+		t.Fatal("compound detail should not be nil")
+	}
+	if result.Compound.Step != "loop" {
+		t.Fatalf("step = %q, want %q", result.Compound.Step, "loop")
+	}
+	if result.Compound.BranchName != "compound/my-feature" {
+		t.Fatalf("branchName = %q, want %q", result.Compound.BranchName, "compound/my-feature")
+	}
+	if result.Paths == nil || result.Paths.AutoState == "" {
+		t.Fatal("paths.autoState should be set")
+	}
+}
+
+func TestGet_UserStoriesKey(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	// Use "userStories" instead of "stories"
+	prd := map[string]interface{}{
+		"userStories": []map[string]interface{}{
+			{"id": "US-001", "title": "First", "status": "passed"},
+			{"id": "US-002", "title": "Second", "status": "pending"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.TotalStories != 2 {
+		t.Fatalf("totalStories = %d, want 2", result.Manual.TotalStories)
+	}
+	if result.Manual.CompletedStories != 1 {
+		t.Fatalf("completedStories = %d, want 1", result.Manual.CompletedStories)
+	}
+}
+
+func TestStatusResult_DetailFieldsJSONRoundTrip(t *testing.T) {
+	original := StatusResult{
+		ContractVersion: ContractVersion,
+		WorkflowTrack:   TrackManual,
+		State:           StateManualInProgress,
+		Manual: &ManualDetail{
+			BranchName:       "hal/test",
+			TotalStories:     5,
+			CompletedStories: 2,
+			NextStory:        &StoryRef{ID: "US-003", Title: "Impl"},
+		},
+		Paths: &StatusPaths{PRDJson: ".hal/prd.json"},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded StatusResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded.Manual == nil {
+		t.Fatal("decoded.Manual is nil")
+	}
+	if decoded.Manual.TotalStories != 5 {
+		t.Fatalf("totalStories = %d, want 5", decoded.Manual.TotalStories)
+	}
+	if decoded.Manual.NextStory == nil || decoded.Manual.NextStory.ID != "US-003" {
+		t.Fatalf("nextStory mismatch")
+	}
+	if decoded.Paths == nil || decoded.Paths.PRDJson != ".hal/prd.json" {
+		t.Fatalf("paths mismatch")
+	}
+
+	// Verify omitempty: compound should NOT appear in JSON
+	if decoded.Compound != nil {
+		t.Fatal("compound should be nil when not set")
+	}
+	rawMap := map[string]interface{}{}
+	json.Unmarshal(data, &rawMap)
+	if _, ok := rawMap["compound"]; ok {
+		t.Fatal("compound key should not appear in JSON when nil (omitempty)")
+	}
+}
