@@ -97,5 +97,10 @@ func runDoctorFn(dir string, jsonMode bool, out io.Writer) error {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, result.Summary)
 
+	if result.PrimaryRemediation != nil {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "Fix:      %s\n", result.PrimaryRemediation.Command)
+	}
+
 	return nil
 }

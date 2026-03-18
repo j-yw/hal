@@ -292,3 +292,56 @@ func TestRun_NoLegacyDebris(t *testing.T) {
 	}
 	t.Fatal("legacy_debris check not found")
 }
+
+func TestRun_PrimaryRemediation(t *testing.T) {
+	dir := t.TempDir()
+	// No .hal dir — should give hal init as primary remediation
+
+	result := Run(Options{Dir: dir})
+
+	if result.PrimaryRemediation == nil {
+		t.Fatal("primaryRemediation should not be nil when there are failures")
+	}
+	if result.PrimaryRemediation.Command != "hal init" {
+		t.Fatalf("primaryRemediation.command = %q, want %q", result.PrimaryRemediation.Command, "hal init")
+	}
+	if !result.PrimaryRemediation.Safe {
+		t.Fatal("primaryRemediation.safe should be true for hal init")
+	}
+}
+
+func TestRun_NoPrimaryRemediationWhenHealthy(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	if result.OverallStatus != StatusPass {
+		t.Fatalf("overallStatus = %q, want %q", result.OverallStatus, StatusPass)
+	}
+	if result.PrimaryRemediation != nil {
+		t.Fatalf("primaryRemediation should be nil when healthy, got %+v", result.PrimaryRemediation)
+	}
+}
+
+func TestRun_LegacyDebrisRemediationIsCleanup(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	// Add legacy debris
+	os.MkdirAll(filepath.Join(dir, ".goralph"), 0755)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	if result.PrimaryRemediation == nil {
+		t.Fatal("primaryRemediation should not be nil")
+	}
+	if result.PrimaryRemediation.Command != "hal cleanup" {
+		t.Fatalf("primaryRemediation.command = %q, want %q", result.PrimaryRemediation.Command, "hal cleanup")
+	}
+}

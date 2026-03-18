@@ -41,12 +41,13 @@ const (
 
 // DoctorResult is the v1 machine-readable doctor contract.
 type DoctorResult struct {
-	ContractVersion int      `json:"contractVersion"`
-	OverallStatus   string   `json:"overallStatus"`
-	Checks          []Check  `json:"checks"`
-	Failures        []string `json:"failures"`
-	Warnings        []string `json:"warnings"`
-	Summary         string   `json:"summary"`
+	ContractVersion    int          `json:"contractVersion"`
+	OverallStatus      string       `json:"overallStatus"`
+	Checks             []Check      `json:"checks"`
+	Failures           []string     `json:"failures"`
+	Warnings           []string     `json:"warnings"`
+	PrimaryRemediation *Remediation `json:"primaryRemediation,omitempty"`
+	Summary            string       `json:"summary"`
 }
 
 // Check is a single health check result.
@@ -56,6 +57,14 @@ type Check struct {
 	Severity      string `json:"severity"`
 	RemediationID string `json:"remediationId"`
 	Message       string `json:"message"`
+	// Remediation provides an actionable command to fix the issue.
+	Remediation *Remediation `json:"remediation,omitempty"`
+}
+
+// Remediation describes how to fix a failed or warned check.
+type Remediation struct {
+	Command string `json:"command"`
+	Safe    bool   `json:"safe"` // Whether auto-applying is safe
 }
 
 // Options configures the doctor run.
@@ -98,12 +107,13 @@ func Run(opts Options) DoctorResult {
 
 		failures = append(failures, "hal_dir")
 		return DoctorResult{
-			ContractVersion: ContractVersion,
-			OverallStatus:   StatusFail,
-			Checks:          checks,
-			Failures:        failures,
-			Warnings:        warnings,
-			Summary:         "Hal is not initialized. Run hal init.",
+			ContractVersion:    ContractVersion,
+			OverallStatus:      StatusFail,
+			Checks:             checks,
+			Failures:           failures,
+			Warnings:           warnings,
+			PrimaryRemediation: halCheck.Remediation,
+			Summary:            "Hal is not initialized. Run hal init.",
 		}
 	}
 
@@ -153,6 +163,15 @@ func Run(opts Options) DoctorResult {
 		overall = StatusWarn
 	}
 
+	// Find primary remediation from first failing/warning check with a command
+	var primaryRemediation *Remediation
+	for _, c := range checks {
+		if (c.Status == StatusFail || c.Status == StatusWarn) && c.Remediation != nil {
+			primaryRemediation = c.Remediation
+			break
+		}
+	}
+
 	summary := "Hal is ready to use."
 	if overall == StatusFail {
 		summary = "Hal is not ready yet: run hal init."
@@ -161,12 +180,13 @@ func Run(opts Options) DoctorResult {
 	}
 
 	return DoctorResult{
-		ContractVersion: ContractVersion,
-		OverallStatus:   overall,
-		Checks:          checks,
-		Failures:        failures,
-		Warnings:        warnings,
-		Summary:         summary,
+		ContractVersion:    ContractVersion,
+		OverallStatus:      overall,
+		Checks:             checks,
+		Failures:           failures,
+		Warnings:           warnings,
+		PrimaryRemediation: primaryRemediation,
+		Summary:            summary,
 	}
 }
 
@@ -206,6 +226,7 @@ func checkHalDir(halDir string) Check {
 		Severity:      SeverityError,
 		RemediationID: RemediationRunHalInit,
 		Message:       "Missing .hal/ directory.",
+		Remediation:   &Remediation{Command: "hal init", Safe: true},
 	}
 }
 
@@ -226,6 +247,7 @@ func checkConfigYAML(halDir string) Check {
 		Severity:      SeverityWarn,
 		RemediationID: RemediationRunHalInit,
 		Message:       "Missing .hal/config.yaml. Using defaults.",
+		Remediation:   &Remediation{Command: "hal init", Safe: true},
 	}
 }
 
@@ -276,6 +298,7 @@ func checkSkills(dir string) Check {
 		Severity:      SeverityError,
 		RemediationID: RemediationRunHalInit,
 		Message:       "Missing installed Hal skills: " + strings.Join(missing, ", ") + ".",
+		Remediation:   &Remediation{Command: "hal init", Safe: true},
 	}
 }
 
@@ -306,6 +329,7 @@ func checkCommands(dir string) Check {
 		Severity:      SeverityError,
 		RemediationID: RemediationRunHalInit,
 		Message:       "Missing installed Hal commands: " + strings.Join(missing, ", ") + ".",
+		Remediation:   &Remediation{Command: "hal init", Safe: true},
 	}
 }
 
@@ -408,6 +432,7 @@ func checkLegacyDebris(dir string) Check {
 		Severity:      SeverityWarn,
 		RemediationID: RemediationRunHalInit,
 		Message:       "Legacy debris found: " + strings.Join(debris, ", ") + ". Run hal cleanup.",
+		Remediation:   &Remediation{Command: "hal cleanup", Safe: true},
 	}
 }
 
