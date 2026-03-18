@@ -134,6 +134,7 @@ Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) w
 | `hal status [--json]` | Show workflow state (manual, compound, review-loop) |
 | `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
 | `hal continue [--json]` | Show what to do next (combines status + doctor) |
+| `hal repair [--dry-run] [--json]` | Auto-fix safe issues detected by doctor |
 
 ### Link Management
 

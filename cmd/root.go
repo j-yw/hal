@@ -37,6 +37,7 @@ Status / Health:
   hal status [--json]                  Show workflow state
   hal doctor [--json]                  Check environment health
   hal continue [--json]                Show what to do next
+  hal repair [--dry-run] [--json]      Auto-fix safe issues
 
 Links:
   hal links status [--json]            Inspect engine skill links
