@@ -265,3 +265,46 @@ func TestMachineContractFields_DoctorChecksHaveScopeAndApplicability(t *testing.
 		}
 	}
 }
+
+func TestMachineContractFields_Repair(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	var buf bytes.Buffer
+	if err := runRepairFn(dir, true, true, &buf); err != nil {
+		t.Fatalf("runRepairFn error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON parse error: %v\n%s", err, buf.String())
+	}
+
+	for _, field := range []string{"contractVersion", "ok", "summary"} {
+		if _, ok := raw[field]; !ok {
+			t.Errorf("repair JSON missing field %q", field)
+		}
+	}
+}
+
+func TestMachineContractFields_LinksStatus(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, &buf); err != nil {
+		t.Fatalf("runLinksStatusFn error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON parse error: %v\n%s", err, buf.String())
+	}
+
+	for _, field := range []string{"contractVersion", "engines", "summary"} {
+		if _, ok := raw[field]; !ok {
+			t.Errorf("links status JSON missing field %q", field)
+		}
+	}
+}
