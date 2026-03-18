@@ -5,10 +5,9 @@ Improve HAL CLI's operational coherence: machine-readable output, workflow state
 
 ## Final Results
 - **Baseline**: 3 test failures, ~387 tests
-- **Final**: 0 test failures, 495 tests (+108 new), 109 experiments, ~108 commits
-- **+7700 lines** across 84 files, 33+ new files
-- **9 new commands**: status, doctor, continue, repair, links status/refresh/clean, prd audit
+- **Final**: 0 test failures, 500 tests (+113 new), 117 experiments
+- **~8000 lines** across 84 files
+- **9 new commands**: status, doctor (--fix), continue, repair, links status (--engine)/refresh/clean, prd audit
 - **20+ commands** with `--json` flag, consistent JSON exit codes
 - **3 new packages**: internal/status, internal/doctor
-- **4 contract docs**: status-v1, doctor-v1, continue-v1, migration guide
-- **All original spec items and ideas backlog items complete**
+- **All original spec items and ideas backlog complete**

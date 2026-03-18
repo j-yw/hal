@@ -109,3 +109,14 @@ func TestDoctorCmdHelp(t *testing.T) {
 		t.Fatalf("Example missing 'hal doctor': %s", cmd.Example)
 	}
 }
+
+func TestDoctorFixFlag(t *testing.T) {
+	cmd := doctorCmd
+	flag := cmd.Flags().Lookup("fix")
+	if flag == nil {
+		t.Fatal("doctor command should have --fix flag")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("--fix default should be false, got %q", flag.DefValue)
+	}
+}
