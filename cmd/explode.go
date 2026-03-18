@@ -21,6 +21,16 @@ var (
 	explodeJSONFlag   bool
 )
 
+// ExplodeResult is the machine-readable output of hal explode --json.
+type ExplodeResult struct {
+	ContractVersion int    `json:"contractVersion"`
+	OK              bool   `json:"ok"`
+	OutputPath      string `json:"outputPath,omitempty"`
+	TaskCount       int    `json:"taskCount"`
+	Error           string `json:"error,omitempty"`
+	Summary         string `json:"summary"`
+}
+
 var explodeCmd = &cobra.Command{
 	Use:   "explode [prd-path]",
 	Short: "Break a PRD into granular tasks for autonomous execution",
@@ -151,6 +161,9 @@ func runExplode(cmd *cobra.Command, args []string) error {
 		}
 
 		taskCount := countTasks(&prd)
+		if explodeJSONFlag {
+			return outputExplodeJSON(out, outPath, taskCount)
+		}
 		display.ShowCommandSuccess("Tasks generated", fmt.Sprintf("%d tasks • Path: %s", taskCount, outPath))
 		return nil
 	}
@@ -179,7 +192,26 @@ func runExplode(cmd *cobra.Command, args []string) error {
 		taskCount = countTasks(&prd)
 	}
 
+	if explodeJSONFlag {
+		return outputExplodeJSON(out, outPath, taskCount)
+	}
 	display.ShowCommandSuccess("Tasks generated", fmt.Sprintf("%d tasks • Path: %s", taskCount, outPath))
+	return nil
+}
+
+func outputExplodeJSON(out io.Writer, outPath string, taskCount int) error {
+	jr := ExplodeResult{
+		ContractVersion: 1,
+		OK:              true,
+		OutputPath:      outPath,
+		TaskCount:       taskCount,
+		Summary:         fmt.Sprintf("%d tasks generated at %s.", taskCount, outPath),
+	}
+	data, err := json.MarshalIndent(jr, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal explode result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
 	return nil
 }
 
