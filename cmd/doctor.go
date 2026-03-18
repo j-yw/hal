@@ -11,7 +11,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var doctorJSONFlag bool
+var (
+	doctorJSONFlag bool
+	doctorFixFlag  bool
+)
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
@@ -32,22 +35,28 @@ for agent orchestration and tooling integration.
 The doctor is engine-aware: Codex-specific checks are skipped when
 the configured engine is not codex.
 
+Use --fix to auto-apply safe remediations (equivalent to 'hal repair').
+
 Examples:
   hal doctor            # Human-readable check results
-  hal doctor --json     # Machine-readable JSON contract`,
+  hal doctor --json     # Machine-readable JSON contract
+  hal doctor --fix      # Check and auto-fix safe issues`,
 	Example: `  hal doctor
-  hal doctor --json`,
+  hal doctor --json
+  hal doctor --fix`,
 	RunE: runDoctor,
 }
 
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorJSONFlag, "json", false, "Output machine-readable JSON (v1 contract)")
+	doctorCmd.Flags().BoolVar(&doctorFixFlag, "fix", false, "Auto-fix safe issues (equivalent to hal repair)")
 	rootCmd.AddCommand(doctorCmd)
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
 	jsonMode := doctorJSONFlag
+	fix := doctorFixFlag
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
@@ -58,6 +67,17 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			}
 			jsonMode = v
 		}
+		if cmd.Flags().Lookup("fix") != nil {
+			v, err := cmd.Flags().GetBool("fix")
+			if err != nil {
+				return err
+			}
+			fix = v
+		}
+	}
+
+	if fix {
+		return runRepairFn(".", false, jsonMode, out)
 	}
 
 	return runDoctorFn(".", jsonMode, out)
