@@ -279,3 +279,42 @@ func TestRunLinksRefresh_UnknownEngine(t *testing.T) {
 		t.Fatalf("error should mention unknown engine: %v", err)
 	}
 }
+
+func TestRunLinksStatusFn_EngineFilter(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, "claude", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	if len(result.Engines) != 1 {
+		t.Fatalf("expected 1 engine with filter, got %d", len(result.Engines))
+	}
+	if result.Engines[0].Engine != "claude" {
+		t.Fatalf("expected claude, got %q", result.Engines[0].Engine)
+	}
+}
+
+func TestRunLinksStatusFn_NoFilter(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	if len(result.Engines) < 3 {
+		t.Fatalf("expected at least 3 engines without filter, got %d", len(result.Engines))
+	}
+}
