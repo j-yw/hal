@@ -26,6 +26,7 @@ var (
 type AutoResult struct {
 	ContractVersion int    `json:"contractVersion"`
 	OK              bool   `json:"ok"`
+	Resumed         bool   `json:"resumed,omitempty"`
 	Error           string `json:"error,omitempty"`
 	Summary         string `json:"summary"`
 }
@@ -206,13 +207,13 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Run the pipeline
 	if err := pipeline.Run(ctx, opts); err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, err.Error())
+			return outputAutoJSON(out, false, resume, err.Error())
 		}
 		return err
 	}
 
 	if jsonMode {
-		return outputAutoJSON(out, true, "Auto pipeline completed successfully.")
+		return outputAutoJSON(out, true, resume, "Auto pipeline completed successfully.")
 	}
 
 	// Show success message
@@ -221,10 +222,11 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func outputAutoJSON(out io.Writer, ok bool, summary string) error {
+func outputAutoJSON(out io.Writer, ok bool, resumed bool, summary string) error {
 	jr := AutoResult{
 		ContractVersion: 1,
 		OK:              ok,
+		Resumed:         resumed,
 		Summary:         summary,
 	}
 	if !ok {
