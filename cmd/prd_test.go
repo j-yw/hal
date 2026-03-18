@@ -166,3 +166,32 @@ func TestRunPRDAuditFn_MarkdownOnly(t *testing.T) {
 		t.Fatalf("should show markdown PRD found\n%s", output)
 	}
 }
+
+func TestRunPRDAuditFn_AutoPRDConflict(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	// Both manual and auto PRD
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte(`{"branchName":"hal/x","userStories":[{"id":"US-001","passes":false}]}`), 0644)
+	os.WriteFile(filepath.Join(halDir, template.AutoPRDFile), []byte(`{"branchName":"compound/y","tasks":[{"id":"T-001","passes":false}]}`), 0644)
+
+	var buf bytes.Buffer
+	runPRDAuditFn(dir, true, &buf)
+
+	var result PRDAuditResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	if result.OK {
+		t.Fatal("should not be OK when both prd.json and auto-prd.json exist")
+	}
+	found := false
+	for _, issue := range result.Issues {
+		if strings.Contains(issue, "auto-prd.json") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("should detect auto-prd conflict, issues: %v", result.Issues)
+	}
+}
