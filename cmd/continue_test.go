@@ -139,3 +139,42 @@ func TestRunContinueFn_ReviewLoopComplete(t *testing.T) {
 		t.Fatalf("workflowTrack = %q, want review_loop", result.Status.WorkflowTrack)
 	}
 }
+
+func TestRunContinueFn_JSONContainsBothStatusAndDoctor(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	var buf bytes.Buffer
+	if err := runContinueFn(dir, true, &buf); err != nil {
+		t.Fatalf("runContinueFn() error = %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON parse error: %v", err)
+	}
+
+	// Status should have its own contractVersion
+	statusObj, ok := raw["status"].(map[string]interface{})
+	if !ok {
+		t.Fatal("status field should be an object")
+	}
+	if _, ok := statusObj["contractVersion"].(float64); !ok {
+		t.Fatal("status.contractVersion should be a number")
+	}
+	if _, ok := statusObj["workflowTrack"].(string); !ok {
+		t.Fatal("status.workflowTrack should be a string")
+	}
+
+	// Doctor should have its own contractVersion
+	doctorObj, ok := raw["doctor"].(map[string]interface{})
+	if !ok {
+		t.Fatal("doctor field should be an object")
+	}
+	if _, ok := doctorObj["contractVersion"].(float64); !ok {
+		t.Fatal("doctor.contractVersion should be a number")
+	}
+	if _, ok := doctorObj["overallStatus"].(string); !ok {
+		t.Fatal("doctor.overallStatus should be a string")
+	}
+}

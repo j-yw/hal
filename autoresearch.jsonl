@@ -107,3 +107,4 @@
 {"run":106,"commit":"35b805e","metric":0,"metrics":{"total_tests":494,"vet_clean":1},"status":"keep","description":"test: add contract field test for prd audit --json — locks required fields","timestamp":1773830335676,"segment":0}
 {"run":107,"commit":"675d013","metric":0,"metrics":{"total_tests":494,"vet_clean":1},"status":"keep","description":"feat: prd audit detects auto-prd.json conflicts — warns when both manual and auto PRDs exist simultaneously","timestamp":1773830428889,"segment":0}
 {"run":108,"commit":"8d7ac4a","metric":0,"metrics":{"total_tests":495,"vet_clean":1},"status":"keep","description":"test: add auto-prd conflict detection test for prd audit","timestamp":1773830470226,"segment":0}
+{"run":109,"commit":"3b2b78d","metric":0,"metrics":{"total_tests":495,"vet_clean":1},"status":"keep","description":"feat: continue human output shows health check pass rate alongside workflow state","timestamp":1773830563211,"segment":0}
