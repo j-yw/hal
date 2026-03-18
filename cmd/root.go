@@ -38,6 +38,10 @@ Status / Health:
   hal doctor [--json]                  Check environment health
   hal continue [--json]                Show what to do next
 
+Links:
+  hal links status [--json]            Inspect engine skill links
+  hal links refresh [engine]           Recreate skill links
+
 Analyze:
   hal analyze --format text|json
   hal analyze --output json           Deprecated alias for --format

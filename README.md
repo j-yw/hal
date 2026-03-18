@@ -135,6 +135,13 @@ Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) w
 | `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
 | `hal continue [--json]` | Show what to do next (combines status + doctor) |
 
+### Link Management
+
+| Command | Description |
+|---------|-------------|
+| `hal links status [--json]` | Inspect engine skill links (per-engine health) |
+| `hal links refresh [engine]` | Recreate skill links for all or specific engine |
+
 ### Compound Pipeline
 
 | Command | Description |
