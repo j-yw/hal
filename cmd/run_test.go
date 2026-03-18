@@ -394,3 +394,25 @@ func TestOutputRunJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestOutputRunJSONError(t *testing.T) {
+	var buf bytes.Buffer
+	if err := outputRunJSONError(&buf, "test error msg"); err != nil {
+		t.Fatalf("outputRunJSONError() error = %v", err)
+	}
+
+	var jr RunResult
+	if err := json.Unmarshal(buf.Bytes(), &jr); err != nil {
+		t.Fatalf("JSON unmarshal error: %v", err)
+	}
+
+	if jr.OK {
+		t.Fatal("ok should be false for error")
+	}
+	if jr.Error != "test error msg" {
+		t.Fatalf("error = %q, want %q", jr.Error, "test error msg")
+	}
+	if jr.ContractVersion != 1 {
+		t.Fatalf("contractVersion = %d, want 1", jr.ContractVersion)
+	}
+}

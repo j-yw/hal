@@ -211,21 +211,33 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 
 	iterations, err := parseIterations(args, iterationsFlag, iterationsChanged, 10)
 	if err != nil {
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	if timeoutOverride < 0 {
+		if jsonMode {
+			return outputRunJSONError(out, "--timeout must be greater than or equal to 0")
+		}
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--timeout must be greater than or equal to 0"))
 	}
 
 	// Check .hal directory exists
 	halDir := template.HalDir
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		if jsonMode {
+			return outputRunJSONError(out, ".hal/ not found. Run 'hal init' first")
+		}
 		return fmt.Errorf(".hal/ not found. Run 'hal init' first")
 	}
 
 	// Check prd.json exists
 	prdPath := halDir + "/prd.json"
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
+		if jsonMode {
+			return outputRunJSONError(out, "prd.json not found at "+prdPath+". Create your task list first")
+		}
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
 
@@ -239,6 +251,9 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
 	if err != nil {
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	engineCfg := compound.LoadEngineConfig(".", resolvedEngine)
@@ -260,6 +275,9 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		BaseBranch:    baseBranch,
 	})
 	if err != nil {
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
 		return err
 	}
 
@@ -271,9 +289,24 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 
 	// Only return error if there was an actual failure
 	if result.Error != nil {
+		if jsonMode {
+			return outputRunJSON(out, result, story, dryRun)
+		}
 		return fmt.Errorf("loop failed: %w", result.Error)
 	}
 
+	return nil
+}
+
+func outputRunJSONError(out io.Writer, errMsg string) error {
+	jr := RunResult{
+		ContractVersion: 1,
+		OK:              false,
+		Error:           errMsg,
+		Summary:         errMsg,
+	}
+	data, _ := json.MarshalIndent(jr, "", "  ")
+	fmt.Fprintln(out, string(data))
 	return nil
 }
 
