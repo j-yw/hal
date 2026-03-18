@@ -20,6 +20,10 @@ func setupHalDir(t *testing.T, dir string) string {
 	if err := os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// Create prompt.md
+	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# Agent Instructions\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	return halDir
 }
 
@@ -421,4 +425,71 @@ func TestRun_InvalidYAMLConfig(t *testing.T) {
 	if !found {
 		t.Fatal("config_yaml check not found")
 	}
+}
+
+func TestRun_MissingPromptMD(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	// Remove prompt.md created by setupHalDir
+	os.Remove(filepath.Join(halDir, template.PromptFile))
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	found := false
+	for _, c := range result.Checks {
+		if c.ID == "prompt_md" {
+			found = true
+			if c.Status != StatusWarn {
+				t.Fatalf("prompt_md status = %q, want %q", c.Status, StatusWarn)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("prompt_md check not found")
+	}
+}
+
+func TestRun_EmptyPromptMD(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	os.WriteFile(filepath.Join(halDir, "prompt.md"), []byte("  \n  "), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "prompt_md" {
+			if c.Status != StatusWarn {
+				t.Fatalf("prompt_md status = %q, want %q for empty prompt", c.Status, StatusWarn)
+			}
+			return
+		}
+	}
+	t.Fatal("prompt_md check not found")
+}
+
+func TestRun_ValidPromptMD(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	os.WriteFile(filepath.Join(halDir, "prompt.md"), []byte("# Agent Instructions\nDo good work."), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "prompt_md" {
+			if c.Status != StatusPass {
+				t.Fatalf("prompt_md status = %q, want %q", c.Status, StatusPass)
+			}
+			return
+		}
+	}
+	t.Fatal("prompt_md check not found")
 }

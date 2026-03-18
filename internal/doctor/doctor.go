@@ -131,7 +131,14 @@ func Run(opts Options) DoctorResult {
 	// 4. Default engine CLI
 	checks = append(checks, checkEngineCLI(engine))
 
-	// 5. Hal skills
+	// 5. Prompt template
+	promptCheck := checkPromptMD(halDir)
+	checks = append(checks, promptCheck)
+	if promptCheck.Status == StatusWarn {
+		warnings = append(warnings, "prompt_md")
+	}
+
+	// 6. Hal skills
 	skillCheck := checkSkills(dir)
 	checks = append(checks, skillCheck)
 	if skillCheck.Status == StatusFail {
@@ -492,6 +499,47 @@ func checkLegacyDebris(dir string) Check {
 		RemediationID: RemediationRunHalInit,
 		Message:       "Legacy debris found: " + strings.Join(debris, ", ") + ". Run hal cleanup.",
 		Remediation:   &Remediation{Command: "hal cleanup", Safe: true},
+	}
+}
+
+func checkPromptMD(halDir string) Check {
+	promptPath := filepath.Join(halDir, template.PromptFile)
+	data, err := os.ReadFile(promptPath)
+	if os.IsNotExist(err) {
+		return Check{
+			ID:            "prompt_md",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationRunHalInit,
+			Message:       "Missing .hal/prompt.md. Agent instructions will use defaults.",
+			Remediation:   &Remediation{Command: "hal init", Safe: true},
+		}
+	}
+	if err != nil {
+		return Check{
+			ID:            "prompt_md",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationNone,
+			Message:       "Cannot read .hal/prompt.md: " + err.Error(),
+		}
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return Check{
+			ID:            "prompt_md",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationRunHalInit,
+			Message:       "Empty .hal/prompt.md. Agent will lack project-specific instructions.",
+			Remediation:   &Remediation{Command: "hal init --refresh-templates", Safe: false},
+		}
+	}
+	return Check{
+		ID:            "prompt_md",
+		Status:        StatusPass,
+		Severity:      SeverityInfo,
+		RemediationID: RemediationNone,
+		Message:       "Loaded .hal/prompt.md.",
 	}
 }
 
