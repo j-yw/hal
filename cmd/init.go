@@ -324,9 +324,9 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	} else {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Next steps:")
-		fmt.Fprintln(out, "  1. Run: hal plan \"feature description\" to generate a PRD")
-		fmt.Fprintln(out, "  2. Or create .hal/prd.json manually")
-		fmt.Fprintln(out, "  3. Run: hal run")
+		fmt.Fprintln(out, "  1. hal doctor          Check environment health")
+		fmt.Fprintln(out, "  2. hal plan \"desc\"      Generate a PRD")
+		fmt.Fprintln(out, "  3. hal run             Execute stories")
 	}
 
 	return nil
