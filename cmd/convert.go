@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +19,17 @@ var (
 	convertValidateFlag bool
 	convertArchiveFlag  bool
 	convertForceFlag    bool
+	convertJSONFlag     bool
 )
+
+// ConvertResult is the machine-readable output of hal convert --json.
+type ConvertResult struct {
+	ContractVersion int    `json:"contractVersion"`
+	OK              bool   `json:"ok"`
+	OutputPath      string `json:"outputPath"`
+	Valid           *bool  `json:"valid,omitempty"`
+	Summary         string `json:"summary"`
+}
 
 var convertCmd = &cobra.Command{
 	Use:   "convert [markdown-prd]",
@@ -44,8 +55,10 @@ Examples:
   hal convert .hal/prd.md --force           # Override branch mismatch guard
   hal convert .hal/prd.md -o custom.json    # Custom output path (no archive)
   hal convert .hal/prd.md --validate        # Also validate after conversion
-  hal convert .hal/prd.md -e claude         # Use Claude engine`,
+  hal convert .hal/prd.md -e claude         # Use Claude engine
+  hal convert --json                        # Machine-readable JSON output`,
 	Example: `  hal convert
+  hal convert --json
   hal convert --archive
   hal convert .hal/prd-auth.md --validate
   hal convert .hal/prd-auth.md --force
@@ -60,6 +73,7 @@ func init() {
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
 	convertCmd.Flags().BoolVar(&convertArchiveFlag, "archive", false, "Archive existing feature state before writing canonical .hal/prd.json")
 	convertCmd.Flags().BoolVar(&convertForceFlag, "force", false, "Allow canonical overwrite without archive when branch mismatch protection would block")
+	convertCmd.Flags().BoolVar(&convertJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(convertCmd)
 }
 
@@ -127,6 +141,37 @@ func runConvertWithDeps(cmd *cobra.Command, args []string, deps convertDeps) err
 	ctx := context.Background()
 	if err := deps.convertWithEngine(ctx, eng, mdPath, outPath, opts, display); err != nil {
 		return fmt.Errorf("conversion failed: %w", err)
+	}
+
+	if convertJSONFlag {
+		jr := ConvertResult{
+			ContractVersion: 1,
+			OK:              true,
+			OutputPath:      outPath,
+			Summary:         fmt.Sprintf("Conversion complete. Output: %s", outPath),
+		}
+
+		// Optionally validate in JSON mode
+		if convertValidateFlag {
+			result, err := deps.validateWithEngine(ctx, eng, outPath, display)
+			if err != nil {
+				jr.OK = false
+				jr.Summary = fmt.Sprintf("Conversion succeeded but validation failed: %v", err)
+			} else {
+				valid := result.Valid
+				jr.Valid = &valid
+				if !valid {
+					jr.Summary = "Conversion succeeded but PRD validation failed."
+				}
+			}
+		}
+
+		data, err := json.MarshalIndent(jr, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal convert result: %w", err)
+		}
+		fmt.Fprintln(os.Stdout, string(data))
+		return nil
 	}
 
 	// Show success
