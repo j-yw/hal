@@ -28,11 +28,13 @@ With --json, outputs a stable machine-readable contract (v1) suitable
 for agent orchestration and tooling integration.
 
 Workflow states:
-  not_initialized       No .hal/ directory found
+  not_initialized         No .hal/ directory found
   hal_initialized_no_prd  .hal/ exists but no prd.json
-  manual_in_progress    PRD has pending stories
-  manual_complete       All PRD stories passed
-  compound_active       Auto pipeline state is present
+  manual_in_progress      PRD has pending stories
+  manual_complete         All PRD stories passed
+  compound_active         Auto pipeline in progress
+  compound_complete       Auto pipeline step is 'done'
+  review_loop_complete    Review-loop reports exist (no active PRD)
 
 Examples:
   hal status            # Human-readable summary
