@@ -580,3 +580,41 @@ func TestGet_ManualComplete_WithReports_SuggestsAuto(t *testing.T) {
 		t.Fatalf("nextAction.id = %q, want %q (should suggest auto when report exists)", result.NextAction.ID, ActionRunAuto)
 	}
 }
+
+func TestGet_EmptyStoriesArray(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"stories": []map[string]interface{}{},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	// 0 stories should be in progress (need to add stories)
+	if result.State != StateManualInProgress {
+		t.Fatalf("state = %q, want %q for empty stories", result.State, StateManualInProgress)
+	}
+	if result.Manual == nil {
+		t.Fatal("manual should not be nil")
+	}
+	if result.Manual.TotalStories != 0 {
+		t.Fatalf("totalStories = %d, want 0", result.Manual.TotalStories)
+	}
+}
+
+func TestGet_UnparseablePRD(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte("not json at all"), 0644)
+
+	result := Get(dir)
+
+	if result.State != StateManualInProgress {
+		t.Fatalf("state = %q, want %q for unparseable PRD", result.State, StateManualInProgress)
+	}
+}
