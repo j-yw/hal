@@ -20,6 +20,7 @@ var (
 	analyzeFormatFlag     string
 	analyzeOutputFlag     string
 	analyzeEngineFlag     string
+	analyzeJSONFlag       bool
 )
 
 type analyzeDeps struct {
@@ -57,10 +58,12 @@ Examples:
   hal analyze                           # Analyze latest report
   hal analyze report.md                 # Analyze specific file
   hal analyze --reports-dir ./reports   # Use custom reports directory
-  hal analyze --format json             # Output as JSON
+  hal analyze --json                     # Output as JSON (preferred)
+  hal analyze --format json             # Output as JSON (equivalent)
   hal analyze --output json             # Deprecated alias for --format`,
 	Example: `  hal analyze
   hal analyze .hal/reports/report.md
+  hal analyze --json
   hal analyze --reports-dir ./reports
   hal analyze --format json --engine codex`,
 	Args: maxArgsValidation(1),
@@ -72,6 +75,7 @@ func init() {
 	analyzeCmd.Flags().StringVarP(&analyzeFormatFlag, "format", "f", "text", "Output format: text (default) or json")
 	analyzeCmd.Flags().StringVarP(&analyzeOutputFlag, "output", "o", "", "[deprecated] Alias for --format")
 	analyzeCmd.Flags().StringVarP(&analyzeEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
+	analyzeCmd.Flags().BoolVar(&analyzeJSONFlag, "json", false, "Output as JSON (shorthand for --format json)")
 	rootCmd.AddCommand(analyzeCmd)
 }
 
@@ -104,8 +108,10 @@ func runAnalyzeWithDeps(cmd *cobra.Command, args []string, deps analyzeDeps) err
 	formatFlagValue := analyzeFormatFlag
 	outputAliasValue := analyzeOutputFlag
 	engineName := analyzeEngineFlag
+	jsonFlag := analyzeJSONFlag
 	formatChanged := false
 	outputChanged := false
+	jsonChanged := false
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -145,15 +151,28 @@ func runAnalyzeWithDeps(cmd *cobra.Command, args []string, deps analyzeDeps) err
 			}
 			engineName = value
 		}
+		if flags.Lookup("json") != nil {
+			value, err := flags.GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonFlag = value
+			jsonChanged = flags.Changed("json")
+		}
 	}
 
 	if formatChanged && outputChanged {
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--output/-o cannot be used with --format/-f"))
 	}
+	if jsonChanged && (formatChanged || outputChanged) {
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--json cannot be used with --format/-f or --output/-o"))
+	}
 
 	formatValue := formatFlagValue
-	if outputChanged {
-		warnDeprecated(errOut, "--output/-o is deprecated; use --format/-f")
+	if jsonFlag {
+		formatValue = "json"
+	} else if outputChanged {
+		warnDeprecated(errOut, "--output/-o is deprecated; use --format/-f or --json")
 		formatValue = outputAliasValue
 	}
 
