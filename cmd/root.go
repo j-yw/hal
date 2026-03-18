@@ -25,6 +25,7 @@ Workflow:
   hal init                             Initialize project with skills
   hal plan "feature desc"              Generate PRD interactively
   hal convert                          Convert markdown PRD to JSON
+  hal prd audit [--json]               Audit PRD health and drift
   hal run --base develop [iterations]  Execute stories autonomously
   hal archive create                   Archive feature state when done
 

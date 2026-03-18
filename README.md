@@ -133,6 +133,7 @@ Stable JSON contracts for agent integration:
 | `hal plan [description]` | Generate PRD (opens editor if no args) |
 | `hal convert [markdown-prd]` | Convert markdown PRD to JSON (auto-discover source when omitted) |
 | `hal validate [prd.json]` | Validate PRD against quality rules |
+| `hal prd audit [--json]` | Audit PRD health and detect markdown↔JSON drift |
 | `hal run [iterations]` | Execute stories autonomously (default: 10; do not combine positional iterations with `-i/--iterations`) |
 
 ### Status & Health
