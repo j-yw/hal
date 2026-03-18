@@ -618,3 +618,22 @@ func TestGet_UnparseablePRD(t *testing.T) {
 		t.Fatalf("state = %q, want %q for unparseable PRD", result.State, StateManualInProgress)
 	}
 }
+
+func TestGet_GracefulWithMinimalSetup(t *testing.T) {
+	// Just .hal/ dir, nothing else
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+
+	result := Get(dir)
+
+	if result.ContractVersion != ContractVersion {
+		t.Fatalf("contractVersion = %d, want %d", result.ContractVersion, ContractVersion)
+	}
+	if result.State != StateInitializedNoPRD {
+		t.Fatalf("state = %q, want %q", result.State, StateInitializedNoPRD)
+	}
+	// Should never panic on minimal setup
+	if result.Summary == "" {
+		t.Fatal("summary should not be empty")
+	}
+}
