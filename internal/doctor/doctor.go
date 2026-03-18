@@ -43,6 +43,7 @@ const (
 type DoctorResult struct {
 	ContractVersion    int          `json:"contractVersion"`
 	OverallStatus      string       `json:"overallStatus"`
+	Engine             string       `json:"engine"`
 	Checks             []Check      `json:"checks"`
 	Failures           []string     `json:"failures"`
 	Warnings           []string     `json:"warnings"`
@@ -87,6 +88,11 @@ func Run(opts Options) DoctorResult {
 	var failures []string
 	var warnings []string
 
+	engine := opts.Engine
+	if engine == "" {
+		engine = "codex"
+	}
+
 	// 1. Git repo
 	checks = append(checks, checkGitRepo(dir))
 
@@ -109,6 +115,7 @@ func Run(opts Options) DoctorResult {
 		return DoctorResult{
 			ContractVersion:    ContractVersion,
 			OverallStatus:      StatusFail,
+			Engine:             engine,
 			Checks:             checks,
 			Failures:           failures,
 			Warnings:           warnings,
@@ -121,10 +128,6 @@ func Run(opts Options) DoctorResult {
 	checks = append(checks, checkConfigYAML(halDir))
 
 	// 4. Default engine CLI
-	engine := opts.Engine
-	if engine == "" {
-		engine = "codex"
-	}
 	checks = append(checks, checkEngineCLI(engine))
 
 	// 5. Hal skills
@@ -211,6 +214,7 @@ func Run(opts Options) DoctorResult {
 	return DoctorResult{
 		ContractVersion:    ContractVersion,
 		OverallStatus:      overall,
+		Engine:             engine,
 		Checks:             checks,
 		Failures:           failures,
 		Warnings:           warnings,
