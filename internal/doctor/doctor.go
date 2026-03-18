@@ -5,6 +5,7 @@
 package doctor
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,7 +167,14 @@ func Run(opts Options) DoctorResult {
 	progressCheck := checkProgressFile(halDir)
 	checks = append(checks, progressCheck)
 
-	// 7. Hal skills
+	// 7. PRD validity (only when prd.json exists)
+	prdCheck := checkPRDJSON(halDir)
+	checks = append(checks, prdCheck)
+	if prdCheck.Status == StatusWarn {
+		warnings = append(warnings, "prd_json")
+	}
+
+	// 8. Hal skills
 	skillCheck := checkSkills(dir)
 	checks = append(checks, skillCheck)
 	if skillCheck.Status == StatusFail {
@@ -226,6 +234,9 @@ func Run(opts Options) DoctorResult {
 		case "default_engine_cli":
 			c.Scope = ScopeRepo
 			c.Applicability = ApplicabilityRequired
+		case "prd_json":
+			c.Scope = ScopeRepo
+			c.Applicability = ApplicabilityOptional
 		case "local_skill_links":
 			c.Scope = ScopeEngineLocal
 			c.Applicability = ApplicabilityOptional
@@ -575,6 +586,64 @@ func checkLegacyDebris(dir string) Check {
 		RemediationID: RemediationRunHalInit,
 		Message:       "Legacy debris found: " + strings.Join(debris, ", ") + ". Run hal cleanup.",
 		Remediation:   &Remediation{Command: "hal cleanup", Safe: true},
+	}
+}
+
+func checkPRDJSON(halDir string) Check {
+	prdPath := filepath.Join(halDir, template.PRDFile)
+	data, err := os.ReadFile(prdPath)
+	if os.IsNotExist(err) {
+		return Check{
+			ID:            "prd_json",
+			Status:        StatusSkip,
+			Severity:      SeverityInfo,
+			RemediationID: RemediationNone,
+			Message:       "No prd.json found (normal before first plan/convert).",
+		}
+	}
+	if err != nil {
+		return Check{
+			ID:            "prd_json",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationNone,
+			Message:       "Cannot read .hal/prd.json: " + err.Error(),
+		}
+	}
+
+	// Validate it's parseable JSON with expected structure
+	var raw map[string]interface{}
+	if jsonErr := json.Unmarshal(data, &raw); jsonErr != nil {
+		return Check{
+			ID:            "prd_json",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationNone,
+			Message:       "Invalid JSON in .hal/prd.json: " + jsonErr.Error(),
+			Remediation:   &Remediation{Command: "hal convert", Safe: false},
+		}
+	}
+
+	// Check for stories/userStories key
+	_, hasStories := raw["stories"]
+	_, hasUserStories := raw["userStories"]
+	if !hasStories && !hasUserStories {
+		return Check{
+			ID:            "prd_json",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationNone,
+			Message:       "prd.json is missing stories or userStories key.",
+			Remediation:   &Remediation{Command: "hal convert", Safe: false},
+		}
+	}
+
+	return Check{
+		ID:            "prd_json",
+		Status:        StatusPass,
+		Severity:      SeverityInfo,
+		RemediationID: RemediationNone,
+		Message:       "Loaded .hal/prd.json.",
 	}
 }
 
