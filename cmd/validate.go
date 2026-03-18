@@ -59,10 +59,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// Check PRD exists
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
 		if validateJSONFlag {
-			errResult := &prd.ValidationResult{Valid: false, Errors: []prd.Issue{{Message: "PRD not found: " + prdPath, Severity: "error"}}}
-			data, _ := json.MarshalIndent(errResult, "", "  ")
-			fmt.Fprintln(os.Stdout, string(data))
-			return nil
+			return outputValidateJSONError("PRD not found: " + prdPath)
 		}
 		return fmt.Errorf("PRD not found: %s", prdPath)
 	}
@@ -70,10 +67,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	engineName, err := resolveEngine(cmd, "engine", validateEngineFlag, ".")
 	if err != nil {
 		if validateJSONFlag {
-			errResult := &prd.ValidationResult{Valid: false, Errors: []prd.Issue{{Message: err.Error(), Severity: "error"}}}
-			data, _ := json.MarshalIndent(errResult, "", "  ")
-			fmt.Fprintln(os.Stdout, string(data))
-			return nil
+			return outputValidateJSONError(err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -82,10 +76,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	eng, err := newEngine(engineName)
 	if err != nil {
 		if validateJSONFlag {
-			errResult := &prd.ValidationResult{Valid: false, Errors: []prd.Issue{{Message: err.Error(), Severity: "error"}}}
-			data, _ := json.MarshalIndent(errResult, "", "  ")
-			fmt.Fprintln(os.Stdout, string(data))
-			return nil
+			return outputValidateJSONError(err.Error())
 		}
 		return err
 	}
@@ -129,5 +120,15 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("validation failed"))
 	}
 
+	return nil
+}
+
+func outputValidateJSONError(msg string) error {
+	result := &prd.ValidationResult{
+		Valid:  false,
+		Errors: []prd.Issue{{Message: msg, Severity: "error"}},
+	}
+	data, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Fprintln(os.Stdout, string(data))
 	return nil
 }

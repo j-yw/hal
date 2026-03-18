@@ -128,3 +128,4 @@
 {"run":127,"commit":"4e86e14","metric":0,"metrics":{"total_tests":504,"vet_clean":1},"status":"keep","description":"fix: continue output hides redundant 'Then:' when fix command equals next workflow action","timestamp":1773831940010,"segment":0}
 {"run":128,"commit":"5150dc9","metric":0,"metrics":{"total_tests":505,"vet_clean":1},"status":"keep","description":"test: verify continue output omits redundant 'Then:' when fix command matches workflow action","timestamp":1773832013081,"segment":0}
 {"run":129,"commit":"3cdbaa7","metric":0,"metrics":{"total_tests":506,"vet_clean":1},"status":"keep","description":"test: verify doctor --fix delegates to repair logic and applies fixes","timestamp":1773832086069,"segment":0}
+{"run":130,"commit":"0947102","metric":0,"metrics":{"total_tests":507,"vet_clean":1},"status":"keep","description":"test: verify report --json includes nextAction with 'hal auto' command","timestamp":1773832193051,"segment":0}
