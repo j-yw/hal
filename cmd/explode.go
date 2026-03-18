@@ -18,6 +18,7 @@ import (
 var (
 	explodeBranchFlag string
 	explodeEngineFlag string
+	explodeJSONFlag   bool
 )
 
 var explodeCmd = &cobra.Command{
@@ -45,6 +46,7 @@ Examples:
 func init() {
 	explodeCmd.Flags().StringVar(&explodeBranchFlag, "branch", "", "Branch name that sets output PRD branchName")
 	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
+	explodeCmd.Flags().BoolVar(&explodeJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(explodeCmd)
 }
 
