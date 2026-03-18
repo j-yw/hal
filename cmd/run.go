@@ -41,6 +41,8 @@ type RunResult struct {
 	OK              bool   `json:"ok"`
 	Iterations      int    `json:"iterations"`
 	Complete        bool   `json:"complete"`
+	StoryID         string `json:"storyId,omitempty"`
+	DryRun          bool   `json:"dryRun,omitempty"`
 	Error           string `json:"error,omitempty"`
 	Summary         string `json:"summary"`
 }
@@ -264,7 +266,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	result := runner.Run(context.Background())
 
 	if jsonMode {
-		return outputRunJSON(out, result)
+		return outputRunJSON(out, result, story, dryRun)
 	}
 
 	// Only return error if there was an actual failure
@@ -275,11 +277,13 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	return nil
 }
 
-func outputRunJSON(out io.Writer, result loop.Result) error {
+func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool) error {
 	jr := RunResult{
 		ContractVersion: 1,
 		OK:              result.Success,
 		Iterations:      result.Iterations,
+		StoryID:         storyID,
+		DryRun:          dryRun,
 		Complete:        result.Complete,
 	}
 
