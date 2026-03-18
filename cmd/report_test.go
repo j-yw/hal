@@ -39,11 +39,11 @@ func TestReportCommandFlags(t *testing.T) {
 		t.Fatal("report command should return an error for positional arguments")
 	}
 
-	if !strings.Contains(strings.ToLower(reportCmd.Short), "legacy session reporting") {
-		t.Fatalf("reportCmd.Short = %q, want to contain %q", reportCmd.Short, "legacy session reporting")
+	if !strings.Contains(strings.ToLower(reportCmd.Short), "report") {
+		t.Fatalf("reportCmd.Short = %q, want to contain %q", reportCmd.Short, "report")
 	}
-	if !strings.Contains(strings.ToLower(reportCmd.Long), "legacy session reporting") {
-		t.Fatalf("reportCmd.Long should mention legacy session reporting")
+	if !strings.Contains(strings.ToLower(reportCmd.Long), "summary report") {
+		t.Fatalf("reportCmd.Long should mention summary report, got %q", reportCmd.Long)
 	}
 
 	if reportCmd.Flags().Lookup("dry-run") == nil {

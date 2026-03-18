@@ -19,13 +19,11 @@ var (
 
 var reportCmd = &cobra.Command{
 	Use:   "report",
-	Short: "Run legacy session reporting for completed work",
+	Short: "Generate a summary report for completed work",
 	Args:  noArgsValidation(),
-	Long: `Run legacy session reporting for the completed work session and generate a summary report.
+	Long: `Generate a summary report for the completed work session.
 
-This command preserves the workflow that previously lived under 'hal review'.
-
-The review process:
+The report process:
   1. Gathers context (progress log, git diff, commits, PRD)
   2. Analyzes what was built and how
   3. Identifies patterns worth documenting
@@ -36,9 +34,9 @@ The generated report can be used by 'hal auto' to identify
 the next priority item to work on.
 
 Examples:
-  hal report                  # Review with codex engine (default)
+  hal report                  # Generate report with codex engine (default)
   hal report --engine claude  # Use Claude instead
-  hal report --dry-run        # Preview what would be reviewed
+  hal report --dry-run        # Preview what would be reported
   hal report --skip-agents    # Skip AGENTS.md update`,
 	Example: `  hal report
   hal report --engine claude

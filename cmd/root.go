@@ -29,9 +29,13 @@ Workflow:
   hal archive create                   Archive feature state when done
 
 Review / Reporting:
-  hal report                           Legacy session report generation
+  hal report                           Generate summary report for completed work
   hal review --base <branch> [iters]  Iterative review/fix loop
   hal review against <branch> [iters] Deprecated alias
+
+Status / Health:
+  hal status [--json]                  Show workflow state
+  hal doctor [--json]                  Check environment health
 
 Analyze:
   hal analyze --format text|json
