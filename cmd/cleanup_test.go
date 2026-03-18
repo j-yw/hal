@@ -189,3 +189,31 @@ func TestRunCleanupFn_OrphanedDirectoryDryRun(t *testing.T) {
 		t.Fatal("rules/ directory should still exist after dry-run")
 	}
 }
+
+func TestRunCleanupFn_DeprecatedSkillLinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	halDir := filepath.Join(tmpDir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create deprecated ralph link
+	claudeSkills := filepath.Join(tmpDir, ".claude", "skills")
+	os.MkdirAll(claudeSkills, 0755)
+	os.Symlink("../../.hal/skills/hal", filepath.Join(claudeSkills, "ralph"))
+
+	var out bytes.Buffer
+	if err := runCleanupFn(halDir, false, &out); err != nil {
+		t.Fatalf("runCleanupFn() error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "ralph") {
+		t.Fatalf("output should mention ralph removal\n%s", output)
+	}
+
+	// Verify link was removed
+	if _, err := os.Lstat(filepath.Join(claudeSkills, "ralph")); !os.IsNotExist(err) {
+		t.Fatal(".claude/skills/ralph should be removed after cleanup")
+	}
+}

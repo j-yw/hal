@@ -27,13 +27,15 @@ type CleanupResult struct {
 
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
-	Short: "Remove orphaned files from .hal/",
+	Short: "Remove orphaned and deprecated files",
 	Args:  noArgsValidation(),
-	Long: `Remove orphaned files from .hal/ that are no longer used.
+	Long: `Remove orphaned and deprecated files from .hal/ and engine link directories.
 
 This command removes:
-  - auto-progress.txt (replaced by unified progress.txt)
-  - rules/ directory (replaced by standards/)
+  - .hal/auto-progress.txt (replaced by unified progress.txt)
+  - .hal/rules/ directory (replaced by standards/)
+  - .claude/skills/ralph (deprecated alias)
+  - .pi/skills/ralph (deprecated alias)
 
 Use --dry-run to preview what would be removed without making changes.
 
@@ -106,6 +108,20 @@ func runCleanupJSON(halDir string, dryRun bool, out io.Writer) error {
 			}
 		}
 		removed = append(removed, dir+"/")
+	}
+
+	// Clean deprecated engine skill links (project-local)
+	projectDir := filepath.Dir(halDir)
+	for _, link := range deprecatedSkillLinks(projectDir) {
+		if _, err := os.Lstat(link); os.IsNotExist(err) {
+			continue
+		}
+		if !dryRun {
+			if err := os.RemoveAll(link); err != nil {
+				return fmt.Errorf("failed to remove %s: %w", link, err)
+			}
+		}
+		removed = append(removed, link)
 	}
 
 	jr := CleanupResult{
@@ -181,6 +197,23 @@ func runCleanupFn(halDir string, dryRun bool, w io.Writer) error {
 		removed++
 	}
 
+	// Clean deprecated engine skill links (project-local)
+	projectDir := filepath.Dir(halDir) // halDir is .hal, parent is project root
+	for _, link := range deprecatedSkillLinks(projectDir) {
+		if _, err := os.Lstat(link); os.IsNotExist(err) {
+			continue
+		}
+		if dryRun {
+			fmt.Fprintf(w, "Would remove: %s\n", link)
+		} else {
+			if err := os.RemoveAll(link); err != nil {
+				return fmt.Errorf("failed to remove %s: %w", link, err)
+			}
+			fmt.Fprintf(w, "Removed: %s\n", link)
+		}
+		removed++
+	}
+
 	if removed == 0 {
 		fmt.Fprintln(w, "No orphaned files found.")
 	} else if dryRun {
@@ -190,4 +223,12 @@ func runCleanupFn(halDir string, dryRun bool, w io.Writer) error {
 	}
 
 	return nil
+}
+
+// deprecatedSkillLinks returns paths to deprecated skill links that should be removed.
+func deprecatedSkillLinks(projectDir string) []string {
+	return []string{
+		filepath.Join(projectDir, ".claude", "skills", "ralph"),
+		filepath.Join(projectDir, ".pi", "skills", "ralph"),
+	}
 }
