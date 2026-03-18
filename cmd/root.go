@@ -36,6 +36,7 @@ Review / Reporting:
 Status / Health:
   hal status [--json]                  Show workflow state
   hal doctor [--json]                  Check environment health
+  hal continue [--json]                Show what to do next
 
 Analyze:
   hal analyze --format text|json
