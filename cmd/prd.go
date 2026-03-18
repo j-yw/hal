@@ -133,12 +133,22 @@ func runPRDAuditFn(dir string, jsonMode bool, out io.Writer) error {
 		}
 	}
 
+	// Check auto-prd.json
+	autoPRDPath := filepath.Join(halDir, template.AutoPRDFile)
+	autoPRDExists := false
+	if _, err := os.Stat(autoPRDPath); err == nil {
+		autoPRDExists = true
+	}
+
 	// Drift detection
 	if jsonExists && markdownExists {
 		issues = append(issues, "both prd.json and markdown PRD exist — potential drift. Consider archiving one.")
 	}
-	if !jsonExists && !markdownExists {
+	if !jsonExists && !markdownExists && !autoPRDExists {
 		issues = append(issues, "no PRD files found. Run hal plan or create a PRD manually.")
+	}
+	if jsonExists && autoPRDExists {
+		issues = append(issues, "both prd.json and auto-prd.json exist — manual and auto PRDs may conflict.")
 	}
 
 	ok := len(issues) == 0
