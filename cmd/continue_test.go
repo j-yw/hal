@@ -178,3 +178,60 @@ func TestRunContinueFn_JSONContainsBothStatusAndDoctor(t *testing.T) {
 		t.Fatal("doctor.overallStatus should be a string")
 	}
 }
+
+func TestRunContinueFn_ReadyField(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(string)
+		wantReady bool
+	}{
+		{
+			name: "no_hal_dir",
+			setup: func(dir string) {
+				// nothing
+			},
+			wantReady: false,
+		},
+		{
+			name: "healthy_repo",
+			setup: func(dir string) {
+				halDir := filepath.Join(dir, template.HalDir)
+				os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+				os.MkdirAll(halDir, 0755)
+				os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644)
+				os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# A\n"), 0644)
+				os.WriteFile(filepath.Join(halDir, template.ProgressFile), []byte("## P\n"), 0644)
+				for _, name := range skills.ManagedSkillNames {
+					os.MkdirAll(filepath.Join(halDir, "skills", name), 0755)
+					os.WriteFile(filepath.Join(halDir, "skills", name, "SKILL.md"), []byte("# "+name), 0644)
+				}
+				commandsDir := filepath.Join(halDir, template.CommandsDir)
+				os.MkdirAll(commandsDir, 0755)
+				for _, name := range skills.CommandNames {
+					os.WriteFile(filepath.Join(commandsDir, name+".md"), []byte("# "+name), 0644)
+				}
+			},
+			wantReady: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("HOME", dir)
+			tt.setup(dir)
+
+			var buf bytes.Buffer
+			if err := runContinueFn(dir, true, &buf); err != nil {
+				t.Fatalf("runContinueFn() error = %v", err)
+			}
+
+			var result ContinueResult
+			json.Unmarshal(buf.Bytes(), &result)
+
+			if result.Ready != tt.wantReady {
+				t.Fatalf("ready = %v, want %v", result.Ready, tt.wantReady)
+			}
+		})
+	}
+}
