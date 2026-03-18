@@ -24,11 +24,19 @@ var (
 
 // AutoResult is the machine-readable output of hal auto --json.
 type AutoResult struct {
-	ContractVersion int    `json:"contractVersion"`
-	OK              bool   `json:"ok"`
-	Resumed         bool   `json:"resumed,omitempty"`
-	Error           string `json:"error,omitempty"`
-	Summary         string `json:"summary"`
+	ContractVersion int             `json:"contractVersion"`
+	OK              bool            `json:"ok"`
+	Resumed         bool            `json:"resumed,omitempty"`
+	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Summary         string          `json:"summary"`
+}
+
+// AutoNextAction suggests what to do after the auto pipeline.
+type AutoNextAction struct {
+	ID          string `json:"id"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
 }
 
 var autoCmd = &cobra.Command{
@@ -238,8 +246,19 @@ func outputAutoJSON(out io.Writer, ok bool, resumed bool, summary string) error 
 		Resumed:         resumed,
 		Summary:         summary,
 	}
-	if !ok {
+	if ok {
+		jr.NextAction = &AutoNextAction{
+			ID:          "run_report",
+			Command:     "hal report",
+			Description: "Generate a report for the completed auto pipeline work.",
+		}
+	} else {
 		jr.Error = summary
+		jr.NextAction = &AutoNextAction{
+			ID:          "resume_auto",
+			Command:     "hal auto --resume",
+			Description: "Resume the auto pipeline from the last saved state.",
+		}
 	}
 	data, err := json.MarshalIndent(jr, "", "  ")
 	if err != nil {
