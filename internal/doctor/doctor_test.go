@@ -678,3 +678,35 @@ func TestRun_CheckCount(t *testing.T) {
 		}
 	}
 }
+
+func TestRun_PRDWithNoStoriesKey(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	// Valid JSON but no stories key
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte(`{"project":"test","description":"desc"}`), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "prd_json" {
+			if c.Status != StatusWarn {
+				t.Fatalf("prd_json status = %q, want %q (missing stories key)", c.Status, StatusWarn)
+			}
+			return
+		}
+	}
+	t.Fatal("prd_json check not found")
+}
+
+func TestRun_EarlyReturn_HasCorrectEngine(t *testing.T) {
+	// When .hal/ is missing, the early return should still report the engine
+	dir := t.TempDir()
+	result := Run(Options{Dir: dir, Engine: "claude"})
+
+	if result.Engine != "claude" {
+		t.Fatalf("engine = %q, want %q", result.Engine, "claude")
+	}
+}
