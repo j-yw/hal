@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -21,19 +22,21 @@ const ContractVersion = 1
 
 // Workflow track values.
 const (
-	TrackManual   = "manual"
-	TrackCompound = "compound"
-	TrackUnknown  = "unknown"
+	TrackManual     = "manual"
+	TrackCompound   = "compound"
+	TrackReviewLoop = "review_loop"
+	TrackUnknown    = "unknown"
 )
 
 // State values.
 const (
-	StateNotInitialized    = "not_initialized"
-	StateInitializedNoPRD  = "hal_initialized_no_prd"
-	StateManualInProgress  = "manual_in_progress"
-	StateManualComplete    = "manual_complete"
-	StateCompoundActive    = "compound_active"
-	StateCompoundComplete  = "compound_complete"
+	StateNotInitialized     = "not_initialized"
+	StateInitializedNoPRD   = "hal_initialized_no_prd"
+	StateManualInProgress   = "manual_in_progress"
+	StateManualComplete     = "manual_complete"
+	StateCompoundActive     = "compound_active"
+	StateCompoundComplete   = "compound_complete"
+	StateReviewLoopComplete = "review_loop_complete"
 )
 
 // NextAction IDs.
@@ -55,9 +58,10 @@ type StatusResult struct {
 	NextAction      NextAction `json:"nextAction"`
 	Summary         string     `json:"summary"`
 	// Optional detail fields (additive, omitempty for backward compat)
-	Manual   *ManualDetail   `json:"manual,omitempty"`
-	Compound *CompoundDetail `json:"compound,omitempty"`
-	Paths    *StatusPaths    `json:"paths,omitempty"`
+	Manual     *ManualDetail     `json:"manual,omitempty"`
+	Compound   *CompoundDetail   `json:"compound,omitempty"`
+	ReviewLoop *ReviewLoopDetail `json:"reviewLoop,omitempty"`
+	Paths      *StatusPaths      `json:"paths,omitempty"`
 }
 
 // ManualDetail provides story-level detail for manual workflows.
@@ -78,6 +82,11 @@ type StoryRef struct {
 type CompoundDetail struct {
 	Step       string `json:"step,omitempty"`
 	BranchName string `json:"branchName,omitempty"`
+}
+
+// ReviewLoopDetail provides review-loop detail.
+type ReviewLoopDetail struct {
+	LatestReport string `json:"latestReport,omitempty"`
 }
 
 // StatusPaths lists canonical file paths relevant to the current state.
@@ -150,6 +159,27 @@ func Get(dir string) StatusResult {
 		return classifyCompound(halDir, artifacts)
 	}
 
+	// Check for review-loop reports when no PRD exists (review-only workflow)
+	if !artifacts.JSONPRD {
+		if latestReview := findLatestReviewLoopReport(halDir); latestReview != "" {
+			return StatusResult{
+				ContractVersion: ContractVersion,
+				WorkflowTrack:   TrackReviewLoop,
+				State:           StateReviewLoopComplete,
+				Artifacts:       artifacts,
+				NextAction: NextAction{
+					ID:          ActionRunPlan,
+					Command:     "hal plan",
+					Description: "Review loop completed. Create a PRD for new work, or run another review.",
+				},
+				ReviewLoop: &ReviewLoopDetail{
+					LatestReport: latestReview,
+				},
+				Summary: "Review loop completed; latest report available.",
+			}
+		}
+	}
+
 	// Manual workflow
 	if !artifacts.JSONPRD {
 		return StatusResult{
@@ -206,9 +236,33 @@ func detectArtifacts(dir, halDir string) Artifacts {
 	return a
 }
 
+// findLatestReviewLoopReport returns the path of the newest review-loop-*.json
+// report, or empty string if none found.
+func findLatestReviewLoopReport(halDir string) string {
+	reportsDir := filepath.Join(halDir, "reports")
+	matches, err := filepath.Glob(filepath.Join(reportsDir, "review-loop-*.json"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	// Sort descending to get newest first (timestamp in name)
+	sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+	// Return relative path
+	rel, err := filepath.Rel(filepath.Dir(halDir), matches[0])
+	if err != nil {
+		return matches[0]
+	}
+	return rel
+}
+
 func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 	prdRelPath := filepath.Join(template.HalDir, template.PRDFile)
 	prdPath := filepath.Join(halDir, template.PRDFile)
+
+	// Check if there's also a review-loop report (supplementary)
+	var reviewLoop *ReviewLoopDetail
+	if latest := findLatestReviewLoopReport(halDir); latest != "" {
+		reviewLoop = &ReviewLoopDetail{LatestReport: latest}
+	}
 	data, err := os.ReadFile(prdPath)
 	if err != nil {
 		return StatusResult{
@@ -274,9 +328,10 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 				Command:     "hal report",
 				Description: "Generate a report for the completed manual work.",
 			},
-			Manual:  manual,
-			Paths:   paths,
-			Summary: "Manual workflow is complete; generate a report for the completed work.",
+			Manual:     manual,
+			ReviewLoop: reviewLoop,
+			Paths:      paths,
+			Summary:    "Manual workflow is complete; generate a report for the completed work.",
 		}
 	}
 
@@ -290,9 +345,10 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 			Command:     "hal run",
 			Description: "Continue executing the remaining PRD stories.",
 		},
-		Manual:  manual,
-		Paths:   paths,
-		Summary: "Manual workflow is in progress; continue the run loop.",
+		Manual:     manual,
+		ReviewLoop: reviewLoop,
+		Paths:      paths,
+		Summary:    "Manual workflow is in progress; continue the run loop.",
 	}
 }
 

@@ -407,3 +407,54 @@ func TestStatusResult_DetailFieldsJSONRoundTrip(t *testing.T) {
 		t.Fatal("compound key should not appear in JSON when nil (omitempty)")
 	}
 }
+
+func TestGet_ReviewLoopComplete_NoPRD(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	reportsDir := filepath.Join(halDir, "reports")
+	os.MkdirAll(reportsDir, 0755)
+	// Create a review-loop report
+	os.WriteFile(filepath.Join(reportsDir, "review-loop-20260318-120000.json"), []byte(`{"command":"hal review"}`), 0644)
+
+	result := Get(dir)
+
+	if result.WorkflowTrack != TrackReviewLoop {
+		t.Fatalf("workflowTrack = %q, want %q", result.WorkflowTrack, TrackReviewLoop)
+	}
+	if result.State != StateReviewLoopComplete {
+		t.Fatalf("state = %q, want %q", result.State, StateReviewLoopComplete)
+	}
+	if result.ReviewLoop == nil {
+		t.Fatal("reviewLoop should not be nil")
+	}
+	if result.ReviewLoop.LatestReport == "" {
+		t.Fatal("reviewLoop.latestReport should be set")
+	}
+}
+
+func TestGet_ManualWithReviewLoopReport(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	reportsDir := filepath.Join(halDir, "reports")
+	os.MkdirAll(reportsDir, 0755)
+
+	// Both PRD and review-loop report
+	prd := map[string]interface{}{
+		"stories": []map[string]interface{}{
+			{"id": "US-001", "status": "pending"},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+	os.WriteFile(filepath.Join(reportsDir, "review-loop-20260318-120000.json"), []byte(`{}`), 0644)
+
+	result := Get(dir)
+
+	// Should be manual (PRD takes precedence), but reviewLoop detail should be present
+	if result.WorkflowTrack != TrackManual {
+		t.Fatalf("workflowTrack = %q, want %q (manual should win when PRD exists)", result.WorkflowTrack, TrackManual)
+	}
+	if result.ReviewLoop == nil {
+		t.Fatal("reviewLoop detail should be present as supplementary info")
+	}
+}
