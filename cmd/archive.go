@@ -19,6 +19,17 @@ import (
 var archiveNameFlag string
 var archiveVerboseFlag bool
 var archiveListJSONFlag bool
+var archiveCreateJSONFlag bool
+
+// ArchiveCreateResult is the machine-readable output of hal archive create --json.
+type ArchiveCreateResult struct {
+	ContractVersion int    `json:"contractVersion"`
+	OK              bool   `json:"ok"`
+	ArchiveDir      string `json:"archiveDir,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Summary         string `json:"summary"`
+}
 
 var archiveCmd = &cobra.Command{
 	Use:   "archive",
@@ -83,6 +94,7 @@ Use 'hal archive list' to see available archives.`,
 func init() {
 	archiveCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
 	archiveCreateCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
+	archiveCreateCmd.Flags().BoolVar(&archiveCreateJSONFlag, "json", false, "Output machine-readable JSON result")
 	archiveListCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
 	archiveRestoreCmd.Flags().StringVarP(&archiveNameFlag, "name", "n", "", "Archive name (default: derived from branch name)")
 	if err := archiveListCmd.Flags().MarkHidden("name"); err != nil {
@@ -125,11 +137,57 @@ func runArchiveCreateWithIO(cmd *cobra.Command, name string) error {
 		out = cmd.OutOrStdout()
 	}
 
+	if archiveCreateJSONFlag {
+		if strings.TrimSpace(name) == "" {
+			name = deriveArchiveName(template.HalDir)
+		}
+		if strings.TrimSpace(name) == "" {
+			return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("archive name is required with --json; pass --name/-n"))
+		}
+		return runArchiveCreateJSON(template.HalDir, name, out)
+	}
+
 	if strings.TrimSpace(name) == "" && isNonInteractive(in) {
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("archive name is required in non-interactive mode; pass --name/-n"))
 	}
 
 	return runArchiveCreate(template.HalDir, name, in, out)
+}
+
+func runArchiveCreateJSON(halDir string, name string, out io.Writer) error {
+	if _, err := os.Stat(halDir); os.IsNotExist(err) {
+		jr := ArchiveCreateResult{
+			ContractVersion: 1,
+			OK:              false,
+			Error:           ".hal/ not found",
+			Summary:         ".hal/ not found — run hal init first.",
+		}
+		data, _ := json.MarshalIndent(jr, "", "  ")
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	archiveDir, err := archive.Create(halDir, name, io.Discard)
+	jr := ArchiveCreateResult{
+		ContractVersion: 1,
+		Name:            name,
+	}
+	if err != nil {
+		jr.OK = false
+		jr.Error = err.Error()
+		jr.Summary = "Archive creation failed: " + err.Error()
+	} else {
+		jr.OK = true
+		jr.ArchiveDir = archiveDir
+		jr.Summary = fmt.Sprintf("Archived to %s.", archiveDir)
+	}
+
+	data, marshalErr := json.MarshalIndent(jr, "", "  ")
+	if marshalErr != nil {
+		return fmt.Errorf("failed to marshal archive result: %w", marshalErr)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
 }
 
 func runArchiveList(cmd *cobra.Command, args []string) error {
