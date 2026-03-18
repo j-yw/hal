@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -421,5 +422,28 @@ func TestReviewCommandLegacyFlagsRemoved(t *testing.T) {
 	}
 	if reviewCmd.Flags().Lookup("skip-agents") != nil {
 		t.Fatal("review command should not expose legacy --skip-agents flag")
+	}
+}
+
+func TestOutputReportJSON_IncludesNextAction(t *testing.T) {
+	var buf bytes.Buffer
+	result := &compound.ReviewResult{
+		ReportPath: ".hal/reports/review.md",
+		Summary:    "Done",
+	}
+
+	if err := outputReportJSON(&buf, result); err != nil {
+		t.Fatalf("outputReportJSON error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	json.Unmarshal(buf.Bytes(), &raw)
+
+	na, ok := raw["nextAction"].(map[string]interface{})
+	if !ok {
+		t.Fatal("nextAction should be present when reportPath is set")
+	}
+	if na["command"] != "hal auto" {
+		t.Fatalf("nextAction.command = %q, want %q", na["command"], "hal auto")
 	}
 }

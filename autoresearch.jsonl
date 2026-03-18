@@ -127,3 +127,4 @@
 {"run":126,"commit":"b3b8616","metric":0,"metrics":{"total_tests":504,"vet_clean":1},"status":"keep","description":"docs: update migration guide JSON result types for run/report/auto with nextAction and prd fields","timestamp":1773831881398,"segment":0}
 {"run":127,"commit":"4e86e14","metric":0,"metrics":{"total_tests":504,"vet_clean":1},"status":"keep","description":"fix: continue output hides redundant 'Then:' when fix command equals next workflow action","timestamp":1773831940010,"segment":0}
 {"run":128,"commit":"5150dc9","metric":0,"metrics":{"total_tests":505,"vet_clean":1},"status":"keep","description":"test: verify continue output omits redundant 'Then:' when fix command matches workflow action","timestamp":1773832013081,"segment":0}
+{"run":129,"commit":"3cdbaa7","metric":0,"metrics":{"total_tests":506,"vet_clean":1},"status":"keep","description":"test: verify doctor --fix delegates to repair logic and applies fixes","timestamp":1773832086069,"segment":0}
