@@ -37,6 +37,7 @@ type LinkDetail struct {
 // LinksResult is the machine-readable output of hal links status --json.
 type LinksResult struct {
 	ContractVersion int          `json:"contractVersion"`
+	Healthy         bool         `json:"healthy"`
 	Engines         []LinkStatus `json:"engines"`
 	Summary         string       `json:"summary"`
 }
@@ -152,16 +153,17 @@ func runLinksStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	}
 
 	if jsonMode {
-		result := LinksResult{
-			ContractVersion: 1,
-			Engines:         engineStatuses,
-		}
-
 		allOK := true
 		for _, es := range engineStatuses {
 			if es.Status != "pass" && es.Status != "skip" {
 				allOK = false
 			}
+		}
+
+		result := LinksResult{
+			ContractVersion: 1,
+			Healthy:         allOK,
+			Engines:         engineStatuses,
 		}
 		if allOK {
 			result.Summary = "All engine links are healthy."
