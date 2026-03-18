@@ -572,3 +572,67 @@ func TestRun_ScopeAndApplicability(t *testing.T) {
 		}
 	}
 }
+
+func TestRun_InvalidPRDJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	// Write invalid JSON
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte("{invalid json"), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "prd_json" {
+			if c.Status != StatusWarn {
+				t.Fatalf("prd_json status = %q, want %q for invalid JSON", c.Status, StatusWarn)
+			}
+			return
+		}
+	}
+	t.Fatal("prd_json check not found")
+}
+
+func TestRun_ValidPRDJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte(`{"stories":[{"id":"US-001","status":"pending"}]}`), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "prd_json" {
+			if c.Status != StatusPass {
+				t.Fatalf("prd_json status = %q, want %q", c.Status, StatusPass)
+			}
+			return
+		}
+	}
+	t.Fatal("prd_json check not found")
+}
+
+func TestRun_NoPRDJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	// No prd.json — should skip
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "prd_json" {
+			if c.Status != StatusSkip {
+				t.Fatalf("prd_json status = %q, want %q (no prd.json)", c.Status, StatusSkip)
+			}
+			return
+		}
+	}
+	t.Fatal("prd_json check not found")
+}
