@@ -710,3 +710,23 @@ func TestRun_EarlyReturn_HasCorrectEngine(t *testing.T) {
 		t.Fatalf("engine = %q, want %q", result.Engine, "claude")
 	}
 }
+
+func TestRun_GracefulWithMinimalSetup(t *testing.T) {
+	// Just .hal/ dir, nothing else — should not panic or error
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	// Should complete without panic
+	if result.ContractVersion != ContractVersion {
+		t.Fatalf("contractVersion = %d, want %d", result.ContractVersion, ContractVersion)
+	}
+	// Should have some failing checks (no config, no skills, etc.)
+	if result.OverallStatus == StatusPass {
+		t.Fatal("should not pass with minimal setup")
+	}
+	if result.TotalChecks == 0 {
+		t.Fatal("should have some checks")
+	}
+}

@@ -109,3 +109,4 @@
 {"run":108,"commit":"8d7ac4a","metric":0,"metrics":{"total_tests":495,"vet_clean":1},"status":"keep","description":"test: add auto-prd conflict detection test for prd audit","timestamp":1773830470226,"segment":0}
 {"run":109,"commit":"3b2b78d","metric":0,"metrics":{"total_tests":495,"vet_clean":1},"status":"keep","description":"feat: continue human output shows health check pass rate alongside workflow state","timestamp":1773830563211,"segment":0}
 {"run":110,"commit":"c330296","metric":0,"metrics":{"total_tests":496,"vet_clean":1},"status":"keep","description":"test: verify continue --json embeds both status and doctor with their own contractVersion fields","timestamp":1773830634880,"segment":0}
+{"run":111,"commit":"074ff81","metric":0,"metrics":{"total_tests":496,"vet_clean":1},"status":"keep","description":"feat: links status --json includes healthy boolean field for quick agent health checks","timestamp":1773830707396,"segment":0}
