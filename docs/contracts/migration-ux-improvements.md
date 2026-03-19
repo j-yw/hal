@@ -62,7 +62,7 @@ Every core command now supports `--json` for machine-readable output:
 | `hal cleanup --json` | `{ok, removed, dryRun, summary}` |
 | `hal analyze --json` | Analysis result (shorthand for `--format json`) |
 | `hal review --json` | `ReviewLoopResult` directly |
-| `hal archive list --json` | `ArchiveInfo[]` array |
+| `hal archive list --json` | `{contractVersion, ok, archives, error, summary}` |
 | `hal version --json` | `{version, commit, buildDate, go, os, arch}` |
 
 ## UX Changes

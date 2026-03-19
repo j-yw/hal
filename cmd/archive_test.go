@@ -11,6 +11,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/spf13/cobra"
 )
 
 // writePRD writes a minimal prd.json with the given branch name into dir.
@@ -131,6 +132,57 @@ func TestRunArchiveCreate(t *testing.T) {
 	}
 }
 
+func TestRunArchiveCreateWithIO_JSONMissingNameReturnsJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	if err := os.MkdirAll(filepath.Join(template.HalDir, "archive"), 0755); err != nil {
+		t.Fatalf("mkdir .hal/archive: %v", err)
+	}
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetIn(strings.NewReader(""))
+
+	err = runArchiveCreateWithIO(cmd, "")
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "archive name is required with --json; pass --name/-n") {
+		t.Fatalf("error %q does not contain missing-name message", err.Error())
+	}
+
+	if !json.Valid(out.Bytes()) {
+		t.Fatalf("stdout is not valid JSON: %q", out.String())
+	}
+
+	var result ArchiveCreateResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("result.OK = true, want false")
+	}
+	wantErr := "archive name is required with --json; pass --name/-n"
+	if result.Error != wantErr {
+		t.Fatalf("result.Error = %q, want %q", result.Error, wantErr)
+	}
+}
+
 func TestRunArchiveListFn(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -219,6 +271,92 @@ func TestRunArchiveListFn(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunArchiveListJSON(t *testing.T) {
+	t.Run("missing hal dir returns JSON error payload", func(t *testing.T) {
+		var out bytes.Buffer
+		err := runArchiveListJSON(filepath.Join(t.TempDir(), ".hal"), &out)
+		if err == nil {
+			t.Fatal("expected error for missing .hal dir, got nil")
+		}
+		if !strings.Contains(err.Error(), ".hal/ not found") {
+			t.Fatalf("error %q does not contain missing .hal message", err.Error())
+		}
+
+		if !json.Valid(out.Bytes()) {
+			t.Fatalf("stdout is not valid JSON: %q", out.String())
+		}
+
+		var result map[string]interface{}
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatalf("failed to unmarshal JSON: %v", err)
+		}
+
+		okValue, ok := result["ok"].(bool)
+		if !ok || okValue {
+			t.Fatalf("result.ok = %v (present: %v), want false", result["ok"], ok)
+		}
+
+		errorValue, ok := result["error"].(string)
+		if !ok || !strings.Contains(errorValue, ".hal/ not found") {
+			t.Fatalf("result.error = %q, want .hal/ not found message", result["error"])
+		}
+
+		archives, ok := result["archives"].([]interface{})
+		if !ok {
+			t.Fatalf("result.archives is %T, want array", result["archives"])
+		}
+		if len(archives) != 0 {
+			t.Fatalf("len(result.archives) = %d, want 0", len(archives))
+		}
+	})
+
+	t.Run("success returns archive envelope JSON", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		halDir := filepath.Join(tmpDir, ".hal")
+		archiveDir := filepath.Join(halDir, "archive", "2026-01-15-test-feature")
+		if err := os.MkdirAll(archiveDir, 0755); err != nil {
+			t.Fatalf("mkdir archive dir: %v", err)
+		}
+		writePRD(t, archiveDir, "hal/test-feature")
+
+		var out bytes.Buffer
+		err := runArchiveListJSON(halDir, &out)
+		if err != nil {
+			t.Fatalf("runArchiveListJSON returned error: %v", err)
+		}
+
+		if !json.Valid(out.Bytes()) {
+			t.Fatalf("stdout is not valid JSON: %q", out.String())
+		}
+
+		var result map[string]interface{}
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatalf("expected envelope JSON output, unmarshal error: %v", err)
+		}
+
+		okValue, ok := result["ok"].(bool)
+		if !ok || !okValue {
+			t.Fatalf("result.ok = %v (present: %v), want true", result["ok"], ok)
+		}
+
+		archives, ok := result["archives"].([]interface{})
+		if !ok {
+			t.Fatalf("result.archives is %T, want array", result["archives"])
+		}
+		if len(archives) != 1 {
+			t.Fatalf("len(result.archives) = %d, want 1", len(archives))
+		}
+
+		first, ok := archives[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("result.archives[0] is %T, want object", archives[0])
+		}
+		if first["name"] != "2026-01-15-test-feature" {
+			t.Fatalf("archive name = %v, want 2026-01-15-test-feature", first["name"])
+		}
+	})
 }
 
 func TestRunArchiveRestoreFn(t *testing.T) {
@@ -388,11 +526,27 @@ func TestArchiveCLIContracts(t *testing.T) {
 			flag.Changed = false
 		}
 		archiveNameFlag = ""
+		if flag := archiveCmd.Flags().Lookup("json"); flag != nil {
+			_ = flag.Value.Set("false")
+			flag.Changed = false
+		}
+		if flag := archiveCreateCmd.Flags().Lookup("json"); flag != nil {
+			_ = flag.Value.Set("false")
+			flag.Changed = false
+		}
 		if flag := archiveListCmd.Flags().Lookup("verbose"); flag != nil {
 			_ = flag.Value.Set("false")
 			flag.Changed = false
 		}
 		archiveVerboseFlag = false
+		if flag := archiveListCmd.Flags().Lookup("json"); flag != nil {
+			_ = flag.Value.Set("false")
+			flag.Changed = false
+		}
+		if flag := archiveRestoreCmd.Flags().Lookup("json"); flag != nil {
+			_ = flag.Value.Set("false")
+			flag.Changed = false
+		}
 
 		var stdout, stderr bytes.Buffer
 		rootCmd.SetOut(&stdout)
@@ -423,6 +577,28 @@ func TestArchiveCLIContracts(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "archived to") {
 			t.Fatalf("stdout %q does not contain archive success", stdout)
+		}
+	})
+
+	t.Run("hal archive --json -n works", func(t *testing.T) {
+		dir := t.TempDir()
+		setupState(t, dir)
+
+		stdout, _, err := execRoot(t, dir, "", "archive", "--json", "-n", "foo")
+		if err != nil {
+			t.Fatalf("archive --json command failed: %v", err)
+		}
+
+		if !json.Valid([]byte(stdout)) {
+			t.Fatalf("stdout %q is not valid JSON", stdout)
+		}
+
+		var result ArchiveCreateResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("unmarshal stdout: %v", err)
+		}
+		if !result.OK {
+			t.Fatalf("result.OK = false, want true (error=%q)", result.Error)
 		}
 	})
 

@@ -111,7 +111,6 @@ func runAnalyzeWithDeps(cmd *cobra.Command, args []string, deps analyzeDeps) err
 	jsonFlag := analyzeJSONFlag
 	formatChanged := false
 	outputChanged := false
-	jsonChanged := false
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -157,14 +156,13 @@ func runAnalyzeWithDeps(cmd *cobra.Command, args []string, deps analyzeDeps) err
 				return err
 			}
 			jsonFlag = value
-			jsonChanged = flags.Changed("json")
 		}
 	}
 
 	if formatChanged && outputChanged {
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--output/-o cannot be used with --format/-f"))
 	}
-	if jsonChanged && (formatChanged || outputChanged) {
+	if jsonFlag && (formatChanged || outputChanged) {
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--json cannot be used with --format/-f or --output/-o"))
 	}
 
