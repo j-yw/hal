@@ -388,116 +388,109 @@ func updateMigratedFiles(configDir string) error {
 	return nil
 }
 
+const migratedCommandSafetySection = "## Command Safety\n\n" +
+	"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+	"- Never run commands that block indefinitely without a timeout\n" +
+	"- Before any browser verification, check if a dev server is running first\n" +
+	"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+	"- Use available browser verification tools (e.g., browser skills installed in your skills directory)\n" +
+	"- If no browser tools are available, SKIP browser verification — rely on typecheck + build\n" +
+	"- Retry browser verification up to 3 times for transient failures; if all 3 attempts fail, SKIP and rely on typecheck + build\n" +
+	"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
+
+const migratedBrowserTestingSection = "## Browser Testing (Required for Frontend Stories)\n\n" +
+	"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+	"1. Use available browser verification tools from your skills directory\n" +
+	"2. Navigate to the relevant page\n" +
+	"3. Interact with elements and verify behavior\n" +
+	"4. Retry up to 3 times if browser tools fail transiently\n" +
+	"5. If all 3 attempts fail or no browser tools are available, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
+	"6. Take screenshots if helpful\n\n" +
+	"A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, no browser tools were available, or 3 attempts failed."
+
+const canonicalBranchGuidance = "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
+
+var (
+	legacyBrowserVerificationPattern = regexp.MustCompile(`Verify in browser using [A-Za-z0-9_-]+(?: skill)?(?: \([^)\r\n]*\))?`)
+	legacyCommandSafetyPattern       = regexp.MustCompile(`## Command Safety\n\n(?:- [^\n]+\n)+\n`)
+	legacyBrowserTestingPattern      = regexp.MustCompile(`## Browser Testing \(Required for Frontend Stories\)\n\n(?s:.+?)(?:\n\n## |\z)`)
+	legacyBranchGuidance             = []string{
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from main.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from `main`.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from current HEAD.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.",
+	}
+)
+
+func migrateBrowserVerificationContent(content string) string {
+	return legacyBrowserVerificationPattern.ReplaceAllString(content, template.BrowserVerificationCriterion)
+}
+
+func migratePromptTemplate(content string) string {
+	content = migrateBrowserVerificationContent(content)
+
+	if !strings.Contains(content, "## Command Safety") {
+		if idx := strings.Index(content, "## Quality Requirements"); idx >= 0 {
+			content = content[:idx] + migratedCommandSafetySection + content[idx:]
+		}
+	}
+
+	if match := legacyCommandSafetyPattern.FindString(content); match != "" && match != migratedCommandSafetySection {
+		content = strings.Replace(content, match, migratedCommandSafetySection, 1)
+	}
+
+	if match := legacyBrowserTestingPattern.FindString(content); match != "" {
+		trimmed := strings.TrimSuffix(match, "\n\n## ")
+		if trimmed != migratedBrowserTestingSection {
+			content = strings.Replace(content, trimmed, migratedBrowserTestingSection, 1)
+		}
+	}
+
+	if !strings.Contains(content, "{{STANDARDS}}") {
+		content = strings.Replace(content,
+			"You are an autonomous coding agent working on a software project.\n\n## Your Task",
+			"You are an autonomous coding agent working on a software project.\n\n{{STANDARDS}}\n\n## Your Task", 1)
+	}
+
+	for _, old := range legacyBranchGuidance {
+		content = strings.ReplaceAll(content, old, canonicalBranchGuidance)
+	}
+
+	return content
+}
+
+func migrateSkillFiles(skillsDir string, transform func(string) string) error {
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillDir := filepath.Join(skillsDir, entry.Name())
+		_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			_ = replaceFileContent(path, transform)
+			return nil
+		})
+	}
+	return nil
+}
+
 // migrateTemplates applies idempotent fixes to existing .hal/ files.
 // This runs on every `hal init` to ensure stale templates pick up fixes.
 func migrateTemplates(configDir string) error {
-	// Tool-agnostic target text for browser verification sections.
-	commandSafety := "## Command Safety\n\n" +
-		"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
-		"- Never run commands that block indefinitely without a timeout\n" +
-		"- Before any browser verification, check if a dev server is running first\n" +
-		"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
-		"- Use available browser verification tools (e.g., browser skills installed in your skills directory)\n" +
-		"- If no browser tools are available, SKIP browser verification — rely on typecheck + build\n" +
-		"- Retry browser verification up to 3 times for transient failures; if all 3 attempts fail, SKIP and rely on typecheck + build\n" +
-		"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
-	browserTesting := "## Browser Testing (Required for Frontend Stories)\n\n" +
-		"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
-		"1. Use available browser verification tools from your skills directory\n" +
-		"2. Navigate to the relevant page\n" +
-		"3. Interact with elements and verify behavior\n" +
-		"4. Retry up to 3 times if browser tools fail transiently\n" +
-		"5. If all 3 attempts fail or no browser tools are available, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
-		"6. Take screenshots if helpful\n\n" +
-		"A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, no browser tools were available, or 3 attempts failed."
-
-	// Normalize legacy browser verification criteria in skill files and prompt.md.
-	devBrowserMigration := func(content string) string {
-		legacyVerification := regexp.MustCompile(`Verify in browser using [A-Za-z0-9_-]+(?: skill)?(?: \([^)\r\n]*\))?`)
-		content = legacyVerification.ReplaceAllString(content, template.BrowserVerificationCriterion)
-		return content
-	}
-
-	// Migrate prompt.md
-	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), devBrowserMigration); err != nil {
+	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), migratePromptTemplate); err != nil {
 		return err
 	}
-
-	// Migrate skill files
-	skillsDir := filepath.Join(configDir, "skills")
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			skillDir := filepath.Join(skillsDir, entry.Name())
-			_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
-					return nil
-				}
-				_ = replaceFileContent(path, devBrowserMigration)
-				return nil
-			})
-		}
-	}
-
-	// Apply all prompt.md migrations in a single pass.
-	promptPath := filepath.Join(configDir, template.PromptFile)
-	if err := replaceFileContent(promptPath, func(content string) string {
-		// 1. Ensure Command Safety section exists.
-		if !strings.Contains(content, "## Command Safety") {
-			if idx := strings.Index(content, "## Quality Requirements"); idx >= 0 {
-				content = content[:idx] + commandSafety + content[idx:]
-			}
-		}
-
-		// 2. Migrate legacy Command Safety section to tool-agnostic text.
-		legacyCmdSafety := regexp.MustCompile(`## Command Safety\n\n(?:- [^\n]+\n)+\n`)
-		if m := legacyCmdSafety.FindString(content); m != "" && m != commandSafety {
-			content = strings.Replace(content, m, commandSafety, 1)
-		}
-
-		// 3. Migrate legacy Browser Testing section to tool-agnostic text.
-		legacyBrowserTest := regexp.MustCompile(`## Browser Testing \(Required for Frontend Stories\)\n\n(?s:.+?)(?:\n\n## |\z)`)
-		if m := legacyBrowserTest.FindString(content); m != "" {
-			matched := m
-			if strings.HasSuffix(matched, "\n\n## ") {
-				matched = strings.TrimSuffix(matched, "\n\n## ")
-			}
-			if matched != browserTesting {
-				content = strings.Replace(content, matched, browserTesting, 1)
-			}
-		}
-
-		// 4. Add {{STANDARDS}} placeholder if missing.
-		if !strings.Contains(content, "{{STANDARDS}}") {
-			content = strings.Replace(content,
-				"You are an autonomous coding agent working on a software project.\n\n## Your Task",
-				"You are an autonomous coding agent working on a software project.\n\n{{STANDARDS}}\n\n## Your Task", 1)
-		}
-
-		// 5. Normalize branch creation guidance to use {{BASE_BRANCH}}.
-		canonical := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
-		for _, old := range []string{
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from main.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from `main`.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from current HEAD.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.",
-		} {
-			content = strings.ReplaceAll(content, old, canonical)
-		}
-
-		return content
-	}); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	return nil
+	return migrateSkillFiles(filepath.Join(configDir, "skills"), migrateBrowserVerificationContent)
 }
 
 type refreshSummary struct {
