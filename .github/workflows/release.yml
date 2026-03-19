@@ -23,6 +23,28 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Validate Homebrew tap token
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not set." >&2
+            exit 1
+          fi
+
+          permission="$(gh repo view j-yw/homebrew-tap --json viewerPermission --jq .viewerPermission)"
+          case "$permission" in
+            ADMIN|MAINTAIN|WRITE)
+              echo "Homebrew tap token OK ($permission)"
+              ;;
+            *)
+              echo "HOMEBREW_TAP_TOKEN must have write access to j-yw/homebrew-tap (got: $permission)." >&2
+              exit 1
+              ;;
+          esac
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
