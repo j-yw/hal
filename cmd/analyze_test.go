@@ -37,6 +37,7 @@ func newAnalyzeTestCommand(t *testing.T) (*cobra.Command, *bytes.Buffer, *bytes.
 	cmd.Flags().String("format", "text", "")
 	cmd.Flags().String("output", "", "")
 	cmd.Flags().String("engine", "codex", "")
+	cmd.Flags().Bool("json", false, "")
 
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -136,6 +137,24 @@ func TestRunAnalyze_OutputAliasWarningAndConflict(t *testing.T) {
 
 		err := runAnalyzeWithDeps(cmd, nil, baseAnalyzeDeps())
 		assertExitCodeError(t, err, ExitCodeValidation, "--output/-o cannot be used with --format/-f")
+	})
+
+	t.Run("--json=false does not conflict with --format", func(t *testing.T) {
+		cmd, out, _ := newAnalyzeTestCommand(t)
+		if err := cmd.Flags().Set("json", "false"); err != nil {
+			t.Fatalf("set json: %v", err)
+		}
+		if err := cmd.Flags().Set("format", "json"); err != nil {
+			t.Fatalf("set format: %v", err)
+		}
+
+		err := runAnalyzeWithDeps(cmd, nil, baseAnalyzeDeps())
+		if err != nil {
+			t.Fatalf("runAnalyzeWithDeps() unexpected error: %v", err)
+		}
+		if !json.Valid(out.Bytes()) {
+			t.Fatalf("stdout is not valid JSON: %q", out.String())
+		}
 	})
 }
 
