@@ -14,12 +14,14 @@ hal version [flags]
 
 ```
   hal version
+  hal version --json
 ```
 
 ### Options
 
 ```
   -h, --help   help for version
+      --json   Output as JSON
 ```
 
 ### SEE ALSO

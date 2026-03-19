@@ -1,14 +1,12 @@
 ## hal report
 
-Run legacy session reporting for completed work
+Generate a summary report for completed work
 
 ### Synopsis
 
-Run legacy session reporting for the completed work session and generate a summary report.
+Generate a summary report for the completed work session.
 
-This command preserves the workflow that previously lived under 'hal review'.
-
-The review process:
+The report process:
   1. Gathers context (progress log, git diff, commits, PRD)
   2. Analyzes what was built and how
   3. Identifies patterns worth documenting
@@ -19,9 +17,10 @@ The generated report can be used by 'hal auto' to identify
 the next priority item to work on.
 
 Examples:
-  hal report                  # Review with codex engine (default)
+  hal report                  # Generate report with codex engine (default)
   hal report --engine claude  # Use Claude instead
-  hal report --dry-run        # Preview what would be reviewed
+  hal report --json           # Machine-readable JSON output
+  hal report --dry-run        # Preview what would be reported
   hal report --skip-agents    # Skip AGENTS.md update
 
 ```
@@ -32,6 +31,7 @@ hal report [flags]
 
 ```
   hal report
+  hal report --json
   hal report --engine claude
   hal report --dry-run
   hal report --skip-agents
@@ -43,6 +43,7 @@ hal report [flags]
       --dry-run         Preview without executing
   -e, --engine string   Engine to use (codex, claude, pi) (default "codex")
   -h, --help            help for report
+      --json            Output machine-readable JSON result
       --skip-agents     Skip AGENTS.md update
 ```
 

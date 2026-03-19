@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -30,28 +31,28 @@ var initCmd = &cobra.Command{
 	Args:  noArgsValidation(),
 	Long: `Initialize the .hal/ directory in the current project.
 
-If an existing .goralph/ directory is detected and no .hal/ directory exists,
-it will be automatically renamed to .hal/ to preserve your configuration.
+Repo-local setup (always safe):
+  .hal/config.yaml      Configuration settings
+  .hal/prompt.md         Agent instructions template
+  .hal/progress.txt      Progress log
+  .hal/archive/          Archived runs
+  .hal/reports/          Analysis reports
+  .hal/skills/           Hal-managed skills (prd, hal, autospec, etc.)
+  .hal/commands/         Agent-invocable commands
+  .hal/standards/        Project standards (committed)
 
-Also adds .hal/ to .gitignore if not already present.
+Engine-local links (project-scoped):
+  .claude/skills/        Symlinks to .hal/skills/ for Claude Code
+  .pi/skills/            Symlinks to .hal/skills/ for Pi
 
-Creates:
-  .hal/
-    config.yaml    # Configuration settings
-    prompt.md      # Agent instructions template
-    progress.txt   # Progress log for learnings
-    archive/       # Archived runs
-    reports/       # Analysis reports for auto mode
-    skills/        # PRD and Hal skills
-      prd/         # PRD generation skill
-      hal/         # PRD-to-JSON conversion skill
+Global links (affects ~/.codex — only for Codex users):
+  ~/.codex/skills/       Symlinks for Codex skill discovery
+  ~/.codex/commands/     Symlinks for Codex commands
 
-Also creates .claude/skills/ with symlinks to .hal/skills/ for Claude Code
-skill discovery.
-
-After init, create a prd.json with your user stories and run 'hal run'.
-Or use 'hal plan' to interactively generate a PRD.`,
+Use 'hal doctor' to check environment health.
+Use 'hal status' to check workflow state.`,
 	Example: `  hal init
+  hal init --json
   hal init --refresh-templates
   hal init --refresh-templates --dry-run`,
 	RunE: runInit,
@@ -65,6 +66,16 @@ func init() {
 func addInitFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("refresh-templates", false, "Backup and overwrite core templates with latest embedded versions")
 	cmd.Flags().Bool("dry-run", false, "Preview template refresh actions (only applies with --refresh-templates; other init steps still run)")
+	cmd.Flags().Bool("json", false, "Output machine-readable JSON result")
+}
+
+// InitResult is the machine-readable output of hal init --json.
+type InitResult struct {
+	ContractVersion int      `json:"contractVersion"`
+	OK              bool     `json:"ok"`
+	Created         []string `json:"created,omitempty"`
+	Skipped         []string `json:"skipped,omitempty"`
+	Summary         string   `json:"summary"`
 }
 
 // ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
@@ -174,10 +185,11 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	projectDir := "."
 
 	// Read flags (cmd may be nil in tests)
-	var doRefresh, dryRun bool
+	var doRefresh, dryRun, jsonMode bool
 	if cmd != nil {
 		doRefresh, _ = cmd.Flags().GetBool("refresh-templates")
 		dryRun, _ = cmd.Flags().GetBool("dry-run")
+		jsonMode, _ = cmd.Flags().GetBool("json")
 	}
 
 	// Auto-migrate .goralph/ to .hal/ if applicable
@@ -268,6 +280,26 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		_ = err // Errors are logged as warnings in LinkAllCommands.
 	}
 
+	if jsonMode {
+		jr := InitResult{
+			ContractVersion: 1,
+			OK:              true,
+			Created:         created,
+			Skipped:         skipped,
+		}
+		if len(created) > 0 {
+			jr.Summary = fmt.Sprintf("Initialized .hal/ with %d new file(s).", len(created))
+		} else {
+			jr.Summary = "Initialized .hal/ — all files already exist."
+		}
+		data, err := json.MarshalIndent(jr, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal init result: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
 	fmt.Fprintln(out, "Initialized .hal/")
 	fmt.Fprintln(out)
 
@@ -292,9 +324,9 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 	} else {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Next steps:")
-		fmt.Fprintln(out, "  1. Run: hal plan \"feature description\" to generate a PRD")
-		fmt.Fprintln(out, "  2. Or create .hal/prd.json manually")
-		fmt.Fprintln(out, "  3. Run: hal run")
+		fmt.Fprintln(out, "  1. hal doctor          Check environment health")
+		fmt.Fprintln(out, "  2. hal plan \"desc\"      Generate a PRD")
+		fmt.Fprintln(out, "  3. hal run             Execute stories")
 	}
 
 	return nil
@@ -356,175 +388,109 @@ func updateMigratedFiles(configDir string) error {
 	return nil
 }
 
+const migratedCommandSafetySection = "## Command Safety\n\n" +
+	"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+	"- Never run commands that block indefinitely without a timeout\n" +
+	"- Before any browser verification, check if a dev server is running first\n" +
+	"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+	"- Use available browser verification tools (e.g., browser skills installed in your skills directory)\n" +
+	"- If no browser tools are available, SKIP browser verification — rely on typecheck + build\n" +
+	"- Retry browser verification up to 3 times for transient failures; if all 3 attempts fail, SKIP and rely on typecheck + build\n" +
+	"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
+
+const migratedBrowserTestingSection = "## Browser Testing (Required for Frontend Stories)\n\n" +
+	"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+	"1. Use available browser verification tools from your skills directory\n" +
+	"2. Navigate to the relevant page\n" +
+	"3. Interact with elements and verify behavior\n" +
+	"4. Retry up to 3 times if browser tools fail transiently\n" +
+	"5. If all 3 attempts fail or no browser tools are available, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
+	"6. Take screenshots if helpful\n\n" +
+	"A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, no browser tools were available, or 3 attempts failed."
+
+const canonicalBranchGuidance = "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
+
+var (
+	legacyBrowserVerificationPattern = regexp.MustCompile(`Verify in browser using [A-Za-z0-9_-]+(?: skill)?(?: \([^)\r\n]*\))?`)
+	legacyCommandSafetyPattern       = regexp.MustCompile(`## Command Safety\n\n(?:- [^\n]+\n)+\n`)
+	legacyBrowserTestingPattern      = regexp.MustCompile(`## Browser Testing \(Required for Frontend Stories\)\n\n(?s:.+?)(?:\n\n## |\z)`)
+	legacyBranchGuidance             = []string{
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from main.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from `main`.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from current HEAD.",
+		"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.",
+	}
+)
+
+func migrateBrowserVerificationContent(content string) string {
+	return legacyBrowserVerificationPattern.ReplaceAllString(content, template.BrowserVerificationCriterion)
+}
+
+func migratePromptTemplate(content string) string {
+	content = migrateBrowserVerificationContent(content)
+
+	if !strings.Contains(content, "## Command Safety") {
+		if idx := strings.Index(content, "## Quality Requirements"); idx >= 0 {
+			content = content[:idx] + migratedCommandSafetySection + content[idx:]
+		}
+	}
+
+	if match := legacyCommandSafetyPattern.FindString(content); match != "" && match != migratedCommandSafetySection {
+		content = strings.Replace(content, match, migratedCommandSafetySection, 1)
+	}
+
+	if match := legacyBrowserTestingPattern.FindString(content); match != "" {
+		trimmed := strings.TrimSuffix(match, "\n\n## ")
+		if trimmed != migratedBrowserTestingSection {
+			content = strings.Replace(content, trimmed, migratedBrowserTestingSection, 1)
+		}
+	}
+
+	if !strings.Contains(content, "{{STANDARDS}}") {
+		content = strings.Replace(content,
+			"You are an autonomous coding agent working on a software project.\n\n## Your Task",
+			"You are an autonomous coding agent working on a software project.\n\n{{STANDARDS}}\n\n## Your Task", 1)
+	}
+
+	for _, old := range legacyBranchGuidance {
+		content = strings.ReplaceAll(content, old, canonicalBranchGuidance)
+	}
+
+	return content
+}
+
+func migrateSkillFiles(skillsDir string, transform func(string) string) error {
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillDir := filepath.Join(skillsDir, entry.Name())
+		_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			_ = replaceFileContent(path, transform)
+			return nil
+		})
+	}
+	return nil
+}
+
 // migrateTemplates applies idempotent fixes to existing .hal/ files.
 // This runs on every `hal init` to ensure stale templates pick up fixes.
 func migrateTemplates(configDir string) error {
-	commandSafety := "## Command Safety\n\n" +
-		"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
-		"- Never run commands that block indefinitely without a timeout\n" +
-		"- Before any browser verification, check if a dev server is running first\n" +
-		"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
-		"- Use the `hal-pinchtab` skill for browser verification\n" +
-		"- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n" +
-		"- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
-		"- Do NOT use `agent-browser` or `dev-browser`\n" +
-		"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
-	browserTesting := "## Browser Testing (Required for Frontend Stories)\n\n" +
-		"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
-		"1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build\n" +
-		"2. Navigate to the relevant page\n" +
-		"3. Interact with elements and verify behavior\n" +
-		"4. Retry Pinchtab up to 3 times if the tool fails transiently\n" +
-		"5. If all 3 attempts fail, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
-		"6. Take screenshots if helpful\n\n" +
-		"A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed."
-
-	// Normalize legacy browser verification guidance in skill files and prompt.md.
-	devBrowserMigration := func(content string) string {
-		legacyVerification := regexp.MustCompile(`Verify in browser using (?:(?:` + regexp.QuoteMeta(template.BrowserVerificationSkillName) + `|pinchtab)(?: skill)?|[A-Za-z0-9_-]+-browser skill)(?: \([^)\r\n]*\))?`)
-		content = legacyVerification.ReplaceAllString(content, template.BrowserVerificationCriterion)
-		return content
-	}
-
-	// Migrate prompt.md
-	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), devBrowserMigration); err != nil {
+	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), migratePromptTemplate); err != nil {
 		return err
 	}
-
-	// Migrate skill files
-	skillsDir := filepath.Join(configDir, "skills")
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			skillDir := filepath.Join(skillsDir, entry.Name())
-			// Walk all files in the skill directory (SKILL.md, examples/*)
-			_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
-					return nil
-				}
-				_ = replaceFileContent(path, devBrowserMigration) // best-effort per file
-				return nil
-			})
-		}
-	}
-
-	// Ensure Command Safety section exists in prompt.md
-	promptPath := filepath.Join(configDir, template.PromptFile)
-	data, err := os.ReadFile(promptPath)
-	if err != nil {
-		return nil // prompt.md may not exist yet
-	}
-	if !strings.Contains(string(data), "## Command Safety") {
-		if err := replaceFileContent(promptPath, func(content string) string {
-			// Insert before Quality Requirements section
-			marker := "## Quality Requirements"
-			if idx := strings.Index(content, marker); idx >= 0 {
-				return content[:idx] + commandSafety + content[idx:]
-			}
-			return content
-		}); err != nil {
-			return err
-		}
-	}
-
-	// Harden browser verification guidance in prompt.md.
-	if err := replaceFileContent(promptPath, func(content string) string {
-		commandSafetyVariants := []string{
-			"## Command Safety\n\n" +
-				"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
-				"- Never run commands that block indefinitely without a timeout\n" +
-				"- Before any browser verification, check if a dev server is running first\n" +
-				"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
-				"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n",
-			"## Command Safety\n\n" +
-				"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
-				"- Never run commands that block indefinitely without a timeout\n" +
-				"- Before any browser verification, check if a dev server is running first\n" +
-				"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
-				"- Use `pinchtab` for browser verification\n" +
-				"- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n" +
-				"- Do NOT use `agent-browser` or `dev-browser`\n" +
-				"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n",
-		}
-		for _, variant := range commandSafetyVariants {
-			content = strings.ReplaceAll(content, variant, commandSafety)
-		}
-
-		browserTestingVariants := []string{
-			"## Browser Testing (Required for Frontend Stories)\n\n" +
-				"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
-				"1. Use browser automation tools available to you\n" +
-				"2. Navigate to the relevant page\n" +
-				"3. Interact with elements and verify behavior\n" +
-				"4. Take screenshots if helpful\n\n" +
-				"A frontend story is NOT complete until browser verification passes.",
-			"## Browser Testing (Required for Frontend Stories)\n\n" +
-				"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
-				"1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)\n" +
-				"2. Navigate to the relevant page\n" +
-				"3. Interact with elements and verify behavior\n" +
-				"4. Retry `pinchtab` up to 3 times if the tool fails transiently\n" +
-				"5. If all 3 attempts fail, SKIP browser verification and rely on typecheck + build (note the skip reason in progress)\n" +
-				"6. Take screenshots if helpful\n\n" +
-				"A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.",
-		}
-		for _, variant := range browserTestingVariants {
-			content = strings.ReplaceAll(content, variant, browserTesting)
-		}
-
-		content = strings.ReplaceAll(content, "- Use `pinchtab` for browser verification\n", "- Use the `hal-pinchtab` skill for browser verification\n")
-		content = strings.ReplaceAll(content, "- Use the `pinchtab` skill for browser verification\n", "- Use the `hal-pinchtab` skill for browser verification\n")
-		content = strings.ReplaceAll(content, "- Use the `hal-pinchtab` skill for browser verification\n- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n", "- Use the `hal-pinchtab` skill for browser verification\n- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n")
-		content = strings.ReplaceAll(content, "- Retry `pinchtab` up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n", "- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n- Retry Pinchtab up to 3 times for transient tool failures; if all 3 attempts fail, SKIP browser verification and rely on typecheck + build\n")
-		content = strings.ReplaceAll(content, "1. Use browser automation tools available to you", "1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build")
-		content = strings.ReplaceAll(content, "1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)", "1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build")
-		content = strings.ReplaceAll(content, "4. Retry `pinchtab` up to 3 times if the tool fails transiently", "4. Retry Pinchtab up to 3 times if the tool fails transiently")
-		content = strings.ReplaceAll(content, "`pinchtab` skill", "`hal-pinchtab` skill")
-		content = strings.ReplaceAll(content, "no pinchtab skill installed", "no hal-pinchtab skill installed")
-		content = strings.ReplaceAll(content, "A frontend story is NOT complete until browser verification passes.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed.")
-		content = strings.ReplaceAll(content, "A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed.")
-		return content
-	}); err != nil {
-		return err
-	}
-
-	// Add {{STANDARDS}} placeholder to prompt.md if missing
-	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), func(content string) string {
-		if strings.Contains(content, "{{STANDARDS}}") {
-			return content
-		}
-		old := "You are an autonomous coding agent working on a software project.\n\n## Your Task"
-		replacement := "You are an autonomous coding agent working on a software project.\n\n{{STANDARDS}}\n\n## Your Task"
-		return strings.Replace(content, old, replacement, 1)
-	}); err != nil {
-		return err
-	}
-
-	// Update branch creation guidance to use {{BASE_BRANCH}} and avoid implicit main.
-	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), func(content string) string {
-		canonical := "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
-		variants := []string{
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from main.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from `main`.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from current HEAD.",
-			"3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}`.",
-		}
-		for _, old := range variants {
-			content = strings.ReplaceAll(content, old, canonical)
-		}
-		return content
-	}); err != nil {
-		return err
-	}
-
-	return nil
+	return migrateSkillFiles(filepath.Join(configDir, "skills"), migrateBrowserVerificationContent)
 }
 
 type refreshSummary struct {

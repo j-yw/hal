@@ -1,13 +1,16 @@
 ## hal cleanup
 
-Remove orphaned files from .hal/
+Remove orphaned and deprecated files
 
 ### Synopsis
 
-Remove orphaned files from .hal/ that are no longer used.
+Remove orphaned and deprecated files from .hal/ and engine link directories.
 
 This command removes:
-  - auto-progress.txt (replaced by unified progress.txt)
+  - .hal/auto-progress.txt (replaced by unified progress.txt)
+  - .hal/rules/ directory (replaced by standards/)
+  - .claude/skills/ralph (deprecated alias)
+  - .pi/skills/ralph (deprecated alias)
 
 Use --dry-run to preview what would be removed without making changes.
 
@@ -22,6 +25,7 @@ hal cleanup [flags]
 ```
   hal cleanup --dry-run
   hal cleanup
+  hal cleanup --json
 ```
 
 ### Options
@@ -29,6 +33,7 @@ hal cleanup [flags]
 ```
       --dry-run   Preview changes without removing files
   -h, --help      help for cleanup
+      --json      Output machine-readable JSON result
 ```
 
 ### SEE ALSO

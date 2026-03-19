@@ -26,6 +26,7 @@ Examples:
   hal convert .hal/prd.md -o custom.json    # Custom output path (no archive)
   hal convert .hal/prd.md --validate        # Also validate after conversion
   hal convert .hal/prd.md -e claude         # Use Claude engine
+  hal convert --json                        # Machine-readable JSON output
 
 ```
 hal convert [markdown-prd] [flags]
@@ -35,6 +36,7 @@ hal convert [markdown-prd] [flags]
 
 ```
   hal convert
+  hal convert --json
   hal convert --archive
   hal convert .hal/prd-auth.md --validate
   hal convert .hal/prd-auth.md --force
@@ -48,6 +50,7 @@ hal convert [markdown-prd] [flags]
   -e, --engine string   Engine to use (claude, codex, pi) (default "codex")
       --force           Allow canonical overwrite without archive when branch mismatch protection would block
   -h, --help            help for convert
+      --json            Output machine-readable JSON result
   -o, --output string   Output path (default: .hal/prd.json)
       --validate        Validate PRD after conversion
 ```

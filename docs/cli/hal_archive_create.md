@@ -23,6 +23,7 @@ hal archive create [flags]
 
 ```
   -h, --help          help for create
+      --json          Output machine-readable JSON result
   -n, --name string   Archive name (default: derived from branch name)
 ```
 

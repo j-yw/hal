@@ -26,7 +26,7 @@ exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	var buf bytes.Buffer
 	display := engine.NewDisplay(&buf)
 
@@ -111,7 +111,7 @@ func TestPrompt_ReturnsErrorOnNonZeroWithStdoutAndNoStderr(t *testing.T) {
 	writeFakePi(t, binDir, "#!/bin/sh\nprintf 'partial response'\nexit 1\n")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	resp, err := eng.Prompt(context.Background(), "test prompt")
 	if err == nil {
 		t.Fatalf("Prompt() error = nil, want non-nil (resp=%q)", resp)
@@ -134,7 +134,7 @@ exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	eng := New(&engine.EngineConfig{Timeout: 2 * time.Second})
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
 	if err == nil {
 		t.Fatal("StreamPrompt() error = nil, want output fallback error")

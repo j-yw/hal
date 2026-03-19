@@ -24,6 +24,7 @@ Examples:
   hal auto --resume            # Continue from last saved state
   hal auto --skip-pr           # Skip PR creation at the end
   hal auto --base develop      # Use develop as the base branch
+  hal auto --json              # Machine-readable result output
 
 ```
 hal auto [flags]
@@ -33,6 +34,7 @@ hal auto [flags]
 
 ```
   hal auto
+  hal auto --json
   hal auto --report .hal/reports/report.md
   hal auto --resume
   hal auto --engine codex --base develop
@@ -45,6 +47,7 @@ hal auto [flags]
       --dry-run         Show steps without executing
   -e, --engine string   Engine to use (claude, codex, pi) (default "codex")
   -h, --help            help for auto
+      --json            Output machine-readable JSON result
       --report string   Specific report file (skips find latest)
       --resume          Continue from last saved state
       --skip-pr         Skip PR creation at end

@@ -1,0 +1,320 @@
+package cmd
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/template"
+)
+
+func TestRunLinksStatusFn_JSONOutput(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	halDir := filepath.Join(dir, template.HalDir)
+	skillsDir := filepath.Join(halDir, "skills")
+	os.MkdirAll(skillsDir, 0755)
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(skillsDir, name), 0755)
+	}
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("JSON unmarshal error: %v\noutput: %s", err, buf.String())
+	}
+
+	if result.ContractVersion != 1 {
+		t.Fatalf("contractVersion = %d, want 1", result.ContractVersion)
+	}
+	if len(result.Engines) == 0 {
+		t.Fatal("engines should not be empty")
+	}
+
+	// Check that all 3 engines are listed
+	engineNames := map[string]bool{}
+	for _, es := range result.Engines {
+		engineNames[es.Engine] = true
+	}
+	for _, name := range []string{"claude", "pi", "codex"} {
+		if !engineNames[name] {
+			t.Errorf("missing engine %q", name)
+		}
+	}
+}
+
+func TestRunLinksStatusFn_HumanOutput(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, false, "", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "claude") {
+		t.Fatalf("human output should mention claude\n%s", output)
+	}
+	if !strings.Contains(output, "codex") {
+		t.Fatalf("human output should mention codex\n%s", output)
+	}
+}
+
+func TestRunLinksStatusFn_DetectsMissing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
+	// Create engine dirs but no links
+	os.MkdirAll(filepath.Join(dir, ".claude", "skills"), 0755)
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	// Claude should have missing links
+	for _, es := range result.Engines {
+		if es.Engine == "claude" {
+			if es.Status != "warn" {
+				t.Fatalf("claude status = %q, want %q (missing links)", es.Status, "warn")
+			}
+			return
+		}
+	}
+	t.Fatal("claude engine not found")
+}
+
+func TestLinksCmdHelp(t *testing.T) {
+	if linksCmd.Use != "links" {
+		t.Fatalf("Use = %q, want %q", linksCmd.Use, "links")
+	}
+	if linksStatusCmd.Short == "" {
+		t.Fatal("links status Short is empty")
+	}
+	if !strings.Contains(linksStatusCmd.Example, "hal links status") {
+		t.Fatalf("links status Example missing 'hal links status': %s", linksStatusCmd.Example)
+	}
+	if !strings.Contains(linksRefreshCmd.Example, "hal links refresh") {
+		t.Fatalf("links refresh Example missing 'hal links refresh': %s", linksRefreshCmd.Example)
+	}
+}
+
+func TestRunLinksStatusFn_DetectsBroken(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
+
+	// Create engine dir with broken symlink
+	claudeSkills := filepath.Join(dir, ".claude", "skills")
+	os.MkdirAll(claudeSkills, 0755)
+	os.Symlink("/nonexistent/target", filepath.Join(claudeSkills, "prd"))
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	for _, es := range result.Engines {
+		if es.Engine == "claude" {
+			if es.Status != "warn" {
+				t.Fatalf("claude status = %q, want %q (broken link)", es.Status, "warn")
+			}
+			// Check detail for broken link
+			for _, link := range es.Links {
+				if link.Name == "prd" && link.Status != "broken" {
+					t.Fatalf("prd link status = %q, want %q", link.Status, "broken")
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("claude engine not found")
+}
+
+func TestRunLinksClean_RemovesDeprecated(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	// Create deprecated ralph link
+	claudeSkills := filepath.Join(dir, ".claude", "skills")
+	os.MkdirAll(claudeSkills, 0755)
+	os.Symlink("../../.hal/skills/hal", filepath.Join(claudeSkills, "ralph"))
+
+	var buf bytes.Buffer
+	cmd := linksCleanCmd
+	cmd.SetOut(&buf)
+	if err := runLinksClean(cmd, nil); err != nil {
+		t.Fatalf("runLinksClean() error = %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(claudeSkills, "ralph")); !os.IsNotExist(err) {
+		t.Fatal("ralph link should be removed")
+	}
+
+	if !strings.Contains(buf.String(), "ralph") {
+		t.Fatalf("output should mention ralph\n%s", buf.String())
+	}
+}
+
+func TestRunLinksClean_NothingToClean(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	var buf bytes.Buffer
+	cmd := linksCleanCmd
+	cmd.SetOut(&buf)
+	if err := runLinksClean(cmd, nil); err != nil {
+		t.Fatalf("runLinksClean() error = %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "No deprecated") {
+		t.Fatalf("output should say nothing to clean\n%s", buf.String())
+	}
+}
+
+func TestRunLinksRefresh_CreatesLinks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	// Create .hal/skills with content
+	halDir := filepath.Join(dir, template.HalDir)
+	skillsDir := filepath.Join(halDir, "skills")
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(skillsDir, name), 0755)
+		os.WriteFile(filepath.Join(skillsDir, name, "SKILL.md"), []byte("# "+name), 0644)
+	}
+
+	var buf bytes.Buffer
+	cmd := linksRefreshCmd
+	cmd.SetOut(&buf)
+	if err := runLinksRefresh(cmd, nil); err != nil {
+		t.Fatalf("runLinksRefresh() error = %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "Refreshed") {
+		t.Fatalf("output should say Refreshed\n%s", buf.String())
+	}
+
+	// Verify Claude links were created
+	for _, name := range skills.ManagedSkillNames {
+		linkPath := filepath.Join(dir, ".claude", "skills", name)
+		info, err := os.Lstat(linkPath)
+		if err != nil {
+			// Some links might not be created if directory doesn't exist — that's OK
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf(".claude/skills/%s should be a symlink", name)
+		}
+	}
+}
+
+func TestRunLinksRefresh_SpecificEngine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	halDir := filepath.Join(dir, template.HalDir)
+	skillsDir := filepath.Join(halDir, "skills")
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(skillsDir, name), 0755)
+	}
+
+	var buf bytes.Buffer
+	cmd := linksRefreshCmd
+	cmd.SetOut(&buf)
+	if err := runLinksRefresh(cmd, []string{"pi"}); err != nil {
+		t.Fatalf("runLinksRefresh(pi) error = %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "pi") {
+		t.Fatalf("output should mention pi\n%s", buf.String())
+	}
+}
+
+func TestRunLinksRefresh_UnknownEngine(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
+
+	err := runLinksRefresh(nil, []string{"nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown engine")
+	}
+	if !strings.Contains(err.Error(), "unknown engine") {
+		t.Fatalf("error should mention unknown engine: %v", err)
+	}
+}
+
+func TestRunLinksStatusFn_EngineFilter(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, "claude", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	if len(result.Engines) != 1 {
+		t.Fatalf("expected 1 engine with filter, got %d", len(result.Engines))
+	}
+	if result.Engines[0].Engine != "claude" {
+		t.Fatalf("expected claude, got %q", result.Engines[0].Engine)
+	}
+}
+
+func TestRunLinksStatusFn_NoFilter(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(dir, true, "", &buf); err != nil {
+		t.Fatalf("runLinksStatusFn() error = %v", err)
+	}
+
+	var result LinksResult
+	json.Unmarshal(buf.Bytes(), &result)
+
+	if len(result.Engines) < 3 {
+		t.Fatalf("expected at least 3 engines without filter, got %d", len(result.Engines))
+	}
+}

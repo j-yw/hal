@@ -115,6 +115,14 @@ The old `hal review` reporting workflow moved to `hal report`.
 
 Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) with the main entry page at [`docs/cli/hal.md`](docs/cli/hal.md).
 
+## Machine Contracts
+
+Stable JSON contracts for agent integration:
+
+- [`docs/contracts/status-v1.md`](docs/contracts/status-v1.md) — Workflow state machine
+- [`docs/contracts/doctor-v1.md`](docs/contracts/doctor-v1.md) — Health/readiness checks
+- [`docs/contracts/continue-v1.md`](docs/contracts/continue-v1.md) — What to do next
+
 ## Commands
 
 ### Core Commands
@@ -125,13 +133,30 @@ Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) w
 | `hal plan [description]` | Generate PRD (opens editor if no args) |
 | `hal convert [markdown-prd]` | Convert markdown PRD to JSON (auto-discover source when omitted) |
 | `hal validate [prd.json]` | Validate PRD against quality rules |
+| `hal prd audit [--json]` | Audit PRD health and detect markdown↔JSON drift |
 | `hal run [iterations]` | Execute stories autonomously (default: 10; do not combine positional iterations with `-i/--iterations`) |
+
+### Status & Health
+
+| Command | Description |
+|---------|-------------|
+| `hal status [--json]` | Show workflow state (manual, compound, review-loop) |
+| `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
+| `hal continue [--json]` | Show what to do next (combines status + doctor) |
+| `hal repair [--dry-run] [--json]` | Auto-fix safe issues detected by doctor |
+
+### Link Management
+
+| Command | Description |
+|---------|-------------|
+| `hal links status [--json]` | Inspect engine skill links (per-engine health) |
+| `hal links refresh [engine]` | Recreate skill links for all or specific engine |
 
 ### Compound Pipeline
 
 | Command | Description |
 |---------|-------------|
-| `hal report` | Legacy session reporting: generate report → `.hal/reports/`, update AGENTS.md |
+| `hal report` | Generate summary report → `.hal/reports/`, update AGENTS.md |
 | `hal review --base <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e`; do not combine positional iterations with `-i/--iterations`) |
 | `hal auto` | Run full pipeline using latest report |
 | `hal analyze [report] --format text\|json` | Analyze a report to find priority item (`--output` is deprecated) |
@@ -420,7 +445,6 @@ Standards and commands in `.hal/` are committed to git (not ignored), while runt
 ├── skills/                 # Installed skills (auto-generated)
 │   ├── prd/                # PRD generation
 │   ├── hal/                # PRD-to-JSON conversion
-│   ├── hal-pinchtab/       # Browser verification
 │   ├── explode/            # Task breakdown
 │   ├── autospec/           # Non-interactive PRD generation
 │   └── review/             # Work review and patterns

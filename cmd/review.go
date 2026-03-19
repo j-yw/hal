@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,7 @@ var (
 	reviewEngineFlag     string
 	reviewBaseFlag       string
 	reviewIterationsFlag int
+	reviewJSONFlag       bool
 )
 
 var reviewCmd = &cobra.Command{
@@ -52,6 +54,7 @@ var reviewCmd = &cobra.Command{
 This command powers branch-vs-branch review loops.
 Use 'hal report' for legacy session reporting.`,
 	Example: `  hal review --base develop
+  hal review --base develop --json
   hal review --base origin/main 5
   hal review --base develop --iterations 3 -e codex
   hal review against develop 3   # Deprecated alias`,
@@ -63,6 +66,7 @@ func init() {
 	reviewCmd.Flags().StringVar(&reviewBaseFlag, "base", "", "Base branch to review against")
 	reviewCmd.Flags().IntVarP(&reviewIterationsFlag, "iterations", "i", 10, "Maximum review iterations")
 	reviewCmd.Flags().StringVarP(&reviewEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
+	reviewCmd.Flags().BoolVar(&reviewJSONFlag, "json", false, "Output machine-readable JSON result (skip terminal rendering)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -112,6 +116,9 @@ func runReview(cmd *cobra.Command, args []string) error {
 	}
 	req.Engine = resolvedEngine
 
+	if reviewJSONFlag {
+		return runReviewLoopJSON(ctx, req, out, defaultReviewLoopDeps)
+	}
 	return defaultReviewDeps.runLoop(ctx, req, out)
 }
 
@@ -231,6 +238,57 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 		fmt.Fprint(out, rendered)
 	}
 
+	return nil
+}
+
+func runReviewLoopJSON(ctx context.Context, req reviewRequest, out io.Writer, deps reviewLoopDeps) error {
+	if deps.newEngine == nil {
+		deps.newEngine = newEngine
+	}
+	if deps.runLoop == nil {
+		deps.runLoop = compound.RunReviewLoopWithDisplay
+	}
+	if deps.writeReports == nil && deps.writeJSONReport == nil && deps.writeMarkdownReport == nil {
+		deps.writeReports = compound.WriteReviewLoopReports
+	}
+	if deps.writeJSONReport == nil {
+		deps.writeJSONReport = compound.WriteReviewLoopJSONReport
+	}
+	if deps.writeMarkdownReport == nil {
+		deps.writeMarkdownReport = compound.WriteReviewLoopMarkdownReport
+	}
+
+	engineName := normalizeReviewEngine(req.Engine)
+	eng, err := deps.newEngine(engineName)
+	if err != nil {
+		return fmt.Errorf("failed to create %s engine: %w", engineName, err)
+	}
+
+	result, err := deps.runLoop(ctx, eng, nil, req.BaseBranch, req.Iterations)
+	if err != nil {
+		return fmt.Errorf("review loop failed with %s: %w", engineName, err)
+	}
+
+	// Write reports
+	if deps.writeReports != nil {
+		if _, _, err := deps.writeReports(".", result); err != nil {
+			return fmt.Errorf("failed to write review loop reports: %w", err)
+		}
+	} else {
+		if _, err := deps.writeJSONReport(".", result); err != nil {
+			return fmt.Errorf("failed to write review loop JSON report: %w", err)
+		}
+		if _, err := deps.writeMarkdownReport(".", result); err != nil {
+			return fmt.Errorf("failed to write review loop markdown report: %w", err)
+		}
+	}
+
+	// Output as JSON to stdout
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal review result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
 	return nil
 }
 

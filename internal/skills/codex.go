@@ -18,18 +18,27 @@ func (c *CodexLinker) Name() string {
 	return "codex"
 }
 
+// codexHome returns the home directory for Codex global paths.
+// It prefers $HOME over os.UserHomeDir() so tests can isolate
+// global link operations via t.Setenv("HOME", tmpDir).
+func codexHome() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
 // SkillsDir returns where Codex looks for skills.
 // Unlike Claude (project-local), Codex uses global ~/.codex/skills/.
 func (c *CodexLinker) SkillsDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".codex", "skills")
+	return filepath.Join(codexHome(), ".codex", "skills")
 }
 
 // CommandsDir returns where Codex looks for user-invocable commands.
 // Uses global ~/.codex/commands/hal/ (parallel to skills).
 func (c *CodexLinker) CommandsDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".codex", "commands", "hal")
+	return filepath.Join(codexHome(), ".codex", "commands", "hal")
 }
 
 // LinkCommands creates a symlink from ~/.codex/commands/hal to .hal/commands/.

@@ -17,6 +17,7 @@ hal review --base <base-branch> [iterations] [flags]
 
 ```
   hal review --base develop
+  hal review --base develop --json
   hal review --base origin/main 5
   hal review --base develop --iterations 3 -e codex
   hal review against develop 3   # Deprecated alias
@@ -29,6 +30,7 @@ hal review --base <base-branch> [iterations] [flags]
   -e, --engine string    Engine to use (claude, codex, pi) (default "codex")
   -h, --help             help for review
   -i, --iterations int   Maximum review iterations (default 10)
+      --json             Output machine-readable JSON result (skip terminal rendering)
 ```
 
 ### SEE ALSO

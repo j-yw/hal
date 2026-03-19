@@ -16,6 +16,7 @@ Checks:
 Examples:
   hal validate                    # Validate .hal/prd.json
   hal validate path/to/prd.json   # Validate specific file
+  hal validate --json             # Machine-readable JSON result
   hal validate -e claude          # Use Claude engine
 
 ```
@@ -26,6 +27,7 @@ hal validate [prd-path] [flags]
 
 ```
   hal validate
+  hal validate --json
   hal validate .hal/prd.json
   hal validate ./docs/prd.json --engine codex
 ```
@@ -35,6 +37,7 @@ hal validate [prd-path] [flags]
 ```
   -e, --engine string   Engine to use (claude, codex, pi) (default "codex")
   -h, --help            help for validate
+      --json            Output machine-readable JSON result
 ```
 
 ### SEE ALSO

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,8 @@ Use 'hal standards list' to see what's currently configured.`,
   hal standards discover`,
 }
 
+var standardsListJSONFlag bool
+
 var standardsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List configured standards",
@@ -34,8 +37,11 @@ var standardsListCmd = &cobra.Command{
 	Long: `Show all standards currently configured for this project.
 
 Reads .hal/standards/index.yml and displays the catalog of standards
-organized by domain. If no index exists, lists the .md files found.`,
-	Example: `  hal standards list`,
+organized by domain. If no index exists, lists the .md files found.
+
+With --json, outputs standards count and index as JSON.`,
+	Example: `  hal standards list
+  hal standards list --json`,
 	RunE:    runStandardsList,
 }
 
@@ -64,13 +70,40 @@ The discovery flow:
 }
 
 func init() {
+	standardsListCmd.Flags().BoolVar(&standardsListJSONFlag, "json", false, "Output as JSON")
 	standardsCmd.AddCommand(standardsListCmd)
 	standardsCmd.AddCommand(standardsDiscoverCmd)
 	rootCmd.AddCommand(standardsCmd)
 }
 
 func runStandardsList(cmd *cobra.Command, args []string) error {
-	return runStandardsListFn(template.HalDir, os.Stdout)
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+	if standardsListJSONFlag {
+		return runStandardsListJSON(template.HalDir, out)
+	}
+	return runStandardsListFn(template.HalDir, out)
+}
+
+func runStandardsListJSON(halDir string, out io.Writer) error {
+	count, _ := standards.Count(halDir)
+	index, _ := standards.ListIndex(halDir)
+
+	result := map[string]interface{}{
+		"count": count,
+	}
+	if index != "" {
+		result["index"] = index
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal standards: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
 }
 
 func runStandardsListFn(halDir string, w io.Writer) error {
