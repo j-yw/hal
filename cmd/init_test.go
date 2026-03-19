@@ -336,7 +336,7 @@ func TestRunInit(t *testing.T) {
 		}
 	})
 
-	t.Run("installs hal-pinchtab skill", func(t *testing.T) {
+	t.Run("installs managed skills", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("HOME", dir)
 		if err := os.Chdir(dir); err != nil {
@@ -347,34 +347,57 @@ func TestRunInit(t *testing.T) {
 			t.Fatalf("runInit() error: %v", err)
 		}
 
-		skillPath := filepath.Join(dir, template.HalDir, "skills", template.BrowserVerificationSkillName, "SKILL.md")
+		// Verify at least one managed skill is installed.
+		skillPath := filepath.Join(dir, template.HalDir, "skills", "prd", "SKILL.md")
 		data, err := os.ReadFile(skillPath)
 		if err != nil {
-			t.Fatalf("%s skill should be installed: %v", template.BrowserVerificationSkillName, err)
+			t.Fatalf("prd skill should be installed: %v", err)
 		}
-		if !strings.Contains(string(data), "name: "+template.BrowserVerificationSkillName) {
-			t.Fatalf("%s skill should contain frontmatter, got: %s", template.BrowserVerificationSkillName, string(data))
+		if !strings.Contains(string(data), "name: prd") {
+			t.Fatalf("prd skill should contain frontmatter, got: %s", string(data))
 		}
 	})
 }
 
-func TestMigrateTemplatesUpgradesHalPinchtabGuidance(t *testing.T) {
+func TestMigrateTemplatesUpgradesLegacyToolReferences(t *testing.T) {
 	halDir := filepath.Join(t.TempDir(), template.HalDir)
 	if err := os.MkdirAll(filepath.Join(halDir, "skills", "prd"), 0755); err != nil {
 		t.Fatalf("failed to create skills dir: %v", err)
 	}
 
-	legacyPrompt := template.DefaultPrompt
-	legacyPrompt = strings.ReplaceAll(legacyPrompt, "- Use the `hal-pinchtab` skill for browser verification\n", "- Use `pinchtab` for browser verification\n")
-	legacyPrompt = strings.ReplaceAll(legacyPrompt, "- If the `hal-pinchtab` skill is not installed, SKIP browser verification — rely on typecheck + build\n", "")
-	legacyPrompt = strings.ReplaceAll(legacyPrompt, "1. If the `hal-pinchtab` skill is installed, use it for browser verification (do NOT use `agent-browser` or `dev-browser`); otherwise SKIP browser verification and rely on typecheck + build", "1. Use `pinchtab` for browser verification (do NOT use `agent-browser` or `dev-browser`)")
-	legacyPrompt = strings.ReplaceAll(legacyPrompt, "4. Retry Pinchtab up to 3 times if the tool fails transiently", "4. Retry `pinchtab` up to 3 times if the tool fails transiently")
-	legacyPrompt = strings.ReplaceAll(legacyPrompt, "A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, the `hal-pinchtab` skill was unavailable, or 3 Pinchtab attempts failed.", "A frontend story is complete when browser verification passes, or when it is explicitly skipped after 3 failed `pinchtab` attempts.")
+	// Write a legacy prompt with tool-specific references (simulating an older installation).
+	legacyCmdSafety := "## Command Safety\n\n" +
+		"- Always add timeouts to network commands: `curl --max-time 10`, `timeout 60 <cmd>`\n" +
+		"- Never run commands that block indefinitely without a timeout\n" +
+		"- Before any browser verification, check if a dev server is running first\n" +
+		"- If no server is running, SKIP browser verification — rely on typecheck + build\n" +
+		"- Use `legacy-tool` for browser verification\n" +
+		"- Retry `legacy-tool` up to 3 times\n" +
+		"- Do NOT start long-running servers in the foreground (e.g., `npm run dev` without `&`)\n\n"
+	legacyBrowserTest := "## Browser Testing (Required for Frontend Stories)\n\n" +
+		"For any story that changes UI, you MUST verify it works in the browser:\n\n" +
+		"1. Use `legacy-tool` for browser verification\n" +
+		"2. Navigate to the relevant page\n" +
+		"3. Interact with elements and verify behavior\n" +
+		"4. Take screenshots if helpful\n\n" +
+		"A frontend story is NOT complete until browser verification passes."
+
+	legacyPrompt := strings.Replace(template.DefaultPrompt, "## Command Safety", "SPLIT_CS", 1)
+	parts := strings.SplitN(legacyPrompt, "SPLIT_CS", 2)
+	// Replace rest from Quality Requirements onward.
+	rest := parts[1]
+	qrIdx := strings.Index(rest, "## Quality Requirements")
+	btIdx := strings.Index(rest, "## Browser Testing")
+	scIdx := strings.Index(rest, "## Stop Condition")
+	if qrIdx >= 0 && btIdx >= 0 && scIdx >= 0 {
+		// Reconstruct: before CS + legacy CS + QR section + legacy BT + Stop Condition onward
+		legacyPrompt = parts[0] + legacyCmdSafety + rest[qrIdx:btIdx] + legacyBrowserTest + "\n\n" + rest[scIdx:]
+	}
 	writeFile(t, halDir, template.PromptFile, legacyPrompt)
 
-	legacySkill := strings.ReplaceAll(template.BrowserVerificationCriterion, template.BrowserVerificationSkillName+" skill", "pinchtab")
-	legacySkill = strings.ReplaceAll(legacySkill, " or no "+template.BrowserVerificationSkillName+" skill installed", "")
-	writeFile(t, filepath.Join(halDir, "skills", "prd"), "SKILL.md", legacySkill+"\n")
+	// Write a legacy skill criterion with tool-specific text.
+	writeFile(t, filepath.Join(halDir, "skills", "prd"), "SKILL.md",
+		"Verify in browser using legacy-tool skill (skip if unavailable)\n")
 
 	if err := migrateTemplates(halDir); err != nil {
 		t.Fatalf("migrateTemplates() error: %v", err)
@@ -385,14 +408,14 @@ func TestMigrateTemplatesUpgradesHalPinchtabGuidance(t *testing.T) {
 		t.Fatalf("failed to read migrated prompt: %v", err)
 	}
 	prompt := string(promptData)
-	if !strings.Contains(prompt, "Use the `hal-pinchtab` skill for browser verification") {
-		t.Fatalf("prompt should use hal-pinchtab skill guidance, got: %s", prompt)
+	if !strings.Contains(prompt, "Use available browser verification tools") {
+		t.Fatalf("prompt should use tool-agnostic guidance, got: %s", prompt)
 	}
-	if !strings.Contains(prompt, "If the `hal-pinchtab` skill is not installed, SKIP browser verification") {
-		t.Fatalf("prompt should allow skipping when hal-pinchtab skill is unavailable, got: %s", prompt)
+	if !strings.Contains(prompt, "If no browser tools are available, SKIP browser verification") {
+		t.Fatalf("prompt should allow skipping when no browser tools available, got: %s", prompt)
 	}
-	if strings.Contains(prompt, "Use `pinchtab` for browser verification") {
-		t.Fatalf("prompt should not keep legacy bare pinchtab wording, got: %s", prompt)
+	if strings.Contains(prompt, "legacy-tool") {
+		t.Fatalf("prompt should not contain legacy tool references, got: %s", prompt)
 	}
 
 	skillData, err := os.ReadFile(filepath.Join(halDir, "skills", "prd", "SKILL.md"))

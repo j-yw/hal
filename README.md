@@ -445,7 +445,6 @@ Standards and commands in `.hal/` are committed to git (not ignored), while runt
 ├── skills/                 # Installed skills (auto-generated)
 │   ├── prd/                # PRD generation
 │   ├── hal/                # PRD-to-JSON conversion
-│   ├── hal-pinchtab/       # Browser verification
 │   ├── explode/            # Task breakdown
 │   ├── autospec/           # Non-interactive PRD generation
 │   └── review/             # Work review and patterns

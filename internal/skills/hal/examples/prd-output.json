@@ -24,7 +24,7 @@
         "Each task card shows colored status badge",
         "Badge colors: gray=pending, blue=in_progress, green=done",
         "Typecheck passes",
-        "Verify in browser using hal-pinchtab skill (skip if no dev server running, no hal-pinchtab skill installed, or 3 Pinchtab attempts fail)"
+        "Verify in browser (skip if no dev server running, no browser tools available, or 3 attempts fail)"
       ],
       "priority": 2,
       "passes": false,
@@ -39,7 +39,7 @@
         "Changing status saves immediately",
         "UI updates without page refresh",
         "Typecheck passes",
-        "Verify in browser using hal-pinchtab skill (skip if no dev server running, no hal-pinchtab skill installed, or 3 Pinchtab attempts fail)"
+        "Verify in browser (skip if no dev server running, no browser tools available, or 3 attempts fail)"
       ],
       "priority": 3,
       "passes": false,
@@ -53,7 +53,7 @@
         "Filter dropdown: All | Pending | In Progress | Done",
         "Filter persists in URL params",
         "Typecheck passes",
-        "Verify in browser using hal-pinchtab skill (skip if no dev server running, no hal-pinchtab skill installed, or 3 Pinchtab attempts fail)"
+        "Verify in browser (skip if no dev server running, no browser tools available, or 3 attempts fail)"
       ],
       "priority": 4,
       "passes": false,

@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestCodexLinkerName(t *testing.T) {
@@ -99,39 +97,41 @@ func TestCodexLinkerLinkIdempotent(t *testing.T) {
 	}
 }
 
-func TestCodexLinkerLinkPreservesExistingPinchtabSkill(t *testing.T) {
+func TestCodexLinkerLinkPreservesExistingUserSkill(t *testing.T) {
 	projectDir := t.TempDir()
-	halSkillDir := filepath.Join(projectDir, ".hal", "skills", template.BrowserVerificationSkillName)
+	halSkillDir := filepath.Join(projectDir, ".hal", "skills", "prd")
 	if err := os.MkdirAll(halSkillDir, 0755); err != nil {
-		t.Fatalf("failed to create %s skill dir: %v", template.BrowserVerificationSkillName, err)
+		t.Fatalf("failed to create prd skill dir: %v", err)
 	}
 
 	codexSkillsDir := t.TempDir()
-	existingPinchtab := filepath.Join(codexSkillsDir, "pinchtab")
-	if err := os.WriteFile(existingPinchtab, []byte("user managed"), 0644); err != nil {
-		t.Fatalf("failed to create existing pinchtab skill: %v", err)
+	existingSkill := filepath.Join(codexSkillsDir, "my-custom-skill")
+	if err := os.WriteFile(existingSkill, []byte("user managed"), 0644); err != nil {
+		t.Fatalf("failed to create existing custom skill: %v", err)
 	}
 
 	linker := &testCodexLinker{skillsDir: codexSkillsDir}
-	if err := linker.Link(projectDir, []string{template.BrowserVerificationSkillName}); err != nil {
+	if err := linker.Link(projectDir, []string{"prd"}); err != nil {
 		t.Fatalf("Link() error = %v", err)
 	}
 
-	data, err := os.ReadFile(existingPinchtab)
+	// User's custom skill should be preserved.
+	data, err := os.ReadFile(existingSkill)
 	if err != nil {
-		t.Fatalf("existing pinchtab skill should be preserved: %v", err)
+		t.Fatalf("existing custom skill should be preserved: %v", err)
 	}
 	if string(data) != "user managed" {
-		t.Fatalf("existing pinchtab skill should not be overwritten, got: %s", string(data))
+		t.Fatalf("existing custom skill should not be overwritten, got: %s", string(data))
 	}
 
-	halPinchtabLink := filepath.Join(codexSkillsDir, template.BrowserVerificationSkillName)
-	info, err := os.Lstat(halPinchtabLink)
+	// Managed prd link should be created.
+	prdLink := filepath.Join(codexSkillsDir, "prd")
+	info, err := os.Lstat(prdLink)
 	if err != nil {
-		t.Fatalf("expected %s link to exist: %v", template.BrowserVerificationSkillName, err)
+		t.Fatalf("expected prd link to exist: %v", err)
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("%s should be a symlink", template.BrowserVerificationSkillName)
+		t.Fatalf("prd should be a symlink")
 	}
 }
 

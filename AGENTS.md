@@ -158,6 +158,15 @@
 - `runConvertWithDeps` writes display output through `os.Stdout`; command tests that need to assert streamed lines like `Using source: ...` should capture stdout (e.g., via `os.Pipe`) around the helper invocation.
 - When convert behavior changes, keep `cmd/convert.go` long help and README convert docs aligned, and add/update command help tests for required safety/source phrases to prevent documentation drift.
 
+## Patterns from autoresearch/remove-tool-references (2026-03-18)
+
+- Browser verification is tool-agnostic: `template.BrowserVerificationCriterion` uses generic text ("Verify in browser (skip if no dev server running, no browser tools available, or 3 attempts fail)") with no tool-specific names.
+- There is no `BrowserVerificationSkillName` constant — agents discover available browser tools at runtime via their skills directory.
+- The `hal-pinchtab` skill was removed from embedded skills. It should not be re-added. If a user needs pinchtab support, they install the skill locally.
+- Migration code in `migrateTemplates` uses regex section replacement (not exact string matching) to normalize legacy prompt sections. The `devBrowserMigration` regex matches any "Verify in browser using [tool-name]" pattern generically.
+- When removing tool-specific references, keep migration code that handles user `.hal/` files from older versions — users may have prompts with old tool names that need migrating.
+- Test tool-specific migration using generic tool names (e.g., "legacy-tool") rather than real tool names to avoid re-introducing references.
+
 ## Patterns from autoresearch/hal-ux-machine-readability (2026-03-18)
 
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
