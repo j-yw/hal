@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
@@ -18,46 +19,75 @@ var sandboxDeleteCmd = &cobra.Command{
 	Args:  noArgsValidation(),
 	Long: `Permanently delete a sandbox.
 
-Reads the sandbox name and provider from .hal/sandbox.json.
-After successful deletion, sandbox.json is removed.`,
-	Example: `  hal sandbox delete`,
+By default, reads the sandbox name and provider from .hal/sandbox.json.
+Use --name to delete by explicit sandbox name when local state is missing.
+After successful deletion, sandbox.json is removed only when it matches the deleted sandbox.`,
+	Example: `  hal sandbox delete
+  hal sandbox delete --name hal-feature-auth`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSandboxDeleteWithDeps(".", os.Stdout, nil)
+		name, err := cmd.Flags().GetString("name")
+		if err != nil {
+			return fmt.Errorf("reading --name flag: %w", err)
+		}
+		return runSandboxDeleteWithDeps(".", os.Stdout, name, nil)
 	},
 }
 
 func init() {
 	sandboxCmd.AddCommand(sandboxDeleteCmd)
+	sandboxDeleteCmd.Flags().String("name", "", "Delete sandbox by explicit name (without reading .hal/sandbox.json)")
 }
 
 // runSandboxDeleteWithDeps contains the testable logic for the sandbox delete command.
-// If provider is nil, it is resolved from state.Provider.
-func runSandboxDeleteWithDeps(dir string, out io.Writer, provider sandbox.Provider) error {
+// If provider is nil, it is resolved from matching state (or sandbox config when deleting by explicit name).
+func runSandboxDeleteWithDeps(dir string, out io.Writer, targetName string, provider sandbox.Provider) error {
 	halDir := filepath.Join(dir, template.HalDir)
 
-	state, err := sandbox.LoadState(halDir)
-	if err != nil {
-		return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
+	deleteName := strings.TrimSpace(targetName)
+	var state *sandbox.SandboxState
+	var err error
+
+	if deleteName == "" {
+		state, err = sandbox.LoadState(halDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
+			}
+			return fmt.Errorf("loading sandbox state: %w", err)
+		}
+		deleteName = state.Name
+	} else {
+		state, err = sandbox.LoadState(halDir)
+		if err != nil && !os.IsNotExist(err) {
+			// Best-effort state load: delete-by-name should still work without local state.
+			state = nil
+		}
 	}
 
 	if provider == nil {
-		provider, err = resolveProviderFromState(dir, state)
+		if state != nil && state.Name == deleteName {
+			provider, err = resolveProviderFromState(dir, state)
+		} else {
+			provider, err = resolveProviderFromName(dir, deleteName)
+		}
 		if err != nil {
 			return err
 		}
 	}
 
-	fmt.Fprintf(out, "Deleting sandbox %q...\n", state.Name)
+	fmt.Fprintf(out, "Deleting sandbox %q...\n", deleteName)
 
 	ctx := context.Background()
-	if err := provider.Delete(ctx, state.Name, out); err != nil {
+	if err := provider.Delete(ctx, deleteName, out); err != nil {
 		return fmt.Errorf("sandbox delete failed: %w", err)
 	}
 
-	if err := sandbox.RemoveState(halDir); err != nil {
-		return fmt.Errorf("removing sandbox state: %w", err)
+	if state != nil && state.Name == deleteName {
+		if err := sandbox.RemoveState(halDir); err != nil {
+			return fmt.Errorf("removing sandbox state: %w", err)
+		}
 	}
 
-	fmt.Fprintf(out, "Sandbox %q deleted.\n", state.Name)
+	fmt.Fprintf(out, "Sandbox %q deleted.\n", deleteName)
 	return nil
 }

@@ -43,7 +43,7 @@ var sandboxSetupCmd = &cobra.Command{
 
 First prompts for a provider:
   (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
-  (2) Hetzner — self-managed VPS (prompts for SSH key name, server type)
+  (2) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
 
 Then prompts for shared environment variables:
   • API keys (Anthropic, OpenAI) — masked input
@@ -68,14 +68,21 @@ func init() {
 // and the project config. Used by stop, delete, status, and ssh commands.
 func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.Provider, error) {
 	halDir := filepath.Join(dir, template.HalDir)
-	sandboxCfg, _ := compound.LoadSandboxConfig(dir)
-	dayCfg, _ := compound.LoadDaytonaConfig(dir)
+	sandboxCfg, err := compound.LoadSandboxConfig(dir)
+	if err != nil {
+		return nil, fmt.Errorf("loading sandbox config: %w", err)
+	}
+	dayCfg, err := compound.LoadDaytonaConfig(dir)
+	if err != nil {
+		return nil, fmt.Errorf("loading daytona config: %w", err)
+	}
 
 	provCfg := sandbox.ProviderConfig{
 		StateDir: halDir,
 	}
 	if dayCfg != nil {
 		provCfg.DaytonaAPIKey = dayCfg.APIKey
+		provCfg.DaytonaServerURL = dayCfg.ServerURL
 	}
 	if sandboxCfg != nil {
 		provCfg.HetznerSSHKey = sandboxCfg.Hetzner.SSHKey
@@ -84,6 +91,40 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 	}
 
 	return sandbox.ProviderFromConfig(state.Provider, provCfg)
+}
+
+// resolveProviderFromName creates a Provider for delete-by-name paths where no
+// matching local sandbox state exists. It uses the configured sandbox provider.
+func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
+	halDir := filepath.Join(dir, template.HalDir)
+	sandboxCfg, err := compound.LoadSandboxConfig(dir)
+	if err != nil {
+		return nil, fmt.Errorf("loading sandbox config: %w", err)
+	}
+	dayCfg, err := compound.LoadDaytonaConfig(dir)
+	if err != nil {
+		return nil, fmt.Errorf("loading daytona config: %w", err)
+	}
+
+	provCfg := sandbox.ProviderConfig{
+		StateDir: halDir,
+	}
+	if dayCfg != nil {
+		provCfg.DaytonaAPIKey = dayCfg.APIKey
+		provCfg.DaytonaServerURL = dayCfg.ServerURL
+	}
+	if sandboxCfg != nil {
+		provCfg.HetznerSSHKey = sandboxCfg.Hetzner.SSHKey
+		provCfg.HetznerServerType = sandboxCfg.Hetzner.ServerType
+		provCfg.HetznerImage = sandboxCfg.Hetzner.Image
+	}
+
+	providerName := sandboxCfg.Provider
+	if strings.TrimSpace(providerName) == "" {
+		providerName = "daytona"
+	}
+
+	return sandbox.ProviderFromConfig(providerName, provCfg)
 }
 
 func runSandboxSetupCobra(cmd *cobra.Command, args []string) error {
@@ -129,6 +170,7 @@ var sandboxEnvFields = []setupField{
 var hetznerFields = []setupField{
 	{key: "_hetzner_ssh_key", label: "SSH key name", required: true},
 	{key: "_hetzner_server_type", label: "Server type", defVal: "cx22"},
+	{key: "_hetzner_image", label: "Image", defVal: "ubuntu-24.04"},
 }
 
 // runSandboxSetup contains the testable logic for the sandbox setup command.
@@ -225,12 +267,23 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		if currentType == "" {
 			currentType = hetznerFields[1].defVal
 		}
-		val, err = promptField(reader, in, out, readPassword, hetznerFields[1], currentType)
-		if err != nil {
-			return err
+			val, err = promptField(reader, in, out, readPassword, hetznerFields[1], currentType)
+			if err != nil {
+				return err
+			}
+			collected["_hetzner_server_type"] = val
+
+			// Image
+			currentImage := existingSandbox.Hetzner.Image
+			if currentImage == "" {
+				currentImage = hetznerFields[2].defVal
+			}
+			val, err = promptField(reader, in, out, readPassword, hetznerFields[2], currentImage)
+			if err != nil {
+				return err
+			}
+			collected["_hetzner_image"] = val
 		}
-		collected["_hetzner_server_type"] = val
-	}
 
 	// ── API keys ──
 	fmt.Fprintln(out, "")
@@ -312,6 +365,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		sandboxCfg.Hetzner = compound.HetznerConfig{
 			SSHKey:     collected["_hetzner_ssh_key"],
 			ServerType: collected["_hetzner_server_type"],
+			Image:      collected["_hetzner_image"],
 		}
 	}
 
@@ -329,7 +383,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	case "daytona":
 		fmt.Fprintln(out, "  Daytona:    ✓ configured")
 	case "hetzner":
-		fmt.Fprintf(out, "  Hetzner:    ✓ ssh-key=%s type=%s\n", collected["_hetzner_ssh_key"], collected["_hetzner_server_type"])
+		fmt.Fprintf(out, "  Hetzner:    ✓ ssh-key=%s type=%s image=%s\n", collected["_hetzner_ssh_key"], collected["_hetzner_server_type"], collected["_hetzner_image"])
 	}
 
 	configuredCount := 0

@@ -146,7 +146,7 @@ func TestRunSandboxDelete(t *testing.T) {
 			mock := &mockDeleteProvider{deleteErr: tt.deleteErr}
 			var out bytes.Buffer
 
-			err := runSandboxDeleteWithDeps(dir, &out, mock)
+			err := runSandboxDeleteWithDeps(dir, &out, "", mock)
 
 			if tt.wantErr != "" {
 				if err == nil {

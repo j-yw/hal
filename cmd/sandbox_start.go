@@ -99,6 +99,7 @@ func runSandboxStartWithDeps(
 
 		provCfg := sandbox.ProviderConfig{
 			DaytonaAPIKey:     dayCfg.APIKey,
+			DaytonaServerURL:  dayCfg.ServerURL,
 			HetznerSSHKey:     sandboxCfg.Hetzner.SSHKey,
 			HetznerServerType: sandboxCfg.Hetzner.ServerType,
 			HetznerImage:      sandboxCfg.Hetzner.Image,

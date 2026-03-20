@@ -28,9 +28,9 @@ func daytonaSetupInput(apiKey, serverURL string) string {
 }
 
 // hetznerSetupInput builds stdin input for the Hetzner setup path:
-// provider choice "2", ssh key name, server type, then env var prompts.
-func hetznerSetupInput(sshKey, serverType string) string {
-	return "2\n" + sshKey + "\n" + serverType + "\n" + emptyEnvInputs
+// provider choice "2", ssh key name, server type, image, then env var prompts.
+func hetznerSetupInput(sshKey, serverType, image string) string {
+	return "2\n" + sshKey + "\n" + serverType + "\n" + image + "\n" + emptyEnvInputs
 }
 
 func TestRunSandboxSetup(t *testing.T) {
@@ -167,15 +167,15 @@ func TestRunSandboxSetup(t *testing.T) {
 				}
 			},
 		},
-		{
-			name: "hetzner: saves ssh key and server type",
-			setup: func(t *testing.T, dir string) {
-				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
-			},
-			stdinInput: hetznerSetupInput("my-ssh-key", "cx32"),
-			wantOutput: "Saved to .hal/config.yaml",
-			checkFn: func(t *testing.T, dir string) {
-				cfg, err := compound.LoadSandboxConfig(dir)
+			{
+				name: "hetzner: saves ssh key and server type",
+				setup: func(t *testing.T, dir string) {
+					os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+				},
+				stdinInput: hetznerSetupInput("my-ssh-key", "cx32", "debian-12"),
+				wantOutput: "Saved to .hal/config.yaml",
+				checkFn: func(t *testing.T, dir string) {
+					cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
 					t.Fatalf("LoadSandboxConfig() error: %v", err)
 				}
@@ -185,20 +185,23 @@ func TestRunSandboxSetup(t *testing.T) {
 				if cfg.Hetzner.SSHKey != "my-ssh-key" {
 					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "my-ssh-key")
 				}
-				if cfg.Hetzner.ServerType != "cx32" {
-					t.Errorf("Hetzner.ServerType = %q, want %q", cfg.Hetzner.ServerType, "cx32")
-				}
+					if cfg.Hetzner.ServerType != "cx32" {
+						t.Errorf("Hetzner.ServerType = %q, want %q", cfg.Hetzner.ServerType, "cx32")
+					}
+					if cfg.Hetzner.Image != "debian-12" {
+						t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, "debian-12")
+					}
+				},
 			},
-		},
-		{
-			name: "hetzner: uses default server type when empty",
-			setup: func(t *testing.T, dir string) {
-				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
-			},
-			stdinInput: hetznerSetupInput("my-ssh-key", ""),
-			wantOutput: "Saved to .hal/config.yaml",
-			checkFn: func(t *testing.T, dir string) {
-				cfg, err := compound.LoadSandboxConfig(dir)
+			{
+				name: "hetzner: uses default server type when empty",
+				setup: func(t *testing.T, dir string) {
+					os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+				},
+				stdinInput: hetznerSetupInput("my-ssh-key", "", ""),
+				wantOutput: "Saved to .hal/config.yaml",
+				checkFn: func(t *testing.T, dir string) {
+					cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
 					t.Fatalf("LoadSandboxConfig() error: %v", err)
 				}
@@ -208,18 +211,21 @@ func TestRunSandboxSetup(t *testing.T) {
 				if cfg.Hetzner.SSHKey != "my-ssh-key" {
 					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "my-ssh-key")
 				}
-				if cfg.Hetzner.ServerType != "cx22" {
-					t.Errorf("Hetzner.ServerType = %q, want %q (default)", cfg.Hetzner.ServerType, "cx22")
-				}
+					if cfg.Hetzner.ServerType != "cx22" {
+						t.Errorf("Hetzner.ServerType = %q, want %q (default)", cfg.Hetzner.ServerType, "cx22")
+					}
+					if cfg.Hetzner.Image != "ubuntu-24.04" {
+						t.Errorf("Hetzner.Image = %q, want %q (default)", cfg.Hetzner.Image, "ubuntu-24.04")
+					}
+				},
 			},
-		},
 		{
 			name: "hetzner: saves env vars alongside hetzner config",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
 			// 3 vars: sk-ant-test, j-yw, + hal-sandbox (tailscale hostname default)
-			stdinInput: "2\nmy-ssh-key\n\nsk-ant-test\n\n\nj-yw\n\n\n\n",
+				stdinInput: "2\nmy-ssh-key\n\n\nsk-ant-test\n\n\nj-yw\n\n\n\n",
 			wantOutput: "3 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
@@ -245,8 +251,8 @@ func TestRunSandboxSetup(t *testing.T) {
 				existingYAML := "engine: pi\nmaxIterations: 5\n"
 				os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644)
 			},
-			stdinInput: hetznerSetupInput("my-key", ""),
-			wantOutput: "Saved to .hal/config.yaml",
+				stdinInput: hetznerSetupInput("my-key", "", ""),
+				wantOutput: "Saved to .hal/config.yaml",
 			checkFn: func(t *testing.T, dir string) {
 				data, err := os.ReadFile(filepath.Join(dir, template.HalDir, "config.yaml"))
 				if err != nil {
@@ -287,28 +293,31 @@ func TestRunSandboxSetup(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				halDir := filepath.Join(dir, template.HalDir)
 				os.MkdirAll(halDir, 0755)
-				sandboxCfg := &compound.SandboxConfig{
-					Provider: "hetzner",
-					Hetzner:  compound.HetznerConfig{SSHKey: "old-key"},
-					Env:      map[string]string{},
-				}
-				compound.SaveSandboxConfig(dir, sandboxCfg)
-			},
-			stdinInput: "\n\n\n" + emptyEnvInputs, // enter=hetzner default, enter=keep old ssh key, enter=keep default type
-			wantOutput: "Provider:   hetzner",
-			checkFn: func(t *testing.T, dir string) {
-				cfg, err := compound.LoadSandboxConfig(dir)
+					sandboxCfg := &compound.SandboxConfig{
+						Provider: "hetzner",
+						Hetzner:  compound.HetznerConfig{SSHKey: "old-key", Image: "debian-12"},
+						Env:      map[string]string{},
+					}
+					compound.SaveSandboxConfig(dir, sandboxCfg)
+				},
+				stdinInput: "\n\n\n\n" + emptyEnvInputs, // enter=hetzner default, keep old ssh key/default type/default image
+				wantOutput: "Provider:   hetzner",
+				checkFn: func(t *testing.T, dir string) {
+					cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
 					t.Fatalf("LoadSandboxConfig() error: %v", err)
 				}
 				if cfg.Provider != "hetzner" {
 					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
 				}
-				if cfg.Hetzner.SSHKey != "old-key" {
-					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "old-key")
-				}
+					if cfg.Hetzner.SSHKey != "old-key" {
+						t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "old-key")
+					}
+					if cfg.Hetzner.Image != "debian-12" {
+						t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, "debian-12")
+					}
+				},
 			},
-		},
 		{
 			name: "invalid provider choice returns error",
 			setup: func(t *testing.T, dir string) {
@@ -410,7 +419,7 @@ func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 
-	in := strings.NewReader(hetznerSetupInput("my-key", ""))
+	in := strings.NewReader(hetznerSetupInput("my-key", "", ""))
 	var out bytes.Buffer
 
 	err := runSandboxSetup(dir, in, &out, noopPasswordReader)
@@ -430,6 +439,9 @@ func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 	}
 	if !strings.Contains(output, "Server type") {
 		t.Error("output should contain server type prompt")
+	}
+	if !strings.Contains(output, "Image") {
+		t.Error("output should contain image prompt")
 	}
 	if !strings.Contains(output, "Provider:   hetzner") {
 		t.Error("output should show hetzner as provider in summary")
