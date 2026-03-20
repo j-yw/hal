@@ -30,6 +30,7 @@ hal archive [flags]
 
 ```
   -h, --help          help for archive
+      --json          Output machine-readable JSON result
   -n, --name string   Archive name (default: derived from branch name)
 ```
 

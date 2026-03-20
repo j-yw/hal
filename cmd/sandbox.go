@@ -90,17 +90,6 @@ func runSandboxSetupCobra(cmd *cobra.Command, args []string) error {
 	return runSandboxSetup(".", os.Stdin, os.Stdout, readPasswordFromTerminal)
 }
 
-// runSandboxAutoSetup is used by non-setup sandbox commands when EnsureAuth
-// needs to trigger credential setup. It must be interactive to avoid blocking
-// in non-TTY environments (for example CI or scripted usage).
-func runSandboxAutoSetup(dir string, out io.Writer) error {
-	if os.Stdin == nil || !term.IsTerminal(int(os.Stdin.Fd())) {
-		return fmt.Errorf("daytona API key not configured; run 'hal sandbox setup' interactively or configure daytona.apiKey in .hal/config.yaml")
-	}
-
-	return runSandboxSetup(dir, os.Stdin, out, readPasswordFromTerminal)
-}
-
 // passwordReader reads a password from the user. The fd parameter is the file
 // descriptor of the terminal. Returns the password bytes and any error.
 type passwordReader func(fd int) ([]byte, error)
