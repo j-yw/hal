@@ -4,10 +4,10 @@ Stop a running sandbox
 
 ### Synopsis
 
-Stop a running Daytona sandbox.
+Stop a running sandbox.
 
-Reads the sandbox name from .hal/sandbox.json unless --name is specified.
-The sandbox state file is updated to reflect the stopped status.
+Reads the sandbox name and provider from .hal/sandbox.json.
+The provider is used to determine how to stop the sandbox (daytona CLI or hcloud CLI).
 
 ```
 hal sandbox stop [flags]
@@ -17,17 +17,15 @@ hal sandbox stop [flags]
 
 ```
   hal sandbox stop
-  hal sandbox stop --name hal-dev
 ```
 
 ### Options
 
 ```
-  -h, --help          help for stop
-  -n, --name string   sandbox name (defaults to active sandbox from sandbox.json)
+  -h, --help   help for stop
 ```
 
 ### SEE ALSO
 
-* [hal sandbox](hal_sandbox.md)	 - Manage Daytona sandboxes
+* [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments
 

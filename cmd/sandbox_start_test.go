@@ -6,85 +6,65 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	daytonatypes "github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 )
 
-type sandboxStartCall struct {
-	called     bool
-	apiKey     string
-	serverURL  string
-	name       string
-	snapshotID string
+// mockProvider implements sandbox.Provider for testing.
+type mockProvider struct {
+	createResult *sandbox.SandboxResult
+	createErr    error
+	createCalls  []mockCreateCall
 }
 
-func fakeSandboxStarter(returnResult *sandbox.CreateSandboxResult, returnErr error) (sandboxStarter, *sandboxStartCall) {
-	call := &sandboxStartCall{}
-	fn := func(ctx context.Context, apiKey, serverURL, name, snapshotID string, envVars map[string]string, out io.Writer) (*sandbox.CreateSandboxResult, error) {
-		call.called = true
-		call.apiKey = apiKey
-		call.serverURL = serverURL
-		call.name = name
-		call.snapshotID = snapshotID
-		return returnResult, returnErr
-	}
-	return fn, call
+type mockCreateCall struct {
+	Name string
+	Env  map[string]string
 }
 
-type startDockerfileSnapshotCreateCall struct {
-	called         bool
-	apiKey         string
-	serverURL      string
-	name           string
-	dockerfilePath string
-	contextPath    string
+func (m *mockProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
+	m.createCalls = append(m.createCalls, mockCreateCall{Name: name, Env: env})
+	return m.createResult, m.createErr
 }
 
-func fakeStartDockerfileSnapshotCreator(returnID string, returnErr error) (snapshotFromDockerfileCreator, *startDockerfileSnapshotCreateCall) {
-	call := &startDockerfileSnapshotCreateCall{}
-	fn := func(ctx context.Context, apiKey, serverURL, name, dockerfilePath, contextPath string, out io.Writer) (string, error) {
-		call.called = true
-		call.apiKey = apiKey
-		call.serverURL = serverURL
-		call.name = name
-		call.dockerfilePath = dockerfilePath
-		call.contextPath = contextPath
-		return returnID, returnErr
-	}
-	return fn, call
+func (m *mockProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+	return nil
 }
 
-type startSnapshotListCall struct {
-	called    bool
-	apiKey    string
-	serverURL string
+func (m *mockProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+	return nil
 }
 
-func fakeStartSnapshotLister(returnSnapshots []*daytonatypes.Snapshot, returnErr error) (snapshotLister, *startSnapshotListCall) {
-	call := &startSnapshotListCall{}
-	fn := func(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error) {
-		call.called = true
-		call.apiKey = apiKey
-		call.serverURL = serverURL
-		return returnSnapshots, returnErr
-	}
-	return fn, call
+func (m *mockProvider) SSH(name string) (*exec.Cmd, error) {
+	return nil, nil
 }
 
-func setupStartTest(t *testing.T, dir string, apiKey, serverURL string) {
+func (m *mockProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func (m *mockProvider) Status(ctx context.Context, name string, out io.Writer) error {
+	return nil
+}
+
+func setupStartTest(t *testing.T, dir string) {
 	t.Helper()
 	halDir := filepath.Join(dir, template.HalDir)
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &compound.DaytonaConfig{APIKey: apiKey, ServerURL: serverURL}
-	if err := compound.SaveConfig(dir, cfg); err != nil {
+	// Write a minimal config
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env:      map[string]string{},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -95,244 +75,185 @@ func fakeBranchResolver(branch string, err error) branchResolver {
 	}
 }
 
-func writeTemplateDockerfile(t *testing.T, dir string) string {
-	t.Helper()
-	dockerfilePath := filepath.Join(dir, defaultSandboxDockerfile)
-	if err := os.MkdirAll(filepath.Dir(dockerfilePath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dockerfilePath, []byte("FROM ubuntu:22.04\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	return dockerfilePath
-}
-
-func TestRunSandboxStart_ReusesActiveTemplateSnapshot(t *testing.T) {
+func TestRunSandboxStart_Success(t *testing.T) {
 	dir := t.TempDir()
-	setupStartTest(t, dir, "test-key", "https://api.example.com")
+	setupStartTest(t, dir)
 
-	starterResult := &sandbox.CreateSandboxResult{ID: "sb-001", Name: "hal-feature-auth", Status: "STARTED"}
-	starter, startCall := fakeSandboxStarter(starterResult, nil)
-	lister, listCall := fakeStartSnapshotLister([]*daytonatypes.Snapshot{{ID: "snap-123", Name: sandboxTemplateSnapshotName, State: "active"}}, nil)
-	getBranch := fakeBranchResolver("hal/feature-auth", nil)
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "hal-feature-auth"},
+	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "", nil, &out, starter, getBranch, lister, nil)
+	err := runSandboxStartWithDeps(dir, "", nil, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !listCall.called {
-		t.Fatal("snapshot lister was not called")
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
 	}
-	if !startCall.called {
-		t.Fatal("sandbox starter was not called")
-	}
-	if startCall.name != "hal-feature-auth" {
-		t.Fatalf("starter name = %q, want %q", startCall.name, "hal-feature-auth")
-	}
-	if startCall.snapshotID != "snap-123" {
-		t.Fatalf("starter snapshotID = %q, want %q", startCall.snapshotID, "snap-123")
-	}
-	if !strings.Contains(out.String(), "Template snapshot \"hal\" is active; reusing") {
-		t.Fatalf("output missing reuse line: %q", out.String())
-	}
-	if !strings.Contains(out.String(), "Starting sandbox \"hal-feature-auth\" from template snapshot \"hal\" (snap-123)") {
-		t.Fatalf("output missing start line: %q", out.String())
+	if mock.createCalls[0].Name != "hal-feature-auth" {
+		t.Errorf("Create name = %q, want %q", mock.createCalls[0].Name, "hal-feature-auth")
 	}
 
+	// Verify state was saved
 	halDir := filepath.Join(dir, template.HalDir)
 	state, err := sandbox.LoadState(halDir)
 	if err != nil {
 		t.Fatalf("failed to load saved state: %v", err)
 	}
 	if state.Name != "hal-feature-auth" {
-		t.Fatalf("state.Name = %q, want %q", state.Name, "hal-feature-auth")
+		t.Errorf("state.Name = %q, want %q", state.Name, "hal-feature-auth")
 	}
-	if state.SnapshotID != "snap-123" {
-		t.Fatalf("state.SnapshotID = %q, want %q", state.SnapshotID, "snap-123")
-	}
-	if state.WorkspaceID != "sb-001" {
-		t.Fatalf("state.WorkspaceID = %q, want %q", state.WorkspaceID, "sb-001")
-	}
-}
 
-func TestRunSandboxStart_UsesExplicitName(t *testing.T) {
-	dir := t.TempDir()
-	setupStartTest(t, dir, "key2", "")
-
-	starterResult := &sandbox.CreateSandboxResult{ID: "sb-002", Name: "my-sandbox", Status: "STARTED"}
-	starter, call := fakeSandboxStarter(starterResult, nil)
-	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{{ID: "snap-456", Name: sandboxTemplateSnapshotName, State: "active"}}, nil)
-
-	err := runSandboxStartWithDeps(dir, "my-sandbox", nil, io.Discard, starter, nil, lister, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if call.name != "my-sandbox" {
-		t.Fatalf("starter name = %q, want %q", call.name, "my-sandbox")
+	// Verify output mentions provider
+	if !strings.Contains(out.String(), "Sandbox started") {
+		t.Errorf("output missing 'Sandbox started': %q", out.String())
 	}
 }
 
-func TestRunSandboxStart_CreatesTemplateSnapshotWhenMissing(t *testing.T) {
+func TestRunSandboxStart_ExplicitName(t *testing.T) {
 	dir := t.TempDir()
-	setupStartTest(t, dir, "df-key", "https://api.example.com")
-	dockerfilePath := writeTemplateDockerfile(t, dir)
+	setupStartTest(t, dir)
 
-	starterResult := &sandbox.CreateSandboxResult{ID: "sb-df", Name: "my-box", Status: "STARTED"}
-	starter, startCall := fakeSandboxStarter(starterResult, nil)
-	dockerCreator, dockerCall := fakeStartDockerfileSnapshotCreator("snap-df", nil)
-	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{}, nil)
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox"},
+	}
 
-	err := runSandboxStartWithDeps(dir, "my-box", nil, io.Discard, starter, nil, lister, dockerCreator)
+	err := runSandboxStartWithDeps(dir, "my-sandbox", nil, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !dockerCall.called {
-		t.Fatal("dockerfile snapshot creator was not called")
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
 	}
-	if dockerCall.name != sandboxTemplateSnapshotName {
-		t.Fatalf("snapshot name = %q, want %q", dockerCall.name, sandboxTemplateSnapshotName)
-	}
-	if dockerCall.dockerfilePath != dockerfilePath {
-		t.Fatalf("dockerfile path = %q, want %q", dockerCall.dockerfilePath, dockerfilePath)
-	}
-	if dockerCall.contextPath != dir {
-		t.Fatalf("context path = %q, want %q", dockerCall.contextPath, dir)
-	}
-	if !startCall.called {
-		t.Fatal("sandbox starter was not called")
-	}
-	if startCall.snapshotID != "snap-df" {
-		t.Fatalf("starter snapshotID = %q, want %q", startCall.snapshotID, "snap-df")
+	if mock.createCalls[0].Name != "my-sandbox" {
+		t.Errorf("Create name = %q, want %q", mock.createCalls[0].Name, "my-sandbox")
 	}
 }
 
-func TestRunSandboxStart_FailsWhenDockerfileMissingAndTemplateAbsent(t *testing.T) {
-	dir := t.TempDir()
-	setupStartTest(t, dir, "key", "")
-
-	starter, startCall := fakeSandboxStarter(nil, nil)
-	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{}, nil)
-
-	err := runSandboxStartWithDeps(dir, "box", nil, io.Discard, starter, nil, lister, nil)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "Dockerfile") {
-		t.Fatalf("error %q does not mention Dockerfile", err.Error())
-	}
-	if startCall.called {
-		t.Fatal("sandbox starter should not be called")
-	}
-}
-
-func TestRunSandboxStart_FailsWhenTemplateSnapshotUnusable(t *testing.T) {
-	dir := t.TempDir()
-	setupStartTest(t, dir, "key", "")
-
-	starter, startCall := fakeSandboxStarter(nil, nil)
-	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{{ID: "snap-bad", Name: sandboxTemplateSnapshotName, State: "building"}}, nil)
-
-	err := runSandboxStartWithDeps(dir, "box", nil, io.Discard, starter, nil, lister, nil)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "currently in state building") {
-		t.Fatalf("error %q does not contain expected state message", err.Error())
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "delete") {
-		t.Fatalf("error %q should not suggest deletion for in-progress snapshots", err.Error())
-	}
-	if startCall.called {
-		t.Fatal("sandbox starter should not be called")
-	}
-}
-
-func TestRunSandboxStart_FailsWhenBranchCannotBeDetermined(t *testing.T) {
-	dir := t.TempDir()
-	setupStartTest(t, dir, "key", "")
-
-	starter, _ := fakeSandboxStarter(nil, nil)
-	branchErr := fmt.Errorf("not on a branch")
-
-	err := runSandboxStartWithDeps(dir, "", nil, io.Discard, starter, fakeBranchResolver("", branchErr), nil, nil)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "could not determine sandbox name from git branch") {
-		t.Fatalf("error %q missing branch failure text", err.Error())
-	}
-}
-
-func TestRunSandboxStart_ConflictReusesConcurrentlyCreatedTemplate(t *testing.T) {
-	dir := t.TempDir()
-	setupStartTest(t, dir, "key", "")
-	_ = writeTemplateDockerfile(t, dir)
-
-	starterResult := &sandbox.CreateSandboxResult{ID: "sb-race", Name: "race-box", Status: "STARTED"}
-	starter, startCall := fakeSandboxStarter(starterResult, nil)
-	dockerCreator, _ := fakeStartDockerfileSnapshotCreator("", fmt.Errorf("Daytona error (status 409): conflict"))
-
-	listCalls := 0
-	lister := func(ctx context.Context, apiKey, serverURL string) ([]*daytonatypes.Snapshot, error) {
-		listCalls++
-		if listCalls == 1 {
-			return []*daytonatypes.Snapshot{}, nil
-		}
-		return []*daytonatypes.Snapshot{{ID: "snap-race", Name: sandboxTemplateSnapshotName, State: "active"}}, nil
-	}
-
-	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "race-box", nil, &out, starter, nil, lister, dockerCreator)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if listCalls != 2 {
-		t.Fatalf("list call count = %d, want 2", listCalls)
-	}
-	if !startCall.called {
-		t.Fatal("sandbox starter was not called")
-	}
-	if startCall.snapshotID != "snap-race" {
-		t.Fatalf("starter snapshotID = %q, want %q", startCall.snapshotID, "snap-race")
-	}
-	if !strings.Contains(out.String(), "created concurrently; reusing") {
-		t.Fatalf("output missing concurrent reuse message: %q", out.String())
-	}
-}
-
-func TestRunSandboxStart_EnsureAuthCalled(t *testing.T) {
+func TestRunSandboxStart_EnvVarsFromConfig(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &compound.DaytonaConfig{APIKey: "", ServerURL: ""}
-	if err := compound.SaveConfig(dir, cfg); err != nil {
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env: map[string]string{
+			"GIT_TOKEN": "ghp_from_config",
+			"API_KEY":   "sk-from-config",
+		},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
 		t.Fatal(err)
 	}
 
-	result := &sandbox.CreateSandboxResult{ID: "sb-id", Name: "test", Status: "STARTED"}
-	starter, _ := fakeSandboxStarter(result, nil)
-	var out bytes.Buffer
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb"},
+	}
 
-	err := runSandboxStart(dir, "test", nil, &out, starter, fakeBranchResolver("main", nil))
-	if err == nil {
-		t.Fatal("expected error for empty API key, got nil")
+	// CLI env overrides config
+	cliEnv := map[string]string{"API_KEY": "sk-from-cli"}
+
+	err := runSandboxStartWithDeps(dir, "sb", cliEnv, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	env := mock.createCalls[0].Env
+	if env["GIT_TOKEN"] != "ghp_from_config" {
+		t.Errorf("GIT_TOKEN = %q, want from config", env["GIT_TOKEN"])
+	}
+	if env["API_KEY"] != "sk-from-cli" {
+		t.Errorf("API_KEY = %q, want from CLI override", env["API_KEY"])
 	}
 }
 
-func TestRunSandboxStart_ErrorWhenHalDirMissing(t *testing.T) {
+func TestRunSandboxStart_ProviderAndIPSaved(t *testing.T) {
 	dir := t.TempDir()
-	starter, _ := fakeSandboxStarter(nil, nil)
-	err := runSandboxStartWithDeps(dir, "box", nil, io.Discard, starter, nil, nil, nil)
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "hetzner",
+		Env:      map[string]string{},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-server", IP: "10.0.0.42"},
+	}
+
+	var out bytes.Buffer
+	err := runSandboxStartWithDeps(dir, "my-server", nil, &out, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	state, err := sandbox.LoadState(halDir)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if state.Provider != "hetzner" {
+		t.Errorf("state.Provider = %q, want %q", state.Provider, "hetzner")
+	}
+	if state.IP != "10.0.0.42" {
+		t.Errorf("state.IP = %q, want %q", state.IP, "10.0.0.42")
+	}
+	if !strings.Contains(out.String(), "hetzner") {
+		t.Errorf("output should mention provider: %q", out.String())
+	}
+}
+
+func TestRunSandboxStart_CreateFailure(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createErr: fmt.Errorf("quota exceeded"),
+	}
+
+	err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox creation failed") {
+		t.Errorf("error %q should contain 'sandbox creation failed'", err.Error())
+	}
+}
+
+func TestRunSandboxStart_BranchFailure(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{}
+
+	err := runSandboxStartWithDeps(dir, "", nil, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "could not determine sandbox name from git branch") {
+		t.Errorf("error %q missing branch failure text", err.Error())
+	}
+}
+
+func TestRunSandboxStart_HalDirMissing(t *testing.T) {
+	dir := t.TempDir()
+
+	err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !strings.Contains(err.Error(), ".hal/ not found") {
-		t.Fatalf("error %q does not contain .hal guidance", err.Error())
+		t.Errorf("error %q should mention .hal/", err.Error())
 	}
 }
 
@@ -340,19 +261,7 @@ func TestSandboxStartCommandFlags(t *testing.T) {
 	if sandboxStartCmd.Flags().Lookup("name") == nil {
 		t.Fatal("--name flag should exist")
 	}
-	if sandboxStartCmd.Flags().Lookup("snapshot") != nil {
-		t.Fatal("--snapshot flag should not exist")
-	}
-	if sandboxStartCmd.Flags().Lookup("image") != nil {
-		t.Fatal("--image flag should not exist")
-	}
-	if sandboxStartCmd.Flags().Lookup("snapshot-name") != nil {
-		t.Fatal("--snapshot-name flag should not exist")
-	}
-	if sandboxStartCmd.Flags().Lookup("dockerfile") != nil {
-		t.Fatal("--dockerfile flag should not exist")
-	}
-	if sandboxStartCmd.Flags().Lookup("context") != nil {
-		t.Fatal("--context flag should not exist")
+	if sandboxStartCmd.Flags().Lookup("env") == nil {
+		t.Fatal("--env flag should exist")
 	}
 }

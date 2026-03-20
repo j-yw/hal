@@ -29,10 +29,7 @@ func TestNoArgsCommandsRejectExtraArgsWithValidationCode(t *testing.T) {
 		{name: "sandbox status", cmd: sandboxStatusCmd},
 		{name: "sandbox stop", cmd: sandboxStopCmd},
 		{name: "sandbox delete", cmd: sandboxDeleteCmd},
-		{name: "sandbox shell", cmd: sandboxShellCmd},
-		{name: "snapshot list", cmd: snapshotListCmd},
-		{name: "snapshot create", cmd: snapshotCreateCmd},
-		{name: "snapshot delete", cmd: snapshotDeleteCmd},
+
 	}
 
 	for _, tt := range tests {
