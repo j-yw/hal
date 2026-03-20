@@ -66,7 +66,7 @@ func TestSandboxCommandIntegration(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	if err := runSandboxStart(dir, name, &out, nil, nil); err != nil {
+	if err := runSandboxStart(dir, name, nil, &out, nil, nil); err != nil {
 		t.Fatalf("runSandboxStart(): %v\noutput:\n%s", err, out.String())
 	}
 

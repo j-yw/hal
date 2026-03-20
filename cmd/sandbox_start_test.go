@@ -26,7 +26,7 @@ type sandboxStartCall struct {
 
 func fakeSandboxStarter(returnResult *sandbox.CreateSandboxResult, returnErr error) (sandboxStarter, *sandboxStartCall) {
 	call := &sandboxStartCall{}
-	fn := func(ctx context.Context, apiKey, serverURL, name, snapshotID string, out io.Writer) (*sandbox.CreateSandboxResult, error) {
+	fn := func(ctx context.Context, apiKey, serverURL, name, snapshotID string, envVars map[string]string, out io.Writer) (*sandbox.CreateSandboxResult, error) {
 		call.called = true
 		call.apiKey = apiKey
 		call.serverURL = serverURL
@@ -117,7 +117,7 @@ func TestRunSandboxStart_ReusesActiveTemplateSnapshot(t *testing.T) {
 	getBranch := fakeBranchResolver("hal/feature-auth", nil)
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "", &out, starter, getBranch, lister, nil)
+	err := runSandboxStartWithDeps(dir, "", nil, &out, starter, getBranch, lister, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestRunSandboxStart_UsesExplicitName(t *testing.T) {
 	starter, call := fakeSandboxStarter(starterResult, nil)
 	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{{ID: "snap-456", Name: sandboxTemplateSnapshotName, State: "active"}}, nil)
 
-	err := runSandboxStartWithDeps(dir, "my-sandbox", io.Discard, starter, nil, lister, nil)
+	err := runSandboxStartWithDeps(dir, "my-sandbox", nil, io.Discard, starter, nil, lister, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestRunSandboxStart_CreatesTemplateSnapshotWhenMissing(t *testing.T) {
 	dockerCreator, dockerCall := fakeStartDockerfileSnapshotCreator("snap-df", nil)
 	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{}, nil)
 
-	err := runSandboxStartWithDeps(dir, "my-box", io.Discard, starter, nil, lister, dockerCreator)
+	err := runSandboxStartWithDeps(dir, "my-box", nil, io.Discard, starter, nil, lister, dockerCreator)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestRunSandboxStart_FailsWhenDockerfileMissingAndTemplateAbsent(t *testing.
 	starter, startCall := fakeSandboxStarter(nil, nil)
 	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{}, nil)
 
-	err := runSandboxStartWithDeps(dir, "box", io.Discard, starter, nil, lister, nil)
+	err := runSandboxStartWithDeps(dir, "box", nil, io.Discard, starter, nil, lister, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -235,7 +235,7 @@ func TestRunSandboxStart_FailsWhenTemplateSnapshotUnusable(t *testing.T) {
 	starter, startCall := fakeSandboxStarter(nil, nil)
 	lister, _ := fakeStartSnapshotLister([]*daytonatypes.Snapshot{{ID: "snap-bad", Name: sandboxTemplateSnapshotName, State: "building"}}, nil)
 
-	err := runSandboxStartWithDeps(dir, "box", io.Discard, starter, nil, lister, nil)
+	err := runSandboxStartWithDeps(dir, "box", nil, io.Discard, starter, nil, lister, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -257,7 +257,7 @@ func TestRunSandboxStart_FailsWhenBranchCannotBeDetermined(t *testing.T) {
 	starter, _ := fakeSandboxStarter(nil, nil)
 	branchErr := fmt.Errorf("not on a branch")
 
-	err := runSandboxStartWithDeps(dir, "", io.Discard, starter, fakeBranchResolver("", branchErr), nil, nil)
+	err := runSandboxStartWithDeps(dir, "", nil, io.Discard, starter, fakeBranchResolver("", branchErr), nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -285,7 +285,7 @@ func TestRunSandboxStart_ConflictReusesConcurrentlyCreatedTemplate(t *testing.T)
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "race-box", &out, starter, nil, lister, dockerCreator)
+	err := runSandboxStartWithDeps(dir, "race-box", nil, &out, starter, nil, lister, dockerCreator)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestRunSandboxStart_EnsureAuthCalled(t *testing.T) {
 	starter, _ := fakeSandboxStarter(result, nil)
 	var out bytes.Buffer
 
-	err := runSandboxStart(dir, "test", &out, starter, fakeBranchResolver("main", nil))
+	err := runSandboxStart(dir, "test", nil, &out, starter, fakeBranchResolver("main", nil))
 	if err == nil {
 		t.Fatal("expected error for empty API key, got nil")
 	}
@@ -327,7 +327,7 @@ func TestRunSandboxStart_EnsureAuthCalled(t *testing.T) {
 func TestRunSandboxStart_ErrorWhenHalDirMissing(t *testing.T) {
 	dir := t.TempDir()
 	starter, _ := fakeSandboxStarter(nil, nil)
-	err := runSandboxStartWithDeps(dir, "box", io.Discard, starter, nil, nil, nil)
+	err := runSandboxStartWithDeps(dir, "box", nil, io.Discard, starter, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

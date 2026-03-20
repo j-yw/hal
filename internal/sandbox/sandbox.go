@@ -18,11 +18,13 @@ type CreateSandboxResult struct {
 
 // CreateSandbox creates a Daytona sandbox from a snapshot.
 // It waits for the sandbox to start and returns the sandbox ID, name, and status.
-func CreateSandbox(ctx context.Context, client *daytona.Client, name, snapshotID string, out io.Writer) (*CreateSandboxResult, error) {
+// envVars are injected into the sandbox as environment variables (may be nil).
+func CreateSandbox(ctx context.Context, client *daytona.Client, name, snapshotID string, envVars map[string]string, out io.Writer) (*CreateSandboxResult, error) {
 	params := types.SnapshotParams{
 		Snapshot: snapshotID,
 		SandboxBaseParams: types.SandboxBaseParams{
-			Name: name,
+			Name:    name,
+			EnvVars: envVars,
 		},
 	}
 
