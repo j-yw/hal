@@ -16,26 +16,28 @@ func TestGenerateLightsailCloudInit_WithEnvVars(t *testing.T) {
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
 	}
-	if !strings.Contains(yaml, `API_KEY="sk-123"`) {
-		t.Error(`cloud-init should contain API_KEY="sk-123"`)
+	if !strings.Contains(yaml, "encoding: b64") {
+		t.Error("cloud-init should use base64 encoding")
 	}
-	if !strings.Contains(yaml, `GIT_TOKEN="ghp_abc"`) {
-		t.Error(`cloud-init should contain GIT_TOKEN="ghp_abc"`)
-	}
-
-	// Verify sorted
-	apiIdx := strings.Index(yaml, `API_KEY="sk-123"`)
-	gitIdx := strings.Index(yaml, `GIT_TOKEN="ghp_abc"`)
-	if apiIdx > gitIdx {
-		t.Error("env vars should be sorted: API_KEY before GIT_TOKEN")
-	}
-
-	// Verify runcmd runs setup.sh
 	if !strings.Contains(yaml, "runcmd:") {
 		t.Error("cloud-init should have runcmd section")
 	}
 	if !strings.Contains(yaml, "setup.sh") {
 		t.Error("cloud-init runcmd should run setup.sh")
+	}
+
+	// Verify env file content
+	content := buildLightsailEnvFileContent(env)
+	if !strings.Contains(content, "API_KEY='sk-123'") {
+		t.Errorf("env content should contain API_KEY, got: %s", content)
+	}
+	if !strings.Contains(content, "GIT_TOKEN='ghp_abc'") {
+		t.Errorf("env content should contain GIT_TOKEN, got: %s", content)
+	}
+	apiIdx := strings.Index(content, "API_KEY=")
+	gitIdx := strings.Index(content, "GIT_TOKEN=")
+	if apiIdx > gitIdx {
+		t.Error("env vars should be sorted: API_KEY before GIT_TOKEN")
 	}
 }
 

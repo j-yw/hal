@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -62,26 +63,21 @@ func wrapDoctlError(op string, err error, stderr string) error {
 }
 
 // generateDOCloudInit creates a cloud-init YAML that writes env vars to
-// /root/.env (quoted, safe for special chars), then runs setup.sh to bootstrap
-// the full dev environment.
+// /root/.env (base64-encoded to avoid YAML special char issues), then runs
+// setup.sh to bootstrap the full dev environment.
 func generateDOCloudInit(env map[string]string) string {
+	envContent := buildEnvFileContent(env)
+	encoded := base64.StdEncoding.EncodeToString([]byte(envContent))
+
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
 	b.WriteString("write_files:\n")
 	b.WriteString("  - path: /root/.env\n")
 	b.WriteString("    permissions: \"0600\"\n")
-	b.WriteString("    content: |\n")
-
-	// Sort keys for deterministic output
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		b.WriteString(fmt.Sprintf("      %s=%q\n", k, env[k]))
-	}
+	b.WriteString("    encoding: b64\n")
+	b.WriteString("    content: ")
+	b.WriteString(encoded)
+	b.WriteString("\n")
 
 	b.WriteString("runcmd:\n")
 	b.WriteString("  - |\n")
@@ -90,12 +86,32 @@ func generateDOCloudInit(env map[string]string) string {
 	b.WriteString("    set +a\n")
 	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
 	b.WriteString("  - |\n")
+	b.WriteString("    set -a\n")
+	b.WriteString("    . /root/.env\n")
+	b.WriteString("    set +a\n")
 	b.WriteString("    if [ -n \"${TAILSCALE_AUTHKEY:-}\" ]; then\n")
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
 	b.WriteString("    fi\n")
 
+	return b.String()
+}
+
+// buildEnvFileContent creates a shell-sourceable env file from a map.
+func buildEnvFileContent(env map[string]string) string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for _, k := range keys {
+		// Use single quotes to avoid shell interpretation; escape single quotes inside values
+		escaped := strings.ReplaceAll(env[k], "'", "'\\''")
+		b.WriteString(fmt.Sprintf("%s='%s'\n", k, escaped))
+	}
 	return b.String()
 }
 
