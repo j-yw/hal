@@ -29,9 +29,7 @@ Subcommands:
   stop        Stop a running sandbox
   status      Show sandbox status
   delete      Delete a sandbox
-  shell       Open an interactive shell
-  exec        Run a command in the sandbox
-  snapshot    Manage sandbox snapshots`,
+  ssh         Open an interactive shell or run a remote command`,
 	Example: `  hal sandbox setup
   hal sandbox start
   hal sandbox status`,
