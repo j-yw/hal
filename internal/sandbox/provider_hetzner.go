@@ -10,13 +10,15 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // HetznerProvider implements Provider by shelling out to the hcloud CLI and ssh.
 type HetznerProvider struct {
-	SSHKey     string
-	ServerType string
-	Image      string
+	SSHKey            string
+	ServerType        string
+	Image             string
+	TailscaleLockdown bool
 	// StateDir is the .hal directory path, needed to look up the server IP
 	// from sandbox state for SSH connections.
 	StateDir string
@@ -24,6 +26,12 @@ type HetznerProvider struct {
 	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
 	// Override in tests to capture args without running the real CLI.
 	cmdContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// sshContext builds SSH commands for post-create tailscale IP lookup.
+	sshContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// sleep delays between tailscale IP lookup retries.
+	sleep func(time.Duration)
 }
 
 // commandContext returns the configured command builder, defaulting to
@@ -38,8 +46,8 @@ func (h *HetznerProvider) commandContext(ctx context.Context, name string, args 
 // generateCloudInit creates a cloud-init YAML that writes env vars to
 // /root/.env (base64-encoded to avoid YAML special char issues), then runs
 // setup.sh to bootstrap the full dev environment.
-func generateCloudInit(env map[string]string) string {
-	envContent := buildHetznerEnvFileContent(env)
+func generateCloudInit(env map[string]string, tailscaleLockdown bool) string {
+	envContent := buildHetznerEnvFileContent(withLockdownEnv(env, tailscaleLockdown))
 	encoded := base64.StdEncoding.EncodeToString([]byte(envContent))
 
 	var b strings.Builder
@@ -66,6 +74,13 @@ func generateCloudInit(env map[string]string) string {
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
+	b.WriteString("      tailscale ip -4 > /root/.tailscale-ip\n")
+	b.WriteString("      if [ \"$TAILSCALE_LOCKDOWN\" = \"true\" ]; then\n")
+	b.WriteString("        ufw allow in on tailscale0\n")
+	b.WriteString("        ufw allow in on tailscale0 proto udp to any port 60000:61000\n")
+	b.WriteString("        ufw deny 22/tcp\n")
+	b.WriteString("        ufw --force enable\n")
+	b.WriteString("      fi\n")
 	b.WriteString("    fi\n")
 
 	return b.String()
@@ -92,7 +107,7 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 	}
 
 	// Generate cloud-init user-data file
-	cloudInit := generateCloudInit(env)
+	cloudInit := generateCloudInit(env, h.TailscaleLockdown)
 	tmpFile, err := os.CreateTemp("", "hal-cloud-init-*.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cloud-init temp file: %w", err)
@@ -137,7 +152,18 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 	}
 
 	ip := strings.TrimSpace(ipBuf.String())
-	return &SandboxResult{Name: name, IP: ip}, nil
+	result := &SandboxResult{Name: name, IP: ip}
+	if h.TailscaleLockdown {
+		if ip == "" {
+			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: missing public IP")
+		}
+		tailscaleIP, err := fetchTailscaleIP(ctx, "root", ip, h.sshContext, h.sleep, 9, 10*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
+		}
+		result.TailscaleIP = tailscaleIP
+	}
+	return result, nil
 }
 
 func (h *HetznerProvider) Stop(ctx context.Context, name string, out io.Writer) error {
@@ -171,14 +197,15 @@ func (h *HetznerProvider) SSH(name string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
-	if state.IP == "" {
+	ip := preferredIP(state)
+	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}
 
 	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"root@"+state.IP,
+		"root@"+ip,
 	)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -191,14 +218,15 @@ func (h *HetznerProvider) Exec(name string, args []string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
-	if state.IP == "" {
+	ip := preferredIP(state)
+	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}
 
 	cmdArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"root@" + state.IP,
+		"root@" + ip,
 		"--",
 	}
 	cmdArgs = append(cmdArgs, args...)

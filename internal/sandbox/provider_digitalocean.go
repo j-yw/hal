@@ -10,12 +10,14 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DigitalOceanProvider implements Provider by shelling out to the doctl CLI.
 type DigitalOceanProvider struct {
-	SSHKey string
-	Size   string
+	SSHKey            string
+	Size              string
+	TailscaleLockdown bool
 	// StateDir is the .hal directory path, needed to look up the droplet IP
 	// from sandbox state for SSH connections.
 	StateDir string
@@ -23,6 +25,12 @@ type DigitalOceanProvider struct {
 	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
 	// Override in tests to capture args without running the real CLI.
 	cmdContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// sshContext builds SSH commands for post-create tailscale IP lookup.
+	sshContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// sleep delays between tailscale IP lookup retries.
+	sleep func(time.Duration)
 
 	// lookPath checks whether a binary exists on PATH. Defaults to exec.LookPath.
 	// Override in tests to avoid environment-dependent PATH lookups.
@@ -65,8 +73,8 @@ func wrapDoctlError(op string, err error, stderr string) error {
 // generateDOCloudInit creates a cloud-init YAML that writes env vars to
 // /root/.env (base64-encoded to avoid YAML special char issues), then runs
 // setup.sh to bootstrap the full dev environment.
-func generateDOCloudInit(env map[string]string) string {
-	envContent := buildEnvFileContent(env)
+func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
+	envContent := buildEnvFileContent(withLockdownEnv(env, tailscaleLockdown))
 	encoded := base64.StdEncoding.EncodeToString([]byte(envContent))
 
 	var b strings.Builder
@@ -93,6 +101,13 @@ func generateDOCloudInit(env map[string]string) string {
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
+	b.WriteString("      tailscale ip -4 > /root/.tailscale-ip\n")
+	b.WriteString("      if [ \"$TAILSCALE_LOCKDOWN\" = \"true\" ]; then\n")
+	b.WriteString("        ufw allow in on tailscale0\n")
+	b.WriteString("        ufw allow in on tailscale0 proto udp to any port 60000:61000\n")
+	b.WriteString("        ufw deny 22/tcp\n")
+	b.WriteString("        ufw --force enable\n")
+	b.WriteString("      fi\n")
 	b.WriteString("    fi\n")
 
 	return b.String()
@@ -178,7 +193,7 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	}
 
 	// Generate cloud-init user-data file
-	cloudInit := generateDOCloudInit(env)
+	cloudInit := generateDOCloudInit(env, d.TailscaleLockdown)
 	tmpFile, err := os.CreateTemp("", "hal-do-cloud-init-*.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cloud-init temp file: %w", err)
@@ -220,7 +235,17 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	if strings.TrimSpace(ip) == "" {
 		return nil, fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", name)
 	}
-	return &SandboxResult{ID: id, Name: name, IP: ip}, nil
+
+	result := &SandboxResult{ID: id, Name: name, IP: ip}
+	if d.TailscaleLockdown {
+		tailscaleIP, err := fetchTailscaleIP(ctx, "root", ip, d.sshContext, d.sleep, 9, 10*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
+		}
+		result.TailscaleIP = tailscaleIP
+	}
+
+	return result, nil
 }
 
 func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Writer) error {
@@ -315,9 +340,13 @@ func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
 
-	ip, err := d.refreshIP(state)
-	if err != nil {
-		return nil, err
+	ip := preferredIP(state)
+	if ip == "" {
+		refreshedIP, err := d.refreshIP(state)
+		if err != nil {
+			return nil, err
+		}
+		ip = refreshedIP
 	}
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found for %q", name)
@@ -344,9 +373,13 @@ func (d *DigitalOceanProvider) Exec(name string, args []string) (*exec.Cmd, erro
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
 
-	ip, err := d.refreshIP(state)
-	if err != nil {
-		return nil, err
+	ip := preferredIP(state)
+	if ip == "" {
+		refreshedIP, err := d.refreshIP(state)
+		if err != nil {
+			return nil, err
+		}
+		ip = refreshedIP
 	}
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found for %q", name)

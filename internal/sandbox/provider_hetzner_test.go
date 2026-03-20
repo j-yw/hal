@@ -13,7 +13,7 @@ func TestGenerateCloudInit_WithEnvVars(t *testing.T) {
 		"GIT_TOKEN": "ghp_abc",
 		"API_KEY":   "sk-123",
 	}
-	yaml := generateCloudInit(env)
+	yaml := generateCloudInit(env, false)
 
 	// Verify cloud-config header
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
@@ -47,7 +47,7 @@ func TestGenerateCloudInit_WithEnvVars(t *testing.T) {
 }
 
 func TestGenerateCloudInit_EmptyEnv(t *testing.T) {
-	yaml := generateCloudInit(nil)
+	yaml := generateCloudInit(nil, false)
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
 	}

@@ -11,7 +11,7 @@ func TestGenerateLightsailCloudInit_WithEnvVars(t *testing.T) {
 		"API_KEY":   "sk-123",
 	}
 
-	yaml := generateLightsailCloudInit(env)
+	yaml := generateLightsailCloudInit(env, false)
 
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
@@ -42,7 +42,7 @@ func TestGenerateLightsailCloudInit_WithEnvVars(t *testing.T) {
 }
 
 func TestGenerateLightsailCloudInit_EmptyEnv(t *testing.T) {
-	yaml := generateLightsailCloudInit(nil)
+	yaml := generateLightsailCloudInit(nil, false)
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
 	}

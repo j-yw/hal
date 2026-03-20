@@ -9,9 +9,10 @@ import (
 
 // SandboxResult holds the result of creating a sandbox.
 type SandboxResult struct {
-	ID   string
-	Name string
-	IP   string
+	ID          string
+	Name        string
+	IP          string
+	TailscaleIP string
 }
 
 // Provider defines the interface for sandbox backends.
@@ -60,24 +61,27 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 		}, nil
 	case "hetzner":
 		return &HetznerProvider{
-			SSHKey:     cfg.HetznerSSHKey,
-			ServerType: cfg.HetznerServerType,
-			Image:      cfg.HetznerImage,
-			StateDir:   cfg.StateDir,
+			SSHKey:            cfg.HetznerSSHKey,
+			ServerType:        cfg.HetznerServerType,
+			Image:             cfg.HetznerImage,
+			TailscaleLockdown: cfg.TailscaleLockdown,
+			StateDir:          cfg.StateDir,
 		}, nil
 	case "digitalocean":
 		return &DigitalOceanProvider{
-			SSHKey:   cfg.DigitalOceanSSHKey,
-			Size:     cfg.DigitalOceanSize,
-			StateDir: cfg.StateDir,
+			SSHKey:            cfg.DigitalOceanSSHKey,
+			Size:              cfg.DigitalOceanSize,
+			TailscaleLockdown: cfg.TailscaleLockdown,
+			StateDir:          cfg.StateDir,
 		}, nil
 	case "lightsail":
 		return &LightsailProvider{
-			Region:           cfg.LightsailRegion,
-			AvailabilityZone: cfg.LightsailAvailabilityZone,
-			Bundle:           cfg.LightsailBundle,
-			KeyPairName:      cfg.LightsailKeyPairName,
-			StateDir:         cfg.StateDir,
+			Region:            cfg.LightsailRegion,
+			AvailabilityZone:  cfg.LightsailAvailabilityZone,
+			Bundle:            cfg.LightsailBundle,
+			KeyPairName:       cfg.LightsailKeyPairName,
+			TailscaleLockdown: cfg.TailscaleLockdown,
+			StateDir:          cfg.StateDir,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner, digitalocean, lightsail)", provider)
@@ -98,6 +102,7 @@ type ProviderConfig struct {
 	LightsailAvailabilityZone string
 	LightsailBundle           string
 	LightsailKeyPairName      string
+	TailscaleLockdown         bool
 	// StateDir is the .hal directory path, used by providers that need to
 	// read sandbox state (e.g. Hetzner/DigitalOcean/Lightsail SSH needs the IP from state).
 	StateDir string

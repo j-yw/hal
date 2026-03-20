@@ -15,10 +15,11 @@ import (
 
 // LightsailProvider implements Provider by shelling out to the aws lightsail CLI.
 type LightsailProvider struct {
-	Region           string
-	AvailabilityZone string
-	Bundle           string
-	KeyPairName      string
+	Region            string
+	AvailabilityZone  string
+	Bundle            string
+	KeyPairName       string
+	TailscaleLockdown bool
 	// StateDir is the .hal directory path, needed to look up the instance IP
 	// from sandbox state for SSH connections.
 	StateDir string
@@ -26,6 +27,12 @@ type LightsailProvider struct {
 	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
 	// Override in tests to capture args without running the real CLI.
 	cmdContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// sshContext builds SSH commands for post-create tailscale IP lookup.
+	sshContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// sleep delays between tailscale IP lookup retries.
+	sleep func(time.Duration)
 
 	// lookPath checks whether a binary exists on PATH. Defaults to exec.LookPath.
 	lookPath func(file string) (string, error)
@@ -62,8 +69,8 @@ func wrapAWSError(op string, err error, stderr string) error {
 
 // generateLightsailCloudInit creates a cloud-init YAML that writes env vars to
 // /root/.env (base64-encoded to avoid YAML special char issues), then runs setup.sh.
-func generateLightsailCloudInit(env map[string]string) string {
-	envContent := buildLightsailEnvFileContent(env)
+func generateLightsailCloudInit(env map[string]string, tailscaleLockdown bool) string {
+	envContent := buildLightsailEnvFileContent(withLockdownEnv(env, tailscaleLockdown))
 	encoded := base64.StdEncoding.EncodeToString([]byte(envContent))
 
 	var b strings.Builder
@@ -90,6 +97,13 @@ func generateLightsailCloudInit(env map[string]string) string {
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
+	b.WriteString("      tailscale ip -4 > /root/.tailscale-ip\n")
+	b.WriteString("      if [ \"$TAILSCALE_LOCKDOWN\" = \"true\" ]; then\n")
+	b.WriteString("        ufw allow in on tailscale0\n")
+	b.WriteString("        ufw allow in on tailscale0 proto udp to any port 60000:61000\n")
+	b.WriteString("        ufw deny 22/tcp\n")
+	b.WriteString("        ufw --force enable\n")
+	b.WriteString("      fi\n")
 	b.WriteString("    fi\n")
 
 	return b.String()
@@ -142,7 +156,7 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 	}
 
 	// Generate cloud-init
-	cloudInit := generateLightsailCloudInit(env)
+	cloudInit := generateLightsailCloudInit(env, l.TailscaleLockdown)
 	tmpFile, err := os.CreateTemp("", "hal-lightsail-cloud-init-*.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cloud-init temp file: %w", err)
@@ -200,7 +214,15 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 	}
 
 	fmt.Fprintf(out, "Instance %s ready at %s\n", name, ip)
-	return &SandboxResult{ID: name, Name: name, IP: ip}, nil
+	result := &SandboxResult{ID: name, Name: name, IP: ip}
+	if l.TailscaleLockdown {
+		tailscaleIP, err := fetchTailscaleIP(ctx, "ubuntu", ip, l.sshContext, l.sleep, 9, 10*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
+		}
+		result.TailscaleIP = tailscaleIP
+	}
+	return result, nil
 }
 
 func (l *LightsailProvider) Stop(ctx context.Context, name string, out io.Writer) error {
@@ -263,7 +285,8 @@ func (l *LightsailProvider) SSH(name string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
-	if state.IP == "" {
+	ip := preferredIP(state)
+	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}
 
@@ -271,7 +294,7 @@ func (l *LightsailProvider) SSH(name string) (*exec.Cmd, error) {
 	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"ubuntu@"+state.IP,
+		"ubuntu@"+ip,
 	)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -284,14 +307,15 @@ func (l *LightsailProvider) Exec(name string, args []string) (*exec.Cmd, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
-	if state.IP == "" {
+	ip := preferredIP(state)
+	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}
 
 	cmdArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"ubuntu@" + state.IP,
+		"ubuntu@" + ip,
 		"--",
 	}
 	cmdArgs = append(cmdArgs, args...)

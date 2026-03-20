@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func doctlLookPathStub(file string) (string, error) {
@@ -23,7 +24,7 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 		"GIT_TOKEN": "ghp_abc",
 		"API_KEY":   "sk-123",
 	}
-	yaml := generateDOCloudInit(env)
+	yaml := generateDOCloudInit(env, false)
 
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
@@ -54,7 +55,7 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 }
 
 func TestGenerateDOCloudInit_EmptyEnv(t *testing.T) {
-	yaml := generateDOCloudInit(nil)
+	yaml := generateDOCloudInit(nil, false)
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
 	}
@@ -477,5 +478,36 @@ func TestDigitalOceanProvider_Create_ErrorsWhenPublicIPMissing(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no PublicIPv4") {
 		t.Errorf("error %q should mention missing PublicIPv4", err.Error())
+	}
+}
+
+func TestDigitalOceanProvider_Create_LockdownFailsWhenTailscaleIPUnavailable(t *testing.T) {
+	dp := &DigitalOceanProvider{
+		SSHKey:            "ab:cd:ef:12:34",
+		Size:              "s-2vcpu-4gb",
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "create" {
+				return exec.CommandContext(ctx, "true")
+			}
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "false")
+		},
+	}
+
+	var out bytes.Buffer
+	_, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when tailscale IP lookup fails in lockdown mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch tailscale IP in lockdown mode") {
+		t.Errorf("error %q should mention lockdown tailscale IP failure", err.Error())
 	}
 }
