@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"context"
 	"fmt"
 	"io"
@@ -170,5 +171,87 @@ func TestRunSandboxDelete(t *testing.T) {
 				tt.checkFn(t, dir, mock)
 			}
 		})
+	}
+}
+
+func TestSandboxDeleteCommandFlags(t *testing.T) {
+	nameFlag := sandboxDeleteCmd.Flags().Lookup("name")
+	if nameFlag == nil {
+		t.Fatal("--name flag should exist")
+	}
+	if nameFlag.Shorthand != "n" {
+		t.Fatalf("--name shorthand = %q, want %q", nameFlag.Shorthand, "n")
+	}
+}
+
+func TestRunSandboxDelete_RemovesStateWhenDeletingByWorkspaceID(t *testing.T) {
+	dir := t.TempDir()
+	setupDeleteTestWithState(t, dir, &sandbox.SandboxState{
+		Name:        "hal-feature-auth",
+		Provider:    "daytona",
+		WorkspaceID: "ws-12345",
+		CreatedAt:   time.Now(),
+	})
+
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxDeleteWithDeps(dir, &out, "ws-12345", mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if mock.deleteCalls[0] != "ws-12345" {
+		t.Fatalf("Delete called with %q, want %q", mock.deleteCalls[0], "ws-12345")
+	}
+
+	halDir := filepath.Join(dir, template.HalDir)
+	if _, err := sandbox.LoadState(halDir); err == nil {
+		t.Fatal("expected sandbox state to be removed after workspace-id delete")
+	}
+}
+
+func TestResolveDeleteProvider_UsesStateProviderForWorkspaceID(t *testing.T) {
+	state := &sandbox.SandboxState{
+		Name:        "hal-feature-auth",
+		WorkspaceID: "ws-12345",
+		Provider:    "daytona",
+	}
+
+	expectedProvider := &mockDeleteProvider{}
+	fallbackErr := errors.New("configured provider mismatch")
+	stateResolverCalls := 0
+	nameResolverCalls := 0
+
+	provider, err := resolveDeleteProvider(
+		".",
+		"ws-12345",
+		state,
+		func(_ string, gotState *sandbox.SandboxState) (sandbox.Provider, error) {
+			stateResolverCalls++
+			if gotState != state {
+				t.Fatalf("state resolver got unexpected state pointer")
+			}
+			return expectedProvider, nil
+		},
+		func(_ string, _ string) (sandbox.Provider, error) {
+			nameResolverCalls++
+			return nil, fallbackErr
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider != expectedProvider {
+		t.Fatal("expected provider from state resolver")
+	}
+	if stateResolverCalls != 1 {
+		t.Fatalf("state resolver calls = %d, want 1", stateResolverCalls)
+	}
+	if nameResolverCalls != 0 {
+		t.Fatalf("name resolver calls = %d, want 0", nameResolverCalls)
 	}
 }

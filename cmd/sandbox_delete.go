@@ -35,7 +35,7 @@ After successful deletion, sandbox.json is removed only when it matches the dele
 
 func init() {
 	sandboxCmd.AddCommand(sandboxDeleteCmd)
-	sandboxDeleteCmd.Flags().String("name", "", "Delete sandbox by explicit name (without reading .hal/sandbox.json)")
+	sandboxDeleteCmd.Flags().StringP("name", "n", "", "Delete sandbox by explicit name (without reading .hal/sandbox.json)")
 }
 
 // runSandboxDeleteWithDeps contains the testable logic for the sandbox delete command.
@@ -65,11 +65,7 @@ func runSandboxDeleteWithDeps(dir string, out io.Writer, targetName string, prov
 	}
 
 	if provider == nil {
-		if state != nil && state.Name == deleteName {
-			provider, err = resolveProviderFromState(dir, state)
-		} else {
-			provider, err = resolveProviderFromName(dir, deleteName)
-		}
+		provider, err = resolveDeleteProvider(dir, deleteName, state, resolveProviderFromState, resolveProviderFromName)
 		if err != nil {
 			return err
 		}
@@ -82,7 +78,7 @@ func runSandboxDeleteWithDeps(dir string, out io.Writer, targetName string, prov
 		return fmt.Errorf("sandbox delete failed: %w", err)
 	}
 
-	if state != nil && state.Name == deleteName {
+	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
 		if err := sandbox.RemoveState(halDir); err != nil {
 			return fmt.Errorf("removing sandbox state: %w", err)
 		}
@@ -90,4 +86,17 @@ func runSandboxDeleteWithDeps(dir string, out io.Writer, targetName string, prov
 
 	fmt.Fprintf(out, "Sandbox %q deleted.\n", deleteName)
 	return nil
+}
+
+func resolveDeleteProvider(
+	dir string,
+	deleteName string,
+	state *sandbox.SandboxState,
+	stateResolver func(string, *sandbox.SandboxState) (sandbox.Provider, error),
+	nameResolver func(string, string) (sandbox.Provider, error),
+) (sandbox.Provider, error) {
+	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
+		return stateResolver(dir, state)
+	}
+	return nameResolver(dir, deleteName)
 }
