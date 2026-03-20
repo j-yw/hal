@@ -24,8 +24,8 @@ func TestBuildCreateArgs_Basic(t *testing.T) {
 
 func TestBuildCreateArgs_WithEnvVars(t *testing.T) {
 	env := map[string]string{
-		"GIT_TOKEN":    "ghp_abc",
-		"API_KEY":      "sk-123",
+		"GIT_TOKEN":     "ghp_abc",
+		"API_KEY":       "sk-123",
 		"TAILSCALE_KEY": "tskey-xxx",
 	}
 	args := buildCreateArgs("test-sb", env)
@@ -221,6 +221,116 @@ func TestDaytonaProvider_Create_AllEnvFlags(t *testing.T) {
 		want := fmt.Sprintf("%s=%s", k, v)
 		if !strings.Contains(argsStr, want) {
 			t.Errorf("args missing env var %q", want)
+		}
+	}
+}
+
+func TestBuildSnapshotCreateArgs_UsesSupportedFlags(t *testing.T) {
+	help := `
+Usage:
+  daytona snapshot create [flags]
+
+Flags:
+      --name string
+      --dockerfile-path string
+      --context-path string
+`
+
+	args := buildSnapshotCreateArgs(help)
+	want := []string{
+		"snapshot", "create",
+		"--name", "hal",
+		"--dockerfile-path", "sandbox/Dockerfile",
+		"--context-path", ".",
+	}
+	if len(args) != len(want) {
+		t.Fatalf("got %d args, want %d: %v", len(args), len(want), args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
+func TestDaytonaProvider_Create_MissingTemplateSnapshot_AutoCreatesAndRetries(t *testing.T) {
+	var calls [][]string
+	callNum := 0
+
+	dp := &DaytonaProvider{
+		APIKey: "test-key",
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			callNum++
+			calls = append(calls, append([]string{name}, args...))
+			switch callNum {
+			case 1:
+				return exec.CommandContext(ctx, "sh", "-c", "echo 'snapshot hal not found' >&2; exit 1")
+			case 2:
+				return exec.CommandContext(ctx, "sh", "-c", "printf '%s\n' '--name' '--dockerfile-path' '--context-path'")
+			case 3:
+				return exec.CommandContext(ctx, "echo", "snapshot ready")
+			case 4:
+				return exec.CommandContext(ctx, "echo", "sandbox created")
+			default:
+				return exec.CommandContext(ctx, "true")
+			}
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "my-sandbox", nil, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if result == nil || result.Name != "my-sandbox" {
+		t.Fatalf("result = %+v, want Name=my-sandbox", result)
+	}
+
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 daytona calls, got %d: %v", len(calls), calls)
+	}
+
+	wantCreate := []string{"daytona", "create", "--snapshot", "hal", "--name", "my-sandbox"}
+	if len(calls[0]) != len(wantCreate) {
+		t.Fatalf("first call = %v, want %v", calls[0], wantCreate)
+	}
+	for i := range wantCreate {
+		if calls[0][i] != wantCreate[i] {
+			t.Errorf("first call[%d] = %q, want %q", i, calls[0][i], wantCreate[i])
+		}
+	}
+
+	wantHelp := []string{"daytona", "snapshot", "create", "--help"}
+	if len(calls[1]) != len(wantHelp) {
+		t.Fatalf("second call = %v, want %v", calls[1], wantHelp)
+	}
+	for i := range wantHelp {
+		if calls[1][i] != wantHelp[i] {
+			t.Errorf("second call[%d] = %q, want %q", i, calls[1][i], wantHelp[i])
+		}
+	}
+
+	wantSnapshotCreate := []string{
+		"daytona", "snapshot", "create",
+		"--name", "hal",
+		"--dockerfile-path", "sandbox/Dockerfile",
+		"--context-path", ".",
+	}
+	if len(calls[2]) != len(wantSnapshotCreate) {
+		t.Fatalf("third call = %v, want %v", calls[2], wantSnapshotCreate)
+	}
+	for i := range wantSnapshotCreate {
+		if calls[2][i] != wantSnapshotCreate[i] {
+			t.Errorf("third call[%d] = %q, want %q", i, calls[2][i], wantSnapshotCreate[i])
+		}
+	}
+
+	if len(calls[3]) != len(wantCreate) {
+		t.Fatalf("fourth call = %v, want %v", calls[3], wantCreate)
+	}
+	for i := range wantCreate {
+		if calls[3][i] != wantCreate[i] {
+			t.Errorf("fourth call[%d] = %q, want %q", i, calls[3][i], wantCreate[i])
 		}
 	}
 }
