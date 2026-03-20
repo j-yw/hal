@@ -348,3 +348,80 @@ func TestDaytonaProvider_Status_Failure(t *testing.T) {
 		t.Errorf("error %q should contain 'daytona info failed'", err.Error())
 	}
 }
+
+func TestDaytonaProvider_SSH(t *testing.T) {
+	dp := &DaytonaProvider{APIKey: "key"}
+	cmd, err := dp.SSH("my-sandbox")
+	if err != nil {
+		t.Fatalf("SSH() unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"daytona", "ssh", "my-sandbox"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want)
+		}
+	}
+
+	// Verify stdio is attached
+	if cmd.Stdin == nil {
+		t.Error("Stdin should be set (os.Stdin)")
+	}
+	if cmd.Stdout == nil {
+		t.Error("Stdout should be set (os.Stdout)")
+	}
+	if cmd.Stderr == nil {
+		t.Error("Stderr should be set (os.Stderr)")
+	}
+}
+
+func TestDaytonaProvider_Exec(t *testing.T) {
+	dp := &DaytonaProvider{APIKey: "key"}
+	cmd, err := dp.Exec("my-sandbox", []string{"ls", "-la"})
+	if err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"daytona", "ssh", "my-sandbox", "--", "ls", "-la"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want)
+		}
+	}
+
+	// Verify stdio is attached
+	if cmd.Stdin == nil {
+		t.Error("Stdin should be set (os.Stdin)")
+	}
+	if cmd.Stdout == nil {
+		t.Error("Stdout should be set (os.Stdout)")
+	}
+	if cmd.Stderr == nil {
+		t.Error("Stderr should be set (os.Stderr)")
+	}
+}
+
+func TestDaytonaProvider_Exec_EmptyArgs(t *testing.T) {
+	dp := &DaytonaProvider{APIKey: "key"}
+	cmd, err := dp.Exec("sb", []string{})
+	if err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+
+	// With empty args, should still have the -- separator
+	wantArgs := []string{"daytona", "ssh", "sb", "--"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want)
+		}
+	}
+}
