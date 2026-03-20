@@ -35,13 +35,14 @@ func (h *HetznerProvider) commandContext(ctx context.Context, name string, args 
 }
 
 // generateCloudInit creates a cloud-init YAML that writes env vars to
-// /etc/environment and installs basic dev tooling.
+// /root/.env (quoted, safe for special chars), then runs setup.sh to bootstrap
+// the full dev environment.
 func generateCloudInit(env map[string]string) string {
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
 	b.WriteString("write_files:\n")
-	b.WriteString("  - path: /etc/environment\n")
-	b.WriteString("    append: true\n")
+	b.WriteString("  - path: /root/.env\n")
+	b.WriteString("    permissions: \"0600\"\n")
 	b.WriteString("    content: |\n")
 
 	// Sort keys for deterministic output
@@ -52,14 +53,21 @@ func generateCloudInit(env map[string]string) string {
 	sort.Strings(keys)
 
 	for _, k := range keys {
-		b.WriteString(fmt.Sprintf("      %s=%s\n", k, env[k]))
+		b.WriteString(fmt.Sprintf("      %s=%q\n", k, env[k]))
 	}
 
-	b.WriteString("packages:\n")
-	b.WriteString("  - git\n")
-	b.WriteString("  - curl\n")
-	b.WriteString("  - wget\n")
-	b.WriteString("  - jq\n")
+	b.WriteString("runcmd:\n")
+	b.WriteString("  - |\n")
+	b.WriteString("    set -a\n")
+	b.WriteString("    . /root/.env\n")
+	b.WriteString("    set +a\n")
+	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
+	b.WriteString("  - |\n")
+	b.WriteString("    if [ -n \"${TAILSCALE_AUTHKEY:-}\" ]; then\n")
+	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
+	b.WriteString("      sleep 3\n")
+	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
+	b.WriteString("    fi\n")
 
 	return b.String()
 }

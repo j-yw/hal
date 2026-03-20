@@ -43,29 +43,25 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 		t.Error("env vars should be sorted: API_KEY before GIT_TOKEN")
 	}
 
-	if !strings.Contains(yaml, "packages:") {
-		t.Error("cloud-init should have packages section")
+	// Verify runcmd runs setup.sh
+	if !strings.Contains(yaml, "runcmd:") {
+		t.Error("cloud-init should have runcmd section")
 	}
-	for _, pkg := range []string{"git", "curl", "wget", "jq"} {
-		if !strings.Contains(yaml, "- "+pkg) {
-			t.Errorf("cloud-init should install %s", pkg)
-		}
+	if !strings.Contains(yaml, "setup.sh") {
+		t.Error("cloud-init runcmd should run setup.sh")
 	}
 }
 
-func TestGenerateDOCloudInit_QuotesAndNormalizesValues(t *testing.T) {
+func TestGenerateDOCloudInit_QuotesValues(t *testing.T) {
 	env := map[string]string{
 		"GIT_USER_NAME": `Jane "JJ" Doe`,
-		"MULTI_LINE":    "line1\nline2",
 	}
 
 	yaml := generateDOCloudInit(env)
 
-	if !strings.Contains(yaml, "GIT_USER_NAME=\"Jane \\\"JJ\\\" Doe\"") {
+	// Go's %q escapes quotes with backslashes
+	if !strings.Contains(yaml, `GIT_USER_NAME="Jane \"JJ\" Doe"`) {
 		t.Errorf("cloud-init should escape quotes in env values, got:\n%s", yaml)
-	}
-	if !strings.Contains(yaml, "MULTI_LINE=\"line1 line2\"") {
-		t.Errorf("cloud-init should normalize newlines in env values, got:\n%s", yaml)
 	}
 }
 
@@ -74,7 +70,7 @@ func TestGenerateDOCloudInit_EmptyEnv(t *testing.T) {
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
 	}
-	if !strings.Contains(yaml, "packages:") {
+	if !strings.Contains(yaml, "runcmd:") {
 		t.Error("cloud-init should have packages section even with no env vars")
 	}
 }

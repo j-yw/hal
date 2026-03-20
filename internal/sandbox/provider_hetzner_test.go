@@ -20,29 +20,27 @@ func TestGenerateCloudInit_WithEnvVars(t *testing.T) {
 		t.Error("cloud-init should start with #cloud-config")
 	}
 
-	// Verify env vars present (sorted alphabetically)
-	if !strings.Contains(yaml, "API_KEY=sk-123") {
-		t.Error("cloud-init should contain API_KEY=sk-123")
+	// Verify env vars present (quoted, sorted alphabetically)
+	if !strings.Contains(yaml, `API_KEY="sk-123"`) {
+		t.Error(`cloud-init should contain API_KEY="sk-123"`)
 	}
-	if !strings.Contains(yaml, "GIT_TOKEN=ghp_abc") {
-		t.Error("cloud-init should contain GIT_TOKEN=ghp_abc")
+	if !strings.Contains(yaml, `GIT_TOKEN="ghp_abc"`) {
+		t.Error(`cloud-init should contain GIT_TOKEN="ghp_abc"`)
 	}
 
 	// Verify API_KEY comes before GIT_TOKEN (sorted)
-	apiIdx := strings.Index(yaml, "API_KEY=sk-123")
-	gitIdx := strings.Index(yaml, "GIT_TOKEN=ghp_abc")
+	apiIdx := strings.Index(yaml, `API_KEY="sk-123"`)
+	gitIdx := strings.Index(yaml, `GIT_TOKEN="ghp_abc"`)
 	if apiIdx > gitIdx {
 		t.Error("env vars should be sorted: API_KEY before GIT_TOKEN")
 	}
 
-	// Verify packages section
-	if !strings.Contains(yaml, "packages:") {
-		t.Error("cloud-init should have packages section")
+	// Verify runcmd runs setup.sh
+	if !strings.Contains(yaml, "runcmd:") {
+		t.Error("cloud-init should have runcmd section")
 	}
-	for _, pkg := range []string{"git", "curl", "wget", "jq"} {
-		if !strings.Contains(yaml, "- "+pkg) {
-			t.Errorf("cloud-init should install %s", pkg)
-		}
+	if !strings.Contains(yaml, "setup.sh") {
+		t.Error("cloud-init runcmd should run setup.sh")
 	}
 }
 
@@ -51,7 +49,7 @@ func TestGenerateCloudInit_EmptyEnv(t *testing.T) {
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
 		t.Error("cloud-init should start with #cloud-config")
 	}
-	if !strings.Contains(yaml, "packages:") {
+	if !strings.Contains(yaml, "runcmd:") {
 		t.Error("cloud-init should have packages section even with no env vars")
 	}
 }
