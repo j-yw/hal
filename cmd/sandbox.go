@@ -88,6 +88,8 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 		provCfg.HetznerSSHKey = sandboxCfg.Hetzner.SSHKey
 		provCfg.HetznerServerType = sandboxCfg.Hetzner.ServerType
 		provCfg.HetznerImage = sandboxCfg.Hetzner.Image
+		provCfg.DigitalOceanSSHKey = sandboxCfg.DigitalOcean.SSHKey
+		provCfg.DigitalOceanSize = sandboxCfg.DigitalOcean.Size
 	}
 
 	return sandbox.ProviderFromConfig(state.Provider, provCfg)
@@ -117,6 +119,8 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 		provCfg.HetznerSSHKey = sandboxCfg.Hetzner.SSHKey
 		provCfg.HetznerServerType = sandboxCfg.Hetzner.ServerType
 		provCfg.HetznerImage = sandboxCfg.Hetzner.Image
+		provCfg.DigitalOceanSSHKey = sandboxCfg.DigitalOcean.SSHKey
+		provCfg.DigitalOceanSize = sandboxCfg.DigitalOcean.Size
 	}
 
 	providerName := sandboxCfg.Provider

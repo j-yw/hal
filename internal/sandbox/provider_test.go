@@ -60,14 +60,14 @@ func TestProviderFromConfig_Hetzner(t *testing.T) {
 
 func TestProviderFromConfig_Unknown(t *testing.T) {
 	cfg := ProviderConfig{}
-	_, err := ProviderFromConfig("digitalocean", cfg)
+	_, err := ProviderFromConfig("gcp", cfg)
 	if err == nil {
 		t.Fatal("expected error for unknown provider, got nil")
 	}
 	if !strings.Contains(err.Error(), "unknown sandbox provider") {
 		t.Errorf("error %q does not contain %q", err.Error(), "unknown sandbox provider")
 	}
-	if !strings.Contains(err.Error(), "digitalocean") {
+	if !strings.Contains(err.Error(), "gcp") {
 		t.Errorf("error %q does not mention the unknown provider name", err.Error())
 	}
 }
@@ -80,6 +80,7 @@ func TestProviderFromConfig_AllKnown(t *testing.T) {
 	}{
 		{"daytona", "daytona", "*sandbox.DaytonaProvider"},
 		{"hetzner", "hetzner", "*sandbox.HetznerProvider"},
+		{"digitalocean", "digitalocean", "*sandbox.DigitalOceanProvider"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

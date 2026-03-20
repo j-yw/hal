@@ -50,7 +50,7 @@ func RunCmd(cmd *exec.Cmd, out io.Writer) error {
 }
 
 // ProviderFromConfig returns the Provider implementation matching the given
-// provider name. Known providers: "daytona", "hetzner".
+// provider name. Known providers: "daytona", "hetzner", "digitalocean".
 func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 	switch provider {
 	case "daytona":
@@ -65,8 +65,14 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			Image:      cfg.HetznerImage,
 			StateDir:   cfg.StateDir,
 		}, nil
+	case "digitalocean":
+		return &DigitalOceanProvider{
+			SSHKey:   cfg.DigitalOceanSSHKey,
+			Size:     cfg.DigitalOceanSize,
+			StateDir: cfg.StateDir,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner)", provider)
+		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner, digitalocean)", provider)
 	}
 }
 
@@ -78,7 +84,9 @@ type ProviderConfig struct {
 	HetznerSSHKey     string
 	HetznerServerType string
 	HetznerImage      string
+	DigitalOceanSSHKey string
+	DigitalOceanSize   string
 	// StateDir is the .hal directory path, used by providers that need to
-	// read sandbox state (e.g. Hetzner SSH needs the IP from state).
+	// read sandbox state (e.g. Hetzner/DigitalOcean SSH needs the IP from state).
 	StateDir string
 }

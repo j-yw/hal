@@ -41,11 +41,18 @@ type HetznerConfig struct {
 	Image      string `yaml:"image"`
 }
 
+// DigitalOceanConfig contains DigitalOcean-specific sandbox settings.
+type DigitalOceanConfig struct {
+	SSHKey string `yaml:"sshKey"`
+	Size   string `yaml:"size"`
+}
+
 // SandboxConfig contains sandbox configuration including provider selection and env vars.
 type SandboxConfig struct {
-	Provider string            `yaml:"provider"`
-	Env      map[string]string `yaml:"env"`
-	Hetzner  HetznerConfig     `yaml:"hetzner"`
+	Provider     string             `yaml:"provider"`
+	Env          map[string]string  `yaml:"env"`
+	Hetzner      HetznerConfig      `yaml:"hetzner"`
+	DigitalOcean DigitalOceanConfig `yaml:"digitalocean"`
 }
 
 // rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.
@@ -267,13 +274,17 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 
 	var raw struct {
 		Sandbox struct {
-			Provider *string           `yaml:"provider"`
-			Env      map[string]string `yaml:"env"`
-			Hetzner  struct {
+			Provider     *string           `yaml:"provider"`
+			Env          map[string]string `yaml:"env"`
+			Hetzner      struct {
 				SSHKey     *string `yaml:"sshKey"`
 				ServerType *string `yaml:"serverType"`
 				Image      *string `yaml:"image"`
 			} `yaml:"hetzner"`
+			DigitalOcean struct {
+				SSHKey *string `yaml:"sshKey"`
+				Size   *string `yaml:"size"`
+			} `yaml:"digitalocean"`
 		} `yaml:"sandbox"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -300,6 +311,12 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	}
 	if raw.Sandbox.Hetzner.Image != nil {
 		cfg.Hetzner.Image = *raw.Sandbox.Hetzner.Image
+	}
+	if raw.Sandbox.DigitalOcean.SSHKey != nil {
+		cfg.DigitalOcean.SSHKey = *raw.Sandbox.DigitalOcean.SSHKey
+	}
+	if raw.Sandbox.DigitalOcean.Size != nil {
+		cfg.DigitalOcean.Size = *raw.Sandbox.DigitalOcean.Size
 	}
 
 	return cfg, nil
@@ -358,6 +375,18 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 			hetznerMap["image"] = sandbox.Hetzner.Image
 		}
 		sandboxMap["hetzner"] = hetznerMap
+	}
+
+	// Only write digitalocean section if any field is set
+	if sandbox.DigitalOcean.SSHKey != "" || sandbox.DigitalOcean.Size != "" {
+		doMap := map[string]interface{}{}
+		if sandbox.DigitalOcean.SSHKey != "" {
+			doMap["sshKey"] = sandbox.DigitalOcean.SSHKey
+		}
+		if sandbox.DigitalOcean.Size != "" {
+			doMap["size"] = sandbox.DigitalOcean.Size
+		}
+		sandboxMap["digitalocean"] = doMap
 	}
 
 	existing["sandbox"] = sandboxMap

@@ -98,12 +98,14 @@ func runSandboxStartWithDeps(
 		}
 
 		provCfg := sandbox.ProviderConfig{
-			DaytonaAPIKey:     dayCfg.APIKey,
-			DaytonaServerURL:  dayCfg.ServerURL,
-			HetznerSSHKey:     sandboxCfg.Hetzner.SSHKey,
-			HetznerServerType: sandboxCfg.Hetzner.ServerType,
-			HetznerImage:      sandboxCfg.Hetzner.Image,
-			StateDir:          halDir,
+			DaytonaAPIKey:      dayCfg.APIKey,
+			DaytonaServerURL:   dayCfg.ServerURL,
+			HetznerSSHKey:      sandboxCfg.Hetzner.SSHKey,
+			HetznerServerType:  sandboxCfg.Hetzner.ServerType,
+			HetznerImage:       sandboxCfg.Hetzner.Image,
+			DigitalOceanSSHKey: sandboxCfg.DigitalOcean.SSHKey,
+			DigitalOceanSize:   sandboxCfg.DigitalOcean.Size,
+			StateDir:           halDir,
 		}
 		provider, err = sandbox.ProviderFromConfig(sandboxCfg.Provider, provCfg)
 		if err != nil {
