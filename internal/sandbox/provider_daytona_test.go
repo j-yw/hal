@@ -198,3 +198,153 @@ func TestDaytonaProvider_Create_DefaultCmdContext(t *testing.T) {
 		t.Error("commandContext returned cmd with empty Path")
 	}
 }
+
+func TestDaytonaProvider_Stop_Success(t *testing.T) {
+	var capturedArgs []string
+	dp := &DaytonaProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "stopped")
+		},
+	}
+
+	var out bytes.Buffer
+	err := dp.Stop(context.Background(), "my-sandbox", &out)
+	if err != nil {
+		t.Fatalf("Stop() unexpected error: %v", err)
+	}
+
+	// Verify command: daytona stop my-sandbox
+	wantArgs := []string{"daytona", "stop", "my-sandbox"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+
+	if !strings.Contains(out.String(), "stopped") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "stopped")
+	}
+}
+
+func TestDaytonaProvider_Stop_Failure(t *testing.T) {
+	dp := &DaytonaProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	err := dp.Stop(context.Background(), "my-sandbox", &out)
+	if err == nil {
+		t.Fatal("Stop() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "daytona stop failed") {
+		t.Errorf("error %q should contain 'daytona stop failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "exit code") {
+		t.Errorf("error %q should mention exit code", err.Error())
+	}
+}
+
+func TestDaytonaProvider_Delete_Success(t *testing.T) {
+	var capturedArgs []string
+	dp := &DaytonaProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "deleted")
+		},
+	}
+
+	var out bytes.Buffer
+	err := dp.Delete(context.Background(), "my-sandbox", &out)
+	if err != nil {
+		t.Fatalf("Delete() unexpected error: %v", err)
+	}
+
+	// Verify command: daytona delete my-sandbox --yes
+	wantArgs := []string{"daytona", "delete", "my-sandbox", "--yes"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+
+	if !strings.Contains(out.String(), "deleted") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "deleted")
+	}
+}
+
+func TestDaytonaProvider_Delete_Failure(t *testing.T) {
+	dp := &DaytonaProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 2")
+		},
+	}
+
+	var out bytes.Buffer
+	err := dp.Delete(context.Background(), "my-sandbox", &out)
+	if err == nil {
+		t.Fatal("Delete() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "daytona delete failed") {
+		t.Errorf("error %q should contain 'daytona delete failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "exit code") {
+		t.Errorf("error %q should mention exit code", err.Error())
+	}
+}
+
+func TestDaytonaProvider_Status_Success(t *testing.T) {
+	var capturedArgs []string
+	dp := &DaytonaProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "running")
+		},
+	}
+
+	var out bytes.Buffer
+	err := dp.Status(context.Background(), "my-sandbox", &out)
+	if err != nil {
+		t.Fatalf("Status() unexpected error: %v", err)
+	}
+
+	// Verify command: daytona info my-sandbox
+	wantArgs := []string{"daytona", "info", "my-sandbox"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+
+	if !strings.Contains(out.String(), "running") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "running")
+	}
+}
+
+func TestDaytonaProvider_Status_Failure(t *testing.T) {
+	dp := &DaytonaProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	err := dp.Status(context.Background(), "my-sandbox", &out)
+	if err == nil {
+		t.Fatal("Status() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "daytona info failed") {
+		t.Errorf("error %q should contain 'daytona info failed'", err.Error())
+	}
+}

@@ -62,11 +62,29 @@ func (d *DaytonaProvider) Create(ctx context.Context, name string, env map[strin
 }
 
 func (d *DaytonaProvider) Stop(ctx context.Context, name string, out io.Writer) error {
-	return fmt.Errorf("DaytonaProvider.Stop not yet implemented")
+	cmd := d.commandContext(ctx, "daytona", "stop", name)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("daytona stop failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return fmt.Errorf("daytona stop failed: %w", err)
+	}
+	return nil
 }
 
 func (d *DaytonaProvider) Delete(ctx context.Context, name string, out io.Writer) error {
-	return fmt.Errorf("DaytonaProvider.Delete not yet implemented")
+	cmd := d.commandContext(ctx, "daytona", "delete", name, "--yes")
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("daytona delete failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return fmt.Errorf("daytona delete failed: %w", err)
+	}
+	return nil
 }
 
 func (d *DaytonaProvider) SSH(name string) (*exec.Cmd, error) {
@@ -88,5 +106,14 @@ func (d *DaytonaProvider) Exec(name string, args []string) (*exec.Cmd, error) {
 }
 
 func (d *DaytonaProvider) Status(ctx context.Context, name string, out io.Writer) error {
-	return fmt.Errorf("DaytonaProvider.Status not yet implemented")
+	cmd := d.commandContext(ctx, "daytona", "info", name)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("daytona info failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return fmt.Errorf("daytona info failed: %w", err)
+	}
+	return nil
 }
