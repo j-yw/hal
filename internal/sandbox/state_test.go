@@ -264,12 +264,55 @@ func TestLoadState_LegacyWithoutProvider(t *testing.T) {
 	if state.Name != "legacy-sandbox" {
 		t.Errorf("Name: got %q, want %q", state.Name, "legacy-sandbox")
 	}
-	// Provider should be empty string for legacy files (migration story handles defaulting)
-	if state.Provider != "" {
-		t.Errorf("Provider: got %q, want empty for legacy state", state.Provider)
+	// Provider should be auto-migrated to "daytona" for legacy files
+	if state.Provider != "daytona" {
+		t.Errorf("Provider: got %q, want %q", state.Provider, "daytona")
 	}
 	if state.IP != "" {
 		t.Errorf("IP: got %q, want empty for legacy state", state.IP)
+	}
+
+	// Verify the state was re-saved with provider field
+	reloaded, err := LoadState(halDir)
+	if err != nil {
+		t.Fatalf("LoadState (re-read) failed: %v", err)
+	}
+	if reloaded.Provider != "daytona" {
+		t.Errorf("Re-read Provider: got %q, want %q", reloaded.Provider, "daytona")
+	}
+}
+
+func TestLoadState_ExplicitProviderNotOverwritten(t *testing.T) {
+	halDir := t.TempDir()
+	// State with explicit provider: "hetzner" — migration must NOT overwrite
+	content := `{
+  "name": "hetzner-box",
+  "provider": "hetzner",
+  "ip": "203.0.113.10",
+  "status": "running",
+  "createdAt": "2026-03-20T10:00:00Z"
+}`
+	os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte(content), 0644)
+
+	state, err := LoadState(halDir)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if state.Provider != "hetzner" {
+		t.Errorf("Provider: got %q, want %q", state.Provider, "hetzner")
+	}
+	if state.IP != "203.0.113.10" {
+		t.Errorf("IP: got %q, want %q", state.IP, "203.0.113.10")
+	}
+
+	// Verify state file was NOT re-written (read raw JSON to check)
+	data, err := os.ReadFile(filepath.Join(halDir, template.SandboxFile))
+	if err != nil {
+		t.Fatalf("failed to read state file: %v", err)
+	}
+	// Original content should be preserved as-is (no re-save occurred)
+	if !strings.Contains(string(data), `"hetzner-box"`) {
+		t.Error("state file content was unexpectedly modified")
 	}
 }
 
