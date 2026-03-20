@@ -18,8 +18,20 @@ func noopPasswordReader(_ int) ([]byte, error) {
 	return nil, nil
 }
 
-// newlines for all prompts: daytona key, server url, anthropic, openai, github, git name, git email, tailscale key, tailscale hostname
+// newlines for all env-var prompts: anthropic, openai, github, git name, git email, tailscale key, tailscale hostname
 const emptyEnvInputs = "\n\n\n\n\n\n\n"
+
+// daytonaSetupInput builds stdin input for the Daytona setup path:
+// provider choice "1", api key, server url, then env var prompts.
+func daytonaSetupInput(apiKey, serverURL string) string {
+	return "1\n" + apiKey + "\n" + serverURL + "\n" + emptyEnvInputs
+}
+
+// hetznerSetupInput builds stdin input for the Hetzner setup path:
+// provider choice "2", ssh key name, server type, then env var prompts.
+func hetznerSetupInput(sshKey, serverType string) string {
+	return "2\n" + sshKey + "\n" + serverType + "\n" + emptyEnvInputs
+}
 
 func TestRunSandboxSetup(t *testing.T) {
 	tests := []struct {
@@ -31,11 +43,11 @@ func TestRunSandboxSetup(t *testing.T) {
 		checkFn    func(t *testing.T, dir string)
 	}{
 		{
-			name: "saves credentials with custom server URL",
+			name: "daytona: saves credentials with custom server URL",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "my-api-key\nhttps://custom.server\n" + emptyEnvInputs,
+			stdinInput: "1\nmy-api-key\nhttps://custom.server\n" + emptyEnvInputs,
 			wantOutput: "Saved to .hal/config.yaml",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
@@ -48,14 +60,21 @@ func TestRunSandboxSetup(t *testing.T) {
 				if cfg.ServerURL != "https://custom.server" {
 					t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "https://custom.server")
 				}
+				sCfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if sCfg.Provider != "daytona" {
+					t.Errorf("Provider = %q, want %q", sCfg.Provider, "daytona")
+				}
 			},
 		},
 		{
-			name: "uses default server URL when empty input",
+			name: "daytona: uses default server URL when empty input",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "my-api-key\n\n" + emptyEnvInputs,
+			stdinInput: daytonaSetupInput("my-api-key", ""),
 			wantOutput: "Saved to .hal/config.yaml",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
@@ -71,7 +90,7 @@ func TestRunSandboxSetup(t *testing.T) {
 			},
 		},
 		{
-			name: "overwrites previous credentials",
+			name: "daytona: overwrites previous credentials",
 			setup: func(t *testing.T, dir string) {
 				halDir := filepath.Join(dir, template.HalDir)
 				os.MkdirAll(halDir, 0755)
@@ -80,7 +99,7 @@ func TestRunSandboxSetup(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			stdinInput: "new-key\nhttps://new.server\n" + emptyEnvInputs,
+			stdinInput: "1\nnew-key\nhttps://new.server\n" + emptyEnvInputs,
 			wantOutput: "Saved to .hal/config.yaml",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
@@ -96,14 +115,14 @@ func TestRunSandboxSetup(t *testing.T) {
 			},
 		},
 		{
-			name: "preserves existing engine config",
+			name: "daytona: preserves existing engine config",
 			setup: func(t *testing.T, dir string) {
 				halDir := filepath.Join(dir, template.HalDir)
 				os.MkdirAll(halDir, 0755)
 				existingYAML := "engine: pi\nmaxIterations: 5\n"
 				os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644)
 			},
-			stdinInput: "my-key\nhttps://my.server\n" + emptyEnvInputs,
+			stdinInput: "1\nmy-key\nhttps://my.server\n" + emptyEnvInputs,
 			wantOutput: "Saved to .hal/config.yaml",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
@@ -123,16 +142,19 @@ func TestRunSandboxSetup(t *testing.T) {
 			},
 		},
 		{
-			name: "saves sandbox env vars",
+			name: "daytona: saves sandbox env vars",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "my-key\n\nsk-ant-test\nsk-openai\nghp-token\nj-yw\nj@example.com\ntskey-auth-xxx\nmy-sandbox\n",
+			stdinInput: "1\nmy-key\n\nsk-ant-test\nsk-openai\nghp-token\nj-yw\nj@example.com\ntskey-auth-xxx\nmy-sandbox\n",
 			wantOutput: "7 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
 					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "daytona" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "daytona")
 				}
 				if cfg.Env["ANTHROPIC_API_KEY"] != "sk-ant-test" {
 					t.Errorf("ANTHROPIC_API_KEY = %q, want %q", cfg.Env["ANTHROPIC_API_KEY"], "sk-ant-test")
@@ -146,19 +168,169 @@ func TestRunSandboxSetup(t *testing.T) {
 			},
 		},
 		{
+			name: "hetzner: saves ssh key and server type",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: hetznerSetupInput("my-ssh-key", "cx32"),
+			wantOutput: "Saved to .hal/config.yaml",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "hetzner" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
+				}
+				if cfg.Hetzner.SSHKey != "my-ssh-key" {
+					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "my-ssh-key")
+				}
+				if cfg.Hetzner.ServerType != "cx32" {
+					t.Errorf("Hetzner.ServerType = %q, want %q", cfg.Hetzner.ServerType, "cx32")
+				}
+			},
+		},
+		{
+			name: "hetzner: uses default server type when empty",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: hetznerSetupInput("my-ssh-key", ""),
+			wantOutput: "Saved to .hal/config.yaml",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "hetzner" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
+				}
+				if cfg.Hetzner.SSHKey != "my-ssh-key" {
+					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "my-ssh-key")
+				}
+				if cfg.Hetzner.ServerType != "cx22" {
+					t.Errorf("Hetzner.ServerType = %q, want %q (default)", cfg.Hetzner.ServerType, "cx22")
+				}
+			},
+		},
+		{
+			name: "hetzner: saves env vars alongside hetzner config",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			// 3 vars: sk-ant-test, j-yw, + hal-sandbox (tailscale hostname default)
+			stdinInput: "2\nmy-ssh-key\n\nsk-ant-test\n\n\nj-yw\n\n\n\n",
+			wantOutput: "3 env vars configured",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "hetzner" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
+				}
+				if cfg.Env["ANTHROPIC_API_KEY"] != "sk-ant-test" {
+					t.Errorf("ANTHROPIC_API_KEY = %q, want %q", cfg.Env["ANTHROPIC_API_KEY"], "sk-ant-test")
+				}
+				if cfg.Env["GIT_USER_NAME"] != "j-yw" {
+					t.Errorf("GIT_USER_NAME = %q, want %q", cfg.Env["GIT_USER_NAME"], "j-yw")
+				}
+			},
+		},
+		{
+			name: "hetzner: preserves existing engine config",
+			setup: func(t *testing.T, dir string) {
+				halDir := filepath.Join(dir, template.HalDir)
+				os.MkdirAll(halDir, 0755)
+				existingYAML := "engine: pi\nmaxIterations: 5\n"
+				os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644)
+			},
+			stdinInput: hetznerSetupInput("my-key", ""),
+			wantOutput: "Saved to .hal/config.yaml",
+			checkFn: func(t *testing.T, dir string) {
+				data, err := os.ReadFile(filepath.Join(dir, template.HalDir, "config.yaml"))
+				if err != nil {
+					t.Fatalf("reading config.yaml: %v", err)
+				}
+				if !strings.Contains(string(data), "engine:") {
+					t.Error("engine section was clobbered")
+				}
+			},
+		},
+		{
+			name: "hetzner: error when SSH key is empty",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: "2\n\n",
+			wantErr:    "is required",
+		},
+		{
+			name: "defaults to daytona when pressing enter on provider",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: "\nmy-api-key\n\n" + emptyEnvInputs,
+			wantOutput: "Provider:   daytona",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "daytona" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "daytona")
+				}
+			},
+		},
+		{
+			name: "defaults to hetzner when existing config is hetzner",
+			setup: func(t *testing.T, dir string) {
+				halDir := filepath.Join(dir, template.HalDir)
+				os.MkdirAll(halDir, 0755)
+				sandboxCfg := &compound.SandboxConfig{
+					Provider: "hetzner",
+					Hetzner:  compound.HetznerConfig{SSHKey: "old-key"},
+					Env:      map[string]string{},
+				}
+				compound.SaveSandboxConfig(dir, sandboxCfg)
+			},
+			stdinInput: "\n\n\n" + emptyEnvInputs, // enter=hetzner default, enter=keep old ssh key, enter=keep default type
+			wantOutput: "Provider:   hetzner",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "hetzner" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
+				}
+				if cfg.Hetzner.SSHKey != "old-key" {
+					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "old-key")
+				}
+			},
+		},
+		{
+			name: "invalid provider choice returns error",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: "3\n",
+			wantErr:    "invalid provider choice",
+		},
+		{
 			name: "error when .hal/ does not exist",
 			setup: func(t *testing.T, dir string) {
 				// don't create .hal/
 			},
-			stdinInput: "key\nhttps://server\n",
+			stdinInput: "1\nkey\nhttps://server\n",
 			wantErr:    ".hal/ not found",
 		},
 		{
-			name: "error when API key is empty",
+			name: "daytona: error when API key is empty",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "\nhttps://server\n",
+			stdinInput: "1\n\nhttps://server\n",
 			wantErr:    "is required",
 		},
 	}
@@ -201,11 +373,11 @@ func TestRunSandboxSetup(t *testing.T) {
 	}
 }
 
-func TestRunSandboxSetup_PromptOutput(t *testing.T) {
+func TestRunSandboxSetup_PromptOutput_Daytona(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 
-	in := strings.NewReader("test-key\n\n" + emptyEnvInputs)
+	in := strings.NewReader(daytonaSetupInput("test-key", ""))
 	var out bytes.Buffer
 
 	err := runSandboxSetup(dir, in, &out, noopPasswordReader)
@@ -214,6 +386,9 @@ func TestRunSandboxSetup_PromptOutput(t *testing.T) {
 	}
 
 	output := out.String()
+	if !strings.Contains(output, "Select Provider") {
+		t.Error("output should contain provider selection prompt")
+	}
 	if !strings.Contains(output, "Daytona API key") {
 		t.Error("output should contain API key prompt")
 	}
@@ -225,6 +400,42 @@ func TestRunSandboxSetup_PromptOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "Tailscale") {
 		t.Error("output should contain Tailscale section")
+	}
+	if !strings.Contains(output, "Provider:   daytona") {
+		t.Error("output should show daytona as provider in summary")
+	}
+}
+
+func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+
+	in := strings.NewReader(hetznerSetupInput("my-key", ""))
+	var out bytes.Buffer
+
+	err := runSandboxSetup(dir, in, &out, noopPasswordReader)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Select Provider") {
+		t.Error("output should contain provider selection prompt")
+	}
+	if !strings.Contains(output, "── Hetzner ──") {
+		t.Error("output should contain Hetzner section header")
+	}
+	if !strings.Contains(output, "SSH key name") {
+		t.Error("output should contain SSH key prompt")
+	}
+	if !strings.Contains(output, "Server type") {
+		t.Error("output should contain server type prompt")
+	}
+	if !strings.Contains(output, "Provider:   hetzner") {
+		t.Error("output should show hetzner as provider in summary")
+	}
+	if !strings.Contains(output, "ssh-key=my-key") {
+		t.Error("output should show SSH key in summary")
 	}
 }
 
@@ -242,8 +453,8 @@ func TestRunSandboxSetup_NonTerminalFileInputFallsBackToPlaintext(t *testing.T) 
 		_ = inputFile.Close()
 	})
 
-	// Write input for all prompts
-	if _, err := inputFile.WriteString("piped-api-key\n\n" + emptyEnvInputs); err != nil {
+	// Write input for all prompts: provider choice, api key, server url, env vars
+	if _, err := inputFile.WriteString("1\npiped-api-key\n\n" + emptyEnvInputs); err != nil {
 		t.Fatalf("WriteString() error: %v", err)
 	}
 	if _, err := inputFile.Seek(0, 0); err != nil {

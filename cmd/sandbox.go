@@ -16,11 +16,14 @@ import (
 
 var sandboxCmd = &cobra.Command{
 	Use:   "sandbox",
-	Short: "Manage Daytona sandboxes",
-	Long: `Manage Daytona sandbox environments for isolated development.
+	Short: "Manage sandbox environments",
+	Long: `Manage sandbox environments for isolated development.
+
+Supports multiple providers (Daytona, Hetzner) — run 'hal sandbox setup'
+to choose a provider and configure credentials.
 
 Subcommands:
-  setup       Configure sandbox credentials and environment
+  setup       Configure provider, credentials, and environment
   start       Create and start a sandbox
   stop        Stop a running sandbox
   status      Show sandbox status
@@ -37,10 +40,13 @@ var sandboxSetupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure sandbox credentials and environment",
 	Args:  noArgsValidation(),
-	Long: `Interactive setup for Daytona sandbox credentials and environment variables.
+	Long: `Interactive setup for sandbox credentials and environment variables.
 
-Prompts for:
-  • Daytona API key and server URL
+First prompts for a provider:
+  (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
+  (2) Hetzner — self-managed VPS (prompts for SSH key name, server type)
+
+Then prompts for shared environment variables:
   • API keys (Anthropic, OpenAI) — masked input
   • GitHub token — masked input
   • Git identity (name, email)
@@ -109,6 +115,12 @@ var sandboxEnvFields = []setupField{
 	{key: "TAILSCALE_HOSTNAME", label: "Tailscale hostname", defVal: "hal-sandbox"},
 }
 
+// hetzner-specific setup fields
+var hetznerFields = []setupField{
+	{key: "_hetzner_ssh_key", label: "SSH key name", required: true},
+	{key: "_hetzner_server_type", label: "Server type", defVal: "cx22"},
+}
+
 // runSandboxSetup contains the testable logic for the sandbox setup command.
 // dir is the project root directory (containing .hal/).
 func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passwordReader) error {
@@ -128,34 +140,87 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		existingDaytona = &d
 	}
 	if existingSandbox == nil {
-		existingSandbox = &compound.SandboxConfig{Env: map[string]string{}}
+		existingSandbox = &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	}
+
+	// ── Provider selection ──
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  ── Select Provider ──")
+	fmt.Fprintln(out, "")
+
+	// Determine default provider choice
+	defaultChoice := "1"
+	if existingSandbox.Provider == "hetzner" {
+		defaultChoice = "2"
+	}
+	fmt.Fprintf(out, "  (1) Daytona  (2) Hetzner [%s]: ", defaultChoice)
+	line, _ := reader.ReadString('\n')
+	choice := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
+	if choice == "" {
+		choice = defaultChoice
+	}
+
+	var selectedProvider string
+	switch choice {
+	case "1":
+		selectedProvider = "daytona"
+	case "2":
+		selectedProvider = "hetzner"
+	default:
+		return fmt.Errorf("invalid provider choice %q — enter 1 or 2", choice)
 	}
 
 	// Collect all values
 	collected := make(map[string]string)
 
-	// ── Daytona credentials ──
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  ── Daytona ──")
-	fmt.Fprintln(out, "")
+	// ── Provider-specific credentials ──
+	switch selectedProvider {
+	case "daytona":
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  ── Daytona ──")
+		fmt.Fprintln(out, "")
 
-	// API key
-	val, err := promptField(reader, in, out, readPassword, daytonaFields[0], existingDaytona.APIKey)
-	if err != nil {
-		return err
-	}
-	collected["_daytona_api_key"] = val
+		// API key
+		val, err := promptField(reader, in, out, readPassword, daytonaFields[0], existingDaytona.APIKey)
+		if err != nil {
+			return err
+		}
+		collected["_daytona_api_key"] = val
 
-	// Server URL
-	currentURL := existingDaytona.ServerURL
-	if currentURL == "" {
-		currentURL = daytonaFields[1].defVal
+		// Server URL
+		currentURL := existingDaytona.ServerURL
+		if currentURL == "" {
+			currentURL = daytonaFields[1].defVal
+		}
+		val, err = promptField(reader, in, out, readPassword, daytonaFields[1], currentURL)
+		if err != nil {
+			return err
+		}
+		collected["_daytona_server_url"] = val
+
+	case "hetzner":
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  ── Hetzner ──")
+		fmt.Fprintln(out, "")
+
+		// SSH key name
+		val, err := promptField(reader, in, out, readPassword, hetznerFields[0], existingSandbox.Hetzner.SSHKey)
+		if err != nil {
+			return err
+		}
+		collected["_hetzner_ssh_key"] = val
+
+		// Server type
+		currentType := existingSandbox.Hetzner.ServerType
+		if currentType == "" {
+			currentType = hetznerFields[1].defVal
+		}
+		val, err = promptField(reader, in, out, readPassword, hetznerFields[1], currentType)
+		if err != nil {
+			return err
+		}
+		collected["_hetzner_server_type"] = val
 	}
-	val, err = promptField(reader, in, out, readPassword, daytonaFields[1], currentURL)
-	if err != nil {
-		return err
-	}
-	collected["_daytona_server_url"] = val
 
 	// ── API keys ──
 	fmt.Fprintln(out, "")
@@ -207,32 +272,55 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	}
 
 	// ── Save ──
-	daytonaCfg := &compound.DaytonaConfig{
-		APIKey:    collected["_daytona_api_key"],
-		ServerURL: collected["_daytona_server_url"],
-	}
-	if err := compound.SaveConfig(dir, daytonaCfg); err != nil {
-		return fmt.Errorf("saving daytona config: %w", err)
+
+	// Save provider-specific config
+	switch selectedProvider {
+	case "daytona":
+		daytonaCfg := &compound.DaytonaConfig{
+			APIKey:    collected["_daytona_api_key"],
+			ServerURL: collected["_daytona_server_url"],
+		}
+		if err := compound.SaveConfig(dir, daytonaCfg); err != nil {
+			return fmt.Errorf("saving daytona config: %w", err)
+		}
 	}
 
+	// Build and save sandbox config (provider + env + hetzner fields)
 	envVars := make(map[string]string)
 	for _, f := range sandboxEnvFields {
 		if v, ok := collected[f.key]; ok && v != "" {
 			envVars[f.key] = v
 		}
 	}
-	if len(envVars) > 0 {
-		sandboxCfg := &compound.SandboxConfig{Env: envVars}
-		if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
-			return fmt.Errorf("saving sandbox config: %w", err)
+
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: selectedProvider,
+		Env:      envVars,
+	}
+
+	if selectedProvider == "hetzner" {
+		sandboxCfg.Hetzner = compound.HetznerConfig{
+			SSHKey:     collected["_hetzner_ssh_key"],
+			ServerType: collected["_hetzner_server_type"],
 		}
+	}
+
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		return fmt.Errorf("saving sandbox config: %w", err)
 	}
 
 	// ── Summary ──
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "  ── Saved to .hal/config.yaml ──")
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  Daytona:    ✓ configured")
+	fmt.Fprintf(out, "  Provider:   %s\n", selectedProvider)
+
+	switch selectedProvider {
+	case "daytona":
+		fmt.Fprintln(out, "  Daytona:    ✓ configured")
+	case "hetzner":
+		fmt.Fprintf(out, "  Hetzner:    ✓ ssh-key=%s type=%s\n", collected["_hetzner_ssh_key"], collected["_hetzner_server_type"])
+	}
 
 	configuredCount := 0
 	for _, f := range sandboxEnvFields {
