@@ -297,3 +297,105 @@ func TestHetznerProvider_Status_Failure(t *testing.T) {
 		t.Errorf("error %q should contain 'hcloud server describe failed'", err.Error())
 	}
 }
+
+// writeHetznerState creates a sandbox.json with the given IP in a temp .hal dir.
+func writeHetznerState(t *testing.T, ip string) string {
+	t.Helper()
+	dir := t.TempDir()
+	state := &SandboxState{
+		Name:     "test-server",
+		Provider: "hetzner",
+		IP:       ip,
+	}
+	if err := SaveState(dir, state); err != nil {
+		t.Fatalf("failed to save test state: %v", err)
+	}
+	return dir
+}
+
+func TestHetznerProvider_SSH(t *testing.T) {
+	stateDir := writeHetznerState(t, "10.0.0.42")
+	hp := &HetznerProvider{StateDir: stateDir}
+
+	cmd, err := hp.SSH("test-server")
+	if err != nil {
+		t.Fatalf("SSH() unexpected error: %v", err)
+	}
+
+	// Verify args: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.0.0.42
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "root@10.0.0.42"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want)
+		}
+	}
+
+	// Verify stdio is attached
+	if cmd.Stdin == nil {
+		t.Error("Stdin should be set")
+	}
+	if cmd.Stdout == nil {
+		t.Error("Stdout should be set")
+	}
+	if cmd.Stderr == nil {
+		t.Error("Stderr should be set")
+	}
+}
+
+func TestHetznerProvider_SSH_NoIP(t *testing.T) {
+	stateDir := writeHetznerState(t, "")
+	hp := &HetznerProvider{StateDir: stateDir}
+
+	_, err := hp.SSH("test-server")
+	if err == nil {
+		t.Fatal("SSH() expected error for missing IP, got nil")
+	}
+	if !strings.Contains(err.Error(), "no IP address") {
+		t.Errorf("error %q should mention 'no IP address'", err.Error())
+	}
+}
+
+func TestHetznerProvider_SSH_NoState(t *testing.T) {
+	hp := &HetznerProvider{StateDir: t.TempDir()}
+
+	_, err := hp.SSH("test-server")
+	if err == nil {
+		t.Fatal("SSH() expected error for missing state, got nil")
+	}
+}
+
+func TestHetznerProvider_Exec(t *testing.T) {
+	stateDir := writeHetznerState(t, "10.0.0.42")
+	hp := &HetznerProvider{StateDir: stateDir}
+
+	cmd, err := hp.Exec("test-server", []string{"ls", "-la"})
+	if err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "root@10.0.0.42", "--", "ls", "-la"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want)
+		}
+	}
+}
+
+func TestHetznerProvider_Exec_NoIP(t *testing.T) {
+	stateDir := writeHetznerState(t, "")
+	hp := &HetznerProvider{StateDir: stateDir}
+
+	_, err := hp.Exec("test-server", []string{"ls"})
+	if err == nil {
+		t.Fatal("Exec() expected error for missing IP, got nil")
+	}
+	if !strings.Contains(err.Error(), "no IP address") {
+		t.Errorf("error %q should mention 'no IP address'", err.Error())
+	}
+}

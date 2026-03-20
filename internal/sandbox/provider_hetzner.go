@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -142,7 +141,7 @@ func (h *HetznerProvider) Delete(ctx context.Context, name string, out io.Writer
 }
 
 func (h *HetznerProvider) SSH(name string) (*exec.Cmd, error) {
-	state, err := LoadState(filepath.Join(h.StateDir, "sandbox.json"))
+	state, err := LoadState(h.StateDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
@@ -162,7 +161,7 @@ func (h *HetznerProvider) SSH(name string) (*exec.Cmd, error) {
 }
 
 func (h *HetznerProvider) Exec(name string, args []string) (*exec.Cmd, error) {
-	state, err := LoadState(filepath.Join(h.StateDir, "sandbox.json"))
+	state, err := LoadState(h.StateDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
