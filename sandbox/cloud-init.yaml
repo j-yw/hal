@@ -1,0 +1,45 @@
+#cloud-config
+# =============================================================================
+# Drop-in cloud-init for any VPS (Hetzner, DigitalOcean, AWS, etc.)
+# =============================================================================
+# Usage (Hetzner):
+#   hcloud server create --name dev --type cx22 --image ubuntu-22.04 \
+#     --ssh-key mine --user-data-from-file sandbox/cloud-init.yaml
+#
+# Usage (DigitalOcean):
+#   doctl compute droplet create dev --size s-2vcpu-4gb --image ubuntu-22-04-x64 \
+#     --ssh-keys <fingerprint> --user-data "$(cat sandbox/cloud-init.yaml)"
+#
+# After boot (~3 min), SSH in and everything is ready.
+# =============================================================================
+
+write_files:
+  - path: /root/.env
+    permissions: "0600"
+    content: |
+      # ── Fill in your values ──
+      # ANTHROPIC_API_KEY=sk-ant-...
+      # OPENAI_API_KEY=sk-...
+      # GITHUB_TOKEN=ghp_...
+      # GIT_USER_NAME=j-yw
+      # GIT_USER_EMAIL=32629001+j-yw@users.noreply.github.com
+      # TAILSCALE_AUTHKEY=tskey-auth-...
+      # TAILSCALE_HOSTNAME=hal-dev
+
+runcmd:
+  # Source env vars if populated
+  - |
+    if [ -f /root/.env ]; then
+      set -a
+      . /root/.env
+      set +a
+    fi
+  # Run the universal bootstrap
+  - curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash
+  # Start Tailscale if auth key is set
+  - |
+    if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &
+      sleep 3
+      tailscale up --authkey="$TAILSCALE_AUTHKEY" --ssh --hostname="${TAILSCALE_HOSTNAME:-hal-dev}"
+    fi
