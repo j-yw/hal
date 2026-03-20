@@ -276,6 +276,35 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.W
 	return nil
 }
 
+// refreshIP fetches the current public IP from doctl and updates the state file
+// if it has changed. Returns the current IP.
+func (d *DigitalOceanProvider) refreshIP(state *SandboxState) (string, error) {
+	target := d.resolveDropletTarget(state.Name)
+	cmd := d.commandContext(context.Background(), "doctl", "compute", "droplet", "get", target,
+		"--format", "ID,PublicIPv4",
+		"--no-header",
+	)
+	var outBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Run(); err != nil {
+		return state.IP, nil // fall back to stored IP on API failure
+	}
+
+	_, freshIP := parseDODropletInfo(outBuf.String())
+	if strings.TrimSpace(freshIP) == "" {
+		return state.IP, nil
+	}
+
+	if freshIP != state.IP {
+		state.IP = freshIP
+		// Best-effort update of state file
+		_ = SaveState(d.StateDir, state)
+	}
+	return freshIP, nil
+}
+
 func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
@@ -285,14 +314,19 @@ func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
-	if state.IP == "" {
-		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
+
+	ip, err := d.refreshIP(state)
+	if err != nil {
+		return nil, err
+	}
+	if ip == "" {
+		return nil, fmt.Errorf("no IP address found for %q", name)
 	}
 
 	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"root@"+state.IP,
+		"root@"+ip,
 	)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -309,14 +343,19 @@ func (d *DigitalOceanProvider) Exec(name string, args []string) (*exec.Cmd, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 	}
-	if state.IP == "" {
-		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
+
+	ip, err := d.refreshIP(state)
+	if err != nil {
+		return nil, err
+	}
+	if ip == "" {
+		return nil, fmt.Errorf("no IP address found for %q", name)
 	}
 
 	cmdArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"root@" + state.IP,
+		"root@" + ip,
 		"--",
 	}
 	cmdArgs = append(cmdArgs, args...)

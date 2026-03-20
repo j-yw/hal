@@ -127,12 +127,13 @@ PROFILE="${HOME_DIR}/.profile"
 if ! grep -q '/usr/local/go/bin' "$PROFILE" 2>/dev/null; then
   cat >> "$PROFILE" <<'GOPATH_EOF'
 
-# Go
-export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+# Go + local bin
+export PATH="/usr/local/go/bin:$HOME/go/bin:$HOME/.local/bin:$PATH"
 export GOPATH="$HOME/go"
 GOPATH_EOF
   ok "Go PATH added to .profile"
 fi
+mkdir -p "${HOME_DIR}/.local/bin"
 
 # ── npm global tools ────────────────────────────────────────────────────────
 step "Claude Code, Pi, Codex (npm)"
