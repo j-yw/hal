@@ -49,6 +49,16 @@ func LoadState(halDir string) (*SandboxState, error) {
 	if strings.TrimSpace(state.Name) == "" {
 		return nil, fmt.Errorf("invalid sandbox state: required field %q is empty", "name")
 	}
+
+	// Auto-migrate legacy state: default empty Provider to "daytona" and re-save
+	if state.Provider == "" {
+		state.Provider = "daytona"
+		if err := SaveState(halDir, &state); err != nil {
+			// Best-effort migration — log but don't fail the load
+			fmt.Fprintf(os.Stderr, "warning: failed to migrate sandbox state: %v\n", err)
+		}
+	}
+
 	return &state, nil
 }
 

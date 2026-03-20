@@ -34,6 +34,37 @@ type DaytonaConfig struct {
 	ServerURL string `yaml:"serverURL"`
 }
 
+// HetznerConfig contains Hetzner-specific sandbox settings.
+type HetznerConfig struct {
+	SSHKey     string `yaml:"sshKey"`
+	ServerType string `yaml:"serverType"`
+	Image      string `yaml:"image"`
+}
+
+// DigitalOceanConfig contains DigitalOcean-specific sandbox settings.
+type DigitalOceanConfig struct {
+	SSHKey string `yaml:"sshKey"`
+	Size   string `yaml:"size"`
+}
+
+// LightsailConfig contains AWS Lightsail-specific sandbox settings.
+type LightsailConfig struct {
+	Region           string `yaml:"region"`
+	AvailabilityZone string `yaml:"availabilityZone"`
+	Bundle           string `yaml:"bundle"`
+	KeyPairName      string `yaml:"keyPairName"`
+}
+
+// SandboxConfig contains sandbox configuration including provider selection and env vars.
+type SandboxConfig struct {
+	Provider          string             `yaml:"provider"`
+	TailscaleLockdown bool               `yaml:"tailscaleLockdown"`
+	Env               map[string]string  `yaml:"env"`
+	Hetzner           HetznerConfig      `yaml:"hetzner"`
+	DigitalOcean      DigitalOceanConfig `yaml:"digitalocean"`
+	Lightsail         LightsailConfig    `yaml:"lightsail"`
+}
+
 // rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.
 type rawDaytonaConfig struct {
 	APIKey    *string `yaml:"apiKey"`
@@ -236,6 +267,195 @@ func LoadDaytonaConfig(dir string) (*DaytonaConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// LoadSandboxConfig reads the sandbox: section from .hal/config.yaml.
+// If the file or section is missing, a config with Provider defaulting to "daytona" is returned.
+func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &SandboxConfig{Provider: "daytona", Env: map[string]string{}}, nil
+		}
+		return nil, err
+	}
+
+	var raw struct {
+		Sandbox struct {
+			Provider          *string           `yaml:"provider"`
+			TailscaleLockdown *bool             `yaml:"tailscaleLockdown"`
+			Env               map[string]string `yaml:"env"`
+			Hetzner           struct {
+				SSHKey     *string `yaml:"sshKey"`
+				ServerType *string `yaml:"serverType"`
+				Image      *string `yaml:"image"`
+			} `yaml:"hetzner"`
+			DigitalOcean struct {
+				SSHKey *string `yaml:"sshKey"`
+				Size   *string `yaml:"size"`
+			} `yaml:"digitalocean"`
+			Lightsail struct {
+				Region           *string `yaml:"region"`
+				AvailabilityZone *string `yaml:"availabilityZone"`
+				Bundle           *string `yaml:"bundle"`
+				KeyPairName      *string `yaml:"keyPairName"`
+			} `yaml:"lightsail"`
+		} `yaml:"sandbox"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+
+	if raw.Sandbox.Env == nil {
+		raw.Sandbox.Env = map[string]string{}
+	}
+
+	cfg := &SandboxConfig{
+		Provider: "daytona",
+		Env:      raw.Sandbox.Env,
+	}
+
+	if raw.Sandbox.TailscaleLockdown != nil {
+		cfg.TailscaleLockdown = *raw.Sandbox.TailscaleLockdown
+	}
+
+	if raw.Sandbox.Provider != nil && *raw.Sandbox.Provider != "" {
+		cfg.Provider = *raw.Sandbox.Provider
+	}
+	if raw.Sandbox.Hetzner.SSHKey != nil {
+		cfg.Hetzner.SSHKey = *raw.Sandbox.Hetzner.SSHKey
+	}
+	if raw.Sandbox.Hetzner.ServerType != nil {
+		cfg.Hetzner.ServerType = *raw.Sandbox.Hetzner.ServerType
+	}
+	if raw.Sandbox.Hetzner.Image != nil {
+		cfg.Hetzner.Image = *raw.Sandbox.Hetzner.Image
+	}
+	if raw.Sandbox.DigitalOcean.SSHKey != nil {
+		cfg.DigitalOcean.SSHKey = *raw.Sandbox.DigitalOcean.SSHKey
+	}
+	if raw.Sandbox.DigitalOcean.Size != nil {
+		cfg.DigitalOcean.Size = *raw.Sandbox.DigitalOcean.Size
+	}
+	if raw.Sandbox.Lightsail.Region != nil {
+		cfg.Lightsail.Region = *raw.Sandbox.Lightsail.Region
+	}
+	if raw.Sandbox.Lightsail.AvailabilityZone != nil {
+		cfg.Lightsail.AvailabilityZone = *raw.Sandbox.Lightsail.AvailabilityZone
+	}
+	if raw.Sandbox.Lightsail.Bundle != nil {
+		cfg.Lightsail.Bundle = *raw.Sandbox.Lightsail.Bundle
+	}
+	if raw.Sandbox.Lightsail.KeyPairName != nil {
+		cfg.Lightsail.KeyPairName = *raw.Sandbox.Lightsail.KeyPairName
+	}
+
+	return cfg, nil
+}
+
+// SaveSandboxConfig merges the given SandboxConfig into .hal/config.yaml without
+// clobbering other sections. It preserves existing sandbox.env keys not in the
+// new config and round-trips provider and hetzner fields.
+func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
+	halDir := filepath.Join(dir, template.HalDir)
+	configPath := filepath.Join(halDir, template.ConfigFile)
+
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	existing := make(map[string]interface{})
+	data, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &existing); err != nil {
+			return fmt.Errorf("parsing config: %w", err)
+		}
+	}
+
+	// Build env map — merge with existing
+	envMap := make(map[string]interface{})
+	if existingSandbox, ok := existing["sandbox"].(map[string]interface{}); ok {
+		if existingEnv, ok := existingSandbox["env"].(map[string]interface{}); ok {
+			for k, v := range existingEnv {
+				envMap[k] = v
+			}
+		}
+	}
+	for k, v := range sandbox.Env {
+		envMap[k] = v
+	}
+
+	sandboxMap := map[string]interface{}{
+		"provider":          sandbox.Provider,
+		"tailscaleLockdown": sandbox.TailscaleLockdown,
+		"env":               envMap,
+	}
+
+	// Only write hetzner section if any field is set
+	if sandbox.Hetzner.SSHKey != "" || sandbox.Hetzner.ServerType != "" || sandbox.Hetzner.Image != "" {
+		hetznerMap := map[string]interface{}{}
+		if sandbox.Hetzner.SSHKey != "" {
+			hetznerMap["sshKey"] = sandbox.Hetzner.SSHKey
+		}
+		if sandbox.Hetzner.ServerType != "" {
+			hetznerMap["serverType"] = sandbox.Hetzner.ServerType
+		}
+		if sandbox.Hetzner.Image != "" {
+			hetznerMap["image"] = sandbox.Hetzner.Image
+		}
+		sandboxMap["hetzner"] = hetznerMap
+	}
+
+	// Only write digitalocean section if any field is set
+	if sandbox.DigitalOcean.SSHKey != "" || sandbox.DigitalOcean.Size != "" {
+		doMap := map[string]interface{}{}
+		if sandbox.DigitalOcean.SSHKey != "" {
+			doMap["sshKey"] = sandbox.DigitalOcean.SSHKey
+		}
+		if sandbox.DigitalOcean.Size != "" {
+			doMap["size"] = sandbox.DigitalOcean.Size
+		}
+		sandboxMap["digitalocean"] = doMap
+	}
+
+	// Only write lightsail section if any field is set
+	if sandbox.Lightsail.Region != "" || sandbox.Lightsail.AvailabilityZone != "" || sandbox.Lightsail.Bundle != "" || sandbox.Lightsail.KeyPairName != "" {
+		lightsailMap := map[string]interface{}{}
+		if sandbox.Lightsail.Region != "" {
+			lightsailMap["region"] = sandbox.Lightsail.Region
+		}
+		if sandbox.Lightsail.AvailabilityZone != "" {
+			lightsailMap["availabilityZone"] = sandbox.Lightsail.AvailabilityZone
+		}
+		if sandbox.Lightsail.Bundle != "" {
+			lightsailMap["bundle"] = sandbox.Lightsail.Bundle
+		}
+		if sandbox.Lightsail.KeyPairName != "" {
+			lightsailMap["keyPairName"] = sandbox.Lightsail.KeyPairName
+		}
+		sandboxMap["lightsail"] = lightsailMap
+	}
+
+	existing["sandbox"] = sandboxMap
+
+	out, err := yaml.Marshal(existing)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, out, 0600); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	if err := os.Chmod(configPath, 0600); err != nil {
+		return fmt.Errorf("setting config permissions: %w", err)
+	}
+
+	return nil
 }
 
 // SaveConfig merges the given DaytonaConfig into .hal/config.yaml without clobbering

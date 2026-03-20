@@ -1,15 +1,26 @@
 ## hal sandbox setup
 
-Configure Daytona API credentials
+Configure sandbox credentials and environment
 
 ### Synopsis
 
-Configure Daytona API key and server URL.
+Interactive setup for sandbox credentials and environment variables.
 
-Prompts for API key (masked input) and server URL (with default).
-Credentials are saved to the daytona: section of .hal/config.yaml.
+First prompts for a provider:
+  (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
+  (2) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
+  (3) DigitalOcean — managed VPS via doctl (prompts for SSH key fingerprint, droplet size)
 
-Re-running setup overwrites previous credentials.
+Then prompts for shared environment variables:
+  • API keys (Anthropic, OpenAI) — masked input
+  • GitHub token — masked input
+  • Git identity (name, email)
+  • Tailscale auth key and hostname — for SSH from mobile
+
+All values are saved to .hal/config.yaml. Re-running setup lets you update
+individual values — press Enter to keep the current value.
+
+After setup, 'hal sandbox start' injects all configured env vars automatically.
 
 ```
 hal sandbox setup [flags]
@@ -29,5 +40,5 @@ hal sandbox setup [flags]
 
 ### SEE ALSO
 
-* [hal sandbox](hal_sandbox.md)	 - Manage Daytona sandboxes
+* [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments
 

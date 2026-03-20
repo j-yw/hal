@@ -57,6 +57,8 @@ check "pi"        pi --version
 check "codex"     codex --version
 check "hal"       hal version
 
+check "tailscale" tailscale version
+
 echo ""
 echo "── Claude Code Config ────────────────────────────────"
 if [ -f /root/.claude/settings.json ]; then

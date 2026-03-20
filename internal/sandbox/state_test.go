@@ -205,6 +205,8 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 
 	original := &SandboxState{
 		Name:        "hal-sandbox-implementation",
+		Provider:    "daytona",
+		IP:          "10.0.0.1",
 		SnapshotID:  "snap-123",
 		WorkspaceID: "ws-456",
 		Status:      "running",
@@ -223,6 +225,12 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	if loaded.Name != original.Name {
 		t.Errorf("Name: got %q, want %q", loaded.Name, original.Name)
 	}
+	if loaded.Provider != original.Provider {
+		t.Errorf("Provider: got %q, want %q", loaded.Provider, original.Provider)
+	}
+	if loaded.IP != original.IP {
+		t.Errorf("IP: got %q, want %q", loaded.IP, original.IP)
+	}
 	if loaded.SnapshotID != original.SnapshotID {
 		t.Errorf("SnapshotID: got %q, want %q", loaded.SnapshotID, original.SnapshotID)
 	}
@@ -234,5 +242,112 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 	if !loaded.CreatedAt.Equal(original.CreatedAt) {
 		t.Errorf("CreatedAt: got %v, want %v", loaded.CreatedAt, original.CreatedAt)
+	}
+}
+
+func TestLoadState_LegacyWithoutProvider(t *testing.T) {
+	halDir := t.TempDir()
+	// Legacy sandbox.json without provider or ip fields
+	content := `{
+  "name": "legacy-sandbox",
+  "snapshotId": "snap-old",
+  "workspaceId": "ws-old",
+  "status": "running",
+  "createdAt": "2026-02-14T12:00:00Z"
+}`
+	os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte(content), 0644)
+
+	state, err := LoadState(halDir)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if state.Name != "legacy-sandbox" {
+		t.Errorf("Name: got %q, want %q", state.Name, "legacy-sandbox")
+	}
+	// Provider should be auto-migrated to "daytona" for legacy files
+	if state.Provider != "daytona" {
+		t.Errorf("Provider: got %q, want %q", state.Provider, "daytona")
+	}
+	if state.IP != "" {
+		t.Errorf("IP: got %q, want empty for legacy state", state.IP)
+	}
+
+	// Verify the state was re-saved with provider field
+	reloaded, err := LoadState(halDir)
+	if err != nil {
+		t.Fatalf("LoadState (re-read) failed: %v", err)
+	}
+	if reloaded.Provider != "daytona" {
+		t.Errorf("Re-read Provider: got %q, want %q", reloaded.Provider, "daytona")
+	}
+}
+
+func TestLoadState_ExplicitProviderNotOverwritten(t *testing.T) {
+	halDir := t.TempDir()
+	// State with explicit provider: "hetzner" — migration must NOT overwrite
+	content := `{
+  "name": "hetzner-box",
+  "provider": "hetzner",
+  "ip": "203.0.113.10",
+  "status": "running",
+  "createdAt": "2026-03-20T10:00:00Z"
+}`
+	os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte(content), 0644)
+
+	state, err := LoadState(halDir)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if state.Provider != "hetzner" {
+		t.Errorf("Provider: got %q, want %q", state.Provider, "hetzner")
+	}
+	if state.IP != "203.0.113.10" {
+		t.Errorf("IP: got %q, want %q", state.IP, "203.0.113.10")
+	}
+
+	// Verify state file was NOT re-written (read raw JSON to check)
+	data, err := os.ReadFile(filepath.Join(halDir, template.SandboxFile))
+	if err != nil {
+		t.Fatalf("failed to read state file: %v", err)
+	}
+	// Original content should be preserved as-is (no re-save occurred)
+	if !strings.Contains(string(data), `"hetzner-box"`) {
+		t.Error("state file content was unexpectedly modified")
+	}
+}
+
+func TestSaveAndLoadRoundTrip_Hetzner(t *testing.T) {
+	halDir := t.TempDir()
+	created := time.Date(2026, 3, 20, 10, 0, 0, 0, time.UTC)
+
+	original := &SandboxState{
+		Name:      "hetzner-sandbox",
+		Provider:  "hetzner",
+		IP:        "192.168.1.100",
+		Status:    "running",
+		CreatedAt: created,
+	}
+
+	if err := SaveState(halDir, original); err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+
+	loaded, err := LoadState(halDir)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+
+	if loaded.Provider != "hetzner" {
+		t.Errorf("Provider: got %q, want %q", loaded.Provider, "hetzner")
+	}
+	if loaded.IP != "192.168.1.100" {
+		t.Errorf("IP: got %q, want %q", loaded.IP, "192.168.1.100")
+	}
+	// SnapshotID and WorkspaceID should be empty for Hetzner
+	if loaded.SnapshotID != "" {
+		t.Errorf("SnapshotID: got %q, want empty", loaded.SnapshotID)
+	}
+	if loaded.WorkspaceID != "" {
+		t.Errorf("WorkspaceID: got %q, want empty", loaded.WorkspaceID)
 	}
 }

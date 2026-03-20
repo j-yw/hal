@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -17,106 +17,86 @@ var sandboxDeleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "Delete a sandbox permanently",
 	Args:  noArgsValidation(),
-	Long: `Permanently delete a Daytona sandbox.
+	Long: `Permanently delete a sandbox.
 
-Reads the sandbox name from .hal/sandbox.json unless --name is specified.
-After successful deletion, sandbox.json is removed if it matches the deleted sandbox.`,
+By default, reads the sandbox name and provider from .hal/sandbox.json.
+Use --name to delete by explicit sandbox name when local state is missing.
+After successful deletion, sandbox.json is removed only when it matches the deleted sandbox.`,
 	Example: `  hal sandbox delete
-  hal sandbox delete --name hal-dev`,
+  hal sandbox delete --name hal-feature-auth`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name, _ := cmd.Flags().GetString("name")
-		return runSandboxDelete(".", name, os.Stdout, nil)
+		name, err := cmd.Flags().GetString("name")
+		if err != nil {
+			return fmt.Errorf("reading --name flag: %w", err)
+		}
+		return runSandboxDeleteWithDeps(".", os.Stdout, name, nil)
 	},
 }
 
 func init() {
-	sandboxDeleteCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to active sandbox from sandbox.json)")
-
 	sandboxCmd.AddCommand(sandboxDeleteCmd)
+	sandboxDeleteCmd.Flags().StringP("name", "n", "", "Delete sandbox by explicit name (without reading .hal/sandbox.json)")
 }
 
-// sandboxDeleter is a function that deletes a Daytona sandbox.
-// Injected in tests to avoid real SDK calls.
-type sandboxDeleter func(ctx context.Context, apiKey, serverURL, nameOrID string, out io.Writer) error
-
-// defaultSandboxDeleter creates a real Daytona client and calls DeleteSandbox.
-func defaultSandboxDeleter(ctx context.Context, apiKey, serverURL, nameOrID string, out io.Writer) error {
-	client, err := sandbox.NewClient(apiKey, serverURL)
-	if err != nil {
-		return fmt.Errorf("creating Daytona client: %w", err)
-	}
-	return sandbox.DeleteSandbox(ctx, client, nameOrID, out)
-}
-
-// runSandboxDelete contains the testable logic for the sandbox delete command.
-// dir is the project root directory (containing .hal/).
-// If deleter is nil, the real SDK client is used.
-func runSandboxDelete(dir, name string, out io.Writer, deleter sandboxDeleter) error {
+// runSandboxDeleteWithDeps contains the testable logic for the sandbox delete command.
+// If provider is nil, it is resolved from matching state (or sandbox config when deleting by explicit name).
+func runSandboxDeleteWithDeps(dir string, out io.Writer, targetName string, provider sandbox.Provider) error {
 	halDir := filepath.Join(dir, template.HalDir)
-	if _, err := os.Stat(halDir); os.IsNotExist(err) {
-		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+
+	deleteName := strings.TrimSpace(targetName)
+	var state *sandbox.SandboxState
+	var err error
+
+	if deleteName == "" {
+		state, err = sandbox.LoadState(halDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
+			}
+			return fmt.Errorf("loading sandbox state: %w", err)
+		}
+		deleteName = state.Name
+	} else {
+		state, err = sandbox.LoadState(halDir)
+		if err != nil && !os.IsNotExist(err) {
+			// Best-effort state load: delete-by-name should still work without local state.
+			state = nil
+		}
 	}
 
-	// Resolve sandbox name from state file if not provided.
-	// Track active state (if any) so we only clear it when deleting that sandbox.
-	var activeState *sandbox.SandboxState
-	if name == "" {
-		state, err := sandbox.LoadState(halDir)
+	if provider == nil {
+		provider, err = resolveDeleteProvider(dir, deleteName, state, resolveProviderFromState, resolveProviderFromName)
 		if err != nil {
 			return err
 		}
-		activeState = state
-		name = state.Name
-	} else {
-		// Explicit --name should not depend on local sandbox.json health.
-		// Load state best-effort so we can clean it up only if it matches.
-		if state, err := sandbox.LoadState(halDir); err == nil {
-			activeState = state
-		}
 	}
 
-	// Load config and ensure auth
-	cfg, err := compound.LoadDaytonaConfig(dir)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	if err := sandbox.EnsureAuth(cfg.APIKey, func() error {
-		return runSandboxAutoSetup(dir, out)
-	}, func() (string, error) {
-		reloaded, err := compound.LoadDaytonaConfig(dir)
-		if err != nil {
-			return "", err
-		}
-		return reloaded.APIKey, nil
-	}); err != nil {
-		return err
-	}
-
-	// Re-read config in case EnsureAuth triggered setup
-	cfg, err = compound.LoadDaytonaConfig(dir)
-	if err != nil {
-		return fmt.Errorf("reloading config: %w", err)
-	}
-
-	fmt.Fprintf(out, "Deleting sandbox %q...\n", name)
-
-	if deleter == nil {
-		deleter = defaultSandboxDeleter
-	}
+	fmt.Fprintf(out, "Deleting sandbox %q...\n", deleteName)
 
 	ctx := context.Background()
-	if err := deleter(ctx, cfg.APIKey, cfg.ServerURL, name, out); err != nil {
+	if err := provider.Delete(ctx, deleteName, out); err != nil {
 		return fmt.Errorf("sandbox delete failed: %w", err)
 	}
 
-	// Remove sandbox.json only when deleting the tracked active sandbox.
-	if activeState != nil && (activeState.Name == name || activeState.WorkspaceID == name) {
+	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
 		if err := sandbox.RemoveState(halDir); err != nil {
 			return fmt.Errorf("removing sandbox state: %w", err)
 		}
 	}
 
-	fmt.Fprintf(out, "Sandbox %q deleted.\n", name)
+	fmt.Fprintf(out, "Sandbox %q deleted.\n", deleteName)
 	return nil
+}
+
+func resolveDeleteProvider(
+	dir string,
+	deleteName string,
+	state *sandbox.SandboxState,
+	stateResolver func(string, *sandbox.SandboxState) (sandbox.Provider, error),
+	nameResolver func(string, string) (sandbox.Provider, error),
+) (sandbox.Provider, error) {
+	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
+		return stateResolver(dir, state)
+	}
+	return nameResolver(dir, deleteName)
 }

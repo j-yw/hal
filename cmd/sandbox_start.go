@@ -19,93 +19,108 @@ var sandboxStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Create and start a sandbox",
 	Args:  noArgsValidation(),
-	Long: `Create and start a Daytona sandbox.
+	Long: `Create and start a sandbox using the configured provider (Daytona, Hetzner, or DigitalOcean).
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
 Use --name to override the default name.
 
-hal always starts from the template snapshot "hal".
-If "hal" does not exist, it is created from sandbox/Dockerfile with context ".".`,
+Environment variables from .hal/config.yaml sandbox.env section are passed to the provider.
+Additional -e/--env flags overlay config values.`,
 	Example: `  hal sandbox start
-  hal sandbox start --name hal-dev`,
+  hal sandbox start --name hal-dev
+  hal sandbox start -n dev -e TAILSCALE_AUTHKEY=tskey-auth-xxx -e ANTHROPIC_API_KEY=sk-ant-xxx`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
-		return runSandboxStartWithDeps(".", name, os.Stdout, nil, nil, nil, nil)
+		envSlice, _ := cmd.Flags().GetStringArray("env")
+		envVars := parseEnvFlags(envSlice)
+		return runSandboxStartWithDeps(".", name, envVars, os.Stdout, nil, nil)
 	},
 }
 
+var resolveSandboxProvider = sandbox.ProviderFromConfig
+
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
+	sandboxStartCmd.Flags().StringArrayP("env", "e", nil, "environment variables (format: KEY=VALUE, can be repeated)")
 	sandboxCmd.AddCommand(sandboxStartCmd)
 }
 
-// sandboxStarter is a function that creates a Daytona client and creates a sandbox.
-// Injected in tests to avoid real SDK calls.
-type sandboxStarter func(ctx context.Context, apiKey, serverURL, name, snapshotID string, out io.Writer) (*sandbox.CreateSandboxResult, error)
-
-// defaultSandboxStarter creates a real Daytona client and calls CreateSandbox.
-func defaultSandboxStarter(ctx context.Context, apiKey, serverURL, name, snapshotID string, out io.Writer) (*sandbox.CreateSandboxResult, error) {
-	client, err := sandbox.NewClient(apiKey, serverURL)
-	if err != nil {
-		return nil, fmt.Errorf("creating Daytona client: %w", err)
+// parseEnvFlags parses a slice of "KEY=VALUE" strings into a map.
+func parseEnvFlags(envSlice []string) map[string]string {
+	if len(envSlice) == 0 {
+		return nil
 	}
-	return sandbox.CreateSandbox(ctx, client, name, snapshotID, out)
+	envVars := make(map[string]string, len(envSlice))
+	for _, e := range envSlice {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envVars[parts[0]] = parts[1]
+		}
+	}
+	return envVars
 }
 
 // branchResolver is a function that returns the current git branch name.
 // Injected in tests to avoid depending on actual git state.
 type branchResolver func() (string, error)
 
-// runSandboxStart contains the testable logic for the sandbox start command.
-// dir is the project root directory (containing .hal/).
-// If starter is nil, the real SDK client is used.
-// If getBranch is nil, compound.CurrentBranch is used.
-func runSandboxStart(dir, name string, out io.Writer, starter sandboxStarter, getBranch branchResolver) error {
-	return runSandboxStartWithDeps(dir, name, out, starter, getBranch, nil, nil)
+// startDeps holds injectable dependencies for runSandboxStartWithDeps.
+type startDeps struct {
+	provider  sandbox.Provider
+	getBranch branchResolver
 }
 
 // runSandboxStartWithDeps contains the testable logic for the sandbox start command.
 // dir is the project root directory (containing .hal/).
-// If starter is nil, the real SDK client is used.
+// If provider is nil, it is resolved from config via ProviderFromConfig.
 // If getBranch is nil, compound.CurrentBranch is used.
-// If lister or dockerfileCreator are nil, the real SDK client is used.
 func runSandboxStartWithDeps(
 	dir, name string,
+	envVars map[string]string,
 	out io.Writer,
-	starter sandboxStarter,
+	provider sandbox.Provider,
 	getBranch branchResolver,
-	lister snapshotLister,
-	dockerfileCreator snapshotFromDockerfileCreator,
 ) error {
 	halDir := filepath.Join(dir, template.HalDir)
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
 	}
 
-	// Load config and ensure auth
-	cfg, err := compound.LoadDaytonaConfig(dir)
+	// Load sandbox config (provider, env, hetzner settings)
+	sandboxCfg, err := compound.LoadSandboxConfig(dir)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return fmt.Errorf("loading sandbox config: %w", err)
 	}
 
-	if err := sandbox.EnsureAuth(cfg.APIKey, func() error {
-		return runSandboxAutoSetup(dir, out)
-	}, func() (string, error) {
-		reloaded, err := compound.LoadDaytonaConfig(dir)
+	// Resolve provider if not injected
+	if provider == nil {
+		dayCfg, err := compound.LoadDaytonaConfig(dir)
 		if err != nil {
-			return "", err
+			return fmt.Errorf("loading config: %w", err)
 		}
-		return reloaded.APIKey, nil
-	}); err != nil {
-		return err
+
+		provCfg := sandbox.ProviderConfig{
+			DaytonaAPIKey:            dayCfg.APIKey,
+			DaytonaServerURL:         dayCfg.ServerURL,
+			HetznerSSHKey:            sandboxCfg.Hetzner.SSHKey,
+			HetznerServerType:        sandboxCfg.Hetzner.ServerType,
+			HetznerImage:             sandboxCfg.Hetzner.Image,
+			DigitalOceanSSHKey:       sandboxCfg.DigitalOcean.SSHKey,
+			DigitalOceanSize:         sandboxCfg.DigitalOcean.Size,
+			LightsailRegion:          sandboxCfg.Lightsail.Region,
+			LightsailAvailabilityZone: sandboxCfg.Lightsail.AvailabilityZone,
+			LightsailBundle:          sandboxCfg.Lightsail.Bundle,
+			LightsailKeyPairName:     sandboxCfg.Lightsail.KeyPairName,
+			TailscaleLockdown:        sandboxCfg.TailscaleLockdown,
+			StateDir:                 halDir,
+		}
+		provider, err = resolveSandboxProvider(sandboxCfg.Provider, provCfg)
+		if err != nil {
+			return fmt.Errorf("resolving provider: %w", err)
+		}
 	}
 
-	// Re-read config in case EnsureAuth triggered setup
-	cfg, err = compound.LoadDaytonaConfig(dir)
-	if err != nil {
-		return fmt.Errorf("reloading config: %w", err)
-	}
-
+	// Resolve sandbox name
 	name = strings.TrimSpace(name)
 	if name == "" {
 		if getBranch == nil {
@@ -118,35 +133,62 @@ func runSandboxStartWithDeps(
 		name = sandbox.SandboxNameFromBranch(branch)
 	}
 
-	snapshotID, err := resolveTemplateSnapshot(dir, cfg.APIKey, cfg.ServerURL, out, lister, dockerfileCreator)
-	if err != nil {
-		return fmt.Errorf("resolving template snapshot: %w", err)
+	// Merge env vars: config values + CLI overrides
+	mergedEnv := make(map[string]string)
+	for k, v := range sandboxCfg.Env {
+		mergedEnv[k] = v
+	}
+	for k, v := range envVars {
+		mergedEnv[k] = v
+	}
+	if len(mergedEnv) == 0 {
+		mergedEnv = nil
 	}
 
-	fmt.Fprintf(out, "Starting sandbox %q from template snapshot %q (%s)...\n", name, sandboxTemplateSnapshotName, snapshotID)
+	if sandboxCfg.TailscaleLockdown {
+		authKey := strings.TrimSpace(mergedEnv["TAILSCALE_AUTHKEY"])
+		if authKey == "" {
+			return fmt.Errorf("tailscale lockdown requires TAILSCALE_AUTHKEY (set sandbox.env.TAILSCALE_AUTHKEY or pass --env TAILSCALE_AUTHKEY=...)")
+		}
+	}
 
-	if starter == nil {
-		starter = defaultSandboxStarter
+	envCount := len(mergedEnv)
+	if envCount > 0 {
+		fmt.Fprintf(out, "Starting sandbox %q (%s) with %d env vars...\n", name, sandboxCfg.Provider, envCount)
+	} else {
+		fmt.Fprintf(out, "Starting sandbox %q (%s)...\n", name, sandboxCfg.Provider)
 	}
 
 	ctx := context.Background()
-	result, err := starter(ctx, cfg.APIKey, cfg.ServerURL, name, snapshotID, out)
+	result, err := provider.Create(ctx, name, mergedEnv, out)
 	if err != nil {
 		return fmt.Errorf("sandbox creation failed: %w", err)
 	}
 
-	// Save state
+	// Save state with provider and IP
 	state := &sandbox.SandboxState{
 		Name:        result.Name,
-		SnapshotID:  snapshotID,
+		Provider:    sandboxCfg.Provider,
+		IP:          result.IP,
+		TailscaleIP: result.TailscaleIP,
 		WorkspaceID: result.ID,
-		Status:      result.Status,
 		CreatedAt:   time.Now(),
 	}
 	if err := sandbox.SaveState(halDir, state); err != nil {
 		return fmt.Errorf("saving sandbox state: %w", err)
 	}
 
-	fmt.Fprintf(out, "Sandbox started: %s (status: %s)\n", result.Name, result.Status)
+	fmt.Fprintf(out, "Sandbox started: %s (provider: %s)\n", result.Name, sandboxCfg.Provider)
+	if result.IP != "" {
+		if sandboxCfg.TailscaleLockdown {
+			fmt.Fprintf(out, "  Public IP:    %s (blocked -- Tailscale only)\n", result.IP)
+		} else {
+			fmt.Fprintf(out, "  Public IP:    %s\n", result.IP)
+		}
+	}
+	if result.TailscaleIP != "" {
+		fmt.Fprintf(out, "  Tailscale IP: %s\n", result.TailscaleIP)
+		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
+	}
 	return nil
 }

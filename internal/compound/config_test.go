@@ -693,3 +693,358 @@ daytona:
 		}
 	})
 }
+
+func TestLoadSandboxConfig_MissingFile(t *testing.T) {
+	t.Run("non-existent directory returns defaults with daytona provider", func(t *testing.T) {
+		cfg, err := LoadSandboxConfig(filepath.Join(t.TempDir(), "does-not-exist"))
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if cfg.Provider != "daytona" {
+			t.Errorf("Provider = %q, want %q", cfg.Provider, "daytona")
+		}
+		if len(cfg.Env) != 0 {
+			t.Errorf("Env length = %d, want 0", len(cfg.Env))
+		}
+	})
+
+	t.Run("directory exists but no config.yaml returns defaults", func(t *testing.T) {
+		cfg, err := LoadSandboxConfig(t.TempDir())
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if cfg.Provider != "daytona" {
+			t.Errorf("Provider = %q, want %q", cfg.Provider, "daytona")
+		}
+	})
+}
+
+func TestLoadSandboxConfig_ValidYAML(t *testing.T) {
+	tests := []struct {
+		name           string
+		yaml           string
+		wantProvider   string
+		wantEnvCount   int
+		wantSSHKey     string
+		wantServerType string
+		wantImage      string
+		wantLSRegion   string
+		wantLSAZ       string
+		wantLSBundle   string
+		wantLSKeyPair  string
+	}{
+		{
+			name:         "missing provider defaults to daytona",
+			yaml:         "engine: claude\n",
+			wantProvider: "daytona",
+		},
+		{
+			name:         "empty sandbox section defaults provider to daytona",
+			yaml:         "sandbox:\n",
+			wantProvider: "daytona",
+		},
+		{
+			name: "explicit daytona provider",
+			yaml: `sandbox:
+  provider: daytona
+  env:
+    KEY: value
+`,
+			wantProvider: "daytona",
+			wantEnvCount: 1,
+		},
+		{
+			name: "hetzner provider with full config",
+			yaml: `sandbox:
+  provider: hetzner
+  hetzner:
+    sshKey: my-key
+    serverType: cx22
+    image: ubuntu-24.04
+  env:
+    A: "1"
+    B: "2"
+`,
+			wantProvider:   "hetzner",
+			wantEnvCount:   2,
+			wantSSHKey:     "my-key",
+			wantServerType: "cx22",
+			wantImage:      "ubuntu-24.04",
+		},
+		{
+			name: "hetzner with partial config",
+			yaml: `sandbox:
+  provider: hetzner
+  hetzner:
+    sshKey: partial-key
+`,
+			wantProvider: "hetzner",
+			wantSSHKey:   "partial-key",
+		},
+		{
+			name: "lightsail provider with full config",
+			yaml: `sandbox:
+  provider: lightsail
+  lightsail:
+    region: us-west-2
+    availabilityZone: us-west-2a
+    bundle: small_3_0
+    keyPairName: my-ls-key
+`,
+			wantProvider:  "lightsail",
+			wantLSRegion:  "us-west-2",
+			wantLSAZ:      "us-west-2a",
+			wantLSBundle:  "small_3_0",
+			wantLSKeyPair: "my-ls-key",
+		},
+		{
+			name: "explicit empty provider defaults to daytona",
+			yaml: `sandbox:
+  provider: ""
+`,
+			wantProvider: "daytona",
+		},
+		{
+			name: "sandbox alongside other sections",
+			yaml: `engine: claude
+auto:
+  reportsDir: .hal/reports
+sandbox:
+  provider: hetzner
+  hetzner:
+    sshKey: alongside-key
+    serverType: cpx11
+`,
+			wantProvider:   "hetzner",
+			wantSSHKey:     "alongside-key",
+			wantServerType: "cpx11",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, ".hal")
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("Failed to create .hal dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(tt.yaml), 0644); err != nil {
+				t.Fatalf("Failed to write config.yaml: %v", err)
+			}
+
+			cfg, err := LoadSandboxConfig(dir)
+			if err != nil {
+				t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+			}
+			if cfg.Provider != tt.wantProvider {
+				t.Errorf("Provider = %q, want %q", cfg.Provider, tt.wantProvider)
+			}
+			if len(cfg.Env) != tt.wantEnvCount {
+				t.Errorf("Env length = %d, want %d", len(cfg.Env), tt.wantEnvCount)
+			}
+			if cfg.Hetzner.SSHKey != tt.wantSSHKey {
+				t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, tt.wantSSHKey)
+			}
+			if cfg.Hetzner.ServerType != tt.wantServerType {
+				t.Errorf("Hetzner.ServerType = %q, want %q", cfg.Hetzner.ServerType, tt.wantServerType)
+			}
+			if cfg.Hetzner.Image != tt.wantImage {
+				t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, tt.wantImage)
+			}
+			if cfg.Lightsail.Region != tt.wantLSRegion {
+				t.Errorf("Lightsail.Region = %q, want %q", cfg.Lightsail.Region, tt.wantLSRegion)
+			}
+			if cfg.Lightsail.AvailabilityZone != tt.wantLSAZ {
+				t.Errorf("Lightsail.AvailabilityZone = %q, want %q", cfg.Lightsail.AvailabilityZone, tt.wantLSAZ)
+			}
+			if cfg.Lightsail.Bundle != tt.wantLSBundle {
+				t.Errorf("Lightsail.Bundle = %q, want %q", cfg.Lightsail.Bundle, tt.wantLSBundle)
+			}
+			if cfg.Lightsail.KeyPairName != tt.wantLSKeyPair {
+				t.Errorf("Lightsail.KeyPairName = %q, want %q", cfg.Lightsail.KeyPairName, tt.wantLSKeyPair)
+			}
+		})
+	}
+}
+
+func TestSaveSandboxConfig_RoundTrip(t *testing.T) {
+	t.Run("round-trips provider and hetzner fields", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := &SandboxConfig{
+			Provider: "hetzner",
+			Env:      map[string]string{"KEY": "value"},
+			Hetzner: HetznerConfig{
+				SSHKey:     "my-ssh-key",
+				ServerType: "cx22",
+				Image:      "ubuntu-24.04",
+			},
+		}
+
+		if err := SaveSandboxConfig(dir, cfg); err != nil {
+			t.Fatalf("SaveSandboxConfig() unexpected error: %v", err)
+		}
+
+		loaded, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if loaded.Provider != "hetzner" {
+			t.Errorf("Provider = %q, want %q", loaded.Provider, "hetzner")
+		}
+		if loaded.Env["KEY"] != "value" {
+			t.Errorf("Env[KEY] = %q, want %q", loaded.Env["KEY"], "value")
+		}
+		if loaded.Hetzner.SSHKey != "my-ssh-key" {
+			t.Errorf("Hetzner.SSHKey = %q, want %q", loaded.Hetzner.SSHKey, "my-ssh-key")
+		}
+		if loaded.Hetzner.ServerType != "cx22" {
+			t.Errorf("Hetzner.ServerType = %q, want %q", loaded.Hetzner.ServerType, "cx22")
+		}
+		if loaded.Hetzner.Image != "ubuntu-24.04" {
+			t.Errorf("Hetzner.Image = %q, want %q", loaded.Hetzner.Image, "ubuntu-24.04")
+		}
+	})
+
+	t.Run("round-trips lightsail fields", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := &SandboxConfig{
+			Provider: "lightsail",
+			Env:      map[string]string{"TOKEN": "abc"},
+			Lightsail: LightsailConfig{
+				Region:           "us-east-1",
+				AvailabilityZone: "us-east-1a",
+				Bundle:           "small_3_0",
+				KeyPairName:      "my-keypair",
+			},
+		}
+
+		if err := SaveSandboxConfig(dir, cfg); err != nil {
+			t.Fatalf("SaveSandboxConfig() unexpected error: %v", err)
+		}
+
+		loaded, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if loaded.Provider != "lightsail" {
+			t.Errorf("Provider = %q, want %q", loaded.Provider, "lightsail")
+		}
+		if loaded.Env["TOKEN"] != "abc" {
+			t.Errorf("Env[TOKEN] = %q, want %q", loaded.Env["TOKEN"], "abc")
+		}
+		if loaded.Lightsail.Region != "us-east-1" {
+			t.Errorf("Lightsail.Region = %q, want %q", loaded.Lightsail.Region, "us-east-1")
+		}
+		if loaded.Lightsail.AvailabilityZone != "us-east-1a" {
+			t.Errorf("Lightsail.AvailabilityZone = %q, want %q", loaded.Lightsail.AvailabilityZone, "us-east-1a")
+		}
+		if loaded.Lightsail.Bundle != "small_3_0" {
+			t.Errorf("Lightsail.Bundle = %q, want %q", loaded.Lightsail.Bundle, "small_3_0")
+		}
+		if loaded.Lightsail.KeyPairName != "my-keypair" {
+			t.Errorf("Lightsail.KeyPairName = %q, want %q", loaded.Lightsail.KeyPairName, "my-keypair")
+		}
+	})
+
+	t.Run("round-trips daytona provider without hetzner section", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := &SandboxConfig{
+			Provider: "daytona",
+			Env:      map[string]string{"TOKEN": "abc"},
+		}
+
+		if err := SaveSandboxConfig(dir, cfg); err != nil {
+			t.Fatalf("SaveSandboxConfig() unexpected error: %v", err)
+		}
+
+		loaded, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if loaded.Provider != "daytona" {
+			t.Errorf("Provider = %q, want %q", loaded.Provider, "daytona")
+		}
+		if loaded.Env["TOKEN"] != "abc" {
+			t.Errorf("Env[TOKEN] = %q, want %q", loaded.Env["TOKEN"], "abc")
+		}
+		// Hetzner fields should be empty
+		if loaded.Hetzner.SSHKey != "" {
+			t.Errorf("Hetzner.SSHKey = %q, want empty", loaded.Hetzner.SSHKey)
+		}
+	})
+
+	t.Run("preserves unrelated config sections", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+
+		existingYAML := `engine: pi
+auto:
+  reportsDir: custom/reports
+  branchPrefix: feature/
+  maxIterations: 10
+daytona:
+  apiKey: "keep-this"
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		cfg := &SandboxConfig{
+			Provider: "hetzner",
+			Env:      map[string]string{"NEW": "val"},
+			Hetzner:  HetznerConfig{SSHKey: "test-key"},
+		}
+		if err := SaveSandboxConfig(dir, cfg); err != nil {
+			t.Fatalf("SaveSandboxConfig() unexpected error: %v", err)
+		}
+
+		// Verify auto section was not clobbered
+		autoCfg, err := LoadConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadConfig() unexpected error: %v", err)
+		}
+		if autoCfg.ReportsDir != "custom/reports" {
+			t.Errorf("ReportsDir = %q, want %q", autoCfg.ReportsDir, "custom/reports")
+		}
+
+		// Verify daytona section was not clobbered
+		dayCfg, err := LoadDaytonaConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
+		}
+		if dayCfg.APIKey != "keep-this" {
+			t.Errorf("APIKey = %q, want %q", dayCfg.APIKey, "keep-this")
+		}
+
+		// Verify sandbox was saved
+		sandboxCfg, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if sandboxCfg.Provider != "hetzner" {
+			t.Errorf("Provider = %q, want %q", sandboxCfg.Provider, "hetzner")
+		}
+		if sandboxCfg.Hetzner.SSHKey != "test-key" {
+			t.Errorf("Hetzner.SSHKey = %q, want %q", sandboxCfg.Hetzner.SSHKey, "test-key")
+		}
+	})
+}
+
+func TestLoadSandboxConfig_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("Failed to create .hal dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(":::not yaml"), 0644); err != nil {
+		t.Fatalf("Failed to write config.yaml: %v", err)
+	}
+
+	_, err := LoadSandboxConfig(dir)
+	if err == nil {
+		t.Fatal("LoadSandboxConfig() expected error for invalid YAML, got nil")
+	}
+}
