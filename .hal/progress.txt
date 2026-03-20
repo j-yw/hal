@@ -255,3 +255,13 @@
   - When adding a new provider, update 6 places in `runSandboxSetup`: provider choice prompt, default choice switch, selected provider switch, credentials case, save block, and summary output.
   - Test inputs for DO use `digitaloceanSetupInput(sshKey, size)` helper — follows the same pattern as `daytonaSetupInput` and `hetznerSetupInput`.
 ---
+
+## [2026-03-20] - [US-004] Unit tests for DigitalOcean provider and config
+- What was implemented: Comprehensive unit tests in `internal/sandbox/provider_digitalocean_test.go` covering: Create arg assembly (--size, --image, --ssh-keys, --user-data-file, --wait), Delete arg assembly (--force), Stop arg assembly (droplet-action shutdown), Status arg assembly (--format ID,Name,Status,PublicIPv4), doctl-not-found error path (all 6 methods), ProviderFromConfig field wiring, SSH/Exec with state-based IP resolution, missing IP/state errors, stderr wrapping on failure, and cloud-init generation.
+- Files changed: `internal/sandbox/provider_digitalocean_test.go`
+- **Learnings for future iterations:**
+  - All doctl calls are mocked via the `cmdContext` injection pattern — `exec.CommandContext(ctx, "true")` for success, `exec.CommandContext(ctx, "echo", "10.20.30.40")` for IP output.
+  - The doctl-not-found test uses `t.Setenv("PATH", "")` to ensure `exec.LookPath` fails — no real doctl binary needed.
+  - SSH/Exec tests write a `sandbox.json` to a temp dir to simulate state — keeps tests isolated from real `.hal/` directories.
+  - The stderr wrapping test uses `sh -c "echo ... >&2; exit 1"` to simulate doctl failure with stderr output.
+---
