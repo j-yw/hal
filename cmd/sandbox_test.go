@@ -446,7 +446,7 @@ func TestRunSandboxSetup(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "4\n",
+			stdinInput: "9\n",
 			wantErr:    "invalid provider choice",
 		},
 		{

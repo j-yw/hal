@@ -46,6 +46,7 @@ First prompts for a provider:
   (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
   (2) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
   (3) DigitalOcean — managed VPS via doctl (prompts for SSH key fingerprint, droplet size)
+  (4) AWS Lightsail — lightweight VPS via aws CLI (prompts for key pair name, bundle, region)
 
 Then prompts for shared environment variables:
   • API keys (Anthropic, OpenAI) — masked input
@@ -92,6 +93,10 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 		provCfg.HetznerImage = sandboxCfg.Hetzner.Image
 		provCfg.DigitalOceanSSHKey = sandboxCfg.DigitalOcean.SSHKey
 		provCfg.DigitalOceanSize = sandboxCfg.DigitalOcean.Size
+		provCfg.LightsailRegion = sandboxCfg.Lightsail.Region
+		provCfg.LightsailAvailabilityZone = sandboxCfg.Lightsail.AvailabilityZone
+		provCfg.LightsailBundle = sandboxCfg.Lightsail.Bundle
+		provCfg.LightsailKeyPairName = sandboxCfg.Lightsail.KeyPairName
 	}
 
 	return sandbox.ProviderFromConfig(state.Provider, provCfg)
@@ -123,6 +128,10 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 		provCfg.HetznerImage = sandboxCfg.Hetzner.Image
 		provCfg.DigitalOceanSSHKey = sandboxCfg.DigitalOcean.SSHKey
 		provCfg.DigitalOceanSize = sandboxCfg.DigitalOcean.Size
+		provCfg.LightsailRegion = sandboxCfg.Lightsail.Region
+		provCfg.LightsailAvailabilityZone = sandboxCfg.Lightsail.AvailabilityZone
+		provCfg.LightsailBundle = sandboxCfg.Lightsail.Bundle
+		provCfg.LightsailKeyPairName = sandboxCfg.Lightsail.KeyPairName
 	}
 
 	providerName := sandboxCfg.Provider
@@ -188,6 +197,14 @@ var digitaloceanFields = []setupField{
 	{key: "_do_size", label: "Droplet size", defVal: "s-2vcpu-4gb"},
 }
 
+// lightsail-specific setup fields
+var lightsailFields = []setupField{
+	{key: "_ls_key_pair", label: "Key pair name (aws lightsail get-key-pairs)", required: true},
+	{key: "_ls_bundle", label: "Bundle", defVal: "small_3_0"},
+	{key: "_ls_region", label: "Region", defVal: "us-east-1"},
+	{key: "_ls_az", label: "Availability zone", defVal: "us-east-1a"},
+}
+
 // runSandboxSetup contains the testable logic for the sandbox setup command.
 // dir is the project root directory (containing .hal/).
 func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passwordReader, lookPath lookPathFunc) error {
@@ -222,8 +239,10 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		defaultChoice = "2"
 	case "digitalocean":
 		defaultChoice = "3"
+	case "lightsail":
+		defaultChoice = "4"
 	}
-	fmt.Fprintf(out, "  (1) Daytona  (2) Hetzner  (3) DigitalOcean [%s]: ", defaultChoice)
+	fmt.Fprintf(out, "  (1) Daytona  (2) Hetzner  (3) DigitalOcean  (4) Lightsail [%s]: ", defaultChoice)
 	line, _ := reader.ReadString('\n')
 	choice := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
 	if choice == "" {
@@ -238,14 +257,21 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		selectedProvider = "hetzner"
 	case "3":
 		selectedProvider = "digitalocean"
+	case "4":
+		selectedProvider = "lightsail"
 	default:
-		return fmt.Errorf("invalid provider choice %q — enter 1, 2, or 3", choice)
+		return fmt.Errorf("invalid provider choice %q — enter 1, 2, 3, or 4", choice)
 	}
 
-	// DigitalOcean requires doctl on PATH — check before prompting
+	// Check CLI availability before prompting
 	if selectedProvider == "digitalocean" {
 		if _, err := lookPath("doctl"); err != nil {
 			return fmt.Errorf("doctl not found on PATH: install from https://docs.digitalocean.com/reference/doctl/how-to/install/ and run 'doctl auth init'")
+		}
+	}
+	if selectedProvider == "lightsail" {
+		if _, err := lookPath("aws"); err != nil {
+			return fmt.Errorf("aws CLI not found on PATH: install with 'brew install awscli' and run 'aws configure'")
 		}
 	}
 
@@ -333,6 +359,51 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 			return err
 		}
 		collected["_do_size"] = val
+
+	case "lightsail":
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  ── AWS Lightsail ──")
+		fmt.Fprintln(out, "")
+
+		// Key pair name
+		val, err := promptField(reader, in, out, readPassword, lightsailFields[0], existingSandbox.Lightsail.KeyPairName)
+		if err != nil {
+			return err
+		}
+		collected["_ls_key_pair"] = val
+
+		// Bundle
+		currentBundle := existingSandbox.Lightsail.Bundle
+		if currentBundle == "" {
+			currentBundle = lightsailFields[1].defVal
+		}
+		val, err = promptField(reader, in, out, readPassword, lightsailFields[1], currentBundle)
+		if err != nil {
+			return err
+		}
+		collected["_ls_bundle"] = val
+
+		// Region
+		currentRegion := existingSandbox.Lightsail.Region
+		if currentRegion == "" {
+			currentRegion = lightsailFields[2].defVal
+		}
+		val, err = promptField(reader, in, out, readPassword, lightsailFields[2], currentRegion)
+		if err != nil {
+			return err
+		}
+		collected["_ls_region"] = val
+
+		// Availability zone
+		currentAZ := existingSandbox.Lightsail.AvailabilityZone
+		if currentAZ == "" {
+			currentAZ = lightsailFields[3].defVal
+		}
+		val, err = promptField(reader, in, out, readPassword, lightsailFields[3], currentAZ)
+		if err != nil {
+			return err
+		}
+		collected["_ls_az"] = val
 	}
 
 	// ── API keys ──
@@ -426,6 +497,15 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		}
 	}
 
+	if selectedProvider == "lightsail" {
+		sandboxCfg.Lightsail = compound.LightsailConfig{
+			KeyPairName:      collected["_ls_key_pair"],
+			Bundle:           collected["_ls_bundle"],
+			Region:           collected["_ls_region"],
+			AvailabilityZone: collected["_ls_az"],
+		}
+	}
+
 	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
 		return fmt.Errorf("saving sandbox config: %w", err)
 	}
@@ -443,6 +523,8 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		fmt.Fprintf(out, "  Hetzner:    ✓ ssh-key=%s type=%s image=%s\n", collected["_hetzner_ssh_key"], collected["_hetzner_server_type"], collected["_hetzner_image"])
 	case "digitalocean":
 		fmt.Fprintf(out, "  DigitalOcean: ✓ ssh-key=%s size=%s\n", collected["_do_ssh_key"], collected["_do_size"])
+	case "lightsail":
+		fmt.Fprintf(out, "  Lightsail:  ✓ key=%s bundle=%s region=%s az=%s\n", collected["_ls_key_pair"], collected["_ls_bundle"], collected["_ls_region"], collected["_ls_az"])
 	}
 
 	configuredCount := 0

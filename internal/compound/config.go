@@ -47,12 +47,21 @@ type DigitalOceanConfig struct {
 	Size   string `yaml:"size"`
 }
 
+// LightsailConfig contains AWS Lightsail-specific sandbox settings.
+type LightsailConfig struct {
+	Region           string `yaml:"region"`
+	AvailabilityZone string `yaml:"availabilityZone"`
+	Bundle           string `yaml:"bundle"`
+	KeyPairName      string `yaml:"keyPairName"`
+}
+
 // SandboxConfig contains sandbox configuration including provider selection and env vars.
 type SandboxConfig struct {
 	Provider     string             `yaml:"provider"`
 	Env          map[string]string  `yaml:"env"`
 	Hetzner      HetznerConfig      `yaml:"hetzner"`
 	DigitalOcean DigitalOceanConfig `yaml:"digitalocean"`
+	Lightsail    LightsailConfig    `yaml:"lightsail"`
 }
 
 // rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.

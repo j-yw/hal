@@ -71,8 +71,16 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			Size:     cfg.DigitalOceanSize,
 			StateDir: cfg.StateDir,
 		}, nil
+	case "lightsail":
+		return &LightsailProvider{
+			Region:           cfg.LightsailRegion,
+			AvailabilityZone: cfg.LightsailAvailabilityZone,
+			Bundle:           cfg.LightsailBundle,
+			KeyPairName:      cfg.LightsailKeyPairName,
+			StateDir:         cfg.StateDir,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner, digitalocean)", provider)
+		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner, digitalocean, lightsail)", provider)
 	}
 }
 
@@ -86,7 +94,11 @@ type ProviderConfig struct {
 	HetznerImage      string
 	DigitalOceanSSHKey string
 	DigitalOceanSize   string
+	LightsailRegion           string
+	LightsailAvailabilityZone string
+	LightsailBundle           string
+	LightsailKeyPairName      string
 	// StateDir is the .hal directory path, used by providers that need to
-	// read sandbox state (e.g. Hetzner/DigitalOcean SSH needs the IP from state).
+	// read sandbox state (e.g. Hetzner/DigitalOcean/Lightsail SSH needs the IP from state).
 	StateDir string
 }
