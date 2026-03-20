@@ -94,12 +94,13 @@ func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ..
 
 	var captured bytes.Buffer
 	if out == nil {
-		cmd.Stdout = &captured
-		cmd.Stderr = &captured
+		safe := synchronizedWriter(&captured)
+		cmd.Stdout = safe
+		cmd.Stderr = safe
 	} else {
-		mw := io.MultiWriter(out, &captured)
-		cmd.Stdout = mw
-		cmd.Stderr = mw
+		safe := synchronizedWriter(io.MultiWriter(out, &captured))
+		cmd.Stdout = safe
+		cmd.Stderr = safe
 	}
 
 	err := cmd.Run()
