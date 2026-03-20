@@ -34,6 +34,11 @@ type DaytonaConfig struct {
 	ServerURL string `yaml:"serverURL"`
 }
 
+// SandboxConfig contains environment variables to inject into sandboxes at start time.
+type SandboxConfig struct {
+	Env map[string]string `yaml:"env"`
+}
+
 // rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.
 type rawDaytonaConfig struct {
 	APIKey    *string `yaml:"apiKey"`
@@ -236,6 +241,88 @@ func LoadDaytonaConfig(dir string) (*DaytonaConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// LoadSandboxConfig reads the sandbox: section from .hal/config.yaml.
+// If the file or section is missing, an empty config is returned (no error).
+func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &SandboxConfig{Env: map[string]string{}}, nil
+		}
+		return nil, err
+	}
+
+	var raw struct {
+		Sandbox struct {
+			Env map[string]string `yaml:"env"`
+		} `yaml:"sandbox"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+
+	if raw.Sandbox.Env == nil {
+		raw.Sandbox.Env = map[string]string{}
+	}
+	return &SandboxConfig{Env: raw.Sandbox.Env}, nil
+}
+
+// SaveSandboxConfig merges the given SandboxConfig into .hal/config.yaml without
+// clobbering other sections. It preserves existing sandbox.env keys not in the
+// new config.
+func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
+	halDir := filepath.Join(dir, template.HalDir)
+	configPath := filepath.Join(halDir, template.ConfigFile)
+
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	existing := make(map[string]interface{})
+	data, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &existing); err != nil {
+			return fmt.Errorf("parsing config: %w", err)
+		}
+	}
+
+	// Build env map — merge with existing
+	envMap := make(map[string]interface{})
+	if existingSandbox, ok := existing["sandbox"].(map[string]interface{}); ok {
+		if existingEnv, ok := existingSandbox["env"].(map[string]interface{}); ok {
+			for k, v := range existingEnv {
+				envMap[k] = v
+			}
+		}
+	}
+	for k, v := range sandbox.Env {
+		envMap[k] = v
+	}
+
+	existing["sandbox"] = map[string]interface{}{
+		"env": envMap,
+	}
+
+	out, err := yaml.Marshal(existing)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, out, 0600); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	if err := os.Chmod(configPath, 0600); err != nil {
+		return fmt.Errorf("setting config permissions: %w", err)
+	}
+
+	return nil
 }
 
 // SaveConfig merges the given DaytonaConfig into .hal/config.yaml without clobbering

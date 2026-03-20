@@ -20,7 +20,7 @@ var sandboxCmd = &cobra.Command{
 	Long: `Manage Daytona sandbox environments for isolated development.
 
 Subcommands:
-  setup       Configure Daytona API credentials
+  setup       Configure sandbox credentials and environment
   start       Create and start a sandbox
   stop        Stop a running sandbox
   status      Show sandbox status
@@ -35,14 +35,21 @@ Subcommands:
 
 var sandboxSetupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Configure Daytona API credentials",
+	Short: "Configure sandbox credentials and environment",
 	Args:  noArgsValidation(),
-	Long: `Configure Daytona API key and server URL.
+	Long: `Interactive setup for Daytona sandbox credentials and environment variables.
 
-Prompts for API key (masked input) and server URL (with default).
-Credentials are saved to the daytona: section of .hal/config.yaml.
+Prompts for:
+  • Daytona API key and server URL
+  • API keys (Anthropic, OpenAI) — masked input
+  • GitHub token — masked input
+  • Git identity (name, email)
+  • Tailscale auth key and hostname — for SSH from mobile
 
-Re-running setup overwrites previous credentials.`,
+All values are saved to .hal/config.yaml. Re-running setup lets you update
+individual values — press Enter to keep the current value.
+
+After setup, 'hal sandbox start' injects all configured env vars automatically.`,
 	Example: `  hal sandbox setup`,
 	RunE:    runSandboxSetupCobra,
 }
@@ -76,6 +83,32 @@ func readPasswordFromTerminal(fd int) ([]byte, error) {
 	return term.ReadPassword(fd)
 }
 
+// setupField defines a field to prompt for during sandbox setup.
+type setupField struct {
+	key      string // env var name or config key
+	label    string // display label
+	secret   bool   // mask input
+	required bool   // cannot be empty
+	defVal   string // default if user presses Enter with no existing value
+}
+
+// daytona connection fields
+var daytonaFields = []setupField{
+	{key: "_daytona_api_key", label: "Daytona API key", secret: true, required: true},
+	{key: "_daytona_server_url", label: "Server URL", defVal: "https://app.daytona.io/api"},
+}
+
+// sandbox env var fields
+var sandboxEnvFields = []setupField{
+	{key: "ANTHROPIC_API_KEY", label: "Anthropic API key", secret: true},
+	{key: "OPENAI_API_KEY", label: "OpenAI API key", secret: true},
+	{key: "GITHUB_TOKEN", label: "GitHub token", secret: true},
+	{key: "GIT_USER_NAME", label: "Git name"},
+	{key: "GIT_USER_EMAIL", label: "Git email"},
+	{key: "TAILSCALE_AUTHKEY", label: "Tailscale auth key", secret: true},
+	{key: "TAILSCALE_HOSTNAME", label: "Tailscale hostname", defVal: "hal-sandbox"},
+}
+
 // runSandboxSetup contains the testable logic for the sandbox setup command.
 // dir is the project root directory (containing .hal/).
 func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passwordReader) error {
@@ -87,56 +120,209 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 
 	reader := bufio.NewReader(in)
 
-	// Read API key with masked input
-	fmt.Fprint(out, "Daytona API key: ")
-	var apiKey string
-	if readPassword != nil {
-		if f, ok := in.(*os.File); ok {
-			if term.IsTerminal(int(f.Fd())) {
-				pass, err := readPassword(int(f.Fd()))
-				fmt.Fprintln(out) // newline after masked input
-				if err != nil {
-					return fmt.Errorf("reading API key: %w", err)
-				}
-				apiKey = string(pass)
-			} else {
-				// Non-terminal file input (e.g., piped stdin) — read as plain text.
-				line, _ := reader.ReadString('\n')
-				apiKey = strings.TrimRight(line, "\r\n")
-			}
-		} else {
-			// Non-terminal input (e.g., tests) — read as plain text
-			line, _ := reader.ReadString('\n')
-			apiKey = strings.TrimRight(line, "\r\n")
+	// Load existing config for defaults
+	existingDaytona, _ := compound.LoadDaytonaConfig(dir)
+	existingSandbox, _ := compound.LoadSandboxConfig(dir)
+	if existingDaytona == nil {
+		d := compound.DefaultDaytonaConfig()
+		existingDaytona = &d
+	}
+	if existingSandbox == nil {
+		existingSandbox = &compound.SandboxConfig{Env: map[string]string{}}
+	}
+
+	// Collect all values
+	collected := make(map[string]string)
+
+	// ── Daytona credentials ──
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  ── Daytona ──")
+	fmt.Fprintln(out, "")
+
+	// API key
+	val, err := promptField(reader, in, out, readPassword, daytonaFields[0], existingDaytona.APIKey)
+	if err != nil {
+		return err
+	}
+	collected["_daytona_api_key"] = val
+
+	// Server URL
+	currentURL := existingDaytona.ServerURL
+	if currentURL == "" {
+		currentURL = daytonaFields[1].defVal
+	}
+	val, err = promptField(reader, in, out, readPassword, daytonaFields[1], currentURL)
+	if err != nil {
+		return err
+	}
+	collected["_daytona_server_url"] = val
+
+	// ── API keys ──
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  ── API Keys ──")
+	fmt.Fprintln(out, "")
+
+	for _, f := range sandboxEnvFields[:3] {
+		val, err := promptField(reader, in, out, readPassword, f, existingSandbox.Env[f.key])
+		if err != nil {
+			return err
 		}
+		if val != "" {
+			collected[f.key] = val
+		}
+	}
+
+	// ── Git identity ──
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  ── Git Identity ──")
+	fmt.Fprintln(out, "")
+
+	for _, f := range sandboxEnvFields[3:5] {
+		val, err := promptField(reader, in, out, readPassword, f, existingSandbox.Env[f.key])
+		if err != nil {
+			return err
+		}
+		if val != "" {
+			collected[f.key] = val
+		}
+	}
+
+	// ── Tailscale ──
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  ── Tailscale (SSH from phone) ──")
+	fmt.Fprintln(out, "")
+
+	for _, f := range sandboxEnvFields[5:] {
+		current := existingSandbox.Env[f.key]
+		if current == "" {
+			current = f.defVal
+		}
+		val, err := promptField(reader, in, out, readPassword, f, current)
+		if err != nil {
+			return err
+		}
+		if val != "" {
+			collected[f.key] = val
+		}
+	}
+
+	// ── Save ──
+	daytonaCfg := &compound.DaytonaConfig{
+		APIKey:    collected["_daytona_api_key"],
+		ServerURL: collected["_daytona_server_url"],
+	}
+	if err := compound.SaveConfig(dir, daytonaCfg); err != nil {
+		return fmt.Errorf("saving daytona config: %w", err)
+	}
+
+	envVars := make(map[string]string)
+	for _, f := range sandboxEnvFields {
+		if v, ok := collected[f.key]; ok && v != "" {
+			envVars[f.key] = v
+		}
+	}
+	if len(envVars) > 0 {
+		sandboxCfg := &compound.SandboxConfig{Env: envVars}
+		if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+			return fmt.Errorf("saving sandbox config: %w", err)
+		}
+	}
+
+	// ── Summary ──
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  ── Saved to .hal/config.yaml ──")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  Daytona:    ✓ configured")
+
+	configuredCount := 0
+	for _, f := range sandboxEnvFields {
+		if v, ok := collected[f.key]; ok && v != "" {
+			configuredCount++
+		}
+	}
+	fmt.Fprintf(out, "  Sandbox:    %d env vars configured\n", configuredCount)
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  Run 'hal sandbox start -n dev' to spin up a sandbox.")
+	fmt.Fprintln(out, "")
+
+	return nil
+}
+
+// promptField prompts the user for a single field value.
+// If current is non-empty, it's shown as the default (masked for secrets).
+// Returns the new value, or current if the user presses Enter.
+func promptField(
+	reader *bufio.Reader,
+	in io.Reader,
+	out io.Writer,
+	readPassword passwordReader,
+	field setupField,
+	current string,
+) (string, error) {
+	// Build prompt
+	hint := ""
+	if current != "" {
+		if field.secret {
+			hint = maskSecret(current)
+		} else {
+			hint = current
+		}
+	} else if field.defVal != "" {
+		hint = field.defVal
+	}
+
+	if hint != "" {
+		fmt.Fprintf(out, "  %s [%s]: ", field.label, hint)
+	} else {
+		fmt.Fprintf(out, "  %s: ", field.label)
+	}
+
+	var val string
+	if field.secret {
+		val = readSecretInput(reader, in, out, readPassword)
 	} else {
 		line, _ := reader.ReadString('\n')
-		apiKey = strings.TrimRight(line, "\r\n")
+		val = strings.TrimSpace(strings.TrimRight(line, "\r\n"))
 	}
 
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return fmt.Errorf("API key must not be empty")
+	// If empty, use current or default
+	if val == "" {
+		if current != "" {
+			return current, nil
+		}
+		if field.defVal != "" {
+			return field.defVal, nil
+		}
+		if field.required {
+			return "", fmt.Errorf("%s is required", field.label)
+		}
+		return "", nil
 	}
 
-	// Read server URL with default
-	defaultURL := "https://app.daytona.io/api"
-	fmt.Fprintf(out, "Server URL [%s]: ", defaultURL)
+	return val, nil
+}
+
+// readSecretInput reads a secret value with masked input when possible.
+func readSecretInput(reader *bufio.Reader, in io.Reader, out io.Writer, readPassword passwordReader) string {
+	if readPassword != nil {
+		if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+			pass, err := readPassword(int(f.Fd()))
+			fmt.Fprintln(out) // newline after masked input
+			if err != nil {
+				return ""
+			}
+			return strings.TrimSpace(string(pass))
+		}
+	}
+	// Fallback: plain text (piped input / tests)
 	line, _ := reader.ReadString('\n')
-	serverURL := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
-	if serverURL == "" {
-		serverURL = defaultURL
-	}
+	return strings.TrimSpace(strings.TrimRight(line, "\r\n"))
+}
 
-	// Save to config
-	cfg := &compound.DaytonaConfig{
-		APIKey:    apiKey,
-		ServerURL: serverURL,
+// maskSecret returns a masked version of a secret, showing last 4 chars.
+func maskSecret(s string) string {
+	if len(s) <= 4 {
+		return "••••"
 	}
-	if err := compound.SaveConfig(dir, cfg); err != nil {
-		return fmt.Errorf("saving config: %w", err)
-	}
-
-	fmt.Fprintln(out, "Daytona credentials saved to .hal/config.yaml")
-	return nil
+	return "••••" + s[len(s)-4:]
 }
