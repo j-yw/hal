@@ -11,6 +11,13 @@ import (
 	"strings"
 )
 
+var environmentValueEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`"`, `\"`,
+	"\n", " ",
+	"\r", " ",
+)
+
 // DigitalOceanProvider implements Provider by shelling out to the doctl CLI.
 type DigitalOceanProvider struct {
 	SSHKey string
@@ -22,6 +29,10 @@ type DigitalOceanProvider struct {
 	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
 	// Override in tests to capture args without running the real CLI.
 	cmdContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// lookPath checks whether a binary exists on PATH. Defaults to exec.LookPath.
+	// Override in tests to avoid environment-dependent PATH lookups.
+	lookPath func(file string) (string, error)
 }
 
 // commandContext returns the configured command builder, defaulting to
@@ -34,8 +45,12 @@ func (d *DigitalOceanProvider) commandContext(ctx context.Context, name string, 
 }
 
 // ensureDoctl checks that doctl is available on PATH.
-func ensureDoctl() error {
-	if _, err := exec.LookPath("doctl"); err != nil {
+func (d *DigitalOceanProvider) ensureDoctl() error {
+	lookPath := exec.LookPath
+	if d.lookPath != nil {
+		lookPath = d.lookPath
+	}
+	if _, err := lookPath("doctl"); err != nil {
 		return fmt.Errorf("doctl not found: install from https://docs.digitalocean.com/reference/doctl/how-to/install/ and run 'doctl auth init'")
 	}
 	return nil
@@ -71,7 +86,7 @@ func generateDOCloudInit(env map[string]string) string {
 	sort.Strings(keys)
 
 	for _, k := range keys {
-		b.WriteString(fmt.Sprintf("      %s=%s\n", k, env[k]))
+		b.WriteString(fmt.Sprintf("      %s=%s\n", k, formatEnvironmentValue(env[k])))
 	}
 
 	b.WriteString("packages:\n")
@@ -81,6 +96,10 @@ func generateDOCloudInit(env map[string]string) string {
 	b.WriteString("  - jq\n")
 
 	return b.String()
+}
+
+func formatEnvironmentValue(value string) string {
+	return `"` + environmentValueEscaper.Replace(value) + `"`
 }
 
 // buildDOCreateArgs constructs the argument list for doctl compute droplet create.
@@ -97,8 +116,51 @@ func buildDOCreateArgs(name, size, sshKey, userDataFile string) []string {
 	}
 }
 
+func parseDODropletInfo(output string) (id string, ip string) {
+	fields := strings.Fields(strings.TrimSpace(output))
+	switch len(fields) {
+	case 0:
+		return "", ""
+	case 1:
+		return fields[0], ""
+	default:
+		return fields[0], fields[1]
+	}
+}
+
+func isNumericDropletID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *DigitalOceanProvider) resolveDropletTarget(name string) string {
+	target := strings.TrimSpace(name)
+	if target == "" || isNumericDropletID(target) || strings.TrimSpace(d.StateDir) == "" {
+		return target
+	}
+
+	state, err := LoadState(d.StateDir)
+	if err != nil {
+		return target
+	}
+	if state.Provider != "digitalocean" || strings.TrimSpace(state.WorkspaceID) == "" {
+		return target
+	}
+	if state.Name != target {
+		return target
+	}
+	return strings.TrimSpace(state.WorkspaceID)
+}
+
 func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
-	if err := ensureDoctl(); err != nil {
+	if err := d.ensureDoctl(); err != nil {
 		return nil, err
 	}
 
@@ -127,9 +189,9 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 		return nil, wrapDoctlError("compute droplet create", err, stderrBuf.String())
 	}
 
-	// Get the public IP via doctl compute droplet get
+	// Get droplet ID and public IP for persisted state + follow-up lifecycle ops.
 	ipCmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
-		"--format", "PublicIPv4",
+		"--format", "ID,PublicIPv4",
 		"--no-header",
 	)
 	var ipBuf bytes.Buffer
@@ -141,16 +203,20 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 		return nil, wrapDoctlError("compute droplet get", err, ipStderr.String())
 	}
 
-	ip := strings.TrimSpace(ipBuf.String())
-	return &SandboxResult{Name: name, IP: ip}, nil
+	id, ip := parseDODropletInfo(ipBuf.String())
+	if strings.TrimSpace(ip) == "" {
+		return nil, fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", name)
+	}
+	return &SandboxResult{ID: id, Name: name, IP: ip}, nil
 }
 
 func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Writer) error {
-	if err := ensureDoctl(); err != nil {
+	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", name)
+	target := d.resolveDropletTarget(name)
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", target)
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = out
 	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
@@ -162,11 +228,12 @@ func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Wri
 }
 
 func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.Writer) error {
-	if err := ensureDoctl(); err != nil {
+	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "delete", name, "--force")
+	target := d.resolveDropletTarget(name)
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "delete", target, "--force")
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = out
 	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
@@ -178,11 +245,12 @@ func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.W
 }
 
 func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.Writer) error {
-	if err := ensureDoctl(); err != nil {
+	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
+	target := d.resolveDropletTarget(name)
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
 		"--format", "ID,Name,Status,PublicIPv4",
 	)
 	var stderrBuf bytes.Buffer
@@ -196,7 +264,7 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.W
 }
 
 func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
-	if err := ensureDoctl(); err != nil {
+	if err := d.ensureDoctl(); err != nil {
 		return nil, err
 	}
 
@@ -220,7 +288,7 @@ func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
 }
 
 func (d *DigitalOceanProvider) Exec(name string, args []string) (*exec.Cmd, error) {
-	if err := ensureDoctl(); err != nil {
+	if err := d.ensureDoctl(); err != nil {
 		return nil, err
 	}
 

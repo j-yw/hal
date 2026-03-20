@@ -7,7 +7,7 @@ Stop a running sandbox
 Stop a running sandbox.
 
 Reads the sandbox name and provider from .hal/sandbox.json.
-The provider is used to determine how to stop the sandbox (daytona CLI or hcloud CLI).
+The provider is used to determine how to stop the sandbox (daytona CLI, hcloud CLI, or doctl CLI).
 
 ```
 hal sandbox stop [flags]

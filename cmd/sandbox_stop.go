@@ -16,10 +16,10 @@ var sandboxStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop a running sandbox",
 	Args:  noArgsValidation(),
-	Long: `Stop a running sandbox.
+Long: `Stop a running sandbox.
 
 Reads the sandbox name and provider from .hal/sandbox.json.
-The provider is used to determine how to stop the sandbox (daytona CLI or hcloud CLI).`,
+The provider is used to determine how to stop the sandbox (daytona CLI, hcloud CLI, or doctl CLI).`,
 	Example: `  hal sandbox stop`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSandboxStopWithDeps(".", os.Stdout, nil)

@@ -4,7 +4,7 @@ Create and start a sandbox
 
 ### Synopsis
 
-Create and start a sandbox using the configured provider (Daytona or Hetzner).
+Create and start a sandbox using the configured provider (Daytona, Hetzner, or DigitalOcean).
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
 Use --name to override the default name.
@@ -35,4 +35,3 @@ hal sandbox start [flags]
 ### SEE ALSO
 
 * [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments
-

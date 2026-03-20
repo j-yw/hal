@@ -11,6 +11,13 @@ import (
 	"testing"
 )
 
+func doctlLookPathStub(file string) (string, error) {
+	if file == "doctl" {
+		return "/usr/bin/doctl", nil
+	}
+	return "", exec.ErrNotFound
+}
+
 func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 	env := map[string]string{
 		"GIT_TOKEN": "ghp_abc",
@@ -22,16 +29,16 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 		t.Error("cloud-init should start with #cloud-config")
 	}
 
-	if !strings.Contains(yaml, "API_KEY=sk-123") {
-		t.Error("cloud-init should contain API_KEY=sk-123")
+	if !strings.Contains(yaml, "API_KEY=\"sk-123\"") {
+		t.Error("cloud-init should contain API_KEY=\"sk-123\"")
 	}
-	if !strings.Contains(yaml, "GIT_TOKEN=ghp_abc") {
-		t.Error("cloud-init should contain GIT_TOKEN=ghp_abc")
+	if !strings.Contains(yaml, "GIT_TOKEN=\"ghp_abc\"") {
+		t.Error("cloud-init should contain GIT_TOKEN=\"ghp_abc\"")
 	}
 
 	// Verify sorted order
-	apiIdx := strings.Index(yaml, "API_KEY=sk-123")
-	gitIdx := strings.Index(yaml, "GIT_TOKEN=ghp_abc")
+	apiIdx := strings.Index(yaml, "API_KEY=\"sk-123\"")
+	gitIdx := strings.Index(yaml, "GIT_TOKEN=\"ghp_abc\"")
 	if apiIdx > gitIdx {
 		t.Error("env vars should be sorted: API_KEY before GIT_TOKEN")
 	}
@@ -43,6 +50,22 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 		if !strings.Contains(yaml, "- "+pkg) {
 			t.Errorf("cloud-init should install %s", pkg)
 		}
+	}
+}
+
+func TestGenerateDOCloudInit_QuotesAndNormalizesValues(t *testing.T) {
+	env := map[string]string{
+		"GIT_USER_NAME": `Jane "JJ" Doe`,
+		"MULTI_LINE":    "line1\nline2",
+	}
+
+	yaml := generateDOCloudInit(env)
+
+	if !strings.Contains(yaml, "GIT_USER_NAME=\"Jane \\\"JJ\\\" Doe\"") {
+		t.Errorf("cloud-init should escape quotes in env values, got:\n%s", yaml)
+	}
+	if !strings.Contains(yaml, "MULTI_LINE=\"line1 line2\"") {
+		t.Errorf("cloud-init should normalize newlines in env values, got:\n%s", yaml)
 	}
 }
 
@@ -86,15 +109,16 @@ func TestDigitalOceanProvider_Create_VerifiesArgs(t *testing.T) {
 	var calls [][]string
 
 	dp := &DigitalOceanProvider{
-		SSHKey: "ab:cd:ef:12:34",
-		Size:   "s-2vcpu-4gb",
+		SSHKey:   "ab:cd:ef:12:34",
+		Size:     "s-2vcpu-4gb",
+		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			calls = append(calls, append([]string{name}, args...))
-			// First call (droplet create) succeeds, second call (droplet get) returns IP
+			// First call (droplet create) succeeds, second call (droplet get) returns ID and IP.
 			if len(calls) == 1 {
 				return exec.CommandContext(ctx, "true")
 			}
-			return exec.CommandContext(ctx, "echo", "10.20.30.40")
+			return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
 		},
 	}
 
@@ -107,6 +131,9 @@ func TestDigitalOceanProvider_Create_VerifiesArgs(t *testing.T) {
 
 	if result.Name != "test-droplet" {
 		t.Errorf("result.Name = %q, want %q", result.Name, "test-droplet")
+	}
+	if result.ID != "123456789" {
+		t.Errorf("result.ID = %q, want %q", result.ID, "123456789")
 	}
 	if result.IP != "10.20.30.40" {
 		t.Errorf("result.IP = %q, want %q", result.IP, "10.20.30.40")
@@ -148,8 +175,8 @@ func TestDigitalOceanProvider_Create_VerifiesArgs(t *testing.T) {
 	if !strings.Contains(getJoined, "compute droplet get test-droplet") {
 		t.Errorf("get args should contain 'compute droplet get test-droplet', got: %s", getJoined)
 	}
-	if !strings.Contains(getJoined, "--format PublicIPv4") {
-		t.Errorf("get args should contain '--format PublicIPv4', got: %s", getJoined)
+	if !strings.Contains(getJoined, "--format ID,PublicIPv4") {
+		t.Errorf("get args should contain '--format ID,PublicIPv4', got: %s", getJoined)
 	}
 	if !strings.Contains(getJoined, "--no-header") {
 		t.Errorf("get args should contain '--no-header', got: %s", getJoined)
@@ -160,6 +187,7 @@ func TestDigitalOceanProvider_Stop_VerifiesArgs(t *testing.T) {
 	var capturedArgs []string
 
 	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			capturedArgs = append([]string{name}, args...)
 			return exec.CommandContext(ctx, "true")
@@ -182,6 +210,7 @@ func TestDigitalOceanProvider_Delete_VerifiesArgs(t *testing.T) {
 	var capturedArgs []string
 
 	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			capturedArgs = append([]string{name}, args...)
 			return exec.CommandContext(ctx, "true")
@@ -207,6 +236,7 @@ func TestDigitalOceanProvider_Status_VerifiesArgs(t *testing.T) {
 	var capturedArgs []string
 
 	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			capturedArgs = append([]string{name}, args...)
 			return exec.CommandContext(ctx, "echo", "status output")
@@ -292,6 +322,7 @@ func TestDigitalOceanProvider_SSH_WithState(t *testing.T) {
 	}
 
 	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
 		StateDir: stateDir,
 	}
 
@@ -329,6 +360,7 @@ func TestDigitalOceanProvider_Exec_WithState(t *testing.T) {
 	}
 
 	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
 		StateDir: stateDir,
 	}
 
@@ -363,6 +395,7 @@ func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
 	}
 
 	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
 		StateDir: stateDir,
 	}
 
@@ -377,6 +410,7 @@ func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
 
 func TestDigitalOceanProvider_SSH_MissingState(t *testing.T) {
 	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
 		StateDir: t.TempDir(), // empty dir, no sandbox.json
 	}
 
@@ -416,8 +450,9 @@ func TestProviderFromConfig_DigitalOcean(t *testing.T) {
 
 func TestDigitalOceanProvider_Create_StderrOnFailure(t *testing.T) {
 	dp := &DigitalOceanProvider{
-		SSHKey: "ab:cd:ef",
-		Size:   "s-2vcpu-4gb",
+		SSHKey:   "ab:cd:ef",
+		Size:     "s-2vcpu-4gb",
+		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			// Simulate doctl failure with stderr output
 			return exec.CommandContext(ctx, "sh", "-c", "echo 'droplet create failed: quota exceeded' >&2; exit 1")
@@ -431,5 +466,32 @@ func TestDigitalOceanProvider_Create_StderrOnFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "quota exceeded") {
 		t.Errorf("error %q should contain stderr message 'quota exceeded'", err.Error())
+	}
+}
+
+func TestDigitalOceanProvider_Create_ErrorsWhenPublicIPMissing(t *testing.T) {
+	var calls [][]string
+
+	dp := &DigitalOceanProvider{
+		SSHKey:   "ab:cd:ef:12:34",
+		Size:     "s-2vcpu-4gb",
+		lookPath: doctlLookPathStub,
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(calls) == 1 {
+				return exec.CommandContext(ctx, "true")
+			}
+			// Simulate doctl returning only droplet ID with no PublicIPv4 value.
+			return exec.CommandContext(ctx, "echo", "123456789")
+		},
+	}
+
+	var out bytes.Buffer
+	_, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when PublicIPv4 is missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "no PublicIPv4") {
+		t.Errorf("error %q should mention missing PublicIPv4", err.Error())
 	}
 }

@@ -19,7 +19,7 @@ var sandboxStatusCmd = &cobra.Command{
 	Long: `Show the current status of a sandbox.
 
 Reads the sandbox name and provider from .hal/sandbox.json.
-The provider is used to determine how to fetch status (daytona CLI or hcloud CLI).`,
+The provider is used to determine how to fetch status (daytona CLI, hcloud CLI, or doctl CLI).`,
 	Example: `  hal sandbox status`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSandboxStatusWithDeps(".", os.Stdout, nil)

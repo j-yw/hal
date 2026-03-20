@@ -19,7 +19,7 @@ var sandboxStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Create and start a sandbox",
 	Args:  noArgsValidation(),
-	Long: `Create and start a sandbox using the configured provider (Daytona or Hetzner).
+	Long: `Create and start a sandbox using the configured provider (Daytona, Hetzner, or DigitalOcean).
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
 Use --name to override the default name.
@@ -156,6 +156,7 @@ func runSandboxStartWithDeps(
 		Name:      result.Name,
 		Provider:  sandboxCfg.Provider,
 		IP:        result.IP,
+		WorkspaceID: result.ID,
 		CreatedAt: time.Now(),
 	}
 	if err := sandbox.SaveState(halDir, state); err != nil {

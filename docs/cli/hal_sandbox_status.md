@@ -7,7 +7,7 @@ Show sandbox status
 Show the current status of a sandbox.
 
 Reads the sandbox name and provider from .hal/sandbox.json.
-The provider is used to determine how to fetch status (daytona CLI or hcloud CLI).
+The provider is used to determine how to fetch status (daytona CLI, hcloud CLI, or doctl CLI).
 
 ```
 hal sandbox status [flags]
