@@ -1,0 +1,247 @@
+package sandbox
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"sort"
+	"strings"
+)
+
+// DigitalOceanProvider implements Provider by shelling out to the doctl CLI.
+type DigitalOceanProvider struct {
+	SSHKey string
+	Size   string
+	// StateDir is the .hal directory path, needed to look up the droplet IP
+	// from sandbox state for SSH connections.
+	StateDir string
+
+	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
+	// Override in tests to capture args without running the real CLI.
+	cmdContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+}
+
+// commandContext returns the configured command builder, defaulting to
+// exec.CommandContext.
+func (d *DigitalOceanProvider) commandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if d.cmdContext != nil {
+		return d.cmdContext(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...)
+}
+
+// ensureDoctl checks that doctl is available on PATH.
+func ensureDoctl() error {
+	if _, err := exec.LookPath("doctl"); err != nil {
+		return fmt.Errorf("doctl not found: install from https://docs.digitalocean.com/reference/doctl/how-to/install/ and run 'doctl auth init'")
+	}
+	return nil
+}
+
+// wrapDoctlError wraps a doctl command error with stderr output.
+func wrapDoctlError(op string, err error, stderr string) error {
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		msg := strings.TrimSpace(stderr)
+		if msg != "" {
+			return fmt.Errorf("doctl %s failed with exit code %d: %s: %w", op, exitErr.ExitCode(), msg, err)
+		}
+		return fmt.Errorf("doctl %s failed with exit code %d: %w", op, exitErr.ExitCode(), err)
+	}
+	return fmt.Errorf("doctl %s failed: %w", op, err)
+}
+
+// generateDOCloudInit creates a cloud-init YAML that writes env vars to
+// /etc/environment and installs basic dev tooling. Same format as Hetzner.
+func generateDOCloudInit(env map[string]string) string {
+	var b strings.Builder
+	b.WriteString("#cloud-config\n")
+	b.WriteString("write_files:\n")
+	b.WriteString("  - path: /etc/environment\n")
+	b.WriteString("    append: true\n")
+	b.WriteString("    content: |\n")
+
+	// Sort keys for deterministic output
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		b.WriteString(fmt.Sprintf("      %s=%s\n", k, env[k]))
+	}
+
+	b.WriteString("packages:\n")
+	b.WriteString("  - git\n")
+	b.WriteString("  - curl\n")
+	b.WriteString("  - wget\n")
+	b.WriteString("  - jq\n")
+
+	return b.String()
+}
+
+// buildDOCreateArgs constructs the argument list for doctl compute droplet create.
+// The env map is used to generate a cloud-init file; the returned args reference
+// the given userDataFile path.
+func buildDOCreateArgs(name, size, sshKey, userDataFile string) []string {
+	return []string{
+		"compute", "droplet", "create", name,
+		"--size", size,
+		"--image", "ubuntu-24-04-x64",
+		"--ssh-keys", sshKey,
+		"--user-data-file", userDataFile,
+		"--wait",
+	}
+}
+
+func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
+	if err := ensureDoctl(); err != nil {
+		return nil, err
+	}
+
+	// Generate cloud-init user-data file
+	cloudInit := generateDOCloudInit(env)
+	tmpFile, err := os.CreateTemp("", "hal-do-cloud-init-*.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cloud-init temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(cloudInit); err != nil {
+		tmpFile.Close()
+		return nil, fmt.Errorf("failed to write cloud-init: %w", err)
+	}
+	tmpFile.Close()
+
+	// Run doctl compute droplet create
+	args := buildDOCreateArgs(name, d.Size, d.SSHKey, tmpFile.Name())
+	createCmd := d.commandContext(ctx, "doctl", args...)
+	var stderrBuf bytes.Buffer
+	createCmd.Stdout = out
+	createCmd.Stderr = io.MultiWriter(out, &stderrBuf)
+
+	if err := createCmd.Run(); err != nil {
+		return nil, wrapDoctlError("compute droplet create", err, stderrBuf.String())
+	}
+
+	// Get the public IP via doctl compute droplet get
+	ipCmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
+		"--format", "PublicIPv4",
+		"--no-header",
+	)
+	var ipBuf bytes.Buffer
+	var ipStderr bytes.Buffer
+	ipCmd.Stdout = &ipBuf
+	ipCmd.Stderr = io.MultiWriter(out, &ipStderr)
+
+	if err := ipCmd.Run(); err != nil {
+		return nil, wrapDoctlError("compute droplet get", err, ipStderr.String())
+	}
+
+	ip := strings.TrimSpace(ipBuf.String())
+	return &SandboxResult{Name: name, IP: ip}, nil
+}
+
+func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+	if err := ensureDoctl(); err != nil {
+		return err
+	}
+
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", name)
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = out
+	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+
+	if err := cmd.Run(); err != nil {
+		return wrapDoctlError("compute droplet-action shutdown", err, stderrBuf.String())
+	}
+	return nil
+}
+
+func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+	if err := ensureDoctl(); err != nil {
+		return err
+	}
+
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "delete", name, "--force")
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = out
+	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+
+	if err := cmd.Run(); err != nil {
+		return wrapDoctlError("compute droplet delete", err, stderrBuf.String())
+	}
+	return nil
+}
+
+func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.Writer) error {
+	if err := ensureDoctl(); err != nil {
+		return err
+	}
+
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
+		"--format", "ID,Name,Status,PublicIPv4",
+	)
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = out
+	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+
+	if err := cmd.Run(); err != nil {
+		return wrapDoctlError("compute droplet get", err, stderrBuf.String())
+	}
+	return nil
+}
+
+func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
+	if err := ensureDoctl(); err != nil {
+		return nil, err
+	}
+
+	state, err := LoadState(d.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+	}
+	if state.IP == "" {
+		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
+	}
+
+	cmd := exec.Command("ssh",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"root@"+state.IP,
+	)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd, nil
+}
+
+func (d *DigitalOceanProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+	if err := ensureDoctl(); err != nil {
+		return nil, err
+	}
+
+	state, err := LoadState(d.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+	}
+	if state.IP == "" {
+		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
+	}
+
+	cmdArgs := []string{
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"root@" + state.IP,
+		"--",
+	}
+	cmdArgs = append(cmdArgs, args...)
+	cmd := exec.Command("ssh", cmdArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd, nil
+}
