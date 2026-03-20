@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -63,6 +64,28 @@ After setup, 'hal sandbox start' injects all configured env vars automatically.`
 func init() {
 	sandboxCmd.AddCommand(sandboxSetupCmd)
 	rootCmd.AddCommand(sandboxCmd)
+}
+
+// resolveProviderFromState creates a Provider from the state's provider field
+// and the project config. Used by stop, delete, status, and ssh commands.
+func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.Provider, error) {
+	halDir := filepath.Join(dir, template.HalDir)
+	sandboxCfg, _ := compound.LoadSandboxConfig(dir)
+	dayCfg, _ := compound.LoadDaytonaConfig(dir)
+
+	provCfg := sandbox.ProviderConfig{
+		StateDir: halDir,
+	}
+	if dayCfg != nil {
+		provCfg.DaytonaAPIKey = dayCfg.APIKey
+	}
+	if sandboxCfg != nil {
+		provCfg.HetznerSSHKey = sandboxCfg.Hetzner.SSHKey
+		provCfg.HetznerServerType = sandboxCfg.Hetzner.ServerType
+		provCfg.HetznerImage = sandboxCfg.Hetzner.Image
+	}
+
+	return sandbox.ProviderFromConfig(state.Provider, provCfg)
 }
 
 func runSandboxSetupCobra(cmd *cobra.Command, args []string) error {
