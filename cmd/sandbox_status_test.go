@@ -99,6 +99,19 @@ func TestRunSandboxStatus(t *testing.T) {
 			wantErr: "no active sandbox",
 		},
 		{
+			name: "error when sandbox state is invalid",
+			setup: func(t *testing.T, dir string) {
+				halDir := filepath.Join(dir, template.HalDir)
+				if err := os.MkdirAll(halDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte("{"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "loading sandbox state",
+		},
+		{
 			name: "error when provider status fails",
 			setup: func(t *testing.T, dir string) {
 				setupStatusTestWithState(t, dir, &sandbox.SandboxState{

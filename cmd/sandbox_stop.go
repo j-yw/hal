@@ -37,7 +37,10 @@ func runSandboxStopWithDeps(dir string, out io.Writer, provider sandbox.Provider
 
 	state, err := sandbox.LoadState(halDir)
 	if err != nil {
-		return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
+		}
+		return fmt.Errorf("loading sandbox state: %w", err)
 	}
 
 	if provider == nil {

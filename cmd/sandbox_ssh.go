@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
@@ -37,7 +36,7 @@ func init() {
 
 // runSandboxSSH contains the testable logic for the sandbox ssh command.
 // If provider is nil, it is resolved from state.Provider.
-// If testMode is true, returns the exec.Cmd instead of calling syscall.Exec.
+// If testMode is true, returns the exec.Cmd instead of executing it.
 func runSandboxSSH(dir string, args []string, out io.Writer, provider sandbox.Provider, testMode bool) error {
 	return runSandboxSSHWithDeps(dir, args, out, provider, testMode)
 }
@@ -52,7 +51,10 @@ func runSandboxSSHWithDeps(dir string, args []string, out io.Writer, provider sa
 
 	state, err := sandbox.LoadState(halDir)
 	if err != nil {
-		return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
+		}
+		return fmt.Errorf("loading sandbox state: %w", err)
 	}
 
 	if provider == nil {
@@ -77,12 +79,7 @@ func runSandboxSSHWithDeps(dir string, args []string, out io.Writer, provider sa
 			return nil
 		}
 
-		// Replace process with SSH
-		binary, err := exec.LookPath(cmd.Path)
-		if err != nil {
-			return fmt.Errorf("finding SSH binary: %w", err)
-		}
-		return syscall.Exec(binary, cmd.Args, os.Environ())
+		return execInteractiveSSH(cmd)
 	}
 
 	// Remote command execution

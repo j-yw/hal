@@ -171,6 +171,26 @@ func TestRunSandboxSSH_NoState(t *testing.T) {
 	}
 }
 
+func TestRunSandboxSSH_InvalidState(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte("{"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockSSHProvider{}
+	err := runSandboxSSH(dir, nil, io.Discard, mock, true)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "loading sandbox state") {
+		t.Errorf("error %q should contain 'loading sandbox state'", err.Error())
+	}
+}
+
 func TestRunSandboxSSH_SSHError(t *testing.T) {
 	dir := t.TempDir()
 	setupSSHTestWithState(t, dir, &sandbox.SandboxState{
