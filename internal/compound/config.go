@@ -34,9 +34,18 @@ type DaytonaConfig struct {
 	ServerURL string `yaml:"serverURL"`
 }
 
-// SandboxConfig contains environment variables to inject into sandboxes at start time.
+// HetznerConfig contains Hetzner-specific sandbox settings.
+type HetznerConfig struct {
+	SSHKey     string `yaml:"sshKey"`
+	ServerType string `yaml:"serverType"`
+	Image      string `yaml:"image"`
+}
+
+// SandboxConfig contains sandbox configuration including provider selection and env vars.
 type SandboxConfig struct {
-	Env map[string]string `yaml:"env"`
+	Provider string            `yaml:"provider"`
+	Env      map[string]string `yaml:"env"`
+	Hetzner  HetznerConfig     `yaml:"hetzner"`
 }
 
 // rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.
@@ -244,21 +253,27 @@ func LoadDaytonaConfig(dir string) (*DaytonaConfig, error) {
 }
 
 // LoadSandboxConfig reads the sandbox: section from .hal/config.yaml.
-// If the file or section is missing, an empty config is returned (no error).
+// If the file or section is missing, a config with Provider defaulting to "daytona" is returned.
 func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &SandboxConfig{Env: map[string]string{}}, nil
+			return &SandboxConfig{Provider: "daytona", Env: map[string]string{}}, nil
 		}
 		return nil, err
 	}
 
 	var raw struct {
 		Sandbox struct {
-			Env map[string]string `yaml:"env"`
+			Provider *string           `yaml:"provider"`
+			Env      map[string]string `yaml:"env"`
+			Hetzner  struct {
+				SSHKey     *string `yaml:"sshKey"`
+				ServerType *string `yaml:"serverType"`
+				Image      *string `yaml:"image"`
+			} `yaml:"hetzner"`
 		} `yaml:"sandbox"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -268,12 +283,31 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	if raw.Sandbox.Env == nil {
 		raw.Sandbox.Env = map[string]string{}
 	}
-	return &SandboxConfig{Env: raw.Sandbox.Env}, nil
+
+	cfg := &SandboxConfig{
+		Provider: "daytona",
+		Env:      raw.Sandbox.Env,
+	}
+
+	if raw.Sandbox.Provider != nil && *raw.Sandbox.Provider != "" {
+		cfg.Provider = *raw.Sandbox.Provider
+	}
+	if raw.Sandbox.Hetzner.SSHKey != nil {
+		cfg.Hetzner.SSHKey = *raw.Sandbox.Hetzner.SSHKey
+	}
+	if raw.Sandbox.Hetzner.ServerType != nil {
+		cfg.Hetzner.ServerType = *raw.Sandbox.Hetzner.ServerType
+	}
+	if raw.Sandbox.Hetzner.Image != nil {
+		cfg.Hetzner.Image = *raw.Sandbox.Hetzner.Image
+	}
+
+	return cfg, nil
 }
 
 // SaveSandboxConfig merges the given SandboxConfig into .hal/config.yaml without
 // clobbering other sections. It preserves existing sandbox.env keys not in the
-// new config.
+// new config and round-trips provider and hetzner fields.
 func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 	halDir := filepath.Join(dir, template.HalDir)
 	configPath := filepath.Join(halDir, template.ConfigFile)
@@ -306,9 +340,27 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 		envMap[k] = v
 	}
 
-	existing["sandbox"] = map[string]interface{}{
-		"env": envMap,
+	sandboxMap := map[string]interface{}{
+		"provider": sandbox.Provider,
+		"env":      envMap,
 	}
+
+	// Only write hetzner section if any field is set
+	if sandbox.Hetzner.SSHKey != "" || sandbox.Hetzner.ServerType != "" || sandbox.Hetzner.Image != "" {
+		hetznerMap := map[string]interface{}{}
+		if sandbox.Hetzner.SSHKey != "" {
+			hetznerMap["sshKey"] = sandbox.Hetzner.SSHKey
+		}
+		if sandbox.Hetzner.ServerType != "" {
+			hetznerMap["serverType"] = sandbox.Hetzner.ServerType
+		}
+		if sandbox.Hetzner.Image != "" {
+			hetznerMap["image"] = sandbox.Hetzner.Image
+		}
+		sandboxMap["hetzner"] = hetznerMap
+	}
+
+	existing["sandbox"] = sandboxMap
 
 	out, err := yaml.Marshal(existing)
 	if err != nil {
