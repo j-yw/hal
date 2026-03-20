@@ -68,13 +68,16 @@ func TestBuildCreateArgs_EmptyEnv(t *testing.T) {
 
 func TestDaytonaProvider_Create_Success(t *testing.T) {
 	var capturedArgs []string
+	var capturedCmd *exec.Cmd
 
 	dp := &DaytonaProvider{
-		APIKey: "test-key",
+		APIKey:    "test-key",
+		ServerURL: "https://custom.daytona.local/api",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			capturedArgs = append([]string{name}, args...)
 			// Use a real command that succeeds
-			return exec.CommandContext(ctx, "echo", "sandbox created")
+			capturedCmd = exec.CommandContext(ctx, "echo", "sandbox created")
+			return capturedCmd
 		},
 	}
 
@@ -96,6 +99,16 @@ func TestDaytonaProvider_Create_Success(t *testing.T) {
 	// Verify captured command args
 	if capturedArgs[0] != "daytona" {
 		t.Errorf("command = %q, want %q", capturedArgs[0], "daytona")
+	}
+	if capturedCmd == nil {
+		t.Fatal("expected command to be captured")
+	}
+	envStr := strings.Join(capturedCmd.Env, "\n")
+	if !strings.Contains(envStr, "DAYTONA_API_KEY=test-key") {
+		t.Errorf("command env missing DAYTONA_API_KEY: %q", envStr)
+	}
+	if !strings.Contains(envStr, "DAYTONA_SERVER_URL=https://custom.daytona.local/api") {
+		t.Errorf("command env missing DAYTONA_SERVER_URL: %q", envStr)
 	}
 
 	argsStr := strings.Join(capturedArgs[1:], " ")
@@ -135,6 +148,31 @@ func TestDaytonaProvider_Create_Failure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "daytona create failed") {
 		t.Errorf("error %q should mention 'daytona create failed'", err.Error())
+	}
+}
+
+func TestDaytonaProvider_Create_RequiresAPIKey(t *testing.T) {
+	called := false
+	dp := &DaytonaProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			called = true
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "my-sandbox", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when API key is missing, got nil")
+	}
+	if result != nil {
+		t.Errorf("expected nil result on missing API key, got %+v", result)
+	}
+	if !strings.Contains(err.Error(), "daytona API key is required") {
+		t.Errorf("error %q should mention missing daytona API key", err.Error())
+	}
+	if called {
+		t.Fatal("expected command not to run when API key is missing")
 	}
 }
 
@@ -202,6 +240,7 @@ func TestDaytonaProvider_Create_DefaultCmdContext(t *testing.T) {
 func TestDaytonaProvider_Stop_Success(t *testing.T) {
 	var capturedArgs []string
 	dp := &DaytonaProvider{
+		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			capturedArgs = append([]string{name}, args...)
 			return exec.CommandContext(ctx, "echo", "stopped")
@@ -232,6 +271,7 @@ func TestDaytonaProvider_Stop_Success(t *testing.T) {
 
 func TestDaytonaProvider_Stop_Failure(t *testing.T) {
 	dp := &DaytonaProvider{
+		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
 		},
@@ -253,6 +293,7 @@ func TestDaytonaProvider_Stop_Failure(t *testing.T) {
 func TestDaytonaProvider_Delete_Success(t *testing.T) {
 	var capturedArgs []string
 	dp := &DaytonaProvider{
+		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			capturedArgs = append([]string{name}, args...)
 			return exec.CommandContext(ctx, "echo", "deleted")
@@ -283,6 +324,7 @@ func TestDaytonaProvider_Delete_Success(t *testing.T) {
 
 func TestDaytonaProvider_Delete_Failure(t *testing.T) {
 	dp := &DaytonaProvider{
+		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			return exec.CommandContext(ctx, "sh", "-c", "exit 2")
 		},
@@ -304,6 +346,7 @@ func TestDaytonaProvider_Delete_Failure(t *testing.T) {
 func TestDaytonaProvider_Status_Success(t *testing.T) {
 	var capturedArgs []string
 	dp := &DaytonaProvider{
+		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			capturedArgs = append([]string{name}, args...)
 			return exec.CommandContext(ctx, "echo", "running")
@@ -334,6 +377,7 @@ func TestDaytonaProvider_Status_Success(t *testing.T) {
 
 func TestDaytonaProvider_Status_Failure(t *testing.T) {
 	dp := &DaytonaProvider{
+		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
 		},

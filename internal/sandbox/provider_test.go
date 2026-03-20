@@ -9,7 +9,10 @@ import (
 )
 
 func TestProviderFromConfig_Daytona(t *testing.T) {
-	cfg := ProviderConfig{DaytonaAPIKey: "test-key"}
+	cfg := ProviderConfig{
+		DaytonaAPIKey:    "test-key",
+		DaytonaServerURL: "https://custom.daytona.local/api",
+	}
 	p, err := ProviderFromConfig("daytona", cfg)
 	if err != nil {
 		t.Fatalf("ProviderFromConfig(daytona) unexpected error: %v", err)
@@ -20,6 +23,9 @@ func TestProviderFromConfig_Daytona(t *testing.T) {
 	}
 	if dp.APIKey != "test-key" {
 		t.Errorf("APIKey = %q, want %q", dp.APIKey, "test-key")
+	}
+	if dp.ServerURL != "https://custom.daytona.local/api" {
+		t.Errorf("ServerURL = %q, want %q", dp.ServerURL, "https://custom.daytona.local/api")
 	}
 }
 

@@ -54,7 +54,10 @@ func RunCmd(cmd *exec.Cmd, out io.Writer) error {
 func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 	switch provider {
 	case "daytona":
-		return &DaytonaProvider{APIKey: cfg.DaytonaAPIKey}, nil
+		return &DaytonaProvider{
+			APIKey:    cfg.DaytonaAPIKey,
+			ServerURL: cfg.DaytonaServerURL,
+		}, nil
 	case "hetzner":
 		return &HetznerProvider{
 			SSHKey:     cfg.HetznerSSHKey,
@@ -71,6 +74,7 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 // Fields are populated from .hal/config.yaml by the caller.
 type ProviderConfig struct {
 	DaytonaAPIKey     string
+	DaytonaServerURL  string
 	HetznerSSHKey     string
 	HetznerServerType string
 	HetznerImage      string

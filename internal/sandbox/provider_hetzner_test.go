@@ -141,6 +141,34 @@ func TestHetznerProvider_Create_ServerCreateFails(t *testing.T) {
 	}
 }
 
+func TestHetznerProvider_Create_RequiresImage(t *testing.T) {
+	called := false
+	hp := &HetznerProvider{
+		SSHKey:     "key",
+		ServerType: "cx22",
+		Image:      "",
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			called = true
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := hp.Create(context.Background(), "test", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when image is missing, got nil")
+	}
+	if result != nil {
+		t.Errorf("expected nil result, got %+v", result)
+	}
+	if !strings.Contains(err.Error(), "hetzner image is required") {
+		t.Errorf("error %q should mention missing image", err.Error())
+	}
+	if called {
+		t.Fatal("expected hcloud command not to run when image is missing")
+	}
+}
+
 func TestHetznerProvider_Create_ServerIPFails(t *testing.T) {
 	callCount := 0
 	hp := &HetznerProvider{

@@ -65,6 +65,10 @@ func generateCloudInit(env map[string]string) string {
 }
 
 func (h *HetznerProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
+	if strings.TrimSpace(h.Image) == "" {
+		return nil, fmt.Errorf("hetzner image is required; run `hal sandbox setup` to configure sandbox.hetzner.image")
+	}
+
 	// Generate cloud-init user-data file
 	cloudInit := generateCloudInit(env)
 	tmpFile, err := os.CreateTemp("", "hal-cloud-init-*.yaml")
