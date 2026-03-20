@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -20,8 +21,8 @@ var sandboxCmd = &cobra.Command{
 	Short: "Manage sandbox environments",
 	Long: `Manage sandbox environments for isolated development.
 
-Supports multiple providers (Daytona, Hetzner) — run 'hal sandbox setup'
-to choose a provider and configure credentials.
+Supports multiple providers (Daytona, Hetzner, DigitalOcean) — run
+'hal sandbox setup' to choose a provider and configure credentials.
 
 Subcommands:
   setup       Configure provider, credentials, and environment
@@ -44,6 +45,7 @@ var sandboxSetupCmd = &cobra.Command{
 First prompts for a provider:
   (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
   (2) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
+  (3) DigitalOcean — managed VPS via doctl (prompts for SSH key fingerprint, droplet size)
 
 Then prompts for shared environment variables:
   • API keys (Anthropic, OpenAI) — masked input
@@ -132,8 +134,11 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 }
 
 func runSandboxSetupCobra(cmd *cobra.Command, args []string) error {
-	return runSandboxSetup(".", os.Stdin, os.Stdout, readPasswordFromTerminal)
+	return runSandboxSetup(".", os.Stdin, os.Stdout, readPasswordFromTerminal, exec.LookPath)
 }
+
+// lookPathFunc checks whether a binary is on PATH. Injected for testability.
+type lookPathFunc func(file string) (string, error)
 
 // passwordReader reads a password from the user. The fd parameter is the file
 // descriptor of the terminal. Returns the password bytes and any error.
@@ -177,9 +182,15 @@ var hetznerFields = []setupField{
 	{key: "_hetzner_image", label: "Image", defVal: "ubuntu-24.04"},
 }
 
+// digitalocean-specific setup fields
+var digitaloceanFields = []setupField{
+	{key: "_do_ssh_key", label: "SSH key fingerprint (doctl compute ssh-key list)", required: true},
+	{key: "_do_size", label: "Droplet size", defVal: "s-2vcpu-4gb"},
+}
+
 // runSandboxSetup contains the testable logic for the sandbox setup command.
 // dir is the project root directory (containing .hal/).
-func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passwordReader) error {
+func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passwordReader, lookPath lookPathFunc) error {
 	halDir := filepath.Join(dir, template.HalDir)
 
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
@@ -206,10 +217,13 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 
 	// Determine default provider choice
 	defaultChoice := "1"
-	if existingSandbox.Provider == "hetzner" {
+	switch existingSandbox.Provider {
+	case "hetzner":
 		defaultChoice = "2"
+	case "digitalocean":
+		defaultChoice = "3"
 	}
-	fmt.Fprintf(out, "  (1) Daytona  (2) Hetzner [%s]: ", defaultChoice)
+	fmt.Fprintf(out, "  (1) Daytona  (2) Hetzner  (3) DigitalOcean [%s]: ", defaultChoice)
 	line, _ := reader.ReadString('\n')
 	choice := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
 	if choice == "" {
@@ -222,8 +236,17 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		selectedProvider = "daytona"
 	case "2":
 		selectedProvider = "hetzner"
+	case "3":
+		selectedProvider = "digitalocean"
 	default:
-		return fmt.Errorf("invalid provider choice %q — enter 1 or 2", choice)
+		return fmt.Errorf("invalid provider choice %q — enter 1, 2, or 3", choice)
+	}
+
+	// DigitalOcean requires doctl on PATH — check before prompting
+	if selectedProvider == "digitalocean" {
+		if _, err := lookPath("doctl"); err != nil {
+			return fmt.Errorf("doctl not found on PATH: install from https://docs.digitalocean.com/reference/doctl/how-to/install/ and run 'doctl auth init'")
+		}
 	}
 
 	// Collect all values
@@ -287,7 +310,30 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 				return err
 			}
 			collected["_hetzner_image"] = val
+
+	case "digitalocean":
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  ── DigitalOcean ──")
+		fmt.Fprintln(out, "")
+
+		// SSH key fingerprint
+		val, err := promptField(reader, in, out, readPassword, digitaloceanFields[0], existingSandbox.DigitalOcean.SSHKey)
+		if err != nil {
+			return err
 		}
+		collected["_do_ssh_key"] = val
+
+		// Droplet size
+		currentSize := existingSandbox.DigitalOcean.Size
+		if currentSize == "" {
+			currentSize = digitaloceanFields[1].defVal
+		}
+		val, err = promptField(reader, in, out, readPassword, digitaloceanFields[1], currentSize)
+		if err != nil {
+			return err
+		}
+		collected["_do_size"] = val
+	}
 
 	// ── API keys ──
 	fmt.Fprintln(out, "")
@@ -373,6 +419,13 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		}
 	}
 
+	if selectedProvider == "digitalocean" {
+		sandboxCfg.DigitalOcean = compound.DigitalOceanConfig{
+			SSHKey: collected["_do_ssh_key"],
+			Size:   collected["_do_size"],
+		}
+	}
+
 	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
 		return fmt.Errorf("saving sandbox config: %w", err)
 	}
@@ -388,6 +441,8 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		fmt.Fprintln(out, "  Daytona:    ✓ configured")
 	case "hetzner":
 		fmt.Fprintf(out, "  Hetzner:    ✓ ssh-key=%s type=%s image=%s\n", collected["_hetzner_ssh_key"], collected["_hetzner_server_type"], collected["_hetzner_image"])
+	case "digitalocean":
+		fmt.Fprintf(out, "  DigitalOcean: ✓ ssh-key=%s size=%s\n", collected["_do_ssh_key"], collected["_do_size"])
 	}
 
 	configuredCount := 0

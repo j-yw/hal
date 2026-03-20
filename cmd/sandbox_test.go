@@ -18,6 +18,16 @@ func noopPasswordReader(_ int) ([]byte, error) {
 	return nil, nil
 }
 
+// fakeLookPath always succeeds — simulates all CLIs being available.
+func fakeLookPath(_ string) (string, error) {
+	return "/usr/bin/fake", nil
+}
+
+// fakeLookPathMissing returns an error — simulates CLI not on PATH.
+func fakeLookPathMissing(name string) (string, error) {
+	return "", fmt.Errorf("executable file not found in $PATH: %s", name)
+}
+
 // newlines for all env-var prompts: anthropic, openai, github, git name, git email, tailscale key, tailscale hostname
 const emptyEnvInputs = "\n\n\n\n\n\n\n"
 
@@ -31,6 +41,12 @@ func daytonaSetupInput(apiKey, serverURL string) string {
 // provider choice "2", ssh key name, server type, image, then env var prompts.
 func hetznerSetupInput(sshKey, serverType, image string) string {
 	return "2\n" + sshKey + "\n" + serverType + "\n" + image + "\n" + emptyEnvInputs
+}
+
+// digitaloceanSetupInput builds stdin input for the DigitalOcean setup path:
+// provider choice "3", ssh key fingerprint, droplet size, then env var prompts.
+func digitaloceanSetupInput(sshKey, size string) string {
+	return "3\n" + sshKey + "\n" + size + "\n" + emptyEnvInputs
 }
 
 func TestRunSandboxSetup(t *testing.T) {
@@ -319,11 +335,118 @@ func TestRunSandboxSetup(t *testing.T) {
 				},
 			},
 		{
+			name: "digitalocean: saves ssh key and size",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: digitaloceanSetupInput("ab:cd:ef:12:34", "s-4vcpu-8gb"),
+			wantOutput: "Saved to .hal/config.yaml",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "digitalocean" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "digitalocean")
+				}
+				if cfg.DigitalOcean.SSHKey != "ab:cd:ef:12:34" {
+					t.Errorf("DigitalOcean.SSHKey = %q, want %q", cfg.DigitalOcean.SSHKey, "ab:cd:ef:12:34")
+				}
+				if cfg.DigitalOcean.Size != "s-4vcpu-8gb" {
+					t.Errorf("DigitalOcean.Size = %q, want %q", cfg.DigitalOcean.Size, "s-4vcpu-8gb")
+				}
+			},
+		},
+		{
+			name: "digitalocean: uses default size when empty",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: digitaloceanSetupInput("ab:cd:ef:12:34", ""),
+			wantOutput: "Saved to .hal/config.yaml",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "digitalocean" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "digitalocean")
+				}
+				if cfg.DigitalOcean.SSHKey != "ab:cd:ef:12:34" {
+					t.Errorf("DigitalOcean.SSHKey = %q, want %q", cfg.DigitalOcean.SSHKey, "ab:cd:ef:12:34")
+				}
+				if cfg.DigitalOcean.Size != "s-2vcpu-4gb" {
+					t.Errorf("DigitalOcean.Size = %q, want %q (default)", cfg.DigitalOcean.Size, "s-2vcpu-4gb")
+				}
+			},
+		},
+		{
+			name: "digitalocean: error when SSH key fingerprint is empty",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: "3\n\n",
+			wantErr:    "is required",
+		},
+		{
+			name: "digitalocean: saves env vars alongside DO config",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: "3\nab:cd:ef\n\nsk-ant-test\n\n\nj-yw\n\n\n\n",
+			wantOutput: "3 env vars configured",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "digitalocean" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "digitalocean")
+				}
+				if cfg.Env["ANTHROPIC_API_KEY"] != "sk-ant-test" {
+					t.Errorf("ANTHROPIC_API_KEY = %q, want %q", cfg.Env["ANTHROPIC_API_KEY"], "sk-ant-test")
+				}
+				if cfg.Env["GIT_USER_NAME"] != "j-yw" {
+					t.Errorf("GIT_USER_NAME = %q, want %q", cfg.Env["GIT_USER_NAME"], "j-yw")
+				}
+			},
+		},
+		{
+			name: "digitalocean: defaults to DO when existing config is digitalocean",
+			setup: func(t *testing.T, dir string) {
+				halDir := filepath.Join(dir, template.HalDir)
+				os.MkdirAll(halDir, 0755)
+				sandboxCfg := &compound.SandboxConfig{
+					Provider:     "digitalocean",
+					DigitalOcean: compound.DigitalOceanConfig{SSHKey: "old-fp", Size: "s-1vcpu-1gb"},
+					Env:          map[string]string{},
+				}
+				compound.SaveSandboxConfig(dir, sandboxCfg)
+			},
+			stdinInput: "\n\n\n" + emptyEnvInputs, // enter=DO default, keep old ssh key, keep old size
+			wantOutput: "Provider:   digitalocean",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "digitalocean" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "digitalocean")
+				}
+				if cfg.DigitalOcean.SSHKey != "old-fp" {
+					t.Errorf("DigitalOcean.SSHKey = %q, want %q", cfg.DigitalOcean.SSHKey, "old-fp")
+				}
+				if cfg.DigitalOcean.Size != "s-1vcpu-1gb" {
+					t.Errorf("DigitalOcean.Size = %q, want %q", cfg.DigitalOcean.Size, "s-1vcpu-1gb")
+				}
+			},
+		},
+		{
 			name: "invalid provider choice returns error",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "3\n",
+			stdinInput: "4\n",
 			wantErr:    "invalid provider choice",
 		},
 		{
@@ -355,7 +478,7 @@ func TestRunSandboxSetup(t *testing.T) {
 			in := strings.NewReader(tt.stdinInput)
 			var out bytes.Buffer
 
-			err := runSandboxSetup(dir, in, &out, noopPasswordReader)
+			err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -389,7 +512,7 @@ func TestRunSandboxSetup_PromptOutput_Daytona(t *testing.T) {
 	in := strings.NewReader(daytonaSetupInput("test-key", ""))
 	var out bytes.Buffer
 
-	err := runSandboxSetup(dir, in, &out, noopPasswordReader)
+	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -422,7 +545,7 @@ func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 	in := strings.NewReader(hetznerSetupInput("my-key", "", ""))
 	var out bytes.Buffer
 
-	err := runSandboxSetup(dir, in, &out, noopPasswordReader)
+	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -480,7 +603,7 @@ func TestRunSandboxSetup_NonTerminalFileInputFallsBackToPlaintext(t *testing.T) 
 	}
 
 	var out bytes.Buffer
-	if err := runSandboxSetup(dir, inputFile, &out, readPassword); err != nil {
+	if err := runSandboxSetup(dir, inputFile, &out, readPassword, fakeLookPath); err != nil {
 		t.Fatalf("runSandboxSetup() error: %v", err)
 	}
 
@@ -512,6 +635,84 @@ func TestMaskSecret(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("maskSecret(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestRunSandboxSetup_PromptOutput_DigitalOcean(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+
+	in := strings.NewReader(digitaloceanSetupInput("ab:cd:ef:12:34", ""))
+	var out bytes.Buffer
+
+	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Select Provider") {
+		t.Error("output should contain provider selection prompt")
+	}
+	if !strings.Contains(output, "DigitalOcean") {
+		t.Error("output should contain DigitalOcean in provider selection")
+	}
+	if !strings.Contains(output, "── DigitalOcean ──") {
+		t.Error("output should contain DigitalOcean section header")
+	}
+	if !strings.Contains(output, "SSH key fingerprint") {
+		t.Error("output should contain SSH key fingerprint prompt")
+	}
+	if !strings.Contains(output, "doctl compute ssh-key list") {
+		t.Error("output should contain doctl hint for SSH key")
+	}
+	if !strings.Contains(output, "Droplet size") {
+		t.Error("output should contain droplet size prompt")
+	}
+	if !strings.Contains(output, "Provider:   digitalocean") {
+		t.Error("output should show digitalocean as provider in summary")
+	}
+	if !strings.Contains(output, "ssh-key=ab:cd:ef:12:34") {
+		t.Error("output should show SSH key fingerprint in summary")
+	}
+}
+
+func TestRunSandboxSetup_DigitalOcean_DoctlNotFound(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+
+	in := strings.NewReader("3\n")
+	var out bytes.Buffer
+
+	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPathMissing)
+	if err == nil {
+		t.Fatal("expected error when doctl is not on PATH, got nil")
+	}
+	if !strings.Contains(err.Error(), "doctl not found") {
+		t.Errorf("error %q should contain 'doctl not found'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "doctl auth init") {
+		t.Errorf("error %q should contain install/auth instructions", err.Error())
+	}
+
+	// Verify no config was saved (no partial state)
+	cfg, _ := compound.LoadSandboxConfig(dir)
+	if cfg != nil && cfg.Provider == "digitalocean" {
+		t.Error("should not save digitalocean config when doctl is missing")
+	}
+}
+
+func TestRunSandboxSetup_DoctlCheckOnlyForDigitalOcean(t *testing.T) {
+	// Daytona and Hetzner should work even when doctl is missing
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+
+	in := strings.NewReader(daytonaSetupInput("my-key", ""))
+	var out bytes.Buffer
+
+	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPathMissing)
+	if err != nil {
+		t.Fatalf("Daytona setup should succeed even when doctl is missing: %v", err)
 	}
 }
 

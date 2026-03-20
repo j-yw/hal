@@ -8,7 +8,8 @@ Interactive setup for sandbox credentials and environment variables.
 
 First prompts for a provider:
   (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
-  (2) Hetzner — self-managed VPS (prompts for SSH key name, server type)
+  (2) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
+  (3) DigitalOcean — managed VPS via doctl (prompts for SSH key fingerprint, droplet size)
 
 Then prompts for shared environment variables:
   • API keys (Anthropic, OpenAI) — masked input

@@ -6,8 +6,9 @@ Delete a sandbox permanently
 
 Permanently delete a sandbox.
 
-Reads the sandbox name and provider from .hal/sandbox.json.
-After successful deletion, sandbox.json is removed.
+By default, reads the sandbox name and provider from .hal/sandbox.json.
+Use --name to delete by explicit sandbox name when local state is missing.
+After successful deletion, sandbox.json is removed only when it matches the deleted sandbox.
 
 ```
 hal sandbox delete [flags]
@@ -17,12 +18,14 @@ hal sandbox delete [flags]
 
 ```
   hal sandbox delete
+  hal sandbox delete --name hal-feature-auth
 ```
 
 ### Options
 
 ```
-  -h, --help   help for delete
+  -h, --help          help for delete
+  -n, --name string   Delete sandbox by explicit name (without reading .hal/sandbox.json)
 ```
 
 ### SEE ALSO

@@ -6,8 +6,8 @@ Manage sandbox environments
 
 Manage sandbox environments for isolated development.
 
-Supports multiple providers (Daytona, Hetzner) — run 'hal sandbox setup'
-to choose a provider and configure credentials.
+Supports multiple providers (Daytona, Hetzner, DigitalOcean) — run
+'hal sandbox setup' to choose a provider and configure credentials.
 
 Subcommands:
   setup       Configure provider, credentials, and environment
