@@ -168,3 +168,132 @@ func TestHetznerProvider_Create_ServerIPFails(t *testing.T) {
 		t.Errorf("error %q should mention 'hcloud server ip failed'", err.Error())
 	}
 }
+
+func TestHetznerProvider_Stop_Success(t *testing.T) {
+	var capturedArgs []string
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "shutting down")
+		},
+	}
+
+	var out bytes.Buffer
+	err := hp.Stop(context.Background(), "my-server", &out)
+	if err != nil {
+		t.Fatalf("Stop() unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"hcloud", "server", "shutdown", "my-server"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+}
+
+func TestHetznerProvider_Stop_Failure(t *testing.T) {
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	err := hp.Stop(context.Background(), "my-server", &out)
+	if err == nil {
+		t.Fatal("Stop() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "hcloud server shutdown failed") {
+		t.Errorf("error %q should contain 'hcloud server shutdown failed'", err.Error())
+	}
+}
+
+func TestHetznerProvider_Delete_Success(t *testing.T) {
+	var capturedArgs []string
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "deleted")
+		},
+	}
+
+	var out bytes.Buffer
+	err := hp.Delete(context.Background(), "my-server", &out)
+	if err != nil {
+		t.Fatalf("Delete() unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"hcloud", "server", "delete", "my-server"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+}
+
+func TestHetznerProvider_Delete_Failure(t *testing.T) {
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	err := hp.Delete(context.Background(), "my-server", &out)
+	if err == nil {
+		t.Fatal("Delete() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "hcloud server delete failed") {
+		t.Errorf("error %q should contain 'hcloud server delete failed'", err.Error())
+	}
+}
+
+func TestHetznerProvider_Status_Success(t *testing.T) {
+	var capturedArgs []string
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "running")
+		},
+	}
+
+	var out bytes.Buffer
+	err := hp.Status(context.Background(), "my-server", &out)
+	if err != nil {
+		t.Fatalf("Status() unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"hcloud", "server", "describe", "my-server"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+}
+
+func TestHetznerProvider_Status_Failure(t *testing.T) {
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	err := hp.Status(context.Background(), "my-server", &out)
+	if err == nil {
+		t.Fatal("Status() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "hcloud server describe failed") {
+		t.Errorf("error %q should contain 'hcloud server describe failed'", err.Error())
+	}
+}

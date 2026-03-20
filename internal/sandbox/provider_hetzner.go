@@ -116,11 +116,29 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 }
 
 func (h *HetznerProvider) Stop(ctx context.Context, name string, out io.Writer) error {
-	return fmt.Errorf("HetznerProvider.Stop not yet implemented")
+	cmd := h.commandContext(ctx, "hcloud", "server", "shutdown", name)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("hcloud server shutdown failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return fmt.Errorf("hcloud server shutdown failed: %w", err)
+	}
+	return nil
 }
 
 func (h *HetznerProvider) Delete(ctx context.Context, name string, out io.Writer) error {
-	return fmt.Errorf("HetznerProvider.Delete not yet implemented")
+	cmd := h.commandContext(ctx, "hcloud", "server", "delete", name)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("hcloud server delete failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return fmt.Errorf("hcloud server delete failed: %w", err)
+	}
+	return nil
 }
 
 func (h *HetznerProvider) SSH(name string) (*exec.Cmd, error) {
@@ -167,5 +185,14 @@ func (h *HetznerProvider) Exec(name string, args []string) (*exec.Cmd, error) {
 }
 
 func (h *HetznerProvider) Status(ctx context.Context, name string, out io.Writer) error {
-	return fmt.Errorf("HetznerProvider.Status not yet implemented")
+	cmd := h.commandContext(ctx, "hcloud", "server", "describe", name)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("hcloud server describe failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return fmt.Errorf("hcloud server describe failed: %w", err)
+	}
+	return nil
 }
