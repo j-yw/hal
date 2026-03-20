@@ -232,6 +232,9 @@
   - `wrapDoctlError` captures stderr in a separate buffer via `io.MultiWriter` so error messages include the actual stderr while still streaming to the caller's `out`.
   - `buildDOCreateArgs` is a pure function that returns the args slice, making it easy to test command construction independently.
   - SSH/Exec use the same state-based IP resolution as HetznerProvider — `LoadState(d.StateDir)` to get the IP.
+- DigitalOcean setup uses `digitaloceanFields` with `_do_ssh_key` and `_do_size` internal keys, following the same `_` prefix pattern as Daytona and Hetzner for non-env-var config fields.
+- The `lookPathFunc` injection on `runSandboxSetup` allows testing the doctl PATH check without requiring a real doctl binary — `fakeLookPath` always succeeds, `fakeLookPathMissing` always fails.
+- When adding a new provider to setup, update: provider selection prompt, default choice switch, selected provider switch, provider-specific credentials case, save section, and summary section.
 ---
 
 ## [2026-03-20] - [US-002] Register provider in factory
@@ -241,4 +244,14 @@
   - When adding a new provider, update all three call sites that build `ProviderConfig`: `resolveProviderFromState`, `resolveProviderFromName` in `cmd/sandbox.go`, and the inline config build in `cmd/sandbox_start.go`.
   - The existing `TestProviderFromConfig_Unknown` used "digitalocean" as the unknown provider name — remember to update test fixtures when a new provider makes an old "unknown" name valid.
   - `SaveSandboxConfig` only writes provider-specific sections when at least one field is non-empty — follow the same pattern for new providers.
+---
+
+## [2026-03-20] - [US-003] CLI setup prompt for DigitalOcean
+- What was implemented: Added DigitalOcean as provider option (3) in `hal sandbox setup`. Prompts for SSH key fingerprint (with `doctl compute ssh-key list` hint) and droplet size (default `s-2vcpu-4gb`). Checks for doctl on PATH before prompting — aborts with install instructions if missing. Config saved as `sandbox.provider: digitalocean` with `sandbox.digitalocean.sshKey` and `sandbox.digitalocean.size`.
+- Files changed: `cmd/sandbox.go`, `cmd/sandbox_test.go`, `docs/cli/hal_sandbox.md`, `docs/cli/hal_sandbox_delete.md`, `docs/cli/hal_sandbox_setup.md`
+- **Learnings for future iterations:**
+  - The `lookPathFunc` injection pattern makes doctl PATH checking testable without real binaries. `fakeLookPath` (success) and `fakeLookPathMissing` (failure) cover both paths.
+  - The doctl check runs *after* provider selection but *before* prompting for credentials, so no partial config is saved when doctl is missing.
+  - When adding a new provider, update 6 places in `runSandboxSetup`: provider choice prompt, default choice switch, selected provider switch, credentials case, save block, and summary output.
+  - Test inputs for DO use `digitaloceanSetupInput(sshKey, size)` helper — follows the same pattern as `daytonaSetupInput` and `hetznerSetupInput`.
 ---
