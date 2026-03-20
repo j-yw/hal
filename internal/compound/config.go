@@ -283,9 +283,9 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 
 	var raw struct {
 		Sandbox struct {
-			Provider     *string           `yaml:"provider"`
-			Env          map[string]string `yaml:"env"`
-			Hetzner      struct {
+			Provider *string           `yaml:"provider"`
+			Env      map[string]string `yaml:"env"`
+			Hetzner  struct {
 				SSHKey     *string `yaml:"sshKey"`
 				ServerType *string `yaml:"serverType"`
 				Image      *string `yaml:"image"`
@@ -294,6 +294,12 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 				SSHKey *string `yaml:"sshKey"`
 				Size   *string `yaml:"size"`
 			} `yaml:"digitalocean"`
+			Lightsail struct {
+				Region           *string `yaml:"region"`
+				AvailabilityZone *string `yaml:"availabilityZone"`
+				Bundle           *string `yaml:"bundle"`
+				KeyPairName      *string `yaml:"keyPairName"`
+			} `yaml:"lightsail"`
 		} `yaml:"sandbox"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -326,6 +332,18 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	}
 	if raw.Sandbox.DigitalOcean.Size != nil {
 		cfg.DigitalOcean.Size = *raw.Sandbox.DigitalOcean.Size
+	}
+	if raw.Sandbox.Lightsail.Region != nil {
+		cfg.Lightsail.Region = *raw.Sandbox.Lightsail.Region
+	}
+	if raw.Sandbox.Lightsail.AvailabilityZone != nil {
+		cfg.Lightsail.AvailabilityZone = *raw.Sandbox.Lightsail.AvailabilityZone
+	}
+	if raw.Sandbox.Lightsail.Bundle != nil {
+		cfg.Lightsail.Bundle = *raw.Sandbox.Lightsail.Bundle
+	}
+	if raw.Sandbox.Lightsail.KeyPairName != nil {
+		cfg.Lightsail.KeyPairName = *raw.Sandbox.Lightsail.KeyPairName
 	}
 
 	return cfg, nil
@@ -396,6 +414,24 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 			doMap["size"] = sandbox.DigitalOcean.Size
 		}
 		sandboxMap["digitalocean"] = doMap
+	}
+
+	// Only write lightsail section if any field is set
+	if sandbox.Lightsail.Region != "" || sandbox.Lightsail.AvailabilityZone != "" || sandbox.Lightsail.Bundle != "" || sandbox.Lightsail.KeyPairName != "" {
+		lightsailMap := map[string]interface{}{}
+		if sandbox.Lightsail.Region != "" {
+			lightsailMap["region"] = sandbox.Lightsail.Region
+		}
+		if sandbox.Lightsail.AvailabilityZone != "" {
+			lightsailMap["availabilityZone"] = sandbox.Lightsail.AvailabilityZone
+		}
+		if sandbox.Lightsail.Bundle != "" {
+			lightsailMap["bundle"] = sandbox.Lightsail.Bundle
+		}
+		if sandbox.Lightsail.KeyPairName != "" {
+			lightsailMap["keyPairName"] = sandbox.Lightsail.KeyPairName
+		}
+		sandboxMap["lightsail"] = lightsailMap
 	}
 
 	existing["sandbox"] = sandboxMap

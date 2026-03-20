@@ -728,6 +728,10 @@ func TestLoadSandboxConfig_ValidYAML(t *testing.T) {
 		wantSSHKey     string
 		wantServerType string
 		wantImage      string
+		wantLSRegion   string
+		wantLSAZ       string
+		wantLSBundle   string
+		wantLSKeyPair  string
 	}{
 		{
 			name:         "missing provider defaults to daytona",
@@ -735,8 +739,8 @@ func TestLoadSandboxConfig_ValidYAML(t *testing.T) {
 			wantProvider: "daytona",
 		},
 		{
-			name: "empty sandbox section defaults provider to daytona",
-			yaml: "sandbox:\n",
+			name:         "empty sandbox section defaults provider to daytona",
+			yaml:         "sandbox:\n",
 			wantProvider: "daytona",
 		},
 		{
@@ -776,6 +780,22 @@ func TestLoadSandboxConfig_ValidYAML(t *testing.T) {
 `,
 			wantProvider: "hetzner",
 			wantSSHKey:   "partial-key",
+		},
+		{
+			name: "lightsail provider with full config",
+			yaml: `sandbox:
+  provider: lightsail
+  lightsail:
+    region: us-west-2
+    availabilityZone: us-west-2a
+    bundle: small_3_0
+    keyPairName: my-ls-key
+`,
+			wantProvider:  "lightsail",
+			wantLSRegion:  "us-west-2",
+			wantLSAZ:      "us-west-2a",
+			wantLSBundle:  "small_3_0",
+			wantLSKeyPair: "my-ls-key",
 		},
 		{
 			name: "explicit empty provider defaults to daytona",
@@ -831,6 +851,18 @@ sandbox:
 			if cfg.Hetzner.Image != tt.wantImage {
 				t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, tt.wantImage)
 			}
+			if cfg.Lightsail.Region != tt.wantLSRegion {
+				t.Errorf("Lightsail.Region = %q, want %q", cfg.Lightsail.Region, tt.wantLSRegion)
+			}
+			if cfg.Lightsail.AvailabilityZone != tt.wantLSAZ {
+				t.Errorf("Lightsail.AvailabilityZone = %q, want %q", cfg.Lightsail.AvailabilityZone, tt.wantLSAZ)
+			}
+			if cfg.Lightsail.Bundle != tt.wantLSBundle {
+				t.Errorf("Lightsail.Bundle = %q, want %q", cfg.Lightsail.Bundle, tt.wantLSBundle)
+			}
+			if cfg.Lightsail.KeyPairName != tt.wantLSKeyPair {
+				t.Errorf("Lightsail.KeyPairName = %q, want %q", cfg.Lightsail.KeyPairName, tt.wantLSKeyPair)
+			}
 		})
 	}
 }
@@ -870,6 +902,47 @@ func TestSaveSandboxConfig_RoundTrip(t *testing.T) {
 		}
 		if loaded.Hetzner.Image != "ubuntu-24.04" {
 			t.Errorf("Hetzner.Image = %q, want %q", loaded.Hetzner.Image, "ubuntu-24.04")
+		}
+	})
+
+	t.Run("round-trips lightsail fields", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := &SandboxConfig{
+			Provider: "lightsail",
+			Env:      map[string]string{"TOKEN": "abc"},
+			Lightsail: LightsailConfig{
+				Region:           "us-east-1",
+				AvailabilityZone: "us-east-1a",
+				Bundle:           "small_3_0",
+				KeyPairName:      "my-keypair",
+			},
+		}
+
+		if err := SaveSandboxConfig(dir, cfg); err != nil {
+			t.Fatalf("SaveSandboxConfig() unexpected error: %v", err)
+		}
+
+		loaded, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if loaded.Provider != "lightsail" {
+			t.Errorf("Provider = %q, want %q", loaded.Provider, "lightsail")
+		}
+		if loaded.Env["TOKEN"] != "abc" {
+			t.Errorf("Env[TOKEN] = %q, want %q", loaded.Env["TOKEN"], "abc")
+		}
+		if loaded.Lightsail.Region != "us-east-1" {
+			t.Errorf("Lightsail.Region = %q, want %q", loaded.Lightsail.Region, "us-east-1")
+		}
+		if loaded.Lightsail.AvailabilityZone != "us-east-1a" {
+			t.Errorf("Lightsail.AvailabilityZone = %q, want %q", loaded.Lightsail.AvailabilityZone, "us-east-1a")
+		}
+		if loaded.Lightsail.Bundle != "small_3_0" {
+			t.Errorf("Lightsail.Bundle = %q, want %q", loaded.Lightsail.Bundle, "small_3_0")
+		}
+		if loaded.Lightsail.KeyPairName != "my-keypair" {
+			t.Errorf("Lightsail.KeyPairName = %q, want %q", loaded.Lightsail.KeyPairName, "my-keypair")
 		}
 	})
 

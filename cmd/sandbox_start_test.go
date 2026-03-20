@@ -257,6 +257,68 @@ func TestRunSandboxStart_HalDirMissing(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "lightsail",
+		Env:      map[string]string{},
+		Lightsail: compound.LightsailConfig{
+			Region:           "us-east-1",
+			AvailabilityZone: "us-east-1b",
+			Bundle:           "small_3_0",
+			KeyPairName:      "hal-keypair",
+		},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	originalResolveProvider := resolveSandboxProvider
+	t.Cleanup(func() {
+		resolveSandboxProvider = originalResolveProvider
+	})
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb"},
+	}
+
+	var gotProvider string
+	var gotCfg sandbox.ProviderConfig
+	resolveSandboxProvider = func(provider string, cfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+		gotProvider = provider
+		gotCfg = cfg
+		return mock, nil
+	}
+
+	if err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotProvider != "lightsail" {
+		t.Errorf("provider = %q, want %q", gotProvider, "lightsail")
+	}
+	if gotCfg.LightsailRegion != "us-east-1" {
+		t.Errorf("LightsailRegion = %q, want %q", gotCfg.LightsailRegion, "us-east-1")
+	}
+	if gotCfg.LightsailAvailabilityZone != "us-east-1b" {
+		t.Errorf("LightsailAvailabilityZone = %q, want %q", gotCfg.LightsailAvailabilityZone, "us-east-1b")
+	}
+	if gotCfg.LightsailBundle != "small_3_0" {
+		t.Errorf("LightsailBundle = %q, want %q", gotCfg.LightsailBundle, "small_3_0")
+	}
+	if gotCfg.LightsailKeyPairName != "hal-keypair" {
+		t.Errorf("LightsailKeyPairName = %q, want %q", gotCfg.LightsailKeyPairName, "hal-keypair")
+	}
+	if gotCfg.StateDir != halDir {
+		t.Errorf("StateDir = %q, want %q", gotCfg.StateDir, halDir)
+	}
+}
+
 func TestSandboxStartCommandFlags(t *testing.T) {
 	if sandboxStartCmd.Flags().Lookup("name") == nil {
 		t.Fatal("--name flag should exist")

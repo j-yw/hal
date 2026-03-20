@@ -37,6 +37,8 @@ Additional -e/--env flags overlay config values.`,
 	},
 }
 
+var resolveSandboxProvider = sandbox.ProviderFromConfig
+
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
 	sandboxStartCmd.Flags().StringArrayP("env", "e", nil, "environment variables (format: KEY=VALUE, can be repeated)")
@@ -105,9 +107,13 @@ func runSandboxStartWithDeps(
 			HetznerImage:       sandboxCfg.Hetzner.Image,
 			DigitalOceanSSHKey: sandboxCfg.DigitalOcean.SSHKey,
 			DigitalOceanSize:   sandboxCfg.DigitalOcean.Size,
+			LightsailRegion:           sandboxCfg.Lightsail.Region,
+			LightsailAvailabilityZone: sandboxCfg.Lightsail.AvailabilityZone,
+			LightsailBundle:           sandboxCfg.Lightsail.Bundle,
+			LightsailKeyPairName:      sandboxCfg.Lightsail.KeyPairName,
 			StateDir:           halDir,
 		}
-		provider, err = sandbox.ProviderFromConfig(sandboxCfg.Provider, provCfg)
+		provider, err = resolveSandboxProvider(sandboxCfg.Provider, provCfg)
 		if err != nil {
 			return fmt.Errorf("resolving provider: %w", err)
 		}
