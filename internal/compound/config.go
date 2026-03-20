@@ -57,11 +57,12 @@ type LightsailConfig struct {
 
 // SandboxConfig contains sandbox configuration including provider selection and env vars.
 type SandboxConfig struct {
-	Provider     string             `yaml:"provider"`
-	Env          map[string]string  `yaml:"env"`
-	Hetzner      HetznerConfig      `yaml:"hetzner"`
-	DigitalOcean DigitalOceanConfig `yaml:"digitalocean"`
-	Lightsail    LightsailConfig    `yaml:"lightsail"`
+	Provider          string             `yaml:"provider"`
+	TailscaleLockdown bool               `yaml:"tailscaleLockdown"`
+	Env               map[string]string  `yaml:"env"`
+	Hetzner           HetznerConfig      `yaml:"hetzner"`
+	DigitalOcean      DigitalOceanConfig `yaml:"digitalocean"`
+	Lightsail         LightsailConfig    `yaml:"lightsail"`
 }
 
 // rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.
@@ -283,9 +284,10 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 
 	var raw struct {
 		Sandbox struct {
-			Provider *string           `yaml:"provider"`
-			Env      map[string]string `yaml:"env"`
-			Hetzner  struct {
+			Provider          *string           `yaml:"provider"`
+			TailscaleLockdown *bool             `yaml:"tailscaleLockdown"`
+			Env               map[string]string `yaml:"env"`
+			Hetzner           struct {
 				SSHKey     *string `yaml:"sshKey"`
 				ServerType *string `yaml:"serverType"`
 				Image      *string `yaml:"image"`
@@ -313,6 +315,10 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	cfg := &SandboxConfig{
 		Provider: "daytona",
 		Env:      raw.Sandbox.Env,
+	}
+
+	if raw.Sandbox.TailscaleLockdown != nil {
+		cfg.TailscaleLockdown = *raw.Sandbox.TailscaleLockdown
 	}
 
 	if raw.Sandbox.Provider != nil && *raw.Sandbox.Provider != "" {
@@ -385,8 +391,9 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 	}
 
 	sandboxMap := map[string]interface{}{
-		"provider": sandbox.Provider,
-		"env":      envMap,
+		"provider":          sandbox.Provider,
+		"tailscaleLockdown": sandbox.TailscaleLockdown,
+		"env":               envMap,
 	}
 
 	// Only write hetzner section if any field is set

@@ -52,6 +52,15 @@ func runSandboxStatusWithDeps(dir string, out io.Writer, provider sandbox.Provid
 
 	// Print header with provider and name
 	fmt.Fprintf(out, "Sandbox: %s (provider: %s)\n", state.Name, state.Provider)
+	if state.IP != "" {
+		fmt.Fprintf(out, "Public IP: %s\n", state.IP)
+	}
+	if state.TailscaleIP != "" {
+		fmt.Fprintf(out, "Tailscale IP: %s\n", state.TailscaleIP)
+		fmt.Fprintf(out, "Active SSH IP: %s (tailscale)\n", state.TailscaleIP)
+	} else if state.IP != "" {
+		fmt.Fprintf(out, "Active SSH IP: %s (public)\n", state.IP)
+	}
 
 	ctx := context.Background()
 	if err := provider.Status(ctx, state.Name, out); err != nil {

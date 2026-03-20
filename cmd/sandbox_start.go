@@ -100,18 +100,19 @@ func runSandboxStartWithDeps(
 		}
 
 		provCfg := sandbox.ProviderConfig{
-			DaytonaAPIKey:      dayCfg.APIKey,
-			DaytonaServerURL:   dayCfg.ServerURL,
-			HetznerSSHKey:      sandboxCfg.Hetzner.SSHKey,
-			HetznerServerType:  sandboxCfg.Hetzner.ServerType,
-			HetznerImage:       sandboxCfg.Hetzner.Image,
-			DigitalOceanSSHKey: sandboxCfg.DigitalOcean.SSHKey,
-			DigitalOceanSize:   sandboxCfg.DigitalOcean.Size,
-			LightsailRegion:           sandboxCfg.Lightsail.Region,
+			DaytonaAPIKey:            dayCfg.APIKey,
+			DaytonaServerURL:         dayCfg.ServerURL,
+			HetznerSSHKey:            sandboxCfg.Hetzner.SSHKey,
+			HetznerServerType:        sandboxCfg.Hetzner.ServerType,
+			HetznerImage:             sandboxCfg.Hetzner.Image,
+			DigitalOceanSSHKey:       sandboxCfg.DigitalOcean.SSHKey,
+			DigitalOceanSize:         sandboxCfg.DigitalOcean.Size,
+			LightsailRegion:          sandboxCfg.Lightsail.Region,
 			LightsailAvailabilityZone: sandboxCfg.Lightsail.AvailabilityZone,
-			LightsailBundle:           sandboxCfg.Lightsail.Bundle,
-			LightsailKeyPairName:      sandboxCfg.Lightsail.KeyPairName,
-			StateDir:           halDir,
+			LightsailBundle:          sandboxCfg.Lightsail.Bundle,
+			LightsailKeyPairName:     sandboxCfg.Lightsail.KeyPairName,
+			TailscaleLockdown:        sandboxCfg.TailscaleLockdown,
+			StateDir:                 halDir,
 		}
 		provider, err = resolveSandboxProvider(sandboxCfg.Provider, provCfg)
 		if err != nil {
@@ -144,6 +145,13 @@ func runSandboxStartWithDeps(
 		mergedEnv = nil
 	}
 
+	if sandboxCfg.TailscaleLockdown {
+		authKey := strings.TrimSpace(mergedEnv["TAILSCALE_AUTHKEY"])
+		if authKey == "" {
+			return fmt.Errorf("tailscale lockdown requires TAILSCALE_AUTHKEY (set sandbox.env.TAILSCALE_AUTHKEY or pass --env TAILSCALE_AUTHKEY=...)")
+		}
+	}
+
 	envCount := len(mergedEnv)
 	if envCount > 0 {
 		fmt.Fprintf(out, "Starting sandbox %q (%s) with %d env vars...\n", name, sandboxCfg.Provider, envCount)
@@ -159,16 +167,28 @@ func runSandboxStartWithDeps(
 
 	// Save state with provider and IP
 	state := &sandbox.SandboxState{
-		Name:      result.Name,
-		Provider:  sandboxCfg.Provider,
-		IP:        result.IP,
+		Name:        result.Name,
+		Provider:    sandboxCfg.Provider,
+		IP:          result.IP,
+		TailscaleIP: result.TailscaleIP,
 		WorkspaceID: result.ID,
-		CreatedAt: time.Now(),
+		CreatedAt:   time.Now(),
 	}
 	if err := sandbox.SaveState(halDir, state); err != nil {
 		return fmt.Errorf("saving sandbox state: %w", err)
 	}
 
 	fmt.Fprintf(out, "Sandbox started: %s (provider: %s)\n", result.Name, sandboxCfg.Provider)
+	if result.IP != "" {
+		if sandboxCfg.TailscaleLockdown {
+			fmt.Fprintf(out, "  Public IP:    %s (blocked -- Tailscale only)\n", result.IP)
+		} else {
+			fmt.Fprintf(out, "  Public IP:    %s\n", result.IP)
+		}
+	}
+	if result.TailscaleIP != "" {
+		fmt.Fprintf(out, "  Tailscale IP: %s\n", result.TailscaleIP)
+		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
+	}
 	return nil
 }

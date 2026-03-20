@@ -97,6 +97,7 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 		provCfg.LightsailAvailabilityZone = sandboxCfg.Lightsail.AvailabilityZone
 		provCfg.LightsailBundle = sandboxCfg.Lightsail.Bundle
 		provCfg.LightsailKeyPairName = sandboxCfg.Lightsail.KeyPairName
+		provCfg.TailscaleLockdown = sandboxCfg.TailscaleLockdown
 	}
 
 	return sandbox.ProviderFromConfig(state.Provider, provCfg)
@@ -132,6 +133,7 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 		provCfg.LightsailAvailabilityZone = sandboxCfg.Lightsail.AvailabilityZone
 		provCfg.LightsailBundle = sandboxCfg.Lightsail.Bundle
 		provCfg.LightsailKeyPairName = sandboxCfg.Lightsail.KeyPairName
+		provCfg.TailscaleLockdown = sandboxCfg.TailscaleLockdown
 	}
 
 	providerName := sandboxCfg.Provider
@@ -455,6 +457,26 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		}
 	}
 
+	lockdown := false
+	if selectedProvider != "daytona" {
+		fmt.Fprintf(out, "  Lock down to Tailscale only? (y/n) [%s]: ", yesNoDefault(existingSandbox.TailscaleLockdown))
+		line, _ := reader.ReadString('\n')
+		v := strings.ToLower(strings.TrimSpace(strings.TrimRight(line, "\r\n")))
+		switch v {
+		case "":
+			lockdown = existingSandbox.TailscaleLockdown
+		case "y", "yes":
+			lockdown = true
+		case "n", "no":
+			lockdown = false
+		default:
+			return fmt.Errorf("invalid answer %q (expected y or n)", v)
+		}
+		if lockdown && strings.TrimSpace(collected["TAILSCALE_AUTHKEY"]) == "" {
+			return fmt.Errorf("Tailscale auth key required for lockdown")
+		}
+	}
+
 	// ── Save ──
 
 	// Save provider-specific config
@@ -478,8 +500,9 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	}
 
 	sandboxCfg := &compound.SandboxConfig{
-		Provider: selectedProvider,
-		Env:      envVars,
+		Provider:          selectedProvider,
+		TailscaleLockdown: lockdown,
+		Env:               envVars,
 	}
 
 	if selectedProvider == "hetzner" {
@@ -525,6 +548,14 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		fmt.Fprintf(out, "  DigitalOcean: ✓ ssh-key=%s size=%s\n", collected["_do_ssh_key"], collected["_do_size"])
 	case "lightsail":
 		fmt.Fprintf(out, "  Lightsail:  ✓ key=%s bundle=%s region=%s az=%s\n", collected["_ls_key_pair"], collected["_ls_bundle"], collected["_ls_region"], collected["_ls_az"])
+	}
+
+	if selectedProvider != "daytona" {
+		if lockdown {
+			fmt.Fprintln(out, "  Tailscale:  ✓ locked down (Tailscale-only access)")
+		} else {
+			fmt.Fprintln(out, "  Tailscale:  configured (public SSH allowed)")
+		}
 	}
 
 	configuredCount := 0
@@ -618,4 +649,11 @@ func maskSecret(s string) string {
 		return "••••"
 	}
 	return "••••" + s[len(s)-4:]
+}
+
+func yesNoDefault(v bool) string {
+	if v {
+		return "y"
+	}
+	return "n"
 }

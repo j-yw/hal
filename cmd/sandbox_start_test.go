@@ -174,6 +174,34 @@ func TestRunSandboxStart_EnvVarsFromConfig(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStart_LockdownRequiresAuthKey(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider:          "daytona",
+		Env:               map[string]string{},
+		TailscaleLockdown: true,
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
+	err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "tailscale lockdown requires TAILSCALE_AUTHKEY") {
+		t.Errorf("error %q should mention missing TAILSCALE_AUTHKEY", err.Error())
+	}
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("expected provider.Create not to be called, got %d calls", len(mock.createCalls))
+	}
+}
+
 func TestRunSandboxStart_ProviderAndIPSaved(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)
