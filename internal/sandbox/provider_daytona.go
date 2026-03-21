@@ -94,12 +94,13 @@ func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ..
 
 	var captured bytes.Buffer
 	if out == nil {
-		cmd.Stdout = &captured
-		cmd.Stderr = &captured
+		safe := synchronizedWriter(&captured)
+		cmd.Stdout = safe
+		cmd.Stderr = safe
 	} else {
-		mw := io.MultiWriter(out, &captured)
-		cmd.Stdout = mw
-		cmd.Stderr = mw
+		safe := synchronizedWriter(io.MultiWriter(out, &captured))
+		cmd.Stdout = safe
+		cmd.Stderr = safe
 	}
 
 	err := cmd.Run()
@@ -194,8 +195,9 @@ func (d *DaytonaProvider) Stop(ctx context.Context, name string, out io.Writer) 
 	}
 	cmd := d.commandContext(ctx, "daytona", "stop", name)
 	d.applyCredentials(cmd)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	safeOut := synchronizedWriter(out)
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("daytona stop failed with exit code %d: %w", exitErr.ExitCode(), err)
@@ -211,8 +213,9 @@ func (d *DaytonaProvider) Delete(ctx context.Context, name string, out io.Writer
 	}
 	cmd := d.commandContext(ctx, "daytona", "delete", name, "--yes")
 	d.applyCredentials(cmd)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	safeOut := synchronizedWriter(out)
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("daytona delete failed with exit code %d: %w", exitErr.ExitCode(), err)
@@ -254,8 +257,9 @@ func (d *DaytonaProvider) Status(ctx context.Context, name string, out io.Writer
 	}
 	cmd := d.commandContext(ctx, "daytona", "info", name)
 	d.applyCredentials(cmd)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	safeOut := synchronizedWriter(out)
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("daytona info failed with exit code %d: %w", exitErr.ExitCode(), err)

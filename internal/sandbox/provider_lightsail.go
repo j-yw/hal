@@ -170,11 +170,12 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 	tmpFile.Close()
 
 	// Create instance
+	safeOut := synchronizedWriter(out)
 	args := buildLightsailCreateArgs(name, az, bundle, l.KeyPairName, tmpFile.Name())
 	createCmd := l.commandContext(ctx, "aws", args...)
 	var stderrBuf bytes.Buffer
-	createCmd.Stdout = out
-	createCmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	createCmd.Stdout = safeOut
+	createCmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := createCmd.Run(); err != nil {
 		return nil, wrapAWSError("create-instances", err, stderrBuf.String())
@@ -213,7 +214,7 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 		return nil, fmt.Errorf("instance %q created but no public IP assigned after polling", name)
 	}
 
-	fmt.Fprintf(out, "Instance %s ready at %s\n", name, ip)
+	fmt.Fprintf(safeOut, "Instance %s ready at %s\n", name, ip)
 	result := &SandboxResult{ID: name, Name: name, IP: ip}
 	if l.TailscaleLockdown {
 		tailscaleIP, err := fetchTailscaleIP(ctx, "ubuntu", ip, l.sshContext, l.sleep, 9, 10*time.Second)
@@ -230,10 +231,11 @@ func (l *LightsailProvider) Stop(ctx context.Context, name string, out io.Writer
 		return err
 	}
 
+	safeOut := synchronizedWriter(out)
 	cmd := l.commandContext(ctx, "aws", "lightsail", "stop-instance", "--instance-name", name)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = out
-	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
 		return wrapAWSError("stop-instance", err, stderrBuf.String())
@@ -246,13 +248,14 @@ func (l *LightsailProvider) Delete(ctx context.Context, name string, out io.Writ
 		return err
 	}
 
+	safeOut := synchronizedWriter(out)
 	cmd := l.commandContext(ctx, "aws", "lightsail", "delete-instance",
 		"--instance-name", name,
 		"--force-delete-add-ons",
 	)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = out
-	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
 		return wrapAWSError("delete-instance", err, stderrBuf.String())
@@ -265,14 +268,15 @@ func (l *LightsailProvider) Status(ctx context.Context, name string, out io.Writ
 		return err
 	}
 
+	safeOut := synchronizedWriter(out)
 	cmd := l.commandContext(ctx, "aws", "lightsail", "get-instance",
 		"--instance-name", name,
 		"--query", "instance.{Name:name,State:state.name,IP:publicIpAddress,Blueprint:blueprintId,Bundle:bundleId}",
 		"--output", "table",
 	)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = out
-	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
 		return wrapAWSError("get-instance", err, stderrBuf.String())

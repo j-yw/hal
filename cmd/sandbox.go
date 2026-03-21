@@ -21,7 +21,7 @@ var sandboxCmd = &cobra.Command{
 	Short: "Manage sandbox environments",
 	Long: `Manage sandbox environments for isolated development.
 
-Supports multiple providers (Daytona, Hetzner, DigitalOcean) — run
+Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — run
 'hal sandbox setup' to choose a provider and configure credentials.
 
 Subcommands:

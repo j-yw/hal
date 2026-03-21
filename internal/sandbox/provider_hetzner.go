@@ -106,6 +106,8 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 		return nil, fmt.Errorf("hetzner image is required; run `hal sandbox setup` to configure sandbox.hetzner.image")
 	}
 
+	safeOut := synchronizedWriter(out)
+
 	// Generate cloud-init user-data file
 	cloudInit := generateCloudInit(env, h.TailscaleLockdown)
 	tmpFile, err := os.CreateTemp("", "hal-cloud-init-*.yaml")
@@ -128,8 +130,8 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 		"--ssh-key", h.SSHKey,
 		"--user-data-file", tmpFile.Name(),
 	)
-	createCmd.Stdout = out
-	createCmd.Stderr = out
+	createCmd.Stdout = safeOut
+	createCmd.Stderr = safeOut
 
 	if err := createCmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -142,7 +144,7 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 	ipCmd := h.commandContext(ctx, "hcloud", "server", "ip", name)
 	var ipBuf bytes.Buffer
 	ipCmd.Stdout = &ipBuf
-	ipCmd.Stderr = out
+	ipCmd.Stderr = safeOut
 
 	if err := ipCmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -167,9 +169,10 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 }
 
 func (h *HetznerProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "shutdown", name)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("hcloud server shutdown failed with exit code %d: %w", exitErr.ExitCode(), err)
@@ -180,9 +183,10 @@ func (h *HetznerProvider) Stop(ctx context.Context, name string, out io.Writer) 
 }
 
 func (h *HetznerProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "delete", name)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("hcloud server delete failed with exit code %d: %w", exitErr.ExitCode(), err)
@@ -238,9 +242,10 @@ func (h *HetznerProvider) Exec(name string, args []string) (*exec.Cmd, error) {
 }
 
 func (h *HetznerProvider) Status(ctx context.Context, name string, out io.Writer) error {
+	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "describe", name)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("hcloud server describe failed with exit code %d: %w", exitErr.ExitCode(), err)

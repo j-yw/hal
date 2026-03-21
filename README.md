@@ -546,6 +546,15 @@ git flow release finish -p 0.1.7
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs tests and publishes artifacts via GoReleaser.
 
+The release workflow also requires a repository secret named `HOMEBREW_TAP_TOKEN` with write access to `j-yw/homebrew-tap`. The workflow validates that token before publishing so broken Homebrew credentials fail fast instead of leaving a partially successful release.
+
+To rotate that secret from a local GitHub CLI session with access to the tap:
+
+```bash
+gh auth switch -u j-yw
+gh auth token | gh secret set HOMEBREW_TAP_TOKEN --repo j-yw/hal
+```
+
 ## License
 
 [MIT](LICENSE)
