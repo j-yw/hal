@@ -33,6 +33,7 @@
 - Reuse `sortTargetsByName`, `joinNames`, and `filterRunning` helpers across stop/delete/ssh commands; they live in `cmd/sandbox_stop.go`.
 - Status command uses `sandboxStatusLoadInstance`/`sandboxStatusResolveProvider`/`sandboxStatusNow` injectable vars for test isolation; `renderSandboxDetail` reuses `formatAge`/`formatCost` from `sandbox_list.go`.
 - When a command changes from `noArgsValidation()` to `cobra.MaximumNArgs(N)`, update `cmd/args_test.go` to remove it from the no-args table.
+- `sandbox.Migrate(projectDir, out)` now accepts `io.Writer`; pass `nil` from auto-migrate (no output), pass a `*bytes.Buffer` from the migrate command to detect "no actions" (empty buffer → "Nothing to migrate").
 
 ## [2026-03-21 13:09 CST] - US-001
 - Implemented global sandbox directory helpers in `internal/sandbox/global.go`: `GlobalDir()`, `SandboxesDir()`, and `EnsureGlobalDir()`.
@@ -388,4 +389,17 @@
   - `renderSandboxDetail` reuses `formatAge` and `formatCost` from `sandbox_list.go` — keep display helpers shared across list/status.
   - The status command follows the same injectable provider pattern as SSH (`sandboxStatusResolveProvider` / `sandboxStatusLoadInstance`) for test isolation.
   - When changing `noArgsValidation()` to `cobra.MaximumNArgs(1)`, update `cmd/args_test.go` to remove the command from the no-args test table.
+---
+
+## [2026-03-21 20:00 CST] - US-029
+- Created `cmd/sandbox_migrate.go` with `hal sandbox migrate` command: non-interactive, forwards `sandbox.Migrate` output, prints "Nothing to migrate" when no actions taken.
+- Updated `sandbox.Migrate(projectDir, out)` in `internal/sandbox/migrate.go` to accept `io.Writer` for action output; `nil` writer means silent.
+- Updated `runSandboxAutoMigrate` to pass `nil` writer (auto-migrate stays silent on success).
+- Updated `sandboxMigrate` function var signature and all test overrides in `cmd/sandbox_start_test.go`.
+- Added `cmd/sandbox_migrate_test.go` with 7 tests: no-actions output, forwarded output, error propagation, non-interactive contract, projectDir passthrough, integration with real Migrate, and command metadata.
+- Files changed: `cmd/sandbox_migrate.go`, `cmd/sandbox_migrate_test.go`, `cmd/sandbox.go`, `cmd/sandbox_start_test.go`, `internal/sandbox/migrate.go`, `internal/sandbox/migrate_test.go`
+- **Learnings for future iterations:**
+  - When `sandbox.Migrate` needs to report actions, pass a `bytes.Buffer` and check emptiness to distinguish "did something" from "no-op" without changing the return type.
+  - Pass `nil` as the writer from auto-migrate paths to keep them silent; only the explicit `hal sandbox migrate` command shows action output.
+  - Updating injectable function var signatures requires updating all test overrides across the package; `sed -i` is efficient for uniform signature changes.
 ---
