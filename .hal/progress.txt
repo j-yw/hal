@@ -287,6 +287,8 @@
 - JSON list output uses `SandboxListResponse` with `SandboxListEntry` and `SandboxListTotals` types; optional fields use `omitempty` and pointer types (e.g., `*float64` for `estimatedCost`) so nil values are omitted rather than serialized as zero.
 - `renderSandboxListJSON` is the dedicated JSON renderer; `runSandboxList(out, jsonMode)` dispatches to it or the table renderer based on the flag.
 - `contractVersion` is always `"sandbox-list-v1"` — keep this consistent with `docs/contracts/sandbox-list-v1.md` (US-031).
+- Live status queries use `sandboxListResolveProvider` (package-level var) to resolve providers from global config; override in tests to inject mock providers.
+- `queryLiveStatuses` runs concurrent goroutines per instance with `sync.WaitGroup`; `queryOneStatus` handles a single instance with `context.WithTimeout` at `liveStatusTimeout` (10s).
 ---
 
 ## [2026-03-21 17:45 CST] - US-023
@@ -300,4 +302,20 @@
   - Use pointer types (`*float64`) for JSON optional numeric fields to distinguish missing (nil→omit) from zero (explicit 0).
   - JSON output should go through its own dedicated renderer (not reuse table rendering) to keep output pure and avoid mixing text.
   - The `runSandboxList` signature expanded to `(out, jsonMode)` — update all existing test calls when adding new parameters.
+---
+
+## [2026-03-21 18:00 CST] - US-024
+- Added `--live` flag to `hal sandbox list` that queries each sandbox's provider for fresh status before rendering.
+- Implemented `queryLiveStatuses` and `queryOneStatus` helpers that run concurrent provider status queries with the existing 10s timeout constant.
+- Added `resolveProviderFromGlobalConfig` for building providers from global sandbox config, and `sandboxListResolveProvider` package-level var for test injection.
+- On success, instance status stays as-is from registry (provider confirmed reachability); on failure/timeout, status is set to "unknown".
+- Live query runs before rendering for both table and JSON output modes; empty registries skip queries entirely.
+- Updated all existing `runSandboxList` call sites to pass `liveMode` parameter.
+- Added 12 tests: live success/failure/timeout/resolve-error/mixed-results/empty-no-query/JSON-with-live, plus direct unit tests for `queryLiveStatuses`, `queryOneStatus`, and flag presence.
+- Files changed: `cmd/sandbox_list.go`, `cmd/sandbox_list_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Live queries use `io.Discard` for provider Status output since the list view only needs success/failure, not the raw CLI output.
+  - Provider resolution for live queries uses global config (`resolveProviderFromGlobalConfig`) rather than project-scoped config since sandboxes are now globally registered.
+  - The `sandboxListResolveProvider` injectable var pattern keeps tests fast and deterministic without real provider CLI calls.
+  - When adding parameters to `runSandboxList`, use sed to bulk-update test call sites since there are many.
 ---
