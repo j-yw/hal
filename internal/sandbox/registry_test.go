@@ -1,0 +1,230 @@
+package sandbox
+
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSaveInstanceAndLoadInstance(t *testing.T) {
+	home := setSandboxHome(t)
+
+	created := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	instance := &SandboxState{
+		ID:          "0195b8d6-0f40-7a3f-8c4e-cf7a99e8cc1f",
+		Name:        "api-backend",
+		Provider:    "daytona",
+		WorkspaceID: "ws-123",
+		IP:          "100.64.1.10",
+		Status:      StatusRunning,
+		CreatedAt:   created,
+	}
+
+	if err := SaveInstance(instance); err != nil {
+		t.Fatalf("SaveInstance() unexpected error: %v", err)
+	}
+
+	statePath := filepath.Join(home, sandboxesDirName, "api-backend.json")
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("expected state file to exist: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("state file perms = %o, want %o", info.Mode().Perm(), 0o600)
+	}
+	if _, err := os.Stat(statePath + ".tmp"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("temp file should not remain after atomic save")
+	}
+
+	loaded, err := LoadInstance("api-backend")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.Name != instance.Name {
+		t.Fatalf("loaded name = %q, want %q", loaded.Name, instance.Name)
+	}
+	if loaded.ID != instance.ID {
+		t.Fatalf("loaded id = %q, want %q", loaded.ID, instance.ID)
+	}
+	if loaded.WorkspaceID != instance.WorkspaceID {
+		t.Fatalf("loaded workspace = %q, want %q", loaded.WorkspaceID, instance.WorkspaceID)
+	}
+}
+
+func TestSaveInstance_NameCollision(t *testing.T) {
+	setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{Name: "worker-01", Status: StatusRunning}); err != nil {
+		t.Fatalf("first SaveInstance() failed: %v", err)
+	}
+
+	err := SaveInstance(&SandboxState{Name: "worker-01", Status: StatusStopped})
+	if err == nil {
+		t.Fatal("expected collision error, got nil")
+	}
+	want := `sandbox "worker-01" already exists`
+	if err.Error() != want {
+		t.Fatalf("collision error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestForceWriteInstance_Overwrites(t *testing.T) {
+	setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		ID:        "old-id",
+		Name:      "frontend",
+		Status:    StatusRunning,
+		CreatedAt: time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveInstance() failed: %v", err)
+	}
+
+	if err := ForceWriteInstance(&SandboxState{
+		ID:        "new-id",
+		Name:      "frontend",
+		Status:    StatusStopped,
+		CreatedAt: time.Date(2026, 3, 21, 11, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("ForceWriteInstance() failed: %v", err)
+	}
+
+	loaded, err := LoadInstance("frontend")
+	if err != nil {
+		t.Fatalf("LoadInstance() failed: %v", err)
+	}
+	if loaded.ID != "new-id" {
+		t.Fatalf("loaded id = %q, want %q", loaded.ID, "new-id")
+	}
+	if loaded.Status != StatusStopped {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, StatusStopped)
+	}
+}
+
+func TestLoadInstance_NotFoundWrapsErrNotExist(t *testing.T) {
+	setSandboxHome(t)
+
+	_, err := LoadInstance("does-not-exist")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected errors.Is(err, fs.ErrNotExist) to be true, got %v", err)
+	}
+}
+
+func TestListInstances(t *testing.T) {
+	home := setSandboxHome(t)
+
+	instances, err := ListInstances()
+	if err != nil {
+		t.Fatalf("ListInstances() on empty dir unexpected error: %v", err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("ListInstances() on empty dir len = %d, want 0", len(instances))
+	}
+
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, sandboxesDirName, "README.md"), []byte("ignore me"), 0o600); err != nil {
+		t.Fatalf("write non-json file: %v", err)
+	}
+
+	for _, instance := range []*SandboxState{
+		{Name: "worker-02", Status: StatusRunning},
+		{Name: "api-backend", Status: StatusRunning},
+		{Name: "worker-01", Status: StatusStopped},
+	} {
+		if err := SaveInstance(instance); err != nil {
+			t.Fatalf("SaveInstance(%q) failed: %v", instance.Name, err)
+		}
+	}
+
+	instances, err = ListInstances()
+	if err != nil {
+		t.Fatalf("ListInstances() unexpected error: %v", err)
+	}
+	if len(instances) != 3 {
+		t.Fatalf("ListInstances() len = %d, want 3", len(instances))
+	}
+
+	gotNames := []string{instances[0].Name, instances[1].Name, instances[2].Name}
+	wantNames := []string{"api-backend", "worker-01", "worker-02"}
+	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("ListInstances() names = %v, want %v", gotNames, wantNames)
+	}
+}
+
+func TestRemoveInstance(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(t *testing.T)
+		target   string
+		wantErr  string
+		wantIsFS bool
+	}{
+		{
+			name: "removes existing sandbox",
+			setup: func(t *testing.T) {
+				t.Helper()
+				if err := SaveInstance(&SandboxState{Name: "worker-01", Status: StatusRunning}); err != nil {
+					t.Fatalf("SaveInstance() failed: %v", err)
+				}
+			},
+			target: "worker-01",
+		},
+		{
+			name:     "returns error when sandbox is missing",
+			target:   "missing",
+			wantErr:  `sandbox "missing" does not exist`,
+			wantIsFS: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setSandboxHome(t)
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+
+			err := RemoveInstance(tt.target)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				if tt.wantIsFS && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("expected errors.Is(err, fs.ErrNotExist), got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			_, err = LoadInstance(tt.target)
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("expected sandbox to be removed, LoadInstance err = %v", err)
+			}
+		})
+	}
+}
+
+func setSandboxHome(t *testing.T) string {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv(halConfigHomeEnv, home)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+	return home
+}
