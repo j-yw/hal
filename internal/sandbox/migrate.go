@@ -1,29 +1,44 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/template"
 	"gopkg.in/yaml.v3"
 )
 
-// Migrate moves legacy project sandbox config from .hal/config.yaml to the
-// global sandbox config location when needed.
+// Migrate moves legacy project sandbox state to global locations:
 //
-// Rules:
-//   - If global sandbox-config.yaml already exists, migration is a no-op.
-//   - If project .hal/config.yaml is missing, migration is a no-op.
-//   - If project config has sandbox/daytona sections and global config is
-//     missing, those sections are copied into global sandbox-config.yaml.
+//  1. Config migration: .hal/config.yaml sandbox/daytona sections → global
+//     sandbox-config.yaml (only when global config is missing).
+//  2. State migration: .hal/sandbox.json → global registry entry
+//     (sandboxes/{name}.json). The local file is deleted only after the global
+//     registry save succeeds and a read-back confirms the entry is present.
+//
+// Migration is idempotent — running it repeatedly after a successful migration
+// is a no-op.
 //
 // When out is non-nil, migration emits one line per action. When out is nil,
 // migration emits no output.
 func Migrate(projectDir string, out io.Writer) error {
+	if err := migrateConfig(projectDir, out); err != nil {
+		return err
+	}
+	if err := migrateState(projectDir, out); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateConfig handles config migration (.hal/config.yaml → global sandbox-config.yaml).
+func migrateConfig(projectDir string, out io.Writer) error {
 	globalPath := filepath.Join(GlobalDir(), globalConfigFileName)
 	if _, err := os.Stat(globalPath); err == nil {
 		return nil
@@ -45,6 +60,84 @@ func Migrate(projectDir string, out io.Writer) error {
 
 	if out != nil {
 		fmt.Fprintf(out, "Migrated sandbox config to %s\n", globalPath)
+	}
+
+	return nil
+}
+
+// migrateState handles state migration (.hal/sandbox.json → global registry).
+//
+// Safety contract:
+//   - The local .hal/sandbox.json is deleted only after the global registry
+//     save succeeds AND a read-back confirms the migrated entry is present.
+//   - If read-back verification fails, migration returns an error and the
+//     local file remains unchanged.
+//   - Uses read→write→verify→delete (no os.Rename) for cross-device safety.
+func migrateState(projectDir string, out io.Writer) error {
+	localPath := filepath.Join(projectDir, template.HalDir, template.SandboxFile)
+
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // nothing to migrate
+		}
+		return fmt.Errorf("read legacy sandbox state: %w", err)
+	}
+
+	var state SandboxState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("parse legacy sandbox state: %w", err)
+	}
+
+	if strings.TrimSpace(state.Name) == "" {
+		return fmt.Errorf("legacy sandbox state has empty name — cannot migrate")
+	}
+
+	// Auto-migrate legacy provider field (same as LoadState).
+	if state.Provider == "" {
+		state.Provider = "daytona"
+	}
+
+	// Check if already migrated (entry exists in global registry).
+	if _, err := LoadInstance(state.Name); err == nil {
+		// Already in registry — remove local file and return.
+		if removeErr := os.Remove(localPath); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return fmt.Errorf("remove already-migrated local state: %w", removeErr)
+		}
+		if out != nil {
+			fmt.Fprintf(out, "Removed already-migrated %s (entry %q exists in global registry)\n",
+				template.SandboxFile, state.Name)
+		}
+		return nil
+	}
+
+	// Ensure global directory exists before writing.
+	if err := EnsureGlobalDir(); err != nil {
+		return fmt.Errorf("ensure global dir for state migration: %w", err)
+	}
+
+	// Save to global registry (uses atomic temp-file + rename internally).
+	if err := ForceWriteInstance(&state); err != nil {
+		return fmt.Errorf("save migrated sandbox state: %w", err)
+	}
+
+	// Read-back verification: confirm the entry is present and matches.
+	readBack, err := LoadInstance(state.Name)
+	if err != nil {
+		return fmt.Errorf("verify migrated sandbox state: read-back failed for %q: %w", state.Name, err)
+	}
+	if readBack.Name != state.Name || readBack.ID != state.ID {
+		return fmt.Errorf("verify migrated sandbox state: read-back mismatch for %q (name=%q id=%q, expected name=%q id=%q)",
+			state.Name, readBack.Name, readBack.ID, state.Name, state.ID)
+	}
+
+	// Verification passed — safe to delete local file.
+	if err := os.Remove(localPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove local sandbox state after migration: %w", err)
+	}
+
+	if out != nil {
+		fmt.Fprintf(out, "Migrated sandbox %q to global registry\n", state.Name)
 	}
 
 	return nil
