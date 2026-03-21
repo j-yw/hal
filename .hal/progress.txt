@@ -31,6 +31,8 @@
 - SSH command uses `parseSSHArgs` for `[NAME] [-- command args...]` parsing since `DisableFlagParsing` prevents Cobra from separating positional args; auto-resolve uses `sandbox.ResolveDefault(nil)` with no filter (any status).
 - SSH/exec commands should use injectable `sandboxSSHLoadInstance` and `sandboxSSHResolveProvider` package vars for test isolation; `testMode` flag prevents actual process execution in tests.
 - Reuse `sortTargetsByName`, `joinNames`, and `filterRunning` helpers across stop/delete/ssh commands; they live in `cmd/sandbox_stop.go`.
+- Status command uses `sandboxStatusLoadInstance`/`sandboxStatusResolveProvider`/`sandboxStatusNow` injectable vars for test isolation; `renderSandboxDetail` reuses `formatAge`/`formatCost` from `sandbox_list.go`.
+- When a command changes from `noArgsValidation()` to `cobra.MaximumNArgs(N)`, update `cmd/args_test.go` to remove it from the no-args table.
 
 ## [2026-03-21 13:09 CST] - US-001
 - Implemented global sandbox directory helpers in `internal/sandbox/global.go`: `GlobalDir()`, `SandboxesDir()`, and `EnsureGlobalDir()`.
@@ -370,4 +372,20 @@
   - Auto-resolve uses `sandbox.ResolveDefault(nil)` with no filter (any status) since SSH should be able to target stopped sandboxes too.
   - Injectable vars (`sandboxSSHLoadInstance`, `sandboxSSHResolveProvider`) enable test isolation without real provider CLIs.
   - `testMode` flag on `runSandboxSSHWithDeps` prevents `execInteractiveSSH` / `sandbox.RunCmd` from actually running external processes in tests.
+---
+
+## [2026-03-21 19:30 CST] - US-028
+- Rewrote `cmd/sandbox_status.go` to accept optional `NAME` positional arg via `cobra.MaximumNArgs(1)`.
+- `hal sandbox status NAME` loads instance from global registry, queries provider for live status, and displays all SandboxState fields in a detailed multi-section view (identity, networking, lifecycle, config, labels).
+- `hal sandbox status` (no args) delegates to `runSandboxList(out, false, false)` for table output.
+- Added `renderSandboxDetail` to display: Name, ID, Provider, Status, live query result, Public/Tailscale IPs, Workspace ID, CreatedAt/StoppedAt with age, AutoShutdown, Size, Est. cost, Repo, SnapshotID.
+- Live query failure sets status to "unknown" and shows the error message inline.
+- Removed `sandbox status` from `cmd/args_test.go` no-args table since it now accepts positional args.
+- Added injectable package vars (`sandboxStatusLoadInstance`, `sandboxStatusResolveProvider`, `sandboxStatusNow`) for test isolation.
+- Added 13 tests covering: detailed view with all fields, live query failure, not found, provider resolve error, minimal fields, stopped instance, snapshot labels, no-args list delegation, empty registry delegation, cost display, public IP preference, accepts-optional-name arg validation, and command metadata.
+- Files changed: `cmd/sandbox_status.go`, `cmd/sandbox_status_test.go`, `cmd/args_test.go`
+- **Learnings for future iterations:**
+  - `renderSandboxDetail` reuses `formatAge` and `formatCost` from `sandbox_list.go` — keep display helpers shared across list/status.
+  - The status command follows the same injectable provider pattern as SSH (`sandboxStatusResolveProvider` / `sandboxStatusLoadInstance`) for test isolation.
+  - When changing `noArgsValidation()` to `cobra.MaximumNArgs(1)`, update `cmd/args_test.go` to remove the command from the no-args test table.
 ---
