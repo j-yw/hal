@@ -6,530 +6,625 @@ A web-based project management UI on top of `hal` CLI — where product/engineer
 
 ---
 
-## The Core Problem with the Current CLI
+## The Execution Pipeline: Configurable Stages with Human Gates
 
-Today's hal has two execution modes, and both have UX gaps for managers:
+The key insight: hal's CLI has 3 distinct capabilities that can be mixed and matched:
 
-### 1. Manual: `hal run` — already runs ALL stories
-`hal run` picks the next pending story, implements it, commits, and loops. Default 10 iterations. It already runs the entire PRD end-to-end. **There's nothing manual about it except typing the command.**
+| Capability | CLI Command | What It Does |
+|-----------|-------------|-------------|
+| **Execute** | `hal run` | Runs ALL stories in a PRD to completion |
+| **Review** | `hal review --base` | Iterative code review/fix loop (find issues → fix → repeat until clean) |
+| **Report** | `hal report` | Generates summary report, discovers patterns, updates AGENTS.md |
 
-### 2. Compound: `report → auto → report → auto...` — runs forever
-The compound loop is designed for fully autonomous operation. But there's no **human checkpoint** — once started, it keeps finding work and executing. A PM has no place to say "wait, let me review this before you start the next feature."
+Plus the compound pipeline (`hal auto`) which chains: analyze → branch → prd → explode → execute → pr.
 
-### What's Missing
-**A human-in-the-loop control plane.** A place where a PM can:
-- Queue up multiple features as specs
-- Approve which ones get executed
-- Watch execution in real-time
-- Review results before approving the next batch
-- NOT have an infinite loop running without their awareness
+In the web UI, these become **pipeline stages** that a PM can toggle on/off, and between any two stages there can be a **human approval gate**.
 
 ---
 
-## The Control Model: Job Queue, Not Infinite Loop
+## The Pipeline Builder
 
-The web frontend treats each spec as a **Job** with explicit lifecycle gates:
+Each spec has a configurable pipeline. The PM chooses which stages to include and where approval gates go.
+
+### Pipeline Presets
+
+**Preset 1: Basic (Default)**
+```
+Execute → Done
+```
+Just run all stories. PM reviews the PR manually in GitHub.
+
+**Preset 2: With Review**
+```
+Execute → Review Loop → Done
+```
+After stories are done, hal auto-reviews the code, fixes issues, and iterates until clean. PM gets a polished result.
+
+**Preset 3: With Approval Gate**
+```
+Execute → ⏸ PM Reviews → Review Loop → ⏸ PM Approves → Done
+```
+PM inspects execution results before review loop starts. After review loop, PM approves before PR creation.
+
+**Preset 4: Full Compound**
+```
+Execute → Review Loop → Report → ⏸ PM Reviews → Done
+```
+After execution and review, generate a full report with pattern discovery. PM reviews the report and decides next steps.
+
+**Preset 5: Continuous (with safety rails)**
+```
+Execute → Review Loop → Report → ⏸ PM Reviews Report
+                                        │
+                                        ▼ (PM approves)
+                              Auto Pipeline (next feature)
+                                        │
+                                        ▼
+                              Execute → Review Loop → Report → ⏸ PM Reviews
+                                                                     │
+                                                                    ...
+```
+This is the compound loop — but with a **mandatory PM checkpoint** between features. The report from feature N feeds into the auto pipeline for feature N+1, but only after PM approval.
+
+### Custom Pipeline (Drag-and-Drop)
+
+PMs can build custom pipelines by dragging stages:
 
 ```
-┌──────────┐    ┌──────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
-│  Draft   │───▶│ Approved │───▶│ Executing │───▶│  Review  │───▶│   Done   │
-│          │    │          │    │           │    │          │    │          │
-│ PM writes│    │ PM clicks│    │ hal runs  │    │ PM/EM    │    │ PR ready │
-│ the spec │    │ "Execute"│    │ all tasks │    │ reviews  │    │ to merge │
-└──────────┘    └──────────┘    └───────────┘    └──────────┘    └──────────┘
-      │                              │                │
-      │         ◀────────────────────┘                │
-      │         (failed → back to draft               │
-      │          with error context)                   │
-      │                                                │
-      └────────────────────────────────────────────────┘
-                    (rejected → back to draft
-                     with review feedback)
+┌─────────────────────────────────────────────────────────────┐
+│  Pipeline for: "User Authentication"                         │
+│                                                              │
+│  Available Stages:        Your Pipeline:                     │
+│  ┌──────────────┐        ┌──────────────┐                   │
+│  │ ▶ Execute    │───────▶│ 1. Execute   │                   │
+│  └──────────────┘        ├──────────────┤                   │
+│  ┌──────────────┐        │ 2. ⏸ Gate    │ ← "Review exec"  │
+│  │ 🔍 Review    │───────▶├──────────────┤                   │
+│  └──────────────┘        │ 3. Review    │                   │
+│  ┌──────────────┐        ├──────────────┤                   │
+│  │ 📊 Report    │        │ 4. Report    │                   │
+│  └──────────────┘        ├──────────────┤                   │
+│  ┌──────────────┐        │ 5. ⏸ Gate    │ ← "Final approve"│
+│  │ ⏸ Gate       │        ├──────────────┤                   │
+│  └──────────────┘        │ 6. Create PR │                   │
+│  ┌──────────────┐        └──────────────┘                   │
+│  │ 🔀 Create PR │                                           │
+│  └──────────────┘        [Save as preset ▼]                 │
+│  ┌──────────────┐                                           │
+│  │ 🔄 Auto Next │ ← feeds report into next spec            │
+│  └──────────────┘                                           │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-**Key difference from CLI:** The PM is the conductor. Nothing starts without approval. Nothing advances without review. The infinite loop is replaced by explicit human decisions.
 
 ---
 
-## What Hal CLI Already Gives Us
+## Pipeline Stages in Detail
 
-Every command supports `--json` — the entire CLI is already a headless API:
+### Stage: Execute (`hal run`)
+Runs all stories in the spec's PRD to completion.
 
-| Command | What it does | Web equivalent |
-|---------|-------------|---------------|
-| `hal plan` | AI-generates a PRD | "Generate Spec" button |
-| `hal convert` | Markdown → JSON PRD | Automatic on spec save |
-| `hal validate` | Check PRD quality | Validation badge on spec |
-| `hal explode` | Break PRD → 8-15 tasks | Auto-generates story cards |
-| `hal run` | **Execute ALL stories** | "Execute" button (runs entire PRD) |
-| `hal run -s US-001` | Run single story | Click-to-run individual card |
-| `hal auto` | Full pipeline (analyze→run→PR) | "Auto Pipeline" mode |
-| `hal review` | Code review loop | "Review" button post-execution |
-| `hal report` | Generate summary | Auto after execution completes |
-| `hal status --json` | Workflow state machine | Real-time dashboard |
-| `hal continue --json` | What to do next | Smart suggestions |
-| `hal doctor --json` | Health checks | Environment readiness indicator |
-| `hal sandbox start/stop` | Manage VMs | Sandbox controls in project settings |
+**Inputs:** Converted + exploded PRD (stories)
+**What happens:**
+1. Server calls `hal run -i 50 --json` in the sandbox
+2. hal picks next pending story, implements it, commits, repeats
+3. WebSocket streams progress: which story is running, iteration count
+4. Continues until all stories pass or max iterations hit
 
-### The Critical Insight
-**`hal run` already runs ALL stories to completion.** The web UI just needs to:
-1. Let the PM write the spec
-2. Call `hal convert` + `hal explode` to generate stories
-3. Show stories on a board
-4. On "Execute" → call `hal run` (which handles the entire PRD)
-5. Stream progress via `hal status --json` polling or log tailing
-6. On completion → show results for PM review
+**Outputs:** Updated PRD with `passes: true` on completed stories
+**Status on board:** Stories move from Pending → Done in real-time
+
+**Options:**
+- Max iterations (default: 50)
+- Engine (codex/claude/pi)
+- Timeout per story
+- Run specific story only (`hal run -s T-003`)
+
+### Stage: Review Loop (`hal review --base`)
+Iterative code review: find issues → auto-fix → review again → repeat until clean.
+
+**Inputs:** Completed code on feature branch
+**What happens:**
+1. Server calls `hal review --base <base-branch> --json -i 5` in sandbox
+2. hal diffs the feature branch against base
+3. AI reviews the diff, finds issues (with severity/file/line)
+4. AI auto-fixes what it can
+5. Repeats until no valid issues remain or max iterations hit
+
+**Outputs:** `ReviewLoopResult` with:
+- Issues found / valid / invalid / fixed counts
+- Per-iteration breakdown
+- Stop reason (`no_valid_issues` or `max_iterations`)
+
+**Status on board:** Shows quality badge: "✅ Clean" or "⚠ 3 issues remaining"
+
+**Options:**
+- Max review iterations (default: 5)
+- Engine for review
+- Severity threshold (skip minor issues)
+
+### Stage: Report (`hal report`)
+Generate a summary report, discover patterns, update AGENTS.md.
+
+**Inputs:** Completed work session (git diff, progress, PRD)
+**What happens:**
+1. Server calls `hal report --json` in sandbox
+2. hal gathers context: progress log, git diff, commits, PRD
+3. AI analyzes what was built and how
+4. Identifies patterns worth documenting
+5. Updates AGENTS.md with discovered patterns
+6. Writes report to `.hal/reports/`
+
+**Outputs:** `ReportResult` with:
+- Report path
+- Summary
+- Patterns added to AGENTS.md
+- Recommendations for next steps
+
+**Status on board:** Report card shows summary + recommendations
+
+**Why this matters for compound loop:**
+The report's recommendations feed into the next feature decision. If "Auto Next" stage follows, the report becomes the input for `hal auto` which picks the next priority item.
+
+### Stage: Approval Gate (⏸)
+Human checkpoint. Nothing proceeds until PM/EM explicitly approves.
+
+**What PM sees:**
+- Summary of what completed in the previous stage
+- For post-Execute: story completion status, any failures
+- For post-Review: issues found/fixed, quality score
+- For post-Report: summary, recommendations, patterns discovered
+
+**PM actions:**
+- **Approve** → pipeline continues to next stage
+- **Reject** → spec goes back to Draft with PM's feedback notes
+- **Retry** → re-run the previous stage (useful for flaky failures)
+
+### Stage: Create PR (`git push` + `gh pr create`)
+Push branch and create a draft pull request.
+
+**Inputs:** Completed and reviewed code
+**What happens:**
+1. Push feature branch to remote
+2. Create draft PR with description from spec + task status
+
+**Outputs:** PR URL
+
+### Stage: Auto Next (🔄)
+Feed the report into `hal auto` to pick and execute the next feature.
+
+**Inputs:** Report from previous stage
+**What happens:**
+1. `hal auto --report <path>` runs the full compound pipeline
+2. Analyzes report → identifies priority item → creates branch → generates PRD → explodes → runs
+3. This effectively creates a NEW spec on the board and starts executing it
+
+**Critical constraint:** Auto Next always ends with an approval gate before starting execution. The PM sees "hal wants to work on X next — approve?"
+
+```
+... → Report → Auto Next → ⏸ "Work on X?" → Execute → ...
+```
 
 ---
 
-## Execution Modes in the Web UI
+## How This Maps to the Board
 
-### Mode 1: Full Spec Execution (Default)
-PM clicks "Execute" on a spec → hal runs ALL stories in the PRD sequentially.
-This is what most PMs want: "build this feature."
+### Spec Queue (Outer Board)
 
 ```
-Spec: "User Authentication"
-├── T-001: Setup auth provider    → hal handles
-├── T-002: Login page             → hal handles  
-├── T-003: OAuth callback         → hal handles
-├── T-004: Session management     → hal handles
-├── T-005: Protected routes       → hal handles
-└── All done → PM reviews result
+┌─────────────────────────────────────────────────────────────────────┐
+│  📝 Draft (2)    ✅ Approved (1)   ⏳ Running (1)                  │
+│  ┌──────────┐   ┌──────────┐     ┌──────────────────────────┐     │
+│  │ Payment  │   │ Reviews  │     │ Search Feature            │     │
+│  │ Flow     │   │ System   │     │                            │     │
+│  │          │   │          │     │ Pipeline: Execute → Review │     │
+│  │ [Edit]   │   │ [▶ Run]  │     │ Stage: Execute (5/8)     │     │
+│  └──────────┘   └──────────┘     │ ████████░░░ 62%           │     │
+│  ┌──────────┐                     └──────────────────────────┘     │
+│  │ Email    │                                                      │
+│  │ Tpl      │    ⏸ Waiting (1)         ✓ Done (2)                  │
+│  │ [Edit]   │   ┌──────────────┐     ┌──────────┐                 │
+│  └──────────┘   │ Auth         │     │ DB Setup │                 │
+│                  │              │     │ Cart     │                 │
+│                  │ Gate: Review │     └──────────┘                 │
+│                  │ results      │                                   │
+│                  │ 2 issues     │                                   │
+│                  │ [Approve ✓]  │                                   │
+│                  │ [Reject ✗]   │                                   │
+│                  │ [Retry 🔄]   │                                   │
+│                  └──────────────┘                                   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Mapped to CLI:** `hal run -i 50` (high iteration count to ensure completion)
+Notice "Auth" is in the **Waiting** column — it finished execution and review, but is paused at an approval gate. The PM sees the review results (2 issues remaining) and decides whether to approve (create PR), reject (back to draft), or retry (re-run review).
 
-### Mode 2: Selective Story Execution
-PM selects specific stories to run. Useful for:
-- Re-running a failed story after adjusting the spec
-- Running stories in a custom order
-- Testing one story before committing to the full spec
-
-**Mapped to CLI:** `hal run -s T-003` per selected story
-
-### Mode 3: Auto Pipeline (Power User)
-PM uploads a report or description → hal does everything:
-analyze → branch → generate PRD → explode → run → create PR
-
-**Mapped to CLI:** `hal auto --report <path>`
-
-### Mode 4: Batch Execution (Symphony-like)
-PM queues multiple specs → hal executes them in priority order, one at a time (or parallel in separate sandboxes). **Each spec requires explicit PM approval to start.**
+### Spec Detail View (Pipeline Progress)
 
 ```
-Queue:
-1. ✅ "User Auth"        → Done, PR #42 merged
-2. ⏳ "Search Feature"   → Executing in sandbox-2...  
-3. ⏸  "Payment Flow"     → Approved, waiting for sandbox
-4. 📝 "Email Templates"  → Draft, not approved yet
+┌─────────────────────────────────────────────────────────────────────┐
+│  ← Back │ Search Feature │ Pipeline Progress                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ✅ Execute ────── ⏳ Review ────── ○ Gate ────── ○ PR              │
+│     8/8 tasks       Iteration 2/5    Pending       Pending          │
+│     complete        3 issues → 1                                    │
+│                                                                     │
+│  ┌─── Story Board ─────────────────────────────────────────────┐   │
+│  │                                                              │   │
+│  │  Pending (0)       Running (0)          Done (8)             │   │
+│  │                                        ┌──────────┐         │   │
+│  │                                        │ T-001 ✓  │         │   │
+│  │                                        │ T-002 ✓  │         │   │
+│  │                                        │ T-003 ✓  │         │   │
+│  │                                        │ T-004 ✓  │         │   │
+│  │                                        │ T-005 ✓  │         │   │
+│  │                                        │ T-006 ✓  │         │   │
+│  │                                        │ T-007 ✓  │         │   │
+│  │                                        │ T-008 ✓  │         │   │
+│  │                                        └──────────┘         │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─── Review Loop (Live) ──────────────────────────────────────┐   │
+│  │  Iteration 2/5                                               │   │
+│  │  ┌─────────────────────────────────────────────────────┐    │   │
+│  │  │ Iter 1: 5 issues found, 3 valid, 2 auto-fixed      │    │   │
+│  │  │ Iter 2: 2 issues found, 1 valid, fixing...         │    │   │
+│  │  └─────────────────────────────────────────────────────┘    │   │
+│  │  [⏹ Stop Review]                                            │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  [📋 Execution Log]  [📋 Review Log]  [⚙ Pipeline Settings]       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
-
-**This replaces the infinite `report → auto` loop.** The PM controls the queue. Nothing starts without being approved and queued.
 
 ---
 
-## Architecture
+## The Compound Loop in Practice
+
+### Scenario: Continuous Feature Development
+
+PM sets up a project with **Preset 5 (Continuous)** pipeline:
+
+```
+Execute → Review → Report → ⏸ PM Review → Auto Next → ⏸ PM Approve → ...
+```
+
+**Round 1:**
+1. PM writes spec "User Auth", approves it
+2. Hal executes all 8 stories → ✅ complete
+3. Hal runs review loop → 3 issues found, 2 auto-fixed, 1 remaining
+4. Hal generates report → "Auth complete. Recommend: add search next."
+5. **Pipeline pauses at gate.** PM gets notification.
+6. PM opens Hal Web, sees report summary:
+   - Auth: 8/8 stories done
+   - Review: 1 minor issue remaining (cosmetic)
+   - Recommendation: "Search feature" next
+7. PM clicks **Approve**
+
+**Round 2 (Auto-generated):**
+8. `hal auto` analyzes the report, identifies "Search feature" as priority
+9. A new spec card appears on the board: "Search Feature (auto-generated)"
+10. **Pipeline pauses at "PM Approve" gate.** PM sees:
+    - Auto-generated spec title and description
+    - Estimated 10 tasks
+    - Proposed branch: `hal/search-feature`
+11. PM reviews the auto-generated scope, clicks **Approve**
+12. Hal executes → reviews → reports → pauses for PM again
+
+**The loop continues but NEVER without PM awareness.** Each feature cycle has two mandatory checkpoints:
+1. Post-report: "Here's what we did, here's what's next — approve?"
+2. Pre-execution: "We want to build X — approve?"
+
+### Stopping the Loop
+
+The PM can break the loop at any checkpoint by:
+- Clicking **Reject** (returns to draft, PM rewrites spec)
+- Clicking **Pause** (holds the queue, PM comes back later)
+- Reordering the queue (different spec goes next)
+- Setting a **stop condition** (budget/time/error threshold)
+
+---
+
+## Pipeline Data Model
+
+```sql
+-- Spec pipeline configuration
+CREATE TABLE spec_pipelines (
+    spec_id       TEXT PRIMARY KEY REFERENCES specs(id),
+    preset        TEXT DEFAULT 'basic',      -- basic|with_review|with_gate|compound|continuous|custom
+    stages        TEXT NOT NULL,              -- JSON array of stage definitions
+    current_stage INTEGER DEFAULT 0,          -- Index into stages array
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Individual stage execution records
+CREATE TABLE stage_runs (
+    id            TEXT PRIMARY KEY,
+    spec_id       TEXT REFERENCES specs(id),
+    stage_index   INTEGER NOT NULL,
+    stage_type    TEXT NOT NULL,              -- execute|review|report|gate|pr|auto_next
+    status        TEXT DEFAULT 'pending',     -- pending|running|completed|failed|waiting
+    result        TEXT,                       -- JSON: stage-specific result
+    started_at    DATETIME,
+    completed_at  DATETIME,
+    
+    -- Gate-specific fields
+    gate_label    TEXT,                       -- "Review results" / "Final approve"
+    gate_action   TEXT,                       -- approve|reject|retry (set by PM)
+    gate_notes    TEXT,                       -- PM's feedback
+    gate_acted_by TEXT,                       -- Who approved/rejected
+    gate_acted_at DATETIME
+);
+```
+
+Stage definition JSON:
+```json
+[
+  {"type": "execute", "config": {"maxIterations": 50, "engine": "codex"}},
+  {"type": "review",  "config": {"maxIterations": 5, "engine": "codex"}},
+  {"type": "gate",    "config": {"label": "Review results before PR"}},
+  {"type": "report",  "config": {"skipAgents": false}},
+  {"type": "pr",      "config": {}},
+  {"type": "auto_next", "config": {"requireApproval": true}}
+]
+```
+
+---
+
+## Pipeline API
+
+```
+# Pipeline configuration
+GET    /api/specs/:sid/pipeline              Get pipeline config + current state
+PUT    /api/specs/:sid/pipeline              Update pipeline (set preset or custom stages)
+
+# Pipeline control
+POST   /api/specs/:sid/pipeline/start        Start pipeline execution
+POST   /api/specs/:sid/pipeline/pause        Pause at current stage
+POST   /api/specs/:sid/pipeline/resume       Resume paused pipeline
+
+# Gate actions (PM interactions)
+POST   /api/specs/:sid/stages/:idx/approve   Approve gate → advance pipeline
+POST   /api/specs/:sid/stages/:idx/reject    Reject → spec back to draft
+POST   /api/specs/:sid/stages/:idx/retry     Retry previous stage
+
+# Stage details
+GET    /api/specs/:sid/stages                List all stages with status
+GET    /api/specs/:sid/stages/:idx           Get stage detail + result
+
+# WebSocket events for pipeline progress
+WS /ws/specs/:sid/pipeline
+  pipeline_stage_changed   {stageIndex, stageType, status}
+  gate_waiting             {stageIndex, label, summary}
+  stage_progress           {stageIndex, type: "execute", iteration, total, story}
+  stage_progress           {stageIndex, type: "review", iteration, total, issues}
+  auto_next_proposed       {proposedSpec, title, description, tasks}
+```
+
+---
+
+## Automation Levels (Project-Wide Setting)
+
+These control the DEFAULT pipeline preset for new specs:
+
+| Level | Preset | Gates | Best For |
+|-------|--------|-------|----------|
+| 1 — Manual | Basic | PM must click Execute, no auto-review | Learning, high-risk code |
+| 2 — Semi-Auto | With Gate | Auto-execute on approve, gate before PR | Day-to-day work |
+| 3 — Compound | Compound | Execute+Review+Report auto, gate before next | Trusted codebase |
+| 4 — Continuous | Continuous | Full loop with 2 PM gates per feature | Overnight batch |
+
+PMs can override the project default per-spec. A "Payment Flow" spec might use Manual even in a Continuous project.
+
+### Stop Conditions (Safety Rails for Level 3-4)
+
+| Condition | Default | Effect |
+|-----------|---------|--------|
+| Queue empty | Always on | Pipeline idles when no approved specs remain |
+| Budget limit | Off | Pause when sandbox hours exceed threshold |
+| Error threshold | 3 failures | Pause after N consecutive stage failures |
+| Time window | Off | Only advance pipeline during configured hours |
+| Review severity | Off | Pause if review finds critical/high severity issues |
+
+---
+
+## Full Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                   Hal Web (Next.js)                      │
-│  Spec Editor │ Story Board │ Execution Monitor │ Review  │
+│  Spec Editor │ Pipeline Builder │ Board │ Gate Actions   │
 └──────────────────────────┬──────────────────────────────┘
-                           │ REST + WebSocket  
+                           │ REST + WebSocket
 ┌──────────────────────────▼──────────────────────────────┐
 │                  Hal Server (Go)                         │
 │  `hal serve` — same binary, shares all internal types    │
 │                                                          │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────────┐ │
-│  │ Job Queue  │  │ Event Bus  │  │ Sandbox Manager    │ │
-│  │ SQLite     │  │ WebSocket  │  │ SSH exec hal cmds  │ │
-│  └────────────┘  └────────────┘  └────────────────────┘ │
+│  ┌────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Pipeline   │  │ Event Bus    │  │ Sandbox Mgr    │  │
+│  │ Executor   │  │ WebSocket    │  │ SSH hal cmds   │  │
+│  │ per spec   │  │ broadcast    │  │ multi-sandbox  │  │
+│  └────────────┘  └──────────────┘  └────────────────┘  │
+│  ┌────────────┐  ┌──────────────┐                       │
+│  │ Job Queue  │  │ SQLite       │                       │
+│  │ stage exec │  │ specs/stages │                       │
+│  └────────────┘  └──────────────┘                       │
 └──────────────────────────┬──────────────────────────────┘
                            │ SSH + hal CLI --json
 ┌──────────────────────────▼──────────────────────────────┐
 │              Sandboxes (Isolated VMs)                     │
-│  sandbox-1: hal run (auth feature)                       │
-│  sandbox-2: hal run (search feature)                     │
-│  sandbox-3: idle, ready for next job                     │
+│  sandbox-1: hal run → hal review → hal report            │
+│  sandbox-2: hal run (different spec, parallel)           │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Why `hal serve` in the Same Binary
-- **Type safety**: Import `engine.PRD`, `sandbox.SandboxState`, `cmd.RunResult` directly
-- **No drift**: Server wraps the same functions the CLI calls
-- **Single binary**: `hal serve --port 8080` starts everything
-- **CLI parity**: Any improvement to hal CLI automatically works in the web UI
+### Pipeline Executor (Server-Side)
 
----
+The core server loop per spec:
 
-## The Board: PM/EM Control Surface
-
-### Main View: Project Board
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  🤖 Hal Web    │ E-commerce App ▼ │ 🟢 sandbox-1 │ ⏸ sandbox-2   │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─── Spec Queue ──────────────────────────────────────────────┐   │
-│  │                                                              │   │
-│  │  📝 Draft (2)        ✅ Approved (1)       ⏳ Running (1)   │   │
-│  │  ┌────────────┐     ┌────────────┐       ┌────────────┐    │   │
-│  │  │ Payment    │     │ Reviews    │       │ Search     │    │   │
-│  │  │ Flow       │     │ System     │       │ Feature    │    │   │
-│  │  │            │     │            │       │ 5/8 tasks  │    │   │
-│  │  │ [Edit]     │     │ [Execute▶] │       │ ████░░░ 62%│    │   │
-│  │  └────────────┘     └────────────┘       └────────────┘    │   │
-│  │  ┌────────────┐                                             │   │
-│  │  │ Email      │      🔍 Review (1)       ✓ Done (3)        │   │
-│  │  │ Templates  │     ┌────────────┐       ┌────────────┐    │   │
-│  │  │            │     │ Auth       │       │ DB Setup   │    │   │
-│  │  │ [Edit]     │     │ 3 issues   │       │ Cart       │    │   │
-│  │  └────────────┘     │ [Approve✓] │       │ Products   │    │   │
-│  │                      │ [Reject✗]  │       └────────────┘    │   │
-│  │                      └────────────┘                          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  [+ New Spec]  [📊 Dashboard]  [⚙ Settings]                       │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Spec Detail View (with Story Board inside)
-
-When PM clicks into a spec, they see the kanban of individual stories:
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  ← Back │ Spec: Search Feature │ ⏳ Executing │ 5/8 complete       │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  Pending (3)          In Progress (1)         Done (4)              │
-│  ┌──────────────┐    ┌──────────────┐       ┌──────────────┐      │
-│  │ T-006        │    │ T-005        │       │ T-001 ✓      │      │
-│  │ Filter by    │    │ Search API   │       │ Setup Elastic │      │
-│  │ category     │    │ endpoint     │       ├──────────────┤      │
-│  │              │    │ ⏳ running... │       │ T-002 ✓      │      │
-│  │ [Run ▶]      │    │              │       │ Index schema  │      │
-│  └──────────────┘    │ ┌──────────┐ │       ├──────────────┤      │
-│  ┌──────────────┐    │ │ Live Log │ │       │ T-003 ✓      │      │
-│  │ T-007        │    │ │ ...      │ │       │ Query parser  │      │
-│  │ Pagination   │    │ └──────────┘ │       ├──────────────┤      │
-│  │              │    └──────────────┘       │ T-004 ✓      │      │
-│  └──────────────┘                           │ Results UI    │      │
-│  ┌──────────────┐                           └──────────────┘      │
-│  │ T-008        │                                                  │
-│  │ Sort results │                                                  │
-│  └──────────────┘                                                  │
-│                                                                     │
-│  [⏸ Pause]  [⏹ Stop]  [🔄 Review]  [📋 Full Log]                 │
-└─────────────────────────────────────────────────────────────────────┘
+```go
+func (p *PipelineExecutor) Run(ctx context.Context, specID string) error {
+    pipeline := p.loadPipeline(specID)
+    
+    for i := pipeline.CurrentStage; i < len(pipeline.Stages); i++ {
+        stage := pipeline.Stages[i]
+        
+        switch stage.Type {
+        case "execute":
+            // SSH into sandbox: hal run -i 50 --json
+            // Stream progress via WebSocket
+            result, err := p.runExecute(ctx, specID, stage.Config)
+            p.saveStageResult(specID, i, result)
+            
+        case "review":
+            // SSH into sandbox: hal review --base <branch> --json -i 5
+            result, err := p.runReview(ctx, specID, stage.Config)
+            p.saveStageResult(specID, i, result)
+            
+        case "report":
+            // SSH into sandbox: hal report --json
+            result, err := p.runReport(ctx, specID, stage.Config)
+            p.saveStageResult(specID, i, result)
+            
+        case "gate":
+            // STOP. Set status to "waiting". 
+            // PM must call /api/specs/:id/stages/:i/approve to continue.
+            p.setStageWaiting(specID, i, stage.Config.Label)
+            p.broadcastGateWaiting(specID, i)
+            return nil  // Exit loop. PM action resumes it.
+            
+        case "pr":
+            // SSH: git push + gh pr create
+            result, err := p.runCreatePR(ctx, specID, stage.Config)
+            p.saveStageResult(specID, i, result)
+            
+        case "auto_next":
+            // SSH: hal auto --report <path> --json
+            // Creates a NEW spec on the board from the report
+            newSpec, err := p.runAutoNext(ctx, specID, stage.Config)
+            if stage.Config.RequireApproval {
+                // The new spec starts in "approved" but its pipeline
+                // begins with a gate: "hal wants to build X — approve?"
+                p.createSpecWithGate(newSpec)
+            }
+        }
+        
+        pipeline.CurrentStage = i + 1
+        p.savePipeline(specID, pipeline)
+    }
+    
+    p.markSpecDone(specID)
+    return nil
+}
 ```
 
-### What PMs/EMs Actually Control
-
-| Action | What happens | Human gate? |
-|--------|-------------|-------------|
-| Write spec | Creates draft PRD | — |
-| Edit spec | Modifies PRD content | — |
-| Approve spec | Moves to "Approved" queue | **YES** |
-| Execute spec | Starts `hal run` for all stories | **YES** |
-| Run single story | Starts `hal run -s T-003` | **YES** |
-| Pause execution | Saves state, stops sandbox | **YES** |
-| Review results | Shows code review findings | — |
-| Approve results | Creates PR, moves to Done | **YES** |
-| Reject results | Returns to Draft with feedback | **YES** |
-| Queue next spec | Starts next approved spec | **YES** |
-
-**Every state transition that costs money or changes code requires explicit PM action.**
-
----
-
-## How It Prevents the "Infinite Loop" Problem
-
-### CLI Today (Problematic)
-```
-hal report → hal auto → hal report → hal auto → ...  (never stops)
-```
-
-### Web UI (Human-Controlled)
-```
-PM writes spec → PM approves → hal executes → PM reviews → PM approves
-                                                              │
-                                              PM picks next spec from queue
-                                              (or does nothing — system idles)
-```
-
-### Automation Levels (PM Configurable per Project)
-
-| Level | Name | Behavior |
-|-------|------|----------|
-| 1 | **Manual** | PM must click "Execute" and "Approve" for every spec |
-| 2 | **Semi-Auto** | PM approves specs; execution and review run automatically. PM must approve results before next spec starts |
-| 3 | **Auto-Queue** | Approved specs execute in order. PM only needs to approve final results before merge |
-| 4 | **Full Auto** | Like current `hal auto` loop, but with a **stop condition**: stop when queue is empty, budget is hit, or error threshold exceeded |
-
-Default is Level 2 (Semi-Auto). PMs upgrade when they trust the system.
-
-### Stop Conditions (for Level 3-4)
-- **Queue empty**: All approved specs are done → idle
-- **Budget limit**: Sandbox hours exceed threshold → pause and notify
-- **Error rate**: >3 consecutive failures → pause and notify
-- **Time window**: Only execute during business hours (configurable)
-- **Review gate**: Always pause after review finds critical issues
-
----
-
-## Data Model
-
-```sql
--- A software project (repo)
-CREATE TABLE projects (
-    id            TEXT PRIMARY KEY,
-    name          TEXT NOT NULL,
-    repo_url      TEXT NOT NULL,
-    default_branch TEXT DEFAULT 'main',
-    automation_level INTEGER DEFAULT 2,  -- 1-4
-    sandbox_config TEXT,                 -- JSON: provider, size, etc.
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- A feature spec (PRD)
-CREATE TABLE specs (
-    id            TEXT PRIMARY KEY,
-    project_id    TEXT REFERENCES projects(id),
-    title         TEXT NOT NULL,
-    markdown      TEXT NOT NULL,          -- The spec content
-    json_prd      TEXT,                   -- Converted prd.json (after hal convert)
-    status        TEXT DEFAULT 'draft',   -- draft|approved|executing|review|done|failed
-    priority      INTEGER DEFAULT 0,     -- Queue order (lower = higher priority)
-    branch_name   TEXT,
-    error_context TEXT,                   -- Why it failed (for retry)
-    review_notes  TEXT,                   -- PM's review feedback
-    approved_at   DATETIME,
-    started_at    DATETIME,
-    completed_at  DATETIME,
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Individual stories/tasks within a spec
-CREATE TABLE stories (
-    id            TEXT PRIMARY KEY,
-    spec_id       TEXT REFERENCES specs(id),
-    project_id    TEXT REFERENCES projects(id),
-    story_id      TEXT NOT NULL,           -- T-001, US-001
-    title         TEXT NOT NULL,
-    description   TEXT,
-    acceptance    TEXT,                    -- JSON array of criteria
-    status        TEXT DEFAULT 'pending',  -- pending|running|done|failed
-    priority      INTEGER DEFAULT 0,
-    hal_output    TEXT,                    -- JSON from hal run --json
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Execution runs
-CREATE TABLE runs (
-    id            TEXT PRIMARY KEY,
-    project_id    TEXT REFERENCES projects(id),
-    spec_id       TEXT REFERENCES specs(id),
-    sandbox_name  TEXT,
-    run_type      TEXT NOT NULL,           -- full|single|review|auto
-    status        TEXT DEFAULT 'pending',  -- pending|running|paused|completed|failed
-    hal_result    TEXT,                    -- JSON from hal --json output
-    story_id      TEXT,                    -- For single-story runs
-    started_at    DATETIME,
-    completed_at  DATETIME
-);
-
--- Real-time event log
-CREATE TABLE events (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id    TEXT,
-    spec_id       TEXT,
-    run_id        TEXT,
-    event_type    TEXT NOT NULL,
-    payload       TEXT,                    -- JSON
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+When PM clicks "Approve" on a gate:
+```go
+func (h *Handler) ApproveGate(specID string, stageIndex int) {
+    p.setStageCompleted(specID, stageIndex, "approved")
+    // Resume pipeline from next stage
+    go p.pipelineExecutor.Run(ctx, specID)
+}
 ```
 
 ---
 
-## API Design
+## Implementation Phases
 
-### Specs (the main thing PMs interact with)
-```
-POST   /api/projects/:pid/specs              Create spec (draft)
-GET    /api/projects/:pid/specs              List specs (filterable by status)
-GET    /api/projects/:pid/specs/:sid         Get spec + stories
-PUT    /api/projects/:pid/specs/:sid         Update spec content
-POST   /api/projects/:pid/specs/:sid/approve Approve → moves to queue
-POST   /api/projects/:pid/specs/:sid/execute Start execution (hal run)
-POST   /api/projects/:pid/specs/:sid/review  Start review (hal review)  
-POST   /api/projects/:pid/specs/:sid/accept  Accept results → Done
-POST   /api/projects/:pid/specs/:sid/reject  Reject → back to Draft
-```
+### Phase 1: Core + Basic Pipeline (4 weeks)
+- [ ] `hal serve` — HTTP server, SQLite, migrations
+- [ ] Project + Spec CRUD
+- [ ] Spec → stories (convert + explode)
+- [ ] Basic pipeline (Execute only)
+- [ ] Frontend: board, spec editor, story cards
+- [ ] Execution via local process + WebSocket log streaming
+- [ ] Real-time story status updates
 
-### Stories (generated from specs, PM can run individually)
-```
-GET    /api/projects/:pid/specs/:sid/stories  List stories for spec
-POST   /api/projects/:pid/stories/:tid/run    Run single story
-```
+### Phase 2: Pipeline Stages (3 weeks)
+- [ ] Pipeline model (stages, gates, presets)
+- [ ] Review stage (`hal review --json`)
+- [ ] Report stage (`hal report --json`)
+- [ ] Approval gates (waiting state, PM actions)
+- [ ] Frontend: pipeline builder, gate UI, stage progress
+- [ ] Pipeline presets (basic, with_review, with_gate, compound)
 
-### Execution Control
-```
-POST   /api/projects/:pid/runs/:rid/pause    Pause execution
-POST   /api/projects/:pid/runs/:rid/resume   Resume execution
-POST   /api/projects/:pid/runs/:rid/stop     Stop execution
-GET    /api/projects/:pid/runs/:rid/logs      Stream logs (SSE)
-```
+### Phase 3: Sandbox + Compound (3 weeks)
+- [ ] Sandbox provisioning from UI
+- [ ] Remote execution via SSH
+- [ ] Auto Next stage (compound loop)
+- [ ] Continuous pipeline with PM checkpoints
+- [ ] Stop conditions
+- [ ] Multi-sandbox parallel execution
 
-### Project & Sandbox
-```
-POST   /api/projects                          Create project
-GET    /api/projects                          List projects
-GET    /api/projects/:pid/status              hal status --json
-GET    /api/projects/:pid/health              hal doctor --json
-POST   /api/projects/:pid/sandbox/start       Start sandbox
-POST   /api/projects/:pid/sandbox/stop        Stop sandbox
-```
-
-### WebSocket Events
-```
-WS /ws/projects/:pid
-
-Events:
-  spec_status_changed    {specId, from, to}
-  story_status_changed   {storyId, from, to}
-  run_progress           {runId, iteration, total, currentStory}
-  run_log_line           {runId, line, timestamp}
-  run_completed          {runId, result}
-  sandbox_status         {name, status}
-  queue_changed          {specs: [...]}
-```
+### Phase 4: Polish & Team (3 weeks)
+- [ ] Dashboard + analytics
+- [ ] Notifications (gate waiting, spec done, errors)
+- [ ] Auth + multi-user
+- [ ] Multi-project portfolio
+- [ ] Custom pipeline presets
 
 ---
 
-## How a PM Actually Uses This
+## How a PM Uses the Compound Loop
 
-### Scenario: Building an E-commerce App
+### Day 1: Set up the project
+1. Create project linked to GitHub repo
+2. Set automation level to **3 (Compound)**
+3. Default pipeline becomes: Execute → Review → Report → ⏸ Gate → Auto Next → ⏸ Gate
 
-**Morning: Write specs**
-1. PM opens Hal Web, creates project "E-commerce App" linked to GitHub repo
-2. Writes 3 specs:
-   - "User Authentication" (priority 1)
-   - "Product Catalog" (priority 2)
-   - "Shopping Cart" (priority 3)
-3. Each spec is a markdown document describing the feature
+### Day 1: Kick off first feature
+4. Write spec "User Auth", click Approve
+5. Pipeline starts automatically (level 3)
+6. PM goes to lunch
 
-**Approve & Execute:**
-4. PM reviews "User Authentication" spec, clicks **Approve**
-5. Hal auto-converts to JSON, validates, generates 8 stories
-6. PM sees stories on the board, clicks **Execute**
-7. Hal spins up a sandbox, clones the repo, runs `hal init` + `hal run`
-8. PM watches stories move from Pending → Running → Done in real-time
+### Day 1 afternoon: First checkpoint
+7. PM gets notification: "User Auth complete — review results ready"
+8. Opens board, sees Auth in "Waiting" column
+9. Views: 8/8 stories done, review found 1 minor issue, report recommends "Search" next
+10. Clicks **Approve**
+11. Auto Next generates a new spec "Search Feature" on the board
+12. Pipeline pauses: "hal wants to build Search Feature (10 tasks) — approve?"
+13. PM reviews the auto-generated scope
+14. PM adjusts the spec slightly (adds a requirement), clicks **Approve**
+15. Hal starts executing Search
 
-**Review:**
-9. Execution completes (all 8 stories done)
-10. Spec moves to "Review" column
-11. PM clicks **Review** → hal runs code review
-12. Review shows: "2 issues found, 1 fixed automatically"
-13. PM reads the remaining issue, decides it's minor → clicks **Accept**
-14. Hal creates a draft PR
+### Day 2 morning: Second checkpoint
+16. Search is done + reviewed + reported
+17. PM reviews, approves → Auto Next proposes "Payment Flow"
+18. PM says "actually, I want to prioritize email templates"
+19. Clicks **Reject** on the auto-proposed spec
+20. Writes "Email Templates" spec manually, approves it
+21. Pipeline continues with PM's choice instead of hal's suggestion
 
-**Next feature:**
-15. PM clicks **Execute** on "Product Catalog" (already approved)
-16. Same sandbox, new branch, hal runs the next spec
-17. PM goes to lunch — execution runs in background
-
-**No infinite loop.** Each feature starts and ends explicitly. The PM decides the pace.
+**The compound loop runs, but the PM is always the conductor.**
 
 ---
 
 ## Tech Stack
 
 ### Frontend
-- **Next.js 15** (App Router, server components where possible)
-- **shadcn/ui + Tailwind** (clean, professional UI)
-- **@hello-pangea/dnd** (drag-drop for kanban/queue reordering)
-- **Tiptap or Monaco** (spec editor — rich markdown or code)
-- **Zustand** (lightweight state management)
-- **EventSource / WebSocket** (real-time updates)
+- **Next.js 15** (App Router)
+- **shadcn/ui + Tailwind**
+- **@hello-pangea/dnd** (drag-drop for board + pipeline builder)
+- **Tiptap** (spec editor)
+- **Zustand** (state)
+- **EventSource / WebSocket** (real-time)
 
 ### Backend (`hal serve`)
-- **Go net/http + chi** (lightweight router)
-- **modernc.org/sqlite** (pure Go SQLite, no CGO)
-- **gorilla/websocket** (event streaming)
-- **golang.org/x/crypto/ssh** (sandbox command execution)
-- Embeds frontend build via `//go:embed web/dist`
-
-### Why This Stack
-- Go backend shares types with hal CLI — zero serialization bugs
-- SQLite keeps it single-binary, zero-config
-- Next.js gives us SSR for fast initial loads + rich client interactivity
-- `//go:embed` means `hal serve` is still a single binary
-
----
-
-## Implementation Phases
-
-### Phase 1: Core Loop (4 weeks)
-**Goal:** PM can write a spec, execute it, and see results
-
-- [ ] `internal/server/` — HTTP server, SQLite, migrations
-- [ ] `cmd/serve.go` — `hal serve` command
-- [ ] Project + Spec CRUD API
-- [ ] Spec → Story generation (`hal convert` + `hal explode` via local exec)
-- [ ] Frontend: Project list, spec editor, story board
-- [ ] Execution: `hal run` via local process (same machine first)
-- [ ] Real-time: WebSocket log streaming + story status updates
-- [ ] Spec lifecycle: Draft → Approved → Executing → Review → Done
-
-### Phase 2: Sandbox Execution (3 weeks)
-**Goal:** Execution happens in isolated sandboxes
-
-- [ ] Sandbox provisioning (reuse `hal sandbox start`)
-- [ ] Remote execution via SSH (`hal run --json` in sandbox)
-- [ ] Sandbox lifecycle management (start/stop/delete from UI)
-- [ ] Multi-sandbox support (parallel spec execution)
-- [ ] Cost tracking (sandbox hours per spec)
-
-### Phase 3: Review & Quality (2 weeks)
-**Goal:** PM can review and approve results
-
-- [ ] Review trigger (`hal review --base` in sandbox)
-- [ ] Review results display (issues, fixes, quality score)
-- [ ] Accept/Reject flow with feedback
-- [ ] PR creation on accept
-- [ ] Report generation and display
-
-### Phase 4: Queue & Automation (2 weeks)
-**Goal:** Multiple specs execute in sequence with configurable automation
-
-- [ ] Spec priority queue with drag-drop reordering
-- [ ] Automation levels (1-4)
-- [ ] Stop conditions (budget, errors, time window)
-- [ ] Notifications (spec completed, review needed, error occurred)
-- [ ] Dashboard with execution history and metrics
-
-### Phase 5: Multi-Project & Team (3 weeks)
-**Goal:** Multiple projects, team access
-
-- [ ] Multi-project portfolio view
-- [ ] Auth (JWT + simple user management)
-- [ ] Role-based access (admin/PM/viewer)
-- [ ] Cross-project dashboard
-- [ ] Activity feed
+- **Go net/http + chi** (router)
+- **modernc.org/sqlite** (pure Go SQLite)
+- **gorilla/websocket** (events)
+- **golang.org/x/crypto/ssh** (sandbox execution)
+- Embedded frontend via `//go:embed web/dist`
+- Shares types with hal CLI (same binary)
 
 ---
 
 ## Open Decisions
 
-| Question | Options | Recommendation |
-|----------|---------|---------------|
-| Monorepo or separate? | `web/` in hal repo vs separate repo | Monorepo — type sharing, single version |
-| Editor for specs? | Tiptap (rich) vs Monaco (code) vs textarea | Tiptap — PMs aren't developers |
-| Auth from day 1? | Yes vs add later | No auth Phase 1 (localhost only), add Phase 5 |
-| Local-first or cloud-first? | `hal serve` locally vs hosted | Local-first, cloud option later |
-| Real-time mechanism? | WebSocket vs SSE vs polling | WebSocket for logs, polling for status |
-| Sandbox per spec or per project? | Shared vs isolated | Per-project (shared), with option for per-spec |
+| Question | Recommendation |
+|----------|---------------|
+| Should Auto Next require PM approval? | Yes, always — even at level 4. The PM can approve in batch ("approve next 3") but must see what's proposed. |
+| Can PM edit auto-generated specs? | Yes. Auto Next creates a Draft that PM can edit before approving. |
+| Parallel specs or sequential? | Both. Default sequential (one sandbox). PM can enable parallel (multiple sandboxes, higher cost). |
+| Where do pipeline presets live? | Project-level default + per-spec override. |
+| Gate timeout? | Configurable. Default: none (wait forever). Option: auto-approve after N hours if all quality checks pass. |
