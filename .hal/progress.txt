@@ -417,3 +417,19 @@
   - Doctor checks with remediations must also register the command in `executeRepairCommand` in `cmd/repair.go` for `hal repair` auto-execution.
   - Use `template.SandboxFile` constant for the legacy state filename to stay consistent with the template constants pattern.
 ---
+
+## [2026-03-21 20:30 CST] - US-034
+- Enhanced `Migrate()` in `internal/sandbox/migrate.go` to handle both config migration and state migration (`.hal/sandbox.json` → global registry).
+- Split migration into `migrateConfig()` and `migrateState()` for clarity.
+- State migration follows strict safety contract: read→write→verify→delete. Local `.hal/sandbox.json` is deleted only after `ForceWriteInstance` + `LoadInstance` read-back verification confirms the entry is present and matches.
+- If read-back verification fails, migration returns an error and the local file remains unchanged.
+- Uses read→write→verify→delete pattern (no `os.Rename` between cross-device paths) for inherent cross-device safety.
+- Already-migrated state (entry exists in registry) triggers local file cleanup without re-writing the registry.
+- Auto-migrates legacy empty Provider field to "daytona" (same as `LoadState`).
+- Added 10 new tests: table-driven `TestMigrate_StateFile` (6 cases), `TestMigrate_StateFile_Idempotent`, `TestMigrate_StateFile_NilWriterNoOutput`, `TestMigrate_StateAndConfigTogether`, `TestMigrate_InvalidLocalJSON`.
+- Files changed: `internal/sandbox/migrate.go`, `internal/sandbox/migrate_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - State migration should always do a read-back verification after writing to the global registry before deleting the local source file — this prevents data loss on partial writes.
+  - Using read→write→verify→delete instead of `os.Rename` avoids cross-device (EXDEV) issues and makes the operation naturally atomic per step.
+  - When migrating state where the entry may already exist in the target, check first and handle the already-migrated case explicitly (cleanup local + skip write) for clean idempotency.
+---
