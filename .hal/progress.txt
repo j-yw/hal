@@ -255,6 +255,9 @@
   - The `--size` flag is provider-agnostic at the CLI level; `applySizeOverride` maps it to the correct provider-specific config field based on `cfg.Provider`.
   - When adding new parameters to `runSandboxStartWithDeps`, use sed to update all test call sites efficiently to maintain compilation.
   - `runSandboxStart` is the preferred entry point for Cobra handlers; `runSandboxStartWithDeps` stays available for tests that need direct parameter injection.
+- List command uses injectable `sandboxListNow` package var for deterministic time-dependent tests; reset with `t.Cleanup` after overriding.
+- Table rendering uses `text/tabwriter` for aligned columns; summary line follows the exact format: `N sandboxes (X running, Y stopped)  •  Est. total: $Z.ZZ`.
+- `formatCost` returns `—` for unknown costs (-1) and `$X.XX` for known; `formatAge` returns `Nm`/`Nh`/`Nd` for durations.
 ---
 
 ## [2026-03-21 17:00 CST] - US-021
@@ -266,4 +269,19 @@
   - `EstimatedCost` uses injectable `now func() time.Time` rather than `time.Now()` so tests stay deterministic — follow this pattern for any time-dependent sandbox calculations.
   - Cost accrues from `CreatedAt` regardless of `Status` since cloud providers charge for allocated (even stopped) instances — this is intentional behavior, not a bug.
   - The `hourlyRates` map is package-level in `pricing.go` and tested via `TestEstimatedCost_AllProvidersAndSizes` to lock the expected provider/size matrix.
+---
+
+## [2026-03-21 17:30 CST] - US-022
+- Implemented `hal sandbox list` table output in `cmd/sandbox_list.go`: `runSandboxList`, `renderSandboxTable`, `renderSandboxSummary`, `formatAge`, `formatCost`.
+- Table columns: NAME, PROVIDER, STATUS, TAILSCALE, AGE, AUTO-OFF, EST.COST using `text/tabwriter` for alignment.
+- EST.COST shows `$X.XX` for known rates, `—` for unknown (daytona/unknown sizes); summary total aggregates known costs only.
+- Summary line: `N sandboxes (X running, Y stopped)  •  Est. total: $Z.ZZ`.
+- Default list reads from global registry only — no provider API calls.
+- Added `cmd/sandbox_list_test.go` with coverage for: empty registry, single running, multiple mixed status, unknown cost provider, mixed known/unknown cost, no tailscale, age formatting, cost formatting, table column headers, and summary format.
+- Files changed: `cmd/sandbox_list.go`, `cmd/sandbox_list_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use `sandboxListNow` injectable var for time-dependent list output tests; reset in `t.Cleanup`.
+  - Table rendering via `text/tabwriter` with `tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)` gives clean column alignment.
+  - `formatCost` and `formatAge` are reusable for JSON output and other display paths.
+  - `setupListTest` helper sets `HAL_CONFIG_HOME`, `XDG_CONFIG_HOME`, and `HOME` to isolate global registry state.
 ---
