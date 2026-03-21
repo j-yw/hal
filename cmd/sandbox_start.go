@@ -373,7 +373,7 @@ func runBatchCreate(
 	for _, name := range targets {
 		name := name // capture for goroutine
 		g.Go(func() error {
-			err := createBatchTarget(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo)
+			err := createBatchTarget(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, out)
 
 			mu.Lock()
 			if err != nil {
@@ -412,8 +412,8 @@ func runBatchCreate(
 }
 
 // createBatchTarget creates a single sandbox in batch mode and persists it
-// to the global registry on success. Provider output goes to io.Discard
-// to avoid interleaved output from concurrent goroutines.
+// to the global registry on success. Provider output is prefixed with the
+// sandbox name so concurrent goroutine output stays readable.
 func createBatchTarget(
 	name string,
 	provider sandbox.Provider,
@@ -422,9 +422,19 @@ func createBatchTarget(
 	autoShutdown bool,
 	idleHours int,
 	size, repo string,
+	out io.Writer,
 ) error {
 	ctx := context.Background()
-	result, err := provider.Create(ctx, name, mergedEnv, io.Discard)
+	// Set per-sandbox Tailscale hostname so each device has a unique name
+	perEnv := make(map[string]string, len(mergedEnv)+1)
+	for k, v := range mergedEnv {
+		perEnv[k] = v
+	}
+	if _, ok := perEnv["TAILSCALE_HOSTNAME"]; !ok {
+		perEnv["TAILSCALE_HOSTNAME"] = name
+	}
+	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
+	result, err := provider.Create(ctx, name, perEnv, prefixedOut)
 	if err != nil {
 		return err
 	}
@@ -495,6 +505,11 @@ func runSingleCreate(
 		fmt.Fprintf(out, "Starting sandbox %q (%s) with %d env vars...\n", name, sandboxCfg.Provider, envCount)
 	} else {
 		fmt.Fprintf(out, "Starting sandbox %q (%s)...\n", name, sandboxCfg.Provider)
+	}
+
+	// Set per-sandbox Tailscale hostname so each device has a unique name
+	if _, ok := mergedEnv["TAILSCALE_HOSTNAME"]; !ok {
+		mergedEnv["TAILSCALE_HOSTNAME"] = name
 	}
 
 	ctx := context.Background()
@@ -585,6 +600,31 @@ func mergeGlobalSizeDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbo
 	if localCfg.Lightsail.KeyPairName == "" {
 		localCfg.Lightsail.KeyPairName = globalCfg.Lightsail.KeyPairName
 	}
+}
+
+// prefixWriter wraps a writer and prepends a prefix to each Write call.
+// Used in batch mode so concurrent sandbox output stays identifiable.
+type prefixWriter struct {
+	prefix string
+	w      io.Writer
+	mu     sync.Mutex
+}
+
+func (pw *prefixWriter) Write(p []byte) (int, error) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+
+	// Prepend prefix to each line for readability
+	lines := strings.SplitAfter(string(p), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		if _, err := fmt.Fprintf(pw.w, "%s%s", pw.prefix, line); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
 }
 
 // applySizeOverride sets the provider-specific size field from the --size flag.
