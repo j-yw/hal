@@ -83,7 +83,6 @@ func runSandboxAutoMigrate(projectDir string, out io.Writer) error {
 // resolveProviderFromState creates a Provider from the state's provider field
 // and the project config. Used by stop, delete, status, and ssh commands.
 func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.Provider, error) {
-	halDir := filepath.Join(dir, template.HalDir)
 	sandboxCfg, err := compound.LoadSandboxConfig(dir)
 	if err != nil {
 		return nil, fmt.Errorf("loading sandbox config: %w", err)
@@ -93,9 +92,7 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 		return nil, fmt.Errorf("loading daytona config: %w", err)
 	}
 
-	provCfg := sandbox.ProviderConfig{
-		StateDir: halDir,
-	}
+	provCfg := sandbox.ProviderConfig{}
 	if dayCfg != nil {
 		provCfg.DaytonaAPIKey = dayCfg.APIKey
 		provCfg.DaytonaServerURL = dayCfg.ServerURL
@@ -119,7 +116,6 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 // resolveProviderFromName creates a Provider for delete-by-name paths where no
 // matching local sandbox state exists. It uses the configured sandbox provider.
 func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
-	halDir := filepath.Join(dir, template.HalDir)
 	sandboxCfg, err := compound.LoadSandboxConfig(dir)
 	if err != nil {
 		return nil, fmt.Errorf("loading sandbox config: %w", err)
@@ -129,9 +125,7 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 		return nil, fmt.Errorf("loading daytona config: %w", err)
 	}
 
-	provCfg := sandbox.ProviderConfig{
-		StateDir: halDir,
-	}
+	provCfg := sandbox.ProviderConfig{}
 	if dayCfg != nil {
 		provCfg.DaytonaAPIKey = dayCfg.APIKey
 		provCfg.DaytonaServerURL = dayCfg.ServerURL

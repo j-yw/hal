@@ -116,7 +116,6 @@ func runSandboxStartWithDeps(
 			LightsailBundle:           sandboxCfg.Lightsail.Bundle,
 			LightsailKeyPairName:      sandboxCfg.Lightsail.KeyPairName,
 			TailscaleLockdown:         sandboxCfg.TailscaleLockdown,
-			StateDir:                  halDir,
 		}
 		provider, err = resolveSandboxProvider(sandboxCfg.Provider, provCfg)
 		if err != nil {

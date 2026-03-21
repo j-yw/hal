@@ -118,7 +118,6 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			Bundle:            cfg.LightsailBundle,
 			KeyPairName:       cfg.LightsailKeyPairName,
 			TailscaleLockdown: cfg.TailscaleLockdown,
-			StateDir:          cfg.StateDir,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner, digitalocean, lightsail)", provider)
@@ -140,7 +139,4 @@ type ProviderConfig struct {
 	LightsailBundle           string
 	LightsailKeyPairName      string
 	TailscaleLockdown         bool
-	// StateDir is the .hal directory path, used by providers that still need
-	// local sandbox state during the ConnectInfo migration.
-	StateDir string
 }

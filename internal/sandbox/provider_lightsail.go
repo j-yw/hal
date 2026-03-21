@@ -20,9 +20,6 @@ type LightsailProvider struct {
 	Bundle            string
 	KeyPairName       string
 	TailscaleLockdown bool
-	// StateDir is the .hal directory path, needed to look up the instance IP
-	// from sandbox state for SSH connections.
-	StateDir string
 
 	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
 	// Override in tests to capture args without running the real CLI.
@@ -309,26 +306,12 @@ func (l *LightsailProvider) Status(ctx context.Context, info *ConnectInfo, out i
 }
 
 func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	name := ""
 	ip := ""
 	if info != nil {
-		name = strings.TrimSpace(info.Name)
 		ip = strings.TrimSpace(info.IP)
 	}
-
 	if ip == "" {
-		state, err := LoadState(l.StateDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
-		}
-		if name == "" {
-			name = state.Name
-		}
-		ip = PreferredIP(state)
-	}
-
-	if ip == "" {
-		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
+		return nil, fmt.Errorf("sandbox IP is required")
 	}
 
 	// Lightsail Ubuntu instances use the 'ubuntu' user
@@ -344,26 +327,12 @@ func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	name := ""
 	ip := ""
 	if info != nil {
-		name = strings.TrimSpace(info.Name)
 		ip = strings.TrimSpace(info.IP)
 	}
-
 	if ip == "" {
-		state, err := LoadState(l.StateDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
-		}
-		if name == "" {
-			name = state.Name
-		}
-		ip = PreferredIP(state)
-	}
-
-	if ip == "" {
-		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
+		return nil, fmt.Errorf("sandbox IP is required")
 	}
 
 	cmdArgs := []string{

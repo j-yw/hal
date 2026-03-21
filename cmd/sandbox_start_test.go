@@ -342,9 +342,6 @@ func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
 	if gotCfg.LightsailKeyPairName != "hal-keypair" {
 		t.Errorf("LightsailKeyPairName = %q, want %q", gotCfg.LightsailKeyPairName, "hal-keypair")
 	}
-	if gotCfg.StateDir != halDir {
-		t.Errorf("StateDir = %q, want %q", gotCfg.StateDir, halDir)
-	}
 }
 
 func TestRunSandboxAutoMigrate_WarnsOnError(t *testing.T) {

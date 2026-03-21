@@ -195,6 +195,7 @@
 - Provider lifecycle/connection methods now consume `*ConnectInfo` (`Stop`, `Delete`, `Status`, `SSH`, `Exec`). Command paths should build it via `ConnectInfoFromState(instance)` and pass explicit fallback IDs/names when deleting by raw target value.
 - DigitalOcean provider semantics are ID-first: `Stop`/`Delete`/`Status` should target `info.WorkspaceID` (droplet ID), while `SSH`/`Exec` should use `info.IP` directly.
 - During provider migration, remove `.hal/sandbox.json` (`LoadState`) fallbacks as each provider adopts `ConnectInfo`; SSH/Exec should require `info.IP` and fail fast when missing.
+- Once all providers are fully `ConnectInfo`-based, remove obsolete shared `ProviderConfig` wiring (for example `StateDir`) and related command/test plumbing to keep the provider contract minimal.
 
 ## Patterns from hal/sandbox-uuidv7-generation (2026-03-21)
 

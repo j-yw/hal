@@ -78,19 +78,9 @@ func TestBuildLightsailCreateArgs(t *testing.T) {
 	}
 }
 
-func TestLightsailProvider_SSH(t *testing.T) {
-	dir := t.TempDir()
-	state := &SandboxState{
-		Name:     "test-dev",
-		Provider: "lightsail",
-		IP:       "44.203.78.182",
-	}
-	if err := SaveState(dir, state); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &LightsailProvider{StateDir: dir}
-	cmd, err := p.SSH(&ConnectInfo{Name: "test-dev"})
+func TestLightsailProvider_SSH_WithConnectInfoIP(t *testing.T) {
+	p := &LightsailProvider{}
+	cmd, err := p.SSH(&ConnectInfo{Name: "test-dev", IP: "44.203.78.182"})
 	if err != nil {
 		t.Fatalf("SSH() error: %v", err)
 	}
@@ -104,19 +94,9 @@ func TestLightsailProvider_SSH(t *testing.T) {
 	}
 }
 
-func TestLightsailProvider_Exec(t *testing.T) {
-	dir := t.TempDir()
-	state := &SandboxState{
-		Name:     "test-dev",
-		Provider: "lightsail",
-		IP:       "44.203.78.182",
-	}
-	if err := SaveState(dir, state); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &LightsailProvider{StateDir: dir}
-	cmd, err := p.Exec(&ConnectInfo{Name: "test-dev"}, []string{"ls", "-la"})
+func TestLightsailProvider_Exec_WithConnectInfoIP(t *testing.T) {
+	p := &LightsailProvider{}
+	cmd, err := p.Exec(&ConnectInfo{Name: "test-dev", IP: "44.203.78.182"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() error: %v", err)
 	}
@@ -130,23 +110,24 @@ func TestLightsailProvider_Exec(t *testing.T) {
 	}
 }
 
-func TestLightsailProvider_SSH_NoIP(t *testing.T) {
-	dir := t.TempDir()
-	state := &SandboxState{
-		Name:     "test-dev",
-		Provider: "lightsail",
-		IP:       "",
-	}
-	if err := SaveState(dir, state); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &LightsailProvider{StateDir: dir}
+func TestLightsailProvider_SSH_MissingIP(t *testing.T) {
+	p := &LightsailProvider{}
 	_, err := p.SSH(&ConnectInfo{Name: "test-dev"})
 	if err == nil {
 		t.Fatal("SSH() should error when IP is empty")
 	}
-	if !strings.Contains(err.Error(), "no IP address") {
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
+		t.Errorf("error should mention missing IP, got: %v", err)
+	}
+}
+
+func TestLightsailProvider_Exec_MissingIP(t *testing.T) {
+	p := &LightsailProvider{}
+	_, err := p.Exec(&ConnectInfo{Name: "test-dev"}, []string{"ls"})
+	if err == nil {
+		t.Fatal("Exec() should error when IP is empty")
+	}
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
 		t.Errorf("error should mention missing IP, got: %v", err)
 	}
 }
