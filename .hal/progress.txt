@@ -1,0 +1,243 @@
+## Codebase Patterns
+- Global sandbox state paths resolve in strict order: `HAL_CONFIG_HOME` → `XDG_CONFIG_HOME/hal` → `HOME/.config/hal`.
+- For sandbox global-path tests, use `t.Setenv("HAL_CONFIG_HOME", tmpDir)` for isolation; set `HOME` explicitly when validating fallback behavior.
+- Global directory setup helpers should use `os.MkdirAll(..., 0700)` and stay idempotent.
+- For UUIDv7 generation in `internal/sandbox`, keep the source injectable (`clock` + `io.Reader`) and preserve monotonic ordering by incrementing random bits when timestamps do not advance.
+- Keep sandbox naming canonical through `ValidateName` with exact errors (`must be 1-59 chars`, `must be lowercase alphanumeric and hyphens`, `must not start or end with hyphen`, `must not contain consecutive hyphens`) so CLI and tests share one contract.
+- `BatchNames(base, count)` should enforce `count >= 1`, use zero-padding width `max(2, digits(count))`, preflight base+suffixed length against the 59-char limit, and validate each generated name via `ValidateName`.
+- Sandbox lifecycle strings should use shared constants from `internal/sandbox/types.go` (`StatusRunning`, `StatusStopped`, `StatusUnknown`) to avoid status-value drift across commands and providers.
+- Global registry persistence in `internal/sandbox/registry.go` should store one `sandboxes/{name}.json` file per instance with atomic temp-file + rename writes at `0600`, and keep the collision error exact: `sandbox "<name>" already exists`.
+- Global sandbox config should be modeled in `internal/sandbox/globalconfig.go` with pointer-based raw YAML structs merged into `DefaultGlobalConfig()` so missing keys keep defaults while explicit zero/empty values are preserved.
+- `SaveGlobalConfig()` should write `sandbox-config.yaml` atomically (`.tmp` + `os.Rename`) with `0600` permissions.
+- `hal sandbox setup` should load defaults from `sandbox.LoadGlobalConfig()` and persist via `sandbox.SaveGlobalConfig()` so setup works even when no `.hal/` directory exists.
+- Sandbox-setup command tests should isolate global writes with `t.Setenv("HAL_CONFIG_HOME", tmpDir)` (and clear XDG/HOME fallbacks) to avoid leaking into user-level config during test runs.
+- `ListInstances()` should treat a missing global `sandboxes/` directory as an empty result and always return instances sorted by `Name`.
+- `ResolveDefault(filter)` should centralize no-arg sandbox selection with deterministic contracts: exact empty-state errors, sorted-name ambiguity errors, and a returned hint string for single-match auto-connect flows.
+- Sandbox config migration should treat global `sandbox-config.yaml` as authoritative: only copy local `.hal/config.yaml` sandbox/daytona sections when global is missing, and never mutate the local file.
+- Commands that should continue even if migration fails should call `runSandboxAutoMigrate(projectDir, out)` so migration errors are downgraded to a warning line (`warning: sandbox migration failed: <error>`).
+- Provider lifecycle/connection methods (`Stop`, `Delete`, `Status`, `SSH`, `Exec`) accept `*sandbox.ConnectInfo`; command flows should build it with `sandbox.ConnectInfoFromState(instance)` and set explicit fallback IDs when targeting raw workspace identifiers.
+- During ConnectInfo migration, providers should consume `info.Name`/`info.IP` directly and avoid loading `.hal/sandbox.json` as a fallback.
+- After removing the last provider-level local-state fallback, delete obsolete shared config plumbing (for example `ProviderConfig.StateDir`) and related command wiring to keep provider contracts minimal.
+- Start command persists new sandboxes to the global registry (`SaveInstance`) with UUIDv7 ID, Status="running", TailscaleHostname, and CreatedAt; backward compat local `.hal/sandbox.json` write is best-effort.
+- Use `mergeGlobalSizeDefaults(localCfg, globalCfg)` to fill empty provider-specific size fields from global config before building ProviderConfig in the start command.
+- Start command tests should set `HAL_CONFIG_HOME` via `t.Setenv` (either in `setupStartTest` or per-test) to isolate global registry writes from user-level config.
+- Auto-shutdown env injection (`HAL_AUTO_SHUTDOWN`, `HAL_IDLE_HOURS`) is always applied to merged env before `provider.Create`; use `resolveAutoShutdown(globalCfg, opts)` and `injectAutoShutdownEnv(env, auto, hours)` as the canonical path.
+- Flag overrides for auto-shutdown use pointer-based `autoShutdownOpts` to distinguish "flag not set" from explicit values; `--no-auto-shutdown` always takes precedence over `--auto-shutdown`.
+- Batch creation uses `batchPreflight(base, count)` to generate names via `BatchNames` and validate against the global registry before any `provider.Create` call. Preflight failures block all creation.
+- `runSingleCreate` is the extracted helper for single sandbox creation; `runBatchCreate` iterates over preflight-validated targets and delegates to `runSingleCreate` for each.
+
+## [2026-03-21 13:09 CST] - US-001
+- Implemented global sandbox directory helpers in `internal/sandbox/global.go`: `GlobalDir()`, `SandboxesDir()`, and `EnsureGlobalDir()`.
+- Added tests in `internal/sandbox/global_test.go` for env precedence, sandboxes path derivation, and idempotent directory creation with permissions.
+- Files changed: `internal/sandbox/global.go`, `internal/sandbox/global_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep global path resolution deterministic by relying on env vars first, then home fallback.
+  - Permission mode assertions should be gated on non-Windows platforms for portability.
+  - `make test` and `make vet` are sufficient quality gates for sandbox foundational stories.
+---
+
+## [2026-03-21 13:14 CST] - US-002
+- Implemented RFC 9562 UUIDv7 generation in `internal/sandbox/uuid.go` with injectable `UUIDSource` inputs (`clock` + `io.Reader`), package-level `NewV7()`, default `crypto/rand` usage, and monotonic sequencing when timestamps do not advance.
+- Added `internal/sandbox/uuid_test.go` coverage for canonical UUID format, required version/variant bit contracts, monotonic ordering across sequential calls, and random-source failure handling.
+- Files changed: `internal/sandbox/uuid.go`, `internal/sandbox/uuid_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use `io.ReadFull` for fixed-width entropy reads and return wrapped errors from generators instead of panicking.
+  - Encode UUIDv7 layout directly (48-bit unix ms + version/variant bit masks) to avoid hidden behavior from external UUID dependencies.
+  - Deterministic monotonic UUID tests are easiest with a fixed clock and seeded reader.
+---
+
+## [2026-03-21 13:21 CST] - US-003
+- Implemented sandbox naming primitives in `internal/sandbox/name.go`: `ValidateName(name)`, `TailscaleHostname(name)`, and a stricter `SandboxNameFromBranch(branch)` sanitizer (lowercase, invalid-char replacement, hyphen collapsing, trimming, and max-length capping).
+- Replaced `internal/sandbox/name_test.go` with table-driven coverage for all name-validation acceptance cases (valid names, empty, 60-char overflow, uppercase, special chars, leading/trailing hyphens, consecutive hyphens, and 59-char boundary), plus hostname and branch-sanitization behavior checks.
+- Files changed: `internal/sandbox/name.go`, `internal/sandbox/name_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep `ValidateName` as the single source of truth for sandbox-name constraints and exact error text so batch/start/registry flows can reuse it without diverging UX.
+  - When deriving names from git branches, normalize to lowercase and collapse non-alphanumeric runs to one hyphen before trimming; this avoids invalid defaults and duplicate separator edge cases.
+  - `make test` + `make vet` remain the expected quality gates for sandbox backend stories.
+---
+
+## [2026-03-21 13:27 CST] - US-004
+- Implemented `BatchNames(base, count)` in `internal/sandbox/name.go` with required zero-padding (`max(2, digits(count))`), count validation, max-length preflight, and per-name `ValidateName` enforcement.
+- Added table-driven `TestBatchNames` coverage in `internal/sandbox/name_test.go` for two-digit and three-digit padding, invalid count, max-length overflow, invalid generated names, and the 59-char boundary success case.
+- Files changed: `internal/sandbox/name.go`, `internal/sandbox/name_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Batch naming logic should fail fast on impossible suffix lengths before creating names; this keeps errors deterministic for `--count` preflight flows.
+  - Reusing `ValidateName` inside `BatchNames` keeps naming rules centralized so future command-level validation does not drift.
+  - Sandbox foundational stories continue to use `make test` and `make vet` as the expected quality gates.
+---
+
+## [2026-03-21 13:32 CST] - US-005
+- Expanded `SandboxState` in `internal/sandbox/types.go` to include identity, provider, networking, lifecycle, config, and label fields: `ID`, `Name`, `Provider`, `WorkspaceID`, `IP`, `TailscaleIP`, `TailscaleHostname`, `Status`, `CreatedAt`, `StoppedAt`, `AutoShutdown`, `IdleHours`, `Size`, `Repo`, `SnapshotID`.
+- Added shared sandbox status constants in `internal/sandbox/types.go`: `StatusRunning`, `StatusStopped`, `StatusUnknown`.
+- Added `internal/sandbox/types_test.go` to lock JSON tag behavior (camelCase keys + expected `omitempty` coverage) and status constant values.
+- Files changed: `internal/sandbox/types.go`, `internal/sandbox/types_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep sandbox lifecycle values centralized via `StatusRunning`/`StatusStopped`/`StatusUnknown` to avoid string literal drift as command/provider refactors land.
+  - Use focused JSON key tests for contract-bearing structs to catch accidental tag regressions early.
+  - `make test` + `make vet` remain sufficient quality gates for sandbox model stories.
+---
+
+## [2026-03-21 13:39 CST] - US-006
+- Implemented global sandbox registry CRUD in `internal/sandbox/registry.go`: `SaveInstance`, `ForceWriteInstance`, `LoadInstance`, `ListInstances`, and `RemoveInstance`.
+- Added atomic `sandboxes/{name}.json` writes (temp file + rename) with `0600` permissions, exact collision handling (`sandbox "<name>" already exists`), and not-found errors that wrap `fs.ErrNotExist`.
+- Added `internal/sandbox/registry_test.go` coverage for save/load round-trip, collision behavior, force overwrite, sorted list output, and remove semantics.
+- Files changed: `internal/sandbox/registry.go`, `internal/sandbox/registry_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use `ValidateName` in registry path resolution so filename safety and command validation share one contract.
+  - Treat a missing global `sandboxes/` directory as first-run empty state in listing flows.
+  - Keep replace flows explicit by using `ForceWriteInstance` instead of relaxing `SaveInstance` collision checks.
+---
+
+## [2026-03-21 13:46 CST] - US-007
+- Implemented `ResolveDefault(filter)` in `internal/sandbox/registry.go` to centralize no-name sandbox resolution, including deterministic empty-state errors, ambiguity errors with sorted choices, and single-match hint text for auto-connect flows.
+- Added table-driven `TestResolveDefault` coverage in `internal/sandbox/registry_test.go` for no-match, single-match, and multiple-match behavior across unfiltered and running-only filtered resolution.
+- Files changed: `internal/sandbox/registry.go`, `internal/sandbox/registry_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep no-arg sandbox targeting in `ResolveDefault` so command implementations can share one exact error/hint contract.
+  - Preserve deterministic UX by surfacing ambiguous sandbox names in sorted order.
+  - `make test` and `make vet` remain the expected quality gates for backend sandbox stories.
+---
+
+## [2026-03-21 13:54 CST] - US-008
+- Implemented global sandbox configuration primitives in `internal/sandbox/globalconfig.go`: `GlobalConfig` schema, `DefaultGlobalConfig()`, `LoadGlobalConfig()`, and `SaveGlobalConfig()`.
+- Added pointer-based raw YAML unmarshaling and default-merge behavior so missing keys keep defaults while explicit zero/empty values are preserved.
+- Added atomic global config persistence with temp-file + rename and `0600` permissions at `GlobalDir()/sandbox-config.yaml`.
+- Added `internal/sandbox/globalconfig_test.go` coverage for defaults, missing-file behavior, pointer-merge semantics, invalid YAML handling, save/load round-trip, and nil-save guard.
+- Files changed: `internal/sandbox/globalconfig.go`, `internal/sandbox/globalconfig_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep raw pointer structs (`*string`, `*int`, `*bool`) local to YAML unmarshaling, then merge into `DefaultGlobalConfig()` to preserve the missing-vs-explicit contract.
+  - Use atomic writes (`.tmp` + `os.Rename`) with explicit `0600` mode for global sandbox secrets/config.
+  - `make test` and `make vet` continue to be the required quality gates for sandbox backend stories.
+---
+
+## [2026-03-21 14:02 CST] - US-009
+- Implemented config migration in `internal/sandbox/migrate.go` with `Migrate(projectDir)` to copy legacy `.hal/config.yaml` sandbox/daytona sections into global `sandbox-config.yaml` only when global config is missing.
+- Added pointer-based legacy YAML parsing so migration distinguishes absent sections from explicit values, and preserves conflict behavior where existing global config wins.
+- Added table-driven coverage in `internal/sandbox/migrate_test.go` for the three required cases: local-only copy, both-exist global-wins + local-preserved, and local-missing no-op.
+- Files changed: `internal/sandbox/migrate.go`, `internal/sandbox/migrate_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep migration idempotent by checking global-file existence first and exiting without writes when already configured.
+  - Parse legacy config sections with pointer fields to avoid accidentally migrating defaults when `sandbox`/`daytona` sections are absent.
+  - Use content-preservation assertions in migration tests to guarantee source `.hal/config.yaml` remains untouched during copy-only migrations.
+---
+
+## [2026-03-21 14:06 CST] - US-010
+- Added `runSandboxAutoMigrate(projectDir, out)` in `cmd/sandbox.go` to wrap `sandbox.Migrate(projectDir)` as best-effort migration.
+- Wired `hal sandbox start` (`runSandboxStartWithDeps`) to call `runSandboxAutoMigrate` before loading config/create flow.
+- Added tests in `cmd/sandbox_start_test.go` for the warning contract, no-output success path, and start behavior when migration fails.
+- Files changed: `cmd/sandbox.go`, `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep migration in command paths best-effort: warning-only failures avoid blocking core operations when legacy/local state is malformed.
+  - Lock user-facing warning contracts with exact-string tests to prevent accidental wording drift.
+  - For start-path migration adoption tests, override `sandboxMigrate` via package-level var and assert warning ordering before create output.
+---
+
+## [2026-03-21 14:13 CST] - US-011
+- Added connection-data primitives in `internal/sandbox/provider.go`: new `ConnectInfo` type, `PreferredIP(instance)` (tailscale-first), and `ConnectInfoFromState(instance)` mapper.
+- Kept the `Provider` interface method signatures unchanged in this story to preserve existing command/provider behavior while preparing for incremental migration.
+- Expanded provider tests in `internal/sandbox/provider_test.go` to lock `SandboxResult` persistence fields and verify `PreferredIP` + `ConnectInfoFromState` contracts.
+- Updated `internal/sandbox/tailscale.go` to delegate legacy `preferredIP` usage to exported `PreferredIP` so existing provider codepaths stay consistent.
+- Files changed: `internal/sandbox/provider.go`, `internal/sandbox/provider_test.go`, `internal/sandbox/tailscale.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Keep shared connection-target helpers in `internal/sandbox/provider.go` even before provider interface signature changes; this minimizes drift while refactoring providers one-by-one.
+  - Centralizing tailscale-vs-public IP choice in `PreferredIP` avoids subtle mismatches between SSH/Exec/status call sites.
+  - For contract prep stories, add focused helper tests early so later provider signature migrations can reuse locked behavior instead of re-litigating it.
+---
+
+## [2026-03-21 14:29 CST] - US-012
+- Refactored provider operation signatures to consume `*sandbox.ConnectInfo` and updated `internal/sandbox/provider_daytona.go` so `Stop`, `Delete`, `Status`, `SSH`, and `Exec` resolve targets from `info.Name`.
+- Updated command call sites (`cmd/sandbox_stop.go`, `cmd/sandbox_delete.go`, `cmd/sandbox_status.go`, `cmd/sandbox_ssh.go`) and test mocks to pass `ConnectInfo` instead of raw names.
+- Updated provider tests across Daytona/Hetzner/DigitalOcean/Lightsail to compile against the new method signatures while preserving existing behavior for non-Daytona providers.
+- Files changed: `internal/sandbox/provider.go`, `internal/sandbox/provider_daytona.go`, `internal/sandbox/provider_daytona_test.go`, `internal/sandbox/provider_hetzner.go`, `internal/sandbox/provider_hetzner_test.go`, `internal/sandbox/provider_digitalocean.go`, `internal/sandbox/provider_digitalocean_test.go`, `internal/sandbox/provider_lightsail.go`, `internal/sandbox/provider_lightsail_test.go`, `cmd/sandbox_stop.go`, `cmd/sandbox_delete.go`, `cmd/sandbox_status.go`, `cmd/sandbox_ssh.go`, `cmd/sandbox_start_test.go`, `cmd/sandbox_stop_test.go`, `cmd/sandbox_delete_test.go`, `cmd/sandbox_status_test.go`, `cmd/sandbox_ssh_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Once provider signatures move to `*ConnectInfo`, command/provider tests should assert `info.Name`/`info.WorkspaceID` semantics rather than raw string plumbing.
+  - For delete-by-workspace-ID flows, building `ConnectInfo` from persisted state keeps provider-native IDs available while still using canonical names for providers (like Daytona) that require names.
+  - Interface migration work is safer when cmd mock providers are updated first, then provider-specific tests and implementation call sites.
+---
+
+## [2026-03-21 14:36 CST] - US-013
+- Refactored `internal/sandbox/provider_hetzner.go` so SSH/Exec consume `ConnectInfo.IP` directly and no longer fall back to `.hal/sandbox.json` state reads.
+- Removed Hetzner `StateDir` wiring from provider construction in `internal/sandbox/provider.go` and updated `internal/sandbox/provider_test.go` expectations accordingly.
+- Updated Hetzner provider tests to validate ConnectInfo-driven SSH/Exec behavior and missing-IP error handling without local state fixtures.
+- Files changed: `internal/sandbox/provider.go`, `internal/sandbox/provider_hetzner.go`, `internal/sandbox/provider_hetzner_test.go`, `internal/sandbox/provider_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - As providers migrate to `ConnectInfo`, remove legacy `LoadState` fallbacks early so command-layer target resolution remains the single source of truth.
+  - Keep provider unit tests focused on ConnectInfo inputs (name/IP/workspaceID) rather than synthetic state-file setup once StateDir dependencies are removed.
+  - `make test` and `make vet` remain the required quality gates for sandbox provider refactors.
+---
+
+## [2026-03-21 14:45 CST] - US-014
+- Refactored `internal/sandbox/provider_digitalocean.go` so lifecycle operations (`Stop`, `Delete`, `Status`) target `ConnectInfo.WorkspaceID` (droplet ID), and SSH/Exec require `ConnectInfo.IP` directly.
+- Removed DigitalOcean local-state fallback code (`StateDir`, `LoadState`, `resolveDropletTarget`, `refreshIP`) so provider behavior is fully ConnectInfo-driven.
+- Updated DigitalOcean provider tests to validate droplet-ID targeting, explicit missing-workspace/missing-IP errors, and constructor wiring without `StateDir`.
+- Files changed: `internal/sandbox/provider.go`, `internal/sandbox/provider_digitalocean.go`, `internal/sandbox/provider_digitalocean_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - DigitalOcean lifecycle APIs should use `WorkspaceID` (droplet ID) rather than sandbox name; command-layer fallbacks must populate that ID when targeting by raw value.
+  - ConnectInfo migrations are cleaner when providers fail fast on missing required fields (`WorkspaceID`/`IP`) instead of silently reading legacy local state.
+  - `make test` and `make vet` continue to be the required quality gates for sandbox provider refactors.
+---
+
+## [2026-03-21 14:53 CST] - US-015
+- Refactored `internal/sandbox/provider_lightsail.go` so SSH/Exec require `ConnectInfo.IP` directly and no longer read `.hal/sandbox.json` via `LoadState`.
+- Kept Lightsail lifecycle calls (`Stop`, `Delete`, `Status`) ConnectInfo-driven by instance name (`info.Name`) with no local state fallback.
+- Removed obsolete `StateDir` provider plumbing from `sandbox.ProviderConfig` and command-side provider config construction now that all providers are fully ConnectInfo-based.
+- Updated Lightsail provider tests to use ConnectInfo inputs and assert the missing-IP failure contract.
+- Files changed: `internal/sandbox/provider_lightsail.go`, `internal/sandbox/provider_lightsail_test.go`, `internal/sandbox/provider.go`, `cmd/sandbox.go`, `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Once the last provider leaves local state fallback behind, remove dead config plumbing (`StateDir`) from shared provider config in the same change to prevent stale contracts.
+  - For provider SSH/Exec tests, pass explicit `ConnectInfo.IP` and assert fail-fast missing-IP errors instead of relying on fixture state files.
+  - `make test` and `make vet` remain the required quality gates for sandbox provider refactors.
+---
+
+## [2026-03-21 15:08 CST] - US-016
+- Refactored sandbox setup to support global configuration: added `runSandboxSetup(in, out)` wrapper and moved injectable logic into `runSandboxSetupWithDeps(...)` in `cmd/sandbox.go`.
+- Updated setup to load defaults from `sandbox.LoadGlobalConfig()`, persist via `sandbox.SaveGlobalConfig()`, and print the resolved global config path (`sandbox.GlobalConfigPath()`), enabling setup from directories without `.hal/`.
+- Added compatibility helper `saveLegacyProjectSandboxConfigIfPresent(...)` so setup mirrors values into `.hal/config.yaml` only when a project `.hal/` directory exists.
+- Added `GlobalConfigPath()` in `internal/sandbox/globalconfig.go` and updated load/save internals to use it.
+- Updated setup tests to isolate global state via `HAL_CONFIG_HOME`, switched calls to `runSandboxSetupWithDeps`, and added a no-`.hal/` success case that asserts global config file creation.
+- Files changed: `cmd/sandbox.go`, `cmd/sandbox_test.go`, `internal/sandbox/globalconfig.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - For commands that now read/write global sandbox state, always isolate tests with `HAL_CONFIG_HOME` and reset XDG/HOME fallbacks to avoid touching real user config.
+  - During migration windows, keep global config authoritative while using explicit compatibility shims for legacy `.hal/config.yaml` consumers.
+  - `make test` and `make vet` remain the quality gates for sandbox command stories.
+---
+
+## [2026-03-21 15:20 CST] - US-017
+- Updated `runSandboxStartWithDeps` in `cmd/sandbox_start.go` to generate UUIDv7 ID, set Status="running" and TailscaleHostname, and persist to the global registry via `sandbox.SaveInstance()`.
+- Added `mergeGlobalSizeDefaults()` helper to fill empty provider-specific size fields (Hetzner ServerType/SSHKey/Image, DigitalOcean Size/SSHKey, Lightsail Bundle/Region/AZ/KeyPair) from global config before building ProviderConfig.
+- Kept backward-compat local `.hal/sandbox.json` save as best-effort (non-fatal warning on failure) so existing commands (ssh, stop, delete, status) continue working until they migrate to global registry.
+- Updated all start tests to isolate global registry via `t.Setenv("HAL_CONFIG_HOME", ...)` and verify new fields (ID matching UUIDv7 pattern, Status, Provider, WorkspaceID) on the global registry entry.
+- Added `TestRunSandboxStart_GlobalConfigSizeDefaults` and `TestRunSandboxStart_LocalConfigOverridesGlobalSize` to verify size-merge precedence.
+- Files changed: `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - The start command now uses the resolved `name` (not `result.Name`) for the persisted state, keeping registry filenames consistent with user-facing sandbox names.
+  - Global config size merge should use `mergeGlobalSizeDefaults` before provider resolution so ProviderConfig sees the merged values seamlessly.
+  - Backward-compat local state saves should be non-fatal warnings to avoid blocking sandbox creation when `.hal/` is writable but has other issues.
+---
+
+## [2026-03-21 15:35 CST] - US-018
+- Implemented auto-shutdown env injection in `cmd/sandbox_start.go`: added `autoShutdownOpts` type, `resolveAutoShutdown()`, and `injectAutoShutdownEnv()` helpers.
+- Added `--auto-shutdown`, `--no-auto-shutdown`, and `--idle-hours` flags to the start command with proper precedence (`--no-auto-shutdown` wins over `--auto-shutdown`).
+- Auto-shutdown settings are resolved from global config defaults, then overridden by flags, and injected as `HAL_AUTO_SHUTDOWN`/`HAL_IDLE_HOURS` env vars before `provider.Create`.
+- Persisted `SandboxState` now stores resolved `AutoShutdown` and `IdleHours` values.
+- Files changed: `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Use pointer-based opts structs to distinguish "flag not set" (nil) from "flag explicitly set" when Cobra flag defaults collide with config defaults.
+  - Auto-shutdown env vars are always injected (the old `mergedEnv = nil` guard was removed since env map always has at least the shutdown vars).
+  - When auto-shutdown is disabled, `HAL_IDLE_HOURS` is explicitly removed from env to prevent stale values from config leaking through.
+---
+
+## [2026-03-21 16:05 CST] - US-019
+- Implemented `--count N` flag for batch sandbox creation with preflight validation in `cmd/sandbox_start.go`.
+- Added `batchPreflight(base, count)` helper that generates target names via `BatchNames` and checks each against the global registry for collisions before any `provider.Create` call.
+- Extracted `runSingleCreate` helper from `runSandboxStartWithDeps` for single sandbox creation logic.
+- Added `runBatchCreate` as a dedicated batch execution helper that iterates over preflight-validated targets.
+- Added `count` parameter to `runSandboxStartWithDeps`; `count <= 1` uses single-create path, `count > 1` triggers batch preflight + batch create.
+- Updated all existing test calls to pass `count=0` for backward compatibility.
+- Added tests: `TestBatchPreflight_Success`, `TestBatchPreflight_CollisionDetected`, `TestBatchPreflight_MultipleCollisions`, `TestBatchPreflight_InvalidBaseName`, `TestRunSandboxStart_BatchCreatesAll`, `TestRunSandboxStart_BatchPreflightBlocksCreate`, `TestRunSandboxStart_CountOneIsSingle`, `TestSandboxStartCommandCountFlag`, `TestRunSandboxStart_BatchNameFromBranch`.
+- Files changed: `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`
+- **Learnings for future iterations:**
+  - When adding a new parameter to `runSandboxStartWithDeps`, update all test call sites to maintain compilation; sed-based bulk replacement is efficient for consistent parameter patterns.
+  - Batch preflight should report all collisions in one error (not fail-fast on the first) to give users a complete picture of conflicts.
+  - The `runBatchCreate` helper currently does sequential creation; US-036 will upgrade it to concurrent execution with errgroup.
+---
