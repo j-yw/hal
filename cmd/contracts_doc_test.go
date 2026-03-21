@@ -21,6 +21,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"status-v1", "../docs/contracts/status-v1.md"},
 		{"doctor-v1", "../docs/contracts/doctor-v1.md"},
 		{"continue-v1", "../docs/contracts/continue-v1.md"},
+		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -55,6 +56,57 @@ func TestContractDocsIncludeStateValues(t *testing.T) {
 		if !strings.Contains(content, state) {
 			t.Errorf("status-v1.md missing state value %q", state)
 		}
+	}
+}
+
+// TestContractDocsIncludeSandboxListFields verifies that sandbox-list-v1 contract
+// docs list all required field names from the code types.
+func TestContractDocsIncludeSandboxListFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-list-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-list-v1.md: %v", err)
+	}
+	content := string(data)
+
+	// Top-level required fields
+	topLevelFields := []string{"contractVersion", "sandboxes", "totals"}
+	for _, f := range topLevelFields {
+		if !strings.Contains(content, f) {
+			t.Errorf("sandbox-list-v1.md missing top-level field %q", f)
+		}
+	}
+
+	// Sandbox entry required fields
+	entryRequiredFields := []string{"id", "name", "provider", "status", "createdAt"}
+	for _, f := range entryRequiredFields {
+		if !strings.Contains(content, "`"+f+"`") {
+			t.Errorf("sandbox-list-v1.md missing sandbox entry required field %q", f)
+		}
+	}
+
+	// Sandbox entry optional fields
+	entryOptionalFields := []string{
+		"workspaceId", "ip", "tailscaleIp", "tailscaleHostname",
+		"stoppedAt", "autoShutdown", "idleHours", "size",
+		"repo", "snapshotId", "estimatedCost",
+	}
+	for _, f := range entryOptionalFields {
+		if !strings.Contains(content, "`"+f+"`") {
+			t.Errorf("sandbox-list-v1.md missing sandbox entry optional field %q", f)
+		}
+	}
+
+	// Totals fields
+	totalsFields := []string{"total", "running", "stopped"}
+	for _, f := range totalsFields {
+		if !strings.Contains(content, "`"+f+"`") {
+			t.Errorf("sandbox-list-v1.md missing totals field %q", f)
+		}
+	}
+
+	// Contract version value
+	if !strings.Contains(content, "sandbox-list-v1") {
+		t.Error("sandbox-list-v1.md missing contract version value \"sandbox-list-v1\"")
 	}
 }
 

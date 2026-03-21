@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
@@ -331,6 +332,290 @@ func TestMachineContractFields_PRDAudit(t *testing.T) {
 			t.Errorf("prd audit JSON missing field %q", field)
 		}
 	}
+}
+
+func TestMachineContractFields_SandboxList(t *testing.T) {
+	t.Run("required JSON keys", func(t *testing.T) {
+		cost := 3.50
+		now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+		stopped := now.Add(-time.Hour)
+
+		resp := SandboxListResponse{
+			ContractVersion: "sandbox-list-v1",
+			Sandboxes: []SandboxListEntry{
+				{
+					ID:                "0192d4e5-6f78-7abc-def0-123456789abc",
+					Name:              "api-backend",
+					Provider:          "hetzner",
+					Status:            "running",
+					CreatedAt:         now,
+					WorkspaceID:       "srv-12345",
+					IP:                "203.0.113.10",
+					TailscaleIP:       "100.64.0.1",
+					TailscaleHostname: "hal-api-backend",
+					StoppedAt:         &stopped,
+					AutoShutdown:      true,
+					IdleHours:         48,
+					Size:              "cpx21",
+					Repo:              "github.com/myorg/api",
+					SnapshotID:        "snap-001",
+					EstimatedCost:     &cost,
+				},
+			},
+			Totals: SandboxListTotals{
+				Total:         1,
+				Running:       1,
+				Stopped:       0,
+				EstimatedCost: &cost,
+			},
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+
+		var raw map[string]interface{}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+
+		// Top-level required fields
+		for _, f := range []string{"contractVersion", "sandboxes", "totals"} {
+			if _, ok := raw[f]; !ok {
+				t.Errorf("sandbox list JSON missing required top-level field %q", f)
+			}
+		}
+
+		// Sandbox entry required fields
+		sandboxes := raw["sandboxes"].([]interface{})
+		entry := sandboxes[0].(map[string]interface{})
+		for _, f := range []string{"id", "name", "provider", "status", "createdAt"} {
+			if _, ok := entry[f]; !ok {
+				t.Errorf("sandbox entry JSON missing required field %q", f)
+			}
+		}
+
+		// Sandbox entry optional fields (present when populated)
+		for _, f := range []string{
+			"workspaceId", "ip", "tailscaleIp", "tailscaleHostname",
+			"stoppedAt", "autoShutdown", "idleHours", "size",
+			"repo", "snapshotId", "estimatedCost",
+		} {
+			if _, ok := entry[f]; !ok {
+				t.Errorf("sandbox entry JSON missing optional field %q (should be present when populated)", f)
+			}
+		}
+
+		// Totals required fields
+		totals := raw["totals"].(map[string]interface{})
+		for _, f := range []string{"total", "running", "stopped"} {
+			if _, ok := totals[f]; !ok {
+				t.Errorf("totals JSON missing required field %q", f)
+			}
+		}
+
+		// Totals optional fields
+		if _, ok := totals["estimatedCost"]; !ok {
+			t.Error("totals JSON missing optional field \"estimatedCost\" (should be present when populated)")
+		}
+	})
+
+	t.Run("contract version value", func(t *testing.T) {
+		resp := SandboxListResponse{
+			ContractVersion: "sandbox-list-v1",
+			Sandboxes:       []SandboxListEntry{},
+			Totals:          SandboxListTotals{},
+		}
+
+		data, _ := json.Marshal(resp)
+		var raw map[string]interface{}
+		json.Unmarshal(data, &raw)
+
+		if v := raw["contractVersion"]; v != "sandbox-list-v1" {
+			t.Fatalf("contractVersion = %v, want \"sandbox-list-v1\"", v)
+		}
+	})
+
+	t.Run("optional fields omitted when zero", func(t *testing.T) {
+		resp := SandboxListResponse{
+			ContractVersion: "sandbox-list-v1",
+			Sandboxes: []SandboxListEntry{
+				{
+					ID:        "test-id",
+					Name:      "minimal",
+					Provider:  "daytona",
+					Status:    "running",
+					CreatedAt: time.Now(),
+				},
+			},
+			Totals: SandboxListTotals{Total: 1, Running: 1},
+		}
+
+		data, _ := json.Marshal(resp)
+		var raw map[string]interface{}
+		json.Unmarshal(data, &raw)
+
+		entry := raw["sandboxes"].([]interface{})[0].(map[string]interface{})
+		omittedFields := []string{
+			"workspaceId", "ip", "tailscaleIp", "tailscaleHostname",
+			"stoppedAt", "autoShutdown", "idleHours", "size",
+			"repo", "snapshotId", "estimatedCost",
+		}
+		for _, f := range omittedFields {
+			if _, ok := entry[f]; ok {
+				t.Errorf("field %q should be omitted when zero/nil, but was present", f)
+			}
+		}
+
+		totals := raw["totals"].(map[string]interface{})
+		if _, ok := totals["estimatedCost"]; ok {
+			t.Error("totals.estimatedCost should be omitted when nil")
+		}
+	})
+
+	t.Run("round-trip marshal/unmarshal", func(t *testing.T) {
+		cost := 5.40
+		totalCost := 5.40
+		now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+		stopped := time.Date(2026, 3, 20, 18, 0, 0, 0, time.UTC)
+
+		original := SandboxListResponse{
+			ContractVersion: "sandbox-list-v1",
+			Sandboxes: []SandboxListEntry{
+				{
+					ID:                "0192d4e5-6f78-7abc-def0-123456789abc",
+					Name:              "api-backend",
+					Provider:          "hetzner",
+					Status:            "running",
+					CreatedAt:         now,
+					WorkspaceID:       "srv-12345",
+					IP:                "203.0.113.10",
+					TailscaleIP:       "100.64.0.1",
+					TailscaleHostname: "hal-api-backend",
+					StoppedAt:         &stopped,
+					AutoShutdown:      true,
+					IdleHours:         48,
+					Size:              "cpx21",
+					Repo:              "github.com/myorg/api",
+					SnapshotID:        "snap-001",
+					EstimatedCost:     &cost,
+				},
+				{
+					ID:        "0192d4e5-6f78-7abc-def0-123456789abd",
+					Name:      "worker",
+					Provider:  "daytona",
+					Status:    "stopped",
+					CreatedAt: now,
+				},
+			},
+			Totals: SandboxListTotals{
+				Total:         2,
+				Running:       1,
+				Stopped:       1,
+				EstimatedCost: &totalCost,
+			},
+		}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+
+		var decoded SandboxListResponse
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+
+		// Structural equality checks
+		if decoded.ContractVersion != original.ContractVersion {
+			t.Errorf("ContractVersion = %q, want %q", decoded.ContractVersion, original.ContractVersion)
+		}
+		if len(decoded.Sandboxes) != len(original.Sandboxes) {
+			t.Fatalf("Sandboxes count = %d, want %d", len(decoded.Sandboxes), len(original.Sandboxes))
+		}
+
+		// First entry full check
+		got := decoded.Sandboxes[0]
+		want := original.Sandboxes[0]
+		if got.ID != want.ID {
+			t.Errorf("Sandboxes[0].ID = %q, want %q", got.ID, want.ID)
+		}
+		if got.Name != want.Name {
+			t.Errorf("Sandboxes[0].Name = %q, want %q", got.Name, want.Name)
+		}
+		if got.Provider != want.Provider {
+			t.Errorf("Sandboxes[0].Provider = %q, want %q", got.Provider, want.Provider)
+		}
+		if got.Status != want.Status {
+			t.Errorf("Sandboxes[0].Status = %q, want %q", got.Status, want.Status)
+		}
+		if !got.CreatedAt.Equal(want.CreatedAt) {
+			t.Errorf("Sandboxes[0].CreatedAt = %v, want %v", got.CreatedAt, want.CreatedAt)
+		}
+		if got.WorkspaceID != want.WorkspaceID {
+			t.Errorf("Sandboxes[0].WorkspaceID = %q, want %q", got.WorkspaceID, want.WorkspaceID)
+		}
+		if got.IP != want.IP {
+			t.Errorf("Sandboxes[0].IP = %q, want %q", got.IP, want.IP)
+		}
+		if got.TailscaleIP != want.TailscaleIP {
+			t.Errorf("Sandboxes[0].TailscaleIP = %q, want %q", got.TailscaleIP, want.TailscaleIP)
+		}
+		if got.TailscaleHostname != want.TailscaleHostname {
+			t.Errorf("Sandboxes[0].TailscaleHostname = %q, want %q", got.TailscaleHostname, want.TailscaleHostname)
+		}
+		if got.AutoShutdown != want.AutoShutdown {
+			t.Errorf("Sandboxes[0].AutoShutdown = %v, want %v", got.AutoShutdown, want.AutoShutdown)
+		}
+		if got.IdleHours != want.IdleHours {
+			t.Errorf("Sandboxes[0].IdleHours = %d, want %d", got.IdleHours, want.IdleHours)
+		}
+		if got.Size != want.Size {
+			t.Errorf("Sandboxes[0].Size = %q, want %q", got.Size, want.Size)
+		}
+		if got.Repo != want.Repo {
+			t.Errorf("Sandboxes[0].Repo = %q, want %q", got.Repo, want.Repo)
+		}
+		if got.SnapshotID != want.SnapshotID {
+			t.Errorf("Sandboxes[0].SnapshotID = %q, want %q", got.SnapshotID, want.SnapshotID)
+		}
+		if got.EstimatedCost == nil || want.EstimatedCost == nil {
+			t.Fatal("Sandboxes[0].EstimatedCost should not be nil")
+		}
+		if *got.EstimatedCost != *want.EstimatedCost {
+			t.Errorf("Sandboxes[0].EstimatedCost = %f, want %f", *got.EstimatedCost, *want.EstimatedCost)
+		}
+		if got.StoppedAt == nil || want.StoppedAt == nil {
+			t.Fatal("Sandboxes[0].StoppedAt should not be nil")
+		}
+		if !got.StoppedAt.Equal(*want.StoppedAt) {
+			t.Errorf("Sandboxes[0].StoppedAt = %v, want %v", *got.StoppedAt, *want.StoppedAt)
+		}
+
+		// Second entry minimal check
+		got2 := decoded.Sandboxes[1]
+		if got2.Name != "worker" {
+			t.Errorf("Sandboxes[1].Name = %q, want %q", got2.Name, "worker")
+		}
+		if got2.EstimatedCost != nil {
+			t.Error("Sandboxes[1].EstimatedCost should be nil for minimal entry")
+		}
+
+		// Totals check
+		if decoded.Totals.Total != original.Totals.Total {
+			t.Errorf("Totals.Total = %d, want %d", decoded.Totals.Total, original.Totals.Total)
+		}
+		if decoded.Totals.Running != original.Totals.Running {
+			t.Errorf("Totals.Running = %d, want %d", decoded.Totals.Running, original.Totals.Running)
+		}
+		if decoded.Totals.Stopped != original.Totals.Stopped {
+			t.Errorf("Totals.Stopped = %d, want %d", decoded.Totals.Stopped, original.Totals.Stopped)
+		}
+		if decoded.Totals.EstimatedCost == nil || *decoded.Totals.EstimatedCost != *original.Totals.EstimatedCost {
+			t.Errorf("Totals.EstimatedCost mismatch")
+		}
+	})
 }
 
 func TestNextActionFieldsConsistent(t *testing.T) {

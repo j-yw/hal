@@ -178,3 +178,41 @@
 - The `hal repair` command auto-applies safe remediations from doctor results. To add a new remediation, add `Remediation: &Remediation{Command: "...", Safe: true}` to the check and register the command in `executeRepairCommand`.
 - The `hal links` command group (status/refresh/clean) manages engine skill links separately from `hal init`. Use `hal links refresh codex` for targeted Codex link updates.
 - Doctor checks for link health should suggest `hal links refresh` or `hal links clean` instead of `hal init` — more targeted remediation.
+
+## Patterns from hal/multi-sandbox-management (2026-03-21)
+
+- Global sandbox path resolution in `internal/sandbox/global.go` must follow this exact precedence: `$HAL_CONFIG_HOME` → `$XDG_CONFIG_HOME/hal` → `$HOME/.config/hal`.
+- Tests for global sandbox paths should isolate with `t.Setenv("HAL_CONFIG_HOME", tmpDir)`; for fallback behavior, also set `HOME` explicitly so results are deterministic.
+- `EnsureGlobalDir()` should create both the global root and `sandboxes/` with `os.MkdirAll(..., 0700)` and remain safe to call repeatedly.
+- Global sandbox config lives at `GlobalDir()/sandbox-config.yaml`; `LoadGlobalConfig` should merge pointer-based raw YAML fields into `DefaultGlobalConfig()` so missing keys keep defaults while explicit zero/empty values are preserved.
+- `SaveGlobalConfig` should persist `sandbox-config.yaml` via temp-file + rename with `0600` permissions (same atomic durability pattern as registry writes).
+- `internal/sandbox/migrate.go` config migration should treat global config as authoritative: if `sandbox-config.yaml` already exists, skip local migration; otherwise copy only local `.hal/config.yaml` `sandbox`/`daytona` sections, preserving the local file unchanged.
+- Commands should opt into migration via `runSandboxAutoMigrate(projectDir, out)`; migration failures are non-fatal and must emit exactly `warning: sandbox migration failed: <error>`.
+- `hal sandbox setup` should source defaults from `sandbox.LoadGlobalConfig()` and persist via `sandbox.SaveGlobalConfig()` so it works outside project directories; command tests should isolate with `HAL_CONFIG_HOME` temp dirs.
+- During the transition away from project-scoped sandbox config, setup mirrors values back into `.hal/config.yaml` only when `.hal/` exists (`saveLegacyProjectSandboxConfigIfPresent`) to preserve legacy command compatibility.
+- Global sandbox registry entries live at `SandboxesDir()/"<name>.json"`; writes should stay atomic (`.tmp` + `os.Rename`) with `0600` file mode.
+- Registry collision semantics are strict: `SaveInstance` must return the exact error `sandbox "<name>" already exists`, while `ForceWriteInstance` is the explicit overwrite path for `--force` flows.
+- `ListInstances` should treat a missing `sandboxes/` directory as empty state and return instances sorted by `Name`; missing `LoadInstance`/`RemoveInstance` errors should wrap `fs.ErrNotExist` for `errors.Is` checks.
+- `ResolveDefault(filter)` is the canonical no-name target resolver: return exact empty-state errors (`no sandboxes found` or `no running sandboxes` for running-only filters), ambiguity errors as `multiple sandboxes found: <sorted names>`, and success hint text `connecting to only active sandbox "<name>"`.
+- Provider lifecycle/connection methods now consume `*ConnectInfo` (`Stop`, `Delete`, `Status`, `SSH`, `Exec`). Command paths should build it via `ConnectInfoFromState(instance)` and pass explicit fallback IDs/names when deleting by raw target value.
+- DigitalOcean provider semantics are ID-first: `Stop`/`Delete`/`Status` should target `info.WorkspaceID` (droplet ID), while `SSH`/`Exec` should use `info.IP` directly.
+- During provider migration, remove `.hal/sandbox.json` (`LoadState`) fallbacks as each provider adopts `ConnectInfo`; SSH/Exec should require `info.IP` and fail fast when missing.
+- Once all providers are fully `ConnectInfo`-based, remove obsolete shared `ProviderConfig` wiring (for example `StateDir`) and related command/test plumbing to keep the provider contract minimal.
+
+## Patterns from hal/sandbox-uuidv7-generation (2026-03-21)
+
+- `internal/sandbox/uuid.go` uses an injectable `UUIDSource` (`clock func() time.Time`, `rand io.Reader`) so UUID generation stays deterministic in tests while defaulting to `crypto/rand.Reader` in production.
+- UUIDv7 monotonic behavior is maintained by reseeding randomness only when millisecond timestamps advance; otherwise increment the stored random bits (with timestamp carry on overflow) before formatting.
+- UUID tests should assert canonical 8-4-4-4-12 format and bit-level contracts (version nibble `0x7`, variant top bits `0b10`) plus a reader-failure error path.
+
+## Patterns from hal/sandbox-name-validation (2026-03-21)
+
+- Keep sandbox-name validation centralized in `internal/sandbox/name.go` (`ValidateName`) with the exact user-facing error strings: `must be 1-59 chars`, `must be lowercase alphanumeric and hyphens`, `must not start or end with hyphen`, and `must not contain consecutive hyphens`.
+- `SandboxNameFromBranch` should always produce a valid default name by lowercasing, replacing non `[a-z0-9]` runs with a single hyphen, trimming edge hyphens, and capping to 59 chars (falling back to `sandbox` if sanitization is empty).
+- `BatchNames(base, count)` should compute suffix width as `max(2, digits(count))`, reject `count < 1`, preflight `len(base)+1+width <= 59`, and validate each generated `{base}-NN...` value via `ValidateName`.
+- Name validation tests are table-driven and include boundary cases (59/60 chars) plus structural invalid cases (uppercase, special chars, edge/consecutive hyphens); keep this matrix updated when name rules change.
+
+## Patterns from hal/sandbox-state-type (2026-03-21)
+
+- Keep sandbox lifecycle status values centralized in `internal/sandbox/types.go` constants (`StatusRunning`, `StatusStopped`, `StatusUnknown`) instead of duplicating string literals across commands/providers.
+- `SandboxState` JSON tags are camelCase with selective `omitempty`; preserve this contract with focused marshal/unmarshal key assertions in `internal/sandbox/types_test.go` when adding or renaming fields.

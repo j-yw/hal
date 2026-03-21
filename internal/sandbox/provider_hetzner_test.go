@@ -207,7 +207,7 @@ func TestHetznerProvider_Stop_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := hp.Stop(context.Background(), "my-server", &out)
+	err := hp.Stop(context.Background(), &ConnectInfo{Name: "my-server"}, &out)
 	if err != nil {
 		t.Fatalf("Stop() unexpected error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestHetznerProvider_Stop_Failure(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := hp.Stop(context.Background(), "my-server", &out)
+	err := hp.Stop(context.Background(), &ConnectInfo{Name: "my-server"}, &out)
 	if err == nil {
 		t.Fatal("Stop() expected error, got nil")
 	}
@@ -250,7 +250,7 @@ func TestHetznerProvider_Delete_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := hp.Delete(context.Background(), "my-server", &out)
+	err := hp.Delete(context.Background(), &ConnectInfo{Name: "my-server"}, &out)
 	if err != nil {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestHetznerProvider_Delete_Failure(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := hp.Delete(context.Background(), "my-server", &out)
+	err := hp.Delete(context.Background(), &ConnectInfo{Name: "my-server"}, &out)
 	if err == nil {
 		t.Fatal("Delete() expected error, got nil")
 	}
@@ -293,7 +293,7 @@ func TestHetznerProvider_Status_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := hp.Status(context.Background(), "my-server", &out)
+	err := hp.Status(context.Background(), &ConnectInfo{Name: "my-server"}, &out)
 	if err != nil {
 		t.Fatalf("Status() unexpected error: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestHetznerProvider_Status_Failure(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := hp.Status(context.Background(), "my-server", &out)
+	err := hp.Status(context.Background(), &ConnectInfo{Name: "my-server"}, &out)
 	if err == nil {
 		t.Fatal("Status() expected error, got nil")
 	}
@@ -326,26 +326,10 @@ func TestHetznerProvider_Status_Failure(t *testing.T) {
 	}
 }
 
-// writeHetznerState creates a sandbox.json with the given IP in a temp .hal dir.
-func writeHetznerState(t *testing.T, ip string) string {
-	t.Helper()
-	dir := t.TempDir()
-	state := &SandboxState{
-		Name:     "test-server",
-		Provider: "hetzner",
-		IP:       ip,
-	}
-	if err := SaveState(dir, state); err != nil {
-		t.Fatalf("failed to save test state: %v", err)
-	}
-	return dir
-}
-
 func TestHetznerProvider_SSH(t *testing.T) {
-	stateDir := writeHetznerState(t, "10.0.0.42")
-	hp := &HetznerProvider{StateDir: stateDir}
+	hp := &HetznerProvider{}
 
-	cmd, err := hp.SSH("test-server")
+	cmd, err := hp.SSH(&ConnectInfo{Name: "test-server", IP: "10.0.0.42"})
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
@@ -374,32 +358,21 @@ func TestHetznerProvider_SSH(t *testing.T) {
 }
 
 func TestHetznerProvider_SSH_NoIP(t *testing.T) {
-	stateDir := writeHetznerState(t, "")
-	hp := &HetznerProvider{StateDir: stateDir}
+	hp := &HetznerProvider{}
 
-	_, err := hp.SSH("test-server")
+	_, err := hp.SSH(&ConnectInfo{Name: "test-server"})
 	if err == nil {
 		t.Fatal("SSH() expected error for missing IP, got nil")
 	}
-	if !strings.Contains(err.Error(), "no IP address") {
-		t.Errorf("error %q should mention 'no IP address'", err.Error())
-	}
-}
-
-func TestHetznerProvider_SSH_NoState(t *testing.T) {
-	hp := &HetznerProvider{StateDir: t.TempDir()}
-
-	_, err := hp.SSH("test-server")
-	if err == nil {
-		t.Fatal("SSH() expected error for missing state, got nil")
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
+		t.Errorf("error %q should mention 'sandbox IP is required'", err.Error())
 	}
 }
 
 func TestHetznerProvider_Exec(t *testing.T) {
-	stateDir := writeHetznerState(t, "10.0.0.42")
-	hp := &HetznerProvider{StateDir: stateDir}
+	hp := &HetznerProvider{}
 
-	cmd, err := hp.Exec("test-server", []string{"ls", "-la"})
+	cmd, err := hp.Exec(&ConnectInfo{Name: "test-server", IP: "10.0.0.42"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
@@ -416,14 +389,13 @@ func TestHetznerProvider_Exec(t *testing.T) {
 }
 
 func TestHetznerProvider_Exec_NoIP(t *testing.T) {
-	stateDir := writeHetznerState(t, "")
-	hp := &HetznerProvider{StateDir: stateDir}
+	hp := &HetznerProvider{}
 
-	_, err := hp.Exec("test-server", []string{"ls"})
+	_, err := hp.Exec(&ConnectInfo{Name: "test-server"}, []string{"ls"})
 	if err == nil {
 		t.Fatal("Exec() expected error for missing IP, got nil")
 	}
-	if !strings.Contains(err.Error(), "no IP address") {
-		t.Errorf("error %q should mention 'no IP address'", err.Error())
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
+		t.Errorf("error %q should mention 'sandbox IP is required'", err.Error())
 	}
 }

@@ -11,19 +11,18 @@ func TestGenerateLightsailCloudInit_WithEnvVars(t *testing.T) {
 		"API_KEY":   "sk-123",
 	}
 
-	yaml := generateLightsailCloudInit(env, false)
+	script := generateLightsailCloudInit(env, false)
 
-	if !strings.HasPrefix(yaml, "#cloud-config\n") {
-		t.Error("cloud-init should start with #cloud-config")
+	// Lightsail wraps user-data in its own shell script, so we generate
+	// a plain shell script (NOT cloud-config YAML).
+	if strings.HasPrefix(script, "#cloud-config") {
+		t.Error("Lightsail cloud-init must NOT use #cloud-config (Lightsail wraps user-data in a shell script)")
 	}
-	if !strings.Contains(yaml, "encoding: b64") {
-		t.Error("cloud-init should use base64 encoding")
+	if !strings.Contains(script, "base64 -d > /root/.env") {
+		t.Error("script should decode base64 env to /root/.env")
 	}
-	if !strings.Contains(yaml, "runcmd:") {
-		t.Error("cloud-init should have runcmd section")
-	}
-	if !strings.Contains(yaml, "setup.sh") {
-		t.Error("cloud-init runcmd should run setup.sh")
+	if !strings.Contains(script, "setup.sh") {
+		t.Error("script should run setup.sh")
 	}
 
 	// Verify env file content
@@ -42,12 +41,12 @@ func TestGenerateLightsailCloudInit_WithEnvVars(t *testing.T) {
 }
 
 func TestGenerateLightsailCloudInit_EmptyEnv(t *testing.T) {
-	yaml := generateLightsailCloudInit(nil, false)
-	if !strings.HasPrefix(yaml, "#cloud-config\n") {
-		t.Error("cloud-init should start with #cloud-config")
+	script := generateLightsailCloudInit(nil, false)
+	if strings.HasPrefix(script, "#cloud-config") {
+		t.Error("Lightsail cloud-init must NOT use #cloud-config")
 	}
-	if !strings.Contains(yaml, "runcmd:") {
-		t.Error("cloud-init should have runcmd section")
+	if !strings.Contains(script, "setup.sh") {
+		t.Error("script should run setup.sh")
 	}
 }
 
@@ -73,24 +72,14 @@ func TestBuildLightsailCreateArgs(t *testing.T) {
 	if !strings.Contains(joined, "--key-pair-name my-key") {
 		t.Errorf("args should contain '--key-pair-name my-key', got: %s", joined)
 	}
-	if !strings.Contains(joined, "--user-data-file /tmp/cloud-init.yaml") {
-		t.Errorf("args should contain '--user-data-file /tmp/cloud-init.yaml', got: %s", joined)
+	if !strings.Contains(joined, "--user-data file:///tmp/cloud-init.yaml") {
+		t.Errorf("args should contain '--user-data file:///tmp/cloud-init.yaml', got: %s", joined)
 	}
 }
 
-func TestLightsailProvider_SSH(t *testing.T) {
-	dir := t.TempDir()
-	state := &SandboxState{
-		Name:     "test-dev",
-		Provider: "lightsail",
-		IP:       "44.203.78.182",
-	}
-	if err := SaveState(dir, state); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &LightsailProvider{StateDir: dir}
-	cmd, err := p.SSH("test-dev")
+func TestLightsailProvider_SSH_WithConnectInfoIP(t *testing.T) {
+	p := &LightsailProvider{}
+	cmd, err := p.SSH(&ConnectInfo{Name: "test-dev", IP: "44.203.78.182"})
 	if err != nil {
 		t.Fatalf("SSH() error: %v", err)
 	}
@@ -104,19 +93,9 @@ func TestLightsailProvider_SSH(t *testing.T) {
 	}
 }
 
-func TestLightsailProvider_Exec(t *testing.T) {
-	dir := t.TempDir()
-	state := &SandboxState{
-		Name:     "test-dev",
-		Provider: "lightsail",
-		IP:       "44.203.78.182",
-	}
-	if err := SaveState(dir, state); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &LightsailProvider{StateDir: dir}
-	cmd, err := p.Exec("test-dev", []string{"ls", "-la"})
+func TestLightsailProvider_Exec_WithConnectInfoIP(t *testing.T) {
+	p := &LightsailProvider{}
+	cmd, err := p.Exec(&ConnectInfo{Name: "test-dev", IP: "44.203.78.182"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() error: %v", err)
 	}
@@ -130,23 +109,24 @@ func TestLightsailProvider_Exec(t *testing.T) {
 	}
 }
 
-func TestLightsailProvider_SSH_NoIP(t *testing.T) {
-	dir := t.TempDir()
-	state := &SandboxState{
-		Name:     "test-dev",
-		Provider: "lightsail",
-		IP:       "",
-	}
-	if err := SaveState(dir, state); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &LightsailProvider{StateDir: dir}
-	_, err := p.SSH("test-dev")
+func TestLightsailProvider_SSH_MissingIP(t *testing.T) {
+	p := &LightsailProvider{}
+	_, err := p.SSH(&ConnectInfo{Name: "test-dev"})
 	if err == nil {
 		t.Fatal("SSH() should error when IP is empty")
 	}
-	if !strings.Contains(err.Error(), "no IP address") {
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
+		t.Errorf("error should mention missing IP, got: %v", err)
+	}
+}
+
+func TestLightsailProvider_Exec_MissingIP(t *testing.T) {
+	p := &LightsailProvider{}
+	_, err := p.Exec(&ConnectInfo{Name: "test-dev"}, []string{"ls"})
+	if err == nil {
+		t.Fatal("Exec() should error when IP is empty")
+	}
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
 		t.Errorf("error should mention missing IP, got: %v", err)
 	}
 }

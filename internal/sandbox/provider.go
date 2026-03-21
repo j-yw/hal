@@ -5,14 +5,52 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 )
 
 // SandboxResult holds the result of creating a sandbox.
+// These fields are persisted into SandboxState by command-layer callers.
 type SandboxResult struct {
 	ID          string
 	Name        string
 	IP          string
 	TailscaleIP string
+}
+
+// ConnectInfo is the provider-facing connection target for SSH/Exec/Status
+// style operations. Provider signature migration to this type is incremental;
+// command code can build it ahead of interface changes.
+type ConnectInfo struct {
+	Name        string
+	IP          string
+	WorkspaceID string
+}
+
+// ConnectInfoFromState builds ConnectInfo from a persisted SandboxState.
+// IP prefers tailscale when present.
+func ConnectInfoFromState(instance *SandboxState) *ConnectInfo {
+	if instance == nil {
+		return nil
+	}
+
+	return &ConnectInfo{
+		Name:        instance.Name,
+		IP:          PreferredIP(instance),
+		WorkspaceID: instance.WorkspaceID,
+	}
+}
+
+// PreferredIP returns the best connect address for a sandbox.
+// Tailscale is preferred when available; otherwise public IP is used.
+func PreferredIP(instance *SandboxState) string {
+	if instance == nil {
+		return ""
+	}
+
+	if strings.TrimSpace(instance.TailscaleIP) != "" {
+		return strings.TrimSpace(instance.TailscaleIP)
+	}
+	return strings.TrimSpace(instance.IP)
 }
 
 // Provider defines the interface for sandbox backends.
@@ -23,22 +61,22 @@ type Provider interface {
 	// Output is streamed to out. Returns the result or an error.
 	Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error)
 
-	// Stop halts a running sandbox.
-	Stop(ctx context.Context, name string, out io.Writer) error
+	// Stop halts a running sandbox identified by ConnectInfo.
+	Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error
 
 	// Delete removes a sandbox permanently.
-	Delete(ctx context.Context, name string, out io.Writer) error
+	Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error
 
 	// SSH returns an *exec.Cmd for an interactive SSH session.
 	// The caller decides whether to Run() or syscall.Exec() into it.
-	SSH(name string) (*exec.Cmd, error)
+	SSH(info *ConnectInfo) (*exec.Cmd, error)
 
 	// Exec returns an *exec.Cmd that runs args inside the sandbox.
 	// The caller decides whether to Run() or syscall.Exec() into it.
-	Exec(name string, args []string) (*exec.Cmd, error)
+	Exec(info *ConnectInfo, args []string) (*exec.Cmd, error)
 
 	// Status displays the current status of a sandbox.
-	Status(ctx context.Context, name string, out io.Writer) error
+	Status(ctx context.Context, info *ConnectInfo, out io.Writer) error
 }
 
 // RunCmd executes cmd, piping its stdout and stderr to out, and returns the
@@ -66,14 +104,12 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			ServerType:        cfg.HetznerServerType,
 			Image:             cfg.HetznerImage,
 			TailscaleLockdown: cfg.TailscaleLockdown,
-			StateDir:          cfg.StateDir,
 		}, nil
 	case "digitalocean":
 		return &DigitalOceanProvider{
 			SSHKey:            cfg.DigitalOceanSSHKey,
 			Size:              cfg.DigitalOceanSize,
 			TailscaleLockdown: cfg.TailscaleLockdown,
-			StateDir:          cfg.StateDir,
 		}, nil
 	case "lightsail":
 		return &LightsailProvider{
@@ -82,7 +118,6 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			Bundle:            cfg.LightsailBundle,
 			KeyPairName:       cfg.LightsailKeyPairName,
 			TailscaleLockdown: cfg.TailscaleLockdown,
-			StateDir:          cfg.StateDir,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner, digitalocean, lightsail)", provider)
@@ -104,7 +139,4 @@ type ProviderConfig struct {
 	LightsailBundle           string
 	LightsailKeyPairName      string
 	TailscaleLockdown         bool
-	// StateDir is the .hal directory path, used by providers that need to
-	// read sandbox state (e.g. Hetzner/DigitalOcean/Lightsail SSH needs the IP from state).
-	StateDir string
 }

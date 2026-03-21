@@ -3,10 +3,8 @@ package sandbox
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -180,14 +178,14 @@ func TestDigitalOceanProvider_Stop_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Stop(context.Background(), "my-droplet", &out)
+	err := dp.Stop(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &out)
 	if err != nil {
 		t.Fatalf("Stop() unexpected error: %v", err)
 	}
 
 	joined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joined, "doctl compute droplet-action shutdown my-droplet") {
-		t.Errorf("stop args should contain 'doctl compute droplet-action shutdown my-droplet', got: %s", joined)
+	if !strings.Contains(joined, "doctl compute droplet-action shutdown 123456789") {
+		t.Errorf("stop args should contain 'doctl compute droplet-action shutdown 123456789', got: %s", joined)
 	}
 }
 
@@ -203,14 +201,14 @@ func TestDigitalOceanProvider_Delete_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Delete(context.Background(), "my-droplet", &out)
+	err := dp.Delete(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &out)
 	if err != nil {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
 
 	joined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joined, "doctl compute droplet delete my-droplet") {
-		t.Errorf("delete args should contain 'doctl compute droplet delete my-droplet', got: %s", joined)
+	if !strings.Contains(joined, "doctl compute droplet delete 123456789") {
+		t.Errorf("delete args should contain 'doctl compute droplet delete 123456789', got: %s", joined)
 	}
 	if !strings.Contains(joined, "--force") {
 		t.Errorf("delete args should contain '--force', got: %s", joined)
@@ -229,17 +227,67 @@ func TestDigitalOceanProvider_Status_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Status(context.Background(), "my-droplet", &out)
+	err := dp.Status(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &out)
 	if err != nil {
 		t.Fatalf("Status() unexpected error: %v", err)
 	}
 
 	joined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joined, "doctl compute droplet get my-droplet") {
-		t.Errorf("status args should contain 'doctl compute droplet get my-droplet', got: %s", joined)
+	if !strings.Contains(joined, "doctl compute droplet get 123456789") {
+		t.Errorf("status args should contain 'doctl compute droplet get 123456789', got: %s", joined)
 	}
 	if !strings.Contains(joined, "--format ID,Name,Status,PublicIPv4") {
 		t.Errorf("status args should contain '--format ID,Name,Status,PublicIPv4', got: %s", joined)
+	}
+}
+
+func TestDigitalOceanProvider_RequiresWorkspaceIDForLifecycleOps(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*DigitalOceanProvider) error
+	}{
+		{
+			name: "stop",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+		},
+		{
+			name: "delete",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+		},
+		{
+			name: "status",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var called bool
+			dp := &DigitalOceanProvider{
+				lookPath: doctlLookPathStub,
+				cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+					called = true
+					return exec.CommandContext(ctx, "true")
+				},
+			}
+
+			err := tt.run(dp)
+			if err == nil {
+				t.Fatalf("expected error for missing workspace ID")
+			}
+			if !strings.Contains(err.Error(), "sandbox workspace ID is required") {
+				t.Fatalf("error = %q, want missing workspace ID message", err.Error())
+			}
+			if called {
+				t.Fatalf("expected no doctl invocation when workspace ID is missing")
+			}
+		})
 	}
 }
 
@@ -250,9 +298,8 @@ func TestDigitalOceanProvider_DoctlNotFound(t *testing.T) {
 	t.Cleanup(func() { os.Setenv("PATH", origPath) })
 
 	dp := &DigitalOceanProvider{
-		SSHKey:   "ab:cd:ef",
-		Size:     "s-2vcpu-4gb",
-		StateDir: t.TempDir(),
+		SSHKey: "ab:cd:ef",
+		Size:   "s-2vcpu-4gb",
 	}
 
 	ctx := context.Background()
@@ -264,54 +311,38 @@ func TestDigitalOceanProvider_DoctlNotFound(t *testing.T) {
 		t.Errorf("Create() error = %v, want 'doctl not found'", createErr)
 	}
 
-	stopErr := dp.Stop(ctx, "test", &out)
+	stopErr := dp.Stop(ctx, &ConnectInfo{Name: "test"}, &out)
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "doctl not found") {
 		t.Errorf("Stop() error = %v, want 'doctl not found'", stopErr)
 	}
 
-	deleteErr := dp.Delete(ctx, "test", &out)
+	deleteErr := dp.Delete(ctx, &ConnectInfo{Name: "test"}, &out)
 	if deleteErr == nil || !strings.Contains(deleteErr.Error(), "doctl not found") {
 		t.Errorf("Delete() error = %v, want 'doctl not found'", deleteErr)
 	}
 
-	statusErr := dp.Status(ctx, "test", &out)
+	statusErr := dp.Status(ctx, &ConnectInfo{Name: "test"}, &out)
 	if statusErr == nil || !strings.Contains(statusErr.Error(), "doctl not found") {
 		t.Errorf("Status() error = %v, want 'doctl not found'", statusErr)
 	}
 
-	_, sshErr := dp.SSH("test")
+	_, sshErr := dp.SSH(&ConnectInfo{Name: "test"})
 	if sshErr == nil || !strings.Contains(sshErr.Error(), "doctl not found") {
 		t.Errorf("SSH() error = %v, want 'doctl not found'", sshErr)
 	}
 
-	_, execErr := dp.Exec("test", []string{"ls"})
+	_, execErr := dp.Exec(&ConnectInfo{Name: "test"}, []string{"ls"})
 	if execErr == nil || !strings.Contains(execErr.Error(), "doctl not found") {
 		t.Errorf("Exec() error = %v, want 'doctl not found'", execErr)
 	}
 }
 
-func TestDigitalOceanProvider_SSH_WithState(t *testing.T) {
-	stateDir := t.TempDir()
-
-	state := &SandboxState{
-		Name:     "my-droplet",
-		Provider: "digitalocean",
-		IP:       "10.20.30.40",
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "sandbox.json"), data, 0644); err != nil {
-		t.Fatalf("write state: %v", err)
-	}
-
+func TestDigitalOceanProvider_SSH_WithConnectInfoIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
-		StateDir: stateDir,
 	}
 
-	cmd, err := dp.SSH("my-droplet")
+	cmd, err := dp.SSH(&ConnectInfo{Name: "my-droplet", IP: "10.20.30.40"})
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
@@ -328,28 +359,12 @@ func TestDigitalOceanProvider_SSH_WithState(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_Exec_WithState(t *testing.T) {
-	stateDir := t.TempDir()
-
-	state := &SandboxState{
-		Name:     "my-droplet",
-		Provider: "digitalocean",
-		IP:       "10.20.30.40",
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "sandbox.json"), data, 0644); err != nil {
-		t.Fatalf("write state: %v", err)
-	}
-
+func TestDigitalOceanProvider_Exec_WithConnectInfoIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
-		StateDir: stateDir,
 	}
 
-	cmd, err := dp.Exec("my-droplet", []string{"ls", "-la"})
+	cmd, err := dp.Exec(&ConnectInfo{Name: "my-droplet", IP: "10.20.30.40"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
@@ -364,47 +379,30 @@ func TestDigitalOceanProvider_Exec_WithState(t *testing.T) {
 }
 
 func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
-	stateDir := t.TempDir()
-
-	state := &SandboxState{
-		Name:     "my-droplet",
-		Provider: "digitalocean",
-		IP:       "",
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "sandbox.json"), data, 0644); err != nil {
-		t.Fatalf("write state: %v", err)
-	}
-
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
-		StateDir: stateDir,
 	}
 
-	_, err = dp.SSH("my-droplet")
+	_, err := dp.SSH(&ConnectInfo{Name: "my-droplet"})
 	if err == nil {
 		t.Fatal("SSH() expected error for missing IP, got nil")
 	}
-	if !strings.Contains(err.Error(), "no IP address") {
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
 		t.Errorf("SSH() error %q should mention missing IP", err.Error())
 	}
 }
 
-func TestDigitalOceanProvider_SSH_MissingState(t *testing.T) {
+func TestDigitalOceanProvider_Exec_MissingIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
-		StateDir: t.TempDir(), // empty dir, no sandbox.json
 	}
 
-	_, err := dp.SSH("my-droplet")
+	_, err := dp.Exec(&ConnectInfo{Name: "my-droplet"}, []string{"ls"})
 	if err == nil {
-		t.Fatal("SSH() expected error for missing state, got nil")
+		t.Fatal("Exec() expected error for missing IP, got nil")
 	}
-	if !strings.Contains(err.Error(), "sandbox state") {
-		t.Errorf("SSH() error %q should mention sandbox state", err.Error())
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
+		t.Errorf("Exec() error %q should mention missing IP", err.Error())
 	}
 }
 
@@ -412,7 +410,6 @@ func TestProviderFromConfig_DigitalOcean(t *testing.T) {
 	cfg := ProviderConfig{
 		DigitalOceanSSHKey: "ab:cd:ef:12:34",
 		DigitalOceanSize:   "s-4vcpu-8gb",
-		StateDir:           "/tmp/test-hal",
 	}
 	p, err := ProviderFromConfig("digitalocean", cfg)
 	if err != nil {
@@ -427,9 +424,6 @@ func TestProviderFromConfig_DigitalOcean(t *testing.T) {
 	}
 	if dp.Size != "s-4vcpu-8gb" {
 		t.Errorf("Size = %q, want %q", dp.Size, "s-4vcpu-8gb")
-	}
-	if dp.StateDir != "/tmp/test-hal" {
-		t.Errorf("StateDir = %q, want %q", dp.StateDir, "/tmp/test-hal")
 	}
 }
 
@@ -509,5 +503,52 @@ func TestDigitalOceanProvider_Create_LockdownFailsWhenTailscaleIPUnavailable(t *
 	}
 	if !strings.Contains(err.Error(), "failed to fetch tailscale IP in lockdown mode") {
 		t.Errorf("error %q should mention lockdown tailscale IP failure", err.Error())
+	}
+}
+
+func TestDigitalOceanProvider_Create_LockdownFailsWhenFirewallLockdownFails(t *testing.T) {
+	var calls [][]string
+	sshCalls := 0
+
+	dp := &DigitalOceanProvider{
+		SSHKey:            "ab:cd:ef:12:34",
+		Size:              "s-2vcpu-4gb",
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			sshCalls++
+			if sshCalls == 1 {
+				return exec.CommandContext(ctx, "echo", "100.64.0.99")
+			}
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	_, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when firewall lockdown fails in lockdown mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to apply firewall lockdown in lockdown mode") {
+		t.Errorf("error %q should mention lockdown firewall failure", err.Error())
+	}
+
+	var sawCleanupDelete bool
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete test-droplet --force" {
+			sawCleanupDelete = true
+			break
+		}
+	}
+	if !sawCleanupDelete {
+		t.Fatalf("expected cleanup delete call after lockdown failure, calls=%v", calls)
 	}
 }

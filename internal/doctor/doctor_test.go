@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/skills"
@@ -638,7 +639,7 @@ func TestRun_NoPRDJSON(t *testing.T) {
 }
 
 func TestRun_CheckCount(t *testing.T) {
-	// A fully healthy repo should have exactly 13 checks
+	// A fully healthy repo should have exactly 14 checks
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	halDir := setupHalDir(t, dir)
@@ -662,6 +663,7 @@ func TestRun_CheckCount(t *testing.T) {
 		"local_skill_links",
 		"codex_global_links",
 		"legacy_debris",
+		"legacy_sandbox_state",
 		"broken_skill_links",
 	}
 
@@ -708,6 +710,129 @@ func TestRun_EarlyReturn_HasCorrectEngine(t *testing.T) {
 
 	if result.Engine != "claude" {
 		t.Fatalf("engine = %q, want %q", result.Engine, "claude")
+	}
+}
+
+func TestRun_LegacySandboxStateDetected(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	// Create legacy sandbox.json
+	os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte(`{"name":"test"}`), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	found := false
+	for _, c := range result.Checks {
+		if c.ID == "legacy_sandbox_state" {
+			found = true
+			if c.Status != StatusWarn {
+				t.Fatalf("legacy_sandbox_state status = %q, want %q", c.Status, StatusWarn)
+			}
+			if c.Severity != SeverityWarn {
+				t.Fatalf("legacy_sandbox_state severity = %q, want %q", c.Severity, SeverityWarn)
+			}
+			if c.Scope != ScopeMigration {
+				t.Fatalf("legacy_sandbox_state scope = %q, want %q", c.Scope, ScopeMigration)
+			}
+			if c.Applicability != ApplicabilityOptional {
+				t.Fatalf("legacy_sandbox_state applicability = %q, want %q", c.Applicability, ApplicabilityOptional)
+			}
+			if c.Remediation == nil {
+				t.Fatal("legacy_sandbox_state should have remediation")
+			}
+			if c.Remediation.Command != "hal sandbox migrate" {
+				t.Fatalf("remediation.command = %q, want %q", c.Remediation.Command, "hal sandbox migrate")
+			}
+			if !c.Remediation.Safe {
+				t.Fatal("remediation.safe should be true")
+			}
+			expectedMsg := "Legacy .hal/sandbox.json found — run 'hal sandbox migrate'"
+			if c.Message != expectedMsg {
+				t.Fatalf("message = %q, want %q", c.Message, expectedMsg)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("legacy_sandbox_state check not found")
+	}
+
+	// Should appear in warnings
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if w == "legacy_sandbox_state" {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("warnings = %v, want legacy_sandbox_state in list", result.Warnings)
+	}
+}
+
+func TestRun_NoLegacySandboxState(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	for _, c := range result.Checks {
+		if c.ID == "legacy_sandbox_state" {
+			if c.Status != StatusPass {
+				t.Fatalf("legacy_sandbox_state status = %q, want %q (no sandbox.json present)", c.Status, StatusPass)
+			}
+			return
+		}
+	}
+	t.Fatal("legacy_sandbox_state check not found")
+}
+
+func TestRun_LegacySandboxStateRemediation(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	// Add legacy sandbox state
+	os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte(`{"name":"test"}`), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	// Primary remediation should be hal sandbox migrate (it's the first warning with a command)
+	if result.PrimaryRemediation == nil {
+		t.Fatal("primaryRemediation should not be nil")
+	}
+	if result.PrimaryRemediation.Command != "hal sandbox migrate" {
+		t.Fatalf("primaryRemediation.command = %q, want %q", result.PrimaryRemediation.Command, "hal sandbox migrate")
+	}
+	if !result.PrimaryRemediation.Safe {
+		t.Fatal("primaryRemediation.safe should be true")
+	}
+}
+
+func TestRun_LegacySandboxStateWarSummary(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	os.WriteFile(filepath.Join(halDir, template.SandboxFile), []byte(`{"name":"test"}`), 0644)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	if result.OverallStatus != StatusWarn {
+		t.Fatalf("overallStatus = %q, want %q", result.OverallStatus, StatusWarn)
+	}
+	if result.Summary == "" {
+		t.Fatal("summary should not be empty")
+	}
+	if !strings.Contains(result.Summary, "hal sandbox migrate") {
+		t.Fatalf("summary = %q, should contain 'hal sandbox migrate'", result.Summary)
 	}
 }
 

@@ -237,6 +237,8 @@ func executeRepairCommand(dir string, command string) error {
 		return nil
 	case "hal links clean":
 		return runLinksCleanFn(dir, io.Discard)
+	case "hal sandbox migrate":
+		return runSandboxMigrate(dir, io.Discard)
 	case "hal links refresh codex":
 		linker := skills.GetLinker("codex")
 		if linker == nil {

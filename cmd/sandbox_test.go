@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -28,8 +29,15 @@ func fakeLookPathMissing(name string) (string, error) {
 	return "", fmt.Errorf("executable file not found in $PATH: %s", name)
 }
 
-// newlines for all env-var prompts: anthropic, openai, github, git name, git email, tailscale key, tailscale hostname
-const emptyEnvInputs = "\n\n\n\n\n\n\n"
+func setGlobalConfigHomeForTest(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "global"))
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+}
+
+// newlines for all env-var prompts: anthropic, openai, github, git name, git email, tailscale key
+const emptyEnvInputs = "\n\n\n\n\n\n"
 
 // daytonaSetupInput builds stdin input for the Daytona setup path:
 // provider choice "1", api key, server url, then env var prompts.
@@ -64,7 +72,7 @@ func TestRunSandboxSetup(t *testing.T) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
 			stdinInput: "1\nmy-api-key\nhttps://custom.server\n" + emptyEnvInputs,
-			wantOutput: "Saved to .hal/config.yaml",
+			wantOutput: "Saved to ",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
 				if err != nil {
@@ -91,7 +99,7 @@ func TestRunSandboxSetup(t *testing.T) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
 			stdinInput: daytonaSetupInput("my-api-key", ""),
-			wantOutput: "Saved to .hal/config.yaml",
+			wantOutput: "Saved to ",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
 				if err != nil {
@@ -116,7 +124,7 @@ func TestRunSandboxSetup(t *testing.T) {
 				}
 			},
 			stdinInput: "1\nnew-key\nhttps://new.server\n" + emptyEnvInputs,
-			wantOutput: "Saved to .hal/config.yaml",
+			wantOutput: "Saved to ",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
 				if err != nil {
@@ -139,7 +147,7 @@ func TestRunSandboxSetup(t *testing.T) {
 				os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644)
 			},
 			stdinInput: "1\nmy-key\nhttps://my.server\n" + emptyEnvInputs,
-			wantOutput: "Saved to .hal/config.yaml",
+			wantOutput: "Saved to ",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadDaytonaConfig(dir)
 				if err != nil {
@@ -162,8 +170,8 @@ func TestRunSandboxSetup(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "1\nmy-key\n\nsk-ant-test\nsk-openai\nghp-token\nj-yw\nj@example.com\ntskey-auth-xxx\nmy-sandbox\n",
-			wantOutput: "7 env vars configured",
+			stdinInput: "1\nmy-key\n\nsk-ant-test\nsk-openai\nghp-token\nj-yw\nj@example.com\ntskey-auth-xxx\n",
+			wantOutput: "6 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -178,20 +186,43 @@ func TestRunSandboxSetup(t *testing.T) {
 				if cfg.Env["GIT_USER_NAME"] != "j-yw" {
 					t.Errorf("GIT_USER_NAME = %q, want %q", cfg.Env["GIT_USER_NAME"], "j-yw")
 				}
-				if cfg.Env["TAILSCALE_HOSTNAME"] != "my-sandbox" {
-					t.Errorf("TAILSCALE_HOSTNAME = %q, want %q", cfg.Env["TAILSCALE_HOSTNAME"], "my-sandbox")
+			},
+		},
+		{
+			name: "hetzner: saves ssh key and server type",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: hetznerSetupInput("my-ssh-key", "cx32", "debian-12"),
+			wantOutput: "Saved to ",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
+				if err != nil {
+					t.Fatalf("LoadSandboxConfig() error: %v", err)
+				}
+				if cfg.Provider != "hetzner" {
+					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
+				}
+				if cfg.Hetzner.SSHKey != "my-ssh-key" {
+					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "my-ssh-key")
+				}
+				if cfg.Hetzner.ServerType != "cx32" {
+					t.Errorf("Hetzner.ServerType = %q, want %q", cfg.Hetzner.ServerType, "cx32")
+				}
+				if cfg.Hetzner.Image != "debian-12" {
+					t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, "debian-12")
 				}
 			},
 		},
-			{
-				name: "hetzner: saves ssh key and server type",
-				setup: func(t *testing.T, dir string) {
-					os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
-				},
-				stdinInput: hetznerSetupInput("my-ssh-key", "cx32", "debian-12"),
-				wantOutput: "Saved to .hal/config.yaml",
-				checkFn: func(t *testing.T, dir string) {
-					cfg, err := compound.LoadSandboxConfig(dir)
+		{
+			name: "hetzner: uses default server type when empty",
+			setup: func(t *testing.T, dir string) {
+				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
+			},
+			stdinInput: hetznerSetupInput("my-ssh-key", "", ""),
+			wantOutput: "Saved to ",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
 					t.Fatalf("LoadSandboxConfig() error: %v", err)
 				}
@@ -201,48 +232,22 @@ func TestRunSandboxSetup(t *testing.T) {
 				if cfg.Hetzner.SSHKey != "my-ssh-key" {
 					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "my-ssh-key")
 				}
-					if cfg.Hetzner.ServerType != "cx32" {
-						t.Errorf("Hetzner.ServerType = %q, want %q", cfg.Hetzner.ServerType, "cx32")
-					}
-					if cfg.Hetzner.Image != "debian-12" {
-						t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, "debian-12")
-					}
-				},
+				if cfg.Hetzner.ServerType != "cx22" {
+					t.Errorf("Hetzner.ServerType = %q, want %q (default)", cfg.Hetzner.ServerType, "cx22")
+				}
+				if cfg.Hetzner.Image != "ubuntu-24.04" {
+					t.Errorf("Hetzner.Image = %q, want %q (default)", cfg.Hetzner.Image, "ubuntu-24.04")
+				}
 			},
-			{
-				name: "hetzner: uses default server type when empty",
-				setup: func(t *testing.T, dir string) {
-					os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
-				},
-				stdinInput: hetznerSetupInput("my-ssh-key", "", ""),
-				wantOutput: "Saved to .hal/config.yaml",
-				checkFn: func(t *testing.T, dir string) {
-					cfg, err := compound.LoadSandboxConfig(dir)
-				if err != nil {
-					t.Fatalf("LoadSandboxConfig() error: %v", err)
-				}
-				if cfg.Provider != "hetzner" {
-					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
-				}
-				if cfg.Hetzner.SSHKey != "my-ssh-key" {
-					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "my-ssh-key")
-				}
-					if cfg.Hetzner.ServerType != "cx22" {
-						t.Errorf("Hetzner.ServerType = %q, want %q (default)", cfg.Hetzner.ServerType, "cx22")
-					}
-					if cfg.Hetzner.Image != "ubuntu-24.04" {
-						t.Errorf("Hetzner.Image = %q, want %q (default)", cfg.Hetzner.Image, "ubuntu-24.04")
-					}
-				},
-			},
+		},
 		{
 			name: "hetzner: saves env vars alongside hetzner config",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			// 3 vars: sk-ant-test, j-yw, + hal-sandbox (tailscale hostname default)
-				stdinInput: "2\nmy-ssh-key\n\n\nsk-ant-test\n\n\nj-yw\n\n\n\n",
-			wantOutput: "3 env vars configured",
+			// 2 vars: sk-ant-test (anthropic), j-yw (git name)
+			stdinInput: "2\nmy-ssh-key\n\n\nsk-ant-test\n\n\nj-yw\n\n\n",
+			wantOutput: "2 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -267,8 +272,8 @@ func TestRunSandboxSetup(t *testing.T) {
 				existingYAML := "engine: pi\nmaxIterations: 5\n"
 				os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644)
 			},
-				stdinInput: hetznerSetupInput("my-key", "", ""),
-				wantOutput: "Saved to .hal/config.yaml",
+			stdinInput: hetznerSetupInput("my-key", "", ""),
+			wantOutput: "Saved to ",
 			checkFn: func(t *testing.T, dir string) {
 				data, err := os.ReadFile(filepath.Join(dir, template.HalDir, "config.yaml"))
 				if err != nil {
@@ -309,38 +314,38 @@ func TestRunSandboxSetup(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				halDir := filepath.Join(dir, template.HalDir)
 				os.MkdirAll(halDir, 0755)
-					sandboxCfg := &compound.SandboxConfig{
-						Provider: "hetzner",
-						Hetzner:  compound.HetznerConfig{SSHKey: "old-key", Image: "debian-12"},
-						Env:      map[string]string{},
-					}
-					compound.SaveSandboxConfig(dir, sandboxCfg)
-				},
-				stdinInput: "\n\n\n\n" + emptyEnvInputs, // enter=hetzner default, keep old ssh key/default type/default image
-				wantOutput: "Provider:   hetzner",
-				checkFn: func(t *testing.T, dir string) {
-					cfg, err := compound.LoadSandboxConfig(dir)
+				sandboxCfg := &compound.SandboxConfig{
+					Provider: "hetzner",
+					Hetzner:  compound.HetznerConfig{SSHKey: "old-key", Image: "debian-12"},
+					Env:      map[string]string{},
+				}
+				compound.SaveSandboxConfig(dir, sandboxCfg)
+			},
+			stdinInput: "\n\n\n\n" + emptyEnvInputs, // enter=hetzner default, keep old ssh key/default type/default image
+			wantOutput: "Provider:   hetzner",
+			checkFn: func(t *testing.T, dir string) {
+				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
 					t.Fatalf("LoadSandboxConfig() error: %v", err)
 				}
 				if cfg.Provider != "hetzner" {
 					t.Errorf("Provider = %q, want %q", cfg.Provider, "hetzner")
 				}
-					if cfg.Hetzner.SSHKey != "old-key" {
-						t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "old-key")
-					}
-					if cfg.Hetzner.Image != "debian-12" {
-						t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, "debian-12")
-					}
-				},
+				if cfg.Hetzner.SSHKey != "old-key" {
+					t.Errorf("Hetzner.SSHKey = %q, want %q", cfg.Hetzner.SSHKey, "old-key")
+				}
+				if cfg.Hetzner.Image != "debian-12" {
+					t.Errorf("Hetzner.Image = %q, want %q", cfg.Hetzner.Image, "debian-12")
+				}
 			},
+		},
 		{
 			name: "digitalocean: saves ssh key and size",
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
 			stdinInput: digitaloceanSetupInput("ab:cd:ef:12:34", "s-4vcpu-8gb"),
-			wantOutput: "Saved to .hal/config.yaml",
+			wantOutput: "Saved to ",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -363,7 +368,7 @@ func TestRunSandboxSetup(t *testing.T) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
 			stdinInput: digitaloceanSetupInput("ab:cd:ef:12:34", ""),
-			wantOutput: "Saved to .hal/config.yaml",
+			wantOutput: "Saved to ",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -393,8 +398,8 @@ func TestRunSandboxSetup(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
-			stdinInput: "3\nab:cd:ef\n\nsk-ant-test\n\n\nj-yw\n\n\n\n",
-			wantOutput: "3 env vars configured",
+			stdinInput: "3\nab:cd:ef\n\nsk-ant-test\n\n\nj-yw\n\n\n",
+			wantOutput: "2 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -450,12 +455,17 @@ func TestRunSandboxSetup(t *testing.T) {
 			wantErr:    "invalid provider choice",
 		},
 		{
-			name: "error when .hal/ does not exist",
+			name: "works when .hal/ does not exist",
 			setup: func(t *testing.T, dir string) {
-				// don't create .hal/
+				// Intentionally no .hal/ directory.
 			},
-			stdinInput: "1\nkey\nhttps://server\n",
-			wantErr:    ".hal/ not found",
+			stdinInput: "1\nkey\nhttps://server\n" + emptyEnvInputs,
+			wantOutput: "Provider:   daytona",
+			checkFn: func(t *testing.T, dir string) {
+				if _, err := os.Stat(sandbox.GlobalConfigPath()); err != nil {
+					t.Fatalf("expected global config to exist: %v", err)
+				}
+			},
 		},
 		{
 			name: "daytona: error when API key is empty",
@@ -470,6 +480,7 @@ func TestRunSandboxSetup(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
+			setGlobalConfigHomeForTest(t, dir)
 
 			if tt.setup != nil {
 				tt.setup(t, dir)
@@ -478,7 +489,7 @@ func TestRunSandboxSetup(t *testing.T) {
 			in := strings.NewReader(tt.stdinInput)
 			var out bytes.Buffer
 
-			err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
+			err := runSandboxSetupWithDeps(dir, in, &out, noopPasswordReader, fakeLookPath)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -507,12 +518,13 @@ func TestRunSandboxSetup(t *testing.T) {
 
 func TestRunSandboxSetup_PromptOutput_Daytona(t *testing.T) {
 	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 
 	in := strings.NewReader(daytonaSetupInput("test-key", ""))
 	var out bytes.Buffer
 
-	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
+	err := runSandboxSetupWithDeps(dir, in, &out, noopPasswordReader, fakeLookPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -540,12 +552,13 @@ func TestRunSandboxSetup_PromptOutput_Daytona(t *testing.T) {
 
 func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 
 	in := strings.NewReader(hetznerSetupInput("my-key", "", ""))
 	var out bytes.Buffer
 
-	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
+	err := runSandboxSetupWithDeps(dir, in, &out, noopPasswordReader, fakeLookPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -576,6 +589,7 @@ func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 
 func TestRunSandboxSetup_NonTerminalFileInputFallsBackToPlaintext(t *testing.T) {
 	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, template.HalDir), 0755); err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)
 	}
@@ -603,7 +617,7 @@ func TestRunSandboxSetup_NonTerminalFileInputFallsBackToPlaintext(t *testing.T) 
 	}
 
 	var out bytes.Buffer
-	if err := runSandboxSetup(dir, inputFile, &out, readPassword, fakeLookPath); err != nil {
+	if err := runSandboxSetupWithDeps(dir, inputFile, &out, readPassword, fakeLookPath); err != nil {
 		t.Fatalf("runSandboxSetup() error: %v", err)
 	}
 
@@ -640,12 +654,13 @@ func TestMaskSecret(t *testing.T) {
 
 func TestRunSandboxSetup_PromptOutput_DigitalOcean(t *testing.T) {
 	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 
 	in := strings.NewReader(digitaloceanSetupInput("ab:cd:ef:12:34", ""))
 	var out bytes.Buffer
 
-	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPath)
+	err := runSandboxSetupWithDeps(dir, in, &out, noopPasswordReader, fakeLookPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -679,12 +694,13 @@ func TestRunSandboxSetup_PromptOutput_DigitalOcean(t *testing.T) {
 
 func TestRunSandboxSetup_DigitalOcean_DoctlNotFound(t *testing.T) {
 	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 
 	in := strings.NewReader("3\n")
 	var out bytes.Buffer
 
-	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPathMissing)
+	err := runSandboxSetupWithDeps(dir, in, &out, noopPasswordReader, fakeLookPathMissing)
 	if err == nil {
 		t.Fatal("expected error when doctl is not on PATH, got nil")
 	}
@@ -705,12 +721,13 @@ func TestRunSandboxSetup_DigitalOcean_DoctlNotFound(t *testing.T) {
 func TestRunSandboxSetup_DoctlCheckOnlyForDigitalOcean(t *testing.T) {
 	// Daytona and Hetzner should work even when doctl is missing
 	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 
 	in := strings.NewReader(daytonaSetupInput("my-key", ""))
 	var out bytes.Buffer
 
-	err := runSandboxSetup(dir, in, &out, noopPasswordReader, fakeLookPathMissing)
+	err := runSandboxSetupWithDeps(dir, in, &out, noopPasswordReader, fakeLookPathMissing)
 	if err != nil {
 		t.Fatalf("Daytona setup should succeed even when doctl is missing: %v", err)
 	}
