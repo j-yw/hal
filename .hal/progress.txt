@@ -510,3 +510,38 @@
   - Single-target path stays inline (no errgroup overhead) for cleaner output; multi-target dispatches to concurrent helper.
   - Per-name error injection via `deleteErrByName` enables partial failure tests where some targets succeed and others fail.
 ---
+
+## [2026-03-21 23:00 CST] - US-031
+- Created `docs/contracts/sandbox-list-v1.md` with full sandbox-list-v1 contract documentation.
+- Includes: contract version (`sandbox-list-v1`), top-level structure, required and optional field descriptions with types, totals fields, three JSON examples (multiple sandboxes, empty registry, single minimal), and notes on cost behavior and forward compatibility.
+- Field descriptions and JSON tags exactly match the `SandboxListResponse`/`SandboxListEntry`/`SandboxListTotals` types in `cmd/sandbox_list.go`.
+- Files changed: `docs/contracts/sandbox-list-v1.md`
+- **Learnings for future iterations:**
+  - Contract docs should follow the existing format in `docs/contracts/` (status-v1.md as template): required/optional field tables, multiple JSON examples, stability note.
+  - Keep example JSON payloads consistent with the types' `omitempty` behavior — show both populated and minimal entries.
+  - Contract version is a string (`"sandbox-list-v1"`) unlike status-v1 which uses an integer (`1`).
+---
+
+## [2026-03-21 23:05 CST] - US-032
+- Added field-lock tests in `cmd/machine_contracts_test.go`: `TestMachineContractFields_SandboxList` with 4 subtests.
+- Required JSON keys test: marshals full `SandboxListResponse` and asserts all top-level, entry-required, entry-optional, and totals field names.
+- Contract version value test: asserts `contractVersion` is exactly `"sandbox-list-v1"`.
+- Optional fields omission test: verifies optional fields are absent when zero/nil values are used.
+- Round-trip test: full marshal→unmarshal→structural equality check across all fields including pointer types (`*time.Time`, `*float64`).
+- Added doc-sync tests in `cmd/contracts_doc_test.go`: `TestContractDocsIncludeSandboxListFields` verifying all required and optional field names appear in `docs/contracts/sandbox-list-v1.md`; added `sandbox-list-v1` to `TestContractDocsExist`.
+- Files changed: `cmd/machine_contracts_test.go`, `cmd/contracts_doc_test.go`
+- **Learnings for future iterations:**
+  - Field-lock tests should assert both required keys (always present) and optional keys (present when populated) separately — using backtick-delimited field names in doc-sync ensures exact matches without false positives from prose.
+  - Round-trip tests should cover pointer types (`*float64`, `*time.Time`) to catch omitempty regressions.
+  - Doc-sync tests read from `../docs/contracts/` since cmd tests run from the `cmd/` directory.
+---
+
+## [2026-03-21 23:10 CST] - US-033
+- Verified `hal sandbox list` and `hal sandbox migrate` both define `Use`, `Short`, `Long`, and `Example` in their Cobra command definitions.
+- Both `Example` fields include full command paths (`hal sandbox list`, `hal sandbox migrate`).
+- Added `TestSandboxListCommand_Metadata` in `cmd/sandbox_list_test.go` asserting all four metadata fields are present and Example contains the full command path. `TestSandboxMigrateCommand_Metadata` already existed.
+- Files changed: `cmd/sandbox_list_test.go`
+- **Learnings for future iterations:**
+  - The `TestArchiveAndSandboxCommandFamiliesHaveCompleteMetadata` test already walks all sandbox subcommands for metadata — per-command tests provide targeted, easier-to-debug assertions.
+  - Metadata tests should assert both field presence and Example command-path containment.
+---
