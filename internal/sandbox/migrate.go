@@ -99,7 +99,10 @@ func migrateState(projectDir string, out io.Writer) error {
 	}
 
 	// Check if already migrated (entry exists in global registry).
-	if _, err := LoadInstance(state.Name); err == nil {
+	if existing, err := LoadInstance(state.Name); err == nil {
+		if !equivalentMigrationState(&state, existing) {
+			return fmt.Errorf("legacy sandbox state %q conflicts with existing global sandbox state", state.Name)
+		}
 		// Already in registry — remove local file and return.
 		if removeErr := os.Remove(localPath); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
 			return fmt.Errorf("remove already-migrated local state: %w", removeErr)
@@ -109,6 +112,8 @@ func migrateState(projectDir string, out io.Writer) error {
 				template.SandboxFile, state.Name)
 		}
 		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("check existing global sandbox state %q: %w", state.Name, err)
 	}
 
 	// Ensure global directory exists before writing.
@@ -141,6 +146,23 @@ func migrateState(projectDir string, out io.Writer) error {
 	}
 
 	return nil
+}
+
+func equivalentMigrationState(local, global *SandboxState) bool {
+	if local == nil || global == nil {
+		return false
+	}
+	return local.Name == global.Name &&
+		local.ID == global.ID &&
+		local.WorkspaceID == global.WorkspaceID &&
+		normalizeMigrationProvider(local.Provider) == normalizeMigrationProvider(global.Provider)
+}
+
+func normalizeMigrationProvider(provider string) string {
+	if strings.TrimSpace(provider) == "" {
+		return "daytona"
+	}
+	return provider
 }
 
 type rawLegacyProjectConfig struct {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -154,6 +155,29 @@ func TestResolveDeleteTargets_ExplicitNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveDeleteTargets_ExplicitNames_PreservesRegistryErrors(t *testing.T) {
+	origLoad := sandboxDeleteLoadInstance
+	t.Cleanup(func() {
+		sandboxDeleteLoadInstance = origLoad
+	})
+
+	cause := errors.New("registry parse failed")
+	sandboxDeleteLoadInstance = func(name string) (*sandbox.SandboxState, error) {
+		return nil, fmt.Errorf("parse sandbox %q: %w", name, cause)
+	}
+
+	_, _, err := resolveDeleteTargets([]string{"api-backend"}, false, "")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), `load sandbox "api-backend" from registry`) {
+		t.Fatalf("error %q missing load context", err.Error())
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("expected wrapped cause %v, got %v", cause, err)
 	}
 }
 

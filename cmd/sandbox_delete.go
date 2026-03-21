@@ -3,8 +3,10 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,6 +55,9 @@ func init() {
 
 // sandboxDeleteListInstances is injectable for testing.
 var sandboxDeleteListInstances = sandbox.ListInstances
+
+// sandboxDeleteLoadInstance is injectable for testing named target resolution.
+var sandboxDeleteLoadInstance = sandbox.LoadInstance
 
 // sandboxDeleteRemoveInstance is injectable for testing registry removal.
 var sandboxDeleteRemoveInstance = sandbox.RemoveInstance
@@ -130,9 +135,12 @@ func resolveDeleteByNames(names []string) ([]*sandbox.SandboxState, string, erro
 		}
 		seen[name] = true
 
-		instance, err := sandbox.LoadInstance(name)
+		instance, err := sandboxDeleteLoadInstance(name)
 		if err != nil {
-			return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
+			}
+			return nil, "", fmt.Errorf("load sandbox %q from registry: %w", name, err)
 		}
 		targets = append(targets, instance)
 	}

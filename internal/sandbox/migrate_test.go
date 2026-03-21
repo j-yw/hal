@@ -580,6 +580,92 @@ func TestMigrate_InvalidLocalJSON(t *testing.T) {
 	}
 }
 
+func TestMigrate_StateFile_ExistingRegistryParseError(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "hal-global")
+	t.Setenv(halConfigHomeEnv, globalHome)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	writeSandboxJSON(t, projectDir, &SandboxState{
+		ID:       "legacy-id",
+		Name:     "legacy-box",
+		Provider: "daytona",
+		Status:   StatusRunning,
+	})
+
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir: %v", err)
+	}
+	brokenRegistryPath := filepath.Join(SandboxesDir(), "legacy-box.json")
+	if err := os.WriteFile(brokenRegistryPath, []byte("not json"), 0o600); err != nil {
+		t.Fatalf("write broken registry entry: %v", err)
+	}
+
+	err := Migrate(projectDir, nil)
+	if err == nil {
+		t.Fatal("expected migration error, got nil")
+	}
+	if !strings.Contains(err.Error(), `check existing global sandbox state "legacy-box"`) {
+		t.Fatalf("error %q missing existing-state context", err.Error())
+	}
+	if !strings.Contains(err.Error(), `parse sandbox "legacy-box"`) {
+		t.Fatalf("error %q missing parse context", err.Error())
+	}
+
+	localPath := filepath.Join(projectDir, template.HalDir, template.SandboxFile)
+	if _, statErr := os.Stat(localPath); statErr != nil {
+		t.Fatalf("local sandbox.json should be preserved, stat err = %v", statErr)
+	}
+}
+
+func TestMigrate_StateFile_ExistingRegistryConflictPreservesLocal(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "hal-global")
+	t.Setenv(halConfigHomeEnv, globalHome)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	writeSandboxJSON(t, projectDir, &SandboxState{
+		ID:          "legacy-id",
+		Name:        "legacy-box",
+		Provider:    "daytona",
+		WorkspaceID: "ws-legacy",
+		Status:      StatusRunning,
+	})
+
+	if err := ForceWriteInstance(&SandboxState{
+		ID:          "global-id",
+		Name:        "legacy-box",
+		Provider:    "daytona",
+		WorkspaceID: "ws-global",
+		Status:      StatusRunning,
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	err := Migrate(projectDir, nil)
+	if err == nil {
+		t.Fatal("expected migration conflict error, got nil")
+	}
+	if !strings.Contains(err.Error(), `conflicts with existing global sandbox state`) {
+		t.Fatalf("error %q missing conflict context", err.Error())
+	}
+
+	localPath := filepath.Join(projectDir, template.HalDir, template.SandboxFile)
+	if _, statErr := os.Stat(localPath); statErr != nil {
+		t.Fatalf("local sandbox.json should be preserved, stat err = %v", statErr)
+	}
+
+	existing, loadErr := LoadInstance("legacy-box")
+	if loadErr != nil {
+		t.Fatalf("LoadInstance after conflict: %v", loadErr)
+	}
+	if existing.ID != "global-id" {
+		t.Fatalf("existing global entry should be preserved, ID=%q", existing.ID)
+	}
+}
+
 func writeSandboxJSON(t *testing.T, projectDir string, state *SandboxState) {
 	t.Helper()
 	halDir := filepath.Join(projectDir, template.HalDir)

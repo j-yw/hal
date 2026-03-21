@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,6 +86,36 @@ func TestEnsureGlobalDir(t *testing.T) {
 
 	if err := EnsureGlobalDir(); err != nil {
 		t.Fatalf("EnsureGlobalDir() should be idempotent, got error: %v", err)
+	}
+}
+
+func TestGlobalDir_FallbacksWhenHomeUnavailable(t *testing.T) {
+	origHomeFn := userHomeDirFn
+	origConfigFn := userConfigDirFn
+	origTempFn := tempDirFn
+	t.Cleanup(func() {
+		userHomeDirFn = origHomeFn
+		userConfigDirFn = origConfigFn
+		tempDirFn = origTempFn
+	})
+
+	t.Setenv(halConfigHomeEnv, "")
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", "")
+
+	userHomeDirFn = func() (string, error) {
+		return "", errors.New("no home")
+	}
+	userConfigDirFn = func() (string, error) {
+		return "", errors.New("no config dir")
+	}
+	tempDirFn = func() string {
+		return "relative-temp"
+	}
+
+	got := GlobalDir()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("GlobalDir() should be absolute fallback, got %q", got)
 	}
 }
 

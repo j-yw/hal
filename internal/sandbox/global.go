@@ -12,6 +12,12 @@ const (
 	sandboxesDirName = "sandboxes"
 )
 
+var (
+	userHomeDirFn   = os.UserHomeDir
+	userConfigDirFn = os.UserConfigDir
+	tempDirFn       = os.TempDir
+)
+
 // GlobalDir resolves where global sandbox state should live.
 //
 // Resolution order:
@@ -25,7 +31,16 @@ func GlobalDir() string {
 	if dir := os.Getenv(xdgConfigHomeEnv); dir != "" {
 		return filepath.Join(dir, "hal")
 	}
-	return filepath.Join(homeDir(), ".config", "hal")
+	if home := homeDir(); home != "" {
+		return filepath.Join(home, ".config", "hal")
+	}
+	if configDir, err := userConfigDirFn(); err == nil && configDir != "" {
+		return filepath.Join(configDir, "hal")
+	}
+	if tmp := tempDirFn(); tmp != "" && filepath.IsAbs(tmp) {
+		return filepath.Join(tmp, "hal")
+	}
+	return filepath.Join(string(os.PathSeparator), "tmp", "hal")
 }
 
 // SandboxesDir returns the global sandbox instances directory.
@@ -48,7 +63,7 @@ func homeDir() string {
 	if h := os.Getenv("HOME"); h != "" {
 		return h
 	}
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		return ""
 	}
