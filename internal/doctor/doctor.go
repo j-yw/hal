@@ -209,7 +209,14 @@ func Run(opts Options) DoctorResult {
 		warnings = append(warnings, "legacy_debris")
 	}
 
-	// 9. Broken symlinks in engine skill directories
+	// 9. Legacy sandbox state (.hal/sandbox.json)
+	legacySandboxCheck := checkLegacySandboxState(halDir)
+	checks = append(checks, legacySandboxCheck)
+	if legacySandboxCheck.Status == StatusWarn {
+		warnings = append(warnings, "legacy_sandbox_state")
+	}
+
+	// 10. Broken symlinks in engine skill directories
 	brokenCheck := checkBrokenSkillLinks(dir)
 	checks = append(checks, brokenCheck)
 	if brokenCheck.Status == StatusWarn {
@@ -247,7 +254,7 @@ func Run(opts Options) DoctorResult {
 			} else {
 				c.Applicability = ApplicabilityNotApplicable
 			}
-		case "legacy_debris", "broken_skill_links":
+		case "legacy_debris", "legacy_sandbox_state", "broken_skill_links":
 			c.Scope = ScopeMigration
 			c.Applicability = ApplicabilityOptional
 		}
@@ -278,6 +285,8 @@ func Run(opts Options) DoctorResult {
 				warnParts = append(warnParts, "refresh Codex global links")
 			case "legacy_debris":
 				warnParts = append(warnParts, "run hal cleanup")
+			case "legacy_sandbox_state":
+				warnParts = append(warnParts, "run hal sandbox migrate")
 			case "broken_skill_links":
 				warnParts = append(warnParts, "run hal links clean")
 			case "local_skill_links":
@@ -778,6 +787,27 @@ func checkLocalSkillLinks(dir string) Check {
 		RemediationID: RemediationRunHalInit,
 		Message:       "Stale engine-local skill links: " + strings.Join(stale, ", ") + ". Run hal links refresh.",
 		Remediation:   &Remediation{Command: "hal links refresh", Safe: true},
+	}
+}
+
+func checkLegacySandboxState(halDir string) Check {
+	sandboxPath := filepath.Join(halDir, template.SandboxFile)
+	if _, err := os.Stat(sandboxPath); os.IsNotExist(err) {
+		return Check{
+			ID:            "legacy_sandbox_state",
+			Status:        StatusPass,
+			Severity:      SeverityInfo,
+			RemediationID: RemediationNone,
+			Message:       "No legacy sandbox state found.",
+		}
+	}
+	return Check{
+		ID:            "legacy_sandbox_state",
+		Status:        StatusWarn,
+		Severity:      SeverityWarn,
+		RemediationID: RemediationNone,
+		Message:       "Legacy .hal/sandbox.json found — run 'hal sandbox migrate'",
+		Remediation:   &Remediation{Command: "hal sandbox migrate", Safe: true},
 	}
 }
 
