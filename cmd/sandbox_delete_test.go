@@ -3,19 +3,14 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
-	"github.com/jywlabs/hal/internal/template"
 )
 
 // mockDeleteProvider implements sandbox.Provider for delete tests.
@@ -50,108 +45,65 @@ func (m *mockDeleteProvider) Status(ctx context.Context, info *sandbox.ConnectIn
 	return nil
 }
 
-func setupDeleteTestWithState(t *testing.T, dir string, state *sandbox.SandboxState) {
+func setupDeleteGlobalRegistry(t *testing.T, instances []*sandbox.SandboxState) {
 	t.Helper()
-	halDir := filepath.Join(dir, template.HalDir)
-	os.MkdirAll(halDir, 0755)
-	sandboxCfg := &compound.SandboxConfig{
-		Provider: state.Provider,
-		Env:      map[string]string{},
-	}
-	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", dir)
+	if err := sandbox.EnsureGlobalDir(); err != nil {
 		t.Fatal(err)
 	}
-	if err := sandbox.SaveState(halDir, state); err != nil {
-		t.Fatal(err)
+	for _, inst := range instances {
+		if err := sandbox.ForceWriteInstance(inst); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
-func TestRunSandboxDelete(t *testing.T) {
+func TestResolveDeleteTargets_ExplicitNames(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+	})
+
 	tests := []struct {
-		name       string
-		setup      func(t *testing.T, dir string)
-		deleteErr  error
-		wantErr    string
-		wantOutput string
-		checkFn    func(t *testing.T, dir string, mock *mockDeleteProvider)
+		name      string
+		args      []string
+		wantNames []string
+		wantErr   string
 	}{
 		{
-			name: "deletes sandbox and removes state",
-			setup: func(t *testing.T, dir string) {
-				setupDeleteTestWithState(t, dir, &sandbox.SandboxState{
-					Name:      "hal-feature-auth",
-					Provider:  "daytona",
-					CreatedAt: time.Now(),
-				})
-			},
-			wantOutput: `Sandbox "hal-feature-auth" deleted.`,
-			checkFn: func(t *testing.T, dir string, mock *mockDeleteProvider) {
-				if len(mock.deleteCalls) != 1 {
-					t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
-				}
-				if mock.deleteCalls[0] != "hal-feature-auth" {
-					t.Errorf("Delete name = %q, want %q", mock.deleteCalls[0], "hal-feature-auth")
-				}
-				// State should be removed
-				halDir := filepath.Join(dir, template.HalDir)
-				_, err := sandbox.LoadState(halDir)
-				if err == nil {
-					t.Error("expected sandbox.json to be removed, but LoadState succeeded")
-				}
-			},
+			name:      "single explicit name",
+			args:      []string{"api-backend"},
+			wantNames: []string{"api-backend"},
 		},
 		{
-			name: "error when no sandbox state exists",
-			setup: func(t *testing.T, dir string) {
-				halDir := filepath.Join(dir, template.HalDir)
-				os.MkdirAll(halDir, 0755)
-			},
-			wantErr: "no active sandbox",
+			name:      "multiple explicit names",
+			args:      []string{"frontend", "api-backend"},
+			wantNames: []string{"api-backend", "frontend"}, // sorted
 		},
 		{
-			name: "error when provider delete fails",
-			setup: func(t *testing.T, dir string) {
-				setupDeleteTestWithState(t, dir, &sandbox.SandboxState{
-					Name:      "test-sandbox",
-					Provider:  "daytona",
-					CreatedAt: time.Now(),
-				})
-			},
-			deleteErr: fmt.Errorf("API error: sandbox not found"),
-			wantErr:   "sandbox delete failed",
-			checkFn: func(t *testing.T, dir string, mock *mockDeleteProvider) {
-				// State should be preserved on failure
-				halDir := filepath.Join(dir, template.HalDir)
-				_, err := sandbox.LoadState(halDir)
-				if err != nil {
-					t.Error("expected sandbox.json to be preserved on failure")
-				}
-			},
+			name:      "duplicate names are de-duplicated",
+			args:      []string{"frontend", "frontend", "api-backend"},
+			wantNames: []string{"api-backend", "frontend"},
 		},
 		{
-			name: "prints deleting message",
-			setup: func(t *testing.T, dir string) {
-				setupDeleteTestWithState(t, dir, &sandbox.SandboxState{
-					Name:      "my-box",
-					Provider:  "daytona",
-					CreatedAt: time.Now(),
-				})
-			},
-			wantOutput: `Deleting sandbox "my-box"`,
+			name:      "stopped sandbox can be targeted by name",
+			args:      []string{"worker-01"},
+			wantNames: []string{"worker-01"},
+		},
+		{
+			name:    "unknown name returns error",
+			args:    []string{"does-not-exist"},
+			wantErr: "not found in registry",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if tt.setup != nil {
-				tt.setup(t, dir)
-			}
-
-			mock := &mockDeleteProvider{deleteErr: tt.deleteErr}
-			var out bytes.Buffer
-
-			err := runSandboxDeleteWithDeps(dir, &out, "", mock)
+			targets, _, err := resolveDeleteTargets(tt.args, false, "")
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -160,47 +112,266 @@ func TestRunSandboxDelete(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
 				}
-				if tt.checkFn != nil {
-					tt.checkFn(t, dir, mock)
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			gotNames := make([]string, len(targets))
+			for i, tgt := range targets {
+				gotNames[i] = tgt.Name
+			}
+			if len(gotNames) != len(tt.wantNames) {
+				t.Fatalf("got %d targets %v, want %d %v", len(gotNames), gotNames, len(tt.wantNames), tt.wantNames)
+			}
+			for i, want := range tt.wantNames {
+				if gotNames[i] != want {
+					t.Errorf("target[%d] = %q, want %q", i, gotNames[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveDeleteTargets_AllFlag(t *testing.T) {
+	tests := []struct {
+		name      string
+		instances []*sandbox.SandboxState
+		wantNames []string
+		wantErr   string
+	}{
+		{
+			name: "returns all sandboxes including stopped",
+			instances: []*sandbox.SandboxState{
+				{Name: "backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "stopped-one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+			},
+			wantNames: []string{"backend", "frontend", "stopped-one"},
+		},
+		{
+			name:      "empty registry returns error",
+			instances: nil,
+			wantErr:   "no sandboxes found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupDeleteGlobalRegistry(t, tt.instances)
+
+			targets, _, err := resolveDeleteTargets(nil, true, "")
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if tt.wantOutput != "" && !strings.Contains(out.String(), tt.wantOutput) {
-				t.Errorf("output %q does not contain %q", out.String(), tt.wantOutput)
+
+			gotNames := make([]string, len(targets))
+			for i, tgt := range targets {
+				gotNames[i] = tgt.Name
 			}
-			if tt.checkFn != nil {
-				tt.checkFn(t, dir, mock)
+			if len(gotNames) != len(tt.wantNames) {
+				t.Fatalf("got %d targets %v, want %d %v", len(gotNames), gotNames, len(tt.wantNames), tt.wantNames)
+			}
+			for i, want := range tt.wantNames {
+				if gotNames[i] != want {
+					t.Errorf("target[%d] = %q, want %q", i, gotNames[i], want)
+				}
 			}
 		})
 	}
 }
 
-func TestSandboxDeleteCommandFlags(t *testing.T) {
-	nameFlag := sandboxDeleteCmd.Flags().Lookup("name")
-	if nameFlag == nil {
-		t.Fatal("--name flag should exist")
+func TestResolveDeleteTargets_PatternFlag(t *testing.T) {
+	tests := []struct {
+		name      string
+		instances []*sandbox.SandboxState
+		pattern   string
+		wantNames []string
+		wantErr   string
+	}{
+		{
+			name: "matches sandboxes by pattern",
+			instances: []*sandbox.SandboxState{
+				{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "worker-02", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+				{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+			},
+			pattern:   "worker-*",
+			wantNames: []string{"worker-01", "worker-02"}, // includes stopped
+		},
+		{
+			name: "no matches returns error",
+			instances: []*sandbox.SandboxState{
+				{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+			},
+			pattern: "worker-*",
+			wantErr: "no sandboxes matching pattern",
+		},
+		{
+			name:      "invalid pattern returns error",
+			instances: []*sandbox.SandboxState{},
+			pattern:   "[invalid",
+			wantErr:   "invalid pattern",
+		},
 	}
-	if nameFlag.Shorthand != "n" {
-		t.Fatalf("--name shorthand = %q, want %q", nameFlag.Shorthand, "n")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupDeleteGlobalRegistry(t, tt.instances)
+
+			targets, _, err := resolveDeleteTargets(nil, false, tt.pattern)
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			gotNames := make([]string, len(targets))
+			for i, tgt := range targets {
+				gotNames[i] = tgt.Name
+			}
+			if len(gotNames) != len(tt.wantNames) {
+				t.Fatalf("got %d targets %v, want %d %v", len(gotNames), gotNames, len(tt.wantNames), tt.wantNames)
+			}
+			for i, want := range tt.wantNames {
+				if gotNames[i] != want {
+					t.Errorf("target[%d] = %q, want %q", i, gotNames[i], want)
+				}
+			}
+		})
 	}
 }
 
-func TestRunSandboxDelete_RemovesStateWhenDeletingByWorkspaceID(t *testing.T) {
-	dir := t.TempDir()
-	setupDeleteTestWithState(t, dir, &sandbox.SandboxState{
-		Name:        "hal-feature-auth",
-		Provider:    "daytona",
-		WorkspaceID: "ws-12345",
-		CreatedAt:   time.Now(),
+func TestResolveDeleteTargets_AutoSelect(t *testing.T) {
+	tests := []struct {
+		name      string
+		instances []*sandbox.SandboxState
+		wantNames []string
+		wantHint  string
+		wantErr   string
+	}{
+		{
+			name: "single sandbox auto-selects with hint",
+			instances: []*sandbox.SandboxState{
+				{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+			},
+			wantNames: []string{"my-sandbox"},
+			wantHint:  `Deleting only sandbox "my-sandbox"...`,
+		},
+		{
+			name:      "zero sandboxes returns error",
+			instances: nil,
+			wantErr:   "no sandboxes found",
+		},
+		{
+			name: "multiple sandboxes returns error with choices",
+			instances: []*sandbox.SandboxState{
+				{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+				{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+			},
+			wantErr: "multiple sandboxes found: api-backend, frontend, worker-01",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupDeleteGlobalRegistry(t, tt.instances)
+
+			targets, hint, err := resolveDeleteTargets(nil, false, "")
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			gotNames := make([]string, len(targets))
+			for i, tgt := range targets {
+				gotNames[i] = tgt.Name
+			}
+			if len(gotNames) != len(tt.wantNames) {
+				t.Fatalf("got %d targets %v, want %d %v", len(gotNames), gotNames, len(tt.wantNames), tt.wantNames)
+			}
+			for i, want := range tt.wantNames {
+				if gotNames[i] != want {
+					t.Errorf("target[%d] = %q, want %q", i, gotNames[i], want)
+				}
+			}
+
+			if tt.wantHint != "" && hint != tt.wantHint {
+				t.Errorf("hint = %q, want %q", hint, tt.wantHint)
+			}
+		})
+	}
+}
+
+func TestConfirmDeleteAll(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect bool
+	}{
+		{name: "y confirms", input: "y\n", expect: true},
+		{name: "yes confirms", input: "yes\n", expect: true},
+		{name: "Y confirms", input: "Y\n", expect: true},
+		{name: "YES confirms", input: "YES\n", expect: true},
+		{name: "n declines", input: "n\n", expect: false},
+		{name: "empty declines", input: "\n", expect: false},
+		{name: "random text declines", input: "maybe\n", expect: false},
+		{name: "EOF declines", input: "", expect: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := strings.NewReader(tt.input)
+			var out bytes.Buffer
+			got := confirmDeleteAll(in, &out)
+			if got != tt.expect {
+				t.Errorf("confirmDeleteAll(%q) = %v, want %v", tt.input, got, tt.expect)
+			}
+			if !strings.Contains(out.String(), "Delete all sandboxes? [y/N]") {
+				t.Errorf("output %q missing prompt text", out.String())
+			}
+		})
+	}
+}
+
+func TestRunSandboxDelete_ExplicitName(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
 	var out bytes.Buffer
 
-	err := runSandboxDeleteWithDeps(dir, &out, "ws-12345", mock)
+	err := runSandboxDelete([]string{"my-sandbox"}, false, false, "", nil, &out, mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,54 +379,334 @@ func TestRunSandboxDelete_RemovesStateWhenDeletingByWorkspaceID(t *testing.T) {
 	if len(mock.deleteCalls) != 1 {
 		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
 	}
-	if mock.deleteCalls[0] != "hal-feature-auth" {
-		t.Fatalf("Delete called with %q, want %q", mock.deleteCalls[0], "hal-feature-auth")
+	if mock.deleteCalls[0] != "my-sandbox" {
+		t.Errorf("Delete name = %q, want %q", mock.deleteCalls[0], "my-sandbox")
 	}
-
-	halDir := filepath.Join(dir, template.HalDir)
-	if _, err := sandbox.LoadState(halDir); err == nil {
-		t.Fatal("expected sandbox state to be removed after workspace-id delete")
+	if !strings.Contains(out.String(), `Sandbox "my-sandbox" deleted.`) {
+		t.Errorf("output %q missing deleted message", out.String())
 	}
 }
 
-func TestResolveDeleteProvider_UsesStateProviderForWorkspaceID(t *testing.T) {
-	state := &sandbox.SandboxState{
-		Name:        "hal-feature-auth",
-		WorkspaceID: "ws-12345",
-		Provider:    "daytona",
-	}
+func TestRunSandboxDelete_MultipleNames(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
 
-	expectedProvider := &mockDeleteProvider{}
-	fallbackErr := errors.New("configured provider mismatch")
-	stateResolverCalls := 0
-	nameResolverCalls := 0
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
 
-	provider, err := resolveDeleteProvider(
-		".",
-		"ws-12345",
-		state,
-		func(_ string, gotState *sandbox.SandboxState) (sandbox.Provider, error) {
-			stateResolverCalls++
-			if gotState != state {
-				t.Fatalf("state resolver got unexpected state pointer")
-			}
-			return expectedProvider, nil
-		},
-		func(_ string, _ string) (sandbox.Provider, error) {
-			nameResolverCalls++
-			return nil, fallbackErr
-		},
-	)
+	err := runSandboxDelete([]string{"frontend", "api-backend"}, false, false, "", nil, &out, mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if provider != expectedProvider {
-		t.Fatal("expected provider from state resolver")
+
+	// Targets are sorted: api-backend first, then frontend
+	if len(mock.deleteCalls) != 2 {
+		t.Fatalf("expected 2 Delete calls, got %d", len(mock.deleteCalls))
 	}
-	if stateResolverCalls != 1 {
-		t.Fatalf("state resolver calls = %d, want 1", stateResolverCalls)
+	if mock.deleteCalls[0] != "api-backend" {
+		t.Errorf("Delete[0] = %q, want %q", mock.deleteCalls[0], "api-backend")
 	}
-	if nameResolverCalls != 0 {
-		t.Fatalf("name resolver calls = %d, want 0", nameResolverCalls)
+	if mock.deleteCalls[1] != "frontend" {
+		t.Errorf("Delete[1] = %q, want %q", mock.deleteCalls[1], "frontend")
+	}
+}
+
+func TestRunSandboxDelete_AutoSelectSingleSandbox(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "only-one", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, false, false, "", nil, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if mock.deleteCalls[0] != "only-one" {
+		t.Errorf("Delete name = %q, want %q", mock.deleteCalls[0], "only-one")
+	}
+	if !strings.Contains(out.String(), `Deleting only sandbox "only-one"`) {
+		t.Errorf("output %q missing auto-select hint", out.String())
+	}
+}
+
+func TestRunSandboxDelete_NoSandboxesError(t *testing.T) {
+	setupDeleteGlobalRegistry(t, nil)
+
+	var out bytes.Buffer
+	err := runSandboxDelete(nil, false, false, "", nil, &out, &mockDeleteProvider{})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no sandboxes found") {
+		t.Errorf("error %q does not contain 'no sandboxes found'", err.Error())
+	}
+}
+
+func TestRunSandboxDelete_MultipleSandboxesError(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+	})
+
+	var out bytes.Buffer
+	err := runSandboxDelete(nil, false, false, "", nil, &out, &mockDeleteProvider{})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "api-backend") {
+		t.Errorf("error %q missing 'api-backend'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "frontend") {
+		t.Errorf("error %q missing 'frontend'", err.Error())
+	}
+}
+
+func TestRunSandboxDelete_AllFlagWithYes(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "stopped-one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, true, true, "", nil, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All 3 sandboxes should be deleted (including stopped)
+	if len(mock.deleteCalls) != 3 {
+		t.Fatalf("expected 3 Delete calls, got %d", len(mock.deleteCalls))
+	}
+	// Sorted: api-backend, frontend, stopped-one
+	if mock.deleteCalls[0] != "api-backend" {
+		t.Errorf("Delete[0] = %q, want %q", mock.deleteCalls[0], "api-backend")
+	}
+	if mock.deleteCalls[1] != "frontend" {
+		t.Errorf("Delete[1] = %q, want %q", mock.deleteCalls[1], "frontend")
+	}
+	if mock.deleteCalls[2] != "stopped-one" {
+		t.Errorf("Delete[2] = %q, want %q", mock.deleteCalls[2], "stopped-one")
+	}
+}
+
+func TestRunSandboxDelete_AllFlagPromptConfirms(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	in := strings.NewReader("y\n")
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, true, false, "", in, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if !strings.Contains(out.String(), "Delete all sandboxes? [y/N]") {
+		t.Errorf("output %q missing confirmation prompt", out.String())
+	}
+}
+
+func TestRunSandboxDelete_AllFlagPromptDeclines(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	in := strings.NewReader("n\n")
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, true, false, "", in, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT have called Delete
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected 0 Delete calls, got %d", len(mock.deleteCalls))
+	}
+	if !strings.Contains(out.String(), "Aborted.") {
+		t.Errorf("output %q missing abort message", out.String())
+	}
+}
+
+func TestRunSandboxDelete_AllFlagPromptEOF(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	in := strings.NewReader("") // EOF
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, true, false, "", in, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// EOF should be treated as decline
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected 0 Delete calls, got %d", len(mock.deleteCalls))
+	}
+	if !strings.Contains(out.String(), "Aborted.") {
+		t.Errorf("output %q missing abort message", out.String())
+	}
+}
+
+func TestRunSandboxDelete_PatternFlag(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker-02", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, false, false, "worker-*", nil, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both worker sandboxes should be deleted (including stopped)
+	if len(mock.deleteCalls) != 2 {
+		t.Fatalf("expected 2 Delete calls, got %d", len(mock.deleteCalls))
+	}
+	if mock.deleteCalls[0] != "worker-01" {
+		t.Errorf("Delete[0] = %q, want %q", mock.deleteCalls[0], "worker-01")
+	}
+	if mock.deleteCalls[1] != "worker-02" {
+		t.Errorf("Delete[1] = %q, want %q", mock.deleteCalls[1], "worker-02")
+	}
+}
+
+func TestRunSandboxDelete_ProviderDeleteFails(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: sandbox not found")}
+	var out bytes.Buffer
+
+	err := runSandboxDelete([]string{"my-sandbox"}, false, false, "", nil, &out, mock)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox delete failed") {
+		t.Errorf("error %q does not contain 'sandbox delete failed'", err.Error())
+	}
+}
+
+func TestRunSandboxDelete_PrintsDeletingMessage(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-box", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxDelete([]string{"my-box"}, false, false, "", nil, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(out.String(), `Deleting sandbox "my-box"`) {
+		t.Errorf("output %q missing deleting message", out.String())
+	}
+}
+
+func TestResolveDeleteTargets_DedupAndSort(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "charlie", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	// Provide names out of order with duplicates
+	targets, _, err := resolveDeleteTargets([]string{"charlie", "alpha", "bravo", "charlie", "alpha"}, false, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(targets) != 3 {
+		t.Fatalf("got %d targets, want 3", len(targets))
+	}
+	wantOrder := []string{"alpha", "bravo", "charlie"}
+	for i, want := range wantOrder {
+		if targets[i].Name != want {
+			t.Errorf("target[%d] = %q, want %q", i, targets[i].Name, want)
+		}
+	}
+}
+
+func TestSandboxDeleteCommand_Flags(t *testing.T) {
+	cmd := sandboxDeleteCmd
+
+	if f := cmd.Flags().Lookup("all"); f == nil {
+		t.Error("missing --all flag")
+	}
+	if f := cmd.Flags().Lookup("yes"); f == nil {
+		t.Error("missing --yes flag")
+	} else if f.Shorthand != "y" {
+		t.Errorf("--yes shorthand = %q, want %q", f.Shorthand, "y")
+	}
+	if f := cmd.Flags().Lookup("pattern"); f == nil {
+		t.Error("missing --pattern flag")
+	}
+	if cmd.Use != "delete [NAME ...]" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "delete [NAME ...]")
+	}
+}
+
+func TestRunSandboxDelete_AllFlagNoSandboxes(t *testing.T) {
+	setupDeleteGlobalRegistry(t, nil)
+
+	var out bytes.Buffer
+	err := runSandboxDelete(nil, true, true, "", nil, &out, &mockDeleteProvider{})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no sandboxes found") {
+		t.Errorf("error %q does not contain 'no sandboxes found'", err.Error())
+	}
+}
+
+func TestRunSandboxDelete_AutoSelectStoppedSandbox(t *testing.T) {
+	// Delete auto-select works on all sandboxes, not just running
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "stopped-only", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+	})
+
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, false, false, "", nil, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if mock.deleteCalls[0] != "stopped-only" {
+		t.Errorf("Delete name = %q, want %q", mock.deleteCalls[0], "stopped-only")
 	}
 }

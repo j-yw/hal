@@ -1,109 +1,240 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
-	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
 var sandboxDeleteCmd = &cobra.Command{
-	Use:   "delete",
-	Short: "Delete a sandbox permanently",
-	Args:  noArgsValidation(),
-	Long: `Permanently delete a sandbox.
+	Use:   "delete [NAME ...]",
+	Short: "Delete one or more sandboxes permanently",
+	Long: `Permanently delete one or more sandboxes.
 
-By default, reads the sandbox name and provider from .hal/sandbox.json.
-Use --name to delete by explicit sandbox name when local state is missing.
-After successful deletion, sandbox.json is removed only when it matches the deleted sandbox.`,
-	Example: `  hal sandbox delete
-  hal sandbox delete --name hal-feature-auth`,
+Targets can be specified as positional arguments, with --all for every sandbox,
+or with --pattern to match a glob pattern.
+
+When no arguments or flags are provided, the command auto-resolves:
+  - If exactly one sandbox exists, it is selected automatically.
+  - If zero sandboxes exist, an error is returned.
+  - If multiple exist, an error lists the available choices.
+
+When --all is used without --yes, a confirmation prompt is shown.
+
+Resolved targets are de-duplicated and sorted by name before execution.`,
+	Example: `  hal sandbox delete my-sandbox
+  hal sandbox delete api-backend frontend
+  hal sandbox delete --all --yes
+  hal sandbox delete --pattern "worker-*"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name, err := cmd.Flags().GetString("name")
-		if err != nil {
-			return fmt.Errorf("reading --name flag: %w", err)
-		}
-		return runSandboxDeleteWithDeps(".", os.Stdout, name, nil)
+		allFlag, _ := cmd.Flags().GetBool("all")
+		yesFlag, _ := cmd.Flags().GetBool("yes")
+		pattern, _ := cmd.Flags().GetString("pattern")
+		return runSandboxDelete(args, allFlag, yesFlag, pattern, os.Stdin, os.Stdout, nil)
 	},
 }
 
 func init() {
 	sandboxCmd.AddCommand(sandboxDeleteCmd)
-	sandboxDeleteCmd.Flags().StringP("name", "n", "", "Delete sandbox by explicit name (without reading .hal/sandbox.json)")
+	sandboxDeleteCmd.Flags().Bool("all", false, "Delete all sandboxes")
+	sandboxDeleteCmd.Flags().BoolP("yes", "y", false, "Skip confirmation prompt for --all")
+	sandboxDeleteCmd.Flags().String("pattern", "", "Delete sandboxes matching a glob pattern")
+}
+
+// sandboxDeleteListInstances is injectable for testing.
+var sandboxDeleteListInstances = sandbox.ListInstances
+
+// runSandboxDelete is the public entry point for the delete command.
+func runSandboxDelete(args []string, allFlag, yesFlag bool, pattern string, in io.Reader, out io.Writer, provider sandbox.Provider) error {
+	return runSandboxDeleteWithDeps(args, allFlag, yesFlag, pattern, in, out, provider)
 }
 
 // runSandboxDeleteWithDeps contains the testable logic for the sandbox delete command.
-// If provider is nil, it is resolved from matching state (or sandbox config when deleting by explicit name).
-func runSandboxDeleteWithDeps(dir string, out io.Writer, targetName string, provider sandbox.Provider) error {
-	halDir := filepath.Join(dir, template.HalDir)
+// It resolves targets from the global registry, confirms when needed, then deletes each one.
+func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern string, in io.Reader, out io.Writer, provider sandbox.Provider) error {
+	targets, hint, err := resolveDeleteTargets(args, allFlag, pattern)
+	if err != nil {
+		return err
+	}
 
-	deleteName := strings.TrimSpace(targetName)
-	var state *sandbox.SandboxState
-	var err error
+	if hint != "" {
+		fmt.Fprintln(out, hint)
+	}
 
-	if deleteName == "" {
-		state, err = sandbox.LoadState(halDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("no active sandbox — run `hal sandbox start` first")
-			}
-			return fmt.Errorf("loading sandbox state: %w", err)
-		}
-		deleteName = state.Name
-	} else {
-		state, err = sandbox.LoadState(halDir)
-		if err != nil && !os.IsNotExist(err) {
-			// Best-effort state load: delete-by-name should still work without local state.
-			state = nil
+	// Confirmation prompt for --all without --yes
+	if allFlag && !yesFlag {
+		if !confirmDeleteAll(in, out) {
+			fmt.Fprintln(out, "Aborted.")
+			return nil
 		}
 	}
 
-	if provider == nil {
-		provider, err = resolveDeleteProvider(dir, deleteName, state, resolveProviderFromState, resolveProviderFromName)
-		if err != nil {
+	// Delete each target (execution details in US-038; single-target path here)
+	for _, target := range targets {
+		if err := deleteOneTarget(target, out, provider); err != nil {
 			return err
 		}
 	}
 
-	fmt.Fprintf(out, "Deleting sandbox %q...\n", deleteName)
-
-	info := &sandbox.ConnectInfo{Name: deleteName, WorkspaceID: deleteName}
-	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
-		if stateInfo := sandbox.ConnectInfoFromState(state); stateInfo != nil {
-			info = stateInfo
-		}
-	}
-
-	ctx := context.Background()
-	if err := provider.Delete(ctx, info, out); err != nil {
-		return fmt.Errorf("sandbox delete failed: %w", err)
-	}
-
-	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
-		if err := sandbox.RemoveState(halDir); err != nil {
-			return fmt.Errorf("removing sandbox state: %w", err)
-		}
-	}
-
-	fmt.Fprintf(out, "Sandbox %q deleted.\n", deleteName)
 	return nil
 }
 
-func resolveDeleteProvider(
-	dir string,
-	deleteName string,
-	state *sandbox.SandboxState,
-	stateResolver func(string, *sandbox.SandboxState) (sandbox.Provider, error),
-	nameResolver func(string, string) (sandbox.Provider, error),
-) (sandbox.Provider, error) {
-	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
-		return stateResolver(dir, state)
+// resolveDeleteTargets resolves which sandboxes to delete based on positional args,
+// --all, and --pattern flags. Returns de-duplicated, name-sorted targets.
+//
+// Resolution rules:
+//   - Explicit names: load each from registry
+//   - --all: all sandboxes
+//   - --pattern: sandboxes matching the glob
+//   - No args/flags: auto-resolve (1 → select, 0 → error, >1 → error)
+func resolveDeleteTargets(args []string, allFlag bool, pattern string) ([]*sandbox.SandboxState, string, error) {
+	// Explicit names take precedence
+	if len(args) > 0 {
+		return resolveDeleteByNames(args)
 	}
-	return nameResolver(dir, deleteName)
+
+	// --all: all sandboxes
+	if allFlag {
+		return resolveDeleteAll()
+	}
+
+	// --pattern: matching sandboxes
+	if pattern != "" {
+		return resolveDeleteByPattern(pattern)
+	}
+
+	// No args, no flags: auto-resolve from all sandboxes
+	return resolveDeleteAutoSelect()
+}
+
+// resolveDeleteByNames loads each named sandbox from the registry.
+func resolveDeleteByNames(names []string) ([]*sandbox.SandboxState, string, error) {
+	seen := make(map[string]bool, len(names))
+	targets := make([]*sandbox.SandboxState, 0, len(names))
+
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+
+		instance, err := sandbox.LoadInstance(name)
+		if err != nil {
+			return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
+		}
+		targets = append(targets, instance)
+	}
+
+	sortTargetsByName(targets)
+	return targets, "", nil
+}
+
+// resolveDeleteAll returns all sandboxes from the registry.
+func resolveDeleteAll() ([]*sandbox.SandboxState, string, error) {
+	instances, err := sandboxDeleteListInstances()
+	if err != nil {
+		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
+	}
+
+	if len(instances) == 0 {
+		return nil, "", fmt.Errorf("no sandboxes found")
+	}
+
+	sortTargetsByName(instances)
+	return instances, "", nil
+}
+
+// resolveDeleteByPattern returns sandboxes whose names match the glob pattern.
+func resolveDeleteByPattern(pattern string) ([]*sandbox.SandboxState, string, error) {
+	// Validate pattern syntax before listing
+	if _, err := filepath.Match(pattern, ""); err != nil {
+		return nil, "", fmt.Errorf("invalid pattern %q: %w", pattern, err)
+	}
+
+	instances, err := sandboxDeleteListInstances()
+	if err != nil {
+		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
+	}
+
+	targets := make([]*sandbox.SandboxState, 0)
+	for _, inst := range instances {
+		matched, _ := filepath.Match(pattern, inst.Name)
+		if matched {
+			targets = append(targets, inst)
+		}
+	}
+
+	if len(targets) == 0 {
+		return nil, "", fmt.Errorf("no sandboxes matching pattern %q", pattern)
+	}
+
+	sortTargetsByName(targets)
+	return targets, "", nil
+}
+
+// resolveDeleteAutoSelect auto-resolves when no args or flags are provided.
+// Rules: 1 → select + hint, 0 → error, >1 → error with choices.
+func resolveDeleteAutoSelect() ([]*sandbox.SandboxState, string, error) {
+	instances, err := sandboxDeleteListInstances()
+	if err != nil {
+		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
+	}
+
+	switch len(instances) {
+	case 0:
+		return nil, "", fmt.Errorf("no sandboxes found")
+	case 1:
+		hint := fmt.Sprintf("Deleting only sandbox %q...", instances[0].Name)
+		return instances, hint, nil
+	default:
+		names := make([]string, 0, len(instances))
+		for _, inst := range instances {
+			names = append(names, inst.Name)
+		}
+		sort.Strings(names)
+		return nil, "", fmt.Errorf("multiple sandboxes found: %s", joinNames(names))
+	}
+}
+
+// confirmDeleteAll prompts the user for confirmation when --all is used without --yes.
+// Returns true if user confirms.
+func confirmDeleteAll(in io.Reader, out io.Writer) bool {
+	fmt.Fprint(out, "Delete all sandboxes? [y/N] ")
+	scanner := bufio.NewScanner(in)
+	if !scanner.Scan() {
+		return false
+	}
+	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	return answer == "y" || answer == "yes"
+}
+
+// deleteOneTarget deletes a single sandbox. If provider is nil, resolves from global config.
+func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
+	p := provider
+	if p == nil {
+		var err error
+		p, err = resolveProviderFromGlobalConfig(target.Provider)
+		if err != nil {
+			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
+		}
+	}
+
+	fmt.Fprintf(out, "Deleting sandbox %q...\n", target.Name)
+
+	ctx := context.Background()
+	info := sandbox.ConnectInfoFromState(target)
+	if err := p.Delete(ctx, info, out); err != nil {
+		return fmt.Errorf("sandbox delete failed for %q: %w", target.Name, err)
+	}
+
+	fmt.Fprintf(out, "Sandbox %q deleted.\n", target.Name)
+	return nil
 }
