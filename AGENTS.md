@@ -178,3 +178,9 @@
 - The `hal repair` command auto-applies safe remediations from doctor results. To add a new remediation, add `Remediation: &Remediation{Command: "...", Safe: true}` to the check and register the command in `executeRepairCommand`.
 - The `hal links` command group (status/refresh/clean) manages engine skill links separately from `hal init`. Use `hal links refresh codex` for targeted Codex link updates.
 - Doctor checks for link health should suggest `hal links refresh` or `hal links clean` instead of `hal init` — more targeted remediation.
+
+## Patterns from hal/multi-sandbox-management (2026-03-21)
+
+- Global sandbox path resolution in `internal/sandbox/global.go` must follow this exact precedence: `$HAL_CONFIG_HOME` → `$XDG_CONFIG_HOME/hal` → `$HOME/.config/hal`.
+- Tests for global sandbox paths should isolate with `t.Setenv("HAL_CONFIG_HOME", tmpDir)`; for fallback behavior, also set `HOME` explicitly so results are deterministic.
+- `EnsureGlobalDir()` should create both the global root and `sandboxes/` with `os.MkdirAll(..., 0700)` and remain safe to call repeatedly.
