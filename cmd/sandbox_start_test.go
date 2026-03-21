@@ -90,7 +90,7 @@ func TestRunSandboxStart_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "", 0, nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
+	err := runSandboxStartWithDeps(dir, "", 0, "", "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestRunSandboxStart_ExplicitName(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRunSandboxStart_EnvVarsFromConfig(t *testing.T) {
 	// CLI env overrides config
 	cliEnv := map[string]string{"API_KEY": "sk-from-cli"}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, cliEnv, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", cliEnv, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRunSandboxStart_LockdownRequiresAuthKey(t *testing.T) {
 	}
 
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -271,7 +271,7 @@ func TestRunSandboxStart_ProviderAndIPSaved(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-server", 0, nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-server", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestRunSandboxStart_CreateFailure(t *testing.T) {
 		createErr: fmt.Errorf("quota exceeded"),
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -334,7 +334,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 
 	mock := &mockProvider{}
 
-	err := runSandboxStartWithDeps(dir, "", 0, nil, autoShutdownOpts{}, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
+	err := runSandboxStartWithDeps(dir, "", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -346,7 +346,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 func TestRunSandboxStart_HalDirMissing(t *testing.T) {
 	dir := t.TempDir()
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -394,7 +394,7 @@ func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -481,7 +481,7 @@ func TestRunSandboxStart_AutoMigrateFailureWarnsAndContinues(t *testing.T) {
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestRunSandboxStart_GlobalConfigSizeDefaults(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -768,7 +768,7 @@ func TestRunSandboxStart_AutoShutdownDefaultsInjected(t *testing.T) {
 
 	// Default: no flags set, global config defaults (autoShutdown=true, idleHours=48)
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -808,7 +808,7 @@ func TestRunSandboxStart_NoAutoShutdownFlag(t *testing.T) {
 	noAuto := true
 	opts := autoShutdownOpts{noAutoShutdown: &noAuto}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -865,7 +865,7 @@ func TestRunSandboxStart_AutoShutdownFlagOverridesConfig(t *testing.T) {
 	autoOn := true
 	opts := autoShutdownOpts{autoShutdown: &autoOn}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -914,7 +914,7 @@ func TestRunSandboxStart_IdleHoursFlagOverridesConfig(t *testing.T) {
 	hours := 12
 	opts := autoShutdownOpts{idleHours: &hours}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -949,7 +949,7 @@ func TestRunSandboxStart_AutoShutdownEnvPersistedInState(t *testing.T) {
 	autoOn := true
 	opts := autoShutdownOpts{autoShutdown: &autoOn, idleHours: &hours}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1062,7 +1062,7 @@ func TestRunSandboxStart_BatchCreatesAll(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "worker", 3, nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "worker", 3, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1116,7 +1116,7 @@ func TestRunSandboxStart_BatchPreflightBlocksCreate(t *testing.T) {
 		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
 	}
 
-	err := runSandboxStartWithDeps(dir, "worker", 3, nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "worker", 3, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1140,7 +1140,7 @@ func TestRunSandboxStart_CountOneIsSingle(t *testing.T) {
 
 	var out bytes.Buffer
 	// count=1 should behave as single sandbox creation
-	err := runSandboxStartWithDeps(dir, "sb", 1, nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 1, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1178,7 +1178,7 @@ func TestRunSandboxStart_BatchNameFromBranch(t *testing.T) {
 
 	var out bytes.Buffer
 	// No explicit name; branch provides the base
-	err := runSandboxStartWithDeps(dir, "", 2, nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/api-service", nil))
+	err := runSandboxStartWithDeps(dir, "", 2, "", "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/api-service", nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1191,5 +1191,377 @@ func TestRunSandboxStart_BatchNameFromBranch(t *testing.T) {
 	}
 	if mock.createCalls[1].Name != "hal-api-service-02" {
 		t.Errorf("createCalls[1].Name = %q, want %q", mock.createCalls[1].Name, "hal-api-service-02")
+	}
+}
+
+// --- Flag wiring tests (US-020) ---
+
+func TestSandboxStartCommandAllFlags(t *testing.T) {
+	flags := []string{"name", "count", "size", "repo", "env", "auto-shutdown", "no-auto-shutdown", "idle-hours"}
+	for _, name := range flags {
+		if sandboxStartCmd.Flags().Lookup(name) == nil {
+			t.Errorf("--%s flag should exist", name)
+		}
+	}
+	// Verify short flags
+	if sandboxStartCmd.Flags().ShorthandLookup("n") == nil {
+		t.Error("-n shorthand should exist for --name")
+	}
+	if sandboxStartCmd.Flags().ShorthandLookup("s") == nil {
+		t.Error("-s shorthand should exist for --size")
+	}
+	if sandboxStartCmd.Flags().ShorthandLookup("r") == nil {
+		t.Error("-r shorthand should exist for --repo")
+	}
+	if sandboxStartCmd.Flags().ShorthandLookup("e") == nil {
+		t.Error("-e shorthand should exist for --env")
+	}
+	// Verify usage text is non-empty
+	for _, name := range flags {
+		f := sandboxStartCmd.Flags().Lookup(name)
+		if f.Usage == "" {
+			t.Errorf("--%s flag should have a usage description", name)
+		}
+	}
+}
+
+func TestRunSandboxStart_SizeOverridesHetzner(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "hetzner",
+		Env:      map[string]string{},
+		Hetzner:  compound.HetznerConfig{ServerType: "cx22"},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	originalResolveProvider := resolveSandboxProvider
+	t.Cleanup(func() { resolveSandboxProvider = originalResolveProvider })
+
+	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
+	var gotCfg sandbox.ProviderConfig
+	resolveSandboxProvider = func(provider string, cfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+		gotCfg = cfg
+		return mock, nil
+	}
+
+	// --size cx42 should override config's cx22
+	if err := runSandboxStartWithDeps(dir, "sb", 0, "cx42", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotCfg.HetznerServerType != "cx42" {
+		t.Errorf("HetznerServerType = %q, want %q (from --size override)", gotCfg.HetznerServerType, "cx42")
+	}
+
+	// Verify size is persisted in state
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.Size != "cx42" {
+		t.Errorf("instance.Size = %q, want %q", instance.Size, "cx42")
+	}
+}
+
+func TestRunSandboxStart_SizeOverridesDigitalOcean(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider:     "digitalocean",
+		Env:          map[string]string{},
+		DigitalOcean: compound.DigitalOceanConfig{Size: "s-1vcpu-1gb"},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	originalResolveProvider := resolveSandboxProvider
+	t.Cleanup(func() { resolveSandboxProvider = originalResolveProvider })
+
+	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
+	var gotCfg sandbox.ProviderConfig
+	resolveSandboxProvider = func(provider string, cfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+		gotCfg = cfg
+		return mock, nil
+	}
+
+	if err := runSandboxStartWithDeps(dir, "sb", 0, "s-2vcpu-4gb", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotCfg.DigitalOceanSize != "s-2vcpu-4gb" {
+		t.Errorf("DigitalOceanSize = %q, want %q (from --size override)", gotCfg.DigitalOceanSize, "s-2vcpu-4gb")
+	}
+}
+
+func TestRunSandboxStart_SizeOverridesLightsail(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider:  "lightsail",
+		Env:       map[string]string{},
+		Lightsail: compound.LightsailConfig{Bundle: "small_3_0"},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	originalResolveProvider := resolveSandboxProvider
+	t.Cleanup(func() { resolveSandboxProvider = originalResolveProvider })
+
+	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
+	var gotCfg sandbox.ProviderConfig
+	resolveSandboxProvider = func(provider string, cfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+		gotCfg = cfg
+		return mock, nil
+	}
+
+	if err := runSandboxStartWithDeps(dir, "sb", 0, "medium_3_0", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotCfg.LightsailBundle != "medium_3_0" {
+		t.Errorf("LightsailBundle = %q, want %q (from --size override)", gotCfg.LightsailBundle, "medium_3_0")
+	}
+}
+
+func TestRunSandboxStart_RepoStoredInState(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "github.com/org/repo", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.Repo != "github.com/org/repo" {
+		t.Errorf("instance.Repo = %q, want %q", instance.Repo, "github.com/org/repo")
+	}
+}
+
+func TestRunSandboxStart_NoRepoByDefault(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.Repo != "" {
+		t.Errorf("instance.Repo = %q, want empty string (no --repo)", instance.Repo)
+	}
+}
+
+func TestRunSandboxStart_NoSizeByDefault(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.Size != "" {
+		t.Errorf("instance.Size = %q, want empty string (no --size)", instance.Size)
+	}
+}
+
+func TestRunSandboxStart_SizeAndRepoTogether(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "sb", 0, "cx42", "github.com/org/app", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.Size != "cx42" {
+		t.Errorf("instance.Size = %q, want %q", instance.Size, "cx42")
+	}
+	if instance.Repo != "github.com/org/app" {
+		t.Errorf("instance.Repo = %q, want %q", instance.Repo, "github.com/org/app")
+	}
+}
+
+func TestRunSandboxStart_SizePersistedInBatchState(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "worker", 2, "cx42", "github.com/org/app", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify both batch instances have size and repo persisted
+	for _, name := range []string{"worker-01", "worker-02"} {
+		instance, err := sandbox.LoadInstance(name)
+		if err != nil {
+			t.Fatalf("failed to load instance %q: %v", name, err)
+		}
+		if instance.Size != "cx42" {
+			t.Errorf("%s: Size = %q, want %q", name, instance.Size, "cx42")
+		}
+		if instance.Repo != "github.com/org/app" {
+			t.Errorf("%s: Repo = %q, want %q", name, instance.Repo, "github.com/org/app")
+		}
+	}
+}
+
+func TestRunSandboxStart_ViaRunSandboxStart(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	deps := &sandboxStartDeps{
+		provider:  mock,
+		getBranch: nil,
+	}
+
+	var out bytes.Buffer
+	err := runSandboxStart(dir, "sb", 0, "cx42", "github.com/org/repo", nil, autoShutdownOpts{}, &out, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.Size != "cx42" {
+		t.Errorf("instance.Size = %q, want %q", instance.Size, "cx42")
+	}
+	if instance.Repo != "github.com/org/repo" {
+		t.Errorf("instance.Repo = %q, want %q", instance.Repo, "github.com/org/repo")
+	}
+}
+
+func TestRunSandboxStart_ViaRunSandboxStartNilDeps(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	// With nil deps, runSandboxStart passes nil provider and nil getBranch
+	// This should fail trying to resolve provider since no daytona config
+	err := runSandboxStart(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil)
+	// Expected: resolving provider errors because daytona config is incomplete
+	if err == nil {
+		t.Fatal("expected error with nil deps (no provider configured), got nil")
+	}
+}
+
+func TestApplySizeOverride(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		size     string
+		check    func(t *testing.T, cfg *compound.SandboxConfig)
+	}{
+		{
+			name:     "hetzner sets ServerType",
+			provider: "hetzner",
+			size:     "cx42",
+			check: func(t *testing.T, cfg *compound.SandboxConfig) {
+				if cfg.Hetzner.ServerType != "cx42" {
+					t.Errorf("Hetzner.ServerType = %q, want %q", cfg.Hetzner.ServerType, "cx42")
+				}
+			},
+		},
+		{
+			name:     "digitalocean sets Size",
+			provider: "digitalocean",
+			size:     "s-2vcpu-4gb",
+			check: func(t *testing.T, cfg *compound.SandboxConfig) {
+				if cfg.DigitalOcean.Size != "s-2vcpu-4gb" {
+					t.Errorf("DigitalOcean.Size = %q, want %q", cfg.DigitalOcean.Size, "s-2vcpu-4gb")
+				}
+			},
+		},
+		{
+			name:     "lightsail sets Bundle",
+			provider: "lightsail",
+			size:     "medium_3_0",
+			check: func(t *testing.T, cfg *compound.SandboxConfig) {
+				if cfg.Lightsail.Bundle != "medium_3_0" {
+					t.Errorf("Lightsail.Bundle = %q, want %q", cfg.Lightsail.Bundle, "medium_3_0")
+				}
+			},
+		},
+		{
+			name:     "daytona is no-op",
+			provider: "daytona",
+			size:     "large",
+			check: func(t *testing.T, cfg *compound.SandboxConfig) {
+				// Daytona does not have a size field; verify no panic and no side effects
+				if cfg.Hetzner.ServerType != "" || cfg.DigitalOcean.Size != "" || cfg.Lightsail.Bundle != "" {
+					t.Error("unexpected side effect on non-active provider fields")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &compound.SandboxConfig{Provider: tt.provider}
+			applySizeOverride(cfg, tt.size)
+			tt.check(t, cfg)
+		})
 	}
 }

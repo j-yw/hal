@@ -27,10 +27,19 @@ Use --name to override the default name.
 Environment variables from .hal/config.yaml sandbox.env section are passed to the provider.
 Additional -e/--env flags overlay config values.
 
+Use --size to override the provider-specific instance size from config:
+  - Hetzner: server type (e.g., cx22, cx42)
+  - DigitalOcean: droplet size (e.g., s-2vcpu-4gb)
+  - Lightsail: bundle ID (e.g., small_3_0, medium_3_0)
+
+Use --repo to tag the sandbox with a repository label (informational only).
+
 Auto-shutdown injects HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars into the sandbox
 so that cloud-init can configure idle timers. Defaults come from global sandbox config.`,
 	Example: `  hal sandbox start
   hal sandbox start --name hal-dev
+  hal sandbox start -n dev --size cx42
+  hal sandbox start -n dev --repo github.com/org/repo
   hal sandbox start -n dev -e TAILSCALE_AUTHKEY=tskey-auth-xxx -e ANTHROPIC_API_KEY=sk-ant-xxx
   hal sandbox start --no-auto-shutdown
   hal sandbox start --idle-hours 24
@@ -38,6 +47,8 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		count, _ := cmd.Flags().GetInt("count")
+		size, _ := cmd.Flags().GetString("size")
+		repo, _ := cmd.Flags().GetString("repo")
 		envSlice, _ := cmd.Flags().GetStringArray("env")
 		envVars := parseEnvFlags(envSlice)
 
@@ -56,7 +67,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 			opts.idleHours = &v
 		}
 
-		return runSandboxStartWithDeps(".", name, count, envVars, opts, os.Stdout, nil, nil)
+		return runSandboxStart(".", name, count, size, repo, envVars, opts, os.Stdout, nil)
 	},
 }
 
@@ -65,8 +76,10 @@ var resolveSandboxProvider = sandbox.ProviderFromConfig
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
 	sandboxStartCmd.Flags().Int("count", 0, "create N sandboxes with names {name}-01..{name}-N")
-	sandboxStartCmd.Flags().StringArrayP("env", "e", nil, "environment variables (format: KEY=VALUE, can be repeated)")
-	sandboxStartCmd.Flags().Bool("auto-shutdown", true, "enable auto-shutdown idle timer (default from global config)")
+	sandboxStartCmd.Flags().StringP("size", "s", "", "override provider instance size (e.g., cx42, s-2vcpu-4gb)")
+	sandboxStartCmd.Flags().StringP("repo", "r", "", "repository label for the sandbox (informational)")
+	sandboxStartCmd.Flags().StringArrayP("env", "e", nil, "extra environment variables (KEY=VALUE, repeatable)")
+	sandboxStartCmd.Flags().Bool("auto-shutdown", true, "enable auto-shutdown idle timer")
 	sandboxStartCmd.Flags().Bool("no-auto-shutdown", false, "disable auto-shutdown idle timer")
 	sandboxStartCmd.Flags().Int("idle-hours", 0, "hours before idle shutdown (default from global config)")
 	sandboxCmd.AddCommand(sandboxStartCmd)
@@ -99,8 +112,8 @@ type autoShutdownOpts struct {
 	idleHours       *int  // --idle-hours flag
 }
 
-// startDeps holds injectable dependencies for runSandboxStartWithDeps.
-type startDeps struct {
+// sandboxStartDeps holds injectable dependencies for runSandboxStartWithDeps.
+type sandboxStartDeps struct {
 	provider  sandbox.Provider
 	getBranch branchResolver
 }
@@ -149,14 +162,38 @@ func injectAutoShutdownEnv(env map[string]string, autoShutdown bool, idleHours i
 	}
 }
 
+// runSandboxStart is the public entry point for sandbox start logic.
+// It creates a sandboxStartDeps from the provided deps and delegates
+// to runSandboxStartWithDeps.
+func runSandboxStart(
+	dir, name string,
+	count int,
+	size, repo string,
+	envVars map[string]string,
+	shutdownOpts autoShutdownOpts,
+	out io.Writer,
+	deps *sandboxStartDeps,
+) error {
+	var provider sandbox.Provider
+	var getBranch branchResolver
+	if deps != nil {
+		provider = deps.provider
+		getBranch = deps.getBranch
+	}
+	return runSandboxStartWithDeps(dir, name, count, size, repo, envVars, shutdownOpts, out, provider, getBranch)
+}
+
 // runSandboxStartWithDeps contains the testable logic for the sandbox start command.
 // dir is the project root directory (containing .hal/).
 // count specifies the number of sandboxes to create (0 or 1 = single sandbox).
+// size overrides the provider-specific instance size (e.g., cx42 for Hetzner).
+// repo stores an informational repository label in SandboxState.
 // If provider is nil, it is resolved from config via ProviderFromConfig.
 // If getBranch is nil, compound.CurrentBranch is used.
 func runSandboxStartWithDeps(
 	dir, name string,
 	count int,
+	size, repo string,
 	envVars map[string]string,
 	shutdownOpts autoShutdownOpts,
 	out io.Writer,
@@ -186,6 +223,12 @@ func runSandboxStartWithDeps(
 	}
 	if globalCfg != nil {
 		mergeGlobalSizeDefaults(sandboxCfg, globalCfg)
+	}
+
+	// Apply --size override to the active provider's size field
+	size = strings.TrimSpace(size)
+	if size != "" {
+		applySizeOverride(sandboxCfg, size)
 	}
 
 	// Resolve provider if not injected
@@ -256,11 +299,11 @@ func runSandboxStartWithDeps(
 		if err != nil {
 			return err
 		}
-		return runBatchCreate(targets, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, halDir, out)
+		return runBatchCreate(targets, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
 	}
 
 	// Single sandbox creation
-	return runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, halDir, out)
+	return runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
 }
 
 // batchPreflight generates batch names and validates that none already exist
@@ -295,13 +338,14 @@ func runBatchCreate(
 	mergedEnv map[string]string,
 	autoShutdown bool,
 	idleHours int,
+	size, repo string,
 	halDir string,
 	out io.Writer,
 ) error {
 	fmt.Fprintf(out, "Creating %d sandboxes (%s)...\n", len(targets), sandboxCfg.Provider)
 
 	for _, name := range targets {
-		if err := runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, halDir, out); err != nil {
+		if err := runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out); err != nil {
 			return err
 		}
 	}
@@ -316,6 +360,7 @@ func runSingleCreate(
 	mergedEnv map[string]string,
 	autoShutdown bool,
 	idleHours int,
+	size, repo string,
 	halDir string,
 	out io.Writer,
 ) error {
@@ -351,6 +396,8 @@ func runSingleCreate(
 		CreatedAt:         time.Now(),
 		AutoShutdown:      autoShutdown,
 		IdleHours:         idleHours,
+		Size:              size,
+		Repo:              repo,
 	}
 
 	// Persist to global registry
@@ -411,5 +458,18 @@ func mergeGlobalSizeDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbo
 	}
 	if localCfg.Lightsail.KeyPairName == "" {
 		localCfg.Lightsail.KeyPairName = globalCfg.Lightsail.KeyPairName
+	}
+}
+
+// applySizeOverride sets the provider-specific size field from the --size flag.
+// Hetzner uses ServerType, DigitalOcean uses Size, Lightsail uses Bundle.
+func applySizeOverride(cfg *compound.SandboxConfig, size string) {
+	switch cfg.Provider {
+	case "hetzner":
+		cfg.Hetzner.ServerType = size
+	case "digitalocean":
+		cfg.DigitalOcean.Size = size
+	case "lightsail":
+		cfg.Lightsail.Bundle = size
 	}
 }

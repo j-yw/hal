@@ -25,6 +25,8 @@
 - Flag overrides for auto-shutdown use pointer-based `autoShutdownOpts` to distinguish "flag not set" from explicit values; `--no-auto-shutdown` always takes precedence over `--auto-shutdown`.
 - Batch creation uses `batchPreflight(base, count)` to generate names via `BatchNames` and validate against the global registry before any `provider.Create` call. Preflight failures block all creation.
 - `runSingleCreate` is the extracted helper for single sandbox creation; `runBatchCreate` iterates over preflight-validated targets and delegates to `runSingleCreate` for each.
+- `--size` flag uses `applySizeOverride(cfg, size)` to set the provider-specific size field (Hetzner→ServerType, DigitalOcean→Size, Lightsail→Bundle) before provider construction; Daytona is a no-op.
+- `runSandboxStart` is the public entry point that unwraps `sandboxStartDeps` and delegates to `runSandboxStartWithDeps`; tests can use either path.
 
 ## [2026-03-21 13:09 CST] - US-001
 - Implemented global sandbox directory helpers in `internal/sandbox/global.go`: `GlobalDir()`, `SandboxesDir()`, and `EnsureGlobalDir()`.
@@ -240,4 +242,17 @@
   - When adding a new parameter to `runSandboxStartWithDeps`, update all test call sites to maintain compilation; sed-based bulk replacement is efficient for consistent parameter patterns.
   - Batch preflight should report all collisions in one error (not fail-fast on the first) to give users a complete picture of conflicts.
   - The `runBatchCreate` helper currently does sequential creation; US-036 will upgrade it to concurrent execution with errgroup.
+---
+
+## [2026-03-21 16:45 CST] - US-020
+- Added `--size` (`-s`) flag to override provider-specific instance size (Hetzner→ServerType, DigitalOcean→Size, Lightsail→Bundle) via `applySizeOverride()`.
+- Added `--repo` (`-r`) flag to store an informational repository label in `SandboxState.Repo`.
+- Renamed `startDeps` → `sandboxStartDeps` and added `runSandboxStart` wrapper that unwraps deps and delegates to `runSandboxStartWithDeps`.
+- Updated all Cobra flag descriptions to be concise and ensured all flags have short descriptions.
+- Added tests: `TestSandboxStartCommandAllFlags`, `TestRunSandboxStart_SizeOverridesHetzner/DigitalOcean/Lightsail`, `TestRunSandboxStart_RepoStoredInState`, `TestRunSandboxStart_NoRepoByDefault`, `TestRunSandboxStart_NoSizeByDefault`, `TestRunSandboxStart_SizeAndRepoTogether`, `TestRunSandboxStart_SizePersistedInBatchState`, `TestRunSandboxStart_ViaRunSandboxStart`, `TestRunSandboxStart_ViaRunSandboxStartNilDeps`, `TestApplySizeOverride`.
+- Files changed: `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - The `--size` flag is provider-agnostic at the CLI level; `applySizeOverride` maps it to the correct provider-specific config field based on `cfg.Provider`.
+  - When adding new parameters to `runSandboxStartWithDeps`, use sed to update all test call sites efficiently to maintain compilation.
+  - `runSandboxStart` is the preferred entry point for Cobra handlers; `runSandboxStartWithDeps` stays available for tests that need direct parameter injection.
 ---
