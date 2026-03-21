@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 var sandboxStartCmd = &cobra.Command{
@@ -337,8 +339,17 @@ func batchPreflight(base string, count int) ([]string, error) {
 	return targets, nil
 }
 
+// batchResult tracks the outcome of a single batch creation target.
+type batchResult struct {
+	Name    string
+	Success bool
+	Err     error
+}
+
 // runBatchCreate executes batch sandbox creation after preflight passes.
-// Concurrent execution and reporting is implemented in US-036.
+// provider.Create runs concurrently for all targets using errgroup.
+// Only successful creations are persisted to the global registry.
+// Returns an error when any target fails (exit code 1).
 func runBatchCreate(
 	targets []string,
 	provider sandbox.Provider,
@@ -352,11 +363,97 @@ func runBatchCreate(
 ) error {
 	fmt.Fprintf(out, "Creating %d sandboxes (%s)...\n", len(targets), sandboxCfg.Provider)
 
+	var (
+		mu      sync.Mutex
+		results = make([]batchResult, 0, len(targets))
+	)
+
+	g := new(errgroup.Group)
+
 	for _, name := range targets {
-		if err := runSingleCreate(name, false, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out); err != nil {
-			return err
+		name := name // capture for goroutine
+		g.Go(func() error {
+			err := createBatchTarget(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo)
+
+			mu.Lock()
+			if err != nil {
+				fmt.Fprintf(out, "Failed %s: %v\n", name, err)
+				results = append(results, batchResult{Name: name, Success: false, Err: err})
+			} else {
+				fmt.Fprintf(out, "Created %s\n", name)
+				results = append(results, batchResult{Name: name, Success: true})
+			}
+			mu.Unlock()
+
+			return nil // don't propagate to errgroup; we track errors ourselves
+		})
+	}
+
+	g.Wait()
+
+	// Count successes and failures
+	var success, failed int
+	for _, r := range results {
+		if r.Success {
+			success++
+		} else {
+			failed++
 		}
 	}
+
+	total := len(targets)
+	fmt.Fprintf(out, "%d/%d created (%d failed). Failed sandboxes were not registered.\n", success, total, failed)
+
+	if failed > 0 {
+		return fmt.Errorf("%d/%d sandbox creations failed", failed, total)
+	}
+
+	return nil
+}
+
+// createBatchTarget creates a single sandbox in batch mode and persists it
+// to the global registry on success. Provider output goes to io.Discard
+// to avoid interleaved output from concurrent goroutines.
+func createBatchTarget(
+	name string,
+	provider sandbox.Provider,
+	sandboxCfg *compound.SandboxConfig,
+	mergedEnv map[string]string,
+	autoShutdown bool,
+	idleHours int,
+	size, repo string,
+) error {
+	ctx := context.Background()
+	result, err := provider.Create(ctx, name, mergedEnv, io.Discard)
+	if err != nil {
+		return err
+	}
+
+	id, err := sandbox.NewV7()
+	if err != nil {
+		return fmt.Errorf("generating ID: %w", err)
+	}
+
+	state := &sandbox.SandboxState{
+		ID:                id,
+		Name:              name,
+		Provider:          sandboxCfg.Provider,
+		WorkspaceID:       result.ID,
+		IP:                result.IP,
+		TailscaleIP:       result.TailscaleIP,
+		TailscaleHostname: sandbox.TailscaleHostname(name),
+		Status:            sandbox.StatusRunning,
+		CreatedAt:         time.Now(),
+		AutoShutdown:      autoShutdown,
+		IdleHours:         idleHours,
+		Size:              size,
+		Repo:              repo,
+	}
+
+	if err := sandbox.SaveInstance(state); err != nil {
+		return fmt.Errorf("registering: %w", err)
+	}
+
 	return nil
 }
 

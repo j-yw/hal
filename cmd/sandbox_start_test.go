@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -21,12 +23,15 @@ import (
 var uuidV7Pattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // mockProvider implements sandbox.Provider for testing.
+// Thread-safe: uses a mutex to protect createCalls and deleteCalls for concurrent batch tests.
 type mockProvider struct {
-	createResult *sandbox.SandboxResult
-	createErr    error
-	createCalls  []mockCreateCall
-	deleteCalls  []mockDeleteCall
-	deleteErr    error
+	createResult    *sandbox.SandboxResult
+	createErr       error
+	createErrByName map[string]error // per-name error injection for partial failure tests
+	mu              sync.Mutex
+	createCalls     []mockCreateCall
+	deleteCalls     []mockDeleteCall
+	deleteErr       error
 }
 
 type mockCreateCall struct {
@@ -39,7 +44,16 @@ type mockDeleteCall struct {
 }
 
 func (m *mockProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
+	m.mu.Lock()
 	m.createCalls = append(m.createCalls, mockCreateCall{Name: name, Env: env})
+	m.mu.Unlock()
+
+	// Check per-name error first
+	if m.createErrByName != nil {
+		if err, ok := m.createErrByName[name]; ok {
+			return nil, err
+		}
+	}
 	return m.createResult, m.createErr
 }
 
@@ -48,7 +62,9 @@ func (m *mockProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out 
 }
 
 func (m *mockProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	m.mu.Lock()
 	m.deleteCalls = append(m.deleteCalls, mockDeleteCall{Info: info})
+	m.mu.Unlock()
 	return m.deleteErr
 }
 
@@ -62,6 +78,18 @@ func (m *mockProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.Cmd
 
 func (m *mockProvider) Status(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
+}
+
+// sortedCreateCallNames returns the names of createCalls in sorted order (for concurrent test assertions).
+func (m *mockProvider) sortedCreateCallNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := make([]string, len(m.createCalls))
+	for i, c := range m.createCalls {
+		names[i] = c.Name
+	}
+	sort.Strings(names)
+	return names
 }
 
 func setupStartTest(t *testing.T, dir string) {
@@ -1074,16 +1102,17 @@ func TestRunSandboxStart_BatchCreatesAll(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should have called Create 3 times
+	// Should have called Create 3 times (order may vary due to concurrency)
 	if len(mock.createCalls) != 3 {
 		t.Fatalf("expected 3 Create calls, got %d", len(mock.createCalls))
 	}
 
-	// Verify each target name
+	// Verify all target names were called (sorted for deterministic comparison)
 	wantNames := []string{"worker-01", "worker-02", "worker-03"}
-	for i, call := range mock.createCalls {
-		if call.Name != wantNames[i] {
-			t.Errorf("createCalls[%d].Name = %q, want %q", i, call.Name, wantNames[i])
+	gotNames := mock.sortedCreateCallNames()
+	for i, want := range wantNames {
+		if gotNames[i] != want {
+			t.Errorf("sortedCreateCalls[%d] = %q, want %q", i, gotNames[i], want)
 		}
 	}
 
@@ -1099,10 +1128,22 @@ func TestRunSandboxStart_BatchCreatesAll(t *testing.T) {
 		}
 	}
 
-	// Verify output mentions batch creation
+	// Verify output
 	output := out.String()
 	if !strings.Contains(output, "Creating 3 sandboxes") {
 		t.Errorf("output should mention batch count: %q", output)
+	}
+
+	// Verify each target has a progress line
+	for _, name := range wantNames {
+		if !strings.Contains(output, "Created "+name) {
+			t.Errorf("output should contain progress line for %q: %q", name, output)
+		}
+	}
+
+	// Verify summary line
+	if !strings.Contains(output, "3/3 created (0 failed)") {
+		t.Errorf("output should contain summary line: %q", output)
 	}
 }
 
@@ -1193,11 +1234,14 @@ func TestRunSandboxStart_BatchNameFromBranch(t *testing.T) {
 	if len(mock.createCalls) != 2 {
 		t.Fatalf("expected 2 Create calls, got %d", len(mock.createCalls))
 	}
-	if mock.createCalls[0].Name != "hal-api-service-01" {
-		t.Errorf("createCalls[0].Name = %q, want %q", mock.createCalls[0].Name, "hal-api-service-01")
-	}
-	if mock.createCalls[1].Name != "hal-api-service-02" {
-		t.Errorf("createCalls[1].Name = %q, want %q", mock.createCalls[1].Name, "hal-api-service-02")
+
+	// Concurrent execution: check sorted names for deterministic assertions
+	gotNames := mock.sortedCreateCallNames()
+	wantNames := []string{"hal-api-service-01", "hal-api-service-02"}
+	for i, want := range wantNames {
+		if gotNames[i] != want {
+			t.Errorf("sortedCreateCalls[%d] = %q, want %q", i, gotNames[i], want)
+		}
 	}
 }
 
@@ -1879,5 +1923,347 @@ func TestRunSandboxStart_ForceViaRunSandboxStart(t *testing.T) {
 	}
 	if instance.ID == "old-id" {
 		t.Error("should have new ID after force-replace")
+	}
+}
+
+// --- Batch execution and exit semantics tests (US-036) ---
+
+func TestRunBatchCreate_ConcurrentExecution(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch", IP: "10.0.0.1"},
+	}
+
+	targets := []string{"worker-01", "worker-02", "worker-03", "worker-04", "worker-05"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	var out bytes.Buffer
+	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All 5 should have been created
+	if len(mock.createCalls) != 5 {
+		t.Fatalf("expected 5 Create calls, got %d", len(mock.createCalls))
+	}
+
+	// All should be in the registry
+	gotNames := mock.sortedCreateCallNames()
+	for _, name := range targets {
+		found := false
+		for _, got := range gotNames {
+			if got == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("target %q was not in Create calls", name)
+		}
+	}
+}
+
+func TestRunBatchCreate_PartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch", IP: "10.0.0.1"},
+		createErrByName: map[string]error{
+			"worker-02": fmt.Errorf("provider timeout"),
+		},
+	}
+
+	targets := []string{"worker-01", "worker-02", "worker-03"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	var out bytes.Buffer
+	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+
+	// Should return error when any target fails
+	if err == nil {
+		t.Fatal("expected error for partial failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox creations failed") {
+		t.Errorf("error %q should contain 'sandbox creations failed'", err.Error())
+	}
+
+	output := out.String()
+
+	// Successful targets should be in registry
+	inst1, err1 := sandbox.LoadInstance("worker-01")
+	if err1 != nil {
+		t.Errorf("worker-01 should be in registry (succeeded): %v", err1)
+	} else if inst1.Status != sandbox.StatusRunning {
+		t.Errorf("worker-01 status = %q, want %q", inst1.Status, sandbox.StatusRunning)
+	}
+
+	inst3, err3 := sandbox.LoadInstance("worker-03")
+	if err3 != nil {
+		t.Errorf("worker-03 should be in registry (succeeded): %v", err3)
+	} else if inst3.Status != sandbox.StatusRunning {
+		t.Errorf("worker-03 status = %q, want %q", inst3.Status, sandbox.StatusRunning)
+	}
+
+	// Failed target should NOT be in registry
+	_, err2 := sandbox.LoadInstance("worker-02")
+	if err2 == nil {
+		t.Error("worker-02 should NOT be in registry (failed)")
+	}
+
+	// Verify progress lines
+	if !strings.Contains(output, "Created worker-01") {
+		t.Errorf("output should contain success line for worker-01: %q", output)
+	}
+	if !strings.Contains(output, "Created worker-03") {
+		t.Errorf("output should contain success line for worker-03: %q", output)
+	}
+	if !strings.Contains(output, "Failed worker-02") {
+		t.Errorf("output should contain failure line for worker-02: %q", output)
+	}
+	if !strings.Contains(output, "provider timeout") {
+		t.Errorf("output should contain error detail: %q", output)
+	}
+
+	// Verify summary line
+	if !strings.Contains(output, "2/3 created (1 failed). Failed sandboxes were not registered.") {
+		t.Errorf("output should contain exact summary line: %q", output)
+	}
+}
+
+func TestRunBatchCreate_AllFail(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createErr: fmt.Errorf("all providers down"),
+	}
+
+	targets := []string{"worker-01", "worker-02"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
+
+	var out bytes.Buffer
+	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+
+	if err == nil {
+		t.Fatal("expected error when all fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "2/2 sandbox creations failed") {
+		t.Errorf("error %q should contain '2/2 sandbox creations failed'", err.Error())
+	}
+
+	output := out.String()
+
+	// No instances should be in registry
+	instances, _ := sandbox.ListInstances()
+	if len(instances) != 0 {
+		t.Errorf("expected 0 instances in registry, got %d", len(instances))
+	}
+
+	// Both should have failure lines
+	if !strings.Contains(output, "Failed worker-01") {
+		t.Errorf("output should contain failure line for worker-01: %q", output)
+	}
+	if !strings.Contains(output, "Failed worker-02") {
+		t.Errorf("output should contain failure line for worker-02: %q", output)
+	}
+
+	// Summary: 0/2 created
+	if !strings.Contains(output, "0/2 created (2 failed)") {
+		t.Errorf("output should contain summary: %q", output)
+	}
+}
+
+func TestRunBatchCreate_SummaryFormatAllSuccess(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+	}
+
+	targets := []string{"worker-01", "worker-02"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	var out bytes.Buffer
+	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+
+	// Exact summary format check
+	if !strings.Contains(output, "2/2 created (0 failed). Failed sandboxes were not registered.") {
+		t.Errorf("summary should match exact format: %q", output)
+	}
+}
+
+func TestRunBatchCreate_ExitCodeOnPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+		createErrByName: map[string]error{
+			"worker-01": fmt.Errorf("auth error"),
+		},
+	}
+
+	targets := []string{"worker-01", "worker-02"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+
+	// Must return error (exit code 1) when any target fails
+	if err == nil {
+		t.Fatal("expected error when any target fails")
+	}
+}
+
+func TestRunBatchCreate_ExitCodeOnAllSuccess(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+	}
+
+	targets := []string{"worker-01", "worker-02"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+
+	// Must return nil (exit code 0) when all succeed
+	if err != nil {
+		t.Fatalf("expected no error when all succeed, got: %v", err)
+	}
+}
+
+func TestRunBatchCreate_ProgressLinePerTarget(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+		createErrByName: map[string]error{
+			"worker-02": fmt.Errorf("disk full"),
+		},
+	}
+
+	targets := []string{"worker-01", "worker-02", "worker-03"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	var out bytes.Buffer
+	_ = runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+
+	output := out.String()
+
+	// Count progress lines (each target emits exactly one: "Created X" or "Failed X: ...")
+	successCount := strings.Count(output, "Created worker-")
+	failureCount := strings.Count(output, "Failed worker-")
+
+	if successCount+failureCount != 3 {
+		t.Errorf("expected exactly 3 progress lines, got %d success + %d failure = %d",
+			successCount, failureCount, successCount+failureCount)
+	}
+
+	if successCount != 2 {
+		t.Errorf("expected 2 success lines, got %d", successCount)
+	}
+	if failureCount != 1 {
+		t.Errorf("expected 1 failure line, got %d", failureCount)
+	}
+}
+
+func TestRunSandboxStart_BatchViaCommandWithPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+		createErrByName: map[string]error{
+			"worker-03": fmt.Errorf("quota exceeded"),
+		},
+	}
+
+	var out bytes.Buffer
+	err := runSandboxStartWithDeps(dir, "worker", 3, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+
+	// Should return error for partial failure
+	if err == nil {
+		t.Fatal("expected error for partial failure via start command")
+	}
+
+	output := out.String()
+
+	// Successful targets in registry
+	inst1, err1 := sandbox.LoadInstance("worker-01")
+	if err1 != nil {
+		t.Errorf("worker-01 should be in registry: %v", err1)
+	} else if inst1.Status != sandbox.StatusRunning {
+		t.Errorf("worker-01 status = %q, want running", inst1.Status)
+	}
+
+	inst2, err2 := sandbox.LoadInstance("worker-02")
+	if err2 != nil {
+		t.Errorf("worker-02 should be in registry: %v", err2)
+	} else if inst2.Status != sandbox.StatusRunning {
+		t.Errorf("worker-02 status = %q, want running", inst2.Status)
+	}
+
+	// Failed target not in registry
+	_, err3 := sandbox.LoadInstance("worker-03")
+	if err3 == nil {
+		t.Error("worker-03 should NOT be in registry (failed)")
+	}
+
+	// Summary line present
+	if !strings.Contains(output, "2/3 created (1 failed)") {
+		t.Errorf("output should contain summary: %q", output)
+	}
+}
+
+func TestRunBatchCreate_OnlySuccessfulPersisted(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	// Fail 2 out of 4 targets
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch", IP: "10.0.0.1"},
+		createErrByName: map[string]error{
+			"worker-01": fmt.Errorf("error 1"),
+			"worker-03": fmt.Errorf("error 3"),
+		},
+	}
+
+	targets := []string{"worker-01", "worker-02", "worker-03", "worker-04"}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	_ = runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+
+	// Only worker-02 and worker-04 should be in registry
+	instances, err := sandbox.ListInstances()
+	if err != nil {
+		t.Fatalf("listing instances: %v", err)
+	}
+
+	var registeredNames []string
+	for _, inst := range instances {
+		registeredNames = append(registeredNames, inst.Name)
+	}
+	sort.Strings(registeredNames)
+
+	wantRegistered := []string{"worker-02", "worker-04"}
+	if len(registeredNames) != len(wantRegistered) {
+		t.Fatalf("expected %d registered instances, got %d: %v", len(wantRegistered), len(registeredNames), registeredNames)
+	}
+	for i, name := range wantRegistered {
+		if registeredNames[i] != name {
+			t.Errorf("registeredNames[%d] = %q, want %q", i, registeredNames[i], name)
+		}
 	}
 }

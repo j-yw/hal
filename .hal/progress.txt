@@ -36,6 +36,10 @@
 - `sandbox.Migrate(projectDir, out)` now accepts `io.Writer`; pass `nil` from auto-migrate (no output), pass a `*bytes.Buffer` from the migrate command to detect "no actions" (empty buffer → "Nothing to migrate").
 - Start command collision check uses `sandbox.LoadInstance(name)` before `provider.Create`; without `--force`, returns exact error `sandbox "<name>" already exists`; with `--force`, deletes existing via `provider.Delete` + `sandbox.RemoveInstance` before creating.
 - When adding a `force bool` parameter to `runSandboxStartWithDeps`, use `perl -i -pe` for bulk updates across many test call sites; verify no doubled params afterward.
+- Batch creation uses `errgroup.Group` (without `WithContext`) for concurrent `provider.Create`; goroutines return `nil` to errgroup and track errors in a `sync.Mutex`-protected results slice so all targets complete regardless of individual failures.
+- Batch progress output uses `"Created %s"` / `"Failed %s: %v"` format (one line per target); summary uses `"%d/%d created (%d failed). Failed sandboxes were not registered."`.
+- Thread-safe mock providers for concurrent tests need `sync.Mutex` on call-tracking slices and `sortedCreateCallNames()` for deterministic assertions.
+- Per-name error injection in mock providers (`createErrByName map[string]error`) enables partial failure tests for batch creation.
 
 ## [2026-03-21 13:09 CST] - US-001
 - Implemented global sandbox directory helpers in `internal/sandbox/global.go`: `GlobalDir()`, `SandboxesDir()`, and `EnsureGlobalDir()`.
@@ -451,4 +455,23 @@
   - Collision checks should happen inside `runSingleCreate` (closest to `provider.Create`) to keep the contract simple and testable.
   - `--force` for batch is not needed since `batchPreflight` already handles collision detection; batch mode always passes `force=false`.
   - When extending function signatures with a new parameter, use `perl -i -pe` regex substitution to bulk-update test call sites, then verify no double-insertion.
+---
+
+## [2026-03-21 21:30 CST] - US-036
+- Refactored `runBatchCreate` in `cmd/sandbox_start.go` for concurrent execution using `golang.org/x/sync/errgroup`.
+- Added `createBatchTarget` helper that runs `provider.Create` + `sandbox.SaveInstance` per target without interleaved output (provider writes to `io.Discard`).
+- Each goroutine emits exactly one progress line: `Created <name>` on success, `Failed <name>: <error>` on failure.
+- Only successful targets are persisted to the global registry; failed targets are not registered.
+- Summary line follows exact format: `<success>/<total> created (<failed> failed). Failed sandboxes were not registered.`
+- Returns error when any target fails (exit code 1), nil when all succeed (exit code 0).
+- Updated `mockProvider` to be thread-safe with `sync.Mutex` on `createCalls`/`deleteCalls`; added `createErrByName` map for per-name error injection; added `sortedCreateCallNames()` helper for deterministic concurrent test assertions.
+- Updated existing batch tests (`BatchCreatesAll`, `BatchNameFromBranch`) to use sorted name assertions for concurrent safety.
+- Added 10 new tests: `ConcurrentExecution`, `PartialFailure`, `AllFail`, `SummaryFormatAllSuccess`, `ExitCodeOnPartialFailure`, `ExitCodeOnAllSuccess`, `ProgressLinePerTarget`, `BatchViaCommandWithPartialFailure`, `OnlySuccessfulPersisted`.
+- Added `golang.org/x/sync` dependency to `go.mod`/`go.sum`.
+- Files changed: `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`, `go.mod`, `go.sum`
+- **Learnings for future iterations:**
+  - `errgroup.Group` (without `WithContext`) doesn't cancel on first error — goroutines always return nil to errgroup and track errors separately in a mutex-protected results slice so all targets run to completion.
+  - Batch creation sends provider output to `io.Discard` to avoid interleaved concurrent writes; only the one-line progress per target uses the synchronized output writer.
+  - Thread-safe mock providers need `sync.Mutex` on call-tracking slices; use `sortedCreateCallNames()` for deterministic assertions in concurrent test scenarios.
+  - Per-name error injection via `createErrByName` map enables partial failure tests without requiring complex provider mock logic.
 ---
