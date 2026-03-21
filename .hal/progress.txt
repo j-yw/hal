@@ -27,6 +27,8 @@
 - `runSingleCreate` is the extracted helper for single sandbox creation; `runBatchCreate` iterates over preflight-validated targets and delegates to `runSingleCreate` for each.
 - `--size` flag uses `applySizeOverride(cfg, size)` to set the provider-specific size field (Hetzner→ServerType, DigitalOcean→Size, Lightsail→Bundle) before provider construction; Daytona is a no-op.
 - `runSandboxStart` is the public entry point that unwraps `sandboxStartDeps` and delegates to `runSandboxStartWithDeps`; tests can use either path.
+- Delete target resolution uses ALL sandboxes (not just running) for `--all`, `--pattern`, and auto-select, unlike stop which filters to running only. Confirmation prompt (`Delete all sandboxes? [y/N]`) is only required for `--all` without `--yes`.
+- Reuse `sortTargetsByName`, `joinNames`, and `filterRunning` helpers across stop/delete/ssh commands; they live in `cmd/sandbox_stop.go`.
 
 ## [2026-03-21 13:09 CST] - US-001
 - Implemented global sandbox directory helpers in `internal/sandbox/global.go`: `GlobalDir()`, `SandboxesDir()`, and `EnsureGlobalDir()`.
@@ -334,4 +336,19 @@
   - Target resolution helpers (`resolveStopTargets`) should validate glob pattern syntax before listing instances to avoid silent no-op when the registry is empty.
   - `filterRunning` and `sortTargetsByName` are reusable helpers for stop/delete/ssh command flows.
   - When a command changes from `noArgsValidation()` to accepting positional args, update `cmd/args_test.go` to remove the no-args test entry.
+---
+
+## [2026-03-21 19:00 CST] - US-026
+- Refactored `cmd/sandbox_delete.go` to support global registry target resolution: positional `NAME [NAME...]` args, `--all` for all sandboxes, `--pattern` for glob matching, and no-arg auto-select.
+- Implemented `resolveDeleteTargets` as a dedicated target resolution helper with sub-helpers: `resolveDeleteByNames`, `resolveDeleteAll`, `resolveDeleteByPattern`, `resolveDeleteAutoSelect`.
+- Added `confirmDeleteAll(in, out)` for interactive `--all` confirmation prompt (`Delete all sandboxes? [y/N]`); `--yes` flag skips the prompt.
+- Delete resolution targets ALL sandboxes (not just running) unlike stop which filters to running only.
+- All resolved targets are de-duplicated and sorted by name before execution.
+- Updated `cmd/args_test.go` to remove `sandbox delete` from no-args validation test since it now accepts positional args.
+- Added 27 tests covering: explicit names (single/multiple/dedup/stopped/unknown), `--all` flag (all-including-stopped/empty), `--pattern` (match-including-stopped/no-match/invalid), auto-select (single/zero/multiple/stopped-only), `--all` confirmation (yes-flag/prompt-y/prompt-n/prompt-eof), full command execution, flag presence, and dedup+sort.
+- Files changed: `cmd/sandbox_delete.go`, `cmd/sandbox_delete_test.go`, `cmd/args_test.go`
+- **Learnings for future iterations:**
+  - Delete and stop commands share the same target resolution pattern but with different filtering: delete targets all sandboxes, stop targets running only.
+  - `confirmDeleteAll` uses `bufio.Scanner` + `strings.NewReader` for testable stdin simulation; test EOF as a decline case.
+  - Reuse `sortTargetsByName` and `joinNames` from `cmd/sandbox_stop.go` to avoid duplication across command files.
 ---
