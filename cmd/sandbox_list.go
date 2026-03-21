@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 )
 
 var sandboxListJSONFlag bool
+var sandboxListLiveFlag bool
 
 var sandboxListCmd = &cobra.Command{
 	Use:   "list",
@@ -35,6 +38,7 @@ Use --json for machine-readable output following the sandbox-list-v1 contract.`,
   hal sandbox list --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		jsonMode := sandboxListJSONFlag
+		liveMode := sandboxListLiveFlag
 		if cmd != nil {
 			if f := cmd.Flags().Lookup("json"); f != nil {
 				v, err := cmd.Flags().GetBool("json")
@@ -42,18 +46,57 @@ Use --json for machine-readable output following the sandbox-list-v1 contract.`,
 					jsonMode = v
 				}
 			}
+			if f := cmd.Flags().Lookup("live"); f != nil {
+				v, err := cmd.Flags().GetBool("live")
+				if err == nil {
+					liveMode = v
+				}
+			}
 		}
-		return runSandboxList(os.Stdout, jsonMode)
+		return runSandboxList(os.Stdout, jsonMode, liveMode)
 	},
 }
 
 func init() {
 	sandboxListCmd.Flags().BoolVar(&sandboxListJSONFlag, "json", false, "Output machine-readable JSON (sandbox-list-v1 contract)")
+	sandboxListCmd.Flags().BoolVar(&sandboxListLiveFlag, "live", false, "Fetch fresh status from each provider before rendering")
 	sandboxCmd.AddCommand(sandboxListCmd)
 }
 
 // sandboxListNow is injectable for deterministic tests.
 var sandboxListNow = func() time.Time { return time.Now() }
+
+// liveStatusTimeout is the per-sandbox timeout for live provider status queries.
+const liveStatusTimeout = 10 * time.Second
+
+// sandboxListResolveProvider resolves a sandbox.Provider by provider name
+// using global config. Package-level var for test injection.
+var sandboxListResolveProvider = resolveProviderFromGlobalConfig
+
+// resolveProviderFromGlobalConfig creates a Provider from global config settings.
+func resolveProviderFromGlobalConfig(providerName string) (sandbox.Provider, error) {
+	globalCfg, err := sandbox.LoadGlobalConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := sandbox.ProviderConfig{
+		DaytonaAPIKey:             globalCfg.Daytona.APIKey,
+		DaytonaServerURL:          globalCfg.Daytona.ServerURL,
+		HetznerSSHKey:             globalCfg.Hetzner.SSHKey,
+		HetznerServerType:         globalCfg.Hetzner.ServerType,
+		HetznerImage:              globalCfg.Hetzner.Image,
+		DigitalOceanSSHKey:        globalCfg.DigitalOcean.SSHKey,
+		DigitalOceanSize:          globalCfg.DigitalOcean.Size,
+		LightsailRegion:           globalCfg.Lightsail.Region,
+		LightsailAvailabilityZone: globalCfg.Lightsail.AvailabilityZone,
+		LightsailBundle:           globalCfg.Lightsail.Bundle,
+		LightsailKeyPairName:      globalCfg.Lightsail.KeyPairName,
+		TailscaleLockdown:         globalCfg.TailscaleLockdown,
+	}
+
+	return sandbox.ProviderFromConfig(providerName, cfg)
+}
 
 // SandboxListResponse is the machine-readable JSON output for hal sandbox list --json.
 // Follows the sandbox-list-v1 contract.
@@ -95,10 +138,16 @@ type SandboxListTotals struct {
 }
 
 // runSandboxList renders sandbox list as table (default) or JSON (--json).
-func runSandboxList(out io.Writer, jsonMode bool) error {
+// When liveMode is true, queries each sandbox's provider for fresh status before rendering.
+func runSandboxList(out io.Writer, jsonMode, liveMode bool) error {
 	instances, err := sandbox.ListInstances()
 	if err != nil {
 		return fmt.Errorf("listing sandboxes: %w", err)
+	}
+
+	// Live mode: query each provider for fresh status
+	if liveMode && len(instances) > 0 {
+		queryLiveStatuses(instances, sandboxListResolveProvider)
 	}
 
 	now := sandboxListNow()
@@ -119,6 +168,41 @@ func runSandboxList(out io.Writer, jsonMode bool) error {
 	renderSandboxSummary(out, instances, now)
 
 	return nil
+}
+
+// queryLiveStatuses queries each sandbox's provider for current status.
+// Instances are updated in-place. Each query has a 10s timeout.
+// If a query fails or times out, the instance's status is set to "unknown".
+func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) {
+	var wg sync.WaitGroup
+	for _, inst := range instances {
+		wg.Add(1)
+		go func(inst *sandbox.SandboxState) {
+			defer wg.Done()
+			queryOneStatus(inst, resolve)
+		}(inst)
+	}
+	wg.Wait()
+}
+
+// queryOneStatus queries a single sandbox's provider for current status.
+// Updates the instance's status in-place based on the query result.
+func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) {
+	provider, err := resolve(inst.Provider)
+	if err != nil {
+		inst.Status = sandbox.StatusUnknown
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), liveStatusTimeout)
+	defer cancel()
+
+	info := sandbox.ConnectInfoFromState(inst)
+	if err := provider.Status(ctx, info, io.Discard); err != nil {
+		inst.Status = sandbox.StatusUnknown
+		return
+	}
+	// Success: provider confirmed reachability — status stays as-is from registry
 }
 
 // renderSandboxListJSON renders the sandbox list as machine-readable JSON.

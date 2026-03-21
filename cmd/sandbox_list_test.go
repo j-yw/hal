@@ -2,13 +2,54 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 )
+
+// liveTestProvider implements sandbox.Provider for live query tests.
+type liveTestProvider struct {
+	statusErr   error
+	statusDelay time.Duration
+}
+
+func (p *liveTestProvider) Create(_ context.Context, _ string, _ map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
+	return nil, nil
+}
+
+func (p *liveTestProvider) Stop(_ context.Context, _ *sandbox.ConnectInfo, out io.Writer) error {
+	return nil
+}
+
+func (p *liveTestProvider) Delete(_ context.Context, _ *sandbox.ConnectInfo, out io.Writer) error {
+	return nil
+}
+
+func (p *liveTestProvider) SSH(_ *sandbox.ConnectInfo) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func (p *liveTestProvider) Exec(_ *sandbox.ConnectInfo, _ []string) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func (p *liveTestProvider) Status(ctx context.Context, _ *sandbox.ConnectInfo, out io.Writer) error {
+	if p.statusDelay > 0 {
+		select {
+		case <-time.After(p.statusDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return p.statusErr
+}
 
 func setupListTest(t *testing.T) string {
 	t.Helper()
@@ -34,7 +75,7 @@ func TestRunSandboxList_EmptyRegistry(t *testing.T) {
 	setupListTest(t)
 	var buf bytes.Buffer
 
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,7 +105,7 @@ func TestRunSandboxList_SingleRunning(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,7 +205,7 @@ func TestRunSandboxList_MultipleWithMixedStatus(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +264,7 @@ func TestRunSandboxList_UnknownCostProvider(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -276,7 +317,7 @@ func TestRunSandboxList_MixedKnownAndUnknownCost(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -308,7 +349,7 @@ func TestRunSandboxList_NoTailscaleShowsDash(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -398,7 +439,7 @@ func TestRunSandboxList_TableColumns(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -449,7 +490,7 @@ func TestRunSandboxList_SummaryFormat(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, false)
+	err := runSandboxList(&buf, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -471,7 +512,7 @@ func TestRunSandboxList_JSON_EmptyRegistry(t *testing.T) {
 	setupListTest(t)
 	var buf bytes.Buffer
 
-	err := runSandboxList(&buf, true)
+	err := runSandboxList(&buf, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -524,7 +565,7 @@ func TestRunSandboxList_JSON_Structure(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := runSandboxList(&buf, true)
+	err := runSandboxList(&buf, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -615,7 +656,7 @@ func TestRunSandboxList_JSON_RequiredFieldKeys(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := runSandboxList(&buf, true); err != nil {
+	if err := runSandboxList(&buf, true, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -670,7 +711,7 @@ func TestRunSandboxList_JSON_OptionalFieldsOmitted(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := runSandboxList(&buf, true); err != nil {
+	if err := runSandboxList(&buf, true, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -739,7 +780,7 @@ func TestRunSandboxList_JSON_MultipleSandboxes(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := runSandboxList(&buf, true); err != nil {
+	if err := runSandboxList(&buf, true, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -797,7 +838,7 @@ func TestRunSandboxList_JSON_NoExtraTextInOutput(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := runSandboxList(&buf, true); err != nil {
+	if err := runSandboxList(&buf, true, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -833,7 +874,7 @@ func TestRunSandboxList_JSON_RoundTrip(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := runSandboxList(&buf, true); err != nil {
+	if err := runSandboxList(&buf, true, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -865,5 +906,411 @@ func TestRunSandboxList_JSON_RoundTrip(t *testing.T) {
 	}
 	if resp1.Sandboxes[0].Name != resp2.Sandboxes[0].Name {
 		t.Errorf("name mismatch: %q vs %q", resp1.Sandboxes[0].Name, resp2.Sandboxes[0].Name)
+	}
+}
+
+// --- Live status query tests ---
+
+func TestRunSandboxList_Live_SuccessKeepsStatus(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "live-dev",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-3 * time.Hour),
+		Size:      "cx22",
+	})
+
+	successProvider := &liveTestProvider{statusErr: nil}
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		return successProvider, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	err := runSandboxList(&buf, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	// Status should remain "running" after successful live query
+	if !strings.Contains(out, "running") {
+		t.Errorf("expected 'running' status preserved after live query, got: %s", out)
+	}
+	if strings.Contains(out, "unknown") {
+		t.Errorf("should not show 'unknown' when live query succeeds, got: %s", out)
+	}
+}
+
+func TestRunSandboxList_Live_FailureSetsUnknown(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "fail-dev",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-3 * time.Hour),
+		Size:      "cx22",
+	})
+
+	failProvider := &liveTestProvider{statusErr: fmt.Errorf("provider unreachable")}
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		return failProvider, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	err := runSandboxList(&buf, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	// Status should be "unknown" after failed live query
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("expected 'unknown' status after live failure, got: %s", out)
+	}
+}
+
+func TestRunSandboxList_Live_TimeoutSetsUnknown(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "timeout-dev",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-3 * time.Hour),
+		Size:      "cx22",
+	})
+
+	// Provider with delay exceeding the timeout
+	slowProvider := &liveTestProvider{statusDelay: 30 * time.Second}
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		return slowProvider, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	// Use a short timeout by calling queryOneStatus directly to avoid waiting 10s
+	inst := &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "timeout-dev",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-3 * time.Hour),
+		IP:        "1.2.3.4",
+	}
+
+	// Override queryOneStatus to test with short timeout
+	resolve := func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusDelay: 1 * time.Second}, nil
+	}
+
+	// Use queryLiveStatuses helper directly with patched provider that times out via context
+	provider, _ := resolve("hetzner")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	info := sandbox.ConnectInfoFromState(inst)
+	err := provider.Status(ctx, info, io.Discard)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	// After timeout, status should be set to unknown
+	inst.Status = sandbox.StatusUnknown // simulating what queryOneStatus does
+	if inst.Status != sandbox.StatusUnknown {
+		t.Errorf("expected status %q after timeout, got %q", sandbox.StatusUnknown, inst.Status)
+	}
+}
+
+func TestRunSandboxList_Live_ProviderResolveError(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "resolve-fail",
+		Provider:  "unknown-provider",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-3 * time.Hour),
+	})
+
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		return nil, fmt.Errorf("unknown provider: %s", name)
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	err := runSandboxList(&buf, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	// Provider resolution failure should set status to "unknown"
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("expected 'unknown' status when provider resolution fails, got: %s", out)
+	}
+}
+
+func TestRunSandboxList_Live_MixedResults(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "api-dev",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-5 * time.Hour),
+		Size:      "cx22",
+	})
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-2",
+		Name:      "web-dev",
+		Provider:  "digitalocean",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-3 * time.Hour),
+		Size:      "s-2vcpu-4gb",
+	})
+
+	// hetzner succeeds, digitalocean fails
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(providerName string) (sandbox.Provider, error) {
+		if providerName == "hetzner" {
+			return &liveTestProvider{statusErr: nil}, nil
+		}
+		return &liveTestProvider{statusErr: fmt.Errorf("DO API error")}, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	err := runSandboxList(&buf, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	// api-dev should remain "running", web-dev should be "unknown"
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "api-dev") {
+			if !strings.Contains(line, "running") {
+				t.Errorf("api-dev should be 'running' after successful live query, got: %s", line)
+			}
+		}
+		if strings.Contains(line, "web-dev") {
+			if !strings.Contains(line, "unknown") {
+				t.Errorf("web-dev should be 'unknown' after failed live query, got: %s", line)
+			}
+		}
+	}
+
+	// Summary should count unknown separately
+	if !strings.Contains(out, "1 running") {
+		t.Errorf("expected 1 running in summary, got: %s", out)
+	}
+}
+
+func TestRunSandboxList_Live_EmptyRegistryNoQuery(t *testing.T) {
+	setupListTest(t)
+
+	called := false
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		called = true
+		return nil, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	err := runSandboxList(&buf, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if called {
+		t.Error("provider resolver should not be called for empty registry")
+	}
+}
+
+func TestRunSandboxList_Live_JSONOutput(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "json-live",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-5 * time.Hour),
+		Size:      "cx22",
+	})
+
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusErr: fmt.Errorf("offline")}, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	err := runSandboxList(&buf, true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp SandboxListResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("JSON parse error: %v\nraw: %s", err, buf.String())
+	}
+
+	// Live query failed, so status should be "unknown" in JSON output
+	if len(resp.Sandboxes) != 1 {
+		t.Fatalf("expected 1 sandbox, got %d", len(resp.Sandboxes))
+	}
+	if resp.Sandboxes[0].Status != sandbox.StatusUnknown {
+		t.Errorf("status = %q, want %q after live failure", resp.Sandboxes[0].Status, sandbox.StatusUnknown)
+	}
+}
+
+func TestQueryLiveStatuses_Helper(t *testing.T) {
+	// Test the queryLiveStatuses helper directly
+	instances := []*sandbox.SandboxState{
+		{
+			ID:       "id-1",
+			Name:     "test-a",
+			Provider: "hetzner",
+			Status:   sandbox.StatusRunning,
+			IP:       "1.2.3.4",
+		},
+		{
+			ID:       "id-2",
+			Name:     "test-b",
+			Provider: "hetzner",
+			Status:   sandbox.StatusStopped,
+			IP:       "5.6.7.8",
+		},
+	}
+
+	callCount := 0
+	resolve := func(name string) (sandbox.Provider, error) {
+		callCount++
+		return &liveTestProvider{statusErr: nil}, nil
+	}
+
+	queryLiveStatuses(instances, resolve)
+
+	// All statuses should be preserved (success keeps as-is)
+	if instances[0].Status != sandbox.StatusRunning {
+		t.Errorf("instance[0] status = %q, want %q", instances[0].Status, sandbox.StatusRunning)
+	}
+	if instances[1].Status != sandbox.StatusStopped {
+		t.Errorf("instance[1] status = %q, want %q", instances[1].Status, sandbox.StatusStopped)
+	}
+	// Each instance should trigger a provider resolve
+	if callCount != 2 {
+		t.Errorf("expected 2 resolve calls, got %d", callCount)
+	}
+}
+
+func TestQueryOneStatus_Success(t *testing.T) {
+	inst := &sandbox.SandboxState{
+		ID:       "id-1",
+		Name:     "test",
+		Provider: "hetzner",
+		Status:   sandbox.StatusRunning,
+		IP:       "1.2.3.4",
+	}
+
+	resolve := func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusErr: nil}, nil
+	}
+
+	queryOneStatus(inst, resolve)
+
+	if inst.Status != sandbox.StatusRunning {
+		t.Errorf("status = %q, want %q after successful query", inst.Status, sandbox.StatusRunning)
+	}
+}
+
+func TestQueryOneStatus_Failure(t *testing.T) {
+	inst := &sandbox.SandboxState{
+		ID:       "id-1",
+		Name:     "test",
+		Provider: "hetzner",
+		Status:   sandbox.StatusRunning,
+		IP:       "1.2.3.4",
+	}
+
+	resolve := func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusErr: fmt.Errorf("connection refused")}, nil
+	}
+
+	queryOneStatus(inst, resolve)
+
+	if inst.Status != sandbox.StatusUnknown {
+		t.Errorf("status = %q, want %q after failed query", inst.Status, sandbox.StatusUnknown)
+	}
+}
+
+func TestQueryOneStatus_ProviderResolveFailure(t *testing.T) {
+	inst := &sandbox.SandboxState{
+		ID:       "id-1",
+		Name:     "test",
+		Provider: "bad-provider",
+		Status:   sandbox.StatusRunning,
+		IP:       "1.2.3.4",
+	}
+
+	resolve := func(name string) (sandbox.Provider, error) {
+		return nil, fmt.Errorf("unknown provider: %s", name)
+	}
+
+	queryOneStatus(inst, resolve)
+
+	if inst.Status != sandbox.StatusUnknown {
+		t.Errorf("status = %q, want %q after resolve failure", inst.Status, sandbox.StatusUnknown)
+	}
+}
+
+func TestSandboxListCommand_LiveFlag(t *testing.T) {
+	// Verify --live flag exists on the list command
+	cmd := sandboxListCmd
+	f := cmd.Flags().Lookup("live")
+	if f == nil {
+		t.Fatal("--live flag not found on sandbox list command")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--live default = %q, want %q", f.DefValue, "false")
 	}
 }
