@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 var sandboxDeleteCmd = &cobra.Command{
@@ -52,6 +54,9 @@ func init() {
 // sandboxDeleteListInstances is injectable for testing.
 var sandboxDeleteListInstances = sandbox.ListInstances
 
+// sandboxDeleteRemoveInstance is injectable for testing registry removal.
+var sandboxDeleteRemoveInstance = sandbox.RemoveInstance
+
 // runSandboxDelete is the public entry point for the delete command.
 func runSandboxDelete(args []string, allFlag, yesFlag bool, pattern string, in io.Reader, out io.Writer, provider sandbox.Provider) error {
 	return runSandboxDeleteWithDeps(args, allFlag, yesFlag, pattern, in, out, provider)
@@ -77,14 +82,13 @@ func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern stri
 		}
 	}
 
-	// Delete each target (execution details in US-038; single-target path here)
-	for _, target := range targets {
-		if err := deleteOneTarget(target, out, provider); err != nil {
-			return err
-		}
+	// Single target: delete inline for simple output
+	if len(targets) == 1 {
+		return deleteOneTarget(targets[0], out, provider)
 	}
 
-	return nil
+	// Multiple targets: delete concurrently using errgroup
+	return deleteMultipleTargets(targets, out, provider)
 }
 
 // resolveDeleteTargets resolves which sandboxes to delete based on positional args,
@@ -216,7 +220,15 @@ func confirmDeleteAll(in io.Reader, out io.Writer) bool {
 	return answer == "y" || answer == "yes"
 }
 
-// deleteOneTarget deletes a single sandbox. If provider is nil, resolves from global config.
+// deleteResult tracks the outcome of a single delete target.
+type deleteResult struct {
+	Name    string
+	Success bool
+	Err     error
+}
+
+// deleteOneTarget deletes a single sandbox, removes it from the registry, and reports the result.
+// If provider is nil, resolves from global config.
 func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
 	p := provider
 	if p == nil {
@@ -235,6 +247,78 @@ func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandb
 		return fmt.Errorf("sandbox delete failed for %q: %w", target.Name, err)
 	}
 
-	fmt.Fprintf(out, "Sandbox %q deleted.\n", target.Name)
+	// Remove from global registry after successful provider delete
+	if err := sandboxDeleteRemoveInstance(target.Name); err != nil {
+		fmt.Fprintf(out, "warning: failed to remove registry entry for %q: %v\n", target.Name, err)
+	}
+
+	fmt.Fprintf(out, "Deleted %s\n", target.Name)
+	return nil
+}
+
+// deleteMultipleTargets deletes multiple sandboxes concurrently using errgroup.
+// Each target emits one result line; successful deletes are removed from the registry.
+// Returns an error if any target fails.
+func deleteMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
+	var (
+		mu      sync.Mutex
+		results = make([]deleteResult, 0, len(targets))
+	)
+
+	g := new(errgroup.Group)
+
+	for _, target := range targets {
+		target := target // capture for goroutine
+		g.Go(func() error {
+			p := provider
+			if p == nil {
+				var err error
+				p, err = resolveProviderFromGlobalConfig(target.Provider)
+				if err != nil {
+					mu.Lock()
+					fmt.Fprintf(out, "Failed %s: %v\n", target.Name, err)
+					results = append(results, deleteResult{Name: target.Name, Success: false, Err: err})
+					mu.Unlock()
+					return nil
+				}
+			}
+
+			ctx := context.Background()
+			info := sandbox.ConnectInfoFromState(target)
+			err := p.Delete(ctx, info, io.Discard)
+
+			mu.Lock()
+			if err != nil {
+				fmt.Fprintf(out, "Failed %s: %v\n", target.Name, err)
+				results = append(results, deleteResult{Name: target.Name, Success: false, Err: err})
+			} else {
+				// Remove from global registry after successful provider delete
+				if regErr := sandboxDeleteRemoveInstance(target.Name); regErr != nil {
+					fmt.Fprintf(out, "Deleted %s (warning: registry removal failed: %v)\n", target.Name, regErr)
+				} else {
+					fmt.Fprintf(out, "Deleted %s\n", target.Name)
+				}
+				results = append(results, deleteResult{Name: target.Name, Success: true})
+			}
+			mu.Unlock()
+
+			return nil // don't propagate to errgroup; we track errors ourselves
+		})
+	}
+
+	g.Wait()
+
+	// Check for any failures
+	var failed int
+	for _, r := range results {
+		if !r.Success {
+			failed++
+		}
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("%d/%d sandbox deletes failed", failed, len(targets))
+	}
+
 	return nil
 }
