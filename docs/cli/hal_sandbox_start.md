@@ -4,7 +4,7 @@ Create and start a sandbox
 
 ### Synopsis
 
-Create and start a sandbox using the configured provider (Daytona, Hetzner, or DigitalOcean).
+Create and start a sandbox using the configured provider (Daytona, Hetzner, DigitalOcean, or AWS Lightsail).
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
 Use --name to override the default name.
