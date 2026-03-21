@@ -403,3 +403,17 @@
   - Pass `nil` as the writer from auto-migrate paths to keep them silent; only the explicit `hal sandbox migrate` command shows action output.
   - Updating injectable function var signatures requires updating all test overrides across the package; `sed -i` is efficient for uniform signature changes.
 ---
+
+## [2026-03-21 20:15 CST] - US-030
+- Added `checkLegacySandboxState` doctor check in `internal/doctor/doctor.go` that fires when `.hal/sandbox.json` exists in the project directory.
+- Check ID: `legacy_sandbox_state`, scope: `migration`, severity: `warn`, applicability: `optional`.
+- Message: `Legacy .hal/sandbox.json found — run 'hal sandbox migrate'` with `Remediation{Command: "hal sandbox migrate", Safe: true}`.
+- Registered `hal sandbox migrate` in `executeRepairCommand` in `cmd/repair.go` so `hal repair` can auto-execute this remediation.
+- Updated `TestRun_CheckCount` from 13 to 14 checks (new check added between `legacy_debris` and `broken_skill_links`).
+- Added 4 tests: `TestRun_LegacySandboxStateDetected`, `TestRun_NoLegacySandboxState`, `TestRun_LegacySandboxStateRemediation`, `TestRun_LegacySandboxStateWarSummary`.
+- Files changed: `internal/doctor/doctor.go`, `internal/doctor/doctor_test.go`, `cmd/repair.go`
+- **Learnings for future iterations:**
+  - New doctor checks should be added between existing migration-scope checks and update `TestRun_CheckCount` with the exact expected check order.
+  - Doctor checks with remediations must also register the command in `executeRepairCommand` in `cmd/repair.go` for `hal repair` auto-execution.
+  - Use `template.SandboxFile` constant for the legacy state filename to stay consistent with the template constants pattern.
+---
