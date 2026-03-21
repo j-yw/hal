@@ -132,6 +132,9 @@ func resolveStopByNames(names []string) ([]*sandbox.SandboxState, string, error)
 		if err != nil {
 			return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
 		}
+		if instance.Status != sandbox.StatusRunning {
+			return nil, "", fmt.Errorf("sandbox %q is not running", name)
+		}
 		targets = append(targets, instance)
 	}
 

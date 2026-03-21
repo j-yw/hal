@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,6 +242,7 @@ func runSandboxStartWithDeps(
 	if size != "" {
 		applySizeOverride(sandboxCfg, size)
 	}
+	resolvedSize := configuredSandboxSize(sandboxCfg)
 
 	// Resolve provider if not injected
 	if provider == nil {
@@ -309,11 +312,11 @@ func runSandboxStartWithDeps(
 		if err != nil {
 			return err
 		}
-		return runBatchCreate(targets, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
+		return runBatchCreate(targets, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
 	}
 
 	// Single sandbox creation
-	return runSingleCreate(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
+	return runSingleCreate(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
 }
 
 // batchPreflight generates batch names and validates that none already exist
@@ -329,6 +332,8 @@ func batchPreflight(base string, count int) ([]string, error) {
 	for _, name := range targets {
 		if _, err := sandbox.LoadInstance(name); err == nil {
 			collisions = append(collisions, name)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("batch preflight failed: checking sandbox %q: %w", name, err)
 		}
 	}
 
@@ -496,6 +501,8 @@ func runSingleCreate(
 		if err := sandbox.RemoveInstance(name); err != nil {
 			return fmt.Errorf("removing existing registry entry %q: %w", name, err)
 		}
+	} else if !errors.Is(loadErr, fs.ErrNotExist) {
+		return fmt.Errorf("checking existing sandbox in registry: %w", loadErr)
 	}
 
 	envCount := len(mergedEnv)
@@ -633,5 +640,19 @@ func applySizeOverride(cfg *compound.SandboxConfig, size string) {
 		cfg.DigitalOcean.Size = size
 	case "lightsail":
 		cfg.Lightsail.Bundle = size
+	}
+}
+
+// configuredSandboxSize returns the effective provider size after config/default merges and --size overrides.
+func configuredSandboxSize(cfg *compound.SandboxConfig) string {
+	switch cfg.Provider {
+	case "hetzner":
+		return strings.TrimSpace(cfg.Hetzner.ServerType)
+	case "digitalocean":
+		return strings.TrimSpace(cfg.DigitalOcean.Size)
+	case "lightsail":
+		return strings.TrimSpace(cfg.Lightsail.Bundle)
+	default:
+		return ""
 	}
 }

@@ -113,9 +113,9 @@ func TestResolveStopTargets_ExplicitNames(t *testing.T) {
 			wantNames: []string{"api-backend", "frontend"},
 		},
 		{
-			name:      "stopped sandbox can be targeted by name",
+			name:    "stopped sandbox targeted by name returns error",
 			args:      []string{"worker-01"},
-			wantNames: []string{"worker-01"},
+			wantErr: "is not running",
 		},
 		{
 			name:    "unknown name returns error",

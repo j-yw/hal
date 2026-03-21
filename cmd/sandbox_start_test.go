@@ -668,6 +668,15 @@ func TestRunSandboxStart_GlobalConfigSizeDefaults(t *testing.T) {
 	if gotCfg.HetznerSSHKey != "my-global-key" {
 		t.Errorf("HetznerSSHKey = %q, want %q (from global config)", gotCfg.HetznerSSHKey, "my-global-key")
 	}
+
+	// Persisted state should store the resolved effective size.
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.Size != "cx22" {
+		t.Errorf("instance.Size = %q, want %q (resolved from global config)", instance.Size, "cx22")
+	}
 }
 
 func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
@@ -1148,6 +1157,27 @@ func TestBatchPreflight_MultipleCollisions(t *testing.T) {
 	}
 }
 
+func TestBatchPreflight_RegistryReadError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", dir)
+
+	if err := os.MkdirAll(sandbox.SandboxesDir(), 0o700); err != nil {
+		t.Fatalf("setup: mkdir sandboxes dir: %v", err)
+	}
+	corrupt := filepath.Join(sandbox.SandboxesDir(), "worker-02.json")
+	if err := os.WriteFile(corrupt, []byte("{invalid"), 0o600); err != nil {
+		t.Fatalf("setup: write corrupt sandbox file: %v", err)
+	}
+
+	_, err := batchPreflight("worker", 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "batch preflight failed: checking sandbox \"worker-02\"") {
+		t.Errorf("error %q should include preflight read failure context", err.Error())
+	}
+}
+
 func TestBatchPreflight_InvalidBaseName(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HAL_CONFIG_HOME", dir)
@@ -1533,6 +1563,12 @@ func TestRunSandboxStart_NoSizeByDefault(t *testing.T) {
 func TestRunSandboxStart_SizeAndRepoTogether(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
+	if err := compound.SaveSandboxConfig(dir, &compound.SandboxConfig{
+		Provider: "hetzner",
+		Env:      map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
@@ -1558,6 +1594,12 @@ func TestRunSandboxStart_SizeAndRepoTogether(t *testing.T) {
 func TestRunSandboxStart_SizePersistedInBatchState(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
+	if err := compound.SaveSandboxConfig(dir, &compound.SandboxConfig{
+		Provider: "hetzner",
+		Env:      map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
@@ -1586,6 +1628,12 @@ func TestRunSandboxStart_SizePersistedInBatchState(t *testing.T) {
 func TestRunSandboxStart_ViaRunSandboxStart(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
+	if err := compound.SaveSandboxConfig(dir, &compound.SandboxConfig{
+		Provider: "hetzner",
+		Env:      map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
@@ -1941,6 +1989,38 @@ func TestRunSandboxStart_ForceNoExistingIsNoop(t *testing.T) {
 	// No delete needed since nothing exists
 	if len(mock.deleteCalls) != 0 {
 		t.Errorf("expected 0 Delete calls (nothing to replace), got %d", len(mock.deleteCalls))
+	}
+}
+
+func TestRunSandboxStart_RegistryReadErrorStopsCreate(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	if err := os.MkdirAll(sandbox.SandboxesDir(), 0o700); err != nil {
+		t.Fatalf("setup: mkdir sandboxes dir: %v", err)
+	}
+	corrupt := filepath.Join(sandbox.SandboxesDir(), "bad-sandbox.json")
+	if err := os.WriteFile(corrupt, []byte("{invalid"), 0o600); err != nil {
+		t.Fatalf("setup: write corrupt sandbox file: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "bad-sandbox", ID: "ws-1"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "bad-sandbox", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "checking existing sandbox in registry") {
+		t.Errorf("error %q should include registry read context", err.Error())
+	}
+
+	if len(mock.createCalls) != 0 {
+		t.Errorf("expected 0 Create calls when registry load fails, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 0 {
+		t.Errorf("expected 0 Delete calls when registry load fails, got %d", len(mock.deleteCalls))
 	}
 }
 
