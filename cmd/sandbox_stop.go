@@ -16,7 +16,7 @@ var sandboxStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop a running sandbox",
 	Args:  noArgsValidation(),
-Long: `Stop a running sandbox.
+	Long: `Stop a running sandbox.
 
 Reads the sandbox name and provider from .hal/sandbox.json.
 The provider is used to determine how to stop the sandbox (daytona CLI, hcloud CLI, or doctl CLI).`,
@@ -53,7 +53,8 @@ func runSandboxStopWithDeps(dir string, out io.Writer, provider sandbox.Provider
 	fmt.Fprintf(out, "Stopping sandbox %q...\n", state.Name)
 
 	ctx := context.Background()
-	if err := provider.Stop(ctx, state.Name, out); err != nil {
+	info := sandbox.ConnectInfoFromState(state)
+	if err := provider.Stop(ctx, info, out); err != nil {
 		return fmt.Errorf("sandbox stop failed: %w", err)
 	}
 

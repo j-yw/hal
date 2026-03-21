@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"bytes"
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,21 +28,25 @@ func (m *mockDeleteProvider) Create(ctx context.Context, name string, env map[st
 	return nil, nil
 }
 
-func (m *mockDeleteProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (m *mockDeleteProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
 
-func (m *mockDeleteProvider) Delete(ctx context.Context, name string, out io.Writer) error {
-	m.deleteCalls = append(m.deleteCalls, name)
+func (m *mockDeleteProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	if info != nil {
+		m.deleteCalls = append(m.deleteCalls, info.Name)
+	} else {
+		m.deleteCalls = append(m.deleteCalls, "")
+	}
 	return m.deleteErr
 }
 
-func (m *mockDeleteProvider) SSH(name string) (*exec.Cmd, error) { return nil, nil }
-func (m *mockDeleteProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+func (m *mockDeleteProvider) SSH(info *sandbox.ConnectInfo) (*exec.Cmd, error) { return nil, nil }
+func (m *mockDeleteProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
 	return nil, nil
 }
 
-func (m *mockDeleteProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (m *mockDeleteProvider) Status(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
 
@@ -204,8 +208,8 @@ func TestRunSandboxDelete_RemovesStateWhenDeletingByWorkspaceID(t *testing.T) {
 	if len(mock.deleteCalls) != 1 {
 		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
 	}
-	if mock.deleteCalls[0] != "ws-12345" {
-		t.Fatalf("Delete called with %q, want %q", mock.deleteCalls[0], "ws-12345")
+	if mock.deleteCalls[0] != "hal-feature-auth" {
+		t.Fatalf("Delete called with %q, want %q", mock.deleteCalls[0], "hal-feature-auth")
 	}
 
 	halDir := filepath.Join(dir, template.HalDir)

@@ -192,7 +192,7 @@
 - Registry collision semantics are strict: `SaveInstance` must return the exact error `sandbox "<name>" already exists`, while `ForceWriteInstance` is the explicit overwrite path for `--force` flows.
 - `ListInstances` should treat a missing `sandboxes/` directory as empty state and return instances sorted by `Name`; missing `LoadInstance`/`RemoveInstance` errors should wrap `fs.ErrNotExist` for `errors.Is` checks.
 - `ResolveDefault(filter)` is the canonical no-name target resolver: return exact empty-state errors (`no sandboxes found` or `no running sandboxes` for running-only filters), ambiguity errors as `multiple sandboxes found: <sorted names>`, and success hint text `connecting to only active sandbox "<name>"`.
-- Keep connection-target primitives in `internal/sandbox/provider.go`: `PreferredIP(instance)` centralizes tailscale-first IP selection and `ConnectInfoFromState(instance)` maps registry state to provider-ready identity (`Name`, `WorkspaceID`, preferred `IP`) while provider method signatures are still in transition.
+- Provider lifecycle/connection methods now consume `*ConnectInfo` (`Stop`, `Delete`, `Status`, `SSH`, `Exec`). Command paths should build it via `ConnectInfoFromState(instance)` and pass explicit fallback IDs/names when deleting by raw target value.
 
 ## Patterns from hal/sandbox-uuidv7-generation (2026-03-21)
 

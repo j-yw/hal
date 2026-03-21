@@ -90,7 +90,7 @@ func TestLightsailProvider_SSH(t *testing.T) {
 	}
 
 	p := &LightsailProvider{StateDir: dir}
-	cmd, err := p.SSH("test-dev")
+	cmd, err := p.SSH(&ConnectInfo{Name: "test-dev"})
 	if err != nil {
 		t.Fatalf("SSH() error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestLightsailProvider_Exec(t *testing.T) {
 	}
 
 	p := &LightsailProvider{StateDir: dir}
-	cmd, err := p.Exec("test-dev", []string{"ls", "-la"})
+	cmd, err := p.Exec(&ConnectInfo{Name: "test-dev"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestLightsailProvider_SSH_NoIP(t *testing.T) {
 	}
 
 	p := &LightsailProvider{StateDir: dir}
-	_, err := p.SSH("test-dev")
+	_, err := p.SSH(&ConnectInfo{Name: "test-dev"})
 	if err == nil {
 		t.Fatal("SSH() should error when IP is empty")
 	}

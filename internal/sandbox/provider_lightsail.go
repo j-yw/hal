@@ -226,9 +226,17 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 	return result, nil
 }
 
-func (l *LightsailProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (l *LightsailProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := l.ensureAWS(); err != nil {
 		return err
+	}
+
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return fmt.Errorf("sandbox name is required")
 	}
 
 	safeOut := synchronizedWriter(out)
@@ -243,9 +251,17 @@ func (l *LightsailProvider) Stop(ctx context.Context, name string, out io.Writer
 	return nil
 }
 
-func (l *LightsailProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (l *LightsailProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := l.ensureAWS(); err != nil {
 		return err
+	}
+
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return fmt.Errorf("sandbox name is required")
 	}
 
 	safeOut := synchronizedWriter(out)
@@ -263,9 +279,17 @@ func (l *LightsailProvider) Delete(ctx context.Context, name string, out io.Writ
 	return nil
 }
 
-func (l *LightsailProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (l *LightsailProvider) Status(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := l.ensureAWS(); err != nil {
 		return err
+	}
+
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return fmt.Errorf("sandbox name is required")
 	}
 
 	safeOut := synchronizedWriter(out)
@@ -284,12 +308,25 @@ func (l *LightsailProvider) Status(ctx context.Context, name string, out io.Writ
 	return nil
 }
 
-func (l *LightsailProvider) SSH(name string) (*exec.Cmd, error) {
-	state, err := LoadState(l.StateDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
+	name := ""
+	ip := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+		ip = strings.TrimSpace(info.IP)
 	}
-	ip := preferredIP(state)
+
+	if ip == "" {
+		state, err := LoadState(l.StateDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+		}
+		if name == "" {
+			name = state.Name
+		}
+		ip = PreferredIP(state)
+	}
+
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}
@@ -306,12 +343,25 @@ func (l *LightsailProvider) SSH(name string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (l *LightsailProvider) Exec(name string, args []string) (*exec.Cmd, error) {
-	state, err := LoadState(l.StateDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
+	name := ""
+	ip := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+		ip = strings.TrimSpace(info.IP)
 	}
-	ip := preferredIP(state)
+
+	if ip == "" {
+		state, err := LoadState(l.StateDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+		}
+		if name == "" {
+			name = state.Name
+		}
+		ip = PreferredIP(state)
+	}
+
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}

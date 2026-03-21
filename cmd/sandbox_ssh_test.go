@@ -18,12 +18,12 @@ import (
 
 // mockSSHProvider implements sandbox.Provider for SSH tests.
 type mockSSHProvider struct {
-	sshCmd     *exec.Cmd
-	sshErr     error
-	execCmd    *exec.Cmd
-	execErr    error
-	sshCalls   []string
-	execCalls  []mockExecCall
+	sshCmd    *exec.Cmd
+	sshErr    error
+	execCmd   *exec.Cmd
+	execErr   error
+	sshCalls  []string
+	execCalls []mockExecCall
 }
 
 type mockExecCall struct {
@@ -34,11 +34,21 @@ type mockExecCall struct {
 func (m *mockSSHProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
 	return nil, nil
 }
-func (m *mockSSHProvider) Stop(ctx context.Context, name string, out io.Writer) error   { return nil }
-func (m *mockSSHProvider) Delete(ctx context.Context, name string, out io.Writer) error { return nil }
-func (m *mockSSHProvider) Status(ctx context.Context, name string, out io.Writer) error { return nil }
+func (m *mockSSHProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	return nil
+}
+func (m *mockSSHProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	return nil
+}
+func (m *mockSSHProvider) Status(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	return nil
+}
 
-func (m *mockSSHProvider) SSH(name string) (*exec.Cmd, error) {
+func (m *mockSSHProvider) SSH(info *sandbox.ConnectInfo) (*exec.Cmd, error) {
+	name := ""
+	if info != nil {
+		name = info.Name
+	}
 	m.sshCalls = append(m.sshCalls, name)
 	if m.sshErr != nil {
 		return nil, m.sshErr
@@ -54,7 +64,11 @@ func (m *mockSSHProvider) SSH(name string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (m *mockSSHProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+func (m *mockSSHProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
+	name := ""
+	if info != nil {
+		name = info.Name
+	}
 	m.execCalls = append(m.execCalls, mockExecCall{Name: name, Args: args})
 	if m.execErr != nil {
 		return nil, m.execErr

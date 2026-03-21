@@ -27,21 +27,25 @@ func (m *mockStopProvider) Create(ctx context.Context, name string, env map[stri
 	return nil, nil
 }
 
-func (m *mockStopProvider) Stop(ctx context.Context, name string, out io.Writer) error {
-	m.stopCalls = append(m.stopCalls, name)
+func (m *mockStopProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	if info != nil {
+		m.stopCalls = append(m.stopCalls, info.Name)
+	} else {
+		m.stopCalls = append(m.stopCalls, "")
+	}
 	return m.stopErr
 }
 
-func (m *mockStopProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (m *mockStopProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
 
-func (m *mockStopProvider) SSH(name string) (*exec.Cmd, error) { return nil, nil }
-func (m *mockStopProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+func (m *mockStopProvider) SSH(info *sandbox.ConnectInfo) (*exec.Cmd, error) { return nil, nil }
+func (m *mockStopProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
 	return nil, nil
 }
 
-func (m *mockStopProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (m *mockStopProvider) Status(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
 

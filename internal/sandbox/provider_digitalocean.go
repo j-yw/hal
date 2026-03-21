@@ -249,12 +249,24 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	return result, nil
 }
 
-func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (d *DigitalOceanProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	target := d.resolveDropletTarget(name)
+	target := ""
+	name := ""
+	if info != nil {
+		target = strings.TrimSpace(info.WorkspaceID)
+		name = strings.TrimSpace(info.Name)
+	}
+	if target == "" {
+		target = d.resolveDropletTarget(name)
+	}
+	if target == "" {
+		return fmt.Errorf("sandbox name is required")
+	}
+
 	safeOut := synchronizedWriter(out)
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", target)
 	var stderrBuf bytes.Buffer
@@ -267,12 +279,24 @@ func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Wri
 	return nil
 }
 
-func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (d *DigitalOceanProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	target := d.resolveDropletTarget(name)
+	target := ""
+	name := ""
+	if info != nil {
+		target = strings.TrimSpace(info.WorkspaceID)
+		name = strings.TrimSpace(info.Name)
+	}
+	if target == "" {
+		target = d.resolveDropletTarget(name)
+	}
+	if target == "" {
+		return fmt.Errorf("sandbox name is required")
+	}
+
 	safeOut := synchronizedWriter(out)
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "delete", target, "--force")
 	var stderrBuf bytes.Buffer
@@ -285,12 +309,24 @@ func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.W
 	return nil
 }
 
-func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	target := d.resolveDropletTarget(name)
+	target := ""
+	name := ""
+	if info != nil {
+		target = strings.TrimSpace(info.WorkspaceID)
+		name = strings.TrimSpace(info.Name)
+	}
+	if target == "" {
+		target = d.resolveDropletTarget(name)
+	}
+	if target == "" {
+		return fmt.Errorf("sandbox name is required")
+	}
+
 	safeOut := synchronizedWriter(out)
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
 		"--format", "ID,Name,Status,PublicIPv4",
@@ -334,24 +370,37 @@ func (d *DigitalOceanProvider) refreshIP(state *SandboxState) (string, error) {
 	return freshIP, nil
 }
 
-func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
+func (d *DigitalOceanProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
 	}
 
-	state, err := LoadState(d.StateDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+	name := ""
+	ip := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+		ip = strings.TrimSpace(info.IP)
 	}
 
-	ip := preferredIP(state)
 	if ip == "" {
-		refreshedIP, err := d.refreshIP(state)
+		state, err := LoadState(d.StateDir)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 		}
-		ip = refreshedIP
+		if name == "" {
+			name = state.Name
+		}
+
+		ip = PreferredIP(state)
+		if ip == "" {
+			refreshedIP, err := d.refreshIP(state)
+			if err != nil {
+				return nil, err
+			}
+			ip = refreshedIP
+		}
 	}
+
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found for %q", name)
 	}
@@ -367,24 +416,37 @@ func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (d *DigitalOceanProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
 	}
 
-	state, err := LoadState(d.StateDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+	name := ""
+	ip := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+		ip = strings.TrimSpace(info.IP)
 	}
 
-	ip := preferredIP(state)
 	if ip == "" {
-		refreshedIP, err := d.refreshIP(state)
+		state, err := LoadState(d.StateDir)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
 		}
-		ip = refreshedIP
+		if name == "" {
+			name = state.Name
+		}
+
+		ip = PreferredIP(state)
+		if ip == "" {
+			refreshedIP, err := d.refreshIP(state)
+			if err != nil {
+				return nil, err
+			}
+			ip = refreshedIP
+		}
 	}
+
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found for %q", name)
 	}

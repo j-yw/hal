@@ -168,7 +168,15 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 	return result, nil
 }
 
-func (h *HetznerProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (h *HetznerProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error {
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return fmt.Errorf("sandbox name is required")
+	}
+
 	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "shutdown", name)
 	cmd.Stdout = safeOut
@@ -182,7 +190,15 @@ func (h *HetznerProvider) Stop(ctx context.Context, name string, out io.Writer) 
 	return nil
 }
 
-func (h *HetznerProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (h *HetznerProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return fmt.Errorf("sandbox name is required")
+	}
+
 	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "delete", name)
 	cmd.Stdout = safeOut
@@ -196,12 +212,25 @@ func (h *HetznerProvider) Delete(ctx context.Context, name string, out io.Writer
 	return nil
 }
 
-func (h *HetznerProvider) SSH(name string) (*exec.Cmd, error) {
-	state, err := LoadState(h.StateDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+func (h *HetznerProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
+	name := ""
+	ip := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+		ip = strings.TrimSpace(info.IP)
 	}
-	ip := preferredIP(state)
+
+	if ip == "" {
+		state, err := LoadState(h.StateDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+		}
+		if name == "" {
+			name = state.Name
+		}
+		ip = PreferredIP(state)
+	}
+
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}
@@ -217,12 +246,25 @@ func (h *HetznerProvider) SSH(name string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (h *HetznerProvider) Exec(name string, args []string) (*exec.Cmd, error) {
-	state, err := LoadState(h.StateDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+func (h *HetznerProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
+	name := ""
+	ip := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+		ip = strings.TrimSpace(info.IP)
 	}
-	ip := preferredIP(state)
+
+	if ip == "" {
+		state, err := LoadState(h.StateDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
+		}
+		if name == "" {
+			name = state.Name
+		}
+		ip = PreferredIP(state)
+	}
+
 	if ip == "" {
 		return nil, fmt.Errorf("no IP address found in sandbox state for %q", name)
 	}
@@ -241,7 +283,15 @@ func (h *HetznerProvider) Exec(name string, args []string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (h *HetznerProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (h *HetznerProvider) Status(ctx context.Context, info *ConnectInfo, out io.Writer) error {
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return fmt.Errorf("sandbox name is required")
+	}
+
 	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "describe", name)
 	cmd.Stdout = safeOut

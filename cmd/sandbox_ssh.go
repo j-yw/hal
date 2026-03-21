@@ -66,10 +66,11 @@ func runSandboxSSHWithDeps(dir string, args []string, out io.Writer, provider sa
 
 	// Strip leading "--" from args if present
 	remoteArgs := stripDashDash(args)
+	info := sandbox.ConnectInfoFromState(state)
 
 	if len(remoteArgs) == 0 {
 		// Interactive SSH session
-		cmd, err := provider.SSH(state.Name)
+		cmd, err := provider.SSH(info)
 		if err != nil {
 			return fmt.Errorf("building SSH command: %w", err)
 		}
@@ -83,7 +84,7 @@ func runSandboxSSHWithDeps(dir string, args []string, out io.Writer, provider sa
 	}
 
 	// Remote command execution
-	cmd, err := provider.Exec(state.Name, remoteArgs)
+	cmd, err := provider.Exec(info, remoteArgs)
 	if err != nil {
 		return fmt.Errorf("building exec command: %w", err)
 	}

@@ -73,8 +73,15 @@ func runSandboxDeleteWithDeps(dir string, out io.Writer, targetName string, prov
 
 	fmt.Fprintf(out, "Deleting sandbox %q...\n", deleteName)
 
+	info := &sandbox.ConnectInfo{Name: deleteName, WorkspaceID: deleteName}
+	if state != nil && (state.Name == deleteName || state.WorkspaceID == deleteName) {
+		if stateInfo := sandbox.ConnectInfoFromState(state); stateInfo != nil {
+			info = stateInfo
+		}
+	}
+
 	ctx := context.Background()
-	if err := provider.Delete(ctx, deleteName, out); err != nil {
+	if err := provider.Delete(ctx, info, out); err != nil {
 		return fmt.Errorf("sandbox delete failed: %w", err)
 	}
 

@@ -358,7 +358,7 @@ func TestDaytonaProvider_Stop_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Stop(context.Background(), "my-sandbox", &out)
+	err := dp.Stop(context.Background(), &ConnectInfo{Name: "my-sandbox"}, &out)
 	if err != nil {
 		t.Fatalf("Stop() unexpected error: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestDaytonaProvider_Stop_Failure(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Stop(context.Background(), "my-sandbox", &out)
+	err := dp.Stop(context.Background(), &ConnectInfo{Name: "my-sandbox"}, &out)
 	if err == nil {
 		t.Fatal("Stop() expected error, got nil")
 	}
@@ -411,7 +411,7 @@ func TestDaytonaProvider_Delete_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Delete(context.Background(), "my-sandbox", &out)
+	err := dp.Delete(context.Background(), &ConnectInfo{Name: "my-sandbox"}, &out)
 	if err != nil {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestDaytonaProvider_Delete_Failure(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Delete(context.Background(), "my-sandbox", &out)
+	err := dp.Delete(context.Background(), &ConnectInfo{Name: "my-sandbox"}, &out)
 	if err == nil {
 		t.Fatal("Delete() expected error, got nil")
 	}
@@ -464,7 +464,7 @@ func TestDaytonaProvider_Status_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Status(context.Background(), "my-sandbox", &out)
+	err := dp.Status(context.Background(), &ConnectInfo{Name: "my-sandbox"}, &out)
 	if err != nil {
 		t.Fatalf("Status() unexpected error: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestDaytonaProvider_Status_Failure(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Status(context.Background(), "my-sandbox", &out)
+	err := dp.Status(context.Background(), &ConnectInfo{Name: "my-sandbox"}, &out)
 	if err == nil {
 		t.Fatal("Status() expected error, got nil")
 	}
@@ -505,7 +505,7 @@ func TestDaytonaProvider_Status_Failure(t *testing.T) {
 
 func TestDaytonaProvider_SSH(t *testing.T) {
 	dp := &DaytonaProvider{APIKey: "key"}
-	cmd, err := dp.SSH("my-sandbox")
+	cmd, err := dp.SSH(&ConnectInfo{Name: "my-sandbox"})
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestDaytonaProvider_SSH(t *testing.T) {
 
 func TestDaytonaProvider_Exec(t *testing.T) {
 	dp := &DaytonaProvider{APIKey: "key"}
-	cmd, err := dp.Exec("my-sandbox", []string{"ls", "-la"})
+	cmd, err := dp.Exec(&ConnectInfo{Name: "my-sandbox"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestDaytonaProvider_Exec(t *testing.T) {
 
 func TestDaytonaProvider_Exec_EmptyArgs(t *testing.T) {
 	dp := &DaytonaProvider{APIKey: "key"}
-	cmd, err := dp.Exec("sb", []string{})
+	cmd, err := dp.Exec(&ConnectInfo{Name: "sb"}, []string{})
 	if err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}

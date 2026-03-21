@@ -33,23 +33,23 @@ func (m *mockProvider) Create(ctx context.Context, name string, env map[string]s
 	return m.createResult, m.createErr
 }
 
-func (m *mockProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (m *mockProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
 
-func (m *mockProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (m *mockProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
 
-func (m *mockProvider) SSH(name string) (*exec.Cmd, error) {
+func (m *mockProvider) SSH(info *sandbox.ConnectInfo) (*exec.Cmd, error) {
 	return nil, nil
 }
 
-func (m *mockProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+func (m *mockProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
 	return nil, nil
 }
 
-func (m *mockProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (m *mockProvider) Status(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
 

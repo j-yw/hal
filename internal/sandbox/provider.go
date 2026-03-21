@@ -61,22 +61,22 @@ type Provider interface {
 	// Output is streamed to out. Returns the result or an error.
 	Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error)
 
-	// Stop halts a running sandbox.
-	Stop(ctx context.Context, name string, out io.Writer) error
+	// Stop halts a running sandbox identified by ConnectInfo.
+	Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error
 
 	// Delete removes a sandbox permanently.
-	Delete(ctx context.Context, name string, out io.Writer) error
+	Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error
 
 	// SSH returns an *exec.Cmd for an interactive SSH session.
 	// The caller decides whether to Run() or syscall.Exec() into it.
-	SSH(name string) (*exec.Cmd, error)
+	SSH(info *ConnectInfo) (*exec.Cmd, error)
 
 	// Exec returns an *exec.Cmd that runs args inside the sandbox.
 	// The caller decides whether to Run() or syscall.Exec() into it.
-	Exec(name string, args []string) (*exec.Cmd, error)
+	Exec(info *ConnectInfo, args []string) (*exec.Cmd, error)
 
 	// Status displays the current status of a sandbox.
-	Status(ctx context.Context, name string, out io.Writer) error
+	Status(ctx context.Context, info *ConnectInfo, out io.Writer) error
 }
 
 // RunCmd executes cmd, piping its stdout and stderr to out, and returns the

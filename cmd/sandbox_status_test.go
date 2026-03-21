@@ -27,17 +27,23 @@ type mockStatusProvider struct {
 func (m *mockStatusProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
 	return nil, nil
 }
-func (m *mockStatusProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (m *mockStatusProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
-func (m *mockStatusProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (m *mockStatusProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
-func (m *mockStatusProvider) SSH(name string) (*exec.Cmd, error)           { return nil, nil }
-func (m *mockStatusProvider) Exec(name string, args []string) (*exec.Cmd, error) { return nil, nil }
+func (m *mockStatusProvider) SSH(info *sandbox.ConnectInfo) (*exec.Cmd, error) { return nil, nil }
+func (m *mockStatusProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
+	return nil, nil
+}
 
-func (m *mockStatusProvider) Status(ctx context.Context, name string, out io.Writer) error {
-	m.statusCalls = append(m.statusCalls, name)
+func (m *mockStatusProvider) Status(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	if info != nil {
+		m.statusCalls = append(m.statusCalls, info.Name)
+	} else {
+		m.statusCalls = append(m.statusCalls, "")
+	}
 	if m.statusOut != "" {
 		fmt.Fprint(out, m.statusOut)
 	}

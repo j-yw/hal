@@ -180,7 +180,7 @@ func TestDigitalOceanProvider_Stop_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Stop(context.Background(), "my-droplet", &out)
+	err := dp.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &out)
 	if err != nil {
 		t.Fatalf("Stop() unexpected error: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestDigitalOceanProvider_Delete_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Delete(context.Background(), "my-droplet", &out)
+	err := dp.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &out)
 	if err != nil {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestDigitalOceanProvider_Status_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Status(context.Background(), "my-droplet", &out)
+	err := dp.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &out)
 	if err != nil {
 		t.Fatalf("Status() unexpected error: %v", err)
 	}
@@ -264,27 +264,27 @@ func TestDigitalOceanProvider_DoctlNotFound(t *testing.T) {
 		t.Errorf("Create() error = %v, want 'doctl not found'", createErr)
 	}
 
-	stopErr := dp.Stop(ctx, "test", &out)
+	stopErr := dp.Stop(ctx, &ConnectInfo{Name: "test"}, &out)
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "doctl not found") {
 		t.Errorf("Stop() error = %v, want 'doctl not found'", stopErr)
 	}
 
-	deleteErr := dp.Delete(ctx, "test", &out)
+	deleteErr := dp.Delete(ctx, &ConnectInfo{Name: "test"}, &out)
 	if deleteErr == nil || !strings.Contains(deleteErr.Error(), "doctl not found") {
 		t.Errorf("Delete() error = %v, want 'doctl not found'", deleteErr)
 	}
 
-	statusErr := dp.Status(ctx, "test", &out)
+	statusErr := dp.Status(ctx, &ConnectInfo{Name: "test"}, &out)
 	if statusErr == nil || !strings.Contains(statusErr.Error(), "doctl not found") {
 		t.Errorf("Status() error = %v, want 'doctl not found'", statusErr)
 	}
 
-	_, sshErr := dp.SSH("test")
+	_, sshErr := dp.SSH(&ConnectInfo{Name: "test"})
 	if sshErr == nil || !strings.Contains(sshErr.Error(), "doctl not found") {
 		t.Errorf("SSH() error = %v, want 'doctl not found'", sshErr)
 	}
 
-	_, execErr := dp.Exec("test", []string{"ls"})
+	_, execErr := dp.Exec(&ConnectInfo{Name: "test"}, []string{"ls"})
 	if execErr == nil || !strings.Contains(execErr.Error(), "doctl not found") {
 		t.Errorf("Exec() error = %v, want 'doctl not found'", execErr)
 	}
@@ -311,7 +311,7 @@ func TestDigitalOceanProvider_SSH_WithState(t *testing.T) {
 		StateDir: stateDir,
 	}
 
-	cmd, err := dp.SSH("my-droplet")
+	cmd, err := dp.SSH(&ConnectInfo{Name: "my-droplet"})
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestDigitalOceanProvider_Exec_WithState(t *testing.T) {
 		StateDir: stateDir,
 	}
 
-	cmd, err := dp.Exec("my-droplet", []string{"ls", "-la"})
+	cmd, err := dp.Exec(&ConnectInfo{Name: "my-droplet"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
 		StateDir: stateDir,
 	}
 
-	_, err = dp.SSH("my-droplet")
+	_, err = dp.SSH(&ConnectInfo{Name: "my-droplet"})
 	if err == nil {
 		t.Fatal("SSH() expected error for missing IP, got nil")
 	}
@@ -399,7 +399,7 @@ func TestDigitalOceanProvider_SSH_MissingState(t *testing.T) {
 		StateDir: t.TempDir(), // empty dir, no sandbox.json
 	}
 
-	_, err := dp.SSH("my-droplet")
+	_, err := dp.SSH(&ConnectInfo{Name: "my-droplet"})
 	if err == nil {
 		t.Fatal("SSH() expected error for missing state, got nil")
 	}

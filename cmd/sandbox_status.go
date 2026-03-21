@@ -63,7 +63,8 @@ func runSandboxStatusWithDeps(dir string, out io.Writer, provider sandbox.Provid
 	}
 
 	ctx := context.Background()
-	if err := provider.Status(ctx, state.Name, out); err != nil {
+	info := sandbox.ConnectInfoFromState(state)
+	if err := provider.Status(ctx, info, out); err != nil {
 		return fmt.Errorf("fetching sandbox status: %w", err)
 	}
 
