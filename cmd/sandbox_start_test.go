@@ -90,7 +90,7 @@ func TestRunSandboxStart_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "", nil, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
+	err := runSandboxStartWithDeps(dir, "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestRunSandboxStart_ExplicitName(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-sandbox", nil, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-sandbox", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRunSandboxStart_EnvVarsFromConfig(t *testing.T) {
 	// CLI env overrides config
 	cliEnv := map[string]string{"API_KEY": "sk-from-cli"}
 
-	err := runSandboxStartWithDeps(dir, "sb", cliEnv, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", cliEnv, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRunSandboxStart_LockdownRequiresAuthKey(t *testing.T) {
 	}
 
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
-	err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -271,7 +271,7 @@ func TestRunSandboxStart_ProviderAndIPSaved(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-server", nil, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-server", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestRunSandboxStart_CreateFailure(t *testing.T) {
 		createErr: fmt.Errorf("quota exceeded"),
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -334,7 +334,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 
 	mock := &mockProvider{}
 
-	err := runSandboxStartWithDeps(dir, "", nil, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
+	err := runSandboxStartWithDeps(dir, "", nil, autoShutdownOpts{}, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -346,7 +346,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 func TestRunSandboxStart_HalDirMissing(t *testing.T) {
 	dir := t.TempDir()
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, nil, nil)
+	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -394,7 +394,7 @@ func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -481,7 +481,7 @@ func TestRunSandboxStart_AutoMigrateFailureWarnsAndContinues(t *testing.T) {
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "sb", nil, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestRunSandboxStart_GlobalConfigSizeDefaults(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", nil, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -626,5 +626,342 @@ func TestSandboxStartCommandFlags(t *testing.T) {
 	}
 	if sandboxStartCmd.Flags().Lookup("env") == nil {
 		t.Fatal("--env flag should exist")
+	}
+	if sandboxStartCmd.Flags().Lookup("auto-shutdown") == nil {
+		t.Fatal("--auto-shutdown flag should exist")
+	}
+	if sandboxStartCmd.Flags().Lookup("no-auto-shutdown") == nil {
+		t.Fatal("--no-auto-shutdown flag should exist")
+	}
+	if sandboxStartCmd.Flags().Lookup("idle-hours") == nil {
+		t.Fatal("--idle-hours flag should exist")
+	}
+}
+
+func TestResolveAutoShutdown(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+	intPtr := func(v int) *int { return &v }
+
+	tests := []struct {
+		name             string
+		globalCfg        *sandbox.GlobalConfig
+		opts             autoShutdownOpts
+		wantAutoShutdown bool
+		wantIdleHours    int
+	}{
+		{
+			name:             "defaults from global config",
+			globalCfg:        &sandbox.GlobalConfig{Defaults: sandbox.GlobalDefaults{AutoShutdown: true, IdleHours: 48}},
+			opts:             autoShutdownOpts{},
+			wantAutoShutdown: true,
+			wantIdleHours:    48,
+		},
+		{
+			name:             "nil global config uses hardcoded defaults",
+			globalCfg:        nil,
+			opts:             autoShutdownOpts{},
+			wantAutoShutdown: true,
+			wantIdleHours:    48,
+		},
+		{
+			name:             "global config with autoShutdown false",
+			globalCfg:        &sandbox.GlobalConfig{Defaults: sandbox.GlobalDefaults{AutoShutdown: false, IdleHours: 24}},
+			opts:             autoShutdownOpts{},
+			wantAutoShutdown: false,
+			wantIdleHours:    24,
+		},
+		{
+			name:             "--auto-shutdown flag overrides config",
+			globalCfg:        &sandbox.GlobalConfig{Defaults: sandbox.GlobalDefaults{AutoShutdown: false, IdleHours: 48}},
+			opts:             autoShutdownOpts{autoShutdown: boolPtr(true)},
+			wantAutoShutdown: true,
+			wantIdleHours:    48,
+		},
+		{
+			name:             "--no-auto-shutdown takes precedence over --auto-shutdown",
+			globalCfg:        &sandbox.GlobalConfig{Defaults: sandbox.GlobalDefaults{AutoShutdown: true, IdleHours: 48}},
+			opts:             autoShutdownOpts{autoShutdown: boolPtr(true), noAutoShutdown: boolPtr(true)},
+			wantAutoShutdown: false,
+			wantIdleHours:    48,
+		},
+		{
+			name:             "--no-auto-shutdown disables auto-shutdown",
+			globalCfg:        &sandbox.GlobalConfig{Defaults: sandbox.GlobalDefaults{AutoShutdown: true, IdleHours: 48}},
+			opts:             autoShutdownOpts{noAutoShutdown: boolPtr(true)},
+			wantAutoShutdown: false,
+			wantIdleHours:    48,
+		},
+		{
+			name:             "--idle-hours flag overrides config",
+			globalCfg:        &sandbox.GlobalConfig{Defaults: sandbox.GlobalDefaults{AutoShutdown: true, IdleHours: 48}},
+			opts:             autoShutdownOpts{idleHours: intPtr(24)},
+			wantAutoShutdown: true,
+			wantIdleHours:    24,
+		},
+		{
+			name:             "all flags set together",
+			globalCfg:        &sandbox.GlobalConfig{Defaults: sandbox.GlobalDefaults{AutoShutdown: false, IdleHours: 48}},
+			opts:             autoShutdownOpts{autoShutdown: boolPtr(true), idleHours: intPtr(12)},
+			wantAutoShutdown: true,
+			wantIdleHours:    12,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotAuto, gotHours := resolveAutoShutdown(tt.globalCfg, tt.opts)
+			if gotAuto != tt.wantAutoShutdown {
+				t.Errorf("autoShutdown = %v, want %v", gotAuto, tt.wantAutoShutdown)
+			}
+			if gotHours != tt.wantIdleHours {
+				t.Errorf("idleHours = %d, want %d", gotHours, tt.wantIdleHours)
+			}
+		})
+	}
+}
+
+func TestInjectAutoShutdownEnv(t *testing.T) {
+	t.Run("auto-shutdown enabled injects both vars", func(t *testing.T) {
+		env := map[string]string{"EXISTING": "val"}
+		injectAutoShutdownEnv(env, true, 48)
+
+		if env["HAL_AUTO_SHUTDOWN"] != "true" {
+			t.Errorf("HAL_AUTO_SHUTDOWN = %q, want %q", env["HAL_AUTO_SHUTDOWN"], "true")
+		}
+		if env["HAL_IDLE_HOURS"] != "48" {
+			t.Errorf("HAL_IDLE_HOURS = %q, want %q", env["HAL_IDLE_HOURS"], "48")
+		}
+		if env["EXISTING"] != "val" {
+			t.Errorf("EXISTING = %q, want %q", env["EXISTING"], "val")
+		}
+	})
+
+	t.Run("auto-shutdown disabled injects false and no idle hours", func(t *testing.T) {
+		env := map[string]string{"HAL_IDLE_HOURS": "leftover"}
+		injectAutoShutdownEnv(env, false, 48)
+
+		if env["HAL_AUTO_SHUTDOWN"] != "false" {
+			t.Errorf("HAL_AUTO_SHUTDOWN = %q, want %q", env["HAL_AUTO_SHUTDOWN"], "false")
+		}
+		if _, ok := env["HAL_IDLE_HOURS"]; ok {
+			t.Errorf("HAL_IDLE_HOURS should not be present when auto-shutdown is disabled, got %q", env["HAL_IDLE_HOURS"])
+		}
+	})
+
+	t.Run("custom idle hours", func(t *testing.T) {
+		env := make(map[string]string)
+		injectAutoShutdownEnv(env, true, 24)
+
+		if env["HAL_IDLE_HOURS"] != "24" {
+			t.Errorf("HAL_IDLE_HOURS = %q, want %q", env["HAL_IDLE_HOURS"], "24")
+		}
+	})
+}
+
+func TestRunSandboxStart_AutoShutdownDefaultsInjected(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	// Default: no flags set, global config defaults (autoShutdown=true, idleHours=48)
+	var out bytes.Buffer
+	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, &out, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	env := mock.createCalls[0].Env
+	if env["HAL_AUTO_SHUTDOWN"] != "true" {
+		t.Errorf("HAL_AUTO_SHUTDOWN = %q, want %q", env["HAL_AUTO_SHUTDOWN"], "true")
+	}
+	if env["HAL_IDLE_HOURS"] != "48" {
+		t.Errorf("HAL_IDLE_HOURS = %q, want %q", env["HAL_IDLE_HOURS"], "48")
+	}
+
+	// Verify persisted state has auto-shutdown values
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if !instance.AutoShutdown {
+		t.Error("instance.AutoShutdown should be true")
+	}
+	if instance.IdleHours != 48 {
+		t.Errorf("instance.IdleHours = %d, want 48", instance.IdleHours)
+	}
+}
+
+func TestRunSandboxStart_NoAutoShutdownFlag(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	noAuto := true
+	opts := autoShutdownOpts{noAutoShutdown: &noAuto}
+
+	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env := mock.createCalls[0].Env
+	if env["HAL_AUTO_SHUTDOWN"] != "false" {
+		t.Errorf("HAL_AUTO_SHUTDOWN = %q, want %q", env["HAL_AUTO_SHUTDOWN"], "false")
+	}
+	if _, ok := env["HAL_IDLE_HOURS"]; ok {
+		t.Errorf("HAL_IDLE_HOURS should not be present when --no-auto-shutdown, got %q", env["HAL_IDLE_HOURS"])
+	}
+
+	// Verify persisted state reflects disabled auto-shutdown
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.AutoShutdown {
+		t.Error("instance.AutoShutdown should be false")
+	}
+}
+
+func TestRunSandboxStart_AutoShutdownFlagOverridesConfig(t *testing.T) {
+	dir := t.TempDir()
+	globalDir := filepath.Join(dir, "globalcfg")
+	t.Setenv("HAL_CONFIG_HOME", globalDir)
+
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env:      map[string]string{},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Global config has auto-shutdown disabled
+	globalCfg := &sandbox.GlobalConfig{
+		Provider: "daytona",
+		Defaults: sandbox.GlobalDefaults{AutoShutdown: false, IdleHours: 24},
+	}
+	if err := sandbox.SaveGlobalConfig(globalCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	// --auto-shutdown flag should override the global config
+	autoOn := true
+	opts := autoShutdownOpts{autoShutdown: &autoOn}
+
+	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env := mock.createCalls[0].Env
+	if env["HAL_AUTO_SHUTDOWN"] != "true" {
+		t.Errorf("HAL_AUTO_SHUTDOWN = %q, want %q", env["HAL_AUTO_SHUTDOWN"], "true")
+	}
+	// idle-hours should still come from global config
+	if env["HAL_IDLE_HOURS"] != "24" {
+		t.Errorf("HAL_IDLE_HOURS = %q, want %q (from global config)", env["HAL_IDLE_HOURS"], "24")
+	}
+}
+
+func TestRunSandboxStart_IdleHoursFlagOverridesConfig(t *testing.T) {
+	dir := t.TempDir()
+	globalDir := filepath.Join(dir, "globalcfg")
+	t.Setenv("HAL_CONFIG_HOME", globalDir)
+
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env:      map[string]string{},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Global config has default 48 hours
+	globalCfg := &sandbox.GlobalConfig{
+		Provider: "daytona",
+		Defaults: sandbox.GlobalDefaults{AutoShutdown: true, IdleHours: 48},
+	}
+	if err := sandbox.SaveGlobalConfig(globalCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	// --idle-hours flag should override the global config
+	hours := 12
+	opts := autoShutdownOpts{idleHours: &hours}
+
+	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env := mock.createCalls[0].Env
+	if env["HAL_AUTO_SHUTDOWN"] != "true" {
+		t.Errorf("HAL_AUTO_SHUTDOWN = %q, want %q", env["HAL_AUTO_SHUTDOWN"], "true")
+	}
+	if env["HAL_IDLE_HOURS"] != "12" {
+		t.Errorf("HAL_IDLE_HOURS = %q, want %q", env["HAL_IDLE_HOURS"], "12")
+	}
+
+	// Verify persisted state
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if instance.IdleHours != 12 {
+		t.Errorf("instance.IdleHours = %d, want 12", instance.IdleHours)
+	}
+}
+
+func TestRunSandboxStart_AutoShutdownEnvPersistedInState(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	hours := 72
+	autoOn := true
+	opts := autoShutdownOpts{autoShutdown: &autoOn, idleHours: &hours}
+
+	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if !instance.AutoShutdown {
+		t.Error("instance.AutoShutdown should be true")
+	}
+	if instance.IdleHours != 72 {
+		t.Errorf("instance.IdleHours = %d, want 72", instance.IdleHours)
 	}
 }

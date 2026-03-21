@@ -25,15 +25,36 @@ The sandbox name defaults to the current git branch (with slashes replaced by hy
 Use --name to override the default name.
 
 Environment variables from .hal/config.yaml sandbox.env section are passed to the provider.
-Additional -e/--env flags overlay config values.`,
+Additional -e/--env flags overlay config values.
+
+Auto-shutdown injects HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars into the sandbox
+so that cloud-init can configure idle timers. Defaults come from global sandbox config.`,
 	Example: `  hal sandbox start
   hal sandbox start --name hal-dev
-  hal sandbox start -n dev -e TAILSCALE_AUTHKEY=tskey-auth-xxx -e ANTHROPIC_API_KEY=sk-ant-xxx`,
+  hal sandbox start -n dev -e TAILSCALE_AUTHKEY=tskey-auth-xxx -e ANTHROPIC_API_KEY=sk-ant-xxx
+  hal sandbox start --no-auto-shutdown
+  hal sandbox start --idle-hours 24`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		envSlice, _ := cmd.Flags().GetStringArray("env")
 		envVars := parseEnvFlags(envSlice)
-		return runSandboxStartWithDeps(".", name, envVars, os.Stdout, nil, nil)
+
+		// Resolve auto-shutdown settings from flags
+		opts := autoShutdownOpts{}
+		if cmd.Flags().Changed("no-auto-shutdown") {
+			v := true
+			opts.noAutoShutdown = &v
+		}
+		if cmd.Flags().Changed("auto-shutdown") {
+			v, _ := cmd.Flags().GetBool("auto-shutdown")
+			opts.autoShutdown = &v
+		}
+		if cmd.Flags().Changed("idle-hours") {
+			v, _ := cmd.Flags().GetInt("idle-hours")
+			opts.idleHours = &v
+		}
+
+		return runSandboxStartWithDeps(".", name, envVars, opts, os.Stdout, nil, nil)
 	},
 }
 
@@ -42,6 +63,9 @@ var resolveSandboxProvider = sandbox.ProviderFromConfig
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
 	sandboxStartCmd.Flags().StringArrayP("env", "e", nil, "environment variables (format: KEY=VALUE, can be repeated)")
+	sandboxStartCmd.Flags().Bool("auto-shutdown", true, "enable auto-shutdown idle timer (default from global config)")
+	sandboxStartCmd.Flags().Bool("no-auto-shutdown", false, "disable auto-shutdown idle timer")
+	sandboxStartCmd.Flags().Int("idle-hours", 0, "hours before idle shutdown (default from global config)")
 	sandboxCmd.AddCommand(sandboxStartCmd)
 }
 
@@ -64,10 +88,62 @@ func parseEnvFlags(envSlice []string) map[string]string {
 // Injected in tests to avoid depending on actual git state.
 type branchResolver func() (string, error)
 
+// autoShutdownOpts carries flag overrides for auto-shutdown configuration.
+// Pointer fields distinguish "flag was set" from "flag was not set".
+type autoShutdownOpts struct {
+	autoShutdown    *bool // --auto-shutdown flag
+	noAutoShutdown  *bool // --no-auto-shutdown flag
+	idleHours       *int  // --idle-hours flag
+}
+
 // startDeps holds injectable dependencies for runSandboxStartWithDeps.
 type startDeps struct {
 	provider  sandbox.Provider
 	getBranch branchResolver
+}
+
+// resolveAutoShutdown merges global config defaults with flag overrides.
+// --no-auto-shutdown takes precedence over --auto-shutdown.
+func resolveAutoShutdown(globalCfg *sandbox.GlobalConfig, opts autoShutdownOpts) (autoShutdown bool, idleHours int) {
+	// Start with global config defaults
+	if globalCfg != nil {
+		autoShutdown = globalCfg.Defaults.AutoShutdown
+		idleHours = globalCfg.Defaults.IdleHours
+	} else {
+		// Fallback to hardcoded defaults matching DefaultGlobalConfig
+		autoShutdown = true
+		idleHours = 48
+	}
+
+	// Apply --auto-shutdown flag override
+	if opts.autoShutdown != nil {
+		autoShutdown = *opts.autoShutdown
+	}
+
+	// --no-auto-shutdown takes precedence
+	if opts.noAutoShutdown != nil && *opts.noAutoShutdown {
+		autoShutdown = false
+	}
+
+	// Apply --idle-hours flag override
+	if opts.idleHours != nil {
+		idleHours = *opts.idleHours
+	}
+
+	return autoShutdown, idleHours
+}
+
+// injectAutoShutdownEnv adds HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars
+// to the merged env map for cloud-init idle timer configuration.
+func injectAutoShutdownEnv(env map[string]string, autoShutdown bool, idleHours int) {
+	if autoShutdown {
+		env["HAL_AUTO_SHUTDOWN"] = "true"
+		env["HAL_IDLE_HOURS"] = fmt.Sprintf("%d", idleHours)
+	} else {
+		env["HAL_AUTO_SHUTDOWN"] = "false"
+		// No HAL_IDLE_HOURS when auto-shutdown is disabled
+		delete(env, "HAL_IDLE_HOURS")
+	}
 }
 
 // runSandboxStartWithDeps contains the testable logic for the sandbox start command.
@@ -77,6 +153,7 @@ type startDeps struct {
 func runSandboxStartWithDeps(
 	dir, name string,
 	envVars map[string]string,
+	shutdownOpts autoShutdownOpts,
 	out io.Writer,
 	provider sandbox.Provider,
 	getBranch branchResolver,
@@ -146,6 +223,9 @@ func runSandboxStartWithDeps(
 		name = sandbox.SandboxNameFromBranch(branch)
 	}
 
+	// Resolve auto-shutdown from global config + flag overrides
+	autoShutdown, idleHours := resolveAutoShutdown(globalCfg, shutdownOpts)
+
 	// Merge env vars: config values + CLI overrides
 	mergedEnv := make(map[string]string)
 	for k, v := range sandboxCfg.Env {
@@ -154,9 +234,9 @@ func runSandboxStartWithDeps(
 	for k, v := range envVars {
 		mergedEnv[k] = v
 	}
-	if len(mergedEnv) == 0 {
-		mergedEnv = nil
-	}
+
+	// Inject auto-shutdown env vars for cloud-init
+	injectAutoShutdownEnv(mergedEnv, autoShutdown, idleHours)
 
 	if sandboxCfg.TailscaleLockdown {
 		authKey := strings.TrimSpace(mergedEnv["TAILSCALE_AUTHKEY"])
@@ -195,6 +275,8 @@ func runSandboxStartWithDeps(
 		TailscaleHostname: sandbox.TailscaleHostname(name),
 		Status:            sandbox.StatusRunning,
 		CreatedAt:         time.Now(),
+		AutoShutdown:      autoShutdown,
+		IdleHours:         idleHours,
 	}
 
 	// Persist to global registry
