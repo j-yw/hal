@@ -289,6 +289,8 @@
 - `contractVersion` is always `"sandbox-list-v1"` — keep this consistent with `docs/contracts/sandbox-list-v1.md` (US-031).
 - Live status queries use `sandboxListResolveProvider` (package-level var) to resolve providers from global config; override in tests to inject mock providers.
 - `queryLiveStatuses` runs concurrent goroutines per instance with `sync.WaitGroup`; `queryOneStatus` handles a single instance with `context.WithTimeout` at `liveStatusTimeout` (10s).
+- Stop/delete/ssh target resolution should use `resolveStopTargets`-style dedicated helpers that accept `(args, allFlag, pattern)` and return de-duplicated, name-sorted `[]*sandbox.SandboxState`.
+- When changing a command from `noArgsValidation()` to accepting positional args, update `cmd/args_test.go` to remove that command from the no-args test table.
 ---
 
 ## [2026-03-21 17:45 CST] - US-023
@@ -318,4 +320,18 @@
   - Provider resolution for live queries uses global config (`resolveProviderFromGlobalConfig`) rather than project-scoped config since sandboxes are now globally registered.
   - The `sandboxListResolveProvider` injectable var pattern keeps tests fast and deterministic without real provider CLI calls.
   - When adding parameters to `runSandboxList`, use sed to bulk-update test call sites since there are many.
+---
+
+## [2026-03-21 18:30 CST] - US-025
+- Refactored `cmd/sandbox_stop.go` to support target resolution from the global registry: positional `NAME [NAME...]` args, `--all` for all running, `--pattern` for glob matching, and no-arg auto-select.
+- Implemented `resolveStopTargets` as a dedicated target resolution helper with sub-helpers: `resolveStopByNames`, `resolveStopAll`, `resolveStopByPattern`, `resolveStopAutoSelect`.
+- All resolved targets are de-duplicated and sorted by name before execution.
+- Auto-select prints a hint when exactly 1 running sandbox found; errors list sorted choices when multiple are running.
+- Updated `cmd/args_test.go` to remove `sandbox stop` from no-args validation test since it now accepts positional args.
+- Added 16 tests covering: explicit names (single/multiple/dedup/stopped/unknown), `--all` flag (running-only/no-running/empty), `--pattern` (match/skip-stopped/no-match/invalid), auto-select (single/zero/empty/multiple), full command execution, and flag presence.
+- Files changed: `cmd/sandbox_stop.go`, `cmd/sandbox_stop_test.go`, `cmd/args_test.go`
+- **Learnings for future iterations:**
+  - Target resolution helpers (`resolveStopTargets`) should validate glob pattern syntax before listing instances to avoid silent no-op when the registry is empty.
+  - `filterRunning` and `sortTargetsByName` are reusable helpers for stop/delete/ssh command flows.
+  - When a command changes from `noArgsValidation()` to accepting positional args, update `cmd/args_test.go` to remove the no-args test entry.
 ---
