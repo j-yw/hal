@@ -33,9 +33,11 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
   hal sandbox start --name hal-dev
   hal sandbox start -n dev -e TAILSCALE_AUTHKEY=tskey-auth-xxx -e ANTHROPIC_API_KEY=sk-ant-xxx
   hal sandbox start --no-auto-shutdown
-  hal sandbox start --idle-hours 24`,
+  hal sandbox start --idle-hours 24
+  hal sandbox start -n worker --count 5`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
+		count, _ := cmd.Flags().GetInt("count")
 		envSlice, _ := cmd.Flags().GetStringArray("env")
 		envVars := parseEnvFlags(envSlice)
 
@@ -54,7 +56,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 			opts.idleHours = &v
 		}
 
-		return runSandboxStartWithDeps(".", name, envVars, opts, os.Stdout, nil, nil)
+		return runSandboxStartWithDeps(".", name, count, envVars, opts, os.Stdout, nil, nil)
 	},
 }
 
@@ -62,6 +64,7 @@ var resolveSandboxProvider = sandbox.ProviderFromConfig
 
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
+	sandboxStartCmd.Flags().Int("count", 0, "create N sandboxes with names {name}-01..{name}-N")
 	sandboxStartCmd.Flags().StringArrayP("env", "e", nil, "environment variables (format: KEY=VALUE, can be repeated)")
 	sandboxStartCmd.Flags().Bool("auto-shutdown", true, "enable auto-shutdown idle timer (default from global config)")
 	sandboxStartCmd.Flags().Bool("no-auto-shutdown", false, "disable auto-shutdown idle timer")
@@ -148,10 +151,12 @@ func injectAutoShutdownEnv(env map[string]string, autoShutdown bool, idleHours i
 
 // runSandboxStartWithDeps contains the testable logic for the sandbox start command.
 // dir is the project root directory (containing .hal/).
+// count specifies the number of sandboxes to create (0 or 1 = single sandbox).
 // If provider is nil, it is resolved from config via ProviderFromConfig.
 // If getBranch is nil, compound.CurrentBranch is used.
 func runSandboxStartWithDeps(
 	dir, name string,
+	count int,
 	envVars map[string]string,
 	shutdownOpts autoShutdownOpts,
 	out io.Writer,
@@ -245,6 +250,75 @@ func runSandboxStartWithDeps(
 		}
 	}
 
+	// Batch mode: --count N creates multiple sandboxes
+	if count > 1 {
+		targets, err := batchPreflight(name, count)
+		if err != nil {
+			return err
+		}
+		return runBatchCreate(targets, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, halDir, out)
+	}
+
+	// Single sandbox creation
+	return runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, halDir, out)
+}
+
+// batchPreflight generates batch names and validates that none already exist
+// in the global registry. Returns the list of target names on success.
+func batchPreflight(base string, count int) ([]string, error) {
+	targets, err := sandbox.BatchNames(base, count)
+	if err != nil {
+		return nil, fmt.Errorf("generating batch names: %w", err)
+	}
+
+	// Check each target name against the global registry
+	var collisions []string
+	for _, name := range targets {
+		if _, err := sandbox.LoadInstance(name); err == nil {
+			collisions = append(collisions, name)
+		}
+	}
+
+	if len(collisions) > 0 {
+		return nil, fmt.Errorf("batch preflight failed: sandboxes already exist: %s", strings.Join(collisions, ", "))
+	}
+
+	return targets, nil
+}
+
+// runBatchCreate executes batch sandbox creation after preflight passes.
+// Concurrent execution and reporting is implemented in US-036.
+func runBatchCreate(
+	targets []string,
+	provider sandbox.Provider,
+	sandboxCfg *compound.SandboxConfig,
+	mergedEnv map[string]string,
+	autoShutdown bool,
+	idleHours int,
+	halDir string,
+	out io.Writer,
+) error {
+	fmt.Fprintf(out, "Creating %d sandboxes (%s)...\n", len(targets), sandboxCfg.Provider)
+
+	for _, name := range targets {
+		if err := runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, halDir, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runSingleCreate creates one sandbox and persists it to the global registry.
+func runSingleCreate(
+	name string,
+	provider sandbox.Provider,
+	sandboxCfg *compound.SandboxConfig,
+	mergedEnv map[string]string,
+	autoShutdown bool,
+	idleHours int,
+	halDir string,
+	out io.Writer,
+) error {
 	envCount := len(mergedEnv)
 	if envCount > 0 {
 		fmt.Fprintf(out, "Starting sandbox %q (%s) with %d env vars...\n", name, sandboxCfg.Provider, envCount)

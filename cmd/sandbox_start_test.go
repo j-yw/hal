@@ -90,7 +90,7 @@ func TestRunSandboxStart_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
+	err := runSandboxStartWithDeps(dir, "", 0, nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestRunSandboxStart_ExplicitName(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-sandbox", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRunSandboxStart_EnvVarsFromConfig(t *testing.T) {
 	// CLI env overrides config
 	cliEnv := map[string]string{"API_KEY": "sk-from-cli"}
 
-	err := runSandboxStartWithDeps(dir, "sb", cliEnv, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, cliEnv, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRunSandboxStart_LockdownRequiresAuthKey(t *testing.T) {
 	}
 
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
-	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -271,7 +271,7 @@ func TestRunSandboxStart_ProviderAndIPSaved(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-server", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-server", 0, nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestRunSandboxStart_CreateFailure(t *testing.T) {
 		createErr: fmt.Errorf("quota exceeded"),
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -334,7 +334,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 
 	mock := &mockProvider{}
 
-	err := runSandboxStartWithDeps(dir, "", nil, autoShutdownOpts{}, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
+	err := runSandboxStartWithDeps(dir, "", 0, nil, autoShutdownOpts{}, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -346,7 +346,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 func TestRunSandboxStart_HalDirMissing(t *testing.T) {
 	dir := t.TempDir()
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -394,7 +394,7 @@ func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -481,7 +481,7 @@ func TestRunSandboxStart_AutoMigrateFailureWarnsAndContinues(t *testing.T) {
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestRunSandboxStart_GlobalConfigSizeDefaults(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -768,7 +768,7 @@ func TestRunSandboxStart_AutoShutdownDefaultsInjected(t *testing.T) {
 
 	// Default: no flags set, global config defaults (autoShutdown=true, idleHours=48)
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "sb", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -808,7 +808,7 @@ func TestRunSandboxStart_NoAutoShutdownFlag(t *testing.T) {
 	noAuto := true
 	opts := autoShutdownOpts{noAutoShutdown: &noAuto}
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -865,7 +865,7 @@ func TestRunSandboxStart_AutoShutdownFlagOverridesConfig(t *testing.T) {
 	autoOn := true
 	opts := autoShutdownOpts{autoShutdown: &autoOn}
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -914,7 +914,7 @@ func TestRunSandboxStart_IdleHoursFlagOverridesConfig(t *testing.T) {
 	hours := 12
 	opts := autoShutdownOpts{idleHours: &hours}
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -949,7 +949,7 @@ func TestRunSandboxStart_AutoShutdownEnvPersistedInState(t *testing.T) {
 	autoOn := true
 	opts := autoShutdownOpts{autoShutdown: &autoOn, idleHours: &hours}
 
-	err := runSandboxStartWithDeps(dir, "sb", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -963,5 +963,233 @@ func TestRunSandboxStart_AutoShutdownEnvPersistedInState(t *testing.T) {
 	}
 	if instance.IdleHours != 72 {
 		t.Errorf("instance.IdleHours = %d, want 72", instance.IdleHours)
+	}
+}
+
+// --- Batch creation tests (US-019) ---
+
+func TestBatchPreflight_Success(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", dir)
+
+	targets, err := batchPreflight("worker", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"worker-01", "worker-02", "worker-03"}
+	if len(targets) != len(want) {
+		t.Fatalf("got %d targets, want %d", len(targets), len(want))
+	}
+	for i, name := range targets {
+		if name != want[i] {
+			t.Errorf("targets[%d] = %q, want %q", i, name, want[i])
+		}
+	}
+}
+
+func TestBatchPreflight_CollisionDetected(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", dir)
+
+	// Pre-register worker-02 in the global registry
+	existing := &sandbox.SandboxState{
+		Name:   "worker-02",
+		Status: sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	_, err := batchPreflight("worker", 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "batch preflight failed") {
+		t.Errorf("error %q should contain 'batch preflight failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "worker-02") {
+		t.Errorf("error %q should list colliding name 'worker-02'", err.Error())
+	}
+}
+
+func TestBatchPreflight_MultipleCollisions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", dir)
+
+	// Pre-register worker-01 and worker-03
+	for _, name := range []string{"worker-01", "worker-03"} {
+		existing := &sandbox.SandboxState{
+			Name:   name,
+			Status: sandbox.StatusRunning,
+		}
+		if err := sandbox.SaveInstance(existing); err != nil {
+			t.Fatalf("setup: save %s: %v", name, err)
+		}
+	}
+
+	_, err := batchPreflight("worker", 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "worker-01") {
+		t.Errorf("error %q should list 'worker-01'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "worker-03") {
+		t.Errorf("error %q should list 'worker-03'", err.Error())
+	}
+}
+
+func TestBatchPreflight_InvalidBaseName(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", dir)
+
+	_, err := batchPreflight("INVALID", 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "generating batch names") {
+		t.Errorf("error %q should contain 'generating batch names'", err.Error())
+	}
+}
+
+func TestRunSandboxStart_BatchCreatesAll(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch", IP: "10.0.0.1"},
+	}
+
+	var out bytes.Buffer
+	err := runSandboxStartWithDeps(dir, "worker", 3, nil, autoShutdownOpts{}, &out, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have called Create 3 times
+	if len(mock.createCalls) != 3 {
+		t.Fatalf("expected 3 Create calls, got %d", len(mock.createCalls))
+	}
+
+	// Verify each target name
+	wantNames := []string{"worker-01", "worker-02", "worker-03"}
+	for i, call := range mock.createCalls {
+		if call.Name != wantNames[i] {
+			t.Errorf("createCalls[%d].Name = %q, want %q", i, call.Name, wantNames[i])
+		}
+	}
+
+	// Verify all are in the global registry
+	for _, name := range wantNames {
+		instance, err := sandbox.LoadInstance(name)
+		if err != nil {
+			t.Errorf("instance %q not in registry: %v", name, err)
+			continue
+		}
+		if instance.Status != sandbox.StatusRunning {
+			t.Errorf("instance %q status = %q, want %q", name, instance.Status, sandbox.StatusRunning)
+		}
+	}
+
+	// Verify output mentions batch creation
+	output := out.String()
+	if !strings.Contains(output, "Creating 3 sandboxes") {
+		t.Errorf("output should mention batch count: %q", output)
+	}
+}
+
+func TestRunSandboxStart_BatchPreflightBlocksCreate(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	// Pre-register worker-02 to trigger collision
+	existing := &sandbox.SandboxState{
+		Name:   "worker-02",
+		Status: sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "worker", 3, nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "batch preflight failed") {
+		t.Errorf("error %q should contain 'batch preflight failed'", err.Error())
+	}
+
+	// provider.Create should NOT have been called
+	if len(mock.createCalls) != 0 {
+		t.Errorf("expected 0 Create calls (preflight should block), got %d", len(mock.createCalls))
+	}
+}
+
+func TestRunSandboxStart_CountOneIsSingle(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
+	}
+
+	var out bytes.Buffer
+	// count=1 should behave as single sandbox creation
+	err := runSandboxStartWithDeps(dir, "sb", 1, nil, autoShutdownOpts{}, &out, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	if mock.createCalls[0].Name != "sb" {
+		t.Errorf("Create name = %q, want %q", mock.createCalls[0].Name, "sb")
+	}
+
+	// Should be in registry as "sb", not "sb-01"
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("instance not in registry: %v", err)
+	}
+	if instance.Name != "sb" {
+		t.Errorf("instance.Name = %q, want %q", instance.Name, "sb")
+	}
+}
+
+func TestSandboxStartCommandCountFlag(t *testing.T) {
+	if sandboxStartCmd.Flags().Lookup("count") == nil {
+		t.Fatal("--count flag should exist")
+	}
+}
+
+func TestRunSandboxStart_BatchNameFromBranch(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+	}
+
+	var out bytes.Buffer
+	// No explicit name; branch provides the base
+	err := runSandboxStartWithDeps(dir, "", 2, nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/api-service", nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 2 {
+		t.Fatalf("expected 2 Create calls, got %d", len(mock.createCalls))
+	}
+	if mock.createCalls[0].Name != "hal-api-service-01" {
+		t.Errorf("createCalls[0].Name = %q, want %q", mock.createCalls[0].Name, "hal-api-service-01")
+	}
+	if mock.createCalls[1].Name != "hal-api-service-02" {
+		t.Errorf("createCalls[1].Name = %q, want %q", mock.createCalls[1].Name, "hal-api-service-02")
 	}
 }
