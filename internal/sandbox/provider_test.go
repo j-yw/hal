@@ -132,9 +132,10 @@ func TestRunCmd_StderrCaptured(t *testing.T) {
 
 func TestSandboxResult_Fields(t *testing.T) {
 	r := &SandboxResult{
-		ID:   "sb-123",
-		Name: "my-sandbox",
-		IP:   "10.0.0.1",
+		ID:          "sb-123",
+		Name:        "my-sandbox",
+		IP:          "10.0.0.1",
+		TailscaleIP: "100.64.0.1",
 	}
 	if r.ID != "sb-123" {
 		t.Errorf("ID = %q, want %q", r.ID, "sb-123")
@@ -144,5 +145,107 @@ func TestSandboxResult_Fields(t *testing.T) {
 	}
 	if r.IP != "10.0.0.1" {
 		t.Errorf("IP = %q, want %q", r.IP, "10.0.0.1")
+	}
+	if r.TailscaleIP != "100.64.0.1" {
+		t.Errorf("TailscaleIP = %q, want %q", r.TailscaleIP, "100.64.0.1")
+	}
+}
+
+func TestPreferredIP(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance *SandboxState
+		want     string
+	}{
+		{
+			name:     "nil instance",
+			instance: nil,
+			want:     "",
+		},
+		{
+			name: "tailscale preferred",
+			instance: &SandboxState{
+				IP:          "203.0.113.10",
+				TailscaleIP: "100.64.0.5",
+			},
+			want: "100.64.0.5",
+		},
+		{
+			name: "falls back to public ip",
+			instance: &SandboxState{
+				IP:          "203.0.113.11",
+				TailscaleIP: "",
+			},
+			want: "203.0.113.11",
+		},
+		{
+			name: "trims whitespace",
+			instance: &SandboxState{
+				IP:          " 203.0.113.12 ",
+				TailscaleIP: " 100.64.0.7 ",
+			},
+			want: "100.64.0.7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PreferredIP(tt.instance); got != tt.want {
+				t.Fatalf("PreferredIP() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConnectInfoFromState(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance *SandboxState
+		want     *ConnectInfo
+	}{
+		{
+			name:     "nil instance",
+			instance: nil,
+			want:     nil,
+		},
+		{
+			name: "maps name workspace and preferred ip",
+			instance: &SandboxState{
+				Name:        "api-backend",
+				IP:          "203.0.113.20",
+				TailscaleIP: "100.64.0.8",
+				WorkspaceID: "ws-123",
+			},
+			want: &ConnectInfo{
+				Name:        "api-backend",
+				IP:          "100.64.0.8",
+				WorkspaceID: "ws-123",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ConnectInfoFromState(tt.instance)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("ConnectInfoFromState() = %#v, want nil", got)
+				}
+				return
+			}
+
+			if got == nil {
+				t.Fatalf("ConnectInfoFromState() = nil, want non-nil")
+			}
+			if got.Name != tt.want.Name {
+				t.Fatalf("ConnectInfo.Name = %q, want %q", got.Name, tt.want.Name)
+			}
+			if got.IP != tt.want.IP {
+				t.Fatalf("ConnectInfo.IP = %q, want %q", got.IP, tt.want.IP)
+			}
+			if got.WorkspaceID != tt.want.WorkspaceID {
+				t.Fatalf("ConnectInfo.WorkspaceID = %q, want %q", got.WorkspaceID, tt.want.WorkspaceID)
+			}
+		})
 	}
 }

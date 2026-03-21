@@ -5,14 +5,52 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 )
 
 // SandboxResult holds the result of creating a sandbox.
+// These fields are persisted into SandboxState by command-layer callers.
 type SandboxResult struct {
 	ID          string
 	Name        string
 	IP          string
 	TailscaleIP string
+}
+
+// ConnectInfo is the provider-facing connection target for SSH/Exec/Status
+// style operations. Provider signature migration to this type is incremental;
+// command code can build it ahead of interface changes.
+type ConnectInfo struct {
+	Name        string
+	IP          string
+	WorkspaceID string
+}
+
+// ConnectInfoFromState builds ConnectInfo from a persisted SandboxState.
+// IP prefers tailscale when present.
+func ConnectInfoFromState(instance *SandboxState) *ConnectInfo {
+	if instance == nil {
+		return nil
+	}
+
+	return &ConnectInfo{
+		Name:        instance.Name,
+		IP:          PreferredIP(instance),
+		WorkspaceID: instance.WorkspaceID,
+	}
+}
+
+// PreferredIP returns the best connect address for a sandbox.
+// Tailscale is preferred when available; otherwise public IP is used.
+func PreferredIP(instance *SandboxState) string {
+	if instance == nil {
+		return ""
+	}
+
+	if strings.TrimSpace(instance.TailscaleIP) != "" {
+		return strings.TrimSpace(instance.TailscaleIP)
+	}
+	return strings.TrimSpace(instance.IP)
 }
 
 // Provider defines the interface for sandbox backends.

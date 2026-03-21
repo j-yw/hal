@@ -10,10 +10,7 @@ import (
 )
 
 func preferredIP(state *SandboxState) string {
-	if strings.TrimSpace(state.TailscaleIP) != "" {
-		return strings.TrimSpace(state.TailscaleIP)
-	}
-	return strings.TrimSpace(state.IP)
+	return PreferredIP(state)
 }
 
 func withLockdownEnv(env map[string]string, lockdown bool) map[string]string {
