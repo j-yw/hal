@@ -1303,6 +1303,25 @@ func TestQueryOneStatus_ProviderResolveFailure(t *testing.T) {
 	}
 }
 
+func TestSandboxListCommand_Metadata(t *testing.T) {
+	cmd := sandboxListCmd
+	if cmd.Use != "list" {
+		t.Fatalf("Use = %q, want %q", cmd.Use, "list")
+	}
+	if cmd.Short == "" {
+		t.Fatal("Short is empty")
+	}
+	if cmd.Long == "" {
+		t.Fatal("Long is empty")
+	}
+	if cmd.Example == "" {
+		t.Fatal("Example is empty")
+	}
+	if !strings.Contains(cmd.Example, "hal sandbox list") {
+		t.Fatalf("Example should contain command path, got %q", cmd.Example)
+	}
+}
+
 func TestSandboxListCommand_LiveFlag(t *testing.T) {
 	// Verify --live flag exists on the list command
 	cmd := sandboxListCmd
