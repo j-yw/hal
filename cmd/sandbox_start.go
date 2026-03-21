@@ -34,11 +34,14 @@ Use --size to override the provider-specific instance size from config:
 
 Use --repo to tag the sandbox with a repository label (informational only).
 
+Use --force to replace an existing sandbox with the same name (deletes the old one first).
+
 Auto-shutdown injects HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars into the sandbox
 so that cloud-init can configure idle timers. Defaults come from global sandbox config.`,
 	Example: `  hal sandbox start
   hal sandbox start --name hal-dev
   hal sandbox start -n dev --size cx42
+  hal sandbox start -n dev --force
   hal sandbox start -n dev --repo github.com/org/repo
   hal sandbox start -n dev -e TAILSCALE_AUTHKEY=tskey-auth-xxx -e ANTHROPIC_API_KEY=sk-ant-xxx
   hal sandbox start --no-auto-shutdown
@@ -47,6 +50,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		count, _ := cmd.Flags().GetInt("count")
+		force, _ := cmd.Flags().GetBool("force")
 		size, _ := cmd.Flags().GetString("size")
 		repo, _ := cmd.Flags().GetString("repo")
 		envSlice, _ := cmd.Flags().GetStringArray("env")
@@ -67,7 +71,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 			opts.idleHours = &v
 		}
 
-		return runSandboxStart(".", name, count, size, repo, envVars, opts, os.Stdout, nil)
+		return runSandboxStart(".", name, count, force, size, repo, envVars, opts, os.Stdout, nil)
 	},
 }
 
@@ -76,6 +80,7 @@ var resolveSandboxProvider = sandbox.ProviderFromConfig
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
 	sandboxStartCmd.Flags().Int("count", 0, "create N sandboxes with names {name}-01..{name}-N")
+	sandboxStartCmd.Flags().BoolP("force", "f", false, "replace existing sandbox with the same name")
 	sandboxStartCmd.Flags().StringP("size", "s", "", "override provider instance size (e.g., cx42, s-2vcpu-4gb)")
 	sandboxStartCmd.Flags().StringP("repo", "r", "", "repository label for the sandbox (informational)")
 	sandboxStartCmd.Flags().StringArrayP("env", "e", nil, "extra environment variables (KEY=VALUE, repeatable)")
@@ -168,6 +173,7 @@ func injectAutoShutdownEnv(env map[string]string, autoShutdown bool, idleHours i
 func runSandboxStart(
 	dir, name string,
 	count int,
+	force bool,
 	size, repo string,
 	envVars map[string]string,
 	shutdownOpts autoShutdownOpts,
@@ -180,12 +186,13 @@ func runSandboxStart(
 		provider = deps.provider
 		getBranch = deps.getBranch
 	}
-	return runSandboxStartWithDeps(dir, name, count, size, repo, envVars, shutdownOpts, out, provider, getBranch)
+	return runSandboxStartWithDeps(dir, name, count, force, size, repo, envVars, shutdownOpts, out, provider, getBranch)
 }
 
 // runSandboxStartWithDeps contains the testable logic for the sandbox start command.
 // dir is the project root directory (containing .hal/).
 // count specifies the number of sandboxes to create (0 or 1 = single sandbox).
+// force replaces an existing sandbox with the same name (delete + recreate).
 // size overrides the provider-specific instance size (e.g., cx42 for Hetzner).
 // repo stores an informational repository label in SandboxState.
 // If provider is nil, it is resolved from config via ProviderFromConfig.
@@ -193,6 +200,7 @@ func runSandboxStart(
 func runSandboxStartWithDeps(
 	dir, name string,
 	count int,
+	force bool,
 	size, repo string,
 	envVars map[string]string,
 	shutdownOpts autoShutdownOpts,
@@ -303,7 +311,7 @@ func runSandboxStartWithDeps(
 	}
 
 	// Single sandbox creation
-	return runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
+	return runSingleCreate(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
 }
 
 // batchPreflight generates batch names and validates that none already exist
@@ -345,7 +353,7 @@ func runBatchCreate(
 	fmt.Fprintf(out, "Creating %d sandboxes (%s)...\n", len(targets), sandboxCfg.Provider)
 
 	for _, name := range targets {
-		if err := runSingleCreate(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out); err != nil {
+		if err := runSingleCreate(name, false, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out); err != nil {
 			return err
 		}
 	}
@@ -353,8 +361,10 @@ func runBatchCreate(
 }
 
 // runSingleCreate creates one sandbox and persists it to the global registry.
+// If force is true and a sandbox with the same name exists, it is deleted first.
 func runSingleCreate(
 	name string,
+	force bool,
 	provider sandbox.Provider,
 	sandboxCfg *compound.SandboxConfig,
 	mergedEnv map[string]string,
@@ -364,6 +374,25 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
+	// Check for existing sandbox with the same name
+	existing, loadErr := sandbox.LoadInstance(name)
+	if loadErr == nil {
+		// Sandbox exists
+		if !force {
+			return fmt.Errorf("sandbox %q already exists", name)
+		}
+		// --force: delete the existing sandbox before creating a new one
+		fmt.Fprintf(out, "Replacing existing sandbox %q...\n", name)
+		info := sandbox.ConnectInfoFromState(existing)
+		ctx := context.Background()
+		if err := provider.Delete(ctx, info, out); err != nil {
+			return fmt.Errorf("force-delete of existing sandbox %q failed: %w", name, err)
+		}
+		if err := sandbox.RemoveInstance(name); err != nil {
+			return fmt.Errorf("removing existing registry entry %q: %w", name, err)
+		}
+	}
+
 	envCount := len(mergedEnv)
 	if envCount > 0 {
 		fmt.Fprintf(out, "Starting sandbox %q (%s) with %d env vars...\n", name, sandboxCfg.Provider, envCount)

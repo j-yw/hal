@@ -25,11 +25,17 @@ type mockProvider struct {
 	createResult *sandbox.SandboxResult
 	createErr    error
 	createCalls  []mockCreateCall
+	deleteCalls  []mockDeleteCall
+	deleteErr    error
 }
 
 type mockCreateCall struct {
 	Name string
 	Env  map[string]string
+}
+
+type mockDeleteCall struct {
+	Info *sandbox.ConnectInfo
 }
 
 func (m *mockProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
@@ -42,7 +48,8 @@ func (m *mockProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out 
 }
 
 func (m *mockProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
-	return nil
+	m.deleteCalls = append(m.deleteCalls, mockDeleteCall{Info: info})
+	return m.deleteErr
 }
 
 func (m *mockProvider) SSH(info *sandbox.ConnectInfo) (*exec.Cmd, error) {
@@ -90,7 +97,7 @@ func TestRunSandboxStart_Success(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "", 0, "", "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
+	err := runSandboxStartWithDeps(dir, "", 0, false, "", "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/feature-auth", nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +161,7 @@ func TestRunSandboxStart_ExplicitName(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +211,7 @@ func TestRunSandboxStart_EnvVarsFromConfig(t *testing.T) {
 	// CLI env overrides config
 	cliEnv := map[string]string{"API_KEY": "sk-from-cli"}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", cliEnv, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", cliEnv, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,7 +245,7 @@ func TestRunSandboxStart_LockdownRequiresAuthKey(t *testing.T) {
 	}
 
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -271,7 +278,7 @@ func TestRunSandboxStart_ProviderAndIPSaved(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "my-server", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "my-server", 0, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +326,7 @@ func TestRunSandboxStart_CreateFailure(t *testing.T) {
 		createErr: fmt.Errorf("quota exceeded"),
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -334,7 +341,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 
 	mock := &mockProvider{}
 
-	err := runSandboxStartWithDeps(dir, "", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
+	err := runSandboxStartWithDeps(dir, "", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, fakeBranchResolver("", fmt.Errorf("not on a branch")))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -346,7 +353,7 @@ func TestRunSandboxStart_BranchFailure(t *testing.T) {
 func TestRunSandboxStart_HalDirMissing(t *testing.T) {
 	dir := t.TempDir()
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -394,7 +401,7 @@ func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -481,7 +488,7 @@ func TestRunSandboxStart_AutoMigrateFailureWarnsAndContinues(t *testing.T) {
 	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -549,7 +556,7 @@ func TestRunSandboxStart_GlobalConfigSizeDefaults(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -610,7 +617,7 @@ func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -768,7 +775,7 @@ func TestRunSandboxStart_AutoShutdownDefaultsInjected(t *testing.T) {
 
 	// Default: no flags set, global config defaults (autoShutdown=true, idleHours=48)
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -808,7 +815,7 @@ func TestRunSandboxStart_NoAutoShutdownFlag(t *testing.T) {
 	noAuto := true
 	opts := autoShutdownOpts{noAutoShutdown: &noAuto}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -865,7 +872,7 @@ func TestRunSandboxStart_AutoShutdownFlagOverridesConfig(t *testing.T) {
 	autoOn := true
 	opts := autoShutdownOpts{autoShutdown: &autoOn}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -914,7 +921,7 @@ func TestRunSandboxStart_IdleHoursFlagOverridesConfig(t *testing.T) {
 	hours := 12
 	opts := autoShutdownOpts{idleHours: &hours}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -949,7 +956,7 @@ func TestRunSandboxStart_AutoShutdownEnvPersistedInState(t *testing.T) {
 	autoOn := true
 	opts := autoShutdownOpts{autoShutdown: &autoOn, idleHours: &hours}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, opts, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, opts, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1062,7 +1069,7 @@ func TestRunSandboxStart_BatchCreatesAll(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStartWithDeps(dir, "worker", 3, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "worker", 3, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1116,7 +1123,7 @@ func TestRunSandboxStart_BatchPreflightBlocksCreate(t *testing.T) {
 		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
 	}
 
-	err := runSandboxStartWithDeps(dir, "worker", 3, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "worker", 3, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1140,7 +1147,7 @@ func TestRunSandboxStart_CountOneIsSingle(t *testing.T) {
 
 	var out bytes.Buffer
 	// count=1 should behave as single sandbox creation
-	err := runSandboxStartWithDeps(dir, "sb", 1, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 1, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1178,7 +1185,7 @@ func TestRunSandboxStart_BatchNameFromBranch(t *testing.T) {
 
 	var out bytes.Buffer
 	// No explicit name; branch provides the base
-	err := runSandboxStartWithDeps(dir, "", 2, "", "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/api-service", nil))
+	err := runSandboxStartWithDeps(dir, "", 2, false, "", "", nil, autoShutdownOpts{}, &out, mock, fakeBranchResolver("hal/api-service", nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1252,7 +1259,7 @@ func TestRunSandboxStart_SizeOverridesHetzner(t *testing.T) {
 	}
 
 	// --size cx42 should override config's cx22
-	if err := runSandboxStartWithDeps(dir, "sb", 0, "cx42", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "cx42", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1296,7 +1303,7 @@ func TestRunSandboxStart_SizeOverridesDigitalOcean(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, "s-2vcpu-4gb", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "s-2vcpu-4gb", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1331,7 +1338,7 @@ func TestRunSandboxStart_SizeOverridesLightsail(t *testing.T) {
 		return mock, nil
 	}
 
-	if err := runSandboxStartWithDeps(dir, "sb", 0, "medium_3_0", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "medium_3_0", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1348,7 +1355,7 @@ func TestRunSandboxStart_RepoStoredInState(t *testing.T) {
 		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "github.com/org/repo", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "github.com/org/repo", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1370,7 +1377,7 @@ func TestRunSandboxStart_NoRepoByDefault(t *testing.T) {
 		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1392,7 +1399,7 @@ func TestRunSandboxStart_NoSizeByDefault(t *testing.T) {
 		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1414,7 +1421,7 @@ func TestRunSandboxStart_SizeAndRepoTogether(t *testing.T) {
 		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-1"},
 	}
 
-	err := runSandboxStartWithDeps(dir, "sb", 0, "cx42", "github.com/org/app", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "cx42", "github.com/org/app", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1439,7 +1446,7 @@ func TestRunSandboxStart_SizePersistedInBatchState(t *testing.T) {
 		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
 	}
 
-	err := runSandboxStartWithDeps(dir, "worker", 2, "cx42", "github.com/org/app", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxStartWithDeps(dir, "worker", 2, false, "cx42", "github.com/org/app", nil, autoShutdownOpts{}, io.Discard, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1473,7 +1480,7 @@ func TestRunSandboxStart_ViaRunSandboxStart(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStart(dir, "sb", 0, "cx42", "github.com/org/repo", nil, autoShutdownOpts{}, &out, deps)
+	err := runSandboxStart(dir, "sb", 0, false, "cx42", "github.com/org/repo", nil, autoShutdownOpts{}, &out, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1500,7 +1507,7 @@ func TestRunSandboxStart_ViaRunSandboxStartNilDeps(t *testing.T) {
 
 	// With nil deps, runSandboxStart passes nil provider and nil getBranch
 	// This should fail trying to resolve provider since no daytona config
-	err := runSandboxStart(dir, "sb", 0, "", "", nil, autoShutdownOpts{}, io.Discard, nil)
+	err := runSandboxStart(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil)
 	// Expected: resolving provider errors because daytona config is incomplete
 	if err == nil {
 		t.Fatal("expected error with nil deps (no provider configured), got nil")
@@ -1563,5 +1570,314 @@ func TestApplySizeOverride(t *testing.T) {
 			applySizeOverride(cfg, tt.size)
 			tt.check(t, cfg)
 		})
+	}
+}
+
+// --- Collision and --force tests (US-035) ---
+
+func TestRunSandboxStart_CollisionWithoutForce(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	// Pre-register a sandbox with the same name
+	existing := &sandbox.SandboxState{
+		Name:     "my-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// Exact error message required by acceptance criteria
+	want := `sandbox "my-sandbox" already exists`
+	if err.Error() != want {
+		t.Errorf("error = %q, want exact %q", err.Error(), want)
+	}
+
+	// provider.Create should NOT have been called
+	if len(mock.createCalls) != 0 {
+		t.Errorf("expected 0 Create calls, got %d", len(mock.createCalls))
+	}
+
+	// provider.Delete should NOT have been called
+	if len(mock.deleteCalls) != 0 {
+		t.Errorf("expected 0 Delete calls, got %d", len(mock.deleteCalls))
+	}
+}
+
+func TestRunSandboxStart_ForceReplaceSuccess(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	// Pre-register a sandbox with the same name
+	existing := &sandbox.SandboxState{
+		ID:          "old-id-1234",
+		Name:        "my-sandbox",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		IP:          "10.0.0.1",
+		Status:      sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new", IP: "10.0.0.2"},
+	}
+
+	var out bytes.Buffer
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// provider.Delete should have been called once with old sandbox info
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if mock.deleteCalls[0].Info.Name != "my-sandbox" {
+		t.Errorf("Delete info.Name = %q, want %q", mock.deleteCalls[0].Info.Name, "my-sandbox")
+	}
+
+	// provider.Create should have been called once
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	if mock.createCalls[0].Name != "my-sandbox" {
+		t.Errorf("Create name = %q, want %q", mock.createCalls[0].Name, "my-sandbox")
+	}
+
+	// Registry should have the NEW entry
+	instance, err := sandbox.LoadInstance("my-sandbox")
+	if err != nil {
+		t.Fatalf("failed to load from registry: %v", err)
+	}
+	if instance.ID == "old-id-1234" {
+		t.Error("instance.ID should be a new UUIDv7, not the old ID")
+	}
+	if !uuidV7Pattern.MatchString(instance.ID) {
+		t.Errorf("instance.ID = %q, want UUIDv7 format", instance.ID)
+	}
+	if instance.WorkspaceID != "ws-new" {
+		t.Errorf("instance.WorkspaceID = %q, want %q", instance.WorkspaceID, "ws-new")
+	}
+	if instance.IP != "10.0.0.2" {
+		t.Errorf("instance.IP = %q, want %q", instance.IP, "10.0.0.2")
+	}
+	if instance.Status != sandbox.StatusRunning {
+		t.Errorf("instance.Status = %q, want %q", instance.Status, sandbox.StatusRunning)
+	}
+
+	// Output should mention replacement
+	output := out.String()
+	if !strings.Contains(output, "Replacing existing sandbox") {
+		t.Errorf("output should mention replacement: %q", output)
+	}
+	if !strings.Contains(output, "Sandbox started") {
+		t.Errorf("output should confirm new sandbox started: %q", output)
+	}
+}
+
+func TestRunSandboxStart_ForceDeleteFails(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	// Pre-register a sandbox with the same name
+	existing := &sandbox.SandboxState{
+		ID:       "old-id",
+		Name:     "my-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new"},
+		deleteErr:    fmt.Errorf("provider API error"),
+	}
+
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "force-delete of existing sandbox") {
+		t.Errorf("error %q should mention force-delete failure", err.Error())
+	}
+	if !strings.Contains(err.Error(), "provider API error") {
+		t.Errorf("error %q should contain original error", err.Error())
+	}
+
+	// provider.Create should NOT have been called
+	if len(mock.createCalls) != 0 {
+		t.Errorf("expected 0 Create calls after failed force-delete, got %d", len(mock.createCalls))
+	}
+
+	// Existing entry should still be in the registry
+	instance, err := sandbox.LoadInstance("my-sandbox")
+	if err != nil {
+		t.Fatalf("existing entry should remain in registry: %v", err)
+	}
+	if instance.ID != "old-id" {
+		t.Errorf("existing entry should be unchanged, ID = %q, want %q", instance.ID, "old-id")
+	}
+}
+
+func TestRunSandboxStart_ForceNewID(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	oldID := "01234567-89ab-7cde-8f01-234567890abc"
+	existing := &sandbox.SandboxState{
+		ID:       oldID,
+		Name:     "dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "dev", ID: "ws-new"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "dev", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	instance, err := sandbox.LoadInstance("dev")
+	if err != nil {
+		t.Fatalf("failed to load from registry: %v", err)
+	}
+
+	// New entry must have a different UUIDv7 ID
+	if instance.ID == oldID {
+		t.Error("force-replaced sandbox should have a new ID, got the old one")
+	}
+	if !uuidV7Pattern.MatchString(instance.ID) {
+		t.Errorf("instance.ID = %q, want UUIDv7 format", instance.ID)
+	}
+}
+
+func TestRunSandboxStart_NoCollisionNoForce(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "fresh-sandbox", ID: "ws-1"},
+	}
+
+	var out bytes.Buffer
+	// No existing sandbox, no --force — should succeed normally
+	err := runSandboxStartWithDeps(dir, "fresh-sandbox", 0, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 0 {
+		t.Errorf("expected 0 Delete calls (no collision), got %d", len(mock.deleteCalls))
+	}
+
+	instance, err := sandbox.LoadInstance("fresh-sandbox")
+	if err != nil {
+		t.Fatalf("instance should be in registry: %v", err)
+	}
+	if instance.Name != "fresh-sandbox" {
+		t.Errorf("instance.Name = %q, want %q", instance.Name, "fresh-sandbox")
+	}
+}
+
+func TestRunSandboxStart_ForceNoExistingIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "new-sandbox", ID: "ws-1"},
+	}
+
+	// --force with no existing sandbox should still create normally
+	err := runSandboxStartWithDeps(dir, "new-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	// No delete needed since nothing exists
+	if len(mock.deleteCalls) != 0 {
+		t.Errorf("expected 0 Delete calls (nothing to replace), got %d", len(mock.deleteCalls))
+	}
+}
+
+func TestSandboxStartCommandForceFlag(t *testing.T) {
+	f := sandboxStartCmd.Flags().Lookup("force")
+	if f == nil {
+		t.Fatal("--force flag should exist")
+	}
+	if f.Usage == "" {
+		t.Error("--force flag should have a usage description")
+	}
+	if sandboxStartCmd.Flags().ShorthandLookup("f") == nil {
+		t.Error("-f shorthand should exist for --force")
+	}
+}
+
+func TestRunSandboxStart_ForceViaRunSandboxStart(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	// Pre-register existing sandbox
+	existing := &sandbox.SandboxState{
+		ID:       "old-id",
+		Name:     "sb",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-new"},
+	}
+	deps := &sandboxStartDeps{provider: mock}
+
+	var out bytes.Buffer
+	err := runSandboxStart(dir, "sb", 0, true, "", "", nil, autoShutdownOpts{}, &out, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("failed to load from registry: %v", err)
+	}
+	if instance.ID == "old-id" {
+		t.Error("should have new ID after force-replace")
 	}
 }
