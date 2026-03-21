@@ -184,6 +184,8 @@
 - Global sandbox path resolution in `internal/sandbox/global.go` must follow this exact precedence: `$HAL_CONFIG_HOME` → `$XDG_CONFIG_HOME/hal` → `$HOME/.config/hal`.
 - Tests for global sandbox paths should isolate with `t.Setenv("HAL_CONFIG_HOME", tmpDir)`; for fallback behavior, also set `HOME` explicitly so results are deterministic.
 - `EnsureGlobalDir()` should create both the global root and `sandboxes/` with `os.MkdirAll(..., 0700)` and remain safe to call repeatedly.
+- Global sandbox config lives at `GlobalDir()/sandbox-config.yaml`; `LoadGlobalConfig` should merge pointer-based raw YAML fields into `DefaultGlobalConfig()` so missing keys keep defaults while explicit zero/empty values are preserved.
+- `SaveGlobalConfig` should persist `sandbox-config.yaml` via temp-file + rename with `0600` permissions (same atomic durability pattern as registry writes).
 - Global sandbox registry entries live at `SandboxesDir()/"<name>.json"`; writes should stay atomic (`.tmp` + `os.Rename`) with `0600` file mode.
 - Registry collision semantics are strict: `SaveInstance` must return the exact error `sandbox "<name>" already exists`, while `ForceWriteInstance` is the explicit overwrite path for `--force` flows.
 - `ListInstances` should treat a missing `sandboxes/` directory as empty state and return instances sorted by `Name`; missing `LoadInstance`/`RemoveInstance` errors should wrap `fs.ErrNotExist` for `errors.Is` checks.
