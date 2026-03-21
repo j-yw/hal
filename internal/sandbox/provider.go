@@ -104,7 +104,6 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			ServerType:        cfg.HetznerServerType,
 			Image:             cfg.HetznerImage,
 			TailscaleLockdown: cfg.TailscaleLockdown,
-			StateDir:          cfg.StateDir,
 		}, nil
 	case "digitalocean":
 		return &DigitalOceanProvider{
@@ -142,7 +141,7 @@ type ProviderConfig struct {
 	LightsailBundle           string
 	LightsailKeyPairName      string
 	TailscaleLockdown         bool
-	// StateDir is the .hal directory path, used by providers that need to
-	// read sandbox state (e.g. Hetzner/DigitalOcean/Lightsail SSH needs the IP from state).
+	// StateDir is the .hal directory path, used by providers that still need
+	// local sandbox state during the ConnectInfo migration.
 	StateDir string
 }

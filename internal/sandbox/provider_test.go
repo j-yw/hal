@@ -34,7 +34,6 @@ func TestProviderFromConfig_Hetzner(t *testing.T) {
 		HetznerSSHKey:     "my-key",
 		HetznerServerType: "cx22",
 		HetznerImage:      "ubuntu-24.04",
-		StateDir:          "/tmp/test-hal",
 	}
 	p, err := ProviderFromConfig("hetzner", cfg)
 	if err != nil {
@@ -52,9 +51,6 @@ func TestProviderFromConfig_Hetzner(t *testing.T) {
 	}
 	if hp.Image != "ubuntu-24.04" {
 		t.Errorf("Image = %q, want %q", hp.Image, "ubuntu-24.04")
-	}
-	if hp.StateDir != "/tmp/test-hal" {
-		t.Errorf("StateDir = %q, want %q", hp.StateDir, "/tmp/test-hal")
 	}
 }
 

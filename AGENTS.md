@@ -193,6 +193,7 @@
 - `ListInstances` should treat a missing `sandboxes/` directory as empty state and return instances sorted by `Name`; missing `LoadInstance`/`RemoveInstance` errors should wrap `fs.ErrNotExist` for `errors.Is` checks.
 - `ResolveDefault(filter)` is the canonical no-name target resolver: return exact empty-state errors (`no sandboxes found` or `no running sandboxes` for running-only filters), ambiguity errors as `multiple sandboxes found: <sorted names>`, and success hint text `connecting to only active sandbox "<name>"`.
 - Provider lifecycle/connection methods now consume `*ConnectInfo` (`Stop`, `Delete`, `Status`, `SSH`, `Exec`). Command paths should build it via `ConnectInfoFromState(instance)` and pass explicit fallback IDs/names when deleting by raw target value.
+- During provider migration, remove `.hal/sandbox.json` (`LoadState`) fallbacks as each provider adopts `ConnectInfo`; SSH/Exec should require `info.IP` and fail fast when missing.
 
 ## Patterns from hal/sandbox-uuidv7-generation (2026-03-21)
 
