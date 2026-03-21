@@ -28,6 +28,8 @@
 - `--size` flag uses `applySizeOverride(cfg, size)` to set the provider-specific size field (Hetzner→ServerType, DigitalOcean→Size, Lightsail→Bundle) before provider construction; Daytona is a no-op.
 - `runSandboxStart` is the public entry point that unwraps `sandboxStartDeps` and delegates to `runSandboxStartWithDeps`; tests can use either path.
 - Delete target resolution uses ALL sandboxes (not just running) for `--all`, `--pattern`, and auto-select, unlike stop which filters to running only. Confirmation prompt (`Delete all sandboxes? [y/N]`) is only required for `--all` without `--yes`.
+- SSH command uses `parseSSHArgs` for `[NAME] [-- command args...]` parsing since `DisableFlagParsing` prevents Cobra from separating positional args; auto-resolve uses `sandbox.ResolveDefault(nil)` with no filter (any status).
+- SSH/exec commands should use injectable `sandboxSSHLoadInstance` and `sandboxSSHResolveProvider` package vars for test isolation; `testMode` flag prevents actual process execution in tests.
 - Reuse `sortTargetsByName`, `joinNames`, and `filterRunning` helpers across stop/delete/ssh commands; they live in `cmd/sandbox_stop.go`.
 
 ## [2026-03-21 13:09 CST] - US-001
@@ -351,4 +353,21 @@
   - Delete and stop commands share the same target resolution pattern but with different filtering: delete targets all sandboxes, stop targets running only.
   - `confirmDeleteAll` uses `bufio.Scanner` + `strings.NewReader` for testable stdin simulation; test EOF as a decline case.
   - Reuse `sortTargetsByName` and `joinNames` from `cmd/sandbox_stop.go` to avoid duplication across command files.
+---
+
+## [2026-03-21 19:15 CST] - US-027
+- Refactored `cmd/sandbox_ssh.go` to load instances from the global registry instead of local `.hal/sandbox.json`.
+- SSH command now supports `hal sandbox ssh NAME` for explicit targeting and `hal sandbox ssh` for auto-resolution via `sandbox.ResolveDefault(nil)`.
+- Added `parseSSHArgs` to handle `[NAME] [-- command args...]` parsing with `DisableFlagParsing`.
+- Added `resolveSSHTarget` for registry-based name lookup and no-arg auto-resolution (1→connect+hint, 0→error, >1→error listing choices).
+- ConnectInfo is built via `sandbox.ConnectInfoFromState(instance)` with `PreferredIP` selecting TailscaleIP when available.
+- Provider is resolved via injectable `sandboxSSHResolveProvider` (defaults to `resolveProviderFromGlobalConfig`).
+- Rewrote `cmd/sandbox_ssh_test.go` with 16 tests covering: interactive mode, tailscale IP preference, exec mode, auto-resolve (single/none/multiple), name not found, SSH/exec errors, provider resolve error, exec with auto-resolve, ConnectInfo preferred IP, and parseSSHArgs table-driven tests.
+- Added `resolveSSHTarget` unit tests for by-name, auto-resolve-single, auto-resolve-none, and auto-resolve-multiple.
+- Files changed: `cmd/sandbox_ssh.go`, `cmd/sandbox_ssh_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - SSH arg parsing with `DisableFlagParsing` requires manual `parseSSHArgs` since Cobra doesn't parse positional args vs flags.
+  - Auto-resolve uses `sandbox.ResolveDefault(nil)` with no filter (any status) since SSH should be able to target stopped sandboxes too.
+  - Injectable vars (`sandboxSSHLoadInstance`, `sandboxSSHResolveProvider`) enable test isolation without real provider CLIs.
+  - `testMode` flag on `runSandboxSSHWithDeps` prevents `execInteractiveSSH` / `sandbox.RunCmd` from actually running external processes in tests.
 ---

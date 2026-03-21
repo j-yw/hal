@@ -8,10 +8,10 @@
       "title": "Global Directory Resolution",
       "description": "As a developer, I want sandbox state stored in a global directory so that sandboxes are accessible from any project directory.",
       "acceptanceCriteria": [
-        "GlobalDir() resolves $HAL_CONFIG_HOME → $XDG_CONFIG_HOME/hal → ~/.config/hal in that order",
+        "GlobalDir() resolves $HAL_CONFIG_HOME \u2192 $XDG_CONFIG_HOME/hal \u2192 ~/.config/hal in that order",
         "SandboxesDir() returns GlobalDir()/sandboxes/",
         "EnsureGlobalDir() creates both directories with 0700 permissions if missing",
-        "EnsureGlobalDir() is idempotent — safe to call repeatedly",
+        "EnsureGlobalDir() is idempotent \u2014 safe to call repeatedly",
         "Tests use t.Setenv(\"HAL_CONFIG_HOME\", tmpDir) for isolation",
         "File: internal/sandbox/global.go",
         "Typecheck passes"
@@ -42,7 +42,7 @@
       "title": "Name Validation",
       "description": "As a developer, I want a canonical name validator so that sandbox names are safe for filenames, cloud resources, and Tailscale hostnames.",
       "acceptanceCriteria": [
-        "ValidateName(name) enforces: 1–59 chars, lowercase alphanumeric + hyphens, no leading/trailing/consecutive hyphens",
+        "ValidateName(name) enforces: 1\u201359 chars, lowercase alphanumeric + hyphens, no leading/trailing/consecutive hyphens",
         "Returns specific error messages: \"must be 1-59 chars\", \"must be lowercase alphanumeric and hyphens\", \"must not start or end with hyphen\", \"must not contain consecutive hyphens\"",
         "TailscaleHostname(name) returns \"hal-\" + name",
         "SandboxNameFromBranch(branch) sanitizes a git branch name into a valid sandbox name (lowercase, replace invalid chars with hyphens, trim)",
@@ -60,9 +60,9 @@
       "description": "As a developer, I want batch name generation so that --count N produces correctly padded, validated names.",
       "acceptanceCriteria": [
         "BatchNames(base, count) returns []string of {base}-01 through {base}-N",
-        "Zero-padding width is max(2, digits(count)): count=5 → -01..-05, count=100 → -001..-100",
+        "Zero-padding width is max(2, digits(count)): count=5 \u2192 -01..-05, count=100 \u2192 -001..-100",
         "Each generated name is validated via ValidateName; returns error if any name would be invalid",
-        "Returns error if count \u003c 1",
+        "Returns error if count < 1",
         "Returns error if base name + padding suffix would exceed 59 chars",
         "File: internal/sandbox/name.go",
         "Typecheck passes"
@@ -112,7 +112,7 @@
       "acceptanceCriteria": [
         "ResolveDefault(filter func(*SandboxState) bool) returns the single matching instance, or error",
         "If 0 match: error \"no sandboxes found\" (or \"no running sandboxes\" if filter is status-based)",
-        "If \u003e1 match: error listing available names as choices (e.g., \"multiple sandboxes found: api-backend, frontend, worker-01\")",
+        "If >1 match: error listing available names as choices (e.g., \"multiple sandboxes found: api-backend, frontend, worker-01\")",
         "If exactly 1 match: returns instance + hint message \"connecting to only active sandbox \\\"X\\\"\"",
         "File: internal/sandbox/registry.go",
         "Typecheck passes"
@@ -141,7 +141,7 @@
     },
     {
       "id": "US-009",
-      "title": "Migration Logic — Config File",
+      "title": "Migration Logic \u2014 Config File",
       "description": "As a developer, I want project sandbox config migration to global config to follow clear conflict rules.",
       "acceptanceCriteria": [
         "If local project sandbox config exists and global sandbox-config.yaml is missing, Migrate(projectDir) copies local config to global path",
@@ -284,7 +284,7 @@
     },
     {
       "id": "US-017",
-      "title": "Single Sandbox Start — Create and Register",
+      "title": "Single Sandbox Start \u2014 Create and Register",
       "description": "As a developer, I want hal sandbox start -n NAME to create one sandbox and register it in the global registry.",
       "acceptanceCriteria": [
         "hal sandbox start -n NAME calls provider.Create exactly once and persists exactly one SandboxState entry on success",
@@ -317,7 +317,7 @@
     },
     {
       "id": "US-019",
-      "title": "Batch Creation with --count — Planning and Preflight",
+      "title": "Batch Creation with --count \u2014 Planning and Preflight",
       "description": "As a developer, I want hal sandbox start -n BASE --count N to validate the full batch plan before execution begins.",
       "acceptanceCriteria": [
         "--count N generates target names via BatchNames(base, N) before any provider.Create call",
@@ -367,12 +367,12 @@
     },
     {
       "id": "US-022",
-      "title": "List Command — Table Output",
+      "title": "List Command \u2014 Table Output",
       "description": "As a developer, I want hal sandbox list to render a clear default table view from local state.",
       "acceptanceCriteria": [
         "Default output table columns are exactly: NAME, PROVIDER, STATUS, TAILSCALE, AGE, AUTO-OFF, EST.COST",
-        "EST.COST displays $X.XX for known rates and — when rate data is unavailable",
-        "Summary line format is exact: \"N sandboxes (X running, Y stopped)  •  Est. total: $Z.ZZ\"",
+        "EST.COST displays $X.XX for known rates and \u2014 when rate data is unavailable",
+        "Summary line format is exact: \"N sandboxes (X running, Y stopped)  \u2022  Est. total: $Z.ZZ\"",
         "Default list path reads local registry data only and does not call provider APIs",
         "File: cmd/sandbox_list.go",
         "Typecheck passes"
@@ -383,7 +383,7 @@
     },
     {
       "id": "US-023",
-      "title": "List Command — JSON Output",
+      "title": "List Command \u2014 JSON Output",
       "description": "As a developer, I want hal sandbox list --json to output machine-readable JSON following the sandbox-list-v1 contract.",
       "acceptanceCriteria": [
         "--json outputs the structure: contractVersion, sandboxes[], totals",
@@ -400,7 +400,7 @@
     },
     {
       "id": "US-024",
-      "title": "List Command — Live Status Query",
+      "title": "List Command \u2014 Live Status Query",
       "description": "As a developer, I want hal sandbox list --live to fetch fresh provider status before rendering output.",
       "acceptanceCriteria": [
         "With --live, list queries each sandbox provider for current status before rendering",
@@ -416,7 +416,7 @@
     },
     {
       "id": "US-025",
-      "title": "Stop Command — Target Resolution",
+      "title": "Stop Command \u2014 Target Resolution",
       "description": "As a developer, I want hal sandbox stop to resolve targets from names, --all, --pattern, and no-arg auto-resolve rules before execution.",
       "acceptanceCriteria": [
         "hal sandbox stop NAME [NAME...] resolves explicit names as targets",
@@ -433,7 +433,7 @@
     },
     {
       "id": "US-026",
-      "title": "Delete Command — Target Resolution and Confirmation",
+      "title": "Delete Command \u2014 Target Resolution and Confirmation",
       "description": "As a developer, I want hal sandbox delete to resolve targets consistently and handle --all confirmation before execution.",
       "acceptanceCriteria": [
         "hal sandbox delete NAME [NAME...] resolves explicit names as targets",
@@ -450,22 +450,22 @@
     },
     {
       "id": "US-027",
-      "title": "SSH Command — ConnectInfo and Auto-Resolve",
+      "title": "SSH Command \u2014 ConnectInfo and Auto-Resolve",
       "description": "As a developer, I want hal sandbox ssh to build ConnectInfo from the registry and auto-connect when only one sandbox exists.",
       "acceptanceCriteria": [
         "hal sandbox ssh NAME loads instance from registry, builds ConnectInfo with PreferredIP, calls provider.SSH(info)",
         "hal sandbox ssh NAME -- COMMAND passes command to provider.Exec(info, args)",
-        "hal sandbox ssh (no name) auto-resolves: if exactly 1 → connect + hint \"Connecting to only active sandbox \\\"X\\\"...\"; if 0 → error; if \u003e1 → error listing choices",
+        "hal sandbox ssh (no name) auto-resolves: if exactly 1 \u2192 connect + hint \"Connecting to only active sandbox \\\"X\\\"...\"; if 0 \u2192 error; if >1 \u2192 error listing choices",
         "File: cmd/sandbox_ssh.go",
         "Typecheck passes"
       ],
       "priority": 27,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
       "id": "US-028",
-      "title": "Status Command — Live Query and List Alias",
+      "title": "Status Command \u2014 Live Query and List Alias",
       "description": "As a developer, I want hal sandbox status NAME to show detailed live info, and hal sandbox status (no args) to alias to list.",
       "acceptanceCriteria": [
         "hal sandbox status NAME queries provider for live status and displays detailed info (all SandboxState fields)",
@@ -502,7 +502,7 @@
         "Scope: migration",
         "Severity: warn",
         "Fires when .hal/sandbox.json exists in current project directory",
-        "Message: Legacy .hal/sandbox.json found — run 'hal sandbox migrate'",
+        "Message: Legacy .hal/sandbox.json found \u2014 run 'hal sandbox migrate'",
         "Remediation: { Command: \"hal sandbox migrate\", Safe: true }",
         "hal repair can auto-execute this remediation",
         "File: internal/doctor/ (new check)",
