@@ -284,4 +284,20 @@
   - Table rendering via `text/tabwriter` with `tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)` gives clean column alignment.
   - `formatCost` and `formatAge` are reusable for JSON output and other display paths.
   - `setupListTest` helper sets `HAL_CONFIG_HOME`, `XDG_CONFIG_HOME`, and `HOME` to isolate global registry state.
+- JSON list output uses `SandboxListResponse` with `SandboxListEntry` and `SandboxListTotals` types; optional fields use `omitempty` and pointer types (e.g., `*float64` for `estimatedCost`) so nil values are omitted rather than serialized as zero.
+- `renderSandboxListJSON` is the dedicated JSON renderer; `runSandboxList(out, jsonMode)` dispatches to it or the table renderer based on the flag.
+- `contractVersion` is always `"sandbox-list-v1"` — keep this consistent with `docs/contracts/sandbox-list-v1.md` (US-031).
+---
+
+## [2026-03-21 17:45 CST] - US-023
+- Added `--json` flag to `hal sandbox list` for machine-readable JSON output following the sandbox-list-v1 contract.
+- Added JSON response types (`SandboxListResponse`, `SandboxListEntry`, `SandboxListTotals`) in `cmd/sandbox_list.go` with exact camelCase JSON tags and omitempty on optional fields.
+- JSON output includes `contractVersion: "sandbox-list-v1"`, `sandboxes[]` with required fields (id, name, provider, status, createdAt), and `totals` (total, running, stopped, estimatedCost).
+- `estimatedCost` uses `*float64` pointer so nil (unknown) is omitted, not serialized as 0.
+- Added 7 JSON-specific tests: empty registry, full structure validation, required key assertions, optional field omission, multiple sandboxes, no-extra-text purity check, and round-trip marshal/unmarshal.
+- Files changed: `cmd/sandbox_list.go`, `cmd/sandbox_list_test.go`
+- **Learnings for future iterations:**
+  - Use pointer types (`*float64`) for JSON optional numeric fields to distinguish missing (nil→omit) from zero (explicit 0).
+  - JSON output should go through its own dedicated renderer (not reuse table rendering) to keep output pure and avoid mixing text.
+  - The `runSandboxList` signature expanded to `(out, jsonMode)` — update all existing test calls when adding new parameters.
 ---
