@@ -19,7 +19,7 @@ var sandboxStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Create and start a sandbox",
 	Args:  noArgsValidation(),
-	Long: `Create and start a sandbox using the configured provider (Daytona, Hetzner, or DigitalOcean).
+	Long: `Create and start a sandbox using the configured provider (Daytona, Hetzner, DigitalOcean, or AWS Lightsail).
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
 Use --name to override the default name.
@@ -100,19 +100,19 @@ func runSandboxStartWithDeps(
 		}
 
 		provCfg := sandbox.ProviderConfig{
-			DaytonaAPIKey:            dayCfg.APIKey,
-			DaytonaServerURL:         dayCfg.ServerURL,
-			HetznerSSHKey:            sandboxCfg.Hetzner.SSHKey,
-			HetznerServerType:        sandboxCfg.Hetzner.ServerType,
-			HetznerImage:             sandboxCfg.Hetzner.Image,
-			DigitalOceanSSHKey:       sandboxCfg.DigitalOcean.SSHKey,
-			DigitalOceanSize:         sandboxCfg.DigitalOcean.Size,
-			LightsailRegion:          sandboxCfg.Lightsail.Region,
+			DaytonaAPIKey:             dayCfg.APIKey,
+			DaytonaServerURL:          dayCfg.ServerURL,
+			HetznerSSHKey:             sandboxCfg.Hetzner.SSHKey,
+			HetznerServerType:         sandboxCfg.Hetzner.ServerType,
+			HetznerImage:              sandboxCfg.Hetzner.Image,
+			DigitalOceanSSHKey:        sandboxCfg.DigitalOcean.SSHKey,
+			DigitalOceanSize:          sandboxCfg.DigitalOcean.Size,
+			LightsailRegion:           sandboxCfg.Lightsail.Region,
 			LightsailAvailabilityZone: sandboxCfg.Lightsail.AvailabilityZone,
-			LightsailBundle:          sandboxCfg.Lightsail.Bundle,
-			LightsailKeyPairName:     sandboxCfg.Lightsail.KeyPairName,
-			TailscaleLockdown:        sandboxCfg.TailscaleLockdown,
-			StateDir:                 halDir,
+			LightsailBundle:           sandboxCfg.Lightsail.Bundle,
+			LightsailKeyPairName:      sandboxCfg.Lightsail.KeyPairName,
+			TailscaleLockdown:         sandboxCfg.TailscaleLockdown,
+			StateDir:                  halDir,
 		}
 		provider, err = resolveSandboxProvider(sandboxCfg.Provider, provCfg)
 		if err != nil {

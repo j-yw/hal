@@ -45,8 +45,9 @@ type Provider interface {
 // exit error (if any). This is the standard way to run a Provider-returned
 // *exec.Cmd when you want streamed output rather than collected bytes.
 func RunCmd(cmd *exec.Cmd, out io.Writer) error {
-	cmd.Stdout = out
-	cmd.Stderr = out
+	safeOut := synchronizedWriter(out)
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
 	return cmd.Run()
 }
 
@@ -91,13 +92,13 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 // ProviderConfig holds the configuration needed to instantiate any Provider.
 // Fields are populated from .hal/config.yaml by the caller.
 type ProviderConfig struct {
-	DaytonaAPIKey     string
-	DaytonaServerURL  string
-	HetznerSSHKey     string
-	HetznerServerType string
-	HetznerImage      string
-	DigitalOceanSSHKey string
-	DigitalOceanSize   string
+	DaytonaAPIKey             string
+	DaytonaServerURL          string
+	HetznerSSHKey             string
+	HetznerServerType         string
+	HetznerImage              string
+	DigitalOceanSSHKey        string
+	DigitalOceanSize          string
 	LightsailRegion           string
 	LightsailAvailabilityZone string
 	LightsailBundle           string

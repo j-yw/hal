@@ -207,11 +207,12 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	tmpFile.Close()
 
 	// Run doctl compute droplet create
+	safeOut := synchronizedWriter(out)
 	args := buildDOCreateArgs(name, d.Size, d.SSHKey, tmpFile.Name())
 	createCmd := d.commandContext(ctx, "doctl", args...)
 	var stderrBuf bytes.Buffer
-	createCmd.Stdout = out
-	createCmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	createCmd.Stdout = safeOut
+	createCmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := createCmd.Run(); err != nil {
 		return nil, wrapDoctlError("compute droplet create", err, stderrBuf.String())
@@ -225,7 +226,7 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	var ipBuf bytes.Buffer
 	var ipStderr bytes.Buffer
 	ipCmd.Stdout = &ipBuf
-	ipCmd.Stderr = io.MultiWriter(out, &ipStderr)
+	ipCmd.Stderr = io.MultiWriter(safeOut, &ipStderr)
 
 	if err := ipCmd.Run(); err != nil {
 		return nil, wrapDoctlError("compute droplet get", err, ipStderr.String())
@@ -254,10 +255,11 @@ func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Wri
 	}
 
 	target := d.resolveDropletTarget(name)
+	safeOut := synchronizedWriter(out)
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", target)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = out
-	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
 		return wrapDoctlError("compute droplet-action shutdown", err, stderrBuf.String())
@@ -271,10 +273,11 @@ func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.W
 	}
 
 	target := d.resolveDropletTarget(name)
+	safeOut := synchronizedWriter(out)
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "delete", target, "--force")
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = out
-	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
 		return wrapDoctlError("compute droplet delete", err, stderrBuf.String())
@@ -288,12 +291,13 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.W
 	}
 
 	target := d.resolveDropletTarget(name)
+	safeOut := synchronizedWriter(out)
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
 		"--format", "ID,Name,Status,PublicIPv4",
 	)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = out
-	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
 		return wrapDoctlError("compute droplet get", err, stderrBuf.String())

@@ -10,6 +10,7 @@ First prompts for a provider:
   (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
   (2) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
   (3) DigitalOcean — managed VPS via doctl (prompts for SSH key fingerprint, droplet size)
+  (4) AWS Lightsail — lightweight VPS via aws CLI (prompts for key pair name, bundle, region)
 
 Then prompts for shared environment variables:
   • API keys (Anthropic, OpenAI) — masked input
