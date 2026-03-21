@@ -184,3 +184,9 @@
 - Global sandbox path resolution in `internal/sandbox/global.go` must follow this exact precedence: `$HAL_CONFIG_HOME` → `$XDG_CONFIG_HOME/hal` → `$HOME/.config/hal`.
 - Tests for global sandbox paths should isolate with `t.Setenv("HAL_CONFIG_HOME", tmpDir)`; for fallback behavior, also set `HOME` explicitly so results are deterministic.
 - `EnsureGlobalDir()` should create both the global root and `sandboxes/` with `os.MkdirAll(..., 0700)` and remain safe to call repeatedly.
+
+## Patterns from hal/sandbox-uuidv7-generation (2026-03-21)
+
+- `internal/sandbox/uuid.go` uses an injectable `UUIDSource` (`clock func() time.Time`, `rand io.Reader`) so UUID generation stays deterministic in tests while defaulting to `crypto/rand.Reader` in production.
+- UUIDv7 monotonic behavior is maintained by reseeding randomness only when millisecond timestamps advance; otherwise increment the stored random bits (with timestamp carry on overflow) before formatting.
+- UUID tests should assert canonical 8-4-4-4-12 format and bit-level contracts (version nibble `0x7`, variant top bits `0b10`) plus a reader-failure error path.
