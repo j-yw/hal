@@ -492,3 +492,21 @@
   - Single-target path stays inline (no errgroup overhead) for cleaner output; multi-target dispatches to concurrent helper.
   - Per-name error injection via `stopErrByName` enables partial failure tests where some targets succeed and others fail.
 ---
+
+## [2026-03-21 22:30 CST] - US-038
+- Refactored `cmd/sandbox_delete.go` for concurrent execution and registry updates using `errgroup.Group`.
+- Added `deleteMultipleTargets` helper that deletes sandboxes concurrently: each goroutine calls `provider.Delete`, then `sandboxDeleteRemoveInstance` on success, and emits one result line (`Deleted <name>` or `Failed <name>: <error>`).
+- Single-target path uses inline `deleteOneTarget` for simple output; multi-target path dispatches to `deleteMultipleTargets`.
+- After successful `provider.Delete`, registry entry is removed via `sandboxDeleteRemoveInstance`; if provider.Delete fails, target remains in registry.
+- Added injectable var `sandboxDeleteRemoveInstance` for test isolation of registry removal.
+- Thread-safe mock provider: added `sync.Mutex`, `sortedDeleteCalls()`, and `deleteErrByName` for per-name error injection in concurrent tests.
+- If any targets fail, command returns non-zero error (`N/M sandbox deletes failed`); successful removals are preserved regardless.
+- Added 11 new tests: `RegistryRemovalAfterSuccess`, `RegistryPreservedOnProviderFailure`, `ConcurrentMultipleTargets`, `ConcurrentRegistryUpdates`, `PartialFailurePreservesSuccesses`, `AllFailExitsNonZero`, `AllSuccessExitsZero`, `SingleTargetResultLine`, `MultiTargetResultLines`, `PartialFailureResultLines`, `SingleTargetProviderFailureNoRegistryRemoval`.
+- Updated existing multi-target tests to use `sortedDeleteCalls()` for concurrent safety.
+- Files changed: `cmd/sandbox_delete.go`, `cmd/sandbox_delete_test.go`
+- **Learnings for future iterations:**
+  - Delete command follows the same concurrent-errgroup pattern as stop/batch-create: goroutines return nil to errgroup and track errors in a mutex-protected results slice.
+  - `deleteOneTarget` calls `sandboxDeleteRemoveInstance` after successful `provider.Delete`; the registry removal is injectable for test isolation.
+  - Single-target path stays inline (no errgroup overhead) for cleaner output; multi-target dispatches to concurrent helper.
+  - Per-name error injection via `deleteErrByName` enables partial failure tests where some targets succeed and others fail.
+---
