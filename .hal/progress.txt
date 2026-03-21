@@ -256,3 +256,14 @@
   - When adding new parameters to `runSandboxStartWithDeps`, use sed to update all test call sites efficiently to maintain compilation.
   - `runSandboxStart` is the preferred entry point for Cobra handlers; `runSandboxStartWithDeps` stays available for tests that need direct parameter injection.
 ---
+
+## [2026-03-21 17:00 CST] - US-021
+- Implemented `EstimatedCost(instance *SandboxState, now func() time.Time) float64` in `internal/sandbox/pricing.go` with embedded `hourlyRates` map covering 3 sizes each for digitalocean, hetzner, and lightsail providers.
+- Unknown provider or size returns -1; stopped sandboxes still accrue cost from `CreatedAt`; injectable `now` function enables deterministic tests.
+- Added `internal/sandbox/pricing_test.go` with table-driven coverage for all 9 provider/size combos, unknown provider, unknown size, daytona (no rates), empty size, stopped-still-charges, and zero-hours edge case, plus rate-completeness and positivity assertions.
+- Files changed: `internal/sandbox/pricing.go`, `internal/sandbox/pricing_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - `EstimatedCost` uses injectable `now func() time.Time` rather than `time.Now()` so tests stay deterministic — follow this pattern for any time-dependent sandbox calculations.
+  - Cost accrues from `CreatedAt` regardless of `Status` since cloud providers charge for allocated (even stopped) instances — this is intentional behavior, not a bug.
+  - The `hourlyRates` map is package-level in `pricing.go` and tested via `TestEstimatedCost_AllProvidersAndSizes` to lock the expected provider/size matrix.
+---
