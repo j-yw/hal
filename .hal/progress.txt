@@ -34,6 +34,8 @@
 - Status command uses `sandboxStatusLoadInstance`/`sandboxStatusResolveProvider`/`sandboxStatusNow` injectable vars for test isolation; `renderSandboxDetail` reuses `formatAge`/`formatCost` from `sandbox_list.go`.
 - When a command changes from `noArgsValidation()` to `cobra.MaximumNArgs(N)`, update `cmd/args_test.go` to remove it from the no-args table.
 - `sandbox.Migrate(projectDir, out)` now accepts `io.Writer`; pass `nil` from auto-migrate (no output), pass a `*bytes.Buffer` from the migrate command to detect "no actions" (empty buffer → "Nothing to migrate").
+- Start command collision check uses `sandbox.LoadInstance(name)` before `provider.Create`; without `--force`, returns exact error `sandbox "<name>" already exists`; with `--force`, deletes existing via `provider.Delete` + `sandbox.RemoveInstance` before creating.
+- When adding a `force bool` parameter to `runSandboxStartWithDeps`, use `perl -i -pe` for bulk updates across many test call sites; verify no doubled params afterward.
 
 ## [2026-03-21 13:09 CST] - US-001
 - Implemented global sandbox directory helpers in `internal/sandbox/global.go`: `GlobalDir()`, `SandboxesDir()`, and `EnsureGlobalDir()`.
@@ -432,4 +434,21 @@
   - State migration should always do a read-back verification after writing to the global registry before deleting the local source file — this prevents data loss on partial writes.
   - Using read→write→verify→delete instead of `os.Rename` avoids cross-device (EXDEV) issues and makes the operation naturally atomic per step.
   - When migrating state where the entry may already exist in the target, check first and handle the already-migrated case explicitly (cleanup local + skip write) for clean idempotency.
+---
+
+## [2026-03-21 21:00 CST] - US-035
+- Added `--force` (`-f`) flag to `hal sandbox start` for explicit collision handling.
+- Before `provider.Create`, `runSingleCreate` checks `sandbox.LoadInstance(name)` for existing sandboxes.
+- Without `--force`: returns exact error `sandbox "<name>" already exists`.
+- With `--force`: calls `provider.Delete` on existing sandbox via `ConnectInfoFromState`, removes registry entry, then creates new sandbox with a fresh UUIDv7 ID.
+- If force-delete fails, error is returned and `provider.Create` is never called.
+- Updated `mockProvider` to track `deleteCalls` and support configurable `deleteErr`.
+- Added `force` parameter to `runSandboxStart`, `runSandboxStartWithDeps`, and `runSingleCreate`; batch mode always passes `force=false` (uses preflight instead).
+- Added 8 tests: collision without force, force replace success, force-delete failure, force new ID, no collision, force with no existing (noop), force flag metadata, force via `runSandboxStart`.
+- Updated all existing test call sites to pass `force=false`.
+- Files changed: `cmd/sandbox_start.go`, `cmd/sandbox_start_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Collision checks should happen inside `runSingleCreate` (closest to `provider.Create`) to keep the contract simple and testable.
+  - `--force` for batch is not needed since `batchPreflight` already handles collision detection; batch mode always passes `force=false`.
+  - When extending function signatures with a new parameter, use `perl -i -pe` regex substitution to bulk-update test call sites, then verify no double-insertion.
 ---
