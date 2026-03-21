@@ -187,6 +187,7 @@
 - Global sandbox registry entries live at `SandboxesDir()/"<name>.json"`; writes should stay atomic (`.tmp` + `os.Rename`) with `0600` file mode.
 - Registry collision semantics are strict: `SaveInstance` must return the exact error `sandbox "<name>" already exists`, while `ForceWriteInstance` is the explicit overwrite path for `--force` flows.
 - `ListInstances` should treat a missing `sandboxes/` directory as empty state and return instances sorted by `Name`; missing `LoadInstance`/`RemoveInstance` errors should wrap `fs.ErrNotExist` for `errors.Is` checks.
+- `ResolveDefault(filter)` is the canonical no-name target resolver: return exact empty-state errors (`no sandboxes found` or `no running sandboxes` for running-only filters), ambiguity errors as `multiple sandboxes found: <sorted names>`, and success hint text `connecting to only active sandbox "<name>"`.
 
 ## Patterns from hal/sandbox-uuidv7-generation (2026-03-21)
 

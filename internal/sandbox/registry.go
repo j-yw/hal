@@ -137,6 +137,63 @@ func ListInstances() ([]*SandboxState, error) {
 	return instances, nil
 }
 
+// ResolveDefault resolves the default sandbox when commands are invoked
+// without an explicit sandbox name.
+//
+// It applies the optional filter and expects exactly one match.
+//
+// Returns:
+//   - the matching sandbox + hint when exactly one match exists
+//   - "no sandboxes found" when there are no matches
+//   - "no running sandboxes" when there are no matches and the filter appears
+//     to target running status
+//   - "multiple sandboxes found: ..." with sorted names when ambiguous
+func ResolveDefault(filter func(*SandboxState) bool) (*SandboxState, string, error) {
+	instances, err := ListInstances()
+	if err != nil {
+		return nil, "", fmt.Errorf("list sandboxes: %w", err)
+	}
+
+	matches := make([]*SandboxState, 0, len(instances))
+	for _, instance := range instances {
+		if filter != nil && !filter(instance) {
+			continue
+		}
+		matches = append(matches, instance)
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, "", errors.New(defaultResolveNoMatchError(filter))
+	case 1:
+		match := matches[0]
+		return match, fmt.Sprintf("connecting to only active sandbox %q", match.Name), nil
+	default:
+		names := make([]string, 0, len(matches))
+		for _, match := range matches {
+			names = append(names, match.Name)
+		}
+		return nil, "", fmt.Errorf("multiple sandboxes found: %s", strings.Join(names, ", "))
+	}
+}
+
+func defaultResolveNoMatchError(filter func(*SandboxState) bool) string {
+	if isRunningOnlyFilter(filter) {
+		return "no running sandboxes"
+	}
+	return "no sandboxes found"
+}
+
+func isRunningOnlyFilter(filter func(*SandboxState) bool) bool {
+	if filter == nil {
+		return false
+	}
+
+	running := filter(&SandboxState{Status: StatusRunning})
+	stopped := filter(&SandboxState{Status: StatusStopped})
+	return running && !stopped
+}
+
 // RemoveInstance deletes a sandbox instance from the global registry.
 func RemoveInstance(name string) error {
 	path, err := instancePath(name)

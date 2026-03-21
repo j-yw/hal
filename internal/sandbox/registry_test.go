@@ -161,6 +161,114 @@ func TestListInstances(t *testing.T) {
 	}
 }
 
+func TestResolveDefault(t *testing.T) {
+	runningOnly := func(instance *SandboxState) bool {
+		return instance.Status == StatusRunning
+	}
+
+	tests := []struct {
+		name      string
+		instances []*SandboxState
+		filter    func(*SandboxState) bool
+		wantName  string
+		wantHint  string
+		wantErr   string
+	}{
+		{
+			name:    "no sandboxes returns no sandboxes found",
+			wantErr: "no sandboxes found",
+		},
+		{
+			name: "single sandbox returns instance and hint",
+			instances: []*SandboxState{
+				{Name: "api-backend", Status: StatusRunning},
+			},
+			wantName: "api-backend",
+			wantHint: `connecting to only active sandbox "api-backend"`,
+		},
+		{
+			name: "multiple sandboxes returns sorted choices",
+			instances: []*SandboxState{
+				{Name: "worker-01", Status: StatusRunning},
+				{Name: "frontend", Status: StatusStopped},
+				{Name: "api-backend", Status: StatusRunning},
+			},
+			wantErr: "multiple sandboxes found: api-backend, frontend, worker-01",
+		},
+		{
+			name: "running filter with no running sandboxes returns running error",
+			instances: []*SandboxState{
+				{Name: "api-backend", Status: StatusStopped},
+				{Name: "worker-01", Status: StatusUnknown},
+			},
+			filter:  runningOnly,
+			wantErr: "no running sandboxes",
+		},
+		{
+			name: "running filter with one match returns instance and hint",
+			instances: []*SandboxState{
+				{Name: "api-backend", Status: StatusStopped},
+				{Name: "worker-01", Status: StatusRunning},
+			},
+			filter:   runningOnly,
+			wantName: "worker-01",
+			wantHint: `connecting to only active sandbox "worker-01"`,
+		},
+		{
+			name: "running filter with multiple matches returns choices",
+			instances: []*SandboxState{
+				{Name: "worker-01", Status: StatusRunning},
+				{Name: "api-backend", Status: StatusStopped},
+				{Name: "frontend", Status: StatusRunning},
+			},
+			filter:  runningOnly,
+			wantErr: "multiple sandboxes found: frontend, worker-01",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setSandboxHome(t)
+
+			for _, instance := range tt.instances {
+				if err := SaveInstance(instance); err != nil {
+					t.Fatalf("SaveInstance(%q) failed: %v", instance.Name, err)
+				}
+			}
+
+			got, hint, err := ResolveDefault(tt.filter)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error %q, got nil", tt.wantErr)
+				}
+				if err.Error() != tt.wantErr {
+					t.Fatalf("error = %q, want %q", err.Error(), tt.wantErr)
+				}
+				if got != nil {
+					t.Fatalf("expected nil instance on error, got %q", got.Name)
+				}
+				if hint != "" {
+					t.Fatalf("expected empty hint on error, got %q", hint)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got == nil {
+				t.Fatal("expected resolved sandbox, got nil")
+			}
+			if got.Name != tt.wantName {
+				t.Fatalf("resolved name = %q, want %q", got.Name, tt.wantName)
+			}
+			if hint != tt.wantHint {
+				t.Fatalf("hint = %q, want %q", hint, tt.wantHint)
+			}
+		})
+	}
+}
+
 func TestRemoveInstance(t *testing.T) {
 	tests := []struct {
 		name     string
