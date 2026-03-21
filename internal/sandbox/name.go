@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -53,6 +55,34 @@ func SandboxNameFromBranch(branch string) string {
 		return defaultSandboxName
 	}
 	return sanitized
+}
+
+// BatchNames returns count names as {base}-NN style values.
+func BatchNames(base string, count int) ([]string, error) {
+	if count < 1 {
+		return nil, errors.New("count must be at least 1")
+	}
+
+	width := len(strconv.Itoa(count))
+	if width < 2 {
+		width = 2
+	}
+
+	suffixLen := 1 + width // "-" + padded number
+	if len(base)+suffixLen > maxSandboxNameLength {
+		return nil, fmt.Errorf("base name %q with suffix width %d exceeds %d chars", base, width, maxSandboxNameLength)
+	}
+
+	names := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		name := fmt.Sprintf("%s-%0*d", base, width, i)
+		if err := ValidateName(name); err != nil {
+			return nil, fmt.Errorf("invalid generated name %q: %w", name, err)
+		}
+		names = append(names, name)
+	}
+
+	return names, nil
 }
 
 func sanitizeName(input string) string {

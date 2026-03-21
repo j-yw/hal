@@ -195,4 +195,5 @@
 
 - Keep sandbox-name validation centralized in `internal/sandbox/name.go` (`ValidateName`) with the exact user-facing error strings: `must be 1-59 chars`, `must be lowercase alphanumeric and hyphens`, `must not start or end with hyphen`, and `must not contain consecutive hyphens`.
 - `SandboxNameFromBranch` should always produce a valid default name by lowercasing, replacing non `[a-z0-9]` runs with a single hyphen, trimming edge hyphens, and capping to 59 chars (falling back to `sandbox` if sanitization is empty).
+- `BatchNames(base, count)` should compute suffix width as `max(2, digits(count))`, reject `count < 1`, preflight `len(base)+1+width <= 59`, and validate each generated `{base}-NN...` value via `ValidateName`.
 - Name validation tests are table-driven and include boundary cases (59/60 chars) plus structural invalid cases (uppercase, special chars, edge/consecutive hyphens); keep this matrix updated when name rules change.
