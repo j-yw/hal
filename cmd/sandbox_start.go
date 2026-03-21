@@ -114,9 +114,9 @@ type branchResolver func() (string, error)
 // autoShutdownOpts carries flag overrides for auto-shutdown configuration.
 // Pointer fields distinguish "flag was set" from "flag was not set".
 type autoShutdownOpts struct {
-	autoShutdown    *bool // --auto-shutdown flag
-	noAutoShutdown  *bool // --no-auto-shutdown flag
-	idleHours       *int  // --idle-hours flag
+	autoShutdown   *bool // --auto-shutdown flag
+	noAutoShutdown *bool // --no-auto-shutdown flag
+	idleHours      *int  // --idle-hours flag
 }
 
 // sandboxStartDeps holds injectable dependencies for runSandboxStartWithDeps.
@@ -425,14 +425,12 @@ func createBatchTarget(
 	out io.Writer,
 ) error {
 	ctx := context.Background()
-	// Set per-sandbox Tailscale hostname so each device has a unique name
+	// Always set a per-sandbox hostname so legacy static values are replaced.
 	perEnv := make(map[string]string, len(mergedEnv)+1)
 	for k, v := range mergedEnv {
 		perEnv[k] = v
 	}
-	if _, ok := perEnv["TAILSCALE_HOSTNAME"]; !ok {
-		perEnv["TAILSCALE_HOSTNAME"] = name
-	}
+	perEnv["TAILSCALE_HOSTNAME"] = name
 	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
 	result, err := provider.Create(ctx, name, perEnv, prefixedOut)
 	if err != nil {
@@ -507,10 +505,8 @@ func runSingleCreate(
 		fmt.Fprintf(out, "Starting sandbox %q (%s)...\n", name, sandboxCfg.Provider)
 	}
 
-	// Set per-sandbox Tailscale hostname so each device has a unique name
-	if _, ok := mergedEnv["TAILSCALE_HOSTNAME"]; !ok {
-		mergedEnv["TAILSCALE_HOSTNAME"] = name
-	}
+	// Always set a per-sandbox hostname so legacy static values are replaced.
+	mergedEnv["TAILSCALE_HOSTNAME"] = name
 
 	ctx := context.Background()
 	result, err := provider.Create(ctx, name, mergedEnv, out)

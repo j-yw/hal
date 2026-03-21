@@ -256,6 +256,79 @@ func TestRunSandboxStart_EnvVarsFromConfig(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStart_OverridesLegacyTailscaleHostname(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env: map[string]string{
+			"API_KEY":            "sk-from-config",
+			"TAILSCALE_HOSTNAME": "legacy-shared-host",
+		},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb"},
+	}
+
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+
+	env := mock.createCalls[0].Env
+	if env["TAILSCALE_HOSTNAME"] != "sb" {
+		t.Errorf("TAILSCALE_HOSTNAME = %q, want %q", env["TAILSCALE_HOSTNAME"], "sb")
+	}
+	if env["API_KEY"] != "sk-from-config" {
+		t.Errorf("API_KEY = %q, want %q", env["API_KEY"], "sk-from-config")
+	}
+}
+
+func TestRunSandboxStart_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env: map[string]string{
+			"TAILSCALE_HOSTNAME": "legacy-shared-host",
+		},
+	}
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-1"},
+	}
+
+	if err := runSandboxStartWithDeps(dir, "worker", 2, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.createCalls) != 2 {
+		t.Fatalf("expected 2 Create calls, got %d", len(mock.createCalls))
+	}
+
+	for _, call := range mock.createCalls {
+		if got := call.Env["TAILSCALE_HOSTNAME"]; got != call.Name {
+			t.Errorf("%s: TAILSCALE_HOSTNAME = %q, want %q", call.Name, got, call.Name)
+		}
+	}
+}
+
 func TestRunSandboxStart_LockdownRequiresAuthKey(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
