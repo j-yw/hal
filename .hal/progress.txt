@@ -475,3 +475,20 @@
   - Thread-safe mock providers need `sync.Mutex` on call-tracking slices; use `sortedCreateCallNames()` for deterministic assertions in concurrent test scenarios.
   - Per-name error injection via `createErrByName` map enables partial failure tests without requiring complex provider mock logic.
 ---
+
+## [2026-03-21 22:00 CST] - US-037
+- Refactored `cmd/sandbox_stop.go` for concurrent execution and registry updates using `errgroup.Group`.
+- Added `stopMultipleTargets` helper that stops sandboxes concurrently: each goroutine calls `provider.Stop`, then `updateStoppedState` on success, and emits one result line (`Stopped <name>` or `Failed <name>: <error>`).
+- Added `updateStoppedState` helper that sets `Status=StatusStopped` and `StoppedAt=now` on the `SandboxState` and persists via `ForceWriteInstance`.
+- Single-target path uses inline `stopOneTarget` for simple output; multi-target path dispatches to `stopMultipleTargets`.
+- Added injectable vars: `sandboxStopNow` (deterministic time), `sandboxStopForceWrite` (registry write injection).
+- Thread-safe mock provider: added `sync.Mutex`, `sortedStopCalls()`, and `stopErrByName` for per-name error injection in concurrent tests.
+- If any targets fail, command returns non-zero error (`N/M sandbox stops failed`); successful updates are preserved regardless.
+- Added 12 new tests: registry status/stoppedAt update, concurrent multi-target, concurrent registry updates, partial failure preserves successes, all-fail exits non-zero, single target result lines, multi-target result lines, all-success exits zero, and `updateStoppedState` unit test.
+- Files changed: `cmd/sandbox_stop.go`, `cmd/sandbox_stop_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- **Learnings for future iterations:**
+  - Stop command follows the same concurrent-errgroup pattern as batch creation: goroutines return nil to errgroup and track errors in a mutex-protected results slice.
+  - `updateStoppedState` uses `ForceWriteInstance` (not `SaveInstance`) since the entry already exists in the registry.
+  - Single-target path stays inline (no errgroup overhead) for cleaner output; multi-target dispatches to concurrent helper.
+  - Per-name error injection via `stopErrByName` enables partial failure tests where some targets succeed and others fail.
+---

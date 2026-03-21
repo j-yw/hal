@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,9 +16,21 @@ import (
 )
 
 // mockStopProvider implements sandbox.Provider for stop tests.
+// Supports per-name error injection via stopErrByName for concurrent tests.
 type mockStopProvider struct {
-	stopCalls []string
-	stopErr   error
+	mu            sync.Mutex
+	stopCalls     []string
+	stopErr       error
+	stopErrByName map[string]error
+}
+
+func (m *mockStopProvider) sortedStopCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sorted := make([]string, len(m.stopCalls))
+	copy(sorted, m.stopCalls)
+	sort.Strings(sorted)
+	return sorted
 }
 
 func (m *mockStopProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
@@ -24,10 +38,19 @@ func (m *mockStopProvider) Create(ctx context.Context, name string, env map[stri
 }
 
 func (m *mockStopProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
+	m.mu.Lock()
 	if info != nil {
 		m.stopCalls = append(m.stopCalls, info.Name)
 	} else {
 		m.stopCalls = append(m.stopCalls, "")
+	}
+	m.mu.Unlock()
+
+	// Per-name error injection takes precedence over global stopErr
+	if m.stopErrByName != nil && info != nil {
+		if err, ok := m.stopErrByName[info.Name]; ok {
+			return err
+		}
 	}
 	return m.stopErr
 }
@@ -375,7 +398,7 @@ func TestRunSandboxStop_ExplicitName(t *testing.T) {
 	if mock.stopCalls[0] != "my-sandbox" {
 		t.Errorf("Stop name = %q, want %q", mock.stopCalls[0], "my-sandbox")
 	}
-	if !strings.Contains(out.String(), `Sandbox "my-sandbox" stopped.`) {
+	if !strings.Contains(out.String(), "Stopped my-sandbox") {
 		t.Errorf("output %q missing stopped message", out.String())
 	}
 }
@@ -394,15 +417,16 @@ func TestRunSandboxStop_MultipleNames(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Targets are sorted: api-backend first, then frontend
-	if len(mock.stopCalls) != 2 {
-		t.Fatalf("expected 2 Stop calls, got %d", len(mock.stopCalls))
+	// Concurrent execution — use sorted calls for deterministic assertions
+	sorted := mock.sortedStopCalls()
+	if len(sorted) != 2 {
+		t.Fatalf("expected 2 Stop calls, got %d", len(sorted))
 	}
-	if mock.stopCalls[0] != "api-backend" {
-		t.Errorf("Stop[0] = %q, want %q", mock.stopCalls[0], "api-backend")
+	if sorted[0] != "api-backend" {
+		t.Errorf("Stop[0] = %q, want %q", sorted[0], "api-backend")
 	}
-	if mock.stopCalls[1] != "frontend" {
-		t.Errorf("Stop[1] = %q, want %q", mock.stopCalls[1], "frontend")
+	if sorted[1] != "frontend" {
+		t.Errorf("Stop[1] = %q, want %q", sorted[1], "frontend")
 	}
 }
 
@@ -481,15 +505,15 @@ func TestRunSandboxStop_AllFlag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(mock.stopCalls) != 2 {
-		t.Fatalf("expected 2 Stop calls, got %d", len(mock.stopCalls))
+	sorted := mock.sortedStopCalls()
+	if len(sorted) != 2 {
+		t.Fatalf("expected 2 Stop calls, got %d", len(sorted))
 	}
-	// Sorted: api-backend, frontend
-	if mock.stopCalls[0] != "api-backend" {
-		t.Errorf("Stop[0] = %q, want %q", mock.stopCalls[0], "api-backend")
+	if sorted[0] != "api-backend" {
+		t.Errorf("Stop[0] = %q, want %q", sorted[0], "api-backend")
 	}
-	if mock.stopCalls[1] != "frontend" {
-		t.Errorf("Stop[1] = %q, want %q", mock.stopCalls[1], "frontend")
+	if sorted[1] != "frontend" {
+		t.Errorf("Stop[1] = %q, want %q", sorted[1], "frontend")
 	}
 }
 
@@ -508,14 +532,15 @@ func TestRunSandboxStop_PatternFlag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(mock.stopCalls) != 2 {
-		t.Fatalf("expected 2 Stop calls, got %d", len(mock.stopCalls))
+	sorted := mock.sortedStopCalls()
+	if len(sorted) != 2 {
+		t.Fatalf("expected 2 Stop calls, got %d", len(sorted))
 	}
-	if mock.stopCalls[0] != "worker-01" {
-		t.Errorf("Stop[0] = %q, want %q", mock.stopCalls[0], "worker-01")
+	if sorted[0] != "worker-01" {
+		t.Errorf("Stop[0] = %q, want %q", sorted[0], "worker-01")
 	}
-	if mock.stopCalls[1] != "worker-02" {
-		t.Errorf("Stop[1] = %q, want %q", mock.stopCalls[1], "worker-02")
+	if sorted[1] != "worker-02" {
+		t.Errorf("Stop[1] = %q, want %q", sorted[1], "worker-02")
 	}
 }
 
@@ -589,5 +614,320 @@ func TestSandboxStopCommand_Flags(t *testing.T) {
 	}
 	if cmd.Use != "stop [NAME ...]" {
 		t.Errorf("Use = %q, want %q", cmd.Use, "stop [NAME ...]")
+	}
+}
+
+// --- US-037: Execution and Registry Update Tests ---
+
+func TestRunSandboxStop_UpdatesRegistryStatusAndStoppedAt(t *testing.T) {
+	createdAt := time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)
+	stoppedTime := time.Date(2026, 3, 21, 14, 30, 0, 0, time.UTC)
+
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: createdAt},
+	})
+
+	// Inject deterministic time
+	origNow := sandboxStopNow
+	sandboxStopNow = func() time.Time { return stoppedTime }
+	t.Cleanup(func() { sandboxStopNow = origNow })
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"my-sandbox"}, false, "", &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify registry was updated
+	inst, err := sandbox.LoadInstance("my-sandbox")
+	if err != nil {
+		t.Fatalf("failed to load instance: %v", err)
+	}
+	if inst.Status != sandbox.StatusStopped {
+		t.Errorf("Status = %q, want %q", inst.Status, sandbox.StatusStopped)
+	}
+	if inst.StoppedAt == nil {
+		t.Fatal("StoppedAt is nil, expected non-nil")
+	}
+	if !inst.StoppedAt.Equal(stoppedTime) {
+		t.Errorf("StoppedAt = %v, want %v", *inst.StoppedAt, stoppedTime)
+	}
+}
+
+func TestRunSandboxStop_ConcurrentMultipleTargets(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"api-backend", "frontend", "worker-01"}, false, "", &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sorted := mock.sortedStopCalls()
+	if len(sorted) != 3 {
+		t.Fatalf("expected 3 Stop calls, got %d", len(sorted))
+	}
+	want := []string{"api-backend", "frontend", "worker-01"}
+	for i, name := range want {
+		if sorted[i] != name {
+			t.Errorf("sorted call[%d] = %q, want %q", i, sorted[i], name)
+		}
+	}
+
+	// Verify each target has result line in output
+	output := out.String()
+	for _, name := range want {
+		if !strings.Contains(output, "Stopped "+name) {
+			t.Errorf("output missing result line for %q", name)
+		}
+	}
+}
+
+func TestRunSandboxStop_ConcurrentUpdatesRegistry(t *testing.T) {
+	stoppedTime := time.Date(2026, 3, 21, 15, 0, 0, 0, time.UTC)
+
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	origNow := sandboxStopNow
+	sandboxStopNow = func() time.Time { return stoppedTime }
+	t.Cleanup(func() { sandboxStopNow = origNow })
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"alpha", "bravo"}, false, "", &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both should be updated in registry
+	for _, name := range []string{"alpha", "bravo"} {
+		inst, err := sandbox.LoadInstance(name)
+		if err != nil {
+			t.Fatalf("failed to load %q: %v", name, err)
+		}
+		if inst.Status != sandbox.StatusStopped {
+			t.Errorf("%s Status = %q, want %q", name, inst.Status, sandbox.StatusStopped)
+		}
+		if inst.StoppedAt == nil {
+			t.Errorf("%s StoppedAt is nil", name)
+		} else if !inst.StoppedAt.Equal(stoppedTime) {
+			t.Errorf("%s StoppedAt = %v, want %v", name, *inst.StoppedAt, stoppedTime)
+		}
+	}
+}
+
+func TestRunSandboxStop_PartialFailurePreservesSuccessfulUpdates(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "charlie", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockStopProvider{
+		stopErrByName: map[string]error{
+			"bravo": fmt.Errorf("connection timeout"),
+		},
+	}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"alpha", "bravo", "charlie"}, false, "", &out, mock)
+
+	// Should return non-zero (error)
+	if err == nil {
+		t.Fatal("expected error for partial failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "1/3 sandbox stops failed") {
+		t.Errorf("error %q does not match expected format", err.Error())
+	}
+
+	// alpha and charlie should be stopped in registry
+	for _, name := range []string{"alpha", "charlie"} {
+		inst, err := sandbox.LoadInstance(name)
+		if err != nil {
+			t.Fatalf("failed to load %q: %v", name, err)
+		}
+		if inst.Status != sandbox.StatusStopped {
+			t.Errorf("%s Status = %q, want %q", name, inst.Status, sandbox.StatusStopped)
+		}
+	}
+
+	// bravo should remain running
+	bravo, err := sandbox.LoadInstance("bravo")
+	if err != nil {
+		t.Fatalf("failed to load bravo: %v", err)
+	}
+	if bravo.Status != sandbox.StatusRunning {
+		t.Errorf("bravo Status = %q, want %q (should remain running after failure)", bravo.Status, sandbox.StatusRunning)
+	}
+
+	// Output should have result lines for each
+	output := out.String()
+	if !strings.Contains(output, "Stopped alpha") {
+		t.Error("output missing success line for alpha")
+	}
+	if !strings.Contains(output, "Failed bravo") {
+		t.Error("output missing failure line for bravo")
+	}
+	if !strings.Contains(output, "Stopped charlie") {
+		t.Error("output missing success line for charlie")
+	}
+}
+
+func TestRunSandboxStop_AllFailsExitsNonZero(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockStopProvider{stopErr: fmt.Errorf("provider down")}
+	var out bytes.Buffer
+
+	err := runSandboxStop(nil, true, "", &out, mock)
+	if err == nil {
+		t.Fatal("expected error when all targets fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "2/2 sandbox stops failed") {
+		t.Errorf("error %q does not match expected format", err.Error())
+	}
+
+	// Both should remain running in registry
+	for _, name := range []string{"alpha", "bravo"} {
+		inst, err := sandbox.LoadInstance(name)
+		if err != nil {
+			t.Fatalf("failed to load %q: %v", name, err)
+		}
+		if inst.Status != sandbox.StatusRunning {
+			t.Errorf("%s Status = %q, want running", name, inst.Status)
+		}
+	}
+}
+
+func TestRunSandboxStop_SingleTargetResultLine(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"my-sandbox"}, false, "", &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Stopped my-sandbox") {
+		t.Errorf("output %q missing result line", output)
+	}
+}
+
+func TestRunSandboxStop_SingleTargetFailResultLine(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockStopProvider{stopErr: fmt.Errorf("timeout")}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"my-sandbox"}, false, "", &out, mock)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox stop failed") {
+		t.Errorf("error %q missing expected text", err.Error())
+	}
+}
+
+func TestRunSandboxStop_MultipleTargetsResultLines(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "charlie", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockStopProvider{
+		stopErrByName: map[string]error{
+			"bravo": fmt.Errorf("network error"),
+		},
+	}
+	var out bytes.Buffer
+
+	_ = runSandboxStop([]string{"alpha", "bravo", "charlie"}, false, "", &out, mock)
+
+	output := out.String()
+	// Each target should have exactly one result line
+	if !strings.Contains(output, "Stopped alpha") {
+		t.Error("output missing 'Stopped alpha'")
+	}
+	if !strings.Contains(output, "Failed bravo: network error") {
+		t.Error("output missing 'Failed bravo: network error'")
+	}
+	if !strings.Contains(output, "Stopped charlie") {
+		t.Error("output missing 'Stopped charlie'")
+	}
+}
+
+func TestRunSandboxStop_AllSuccessExitsZero(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxStop(nil, true, "", &out, mock)
+	if err != nil {
+		t.Fatalf("expected nil error when all succeed, got: %v", err)
+	}
+}
+
+func TestUpdateStoppedState(t *testing.T) {
+	stoppedTime := time.Date(2026, 3, 21, 16, 0, 0, 0, time.UTC)
+
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "test-box", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	origNow := sandboxStopNow
+	sandboxStopNow = func() time.Time { return stoppedTime }
+	t.Cleanup(func() { sandboxStopNow = origNow })
+
+	target := &sandbox.SandboxState{Name: "test-box", Provider: "hetzner", Status: sandbox.StatusRunning}
+	err := updateStoppedState(target)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify in-memory struct was updated
+	if target.Status != sandbox.StatusStopped {
+		t.Errorf("Status = %q, want %q", target.Status, sandbox.StatusStopped)
+	}
+	if target.StoppedAt == nil || !target.StoppedAt.Equal(stoppedTime) {
+		t.Errorf("StoppedAt = %v, want %v", target.StoppedAt, stoppedTime)
+	}
+
+	// Verify persisted state
+	loaded, err := sandbox.LoadInstance("test-box")
+	if err != nil {
+		t.Fatalf("failed to load: %v", err)
+	}
+	if loaded.Status != sandbox.StatusStopped {
+		t.Errorf("persisted Status = %q, want %q", loaded.Status, sandbox.StatusStopped)
+	}
+	if loaded.StoppedAt == nil || !loaded.StoppedAt.Equal(stoppedTime) {
+		t.Errorf("persisted StoppedAt = %v, want %v", loaded.StoppedAt, stoppedTime)
 	}
 }

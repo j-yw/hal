@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 var sandboxStopCmd = &cobra.Command{
@@ -46,13 +49,27 @@ func init() {
 // sandboxStopListInstances is injectable for testing.
 var sandboxStopListInstances = sandbox.ListInstances
 
+// sandboxStopNow is injectable for deterministic tests.
+var sandboxStopNow = func() time.Time { return time.Now() }
+
+// sandboxStopForceWrite is injectable for testing registry updates.
+var sandboxStopForceWrite = sandbox.ForceWriteInstance
+
 // runSandboxStop is the public entry point for the stop command.
 func runSandboxStop(args []string, allFlag bool, pattern string, out io.Writer, provider sandbox.Provider) error {
 	return runSandboxStopWithDeps(args, allFlag, pattern, out, provider)
 }
 
+// stopResult tracks the outcome of a single stop target.
+type stopResult struct {
+	Name    string
+	Success bool
+	Err     error
+}
+
 // runSandboxStopWithDeps contains the testable logic for the sandbox stop command.
-// It resolves targets from the global registry, then stops each one.
+// It resolves targets from the global registry, stops them concurrently,
+// updates the registry for successful stops, and reports results.
 func runSandboxStopWithDeps(args []string, allFlag bool, pattern string, out io.Writer, provider sandbox.Provider) error {
 	targets, hint, err := resolveStopTargets(args, allFlag, pattern)
 	if err != nil {
@@ -63,14 +80,13 @@ func runSandboxStopWithDeps(args []string, allFlag bool, pattern string, out io.
 		fmt.Fprintln(out, hint)
 	}
 
-	// Stop each target (execution details in US-037; single-target path here)
-	for _, target := range targets {
-		if err := stopOneTarget(target, out, provider); err != nil {
-			return err
-		}
+	// Single target: stop inline for simple output
+	if len(targets) == 1 {
+		return stopOneTarget(targets[0], out, provider)
 	}
 
-	return nil
+	// Multiple targets: stop concurrently using errgroup
+	return stopMultipleTargets(targets, out, provider)
 }
 
 // resolveStopTargets resolves which sandboxes to stop based on positional args,
@@ -223,7 +239,8 @@ func joinNames(names []string) string {
 	return result
 }
 
-// stopOneTarget stops a single sandbox. If provider is nil, resolves from global config.
+// stopOneTarget stops a single sandbox, updates the registry, and reports the result.
+// If provider is nil, resolves from global config.
 func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
 	p := provider
 	if p == nil {
@@ -242,6 +259,86 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 		return fmt.Errorf("sandbox stop failed for %q: %w", target.Name, err)
 	}
 
-	fmt.Fprintf(out, "Sandbox %q stopped.\n", target.Name)
+	// Update registry: status → stopped, stoppedAt → now
+	if err := updateStoppedState(target); err != nil {
+		fmt.Fprintf(out, "warning: failed to update registry for %q: %v\n", target.Name, err)
+	}
+
+	fmt.Fprintf(out, "Stopped %s\n", target.Name)
 	return nil
+}
+
+// stopMultipleTargets stops multiple sandboxes concurrently using errgroup.
+// Each target emits one result line; successful stops update the registry.
+// Returns an error if any target fails.
+func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
+	var (
+		mu      sync.Mutex
+		results = make([]stopResult, 0, len(targets))
+	)
+
+	g := new(errgroup.Group)
+
+	for _, target := range targets {
+		target := target // capture for goroutine
+		g.Go(func() error {
+			p := provider
+			if p == nil {
+				var err error
+				p, err = resolveProviderFromGlobalConfig(target.Provider)
+				if err != nil {
+					mu.Lock()
+					fmt.Fprintf(out, "Failed %s: %v\n", target.Name, err)
+					results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
+					mu.Unlock()
+					return nil
+				}
+			}
+
+			ctx := context.Background()
+			info := sandbox.ConnectInfoFromState(target)
+			err := p.Stop(ctx, info, io.Discard)
+
+			mu.Lock()
+			if err != nil {
+				fmt.Fprintf(out, "Failed %s: %v\n", target.Name, err)
+				results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
+			} else {
+				// Update registry: status → stopped, stoppedAt → now
+				if regErr := updateStoppedState(target); regErr != nil {
+					fmt.Fprintf(out, "Stopped %s (warning: registry update failed: %v)\n", target.Name, regErr)
+				} else {
+					fmt.Fprintf(out, "Stopped %s\n", target.Name)
+				}
+				results = append(results, stopResult{Name: target.Name, Success: true})
+			}
+			mu.Unlock()
+
+			return nil // don't propagate to errgroup; we track errors ourselves
+		})
+	}
+
+	g.Wait()
+
+	// Check for any failures
+	var failed int
+	for _, r := range results {
+		if !r.Success {
+			failed++
+		}
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("%d/%d sandbox stops failed", failed, len(targets))
+	}
+
+	return nil
+}
+
+// updateStoppedState updates a sandbox's registry entry to stopped status.
+func updateStoppedState(target *sandbox.SandboxState) error {
+	now := sandboxStopNow()
+	target.Status = sandbox.StatusStopped
+	target.StoppedAt = &now
+	return sandboxStopForceWrite(target)
 }
