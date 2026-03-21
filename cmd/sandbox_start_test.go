@@ -421,7 +421,7 @@ func TestRunSandboxAutoMigrate_WarnsOnError(t *testing.T) {
 		sandboxMigrate = originalMigrate
 	})
 
-	sandboxMigrate = func(projectDir string) error {
+	sandboxMigrate = func(projectDir string, _ io.Writer) error {
 		if projectDir != "./project" {
 			t.Fatalf("projectDir = %q, want %q", projectDir, "./project")
 		}
@@ -445,7 +445,7 @@ func TestRunSandboxAutoMigrate_NoOutputOnSuccess(t *testing.T) {
 		sandboxMigrate = originalMigrate
 	})
 
-	sandboxMigrate = func(projectDir string) error {
+	sandboxMigrate = func(projectDir string, _ io.Writer) error {
 		if projectDir != "./project" {
 			t.Fatalf("projectDir = %q, want %q", projectDir, "./project")
 		}
@@ -471,7 +471,7 @@ func TestRunSandboxStart_AutoMigrateFailureWarnsAndContinues(t *testing.T) {
 		sandboxMigrate = originalMigrate
 	})
 
-	sandboxMigrate = func(projectDir string) error {
+	sandboxMigrate = func(projectDir string, _ io.Writer) error {
 		if projectDir != dir {
 			t.Fatalf("projectDir = %q, want %q", projectDir, dir)
 		}

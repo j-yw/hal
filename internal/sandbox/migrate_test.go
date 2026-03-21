@@ -64,7 +64,7 @@ func TestMigrate_ConfigFile(t *testing.T) {
 			localPath := filepath.Join(projectDir, template.HalDir, template.ConfigFile)
 			localBefore, hadLocal := readFileIfExists(t, localPath)
 
-			if err := Migrate(projectDir); err != nil {
+			if err := Migrate(projectDir, nil); err != nil {
 				t.Fatalf("Migrate() unexpected error: %v", err)
 			}
 

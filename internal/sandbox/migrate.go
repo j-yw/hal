@@ -3,6 +3,7 @@ package sandbox
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,7 +20,10 @@ import (
 //   - If project .hal/config.yaml is missing, migration is a no-op.
 //   - If project config has sandbox/daytona sections and global config is
 //     missing, those sections are copied into global sandbox-config.yaml.
-func Migrate(projectDir string) error {
+//
+// When out is non-nil, migration emits one line per action. When out is nil,
+// migration emits no output.
+func Migrate(projectDir string, out io.Writer) error {
 	globalPath := filepath.Join(GlobalDir(), globalConfigFileName)
 	if _, err := os.Stat(globalPath); err == nil {
 		return nil
@@ -37,6 +41,10 @@ func Migrate(projectDir string) error {
 
 	if err := SaveGlobalConfig(cfg); err != nil {
 		return fmt.Errorf("save migrated sandbox config: %w", err)
+	}
+
+	if out != nil {
+		fmt.Fprintf(out, "Migrated sandbox config to %s\n", globalPath)
 	}
 
 	return nil

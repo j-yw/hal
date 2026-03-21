@@ -73,7 +73,7 @@ var sandboxMigrate = sandbox.Migrate
 // runSandboxAutoMigrate performs best-effort migration of legacy sandbox state.
 // Migration failures are surfaced as warnings and never block command execution.
 func runSandboxAutoMigrate(projectDir string, out io.Writer) error {
-	if err := sandboxMigrate(projectDir); err != nil {
+	if err := sandboxMigrate(projectDir, nil); err != nil {
 		if out != nil {
 			fmt.Fprintf(out, "warning: sandbox migration failed: %v\n", err)
 		}
