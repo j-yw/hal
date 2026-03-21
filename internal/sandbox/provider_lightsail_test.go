@@ -11,19 +11,18 @@ func TestGenerateLightsailCloudInit_WithEnvVars(t *testing.T) {
 		"API_KEY":   "sk-123",
 	}
 
-	yaml := generateLightsailCloudInit(env, false)
+	script := generateLightsailCloudInit(env, false)
 
-	if !strings.HasPrefix(yaml, "#cloud-config\n") {
-		t.Error("cloud-init should start with #cloud-config")
+	// Lightsail wraps user-data in its own shell script, so we generate
+	// a plain shell script (NOT cloud-config YAML).
+	if strings.HasPrefix(script, "#cloud-config") {
+		t.Error("Lightsail cloud-init must NOT use #cloud-config (Lightsail wraps user-data in a shell script)")
 	}
-	if !strings.Contains(yaml, "encoding: b64") {
-		t.Error("cloud-init should use base64 encoding")
+	if !strings.Contains(script, "base64 -d > /root/.env") {
+		t.Error("script should decode base64 env to /root/.env")
 	}
-	if !strings.Contains(yaml, "runcmd:") {
-		t.Error("cloud-init should have runcmd section")
-	}
-	if !strings.Contains(yaml, "setup.sh") {
-		t.Error("cloud-init runcmd should run setup.sh")
+	if !strings.Contains(script, "setup.sh") {
+		t.Error("script should run setup.sh")
 	}
 
 	// Verify env file content
@@ -42,12 +41,12 @@ func TestGenerateLightsailCloudInit_WithEnvVars(t *testing.T) {
 }
 
 func TestGenerateLightsailCloudInit_EmptyEnv(t *testing.T) {
-	yaml := generateLightsailCloudInit(nil, false)
-	if !strings.HasPrefix(yaml, "#cloud-config\n") {
-		t.Error("cloud-init should start with #cloud-config")
+	script := generateLightsailCloudInit(nil, false)
+	if strings.HasPrefix(script, "#cloud-config") {
+		t.Error("Lightsail cloud-init must NOT use #cloud-config")
 	}
-	if !strings.Contains(yaml, "runcmd:") {
-		t.Error("cloud-init should have runcmd section")
+	if !strings.Contains(script, "setup.sh") {
+		t.Error("script should run setup.sh")
 	}
 }
 
@@ -73,8 +72,8 @@ func TestBuildLightsailCreateArgs(t *testing.T) {
 	if !strings.Contains(joined, "--key-pair-name my-key") {
 		t.Errorf("args should contain '--key-pair-name my-key', got: %s", joined)
 	}
-	if !strings.Contains(joined, "--user-data-file /tmp/cloud-init.yaml") {
-		t.Errorf("args should contain '--user-data-file /tmp/cloud-init.yaml', got: %s", joined)
+	if !strings.Contains(joined, "--user-data file:///tmp/cloud-init.yaml") {
+		t.Errorf("args should contain '--user-data file:///tmp/cloud-init.yaml', got: %s", joined)
 	}
 }
 

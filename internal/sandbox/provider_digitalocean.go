@@ -84,28 +84,27 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString(encoded)
 	b.WriteString("\n")
 
+	// Install and configure Tailscale FIRST (before setup.sh which takes minutes).
+	// hal polls for /root/.tailscale-ip via SSH, so this must complete quickly.
+	// NOTE: do NOT enable UFW here — hal needs public IP SSH access to read the file.
+	// Lockdown is applied by hal after it reads the Tailscale IP.
 	b.WriteString("runcmd:\n")
 	b.WriteString("  - |\n")
 	b.WriteString("    set -a\n")
 	b.WriteString("    . /root/.env\n")
 	b.WriteString("    set +a\n")
-	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
-	b.WriteString("  - |\n")
-	b.WriteString("    set -a\n")
-	b.WriteString("    . /root/.env\n")
-	b.WriteString("    set +a\n")
 	b.WriteString("    if [ -n \"${TAILSCALE_AUTHKEY:-}\" ]; then\n")
+	b.WriteString("      curl -fsSL https://tailscale.com/install.sh | sh\n")
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
 	b.WriteString("      tailscale ip -4 > /root/.tailscale-ip\n")
-	b.WriteString("      if [ \"$TAILSCALE_LOCKDOWN\" = \"true\" ]; then\n")
-	b.WriteString("        ufw allow in on tailscale0\n")
-	b.WriteString("        ufw allow in on tailscale0 proto udp to any port 60000:61000\n")
-	b.WriteString("        ufw deny 22/tcp\n")
-	b.WriteString("        ufw --force enable\n")
-	b.WriteString("      fi\n")
 	b.WriteString("    fi\n")
+	b.WriteString("  - |\n")
+	b.WriteString("    set -a\n")
+	b.WriteString("    . /root/.env\n")
+	b.WriteString("    set +a\n")
+	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/j-yw/hal/main/sandbox/setup.sh | bash\n")
 
 	return b.String()
 }
@@ -184,6 +183,21 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 		return nil, wrapDoctlError("compute droplet create", err, stderrBuf.String())
 	}
 
+	// Droplet exists on DO from this point — clean up on any failure.
+	cleanupDroplet := func(reason string) {
+		fmt.Fprintf(safeOut, "Cleaning up %s after failure (%s)...\n", name, reason)
+		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		delCmd := d.commandContext(delCtx, "doctl", "compute", "droplet", "delete", name, "--force")
+		delCmd.Stdout = io.Discard
+		delCmd.Stderr = io.Discard
+		if delErr := delCmd.Run(); delErr != nil {
+			fmt.Fprintf(safeOut, "Warning: failed to clean up droplet %s: %v (delete manually with: doctl compute droplet delete %s --force)\n", name, delErr, name)
+		} else {
+			fmt.Fprintf(safeOut, "Cleaned up droplet %s\n", name)
+		}
+	}
+
 	// Get droplet ID and public IP for persisted state + follow-up lifecycle ops.
 	ipCmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
 		"--format", "ID,PublicIPv4",
@@ -195,21 +209,48 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	ipCmd.Stderr = io.MultiWriter(safeOut, &ipStderr)
 
 	if err := ipCmd.Run(); err != nil {
+		cleanupDroplet("failed to get droplet info")
 		return nil, wrapDoctlError("compute droplet get", err, ipStderr.String())
 	}
 
 	id, ip := parseDODropletInfo(ipBuf.String())
 	if strings.TrimSpace(ip) == "" {
+		cleanupDroplet("no public IP")
 		return nil, fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", name)
 	}
 
 	result := &SandboxResult{ID: id, Name: name, IP: ip}
 	if d.TailscaleLockdown {
-		tailscaleIP, err := fetchTailscaleIP(ctx, "root", ip, d.sshContext, d.sleep, 9, 10*time.Second)
+		fmt.Fprintf(safeOut, "Waiting for Tailscale on %s (cloud-init may take a few minutes)...\n", name)
+		tailscaleIP, err := fetchTailscaleIPWithProgress(ctx, "root", ip, d.sshContext, d.sleep, 18, 10*time.Second, safeOut)
 		if err != nil {
+			cleanupDroplet("tailscale IP unavailable")
 			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
 		}
 		result.TailscaleIP = tailscaleIP
+
+		// Apply firewall lockdown AFTER reading the Tailscale IP.
+		// The cloud-init script intentionally skips lockdown so hal can
+		// SSH via the public IP to read /root/.tailscale-ip first.
+		fmt.Fprintf(safeOut, "Applying firewall lockdown on %s...\n", name)
+		lockdownScript := "ufw allow in on tailscale0 && ufw allow in on tailscale0 proto udp to any port 60000:61000 && ufw deny 22/tcp && ufw --force enable"
+		sshFn := d.sshContext
+		if sshFn == nil {
+			sshFn = exec.CommandContext
+		}
+		sshCmd := sshFn(ctx, "ssh",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "ConnectTimeout=10",
+			fmt.Sprintf("root@%s", ip),
+			lockdownScript,
+		)
+		var lockStderr bytes.Buffer
+		sshCmd.Stdout = safeOut
+		sshCmd.Stderr = &lockStderr
+		if err := sshCmd.Run(); err != nil {
+			fmt.Fprintf(safeOut, "Warning: firewall lockdown failed on %s: %v (apply manually)\n", name, err)
+		}
 	}
 
 	return result, nil

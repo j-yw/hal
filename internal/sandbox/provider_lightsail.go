@@ -64,44 +64,40 @@ func wrapAWSError(op string, err error, stderr string) error {
 	return fmt.Errorf("aws lightsail %s failed: %w", op, err)
 }
 
-// generateLightsailCloudInit creates a cloud-init YAML that writes env vars to
-// /root/.env (base64-encoded to avoid YAML special char issues), then runs setup.sh.
+// generateLightsailCloudInit creates a shell script that writes env vars to
+// /root/.env (base64-encoded), then runs setup.sh and optionally configures Tailscale.
+// NOTE: Lightsail wraps user-data inside its own #!/bin/sh startup script, so
+// cloud-config YAML does NOT work. We must provide a plain shell script instead.
 func generateLightsailCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	envContent := buildLightsailEnvFileContent(withLockdownEnv(env, tailscaleLockdown))
 	encoded := base64.StdEncoding.EncodeToString([]byte(envContent))
 
 	var b strings.Builder
-	b.WriteString("#cloud-config\n")
-	b.WriteString("write_files:\n")
-	b.WriteString("  - path: /root/.env\n")
-	b.WriteString("    permissions: \"0600\"\n")
-	b.WriteString("    encoding: b64\n")
-	b.WriteString("    content: ")
+	// Write env file from base64
+	b.WriteString("echo '")
 	b.WriteString(encoded)
-	b.WriteString("\n")
+	b.WriteString("' | base64 -d > /root/.env\n")
+	b.WriteString("chmod 600 /root/.env\n")
 
-	b.WriteString("runcmd:\n")
-	b.WriteString("  - |\n")
-	b.WriteString("    set -a\n")
-	b.WriteString("    . /root/.env\n")
-	b.WriteString("    set +a\n")
-	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
-	b.WriteString("  - |\n")
-	b.WriteString("    set -a\n")
-	b.WriteString("    . /root/.env\n")
-	b.WriteString("    set +a\n")
-	b.WriteString("    if [ -n \"${TAILSCALE_AUTHKEY:-}\" ]; then\n")
-	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
-	b.WriteString("      sleep 3\n")
-	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
-	b.WriteString("      tailscale ip -4 > /root/.tailscale-ip\n")
-	b.WriteString("      if [ \"$TAILSCALE_LOCKDOWN\" = \"true\" ]; then\n")
-	b.WriteString("        ufw allow in on tailscale0\n")
-	b.WriteString("        ufw allow in on tailscale0 proto udp to any port 60000:61000\n")
-	b.WriteString("        ufw deny 22/tcp\n")
-	b.WriteString("        ufw --force enable\n")
-	b.WriteString("      fi\n")
-	b.WriteString("    fi\n")
+	// Source env vars
+	b.WriteString("set -a\n")
+	b.WriteString(". /root/.env\n")
+	b.WriteString("set +a\n")
+
+	// Install and configure Tailscale FIRST (before setup.sh which takes minutes).
+	// hal polls for /root/.tailscale-ip via SSH, so this must complete quickly.
+	// NOTE: do NOT enable UFW here — hal needs public IP SSH access to read the file.
+	// Lockdown is applied by hal after it reads the Tailscale IP.
+	b.WriteString("if [ -n \"${TAILSCALE_AUTHKEY:-}\" ]; then\n")
+	b.WriteString("  curl -fsSL https://tailscale.com/install.sh | sh\n")
+	b.WriteString("  tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
+	b.WriteString("  sleep 3\n")
+	b.WriteString("  tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
+	b.WriteString("  tailscale ip -4 > /root/.tailscale-ip\n")
+	b.WriteString("fi\n")
+
+	// Run full setup (system packages, Node.js, Go, etc.) — this takes a while
+	b.WriteString("curl -fsSL https://raw.githubusercontent.com/j-yw/hal/main/sandbox/setup.sh | bash\n")
 
 	return b.String()
 }
@@ -121,7 +117,7 @@ func buildLightsailEnvFileContent(env map[string]string) string {
 	return b.String()
 }
 
-func buildLightsailCreateArgs(name, az, bundle, keyPair, userDataFile string) []string {
+func buildLightsailCreateArgs(name, az, bundle, keyPair, userDataFilePath string) []string {
 	return []string{
 		"lightsail", "create-instances",
 		"--instance-names", name,
@@ -129,7 +125,7 @@ func buildLightsailCreateArgs(name, az, bundle, keyPair, userDataFile string) []
 		"--blueprint-id", "ubuntu_22_04",
 		"--bundle-id", bundle,
 		"--key-pair-name", keyPair,
-		"--user-data-file", userDataFile,
+		"--user-data", "file://" + userDataFilePath,
 	}
 }
 
@@ -166,7 +162,7 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 	}
 	tmpFile.Close()
 
-	// Create instance
+	// Create instance (Lightsail --user-data requires file:// prefix for file paths)
 	safeOut := synchronizedWriter(out)
 	args := buildLightsailCreateArgs(name, az, bundle, l.KeyPairName, tmpFile.Name())
 	createCmd := l.commandContext(ctx, "aws", args...)
@@ -178,7 +174,24 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 		return nil, wrapAWSError("create-instances", err, stderrBuf.String())
 	}
 
+	// Instance exists on AWS from this point — clean up on any failure.
+	cleanupInstance := func(reason string) {
+		fmt.Fprintf(safeOut, "Cleaning up %s after failure (%s)...\n", name, reason)
+		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		delCmd := l.commandContext(delCtx, "aws", "lightsail", "delete-instance",
+			"--instance-name", name, "--force-delete-add-ons")
+		delCmd.Stdout = io.Discard
+		delCmd.Stderr = io.Discard
+		if delErr := delCmd.Run(); delErr != nil {
+			fmt.Fprintf(safeOut, "Warning: failed to clean up instance %s: %v (delete manually with: aws lightsail delete-instance --instance-name %s)\n", name, delErr, name)
+		} else {
+			fmt.Fprintf(safeOut, "Cleaned up instance %s\n", name)
+		}
+	}
+
 	// Poll for running state and public IP (Lightsail doesn't have --wait)
+	fmt.Fprintf(safeOut, "Waiting for %s public IP...\n", name)
 	var ip string
 	for i := 0; i < 30; i++ {
 		ipCmd := l.commandContext(ctx, "aws",
@@ -200,25 +213,54 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 			}
 		}
 
+		fmt.Fprintf(safeOut, "  Polling IP for %s (%d/30)...\n", name, i+1)
+
 		select {
 		case <-ctx.Done():
+			cleanupInstance("timed out waiting for public IP")
 			return nil, fmt.Errorf("timed out waiting for instance %q to get a public IP", name)
 		case <-time.After(5 * time.Second):
 		}
 	}
 
 	if ip == "" {
+		cleanupInstance("no public IP assigned")
 		return nil, fmt.Errorf("instance %q created but no public IP assigned after polling", name)
 	}
 
 	fmt.Fprintf(safeOut, "Instance %s ready at %s\n", name, ip)
 	result := &SandboxResult{ID: name, Name: name, IP: ip}
 	if l.TailscaleLockdown {
-		tailscaleIP, err := fetchTailscaleIP(ctx, "ubuntu", ip, l.sshContext, l.sleep, 9, 10*time.Second)
+		fmt.Fprintf(safeOut, "Waiting for Tailscale on %s (cloud-init may take a few minutes)...\n", name)
+		tailscaleIP, err := fetchTailscaleIPWithProgress(ctx, "ubuntu", ip, l.sshContext, l.sleep, 18, 10*time.Second, safeOut)
 		if err != nil {
+			cleanupInstance("tailscale IP unavailable")
 			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
 		}
 		result.TailscaleIP = tailscaleIP
+
+		// Apply firewall lockdown AFTER reading the Tailscale IP.
+		// The user-data script intentionally skips lockdown so hal can
+		// SSH via the public IP to read /root/.tailscale-ip first.
+		fmt.Fprintf(safeOut, "Applying firewall lockdown on %s...\n", name)
+		lockdownScript := "sudo ufw allow in on tailscale0 && sudo ufw allow in on tailscale0 proto udp to any port 60000:61000 && sudo ufw deny 22/tcp && sudo ufw --force enable"
+		sshFn := l.sshContext
+		if sshFn == nil {
+			sshFn = exec.CommandContext
+		}
+		sshCmd := sshFn(ctx, "ssh",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "ConnectTimeout=10",
+			fmt.Sprintf("ubuntu@%s", ip),
+			lockdownScript,
+		)
+		var lockStderr bytes.Buffer
+		sshCmd.Stdout = safeOut
+		sshCmd.Stderr = &lockStderr
+		if err := sshCmd.Run(); err != nil {
+			fmt.Fprintf(safeOut, "Warning: firewall lockdown failed on %s: %v (apply manually)\n", name, err)
+		}
 	}
 	return result, nil
 }
