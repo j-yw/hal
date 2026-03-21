@@ -86,6 +86,10 @@ func runSandboxStartWithDeps(
 		return fmt.Errorf(".hal/ not found - run 'hal init' first")
 	}
 
+	if err := runSandboxAutoMigrate(dir, out); err != nil {
+		return err
+	}
+
 	// Load sandbox config (provider, env, hetzner settings)
 	sandboxCfg, err := compound.LoadSandboxConfig(dir)
 	if err != nil {

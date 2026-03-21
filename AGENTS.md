@@ -187,6 +187,7 @@
 - Global sandbox config lives at `GlobalDir()/sandbox-config.yaml`; `LoadGlobalConfig` should merge pointer-based raw YAML fields into `DefaultGlobalConfig()` so missing keys keep defaults while explicit zero/empty values are preserved.
 - `SaveGlobalConfig` should persist `sandbox-config.yaml` via temp-file + rename with `0600` permissions (same atomic durability pattern as registry writes).
 - `internal/sandbox/migrate.go` config migration should treat global config as authoritative: if `sandbox-config.yaml` already exists, skip local migration; otherwise copy only local `.hal/config.yaml` `sandbox`/`daytona` sections, preserving the local file unchanged.
+- Commands should opt into migration via `runSandboxAutoMigrate(projectDir, out)`; migration failures are non-fatal and must emit exactly `warning: sandbox migration failed: <error>`.
 - Global sandbox registry entries live at `SandboxesDir()/"<name>.json"`; writes should stay atomic (`.tmp` + `os.Rename`) with `0600` file mode.
 - Registry collision semantics are strict: `SaveInstance` must return the exact error `sandbox "<name>" already exists`, while `ForceWriteInstance` is the explicit overwrite path for `--force` flows.
 - `ListInstances` should treat a missing `sandboxes/` directory as empty state and return instances sorted by `Name`; missing `LoadInstance`/`RemoveInstance` errors should wrap `fs.ErrNotExist` for `errors.Is` checks.

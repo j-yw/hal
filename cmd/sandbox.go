@@ -67,6 +67,19 @@ func init() {
 	rootCmd.AddCommand(sandboxCmd)
 }
 
+var sandboxMigrate = sandbox.Migrate
+
+// runSandboxAutoMigrate performs best-effort migration of legacy sandbox state.
+// Migration failures are surfaced as warnings and never block command execution.
+func runSandboxAutoMigrate(projectDir string, out io.Writer) error {
+	if err := sandboxMigrate(projectDir); err != nil {
+		if out != nil {
+			fmt.Fprintf(out, "warning: sandbox migration failed: %v\n", err)
+		}
+	}
+	return nil
+}
+
 // resolveProviderFromState creates a Provider from the state's provider field
 // and the project config. Used by stop, delete, status, and ssh commands.
 func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.Provider, error) {
@@ -322,22 +335,22 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		if currentType == "" {
 			currentType = hetznerFields[1].defVal
 		}
-			val, err = promptField(reader, in, out, readPassword, hetznerFields[1], currentType)
-			if err != nil {
-				return err
-			}
-			collected["_hetzner_server_type"] = val
+		val, err = promptField(reader, in, out, readPassword, hetznerFields[1], currentType)
+		if err != nil {
+			return err
+		}
+		collected["_hetzner_server_type"] = val
 
-			// Image
-			currentImage := existingSandbox.Hetzner.Image
-			if currentImage == "" {
-				currentImage = hetznerFields[2].defVal
-			}
-			val, err = promptField(reader, in, out, readPassword, hetznerFields[2], currentImage)
-			if err != nil {
-				return err
-			}
-			collected["_hetzner_image"] = val
+		// Image
+		currentImage := existingSandbox.Hetzner.Image
+		if currentImage == "" {
+			currentImage = hetznerFields[2].defVal
+		}
+		val, err = promptField(reader, in, out, readPassword, hetznerFields[2], currentImage)
+		if err != nil {
+			return err
+		}
+		collected["_hetzner_image"] = val
 
 	case "digitalocean":
 		fmt.Fprintln(out, "")

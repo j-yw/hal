@@ -347,6 +347,94 @@ func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
 	}
 }
 
+func TestRunSandboxAutoMigrate_WarnsOnError(t *testing.T) {
+	originalMigrate := sandboxMigrate
+	t.Cleanup(func() {
+		sandboxMigrate = originalMigrate
+	})
+
+	sandboxMigrate = func(projectDir string) error {
+		if projectDir != "./project" {
+			t.Fatalf("projectDir = %q, want %q", projectDir, "./project")
+		}
+		return fmt.Errorf("boom")
+	}
+
+	var out bytes.Buffer
+	if err := runSandboxAutoMigrate("./project", &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "warning: sandbox migration failed: boom\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRunSandboxAutoMigrate_NoOutputOnSuccess(t *testing.T) {
+	originalMigrate := sandboxMigrate
+	t.Cleanup(func() {
+		sandboxMigrate = originalMigrate
+	})
+
+	sandboxMigrate = func(projectDir string) error {
+		if projectDir != "./project" {
+			t.Fatalf("projectDir = %q, want %q", projectDir, "./project")
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runSandboxAutoMigrate("./project", &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if out.Len() != 0 {
+		t.Fatalf("expected no output, got %q", out.String())
+	}
+}
+
+func TestRunSandboxStart_AutoMigrateFailureWarnsAndContinues(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	originalMigrate := sandboxMigrate
+	t.Cleanup(func() {
+		sandboxMigrate = originalMigrate
+	})
+
+	sandboxMigrate = func(projectDir string) error {
+		if projectDir != dir {
+			t.Fatalf("projectDir = %q, want %q", projectDir, dir)
+		}
+		return fmt.Errorf("migration unavailable")
+	}
+
+	mock := &mockProvider{createResult: &sandbox.SandboxResult{Name: "sb"}}
+
+	var out bytes.Buffer
+	err := runSandboxStartWithDeps(dir, "sb", nil, &out, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected provider.Create to be called once, got %d", len(mock.createCalls))
+	}
+
+	output := out.String()
+	warn := "warning: sandbox migration failed: migration unavailable"
+	if !strings.Contains(output, warn) {
+		t.Fatalf("output missing warning %q: %q", warn, output)
+	}
+
+	warnIdx := strings.Index(output, warn)
+	startIdx := strings.Index(output, "Starting sandbox")
+	if warnIdx == -1 || startIdx == -1 || warnIdx > startIdx {
+		t.Fatalf("warning should appear before sandbox creation output: %q", output)
+	}
+}
+
 func TestSandboxStartCommandFlags(t *testing.T) {
 	if sandboxStartCmd.Flags().Lookup("name") == nil {
 		t.Fatal("--name flag should exist")
