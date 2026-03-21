@@ -54,8 +54,9 @@ Then prompts for shared environment variables:
   • Git identity (name, email)
   • Tailscale auth key and hostname — for SSH from mobile
 
-All values are saved to .hal/config.yaml. Re-running setup lets you update
-individual values — press Enter to keep the current value.
+All values are saved to global sandbox config (~/.config/hal/sandbox-config.yaml
+unless HAL_CONFIG_HOME is set). Re-running setup lets you update individual
+values — press Enter to keep the current value.
 
 After setup, 'hal sandbox start' injects all configured env vars automatically.`,
 	Example: `  hal sandbox setup`,
@@ -152,7 +153,11 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 }
 
 func runSandboxSetupCobra(cmd *cobra.Command, args []string) error {
-	return runSandboxSetup(".", os.Stdin, os.Stdout, readPasswordFromTerminal, exec.LookPath)
+	return runSandboxSetup(os.Stdin, os.Stdout)
+}
+
+func runSandboxSetup(in io.Reader, out io.Writer) error {
+	return runSandboxSetupWithDeps(".", in, out, readPasswordFromTerminal, exec.LookPath)
 }
 
 // lookPathFunc checks whether a binary is on PATH. Injected for testability.
@@ -214,26 +219,23 @@ var lightsailFields = []setupField{
 	{key: "_ls_az", label: "Availability zone", defVal: "us-east-1a"},
 }
 
-// runSandboxSetup contains the testable logic for the sandbox setup command.
-// dir is the project root directory (containing .hal/).
-func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passwordReader, lookPath lookPathFunc) error {
-	halDir := filepath.Join(dir, template.HalDir)
-
-	if _, err := os.Stat(halDir); os.IsNotExist(err) {
-		return fmt.Errorf(".hal/ not found - run 'hal init' first")
+// runSandboxSetupWithDeps contains the testable logic for the sandbox setup
+// command.
+func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPassword passwordReader, lookPath lookPathFunc) error {
+	if err := runSandboxAutoMigrate(dir, out); err != nil {
+		return err
 	}
 
 	reader := bufio.NewReader(in)
 
-	// Load existing config for defaults
-	existingDaytona, _ := compound.LoadDaytonaConfig(dir)
-	existingSandbox, _ := compound.LoadSandboxConfig(dir)
-	if existingDaytona == nil {
-		d := compound.DefaultDaytonaConfig()
-		existingDaytona = &d
+	// Load existing global config for defaults.
+	existingGlobal, err := sandbox.LoadGlobalConfig()
+	if err != nil {
+		return fmt.Errorf("loading global sandbox config: %w", err)
 	}
-	if existingSandbox == nil {
-		existingSandbox = &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	if existingGlobal == nil {
+		defaults := sandbox.DefaultGlobalConfig()
+		existingGlobal = &defaults
 	}
 
 	// ── Provider selection ──
@@ -243,7 +245,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 
 	// Determine default provider choice
 	defaultChoice := "1"
-	switch existingSandbox.Provider {
+	switch existingGlobal.Provider {
 	case "hetzner":
 		defaultChoice = "2"
 	case "digitalocean":
@@ -295,14 +297,14 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		fmt.Fprintln(out, "")
 
 		// API key
-		val, err := promptField(reader, in, out, readPassword, daytonaFields[0], existingDaytona.APIKey)
+		val, err := promptField(reader, in, out, readPassword, daytonaFields[0], existingGlobal.Daytona.APIKey)
 		if err != nil {
 			return err
 		}
 		collected["_daytona_api_key"] = val
 
 		// Server URL
-		currentURL := existingDaytona.ServerURL
+		currentURL := existingGlobal.Daytona.ServerURL
 		if currentURL == "" {
 			currentURL = daytonaFields[1].defVal
 		}
@@ -318,14 +320,14 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		fmt.Fprintln(out, "")
 
 		// SSH key name
-		val, err := promptField(reader, in, out, readPassword, hetznerFields[0], existingSandbox.Hetzner.SSHKey)
+		val, err := promptField(reader, in, out, readPassword, hetznerFields[0], existingGlobal.Hetzner.SSHKey)
 		if err != nil {
 			return err
 		}
 		collected["_hetzner_ssh_key"] = val
 
 		// Server type
-		currentType := existingSandbox.Hetzner.ServerType
+		currentType := existingGlobal.Hetzner.ServerType
 		if currentType == "" {
 			currentType = hetznerFields[1].defVal
 		}
@@ -336,7 +338,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		collected["_hetzner_server_type"] = val
 
 		// Image
-		currentImage := existingSandbox.Hetzner.Image
+		currentImage := existingGlobal.Hetzner.Image
 		if currentImage == "" {
 			currentImage = hetznerFields[2].defVal
 		}
@@ -352,14 +354,14 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		fmt.Fprintln(out, "")
 
 		// SSH key fingerprint
-		val, err := promptField(reader, in, out, readPassword, digitaloceanFields[0], existingSandbox.DigitalOcean.SSHKey)
+		val, err := promptField(reader, in, out, readPassword, digitaloceanFields[0], existingGlobal.DigitalOcean.SSHKey)
 		if err != nil {
 			return err
 		}
 		collected["_do_ssh_key"] = val
 
 		// Droplet size
-		currentSize := existingSandbox.DigitalOcean.Size
+		currentSize := existingGlobal.DigitalOcean.Size
 		if currentSize == "" {
 			currentSize = digitaloceanFields[1].defVal
 		}
@@ -375,14 +377,14 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		fmt.Fprintln(out, "")
 
 		// Key pair name
-		val, err := promptField(reader, in, out, readPassword, lightsailFields[0], existingSandbox.Lightsail.KeyPairName)
+		val, err := promptField(reader, in, out, readPassword, lightsailFields[0], existingGlobal.Lightsail.KeyPairName)
 		if err != nil {
 			return err
 		}
 		collected["_ls_key_pair"] = val
 
 		// Bundle
-		currentBundle := existingSandbox.Lightsail.Bundle
+		currentBundle := existingGlobal.Lightsail.Bundle
 		if currentBundle == "" {
 			currentBundle = lightsailFields[1].defVal
 		}
@@ -393,7 +395,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		collected["_ls_bundle"] = val
 
 		// Region
-		currentRegion := existingSandbox.Lightsail.Region
+		currentRegion := existingGlobal.Lightsail.Region
 		if currentRegion == "" {
 			currentRegion = lightsailFields[2].defVal
 		}
@@ -404,7 +406,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		collected["_ls_region"] = val
 
 		// Availability zone
-		currentAZ := existingSandbox.Lightsail.AvailabilityZone
+		currentAZ := existingGlobal.Lightsail.AvailabilityZone
 		if currentAZ == "" {
 			currentAZ = lightsailFields[3].defVal
 		}
@@ -421,7 +423,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	fmt.Fprintln(out, "")
 
 	for _, f := range sandboxEnvFields[:3] {
-		val, err := promptField(reader, in, out, readPassword, f, existingSandbox.Env[f.key])
+		val, err := promptField(reader, in, out, readPassword, f, existingGlobal.Env[f.key])
 		if err != nil {
 			return err
 		}
@@ -436,7 +438,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	fmt.Fprintln(out, "")
 
 	for _, f := range sandboxEnvFields[3:5] {
-		val, err := promptField(reader, in, out, readPassword, f, existingSandbox.Env[f.key])
+		val, err := promptField(reader, in, out, readPassword, f, existingGlobal.Env[f.key])
 		if err != nil {
 			return err
 		}
@@ -451,7 +453,7 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	fmt.Fprintln(out, "")
 
 	for _, f := range sandboxEnvFields[5:] {
-		current := existingSandbox.Env[f.key]
+		current := existingGlobal.Env[f.key]
 		if current == "" {
 			current = f.defVal
 		}
@@ -466,12 +468,12 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 
 	lockdown := false
 	if selectedProvider != "daytona" {
-		fmt.Fprintf(out, "  Lock down to Tailscale only? (y/n) [%s]: ", yesNoDefault(existingSandbox.TailscaleLockdown))
+		fmt.Fprintf(out, "  Lock down to Tailscale only? (y/n) [%s]: ", yesNoDefault(existingGlobal.TailscaleLockdown))
 		line, _ := reader.ReadString('\n')
 		v := strings.ToLower(strings.TrimSpace(strings.TrimRight(line, "\r\n")))
 		switch v {
 		case "":
-			lockdown = existingSandbox.TailscaleLockdown
+			lockdown = existingGlobal.TailscaleLockdown
 		case "y", "yes":
 			lockdown = true
 		case "n", "no":
@@ -485,20 +487,6 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	}
 
 	// ── Save ──
-
-	// Save provider-specific config
-	switch selectedProvider {
-	case "daytona":
-		daytonaCfg := &compound.DaytonaConfig{
-			APIKey:    collected["_daytona_api_key"],
-			ServerURL: collected["_daytona_server_url"],
-		}
-		if err := compound.SaveConfig(dir, daytonaCfg); err != nil {
-			return fmt.Errorf("saving daytona config: %w", err)
-		}
-	}
-
-	// Build and save sandbox config (provider + env + hetzner fields)
 	envVars := make(map[string]string)
 	for _, f := range sandboxEnvFields {
 		if v, ok := collected[f.key]; ok && v != "" {
@@ -506,29 +494,30 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		}
 	}
 
-	sandboxCfg := &compound.SandboxConfig{
-		Provider:          selectedProvider,
-		TailscaleLockdown: lockdown,
-		Env:               envVars,
-	}
+	cfg := *existingGlobal
+	cfg.Provider = selectedProvider
+	cfg.TailscaleLockdown = lockdown
+	cfg.Env = envVars
 
-	if selectedProvider == "hetzner" {
-		sandboxCfg.Hetzner = compound.HetznerConfig{
+	switch selectedProvider {
+	case "daytona":
+		cfg.Daytona = sandbox.DaytonaGlobalConfig{
+			APIKey:    collected["_daytona_api_key"],
+			ServerURL: collected["_daytona_server_url"],
+		}
+	case "hetzner":
+		cfg.Hetzner = sandbox.HetznerGlobalConfig{
 			SSHKey:     collected["_hetzner_ssh_key"],
 			ServerType: collected["_hetzner_server_type"],
 			Image:      collected["_hetzner_image"],
 		}
-	}
-
-	if selectedProvider == "digitalocean" {
-		sandboxCfg.DigitalOcean = compound.DigitalOceanConfig{
+	case "digitalocean":
+		cfg.DigitalOcean = sandbox.DigitalOceanGlobalConfig{
 			SSHKey: collected["_do_ssh_key"],
 			Size:   collected["_do_size"],
 		}
-	}
-
-	if selectedProvider == "lightsail" {
-		sandboxCfg.Lightsail = compound.LightsailConfig{
+	case "lightsail":
+		cfg.Lightsail = sandbox.LightsailGlobalConfig{
 			KeyPairName:      collected["_ls_key_pair"],
 			Bundle:           collected["_ls_bundle"],
 			Region:           collected["_ls_region"],
@@ -536,13 +525,17 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 		}
 	}
 
-	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
-		return fmt.Errorf("saving sandbox config: %w", err)
+	if err := sandbox.SaveGlobalConfig(&cfg); err != nil {
+		return fmt.Errorf("saving global sandbox config: %w", err)
+	}
+
+	if err := saveLegacyProjectSandboxConfigIfPresent(dir, selectedProvider, lockdown, envVars, collected); err != nil {
+		return err
 	}
 
 	// ── Summary ──
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  ── Saved to .hal/config.yaml ──")
+	fmt.Fprintf(out, "  ── Saved to %s ──\n", sandbox.GlobalConfigPath())
 	fmt.Fprintln(out, "")
 	fmt.Fprintf(out, "  Provider:   %s\n", selectedProvider)
 
@@ -575,6 +568,64 @@ func runSandboxSetup(dir string, in io.Reader, out io.Writer, readPassword passw
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "  Run 'hal sandbox start -n dev' to spin up a sandbox.")
 	fmt.Fprintln(out, "")
+
+	return nil
+}
+
+func saveLegacyProjectSandboxConfigIfPresent(
+	dir, selectedProvider string,
+	lockdown bool,
+	envVars map[string]string,
+	collected map[string]string,
+) error {
+	halDir := filepath.Join(dir, template.HalDir)
+	if _, err := os.Stat(halDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", halDir, err)
+	}
+
+	if selectedProvider == "daytona" {
+		daytonaCfg := &compound.DaytonaConfig{
+			APIKey:    collected["_daytona_api_key"],
+			ServerURL: collected["_daytona_server_url"],
+		}
+		if err := compound.SaveConfig(dir, daytonaCfg); err != nil {
+			return fmt.Errorf("saving legacy daytona config: %w", err)
+		}
+	}
+
+	sandboxCfg := &compound.SandboxConfig{
+		Provider:          selectedProvider,
+		TailscaleLockdown: lockdown,
+		Env:               envVars,
+	}
+
+	switch selectedProvider {
+	case "hetzner":
+		sandboxCfg.Hetzner = compound.HetznerConfig{
+			SSHKey:     collected["_hetzner_ssh_key"],
+			ServerType: collected["_hetzner_server_type"],
+			Image:      collected["_hetzner_image"],
+		}
+	case "digitalocean":
+		sandboxCfg.DigitalOcean = compound.DigitalOceanConfig{
+			SSHKey: collected["_do_ssh_key"],
+			Size:   collected["_do_size"],
+		}
+	case "lightsail":
+		sandboxCfg.Lightsail = compound.LightsailConfig{
+			KeyPairName:      collected["_ls_key_pair"],
+			Bundle:           collected["_ls_bundle"],
+			Region:           collected["_ls_region"],
+			AvailabilityZone: collected["_ls_az"],
+		}
+	}
+
+	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
+		return fmt.Errorf("saving legacy sandbox config: %w", err)
+	}
 
 	return nil
 }

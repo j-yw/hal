@@ -188,6 +188,8 @@
 - `SaveGlobalConfig` should persist `sandbox-config.yaml` via temp-file + rename with `0600` permissions (same atomic durability pattern as registry writes).
 - `internal/sandbox/migrate.go` config migration should treat global config as authoritative: if `sandbox-config.yaml` already exists, skip local migration; otherwise copy only local `.hal/config.yaml` `sandbox`/`daytona` sections, preserving the local file unchanged.
 - Commands should opt into migration via `runSandboxAutoMigrate(projectDir, out)`; migration failures are non-fatal and must emit exactly `warning: sandbox migration failed: <error>`.
+- `hal sandbox setup` should source defaults from `sandbox.LoadGlobalConfig()` and persist via `sandbox.SaveGlobalConfig()` so it works outside project directories; command tests should isolate with `HAL_CONFIG_HOME` temp dirs.
+- During the transition away from project-scoped sandbox config, setup mirrors values back into `.hal/config.yaml` only when `.hal/` exists (`saveLegacyProjectSandboxConfigIfPresent`) to preserve legacy command compatibility.
 - Global sandbox registry entries live at `SandboxesDir()/"<name>.json"`; writes should stay atomic (`.tmp` + `os.Rename`) with `0600` file mode.
 - Registry collision semantics are strict: `SaveInstance` must return the exact error `sandbox "<name>" already exists`, while `ForceWriteInstance` is the explicit overwrite path for `--force` flows.
 - `ListInstances` should treat a missing `sandboxes/` directory as empty state and return instances sorted by `Name`; missing `LoadInstance`/`RemoveInstance` errors should wrap `fs.ErrNotExist` for `errors.Is` checks.
