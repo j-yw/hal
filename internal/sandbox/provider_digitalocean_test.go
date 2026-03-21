@@ -505,3 +505,50 @@ func TestDigitalOceanProvider_Create_LockdownFailsWhenTailscaleIPUnavailable(t *
 		t.Errorf("error %q should mention lockdown tailscale IP failure", err.Error())
 	}
 }
+
+func TestDigitalOceanProvider_Create_LockdownFailsWhenFirewallLockdownFails(t *testing.T) {
+	var calls [][]string
+	sshCalls := 0
+
+	dp := &DigitalOceanProvider{
+		SSHKey:            "ab:cd:ef:12:34",
+		Size:              "s-2vcpu-4gb",
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			sshCalls++
+			if sshCalls == 1 {
+				return exec.CommandContext(ctx, "echo", "100.64.0.99")
+			}
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	_, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when firewall lockdown fails in lockdown mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to apply firewall lockdown in lockdown mode") {
+		t.Errorf("error %q should mention lockdown firewall failure", err.Error())
+	}
+
+	var sawCleanupDelete bool
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete test-droplet --force" {
+			sawCleanupDelete = true
+			break
+		}
+	}
+	if !sawCleanupDelete {
+		t.Fatalf("expected cleanup delete call after lockdown failure, calls=%v", calls)
+	}
+}

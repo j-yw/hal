@@ -249,7 +249,12 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 		sshCmd.Stdout = safeOut
 		sshCmd.Stderr = &lockStderr
 		if err := sshCmd.Run(); err != nil {
-			fmt.Fprintf(safeOut, "Warning: firewall lockdown failed on %s: %v (apply manually)\n", name, err)
+			cleanupDroplet("firewall lockdown failed")
+			lockMsg := strings.TrimSpace(lockStderr.String())
+			if lockMsg != "" {
+				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %s: %w", lockMsg, err)
+			}
+			return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w", err)
 		}
 	}
 
