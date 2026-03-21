@@ -3,10 +3,8 @@ package sandbox
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -180,14 +178,14 @@ func TestDigitalOceanProvider_Stop_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &out)
+	err := dp.Stop(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &out)
 	if err != nil {
 		t.Fatalf("Stop() unexpected error: %v", err)
 	}
 
 	joined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joined, "doctl compute droplet-action shutdown my-droplet") {
-		t.Errorf("stop args should contain 'doctl compute droplet-action shutdown my-droplet', got: %s", joined)
+	if !strings.Contains(joined, "doctl compute droplet-action shutdown 123456789") {
+		t.Errorf("stop args should contain 'doctl compute droplet-action shutdown 123456789', got: %s", joined)
 	}
 }
 
@@ -203,14 +201,14 @@ func TestDigitalOceanProvider_Delete_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &out)
+	err := dp.Delete(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &out)
 	if err != nil {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
 
 	joined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joined, "doctl compute droplet delete my-droplet") {
-		t.Errorf("delete args should contain 'doctl compute droplet delete my-droplet', got: %s", joined)
+	if !strings.Contains(joined, "doctl compute droplet delete 123456789") {
+		t.Errorf("delete args should contain 'doctl compute droplet delete 123456789', got: %s", joined)
 	}
 	if !strings.Contains(joined, "--force") {
 		t.Errorf("delete args should contain '--force', got: %s", joined)
@@ -229,17 +227,67 @@ func TestDigitalOceanProvider_Status_VerifiesArgs(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := dp.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &out)
+	err := dp.Status(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &out)
 	if err != nil {
 		t.Fatalf("Status() unexpected error: %v", err)
 	}
 
 	joined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joined, "doctl compute droplet get my-droplet") {
-		t.Errorf("status args should contain 'doctl compute droplet get my-droplet', got: %s", joined)
+	if !strings.Contains(joined, "doctl compute droplet get 123456789") {
+		t.Errorf("status args should contain 'doctl compute droplet get 123456789', got: %s", joined)
 	}
 	if !strings.Contains(joined, "--format ID,Name,Status,PublicIPv4") {
 		t.Errorf("status args should contain '--format ID,Name,Status,PublicIPv4', got: %s", joined)
+	}
+}
+
+func TestDigitalOceanProvider_RequiresWorkspaceIDForLifecycleOps(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*DigitalOceanProvider) error
+	}{
+		{
+			name: "stop",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+		},
+		{
+			name: "delete",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+		},
+		{
+			name: "status",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var called bool
+			dp := &DigitalOceanProvider{
+				lookPath: doctlLookPathStub,
+				cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+					called = true
+					return exec.CommandContext(ctx, "true")
+				},
+			}
+
+			err := tt.run(dp)
+			if err == nil {
+				t.Fatalf("expected error for missing workspace ID")
+			}
+			if !strings.Contains(err.Error(), "sandbox workspace ID is required") {
+				t.Fatalf("error = %q, want missing workspace ID message", err.Error())
+			}
+			if called {
+				t.Fatalf("expected no doctl invocation when workspace ID is missing")
+			}
+		})
 	}
 }
 
@@ -250,9 +298,8 @@ func TestDigitalOceanProvider_DoctlNotFound(t *testing.T) {
 	t.Cleanup(func() { os.Setenv("PATH", origPath) })
 
 	dp := &DigitalOceanProvider{
-		SSHKey:   "ab:cd:ef",
-		Size:     "s-2vcpu-4gb",
-		StateDir: t.TempDir(),
+		SSHKey: "ab:cd:ef",
+		Size:   "s-2vcpu-4gb",
 	}
 
 	ctx := context.Background()
@@ -290,28 +337,12 @@ func TestDigitalOceanProvider_DoctlNotFound(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_SSH_WithState(t *testing.T) {
-	stateDir := t.TempDir()
-
-	state := &SandboxState{
-		Name:     "my-droplet",
-		Provider: "digitalocean",
-		IP:       "10.20.30.40",
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "sandbox.json"), data, 0644); err != nil {
-		t.Fatalf("write state: %v", err)
-	}
-
+func TestDigitalOceanProvider_SSH_WithConnectInfoIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
-		StateDir: stateDir,
 	}
 
-	cmd, err := dp.SSH(&ConnectInfo{Name: "my-droplet"})
+	cmd, err := dp.SSH(&ConnectInfo{Name: "my-droplet", IP: "10.20.30.40"})
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
@@ -328,28 +359,12 @@ func TestDigitalOceanProvider_SSH_WithState(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_Exec_WithState(t *testing.T) {
-	stateDir := t.TempDir()
-
-	state := &SandboxState{
-		Name:     "my-droplet",
-		Provider: "digitalocean",
-		IP:       "10.20.30.40",
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "sandbox.json"), data, 0644); err != nil {
-		t.Fatalf("write state: %v", err)
-	}
-
+func TestDigitalOceanProvider_Exec_WithConnectInfoIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
-		StateDir: stateDir,
 	}
 
-	cmd, err := dp.Exec(&ConnectInfo{Name: "my-droplet"}, []string{"ls", "-la"})
+	cmd, err := dp.Exec(&ConnectInfo{Name: "my-droplet", IP: "10.20.30.40"}, []string{"ls", "-la"})
 	if err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
@@ -364,47 +379,30 @@ func TestDigitalOceanProvider_Exec_WithState(t *testing.T) {
 }
 
 func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
-	stateDir := t.TempDir()
-
-	state := &SandboxState{
-		Name:     "my-droplet",
-		Provider: "digitalocean",
-		IP:       "",
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "sandbox.json"), data, 0644); err != nil {
-		t.Fatalf("write state: %v", err)
-	}
-
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
-		StateDir: stateDir,
-	}
-
-	_, err = dp.SSH(&ConnectInfo{Name: "my-droplet"})
-	if err == nil {
-		t.Fatal("SSH() expected error for missing IP, got nil")
-	}
-	if !strings.Contains(err.Error(), "no IP address") {
-		t.Errorf("SSH() error %q should mention missing IP", err.Error())
-	}
-}
-
-func TestDigitalOceanProvider_SSH_MissingState(t *testing.T) {
-	dp := &DigitalOceanProvider{
-		lookPath: doctlLookPathStub,
-		StateDir: t.TempDir(), // empty dir, no sandbox.json
 	}
 
 	_, err := dp.SSH(&ConnectInfo{Name: "my-droplet"})
 	if err == nil {
-		t.Fatal("SSH() expected error for missing state, got nil")
+		t.Fatal("SSH() expected error for missing IP, got nil")
 	}
-	if !strings.Contains(err.Error(), "sandbox state") {
-		t.Errorf("SSH() error %q should mention sandbox state", err.Error())
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
+		t.Errorf("SSH() error %q should mention missing IP", err.Error())
+	}
+}
+
+func TestDigitalOceanProvider_Exec_MissingIP(t *testing.T) {
+	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
+	}
+
+	_, err := dp.Exec(&ConnectInfo{Name: "my-droplet"}, []string{"ls"})
+	if err == nil {
+		t.Fatal("Exec() expected error for missing IP, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox IP is required") {
+		t.Errorf("Exec() error %q should mention missing IP", err.Error())
 	}
 }
 
@@ -412,7 +410,6 @@ func TestProviderFromConfig_DigitalOcean(t *testing.T) {
 	cfg := ProviderConfig{
 		DigitalOceanSSHKey: "ab:cd:ef:12:34",
 		DigitalOceanSize:   "s-4vcpu-8gb",
-		StateDir:           "/tmp/test-hal",
 	}
 	p, err := ProviderFromConfig("digitalocean", cfg)
 	if err != nil {
@@ -427,9 +424,6 @@ func TestProviderFromConfig_DigitalOcean(t *testing.T) {
 	}
 	if dp.Size != "s-4vcpu-8gb" {
 		t.Errorf("Size = %q, want %q", dp.Size, "s-4vcpu-8gb")
-	}
-	if dp.StateDir != "/tmp/test-hal" {
-		t.Errorf("StateDir = %q, want %q", dp.StateDir, "/tmp/test-hal")
 	}
 }
 

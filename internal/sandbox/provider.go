@@ -110,7 +110,6 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			SSHKey:            cfg.DigitalOceanSSHKey,
 			Size:              cfg.DigitalOceanSize,
 			TailscaleLockdown: cfg.TailscaleLockdown,
-			StateDir:          cfg.StateDir,
 		}, nil
 	case "lightsail":
 		return &LightsailProvider{

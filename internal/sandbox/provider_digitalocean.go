@@ -18,9 +18,6 @@ type DigitalOceanProvider struct {
 	SSHKey            string
 	Size              string
 	TailscaleLockdown bool
-	// StateDir is the .hal directory path, needed to look up the droplet IP
-	// from sandbox state for SSH connections.
-	StateDir string
 
 	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
 	// Override in tests to capture args without running the real CLI.
@@ -156,37 +153,6 @@ func parseDODropletInfo(output string) (id string, ip string) {
 	}
 }
 
-func isNumericDropletID(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, ch := range value {
-		if ch < '0' || ch > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func (d *DigitalOceanProvider) resolveDropletTarget(name string) string {
-	target := strings.TrimSpace(name)
-	if target == "" || isNumericDropletID(target) || strings.TrimSpace(d.StateDir) == "" {
-		return target
-	}
-
-	state, err := LoadState(d.StateDir)
-	if err != nil {
-		return target
-	}
-	if state.Provider != "digitalocean" || strings.TrimSpace(state.WorkspaceID) == "" {
-		return target
-	}
-	if state.Name != target {
-		return target
-	}
-	return strings.TrimSpace(state.WorkspaceID)
-}
-
 func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
@@ -255,16 +221,11 @@ func (d *DigitalOceanProvider) Stop(ctx context.Context, info *ConnectInfo, out 
 	}
 
 	target := ""
-	name := ""
 	if info != nil {
 		target = strings.TrimSpace(info.WorkspaceID)
-		name = strings.TrimSpace(info.Name)
 	}
 	if target == "" {
-		target = d.resolveDropletTarget(name)
-	}
-	if target == "" {
-		return fmt.Errorf("sandbox name is required")
+		return fmt.Errorf("sandbox workspace ID is required")
 	}
 
 	safeOut := synchronizedWriter(out)
@@ -285,16 +246,11 @@ func (d *DigitalOceanProvider) Delete(ctx context.Context, info *ConnectInfo, ou
 	}
 
 	target := ""
-	name := ""
 	if info != nil {
 		target = strings.TrimSpace(info.WorkspaceID)
-		name = strings.TrimSpace(info.Name)
 	}
 	if target == "" {
-		target = d.resolveDropletTarget(name)
-	}
-	if target == "" {
-		return fmt.Errorf("sandbox name is required")
+		return fmt.Errorf("sandbox workspace ID is required")
 	}
 
 	safeOut := synchronizedWriter(out)
@@ -315,16 +271,11 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, ou
 	}
 
 	target := ""
-	name := ""
 	if info != nil {
 		target = strings.TrimSpace(info.WorkspaceID)
-		name = strings.TrimSpace(info.Name)
 	}
 	if target == "" {
-		target = d.resolveDropletTarget(name)
-	}
-	if target == "" {
-		return fmt.Errorf("sandbox name is required")
+		return fmt.Errorf("sandbox workspace ID is required")
 	}
 
 	safeOut := synchronizedWriter(out)
@@ -341,68 +292,17 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, ou
 	return nil
 }
 
-// refreshIP fetches the current public IP from doctl and updates the state file
-// if it has changed. Returns the current IP.
-func (d *DigitalOceanProvider) refreshIP(state *SandboxState) (string, error) {
-	target := d.resolveDropletTarget(state.Name)
-	cmd := d.commandContext(context.Background(), "doctl", "compute", "droplet", "get", target,
-		"--format", "ID,PublicIPv4",
-		"--no-header",
-	)
-	var outBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &stderrBuf
-
-	if err := cmd.Run(); err != nil {
-		return state.IP, nil // fall back to stored IP on API failure
-	}
-
-	_, freshIP := parseDODropletInfo(outBuf.String())
-	if strings.TrimSpace(freshIP) == "" {
-		return state.IP, nil
-	}
-
-	if freshIP != state.IP {
-		state.IP = freshIP
-		// Best-effort update of state file
-		_ = SaveState(d.StateDir, state)
-	}
-	return freshIP, nil
-}
-
 func (d *DigitalOceanProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
 	}
 
-	name := ""
 	ip := ""
 	if info != nil {
-		name = strings.TrimSpace(info.Name)
 		ip = strings.TrimSpace(info.IP)
 	}
-
 	if ip == "" {
-		state, err := LoadState(d.StateDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
-		}
-		if name == "" {
-			name = state.Name
-		}
-
-		ip = PreferredIP(state)
-		if ip == "" {
-			refreshedIP, err := d.refreshIP(state)
-			if err != nil {
-				return nil, err
-			}
-			ip = refreshedIP
-		}
-	}
-
-	if ip == "" {
-		return nil, fmt.Errorf("no IP address found for %q", name)
+		return nil, fmt.Errorf("sandbox IP is required")
 	}
 
 	cmd := exec.Command("ssh",
@@ -421,34 +321,12 @@ func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd
 		return nil, err
 	}
 
-	name := ""
 	ip := ""
 	if info != nil {
-		name = strings.TrimSpace(info.Name)
 		ip = strings.TrimSpace(info.IP)
 	}
-
 	if ip == "" {
-		state, err := LoadState(d.StateDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load sandbox state: %w", err)
-		}
-		if name == "" {
-			name = state.Name
-		}
-
-		ip = PreferredIP(state)
-		if ip == "" {
-			refreshedIP, err := d.refreshIP(state)
-			if err != nil {
-				return nil, err
-			}
-			ip = refreshedIP
-		}
-	}
-
-	if ip == "" {
-		return nil, fmt.Errorf("no IP address found for %q", name)
+		return nil, fmt.Errorf("sandbox IP is required")
 	}
 
 	cmdArgs := []string{
