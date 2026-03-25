@@ -180,7 +180,11 @@ func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents 
 		out = os.Stdout
 	}
 
-	display := deps.newDisplay(out)
+	displayOut := out
+	if jsonMode {
+		displayOut = io.Discard
+	}
+	display := deps.newDisplay(displayOut)
 	normalizedEngineName := normalizeReviewEngine(engineName)
 
 	var eng engine.Engine
@@ -192,7 +196,9 @@ func runReportWithDeps(ctx context.Context, dir string, dryRun bool, skipAgents 
 		}
 	}
 
-	display.ShowCommandHeader("Review", "work session", deps.buildHeaderCtx(normalizedEngineName))
+	if !jsonMode {
+		display.ShowCommandHeader("Review", "work session", deps.buildHeaderCtx(normalizedEngineName))
+	}
 
 	result, err := deps.runReview(ctx, eng, display, dir, compound.ReviewOptions{
 		DryRun:     dryRun,
