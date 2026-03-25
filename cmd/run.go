@@ -333,18 +333,13 @@ func showRunSummary(out io.Writer, result loop.Result) {
 			engine.StyleBold.Render("Duration:"), formatRunDuration(result.Duration))
 	}
 
-	// Show PRD progress if available
-	prdPath := filepath.Join(template.HalDir, template.PRDFile)
-	if prd, err := engine.LoadPRDFile(template.HalDir, template.PRDFile); err == nil {
-		completed, total := prd.Progress()
+	// Show PRD progress from loop result
+	if result.TotalStories > 0 {
 		fmt.Fprintf(out, "%s Progress: %d/%d stories complete",
-			engine.StyleBold.Render("PRD:"), completed, total)
-		if total > 0 {
-			pct := completed * 100 / total
-			fmt.Fprintf(out, " (%d%%)", pct)
-		}
+			engine.StyleBold.Render("PRD:"), result.CompletedStories, result.TotalStories)
+		pct := result.CompletedStories * 100 / result.TotalStories
+		fmt.Fprintf(out, " (%d%%)", pct)
 		fmt.Fprintln(out)
-		_ = prdPath // used for Progress call context
 	}
 }
 
@@ -384,14 +379,12 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		jr.Duration = result.Duration.Round(time.Second).String()
 	}
 
-	// Try to read PRD state post-loop
-	prdPath := filepath.Join(template.HalDir, template.PRDFile)
-	if prd, err := engine.LoadPRDFile(template.HalDir, template.PRDFile); err == nil {
-		completed, total := prd.Progress()
+	// Story progress from loop result
+	if result.TotalStories > 0 {
 		jr.PRD = &RunPRDInfo{
-			Path:             prdPath,
-			CompletedStories: completed,
-			TotalStories:     total,
+			Path:             filepath.Join(template.HalDir, template.PRDFile),
+			CompletedStories: result.CompletedStories,
+			TotalStories:     result.TotalStories,
 		}
 	}
 

@@ -78,7 +78,21 @@ sed -n '/pipeline.Run/,/ShowCommandSuccess/p' cmd/auto.go 2>/dev/null | grep -qi
 # E40: Run JSON includes completed/total stories directly (not just inside nested PRD)
 sed -n '/func outputRunJSON/,/^}/p' cmd/run.go 2>/dev/null | grep -qiE 'CompletedStories|TotalStories|stories' && { SCORE=$((SCORE+1)); echo "E40: PASS"; } || echo "E40: FAIL"
 
-MAX_SCORE=40
+# === E41-E44: Wave 8 — Structural quality ===
+
+# E41: showRunSummary uses loop.Result story counts (not re-reading PRD from disk)
+sed -n '/func showRunSummary/,/^func /p' cmd/run.go 2>/dev/null | grep -qE 'result\.(CompletedStories|TotalStories)' && { SCORE=$((SCORE+1)); echo "E41: PASS"; } || echo "E41: FAIL"
+
+# E42: Run JSON uses loop.Result story counts (not re-reading PRD from disk)
+sed -n '/func outputRunJSON/,/^}/p' cmd/run.go 2>/dev/null | grep -qE 'result\.(CompletedStories|TotalStories)' && { SCORE=$((SCORE+1)); echo "E42: PASS"; } || echo "E42: FAIL"
+
+# E43: Review loop single-iteration path also populates Issues
+grep -qE 'collectFilesAffected' internal/compound/review_loop.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E43: PASS"; } || echo "E43: FAIL"
+
+# E44: Auto completion summary includes branch info
+sed -n '/pipeline.Run/,/ShowCommandSuccess/p' cmd/auto.go 2>/dev/null | grep -qiE 'branch' && { SCORE=$((SCORE+1)); echo "E44: PASS"; } || echo "E44: FAIL"
+
+MAX_SCORE=44
 
 echo ""
 echo "=== Score: ${SCORE}/${MAX_SCORE} ==="
