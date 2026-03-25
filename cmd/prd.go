@@ -183,29 +183,33 @@ func runPRDAuditFn(dir string, jsonMode bool, out io.Writer) error {
 
 	// Human-readable
 	if jsonExists {
-		fmt.Fprintln(out, "JSON PRD:     ✓ "+filepath.Join(template.HalDir, template.PRDFile))
+		fmt.Fprintf(out, "JSON PRD:     %s %s\n", engine.StyleSuccess.Render("✓"), engine.StyleMuted.Render(filepath.Join(template.HalDir, template.PRDFile)))
 		if prdInfo != nil {
 			fmt.Fprintf(out, "  Project:    %s\n", prdInfo.Project)
-			fmt.Fprintf(out, "  Branch:     %s\n", prdInfo.BranchName)
-			fmt.Fprintf(out, "  Stories:    %d/%d complete\n", prdInfo.CompletedStories, prdInfo.TotalStories)
+			fmt.Fprintf(out, "  Branch:     %s\n", engine.StyleInfo.Render(prdInfo.BranchName))
+			storyLabel := fmt.Sprintf("%d/%d complete", prdInfo.CompletedStories, prdInfo.TotalStories)
+			if prdInfo.CompletedStories == prdInfo.TotalStories && prdInfo.TotalStories > 0 {
+				storyLabel = engine.StyleSuccess.Render(storyLabel)
+			}
+			fmt.Fprintf(out, "  Stories:    %s\n", storyLabel)
 		}
 	} else {
-		fmt.Fprintln(out, "JSON PRD:     ✗ not found")
+		fmt.Fprintf(out, "JSON PRD:     %s not found\n", engine.StyleError.Render("✗"))
 	}
 
 	if markdownExists {
-		fmt.Fprintf(out, "Markdown PRD: ✓ %s\n", markdownPath)
+		fmt.Fprintf(out, "Markdown PRD: %s %s\n", engine.StyleSuccess.Render("✓"), engine.StyleMuted.Render(markdownPath))
 	} else {
-		fmt.Fprintln(out, "Markdown PRD: ✗ not found")
+		fmt.Fprintf(out, "Markdown PRD: %s not found\n", engine.StyleError.Render("✗"))
 	}
 
 	fmt.Fprintln(out)
 	if ok {
-		fmt.Fprintln(out, "PRD is healthy.")
+		fmt.Fprintf(out, "%s PRD is healthy.\n", engine.StyleSuccess.Render("[OK]"))
 	} else {
-		fmt.Fprintln(out, "Issues:")
+		fmt.Fprintf(out, "%s\n", engine.StyleWarning.Render("Issues:"))
 		for _, issue := range issues {
-			fmt.Fprintf(out, "  ⚠ %s\n", issue)
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleWarning.Render("⚠"), issue)
 		}
 	}
 

@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=28
+MAX_SCORE=29
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -255,6 +255,13 @@ if [ "$AUTO_STYLED" -ge 1 ]; then
     SCORE=$((SCORE + 1)); echo "E28: PASS — ${AUTO_STYLED}/3 workflow commands styled"
 else
     echo "E28: FAIL — auto/run/prd all unstyled"
+fi
+
+# E29: PRD info command styled
+if has_engine_import cmd/prd.go && has_style_usage cmd/prd.go; then
+    SCORE=$((SCORE + 1)); echo "E29: PASS — prd info styled"
+else
+    echo "E29: FAIL — prd info unstyled"
 fi
 
 # Coverage
