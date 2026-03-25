@@ -180,18 +180,25 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 				}
 
 				// Show rationale for each issue when available
-				hasRationale := false
+				hasDetails := false
 				for _, issue := range iteration.Issues {
-					if issue.Rationale != "" {
-						hasRationale = true
+					if issue.Rationale != "" || issue.SuggestedFix != "" {
+						hasDetails = true
 						break
 					}
 				}
-				if hasRationale {
+				if hasDetails {
 					sb.WriteString("\n**Details:**\n")
 					for i, issue := range iteration.Issues {
-						if issue.Rationale != "" {
-							sb.WriteString(fmt.Sprintf("%d. **%s** — %s\n", i+1, issue.Title, issue.Rationale))
+						if issue.Rationale != "" || issue.SuggestedFix != "" {
+							sb.WriteString(fmt.Sprintf("%d. **%s**", i+1, issue.Title))
+							if issue.Rationale != "" {
+								sb.WriteString(fmt.Sprintf(" — %s", issue.Rationale))
+							}
+							if issue.SuggestedFix != "" {
+								sb.WriteString(fmt.Sprintf(" *Fix: %s*", issue.SuggestedFix))
+							}
+							sb.WriteString("\n")
 						}
 					}
 				}

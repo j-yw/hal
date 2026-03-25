@@ -91,7 +91,21 @@ sed -n '/type RunPRDInfo/,/^}/p' cmd/run.go 2>/dev/null | grep -qE 'Completed|To
 # E32: Review loop report includes branch names for context
 grep -qE 'BaseBranch|CurrentBranch|base.*branch|current.*branch' internal/compound/review_loop_report.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E32: PASS"; } || echo "E32: FAIL"
 
-MAX_SCORE=32
+# === E33-E36: Wave 6 — Polish ===
+
+# E33: Review markdown renders suggestedFix per issue in details
+echo "$ITER_BLOCK" | grep -qiE 'suggestedFix|SuggestedFix|suggested.fix' && { SCORE=$((SCORE+1)); echo "E33: PASS"; } || echo "E33: FAIL"
+
+# E34: Auto pipeline shows per-step info (branch name, task count, or similar)
+sed -n '/func.*runBranchStep/,/^func /p' internal/compound/pipeline.go 2>/dev/null | grep -qiE 'ShowInfo.*branch' && { SCORE=$((SCORE+1)); echo "E34: PASS"; } || echo "E34: FAIL"
+
+# E35: Review markdown renders a summary of files and issues in totals
+sed -n '/Totals/,/Stop Reason/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qiE 'files|Files' && { SCORE=$((SCORE+1)); echo "E35: PASS"; } || echo "E35: FAIL"
+
+# E36: Auto JSON error includes failure kind for machine consumers
+sed -n '/func outputAutoJSON/,/^}/p' cmd/auto.go 2>/dev/null | grep -qiE 'failure|kind|category' && { SCORE=$((SCORE+1)); echo "E36: PASS"; } || echo "E36: FAIL"
+
+MAX_SCORE=36
 
 echo ""
 echo "=== Score: ${SCORE}/${MAX_SCORE} ==="
