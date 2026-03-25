@@ -207,7 +207,12 @@ func runLinksStatusFn(dir string, jsonMode bool, engineFilter string, out io.Wri
 		default:
 			icon = display.StyleSuccess.Render("✓")
 		}
-		fmt.Fprintf(out, "  %s  %s %s\n", icon, display.StyleBold.Render(es.Engine), display.StyleMuted.Render("("+es.Mode+")"))
+		linkCount := len(es.Links)
+		countLabel := ""
+		if linkCount > 0 {
+			countLabel = " " + display.StyleMuted.Render(fmt.Sprintf("· %d links", linkCount))
+		}
+		fmt.Fprintf(out, "  %s  %s %s%s\n", icon, display.StyleBold.Render(es.Engine), display.StyleMuted.Render("("+es.Mode+")"), countLabel)
 		fmt.Fprintf(out, "     skills: %s\n", display.StyleMuted.Render(es.SkillsDir))
 		if es.CommandsDir != "" {
 			fmt.Fprintf(out, "     commands: %s\n", display.StyleMuted.Render(es.CommandsDir))
