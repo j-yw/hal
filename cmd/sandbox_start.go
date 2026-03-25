@@ -81,6 +81,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 }
 
 var resolveSandboxProvider = sandbox.ProviderFromConfig
+var sandboxStartResolveProviderForForceDelete = resolveProviderFromGlobalConfig
 
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
@@ -494,9 +495,26 @@ func runSingleCreate(
 		}
 		// --force: delete the existing sandbox before creating a new one
 		fmt.Fprintf(out, "Replacing existing sandbox %q...\n", name)
+		deleteProvider := provider
+		existingProvider := strings.TrimSpace(existing.Provider)
+		activeProvider := strings.TrimSpace(sandboxCfg.Provider)
+		if deleteProvider == nil || (existingProvider != "" && existingProvider != activeProvider) {
+			providerName := existingProvider
+			if providerName == "" {
+				providerName = activeProvider
+			}
+			if providerName == "" {
+				return fmt.Errorf("resolving provider for existing sandbox %q: provider is not set", name)
+			}
+			var err error
+			deleteProvider, err = sandboxStartResolveProviderForForceDelete(providerName)
+			if err != nil {
+				return fmt.Errorf("resolving provider for existing sandbox %q: %w", name, err)
+			}
+		}
 		info := sandbox.ConnectInfoFromState(existing)
 		ctx := context.Background()
-		if err := provider.Delete(ctx, info, out); err != nil {
+		if err := deleteProvider.Delete(ctx, info, out); err != nil {
 			return fmt.Errorf("force-delete of existing sandbox %q failed: %w", name, err)
 		}
 		if err := sandbox.RemoveInstance(name); err != nil {

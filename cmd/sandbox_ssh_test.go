@@ -258,8 +258,8 @@ func TestRunSandboxSSH_AutoResolveNone(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "no sandboxes found") {
-		t.Errorf("error %q should contain 'no sandboxes found'", err.Error())
+	if !strings.Contains(err.Error(), "no running sandboxes") {
+		t.Errorf("error %q should contain 'no running sandboxes'", err.Error())
 	}
 }
 
@@ -554,8 +554,8 @@ func TestResolveSSHTarget_AutoResolveNone(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "no sandboxes found") {
-		t.Errorf("error %q should contain 'no sandboxes found'", err.Error())
+	if !strings.Contains(err.Error(), "no running sandboxes") {
+		t.Errorf("error %q should contain 'no running sandboxes'", err.Error())
 	}
 }
 
@@ -573,7 +573,7 @@ func TestResolveSSHTarget_AutoResolveMultiple(t *testing.T) {
 			Provider:  "hetzner",
 			IP:        "10.0.0.2",
 			CreatedAt: time.Now(),
-			Status:    sandbox.StatusStopped,
+			Status:    sandbox.StatusRunning,
 		},
 	)
 
@@ -586,5 +586,46 @@ func TestResolveSSHTarget_AutoResolveMultiple(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "beta") {
 		t.Errorf("error %q should list sandbox names", err.Error())
+	}
+}
+
+func TestResolveSSHTarget_AutoResolveIgnoresStopped(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "stopped-only",
+		Provider:  "daytona",
+		IP:        "10.0.0.1",
+		CreatedAt: time.Now(),
+		Status:    sandbox.StatusStopped,
+	})
+
+	_, _, err := resolveSSHTarget("")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no running sandboxes") {
+		t.Errorf("error %q should contain 'no running sandboxes'", err.Error())
+	}
+}
+
+func TestResolveSSHTarget_ByNameWrapsLoadError(t *testing.T) {
+	setupSSHTest(t)
+
+	origLoad := sandboxSSHLoadInstance
+	t.Cleanup(func() {
+		sandboxSSHLoadInstance = origLoad
+	})
+	sandboxSSHLoadInstance = func(string) (*sandbox.SandboxState, error) {
+		return nil, fmt.Errorf("parse sandbox %q: bad json", "broken")
+	}
+
+	_, _, err := resolveSSHTarget("broken")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), `load sandbox "broken"`) {
+		t.Errorf("error %q should contain wrapped load message", err.Error())
+	}
+	if !strings.Contains(err.Error(), "bad json") {
+		t.Errorf("error %q should preserve underlying error details", err.Error())
 	}
 }

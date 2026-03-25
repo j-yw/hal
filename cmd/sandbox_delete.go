@@ -71,6 +71,10 @@ func runSandboxDelete(args []string, allFlag, yesFlag bool, pattern string, in i
 // runSandboxDeleteWithDeps contains the testable logic for the sandbox delete command.
 // It resolves targets from the global registry, confirms when needed, then deletes each one.
 func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern string, in io.Reader, out io.Writer, provider sandbox.Provider) error {
+	if err := runSandboxAutoMigrate(".", out); err != nil {
+		return err
+	}
+
 	targets, hint, err := resolveDeleteTargets(args, allFlag, pattern)
 	if err != nil {
 		return err
@@ -251,7 +255,7 @@ func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandb
 	fmt.Fprintf(out, "Deleting sandbox %q...\n", target.Name)
 
 	ctx := context.Background()
-	info := sandbox.ConnectInfoFromState(target)
+	info := deleteConnectInfo(target)
 	if err := p.Delete(ctx, info, out); err != nil {
 		return fmt.Errorf("sandbox delete failed for %q: %w", target.Name, err)
 	}
@@ -293,7 +297,7 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provi
 			}
 
 			ctx := context.Background()
-			info := sandbox.ConnectInfoFromState(target)
+			info := deleteConnectInfo(target)
 			err := p.Delete(ctx, info, io.Discard)
 
 			mu.Lock()
@@ -330,4 +334,23 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provi
 	}
 
 	return nil
+}
+
+func deleteConnectInfo(target *sandbox.SandboxState) *sandbox.ConnectInfo {
+	info := sandbox.ConnectInfoFromState(target)
+	if info == nil {
+		info = &sandbox.ConnectInfo{}
+	}
+	if target == nil {
+		return info
+	}
+	if strings.TrimSpace(info.Name) == "" {
+		info.Name = strings.TrimSpace(target.Name)
+	}
+	if target.Provider == "digitalocean" && strings.TrimSpace(info.WorkspaceID) == "" {
+		if name := strings.TrimSpace(target.Name); name != "" {
+			info.WorkspaceID = name
+		}
+	}
+	return info
 }

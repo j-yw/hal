@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"io"
 	"os"
 	"os/exec"
@@ -164,16 +166,21 @@ func isFlag(arg string) bool {
 
 // resolveSSHTarget resolves a sandbox from the global registry.
 // If name is provided, loads that specific instance.
-// If name is empty, auto-resolves using ResolveDefault (no filter).
+// If name is empty, auto-resolves using ResolveDefault with a running-only filter.
 func resolveSSHTarget(name string) (*sandbox.SandboxState, string, error) {
 	if name != "" {
 		instance, err := sandboxSSHLoadInstance(name)
 		if err != nil {
-			return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, "", fmt.Errorf("sandbox %q not found in registry: %w", name, err)
+			}
+			return nil, "", fmt.Errorf("load sandbox %q: %w", name, err)
 		}
 		return instance, "", nil
 	}
 
-	// Auto-resolve: no filter (any status)
-	return sandbox.ResolveDefault(nil)
+	// Auto-resolve: running sandboxes only.
+	return sandbox.ResolveDefault(func(s *sandbox.SandboxState) bool {
+		return s.Status == sandbox.StatusRunning
+	})
 }

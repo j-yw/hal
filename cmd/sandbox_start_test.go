@@ -1854,6 +1854,61 @@ func TestRunSandboxStart_ForceReplaceSuccess(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStart_ForceReplaceUsesExistingProviderForDelete(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	existing := &sandbox.SandboxState{
+		ID:          "old-id-1234",
+		Name:        "my-sandbox",
+		Provider:    "digitalocean",
+		WorkspaceID: "do-123",
+		Status:      sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	createProvider := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new"},
+	}
+	deleteProvider := &mockProvider{}
+
+	origResolve := sandboxStartResolveProviderForForceDelete
+	t.Cleanup(func() {
+		sandboxStartResolveProviderForForceDelete = origResolve
+	})
+	var gotProviderName string
+	sandboxStartResolveProviderForForceDelete = func(providerName string) (sandbox.Provider, error) {
+		gotProviderName = providerName
+		if providerName != "digitalocean" {
+			return nil, fmt.Errorf("unexpected provider %q", providerName)
+		}
+		return deleteProvider, nil
+	}
+
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, createProvider, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotProviderName != "digitalocean" {
+		t.Fatalf("resolved delete provider = %q, want %q", gotProviderName, "digitalocean")
+	}
+	if len(deleteProvider.deleteCalls) != 1 {
+		t.Fatalf("existing provider delete calls = %d, want 1", len(deleteProvider.deleteCalls))
+	}
+	if got := deleteProvider.deleteCalls[0].Info.WorkspaceID; got != "do-123" {
+		t.Fatalf("existing provider delete workspace = %q, want %q", got, "do-123")
+	}
+	if len(createProvider.deleteCalls) != 0 {
+		t.Fatalf("new provider delete calls = %d, want 0", len(createProvider.deleteCalls))
+	}
+	if len(createProvider.createCalls) != 1 {
+		t.Fatalf("new provider create calls = %d, want 1", len(createProvider.createCalls))
+	}
+}
+
 func TestRunSandboxStart_ForceDeleteFails(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
