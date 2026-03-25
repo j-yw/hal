@@ -304,15 +304,41 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		return outputRunJSON(out, result, story, dryRun)
 	}
 
+	// Show completion summary in terminal mode
+	showRunSummary(out, result)
+
 	// Only return error if there was an actual failure
 	if result.Error != nil {
-		if jsonMode {
-			return outputRunJSON(out, result, story, dryRun)
-		}
 		return fmt.Errorf("loop failed: %w", result.Error)
 	}
 
 	return nil
+}
+
+// showRunSummary renders a human-readable completion summary after the loop finishes.
+func showRunSummary(out io.Writer, result loop.Result) {
+	fmt.Fprintln(out)
+	if result.Complete {
+		fmt.Fprintf(out, "%s All stories complete after %d iteration(s).\n",
+			engine.StyleSuccess.Render("✓"), result.Iterations)
+	} else if result.Success {
+		fmt.Fprintf(out, "%s Completed %d iteration(s). Stories remain.\n",
+			engine.StyleInfo.Render("→"), result.Iterations)
+	}
+
+	// Show PRD progress if available
+	prdPath := filepath.Join(template.HalDir, template.PRDFile)
+	if prd, err := engine.LoadPRDFile(template.HalDir, template.PRDFile); err == nil {
+		completed, total := prd.Progress()
+		fmt.Fprintf(out, "%s Progress: %d/%d stories complete",
+			engine.StyleBold.Render("PRD:"), completed, total)
+		if total > 0 {
+			pct := completed * 100 / total
+			fmt.Fprintf(out, " (%d%%)", pct)
+		}
+		fmt.Fprintln(out)
+		_ = prdPath // used for Progress call context
+	}
 }
 
 func outputRunJSONError(out io.Writer, errMsg string) error {

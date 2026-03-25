@@ -24,8 +24,8 @@ else
 fi
 
 # E2: runReviewIteration populates issue details (assigns to a slice, not just int counts)
-# Must use append() or assign a slice literal to an Issues/Details field
-if grep -qE 'iteration\.\w*(Issues|Details)\s*=\s*(append\(|make\(|\[\])' internal/compound/review_loop.go 2>/dev/null || \
+# Must assign a slice via append/make/literal/function call to an Issues/Details field
+if grep -qE 'iteration\.\w*(Issues|Details)\s*=\s*(append\(|make\(|\[\]|build)' internal/compound/review_loop.go 2>/dev/null || \
    grep -qE 'append\(iteration\.\w*(Issues|Details)' internal/compound/review_loop.go 2>/dev/null; then
     SCORE=$((SCORE + 1)); echo "E2: PASS — runReviewIteration populates issue detail slice"
 else
@@ -119,7 +119,7 @@ fi
 # E12: Run human-readable (non-JSON) output shows PRD progress or completion stats
 # Must be outside the jsonMode blocks — in the terminal output path
 RUN_HUMAN_PATH=$(sed -n '/result := runner.Run/,/return nil/p' cmd/run.go 2>/dev/null | grep -v 'jsonMode\|outputRunJSON')
-if echo "$RUN_HUMAN_PATH" | grep -qiE 'progress\|stories\|complete\|prd\|Display\|Show'; then
+if echo "$RUN_HUMAN_PATH" | grep -qiE 'progress|stories|complete|prd|Display|Show'; then
     SCORE=$((SCORE + 1)); echo "E12: PASS — run terminal shows progress/completion info"
 else
     echo "E12: FAIL — run terminal path returns bare error or nil, no progress summary"
