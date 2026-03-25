@@ -95,7 +95,8 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	// Human-readable output
 	engine, _ := compound.LoadDefaultEngine(dir)
 
-	// Header section
+	// Header
+	fmt.Fprintf(out, "%s\n", display.StyleTitle.Render("Status"))
 	fmt.Fprintf(out, "%s  %s\n", display.StyleBold.Render("Workflow:"), result.WorkflowTrack)
 	fmt.Fprintf(out, "%s     %s\n", display.StyleBold.Render("State:"), result.State)
 	if engine != "" {

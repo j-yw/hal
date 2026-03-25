@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=12
+MAX_SCORE=14
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -120,6 +120,20 @@ if grep -qE '(engine|display|ui)\.(StyleTitle|StyleBold)\.Render.*Doctor\|Health
     SCORE=$((SCORE + 1)); echo "E12: PASS — doctor has styled title"
 else
     echo "E12: FAIL — doctor lacks styled title/header"
+fi
+
+# E13: Status has styled title
+if grep -qE '(engine|display|ui)\.StyleTitle' cmd/status.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E13: PASS — status has styled title"
+else
+    echo "E13: FAIL — status lacks styled title"
+fi
+
+# E14: Continue has styled title
+if grep -qE '(engine|display|ui)\.StyleTitle' cmd/continue.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E14: PASS — continue has styled title"
+else
+    echo "E14: FAIL — continue lacks styled title"
 fi
 
 # Coverage

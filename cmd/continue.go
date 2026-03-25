@@ -114,6 +114,7 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 	}
 
 	// Human-readable output
+	fmt.Fprintf(out, "%s\n", ui.StyleTitle.Render("Continue"))
 	if !ready {
 		fmt.Fprintf(out, "%s  Environment needs attention\n", ui.StyleWarning.Render("⚠"))
 		fmt.Fprintln(out)
