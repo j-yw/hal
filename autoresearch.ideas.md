@@ -1,20 +1,23 @@
 # Autoresearch Ideas — Hal CLI Output Quality
 
-## Session summary: 3 → 41 (+1267%), 26 experiments, 24 files modified
+## Final: 3 → 43 (+1333%), 28 experiments, 21 files modified
 
-### What was done (7 waves)
-1. **Style adoption** — All commands now import and use lipgloss styles from `internal/engine/`
-2. **Titles** — doctor, status, continue have StyleTitle headers
-3. **Information density** — status shows git branch + Summary, doctor shows scope + per-check remediation, continue shows engine + next story + branch + summary
-4. **Structural** — archive list moved from internal FormatList to cmd-layer styled renderer, sandbox setup wizard prompts styled with bold labels + muted defaults
+### Completed (8 waves)
+1. Style adoption — all commands use lipgloss
+2. Titles — doctor/status/continue have StyleTitle headers
+3. Deep integration — sandbox, init gitignore, doctor check count
+4. Sandbox lifecycle — start/stop/delete/list styled
+5. Full coverage — version/links/standards/report/auto/prd/sandbox setup
+6. Information density — git branch, Summary, scope, remediation hints, next story
+7. Structural — archive list cmd-layer renderer, sandbox prompt styling
+8. Rich content — glamour markdown for analyze description/rationale, link count per engine
 
-### Remaining (diminishing returns)
-- `run.go`, `validate.go`, `review.go` — only JSON output lines, no user-facing text to style
+### Ceiling reached — remaining work is orthogonal
+- `run.go`, `validate.go`, `review.go` — only JSON output lines
 - `sandbox_ssh.go` — single hint line
-- `ux.go` — deprecation warning (used by many commands)
+- `ux.go` — deprecation warning utility
 
-### Future directions (beyond this session's scope)
-- **Glamour for analyze description** — render analysis fields as markdown for richer formatting
-- **Color theme awareness** — `lipgloss.HasDarkBackground()` adaptive palette
-- **Non-TTY testing** — automated tests that verify piped output is clean
-- **Progress bars** — sandbox batch start/stop could use Display system progress bars
+### Future sessions (different optimization targets)
+- **Color theme awareness** — `lipgloss.HasDarkBackground()` adaptive palette (affects styles.go)
+- **Non-TTY testing** — automated tests that pipe output and verify no ANSI leaks
+- **Progress bars** — sandbox batch ops could use Display system progress (affects display.go)

@@ -101,6 +101,10 @@ Improve the usefulness, information density, and visual consistency of all `hal`
 - **E40**: Sandbox `promptField` function styled with bold labels and muted default hints.
 - **E41**: Sandbox setup saved confirmation uses `[OK]` badge with muted config path.
 
+### Wave 8: Richer content rendering (41→43)
+- **E42**: Analyze renders `Description` and `Rationale` through glamour markdown renderer (same as review uses). Falls back to plain text on error.
+- **E43**: Links status shows per-engine link count (`· N links`) alongside the engine name.
+
 ### Key patterns discovered
 - Use aliased import (`display`, `ui`) when local `engine` variable exists
 - `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts
