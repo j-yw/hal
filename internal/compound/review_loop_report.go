@@ -151,6 +151,9 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 			sb.WriteString(fmt.Sprintf("### Iteration %d\n\n", iteration.Iteration))
 			sb.WriteString(fmt.Sprintf("- Issues Found: %d (%d valid, %d invalid)\n", iteration.IssuesFound, iteration.ValidIssues, iteration.InvalidIssues))
 			sb.WriteString(fmt.Sprintf("- Fixes Applied: %d/%d\n", iteration.FixesApplied, iteration.ValidIssues))
+			if iteration.Duration > 0 {
+				sb.WriteString(fmt.Sprintf("- Duration: %s\n", formatDuration(iteration.Duration)))
+			}
 
 			// Render per-issue details when available
 			if len(iteration.Issues) > 0 {
@@ -185,13 +188,55 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString(fmt.Sprintf("- Issues Found: %d\n", result.Totals.IssuesFound))
 	sb.WriteString(fmt.Sprintf("- Valid Issues: %d\n", result.Totals.ValidIssues))
 	sb.WriteString(fmt.Sprintf("- Invalid Issues: %d\n", result.Totals.InvalidIssues))
-	sb.WriteString(fmt.Sprintf("- Fixes Applied: %d\n\n", result.Totals.FixesApplied))
+	sb.WriteString(fmt.Sprintf("- Fixes Applied: %d\n", result.Totals.FixesApplied))
+
+	// Severity distribution across all iterations
+	severityCounts := countSeverities(result.Iterations)
+	if len(severityCounts) > 0 {
+		sb.WriteString("- Severity: ")
+		first := true
+		for _, sev := range []string{"critical", "high", "medium", "low"} {
+			if count, ok := severityCounts[sev]; ok {
+				if !first {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(fmt.Sprintf("%d %s", count, sev))
+				first = false
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(result.Totals.FilesAffected) > 0 {
+		sb.WriteString(fmt.Sprintf("- Files Affected: %d", len(result.Totals.FilesAffected)))
+		if len(result.Totals.FilesAffected) <= 10 {
+			sb.WriteString(" — ")
+			sb.WriteString(strings.Join(result.Totals.FilesAffected, ", "))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
 
 	sb.WriteString("## Stop Reason\n\n")
 	sb.WriteString(humanizeStopReason(result.StopReason, result.CompletedIterations))
 	sb.WriteString("\n")
 
 	return sb.String(), nil
+}
+
+// countSeverities tallies severity levels across all iteration issue details.
+func countSeverities(iterations []ReviewLoopIteration) map[string]int {
+	counts := make(map[string]int)
+	for _, iter := range iterations {
+		for _, issue := range iter.Issues {
+			sev := strings.ToLower(strings.TrimSpace(issue.Severity))
+			if sev != "" {
+				counts[sev]++
+			}
+		}
+	}
+	return counts
 }
 
 // humanizeStopReason converts internal stop reason codes to user-friendly text.

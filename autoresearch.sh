@@ -10,12 +10,10 @@ TEST_PASS=1
 go test ./cmd/... ./internal/compound/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=14
 
 # === E1-E4: Issue detail propagation ===
 
 # E1: ReviewLoopIteration has a field for per-issue details (a slice type, not just int counts)
-# Must be a slice field on ReviewLoopIteration, not IssuesFound/ValidIssues (those are ints)
 if sed -n '/type ReviewLoopIteration/,/^}/p' internal/compound/types.go 2>/dev/null | \
    grep -qE '\[\].*Review.*Issue'; then
     SCORE=$((SCORE + 1)); echo "E1: PASS — iteration struct has issue detail slice"
@@ -24,7 +22,6 @@ else
 fi
 
 # E2: runReviewIteration populates issue details (assigns to a slice, not just int counts)
-# Must assign a slice via append/make/literal/function call to an Issues/Details field
 if grep -qE 'iteration\.\w*(Issues|Details)\s*=\s*(append\(|make\(|\[\]|build)' internal/compound/review_loop.go 2>/dev/null || \
    grep -qE 'append\(iteration\.\w*(Issues|Details)' internal/compound/review_loop.go 2>/dev/null; then
     SCORE=$((SCORE + 1)); echo "E2: PASS — runReviewIteration populates issue detail slice"
@@ -33,7 +30,6 @@ else
 fi
 
 # E3: ReviewLoopMarkdown renders per-issue detail (title or file) inside the iteration loop
-# Must reference a field from the issue detail type, not just IssuesFound count
 ITER_BLOCK=$(sed -n '/for.*iteration/,/^[[:space:]]*}/p' internal/compound/review_loop_report.go 2>/dev/null)
 if echo "$ITER_BLOCK" | grep -qE '\.(Title|File|Severity)\b' 2>/dev/null; then
     SCORE=$((SCORE + 1)); echo "E3: PASS — markdown renders issue details per iteration"
@@ -54,7 +50,6 @@ fi
 # === E5-E7: Review output enrichment ===
 
 # E5: Markdown renders severity or file:line per issue inside iteration blocks
-# Must be inside the iteration rendering loop AND reference issue-level data
 if echo "$ITER_BLOCK" | grep -qE '(severity|Severity|file.*line|File.*Line|\.File)' 2>/dev/null && \
    echo "$ITER_BLOCK" | grep -qE 'range.*\.(Issues|Details)' 2>/dev/null; then
     SCORE=$((SCORE + 1)); echo "E5: PASS — markdown includes severity/file info per issue"
@@ -63,7 +58,6 @@ else
 fi
 
 # E6: Stop reason rendered as human-friendly text (mapped from code to sentence)
-# Must have a mapping or switch/if that converts "no_valid_issues" to descriptive text
 if grep -qE 'no.valid.issues.*:=|no_valid_issues.*"[A-Z]|stopReason.*switch|humanizeStop|formatStop|friendlyStop' internal/compound/review_loop_report.go 2>/dev/null || \
    sed -n '/Stop Reason/,/WriteString/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qE 'switch|map|case|"no'; then
     SCORE=$((SCORE + 1)); echo "E6: PASS — stop reason has human-friendly rendering"
@@ -117,7 +111,6 @@ else
 fi
 
 # E12: Run human-readable (non-JSON) output shows PRD progress or completion stats
-# Must be outside the jsonMode blocks — in the terminal output path
 RUN_HUMAN_PATH=$(sed -n '/result := runner.Run/,/return nil/p' cmd/run.go 2>/dev/null | grep -v 'jsonMode\|outputRunJSON')
 if echo "$RUN_HUMAN_PATH" | grep -qiE 'progress|stories|complete|prd|Display|Show'; then
     SCORE=$((SCORE + 1)); echo "E12: PASS — run terminal shows progress/completion info"
@@ -138,6 +131,57 @@ if [ "$TEST_PASS" -eq 1 ]; then
 else
     echo "E14: FAIL — tests failed"
 fi
+
+# === E15-E20: Wave 2 — Deeper enrichment ===
+
+# E15: Auto pipeline surfaces analysis result during execution
+if grep -qE 'PriorityItem|priorityItem|Analysis.*display|display.*Analysis|ShowInfo.*analys|ShowInfo.*priority|ShowInfo.*branch' internal/compound/pipeline.go 2>/dev/null || \
+   sed -n '/runAnalyzeStep/,/^}/p' internal/compound/pipeline.go 2>/dev/null | grep -qE 'ShowInfo|display'; then
+    SCORE=$((SCORE + 1)); echo "E15: PASS — auto pipeline shows analysis details"
+else
+    echo "E15: FAIL — auto pipeline doesn't surface analysis results"
+fi
+
+# E16: Review markdown shows files affected across all iterations
+if grep -qE 'Files\s*(Affected|Changed|Modified)|files.*changed|Affected.*Files' internal/compound/review_loop_report.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E16: PASS — review shows files affected"
+else
+    echo "E16: FAIL — review doesn't show files affected summary"
+fi
+
+# E17: ReviewLoopIteration tracks per-iteration duration
+if sed -n '/type ReviewLoopIteration/,/^}/p' internal/compound/types.go 2>/dev/null | \
+   grep -qiE 'duration|elapsed|startedAt|endedAt'; then
+    SCORE=$((SCORE + 1)); echo "E17: PASS — per-iteration timing tracked"
+else
+    echo "E17: FAIL — no per-iteration timing in ReviewLoopIteration"
+fi
+
+# E18: Report JSON includes issues and tech debt (additive to existing contract)
+if grep -qE 'Issues.*json.*issues' cmd/report.go 2>/dev/null && \
+   grep -qE 'TechDebt.*json.*techDebt' cmd/report.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E18: PASS — report JSON contract includes issues and tech debt"
+else
+    echo "E18: FAIL — report JSON lacks issues/tech debt fields"
+fi
+
+# E19: Review totals show severity distribution
+if grep -qE 'severity|Severity|High|Critical|high.*:.*[0-9]|critical.*:.*[0-9]' internal/compound/review_loop_report.go 2>/dev/null && \
+   sed -n '/Totals/,/Stop Reason/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qiE 'severity|high|critical'; then
+    SCORE=$((SCORE + 1)); echo "E19: PASS — review totals include severity distribution"
+else
+    echo "E19: FAIL — review totals lack severity distribution"
+fi
+
+# E20: ReviewLoopResult has FilesAffected or similar summary field
+if sed -n '/type ReviewLoop\(Result\|Totals\)/,/^}/p' internal/compound/types.go 2>/dev/null | \
+   grep -qiE 'files|affected|changed'; then
+    SCORE=$((SCORE + 1)); echo "E20: PASS — ReviewLoopResult tracks files affected"
+else
+    echo "E20: FAIL — ReviewLoopResult lacks files tracking"
+fi
+
+MAX_SCORE=20
 
 echo ""
 echo "=== Results ==="

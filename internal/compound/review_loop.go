@@ -213,7 +213,30 @@ func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations i
 
 	result.EndedAt = deps.now()
 	result.Duration = result.EndedAt.Sub(result.StartedAt)
+	result.Totals.FilesAffected = collectFilesAffected(result.Iterations)
 	return result, nil
+}
+
+// collectFilesAffected gathers unique file paths from all iteration issue details.
+func collectFilesAffected(iterations []ReviewLoopIteration) []string {
+	seen := make(map[string]struct{})
+	for _, iter := range iterations {
+		for _, issue := range iter.Issues {
+			f := strings.TrimSpace(issue.File)
+			if f != "" {
+				seen[f] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	files := make([]string, 0, len(seen))
+	for f := range seen {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	return files
 }
 
 func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
@@ -262,6 +285,8 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 }
 
 func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, deps reviewIterationDeps) (ReviewLoopIteration, error) {
+	iterStart := deps.now()
+
 	diff, err := deps.diffAgainstBase(baseBranch)
 	if err != nil {
 		return ReviewLoopIteration{}, fmt.Errorf("failed to diff against base branch %q: %w", baseBranch, err)
@@ -298,6 +323,7 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 	}
 
 	if issuesFound == 0 {
+		iteration.Duration = deps.now().Sub(iterStart)
 		return iteration, nil
 	}
 
@@ -327,6 +353,7 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 	// Build per-issue detail by merging review findings with fix outcomes.
 	iteration.Issues = buildIssueDetails(parsedReview.Issues, parsedFix.PerIssue)
 
+	iteration.Duration = deps.now().Sub(iterStart)
 	return iteration, nil
 }
 

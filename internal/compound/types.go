@@ -71,10 +71,11 @@ type ReviewLoopResult struct {
 
 // ReviewLoopTotals tracks aggregate counts for a review loop run.
 type ReviewLoopTotals struct {
-	IssuesFound   int `json:"issuesFound"`
-	ValidIssues   int `json:"validIssues"`
-	InvalidIssues int `json:"invalidIssues"`
-	FixesApplied  int `json:"fixesApplied"`
+	IssuesFound   int      `json:"issuesFound"`
+	ValidIssues   int      `json:"validIssues"`
+	InvalidIssues int      `json:"invalidIssues"`
+	FixesApplied  int      `json:"fixesApplied"`
+	FilesAffected []string `json:"filesAffected,omitempty"`
 }
 
 // ReviewLoopIteration contains per-iteration review/fix statistics.
@@ -86,6 +87,7 @@ type ReviewLoopIteration struct {
 	FixesApplied  int                  `json:"fixesApplied"`
 	Summary       string               `json:"summary"`
 	Status        string               `json:"status"`
+	Duration      time.Duration        `json:"duration,omitempty"`
 	Issues        []ReviewIssueDetail  `json:"issues,omitempty"`
 }
 
