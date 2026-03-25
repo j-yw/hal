@@ -102,6 +102,7 @@ func runDoctorFn(dir string, jsonMode bool, out io.Writer) error {
 	}
 
 	// Human-readable output
+	fmt.Fprintf(out, "%s\n", display.StyleTitle.Render("Doctor"))
 	fmt.Fprintf(out, "Engine:   %s\n", engine)
 	checksLabel := fmt.Sprintf("%d/%d passed", result.PassedChecks, result.TotalChecks)
 	if result.PassedChecks == result.TotalChecks {

@@ -49,6 +49,21 @@ Improve the usefulness, information density, and visual consistency of all `hal`
 - Import `engine` styles directly in cmd files (e.g., `engine.StyleSuccess.Render("✓")`)
 
 ## What's Been Tried
-(Update this section as experiments run)
 
-- Nothing yet — this is a fresh autoresearch session.
+### Wave 1: Basic lipgloss adoption (3→8/8)
+- **E1 doctor**: Aliased import as `display` to avoid shadowing local `engine` var. Colored ✓✗⚠− icons + styled summary.
+- **E4 analyze**: Replaced `═══` ASCII art with `StyleTitle`/`StyleBold`/`StyleInfo`. No test changes needed.
+- **E6 cleanup**: Styled icons per item (✓/○), [OK]/[!] summary badges.
+- **E2 status**: Bold labels, colored branch/story/artifact indicators.
+- **E3 continue**: 6 distinct styles — visual separation of doctor issues from workflow.
+
+### Wave 2: Extended coverage (8→11/11)
+- **E9 repair**: Colored ✓/✗/○ per step, [OK]/[!] summaries.
+- **E10 init**: [OK] badge, bold headers, colored file indicators, info-styled commands.
+- **E11 archive**: Styled prompt name with bold/muted.
+
+### Key patterns discovered
+- Use aliased import (`display`, `ui`) when local `engine` variable exists
+- `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts
+- `strings.Contains` tests survive lipgloss wrapping — ANSI escapes don't break substring matching
+- `autoresearch.sh` gets overwritten by revert cycles from prior sessions — must rewrite after each keep
