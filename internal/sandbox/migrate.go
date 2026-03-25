@@ -121,6 +121,12 @@ func migrateState(projectDir string, out io.Writer) error {
 		return fmt.Errorf("ensure global dir for state migration: %w", err)
 	}
 
+	// Legacy state used "id" for provider lifecycle target. Backfill workspaceId
+	// so ConnectInfoFromState remains valid after migration.
+	if strings.TrimSpace(state.WorkspaceID) == "" && strings.TrimSpace(state.ID) != "" {
+		state.WorkspaceID = strings.TrimSpace(state.ID)
+	}
+
 	// Save to global registry (uses atomic temp-file + rename internally).
 	if err := ForceWriteInstance(&state); err != nil {
 		return fmt.Errorf("save migrated sandbox state: %w", err)

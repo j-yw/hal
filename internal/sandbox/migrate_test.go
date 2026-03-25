@@ -298,6 +298,37 @@ func TestMigrate_StateFile(t *testing.T) {
 			},
 		},
 		{
+			name: "backfills workspace ID from legacy ID when missing",
+			setupLocal: func(t *testing.T, projectDir string) {
+				t.Helper()
+				writeSandboxJSON(t, projectDir, &SandboxState{
+					ID:       "do-legacy-id",
+					Name:     "do-legacy-box",
+					Provider: "digitalocean",
+					Status:   StatusRunning,
+				})
+			},
+			wantLocalDeleted: true,
+			wantRegistered:   true,
+			checkRegistry: func(t *testing.T) {
+				t.Helper()
+				inst, err := LoadInstance("do-legacy-box")
+				if err != nil {
+					t.Fatalf("LoadInstance: %v", err)
+				}
+				if inst.WorkspaceID != "do-legacy-id" {
+					t.Errorf("WorkspaceID = %q, want %q", inst.WorkspaceID, "do-legacy-id")
+				}
+				info := ConnectInfoFromState(inst)
+				if info == nil {
+					t.Fatal("ConnectInfoFromState = nil, want non-nil")
+				}
+				if info.WorkspaceID != "do-legacy-id" {
+					t.Errorf("ConnectInfo.WorkspaceID = %q, want %q", info.WorkspaceID, "do-legacy-id")
+				}
+			},
+		},
+		{
 			name: "returns error for empty name in sandbox.json",
 			setupLocal: func(t *testing.T, projectDir string) {
 				t.Helper()
