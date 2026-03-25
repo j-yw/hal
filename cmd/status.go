@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/jywlabs/hal/internal/compound"
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/spf13/cobra"
 )
@@ -93,10 +94,12 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 
 	// Human-readable output
 	engine, _ := compound.LoadDefaultEngine(dir)
-	fmt.Fprintf(out, "Workflow:  %s\n", result.WorkflowTrack)
-	fmt.Fprintf(out, "State:    %s\n", result.State)
+
+	// Header section
+	fmt.Fprintf(out, "%s  %s\n", display.StyleBold.Render("Workflow:"), result.WorkflowTrack)
+	fmt.Fprintf(out, "%s     %s\n", display.StyleBold.Render("State:"), result.State)
 	if engine != "" {
-		fmt.Fprintf(out, "Engine:   %s\n", engine)
+		fmt.Fprintf(out, "%s    %s\n", display.StyleBold.Render("Engine:"), engine)
 	}
 	fmt.Fprintln(out)
 
@@ -104,11 +107,17 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	if result.Manual != nil {
 		m := result.Manual
 		if m.BranchName != "" {
-			fmt.Fprintf(out, "Branch:   %s\n", m.BranchName)
+			fmt.Fprintf(out, "%s    %s\n", display.StyleBold.Render("Branch:"), display.StyleInfo.Render(m.BranchName))
 		}
-		fmt.Fprintf(out, "Stories:  %d/%d complete\n", m.CompletedStories, m.TotalStories)
+		storyLabel := fmt.Sprintf("%d/%d complete", m.CompletedStories, m.TotalStories)
+		if m.CompletedStories == m.TotalStories && m.TotalStories > 0 {
+			storyLabel = display.StyleSuccess.Render(storyLabel)
+		} else if m.CompletedStories > 0 {
+			storyLabel = display.StyleWarning.Render(storyLabel)
+		}
+		fmt.Fprintf(out, "Stories:  %s\n", storyLabel)
 		if m.NextStory != nil {
-			label := m.NextStory.ID
+			label := display.StyleInfo.Render(m.NextStory.ID)
 			if m.NextStory.Title != "" {
 				label += " — " + m.NextStory.Title
 			}
@@ -121,7 +130,7 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	if result.Compound != nil {
 		c := result.Compound
 		if c.BranchName != "" {
-			fmt.Fprintf(out, "Branch:   %s\n", c.BranchName)
+			fmt.Fprintf(out, "%s    %s\n", display.StyleBold.Render("Branch:"), display.StyleInfo.Render(c.BranchName))
 		}
 		if c.Step != "" {
 			fmt.Fprintf(out, "Step:     %s\n", c.Step)
@@ -132,12 +141,12 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	// Show review-loop detail
 	if result.ReviewLoop != nil {
 		if result.ReviewLoop.LatestReport != "" {
-			fmt.Fprintf(out, "Review:   %s\n", result.ReviewLoop.LatestReport)
+			fmt.Fprintf(out, "Review:   %s\n", display.StyleMuted.Render(result.ReviewLoop.LatestReport))
 		}
 		fmt.Fprintln(out)
 	}
 
-	fmt.Fprintln(out, "Artifacts:")
+	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Artifacts:"))
 	printArtifact(out, "  .hal/ directory", result.Artifacts.HalDir)
 	printArtifact(out, "  Markdown PRD", result.Artifacts.MarkdownPRD)
 	printArtifact(out, "  JSON PRD", result.Artifacts.JSONPRD)
@@ -147,17 +156,17 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	fmt.Fprintln(out)
 
 	if result.NextAction.ID != "" {
-		fmt.Fprintf(out, "Action:   %s\n", result.NextAction.Command)
-		fmt.Fprintf(out, "          %s\n", result.NextAction.Description)
+		fmt.Fprintf(out, "%s    %s\n", display.StyleBold.Render("Action:"), display.StyleInfo.Render(result.NextAction.Command))
+		fmt.Fprintf(out, "          %s\n", display.StyleMuted.Render(result.NextAction.Description))
 	}
 
 	return nil
 }
 
 func printArtifact(out io.Writer, label string, present bool) {
-	mark := "✗"
 	if present {
-		mark = "✓"
+		fmt.Fprintf(out, "  %s %s\n", display.StyleSuccess.Render("✓"), label)
+	} else {
+		fmt.Fprintf(out, "  %s %s\n", display.StyleMuted.Render("✗"), label)
 	}
-	fmt.Fprintf(out, "  %s %s\n", mark, label)
 }

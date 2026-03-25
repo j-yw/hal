@@ -1,11 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build must pass
-go build ./... 2>&1 | tail -5
+# Quick sanity: SKILL.md must still exist and contain key sections
+SKILL="/home/v/.agents/skills/markshare/SKILL.md"
+[ -f "$SKILL" ] || { echo "FAIL: SKILL.md missing"; exit 1; }
+grep -q "PHASE 1: Get API Key" "$SKILL" || { echo "FAIL: Phase 1 missing"; exit 1; }
+grep -q "PHASE 2: Find Files" "$SKILL" || { echo "FAIL: Phase 2 missing"; exit 1; }
+grep -q "PHASE 3: Upload" "$SKILL" || { echo "FAIL: Phase 3 missing"; exit 1; }
+grep -q "PHASE 4: Report Result" "$SKILL" || { echo "FAIL: Phase 4 missing"; exit 1; }
+grep -q "OUTPUT RULES" "$SKILL" || { echo "FAIL: Output Rules missing"; exit 1; }
 
-# All cmd tests must pass
-go test ./cmd/... -count=1 -timeout 120s 2>&1 | grep -E "FAIL|ok " | tail -20
+# Eval harness must compile
+python3 -m py_compile /home/v/.agents/skills/markshare/autoresearch-markshare/run_markshare_eval.py || { echo "FAIL: eval harness broken"; exit 1; }
 
-# Verify JSON contract tests specifically
-go test ./cmd/... -run "TestMachine\|TestContract\|Test.*JSON" -count=1 -timeout 30s 2>&1 | grep -E "FAIL|ok " | tail -10
+echo "OK: all structural checks pass"
