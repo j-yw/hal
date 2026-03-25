@@ -76,11 +76,24 @@ type ReviewLoopTotals struct {
 
 // ReviewLoopIteration contains per-iteration review/fix statistics.
 type ReviewLoopIteration struct {
-	Iteration     int    `json:"iteration"`
-	IssuesFound   int    `json:"issuesFound"`
-	ValidIssues   int    `json:"validIssues"`
-	InvalidIssues int    `json:"invalidIssues"`
-	FixesApplied  int    `json:"fixesApplied"`
-	Summary       string `json:"summary"`
-	Status        string `json:"status"`
+	Iteration     int                  `json:"iteration"`
+	IssuesFound   int                  `json:"issuesFound"`
+	ValidIssues   int                  `json:"validIssues"`
+	InvalidIssues int                  `json:"invalidIssues"`
+	FixesApplied  int                  `json:"fixesApplied"`
+	Summary       string               `json:"summary"`
+	Status        string               `json:"status"`
+	Issues        []ReviewIssueDetail  `json:"issues,omitempty"`
+}
+
+// ReviewIssueDetail captures per-issue context from a review iteration,
+// combining the review-phase finding with the fix-phase outcome.
+type ReviewIssueDetail struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Severity string `json:"severity"`
+	File     string `json:"file"`
+	Line     int    `json:"line,omitempty"`
+	Valid    bool   `json:"valid"`
+	Fixed    bool   `json:"fixed"`
 }

@@ -150,6 +150,14 @@ type reviewLoopFixOutcome struct {
 	ValidIssues   int
 	InvalidIssues int
 	FixesApplied  int
+	PerIssue      []reviewLoopFixResult // per-issue valid/fixed keyed by ID
+}
+
+// reviewLoopFixResult holds the fix-phase outcome for a single issue.
+type reviewLoopFixResult struct {
+	ID    string
+	Valid bool
+	Fixed bool
 }
 
 func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
@@ -314,7 +322,39 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 		iteration.Summary = strings.TrimSpace(parsedFix.Summary)
 	}
 
+	// Build per-issue detail by merging review findings with fix outcomes.
+	iteration.Issues = buildIssueDetails(parsedReview.Issues, parsedFix.PerIssue)
+
 	return iteration, nil
+}
+
+// buildIssueDetails merges review-phase issue data with fix-phase outcomes
+// into a single per-issue detail list suitable for reporting.
+func buildIssueDetails(reviewIssues []reviewLoopIssue, fixResults []reviewLoopFixResult) []ReviewIssueDetail {
+	fixByID := make(map[string]reviewLoopFixResult, len(fixResults))
+	for _, fr := range fixResults {
+		fixByID[fr.ID] = fr
+	}
+
+	details := make([]ReviewIssueDetail, 0, len(reviewIssues))
+	for _, ri := range reviewIssues {
+		id := strings.TrimSpace(ri.ID)
+		detail := ReviewIssueDetail{
+			ID:       id,
+			Title:    strings.TrimSpace(ri.Title),
+			Severity: strings.TrimSpace(ri.Severity),
+			File:     strings.TrimSpace(ri.File),
+			Line:     ri.Line,
+			Valid:    true, // default: valid unless fix phase says otherwise
+			Fixed:    false,
+		}
+		if fr, ok := fixByID[id]; ok {
+			detail.Valid = fr.Valid
+			detail.Fixed = fr.Fixed
+		}
+		details = append(details, detail)
+	}
+	return details
 }
 
 func normalizeReviewLoopDeps(baseBranch string, requestedIterations int, deps reviewIterationDeps) (string, reviewIterationDeps, error) {
@@ -785,18 +825,29 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 		return nil, fmt.Errorf("missing fix result for review issue ids: %s", strings.Join(missingIDs, ", "))
 	}
 
-	outcome := &reviewLoopFixOutcome{Summary: strings.TrimSpace(parsed.Summary)}
+	outcome := &reviewLoopFixOutcome{
+		Summary:  strings.TrimSpace(parsed.Summary),
+		PerIssue: make([]reviewLoopFixResult, 0, len(reviewedIssues)),
+	}
 	for _, reviewed := range reviewedIssues {
 		fixIssue := fixByID[strings.TrimSpace(reviewed.ID)]
-		if fixIssue.Valid != nil && *fixIssue.Valid {
+		valid := fixIssue.Valid != nil && *fixIssue.Valid
+		fixed := valid && fixIssue.Fixed != nil && *fixIssue.Fixed
+
+		if valid {
 			outcome.ValidIssues++
-			if fixIssue.Fixed != nil && *fixIssue.Fixed {
+			if fixed {
 				outcome.FixesApplied++
 			}
-			continue
+		} else {
+			outcome.InvalidIssues++
 		}
 
-		outcome.InvalidIssues++
+		outcome.PerIssue = append(outcome.PerIssue, reviewLoopFixResult{
+			ID:    strings.TrimSpace(reviewed.ID),
+			Valid: valid,
+			Fixed: fixed,
+		})
 	}
 
 	return outcome, nil

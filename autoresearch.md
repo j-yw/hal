@@ -1,114 +1,108 @@
-# Autoresearch: Hal CLI Output Quality
+# Autoresearch: Hal CLI Content Quality
 
 ## Objective
 
-Improve the usefulness, information density, and visual consistency of all `hal` CLI command output. Currently, 7 commands use the lipgloss-based `Display` system with styled boxes and colors, while 6+ commands use raw `fmt.Fprintf` with no styling. Only `review` renders rich markdown via glamour. The goal is to bring ALL commands up to the same quality bar while increasing the actionable information each command provides.
+Improve the **content richness** of `hal review`, `hal report`, `hal run`, and `hal auto` command output. Currently these commands output structural metadata (counts, timestamps, branch names) but omit the substance — what issues were found, what files were affected, what the reviewer's approach was, what stories completed. The goal is to surface actionable detail so a human or machine reading the output can understand **what happened** without opening report files.
+
+## Primary focus: `hal review` output enrichment
+
+The review loop is the highest-value target because it has rich internal data (`reviewLoopIssue` with id/title/severity/file/line/rationale/suggestedFix, `reviewLoopFixIssue` with valid/reason/fixed) that is parsed and counted but **discarded** before reaching `ReviewLoopIteration`. The markdown output only shows bare numbers.
+
+### Current output (poor):
+```
+### Iteration 1
+- Issues Found: 3
+- Valid Issues: 3  
+- Fixes Applied: 3
+- Summary: Validated all three reported issues...
+- Status: fixed
+```
+
+### Target output (rich):
+```
+### Iteration 1
+- Issues Found: 3 (3 valid, 0 invalid)
+- Fixes Applied: 3/3
+
+| # | Severity | File | Issue | Fixed |
+|---|----------|------|-------|-------|
+| 1 | high | cmd/review.go:42 | Missing nil check on engine result | ✓ |
+| 2 | medium | internal/compound/pipeline.go:88 | Unchecked error from saveState | ✓ |
+| 3 | low | cmd/auto.go:15 | Unused import after refactor | ✓ |
+
+Summary: Validated all three reported issues...
+```
 
 ## Metrics
-- **Primary**: `output_quality_score` (unitless, higher is better) — sum of binary eval passes across all target commands (max 8)
-- **Secondary**: `styled_command_coverage` — % of commands using the Display system, `test_pass` — go test exit code (1=pass, 0=fail)
+- **Primary**: `content_quality_score` (unitless, higher is better) — sum of binary eval passes across content richness criteria
+- **Secondary**: `test_pass` — `go test ./cmd/... ./internal/compound/...` exit code (1=pass, 0=fail)
 
 ## How to Run
-`./autoresearch.sh` — builds hal, runs tests, scores source for rendering quality, outputs `METRIC` lines.
+`./autoresearch.sh` — builds hal, runs tests, scores source for content quality, outputs `METRIC` lines.
 
 ## Files in Scope
 
-### Rendering infrastructure
-- `internal/engine/display.go` — Display struct with ShowCommandHeader, ShowSuccess, ShowError, ShowInfo, etc. Add new helpers here.
-- `internal/engine/styles.go` — Color palette, box styles, text styles. Extend for new patterns (e.g. InfoBox, StatusBox).
+### Data structures (enrich these first)
+- `internal/compound/types.go` — `ReviewLoopIteration` needs issue detail fields. Add `Issues []ReviewIssueDetail` or similar.
+- `internal/compound/review_loop.go` — `runReviewIteration()` parses issues but only stores counts. Preserve issue details in the returned iteration.
 
-### Commands to improve (PRIORITY — these use raw fmt.Fprintf today)
-- `cmd/doctor.go` — `runDoctorFn()` human-readable branch: unicode icons (✓✗⚠−) but NO color, no box. Needs lipgloss-colored icons.
-- `cmd/status.go` — `runStatusFn()` human-readable branch: plain "Workflow:", "Branch:", "Stories:", artifact ✓/✗ list. Needs styled header/sections.
-- `cmd/continue.go` — `runContinueFn()` human-readable branch: plain "Workflow:", "Health:", "Next:" labels. Needs visual separation of doctor vs workflow.
-- `cmd/analyze.go` — `outputAnalysisText()` uses manual `═══` ASCII art borders. Replace with lipgloss boxes.
-- `cmd/cleanup.go` — `runCleanupFn()` plain "Would remove:" / "Removed:" lines. Needs styled summary.
+### Report generation (render the enriched data)
+- `internal/compound/review_loop_report.go` — `ReviewLoopMarkdown()` renders the markdown summary. Add issue tables, file lists, severity breakdown.
 
-### Commands already styled (REFERENCE — match these patterns)
-- `cmd/plan.go` — Uses ShowCommandHeader, ShowCommandSuccess, ShowNextSteps
-- `cmd/convert.go` — Uses ShowCommandHeader, ShowCommandSuccess, ShowPhase, ShowCommandError
-- `cmd/review.go` — Uses ShowCommandHeader + glamour for markdown result rendering
+### Command output (surface enriched data in terminal)
+- `cmd/review.go` — Human-readable terminal output via glamour-rendered markdown.
+- `cmd/report.go` — `showReviewResult()` shows summary + recommendations. Surface patterns and tech debt.
+- `cmd/run.go` — `outputRunJSON()` + terminal output. Surface story completion details.
+- `cmd/auto.go` — Surface pipeline step details (analysis result, branch name, task count).
 
-### Test files (MUST update alongside command changes)
-- `cmd/status_test.go` (5 tests), `cmd/continue_test.go` (8 tests), `cmd/doctor_test.go` (7 tests)
-- `cmd/analyze_test.go` (6 tests), `cmd/cleanup_test.go` (6 tests)
+### Test files (MUST update alongside changes)
+- `internal/compound/review_loop_test.go` — Review loop tests
+- `internal/compound/review_loop_report_test.go` — Report generation tests  
+- `internal/compound/review_loop_result_test.go` — Result struct contract tests
+- `cmd/review_test.go`, `cmd/report_test.go`, `cmd/run_test.go`, `cmd/auto_test.go`
 
 ## Off Limits
-- `--json` output paths — machine-readable contracts must NOT change
-- `internal/status/`, `internal/doctor/` — pure data packages, no rendering
+- `--json` output contracts — existing JSON field names/types must NOT change (can ADD new fields)
+- `internal/status/`, `internal/doctor/` — pure data packages
 - `docs/contracts/` — contract documentation
 - Cobra command metadata (Use, Short, Long, Example)
-- JSON contract test assertions
+- Engine internals (`internal/engine/*.go` except display.go for new helpers)
+- Review loop prompts — do NOT change what the AI model is asked to produce
 
 ## Constraints
 - `go build ./...` must pass
-- `go test ./cmd/...` must pass (update test assertions for new styled output)
-- All existing `--json` contracts must remain byte-identical
-- Use the existing Display system and lipgloss styles from `internal/engine/` — do NOT add new rendering dependencies
-- Keep non-TTY output clean — styled output should degrade gracefully when piped
-- Import `engine` styles directly in cmd files (e.g., `engine.StyleSuccess.Render("✓")`)
+- `go test ./cmd/... ./internal/compound/...` must pass
+- All existing `--json` contracts must remain backward compatible (additive only)
+- New fields on `ReviewLoopIteration` must have `json:"..."` tags with `omitempty` to preserve backward compat
+- Keep non-TTY output clean — tables should degrade gracefully when piped
+- Do NOT change the review loop prompts or AI interaction logic
+- Do NOT change how `parseReviewLoopResponse` / `parseReviewLoopFixResponse` work internally
+
+## Eval Criteria (what the benchmark scores)
+
+### E1-E4: Issue detail propagation (review loop)
+- E1: `ReviewLoopIteration` has a field that can hold per-issue details (title, file, severity)
+- E2: `runReviewIteration` populates issue details in the returned iteration (not just counts)
+- E3: `ReviewLoopMarkdown` renders issue details (title+file or table) per iteration
+- E4: Issue details include fix outcome (valid/fixed status per issue)
+
+### E5-E7: Review output enrichment
+- E5: Markdown output includes a per-iteration file list or severity breakdown
+- E6: Stop reason rendered as human-friendly sentence (not raw code like "no_valid_issues")
+- E7: Review duration shown (total elapsed, or per-iteration timing)
+
+### E8-E10: Report command enrichment
+- E8: `showReviewResult` renders patterns discovered (not just recommendations)  
+- E9: Report markdown includes tech debt section when present
+- E10: Report terminal output shows count of issues found
+
+### E11-E13: Run command enrichment
+- E11: Run terminal output shows story ID being worked on (per-iteration)
+- E12: Run terminal output shows PRD progress (N/M stories) at end
+- E13: Run JSON output includes per-iteration story info
+
+### E14: Tests pass
+- E14: `go test ./cmd/... ./internal/compound/...` passes
 
 ## What's Been Tried
-
-### Wave 1: Basic lipgloss adoption (3→8/8)
-- **E1 doctor**: Aliased import as `display` to avoid shadowing local `engine` var. Colored ✓✗⚠− icons + styled summary.
-- **E4 analyze**: Replaced `═══` ASCII art with `StyleTitle`/`StyleBold`/`StyleInfo`. No test changes needed.
-- **E6 cleanup**: Styled icons per item (✓/○), [OK]/[!] summary badges.
-- **E2 status**: Bold labels, colored branch/story/artifact indicators.
-- **E3 continue**: 6 distinct styles — visual separation of doctor issues from workflow.
-
-### Wave 2: Extended coverage (8→11/11)
-- **E9 repair**: Colored ✓/✗/○ per step, [OK]/[!] summaries.
-- **E10 init**: [OK] badge, bold headers, colored file indicators, info-styled commands.
-- **E11 archive**: Styled prompt name with bold/muted.
-
-### Wave 3: Extended coverage + deeper integration (11→18/18)
-- **E9 repair**: Colored ✓/✗/○ per step, [OK]/[!] summaries.
-- **E10 init**: [OK] badge, bold headers, colored file indicators, info-styled commands, styled gitignore messages.
-- **E11 archive**: Styled prompt name with bold/muted.
-- **E12-E14**: Added styled titles (StyleTitle) to doctor, status, continue for visual consistency.
-- **E15**: Init gitignore messages styled with ✓ icons + muted parenthetical (13 total style usages).
-- **E16**: Doctor has title + check count integration.
-- **E17**: Sandbox status fully styled — colored status/IPs/cost/lifecycle, bold section headers.
-- **E18**: Sandbox list table headers bold, status column color-coded.
-
-### Wave 4: Sandbox commands (18→20/20)
-- **E19**: Sandbox start/stop/delete styled with [OK] success badges.
-- **E20**: Sandbox list summary with colored running/stopped counts, bold total, muted cost.
-
-### Wave 5: Full coverage (22→29/29)
-- **E23 version**: StyleTitle for "hal", StyleAccent for HAL quote, muted build info.
-- **E24 links**: Colored ✓✗⚠ icons, bold engine names, [OK] refresh/clean badges.
-- **E25 standards**: Styled titles, warnings, info-styled commands, muted hints.
-- **E26 report**: Bold summary label, info-styled numbered recommendations.
-- **E27 sandbox setup**: 8 section headers replaced from `── X ──` ASCII to lipgloss Bold/Title.
-- **E28 auto**: Styled no-reports warning with [!] badge and info-styled path.
-- **E29 prd**: Colored ✓/✗ for file presence, info-styled branch, success-styled counts, [OK] badge.
-
-### Wave 6: Information density (29→38)
-- **E30**: Status now displays the `Summary` field from StatusResult.
-- **E31**: Continue already showed engine (passed at baseline).
-- **E32**: Doctor shows `[scope]` suffix (repo/engine_local/etc.) on failed/warned checks.
-- **E33**: Status shows current git branch via `compound.CurrentBranchOptional()`.
-- **E34**: Continue shows engine name in the healthy workflow path.
-- **E35**: Doctor shows per-check remediation hints (`fix: hal init`) under failed checks.
-- **E36**: Continue shows summary text at the bottom.
-- **E37**: Continue shows next story ID + title in manual workflow path.
-- **E38**: Continue shows branch name in manual workflow, colored story completion.
-
-### Wave 7: Structural improvements (38→41)
-- **E39**: Archive list moved from `internal/archive.FormatList` to cmd-layer `formatArchiveListStyled` with bold headers, info-styled names, muted dates/paths, and archive count footer.
-- **E40**: Sandbox `promptField` function styled with bold labels and muted default hints.
-- **E41**: Sandbox setup saved confirmation uses `[OK]` badge with muted config path.
-
-### Wave 8: Richer content rendering (41→43)
-- **E42**: Analyze renders `Description` and `Rationale` through glamour markdown renderer (same as review uses). Falls back to plain text on error.
-- **E43**: Links status shows per-engine link count (`· N links`) alongside the engine name.
-
-### Key patterns discovered
-- Use aliased import (`display`, `ui`) when local `engine` variable exists
-- `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts
-- `strings.Contains` tests survive lipgloss wrapping — ANSI escapes don't break substring matching
-- Always check test assertions before changing field label text — tests check exact substrings like "Name:       my-sandbox"
-- Keep field labels intact, only style the values
-- `autoresearch.sh` gets overwritten by revert cycles from prior sessions — must rewrite after each keep
+(New session — nothing tried yet)
