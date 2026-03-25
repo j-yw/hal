@@ -72,6 +72,10 @@ Improve the usefulness, information density, and visual consistency of all `hal`
 - **E17**: Sandbox status fully styled — colored status/IPs/cost/lifecycle, bold section headers.
 - **E18**: Sandbox list table headers bold, status column color-coded.
 
+### Wave 4: Sandbox commands (18→20/20)
+- **E19**: Sandbox start/stop/delete styled with [OK] success badges.
+- **E20**: Sandbox list summary with colored running/stopped counts, bold total, muted cost.
+
 ### Key patterns discovered
 - Use aliased import (`display`, `ui`) when local `engine` variable exists
 - `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts

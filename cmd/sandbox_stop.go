@@ -292,7 +292,7 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 				p, err = resolveProviderFromGlobalConfig(target.Provider)
 				if err != nil {
 					mu.Lock()
-					fmt.Fprintf(out, "Failed %s: %v\n", target.Name, err)
+					fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
 					results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
 					mu.Unlock()
 					return nil
@@ -305,7 +305,7 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 
 			mu.Lock()
 			if err != nil {
-				fmt.Fprintf(out, "Failed %s: %v\n", target.Name, err)
+				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
 				results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
 			} else {
 				// Update registry: status → stopped, stoppedAt → now

@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=20
+MAX_SCORE=22
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -199,6 +199,25 @@ if [ "$LIST_STYLES" -ge 4 ]; then
     SCORE=$((SCORE + 1)); echo "E20: PASS — sandbox list has ${LIST_STYLES} style usages (deep integration)"
 else
     echo "E20: FAIL — sandbox list has only ${LIST_STYLES} style usages (need ≥4)"
+fi
+
+# E21: Sandbox start has styled progress (style usage on lines with Starting/Creating)
+START_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/sandbox_start.go 2>/dev/null || echo 0)
+if [ "$START_STYLES" -ge 4 ]; then
+    SCORE=$((SCORE + 1)); echo "E21: PASS — sandbox start has ${START_STYLES} style usages"
+else
+    echo "E21: FAIL — sandbox start has only ${START_STYLES} style usages (need ≥4)"
+fi
+
+# E22: Sandbox batch operations show styled failure messages
+SBX_FAIL_STYLED=0
+for f in sandbox_start sandbox_stop sandbox_delete; do
+    grep -qE '(engine|display|ui)\.Style.*(Failed|failed|error|Error)' "cmd/${f}.go" 2>/dev/null && SBX_FAIL_STYLED=$((SBX_FAIL_STYLED + 1))
+done
+if [ "$SBX_FAIL_STYLED" -ge 2 ]; then
+    SCORE=$((SCORE + 1)); echo "E22: PASS — ${SBX_FAIL_STYLED}/3 sandbox commands have styled failure messages"
+else
+    echo "E22: FAIL — only ${SBX_FAIL_STYLED}/3 sandbox commands have styled failures"
 fi
 
 # Coverage

@@ -367,7 +367,7 @@ func runBatchCreate(
 	halDir string,
 	out io.Writer,
 ) error {
-	fmt.Fprintf(out, "Creating %d sandboxes (%s)...\n", len(targets), sandboxCfg.Provider)
+	fmt.Fprintf(out, "%s Creating %d sandboxes (%s)...\n", display.StyleInfo.Render("○"), len(targets), sandboxCfg.Provider)
 
 	var (
 		mu      sync.Mutex
@@ -383,7 +383,7 @@ func runBatchCreate(
 
 			mu.Lock()
 			if err != nil {
-				fmt.Fprintf(out, "Failed %s: %v\n", name, err)
+				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), name, err)
 				results = append(results, batchResult{Name: name, Success: false, Err: err})
 			} else {
 				fmt.Fprintf(out, "Created %s\n", name)
@@ -508,9 +508,9 @@ func runSingleCreate(
 
 	envCount := len(mergedEnv)
 	if envCount > 0 {
-		fmt.Fprintf(out, "Starting sandbox %q (%s) with %d env vars...\n", name, sandboxCfg.Provider, envCount)
+		fmt.Fprintf(out, "%s Starting sandbox %q (%s) with %d env vars...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider, envCount)
 	} else {
-		fmt.Fprintf(out, "Starting sandbox %q (%s)...\n", name, sandboxCfg.Provider)
+		fmt.Fprintf(out, "%s Starting sandbox %q (%s)...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider)
 	}
 
 	// Always set a per-sandbox hostname so legacy static values are replaced.
