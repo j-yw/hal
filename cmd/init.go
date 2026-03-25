@@ -138,7 +138,7 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 		if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
 			return fmt.Errorf("failed to update .gitignore: %w", err)
 		}
-		fmt.Fprintf(w, "  Updated .gitignore: added committable exceptions\n")
+		fmt.Fprintf(w, "  %s Updated .gitignore: added committable exceptions\n", ui.StyleSuccess.Render("✓"))
 		return nil
 	}
 
@@ -149,7 +149,7 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 		if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
 			return fmt.Errorf("failed to update .gitignore: %w", err)
 		}
-		fmt.Fprintf(w, "  Updated .gitignore: .hal/* (standards and commands are committed)\n")
+		fmt.Fprintf(w, "  %s Updated .gitignore: .hal/* (standards and commands are committed)\n", ui.StyleSuccess.Render("✓"))
 		return nil
 	}
 
@@ -170,7 +170,7 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 		return fmt.Errorf("failed to update .gitignore: %w", err)
 	}
 
-	fmt.Fprintf(w, "  Added .hal/* to .gitignore (standards and commands are committed)\n")
+	fmt.Fprintf(w, "  %s Added .hal/* to .gitignore %s\n", ui.StyleSuccess.Render("✓"), ui.StyleMuted.Render("(standards and commands are committed)"))
 	return nil
 }
 

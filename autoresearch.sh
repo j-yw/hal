@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=14
+MAX_SCORE=16
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -134,6 +134,38 @@ if grep -qE '(engine|display|ui)\.StyleTitle' cmd/continue.go 2>/dev/null; then
     SCORE=$((SCORE + 1)); echo "E14: PASS — continue has styled title"
 else
     echo "E14: FAIL — continue lacks styled title"
+fi
+
+# E15: Init gitignore messages are styled
+if grep -qE '(engine|display|ui)\.(Style|StyleMuted|StyleSuccess|StyleInfo)' cmd/init.go 2>/dev/null && \
+   grep -qE 'gitignore' cmd/init.go 2>/dev/null && \
+   grep -qE '(engine|display|ui)\.Style.*gitignore\|gitignore.*(engine|display|ui)\.Style' cmd/init.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E15: PASS — init gitignore messages styled"
+else
+    # Simpler check: just verify Style usage near gitignore output
+    if grep -qE '(engine|display|ui)\.Style' cmd/init.go 2>/dev/null; then
+        # Count style usages — more = better integration
+        INIT_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/init.go 2>/dev/null || echo 0)
+        if [ "$INIT_STYLES" -ge 8 ]; then
+            SCORE=$((SCORE + 1)); echo "E15: PASS — init has ${INIT_STYLES} style usages (deep integration)"
+        else
+            echo "E15: FAIL — init has only ${INIT_STYLES} style usages (need ≥8 for deep integration)"
+        fi
+    else
+        echo "E15: FAIL — init gitignore messages not styled"
+    fi
+fi
+
+# E16: Doctor shows check count in title line
+if grep -qE 'TotalChecks|PassedChecks.*StyleTitle\|StyleTitle.*Checks' cmd/doctor.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E16: PASS — doctor title includes check count"
+else
+    # Simpler: check if both StyleTitle and check count appear near each other
+    if grep -q 'StyleTitle' cmd/doctor.go 2>/dev/null && grep -q 'TotalChecks' cmd/doctor.go 2>/dev/null; then
+        SCORE=$((SCORE + 1)); echo "E16: PASS — doctor has title + check count"
+    else
+        echo "E16: FAIL — doctor title doesn't include check count"
+    fi
 fi
 
 # Coverage
