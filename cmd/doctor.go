@@ -126,6 +126,9 @@ func runDoctorFn(dir string, jsonMode bool, out io.Writer) error {
 		// Show scope for failed/warned checks to help diagnose
 		if c.Scope != "" && (c.Status == doctor.StatusFail || c.Status == doctor.StatusWarn) {
 			fmt.Fprintf(out, "  %s  %s %s\n", icon, c.Message, display.StyleMuted.Render("["+c.Scope+"]"))
+			if c.Remediation != nil && c.Remediation.Command != "" {
+				fmt.Fprintf(out, "     %s %s\n", display.StyleMuted.Render("fix:"), display.StyleInfo.Render(c.Remediation.Command))
+			}
 		} else {
 			fmt.Fprintf(out, "  %s  %s\n", icon, c.Message)
 		}

@@ -10,7 +10,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=33
+MAX_SCORE=36
 
 has_engine_import() { grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null; }
 has_style_usage() { grep -qE '(engine|display|ui|styles)\.(Style[A-Za-z]+|BoxStyle|HeaderBox|SuccessBox|ErrorBox|WarningBox)' "$1" 2>/dev/null; }
@@ -104,6 +104,28 @@ if grep -qE 'CurrentBranch|gitBranch' cmd/status.go 2>/dev/null; then
     SCORE=$((SCORE+1)); echo "E33: PASS — status shows git branch"
 else
     echo "E33: FAIL — status doesn't show current git branch"
+fi
+
+# E34: Continue shows engine name in healthy path
+if sed -n '/} else {/,/return nil/p' cmd/continue.go 2>/dev/null | grep -qE 'engine|Engine:'; then
+    SCORE=$((SCORE+1)); echo "E34: PASS — continue shows engine in healthy output"
+else
+    echo "E34: FAIL — continue healthy path missing engine"
+fi
+
+# E35: Doctor shows per-check remediation hint (not just primary)
+if sed -n '/Human-readable/,/return nil/p' cmd/doctor.go 2>/dev/null | grep -qE 'c\.Remediation|Remediation\.Command'; then
+    SCORE=$((SCORE+1)); echo "E35: PASS — doctor shows per-check remediation"
+else
+    echo "E35: FAIL — doctor only shows primary remediation"
+fi
+
+# E36: Continue shows summary text
+if grep -qE 'summary|Summary' cmd/continue.go 2>/dev/null && \
+   sed -n '/Human-readable/,/return nil/p' cmd/continue.go 2>/dev/null | grep -qE 'summary|Summary'; then
+    SCORE=$((SCORE+1)); echo "E36: PASS — continue shows summary"
+else
+    echo "E36: FAIL — continue doesn't show summary text"
 fi
 
 echo ""

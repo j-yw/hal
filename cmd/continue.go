@@ -135,6 +135,9 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 	} else {
 		healthLabel := fmt.Sprintf("%d/%d checks passed", doctorResult.PassedChecks, doctorResult.TotalChecks)
 		fmt.Fprintf(out, "%s %s (%s)\n", ui.StyleBold.Render("Workflow:"), statusResult.WorkflowTrack, statusResult.State)
+		if engine != "" {
+			fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Engine:"), engine)
+		}
 		fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Health:"), ui.StyleSuccess.Render(healthLabel))
 		if statusResult.Manual != nil {
 			storyLabel := fmt.Sprintf("%d/%d complete", statusResult.Manual.CompletedStories, statusResult.Manual.TotalStories)
@@ -151,6 +154,11 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "%s     %s\n", ui.StyleBold.Render("Next:"), ui.StyleInfo.Render(nextCmd))
 		fmt.Fprintf(out, "          %s\n", ui.StyleMuted.Render(nextDesc))
+	}
+
+	if summary != "" {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", ui.StyleMuted.Render(summary))
 	}
 
 	return nil
