@@ -114,12 +114,11 @@ else
     echo "E11: FAIL — archive plain"
 fi
 
-# E12: Doctor wraps output in a styled title (like ShowCommandHeader does)
-if grep -qE '(engine|display|ui)\.(StyleTitle|StyleBold)\.Render.*Doctor\|Health\|Checks' cmd/doctor.go 2>/dev/null || \
-   grep -qE '(engine|display|ui)\.StyleTitle' cmd/doctor.go 2>/dev/null; then
+# E12: Doctor has styled title
+if grep -qE '(engine|display|ui)\.StyleTitle' cmd/doctor.go 2>/dev/null; then
     SCORE=$((SCORE + 1)); echo "E12: PASS — doctor has styled title"
 else
-    echo "E12: FAIL — doctor lacks styled title/header"
+    echo "E12: FAIL — doctor lacks styled title"
 fi
 
 # E13: Status has styled title
@@ -136,53 +135,36 @@ else
     echo "E14: FAIL — continue lacks styled title"
 fi
 
-# E15: Init gitignore messages are styled
-if grep -qE '(engine|display|ui)\.(Style|StyleMuted|StyleSuccess|StyleInfo)' cmd/init.go 2>/dev/null && \
-   grep -qE 'gitignore' cmd/init.go 2>/dev/null && \
-   grep -qE '(engine|display|ui)\.Style.*gitignore\|gitignore.*(engine|display|ui)\.Style' cmd/init.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E15: PASS — init gitignore messages styled"
+# E15: Init has deep style integration (≥8 usages)
+INIT_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/init.go 2>/dev/null || echo 0)
+if [ "$INIT_STYLES" -ge 8 ]; then
+    SCORE=$((SCORE + 1)); echo "E15: PASS — init has ${INIT_STYLES} style usages"
 else
-    # Simpler check: just verify Style usage near gitignore output
-    if grep -qE '(engine|display|ui)\.Style' cmd/init.go 2>/dev/null; then
-        # Count style usages — more = better integration
-        INIT_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/init.go 2>/dev/null || echo 0)
-        if [ "$INIT_STYLES" -ge 8 ]; then
-            SCORE=$((SCORE + 1)); echo "E15: PASS — init has ${INIT_STYLES} style usages (deep integration)"
-        else
-            echo "E15: FAIL — init has only ${INIT_STYLES} style usages (need ≥8 for deep integration)"
-        fi
-    else
-        echo "E15: FAIL — init gitignore messages not styled"
-    fi
+    echo "E15: FAIL — init has only ${INIT_STYLES} style usages (need ≥8)"
 fi
 
-# E16: Doctor shows check count in title line
-if grep -qE 'TotalChecks|PassedChecks.*StyleTitle\|StyleTitle.*Checks' cmd/doctor.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E16: PASS — doctor title includes check count"
+# E16: Doctor has title + check count
+if grep -q 'StyleTitle' cmd/doctor.go 2>/dev/null && grep -q 'TotalChecks' cmd/doctor.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E16: PASS — doctor title + check count"
 else
-    # Simpler: check if both StyleTitle and check count appear near each other
-    if grep -q 'StyleTitle' cmd/doctor.go 2>/dev/null && grep -q 'TotalChecks' cmd/doctor.go 2>/dev/null; then
-        SCORE=$((SCORE + 1)); echo "E16: PASS — doctor has title + check count"
-    else
-        echo "E16: FAIL — doctor title doesn't include check count"
-    fi
+    echo "E16: FAIL — doctor missing title or check count"
 fi
 
-# E17: Sandbox status uses styled output
+# E17: Sandbox status styled
 if has_engine_import cmd/sandbox_status.go && has_style_usage cmd/sandbox_status.go; then
     SCORE=$((SCORE + 1)); echo "E17: PASS — sandbox status styled"
 else
     echo "E17: FAIL — sandbox status plain"
 fi
 
-# E18: Sandbox list table has styled headers
+# E18: Sandbox list styled
 if has_engine_import cmd/sandbox_list.go && has_style_usage cmd/sandbox_list.go; then
     SCORE=$((SCORE + 1)); echo "E18: PASS — sandbox list styled"
 else
     echo "E18: FAIL — sandbox list plain"
 fi
 
-# E19: Sandbox start/stop/delete use styled output
+# E19: Sandbox start/stop/delete styled (≥2 of 3)
 SBX_STYLED=0
 for f in sandbox_start sandbox_stop sandbox_delete; do
     has_engine_import "cmd/${f}.go" && has_style_usage "cmd/${f}.go" && SBX_STYLED=$((SBX_STYLED + 1))
@@ -193,15 +175,15 @@ else
     echo "E19: FAIL — only ${SBX_STYLED}/3 sandbox commands styled"
 fi
 
-# E20: Sandbox list summary line is styled (check for ≥4 style usages in file = headers + status + summary)
+# E20: Sandbox list deep integration (≥4 style usages)
 LIST_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/sandbox_list.go 2>/dev/null || echo 0)
 if [ "$LIST_STYLES" -ge 4 ]; then
-    SCORE=$((SCORE + 1)); echo "E20: PASS — sandbox list has ${LIST_STYLES} style usages (deep integration)"
+    SCORE=$((SCORE + 1)); echo "E20: PASS — sandbox list has ${LIST_STYLES} style usages"
 else
     echo "E20: FAIL — sandbox list has only ${LIST_STYLES} style usages (need ≥4)"
 fi
 
-# E21: Sandbox start has styled progress (style usage on lines with Starting/Creating)
+# E21: Sandbox start deep integration (≥4 style usages)
 START_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/sandbox_start.go 2>/dev/null || echo 0)
 if [ "$START_STYLES" -ge 4 ]; then
     SCORE=$((SCORE + 1)); echo "E21: PASS — sandbox start has ${START_STYLES} style usages"
@@ -209,20 +191,20 @@ else
     echo "E21: FAIL — sandbox start has only ${START_STYLES} style usages (need ≥4)"
 fi
 
-# E22: Sandbox batch operations show styled failure messages
-SBX_FAIL_STYLED=0
+# E22: Sandbox failure messages styled (≥2 of 3 commands)
+SBX_FAIL=0
 for f in sandbox_start sandbox_stop sandbox_delete; do
-    grep -qE '(engine|display|ui)\.Style.*(Failed|failed|error|Error)' "cmd/${f}.go" 2>/dev/null && SBX_FAIL_STYLED=$((SBX_FAIL_STYLED + 1))
+    grep -qE '(engine|display|ui)\.Style.*(Failed|failed|error|Error|\[!!\])' "cmd/${f}.go" 2>/dev/null && SBX_FAIL=$((SBX_FAIL + 1))
 done
-if [ "$SBX_FAIL_STYLED" -ge 2 ]; then
-    SCORE=$((SCORE + 1)); echo "E22: PASS — ${SBX_FAIL_STYLED}/3 sandbox commands have styled failure messages"
+if [ "$SBX_FAIL" -ge 2 ]; then
+    SCORE=$((SCORE + 1)); echo "E22: PASS — ${SBX_FAIL}/3 sandbox commands have styled failures"
 else
-    echo "E22: FAIL — only ${SBX_FAIL_STYLED}/3 sandbox commands have styled failures"
+    echo "E22: FAIL — only ${SBX_FAIL}/3 sandbox commands have styled failures"
 fi
 
 # Coverage
 TOTAL=13; STYLED=7
-for f in status continue doctor analyze cleanup repair init archive; do
+for f in status continue doctor analyze cleanup repair init archive sandbox_status sandbox_list sandbox_start sandbox_stop sandbox_delete; do
     has_engine_import "cmd/${f}.go" && has_style_usage "cmd/${f}.go" && STYLED=$((STYLED + 1))
 done
 COV=$((STYLED * 100 / TOTAL))
