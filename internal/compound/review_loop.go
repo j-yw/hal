@@ -369,14 +369,15 @@ func buildIssueDetails(reviewIssues []reviewLoopIssue, fixResults []reviewLoopFi
 	for _, ri := range reviewIssues {
 		id := strings.TrimSpace(ri.ID)
 		detail := ReviewIssueDetail{
-			ID:        id,
-			Title:     strings.TrimSpace(ri.Title),
-			Severity:  strings.TrimSpace(ri.Severity),
-			File:      strings.TrimSpace(ri.File),
-			Line:      ri.Line,
-			Rationale: strings.TrimSpace(ri.Rationale),
-			Valid:     true, // default: valid unless fix phase says otherwise
-			Fixed:     false,
+			ID:           id,
+			Title:        strings.TrimSpace(ri.Title),
+			Severity:     strings.TrimSpace(ri.Severity),
+			File:         strings.TrimSpace(ri.File),
+			Line:         ri.Line,
+			Rationale:    strings.TrimSpace(ri.Rationale),
+			SuggestedFix: strings.TrimSpace(ri.SuggestedFix),
+			Valid:        true, // default: valid unless fix phase says otherwise
+			Fixed:        false,
 		}
 		if fr, ok := fixByID[id]; ok {
 			detail.Valid = fr.Valid

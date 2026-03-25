@@ -77,7 +77,21 @@ sed -n '/type AutoResult/,/^}/p' cmd/auto.go 2>/dev/null | grep -qiE 'duration|e
 
 echo "$ITER_BLOCK" | grep -qiE 'duration|Duration' && { SCORE=$((SCORE+1)); echo "E28: PASS"; } || echo "E28: FAIL"
 
-MAX_SCORE=28
+# === E29-E32: Wave 5 — Completeness ===
+
+# E29: ReviewIssueDetail includes suggestedFix
+echo "$DETAIL_TYPE" | grep -qiE 'suggestedFix|suggested.fix|fix.*suggestion' && { SCORE=$((SCORE+1)); echo "E29: PASS"; } || echo "E29: FAIL"
+
+# E30: Review totals show total elapsed duration
+sed -n '/Totals/,/Stop Reason/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qiE 'duration|Duration|elapsed' && { SCORE=$((SCORE+1)); echo "E30: PASS"; } || echo "E30: FAIL"
+
+# E31: Run JSON includes PRD progress info
+sed -n '/type RunPRDInfo/,/^}/p' cmd/run.go 2>/dev/null | grep -qE 'Completed|Total' && { SCORE=$((SCORE+1)); echo "E31: PASS"; } || echo "E31: FAIL"
+
+# E32: Review loop report includes branch names for context
+grep -qE 'BaseBranch|CurrentBranch|base.*branch|current.*branch' internal/compound/review_loop_report.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E32: PASS"; } || echo "E32: FAIL"
+
+MAX_SCORE=32
 
 echo ""
 echo "=== Score: ${SCORE}/${MAX_SCORE} ==="

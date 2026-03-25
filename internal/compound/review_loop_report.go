@@ -206,6 +206,9 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString(fmt.Sprintf("- Valid Issues: %d\n", result.Totals.ValidIssues))
 	sb.WriteString(fmt.Sprintf("- Invalid Issues: %d\n", result.Totals.InvalidIssues))
 	sb.WriteString(fmt.Sprintf("- Fixes Applied: %d\n", result.Totals.FixesApplied))
+	if result.Duration > 0 {
+		sb.WriteString(fmt.Sprintf("- Duration: %s\n", formatDuration(result.Duration)))
+	}
 
 	// Severity distribution across all iterations
 	severityCounts := countSeverities(result.Iterations)

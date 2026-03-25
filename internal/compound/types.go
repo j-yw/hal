@@ -94,12 +94,13 @@ type ReviewLoopIteration struct {
 // ReviewIssueDetail captures per-issue context from a review iteration,
 // combining the review-phase finding with the fix-phase outcome.
 type ReviewIssueDetail struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Severity  string `json:"severity"`
-	File      string `json:"file"`
-	Line      int    `json:"line,omitempty"`
-	Rationale string `json:"rationale,omitempty"`
-	Valid     bool   `json:"valid"`
-	Fixed     bool   `json:"fixed"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Severity     string `json:"severity"`
+	File         string `json:"file"`
+	Line         int    `json:"line,omitempty"`
+	Rationale    string `json:"rationale,omitempty"`
+	SuggestedFix string `json:"suggestedFix,omitempty"`
+	Valid        bool   `json:"valid"`
+	Fixed        bool   `json:"fixed"`
 }
