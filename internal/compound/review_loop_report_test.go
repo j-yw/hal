@@ -178,13 +178,12 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 	requiredContent := []string{
 		"### Iteration 1",
 		"### Iteration 2",
-		"- Summary: Applied one fix",
-		"- Summary: Applied final fix",
+		"**Summary:** Applied one fix",
+		"**Summary:** Applied final fix",
 		"- Issues Found: 3",
-		"- Valid Issues: 2",
-		"- Invalid Issues: 1",
 		"- Fixes Applied: 2",
-		"no_valid_issues",
+		"Clean review pass",
+		"Duration:",
 	}
 	for _, snippet := range requiredContent {
 		if !strings.Contains(text, snippet) {

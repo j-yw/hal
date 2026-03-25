@@ -212,6 +212,7 @@ func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations i
 	}
 
 	result.EndedAt = deps.now()
+	result.Duration = result.EndedAt.Sub(result.StartedAt)
 	return result, nil
 }
 
@@ -249,6 +250,7 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		StopReason:          "single_iteration",
 		StartedAt:           startedAt,
 		EndedAt:             endedAt,
+		Duration:            endedAt.Sub(startedAt),
 		Totals: ReviewLoopTotals{
 			IssuesFound:   iteration.IssuesFound,
 			ValidIssues:   iteration.ValidIssues,

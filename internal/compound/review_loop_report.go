@@ -137,20 +137,47 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString(fmt.Sprintf("- Requested Iterations: %d\n", result.RequestedIterations))
 	sb.WriteString(fmt.Sprintf("- Completed Iterations: %d\n", result.CompletedIterations))
 	sb.WriteString(fmt.Sprintf("- Started At: %s\n", formatReviewLoopTime(result.StartedAt)))
-	sb.WriteString(fmt.Sprintf("- Ended At: %s\n\n", formatReviewLoopTime(result.EndedAt)))
+	sb.WriteString(fmt.Sprintf("- Ended At: %s\n", formatReviewLoopTime(result.EndedAt)))
+	if !result.StartedAt.IsZero() && !result.EndedAt.IsZero() {
+		sb.WriteString(fmt.Sprintf("- Duration: %s\n", formatDuration(result.EndedAt.Sub(result.StartedAt))))
+	}
+	sb.WriteString("\n")
 
 	sb.WriteString("## Iterations\n\n")
 	if len(result.Iterations) == 0 {
 		sb.WriteString("No iterations were executed.\n\n")
 	} else {
 		for _, iteration := range result.Iterations {
-			sb.WriteString(fmt.Sprintf("### Iteration %d\n", iteration.Iteration))
-			sb.WriteString(fmt.Sprintf("- Issues Found: %d\n", iteration.IssuesFound))
-			sb.WriteString(fmt.Sprintf("- Valid Issues: %d\n", iteration.ValidIssues))
-			sb.WriteString(fmt.Sprintf("- Invalid Issues: %d\n", iteration.InvalidIssues))
-			sb.WriteString(fmt.Sprintf("- Fixes Applied: %d\n", iteration.FixesApplied))
-			sb.WriteString(fmt.Sprintf("- Summary: %s\n", strings.TrimSpace(iteration.Summary)))
-			sb.WriteString(fmt.Sprintf("- Status: %s\n\n", strings.TrimSpace(iteration.Status)))
+			sb.WriteString(fmt.Sprintf("### Iteration %d\n\n", iteration.Iteration))
+			sb.WriteString(fmt.Sprintf("- Issues Found: %d (%d valid, %d invalid)\n", iteration.IssuesFound, iteration.ValidIssues, iteration.InvalidIssues))
+			sb.WriteString(fmt.Sprintf("- Fixes Applied: %d/%d\n", iteration.FixesApplied, iteration.ValidIssues))
+
+			// Render per-issue details when available
+			if len(iteration.Issues) > 0 {
+				sb.WriteString("\n| # | Severity | File | Issue | Fixed |\n")
+				sb.WriteString("|---|----------|------|-------|-------|\n")
+				for i, issue := range iteration.Issues {
+					fileLoc := issue.File
+					if issue.Line > 0 {
+						fileLoc = fmt.Sprintf("%s:%d", issue.File, issue.Line)
+					}
+					fixMark := "—"
+					if !issue.Valid {
+						fixMark = "invalid"
+					} else if issue.Fixed {
+						fixMark = "✓"
+					} else {
+						fixMark = "✗"
+					}
+					title := issue.Title
+					if len(title) > 60 {
+						title = title[:57] + "..."
+					}
+					sb.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s |\n", i+1, issue.Severity, fileLoc, title, fixMark))
+				}
+			}
+
+			sb.WriteString(fmt.Sprintf("\n**Summary:** %s\n\n", strings.TrimSpace(iteration.Summary)))
 		}
 	}
 
@@ -161,14 +188,26 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString(fmt.Sprintf("- Fixes Applied: %d\n\n", result.Totals.FixesApplied))
 
 	sb.WriteString("## Stop Reason\n\n")
-	stopReason := strings.TrimSpace(result.StopReason)
-	if stopReason == "" {
-		stopReason = "unknown"
-	}
-	sb.WriteString(stopReason)
+	sb.WriteString(humanizeStopReason(result.StopReason, result.CompletedIterations))
 	sb.WriteString("\n")
 
 	return sb.String(), nil
+}
+
+// humanizeStopReason converts internal stop reason codes to user-friendly text.
+func humanizeStopReason(reason string, completedIterations int) string {
+	switch strings.TrimSpace(reason) {
+	case "no_valid_issues":
+		return fmt.Sprintf("Clean review pass — no issues found in iteration %d.", completedIterations)
+	case "max_iterations":
+		return fmt.Sprintf("Reached maximum of %d iterations.", completedIterations)
+	case "single_iteration":
+		return "Single iteration completed."
+	case "":
+		return "Unknown."
+	default:
+		return strings.TrimSpace(reason)
+	}
 }
 
 func formatReviewLoopTime(t time.Time) string {
@@ -176,4 +215,18 @@ func formatReviewLoopTime(t time.Time) string {
 		return "n/a"
 	}
 	return t.Format(time.RFC3339)
+}
+
+// formatDuration renders a duration as a human-friendly string.
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	d = d.Round(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }

@@ -62,6 +62,7 @@ type ReviewLoopResult struct {
 	StopReason          string                `json:"stopReason"`
 	StartedAt           time.Time             `json:"startedAt"`
 	EndedAt             time.Time             `json:"endedAt"`
+	Duration            time.Duration         `json:"duration,omitempty"`
 	Totals              ReviewLoopTotals      `json:"totals"`
 	Iterations          []ReviewLoopIteration `json:"iterations"`
 }
