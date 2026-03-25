@@ -214,10 +214,10 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			if jsonMode {
 				return outputAutoJSON(out, false, resume, err.Error(), autoFailureNoReports, false)
 			}
-			fmt.Fprintln(out, "No reports found.")
+			fmt.Fprintf(out, "%s No reports found.\n", engine.StyleWarning.Render("[!]"))
 			fmt.Fprintln(out)
-			fmt.Fprintf(out, "Place your reports in %s/ and run this command again.\n", config.ReportsDir)
-			fmt.Fprintln(out, "Reports can be markdown files, text files, or any format the AI can analyze.")
+			fmt.Fprintf(out, "Place your reports in %s and run this command again.\n", engine.StyleInfo.Render(config.ReportsDir+"/"))
+			fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Reports can be markdown files, text files, or any format the AI can analyze."))
 			return nil
 		}
 	}

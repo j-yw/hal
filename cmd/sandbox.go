@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jywlabs/hal/internal/compound"
+	ui "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -239,7 +240,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	// ── Provider selection ──
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  ── Select Provider ──")
+	fmt.Fprintln(out, "  "+ui.StyleTitle.Render("Select Provider"))
 	fmt.Fprintln(out, "")
 
 	// Determine default provider choice
@@ -292,7 +293,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	switch selectedProvider {
 	case "daytona":
 		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  ── Daytona ──")
+		fmt.Fprintln(out, "  "+ui.StyleBold.Render("Daytona"))
 		fmt.Fprintln(out, "")
 
 		// API key
@@ -315,7 +316,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	case "hetzner":
 		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  ── Hetzner ──")
+		fmt.Fprintln(out, "  "+ui.StyleBold.Render("Hetzner"))
 		fmt.Fprintln(out, "")
 
 		// SSH key name
@@ -349,7 +350,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	case "digitalocean":
 		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  ── DigitalOcean ──")
+		fmt.Fprintln(out, "  "+ui.StyleBold.Render("DigitalOcean"))
 		fmt.Fprintln(out, "")
 
 		// SSH key fingerprint
@@ -372,7 +373,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	case "lightsail":
 		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  ── AWS Lightsail ──")
+		fmt.Fprintln(out, "  "+ui.StyleBold.Render("AWS Lightsail"))
 		fmt.Fprintln(out, "")
 
 		// Key pair name
@@ -418,7 +419,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	// ── API keys ──
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  ── API Keys ──")
+	fmt.Fprintln(out, "  "+ui.StyleBold.Render("API Keys"))
 	fmt.Fprintln(out, "")
 
 	for _, f := range sandboxEnvFields[:3] {
@@ -433,7 +434,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	// ── Git identity ──
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  ── Git Identity ──")
+	fmt.Fprintln(out, "  "+ui.StyleBold.Render("Git Identity"))
 	fmt.Fprintln(out, "")
 
 	for _, f := range sandboxEnvFields[3:5] {
@@ -448,7 +449,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	// ── Tailscale ──
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  ── Tailscale (SSH from phone) ──")
+	fmt.Fprintln(out, "  "+ui.StyleBold.Render("Tailscale")+" "+ui.StyleMuted.Render("(SSH from phone)"))
 	fmt.Fprintln(out, "")
 
 	for _, f := range sandboxEnvFields[5:] {

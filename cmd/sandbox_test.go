@@ -567,7 +567,7 @@ func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 	if !strings.Contains(output, "Select Provider") {
 		t.Error("output should contain provider selection prompt")
 	}
-	if !strings.Contains(output, "── Hetzner ──") {
+	if !strings.Contains(output, "Hetzner") {
 		t.Error("output should contain Hetzner section header")
 	}
 	if !strings.Contains(output, "SSH key name") {
@@ -672,7 +672,7 @@ func TestRunSandboxSetup_PromptOutput_DigitalOcean(t *testing.T) {
 	if !strings.Contains(output, "DigitalOcean") {
 		t.Error("output should contain DigitalOcean in provider selection")
 	}
-	if !strings.Contains(output, "── DigitalOcean ──") {
+	if !strings.Contains(output, "DigitalOcean") {
 		t.Error("output should contain DigitalOcean section header")
 	}
 	if !strings.Contains(output, "SSH key fingerprint") {

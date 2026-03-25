@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=26
+MAX_SCORE=28
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -232,6 +232,29 @@ if [ "$MISC_STYLED" -ge 1 ]; then
     SCORE=$((SCORE + 1)); echo "E26: PASS — ${MISC_STYLED}/3 additional commands styled"
 else
     echo "E26: FAIL — prd/report/auto all unstyled"
+fi
+
+# E27: Sandbox setup wizard styled
+if has_engine_import cmd/sandbox.go && has_style_usage cmd/sandbox.go; then
+    SBX_PARENT_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/sandbox.go 2>/dev/null || echo 0)
+    if [ "$SBX_PARENT_STYLES" -ge 3 ]; then
+        SCORE=$((SCORE + 1)); echo "E27: PASS — sandbox setup has ${SBX_PARENT_STYLES} style usages"
+    else
+        echo "E27: FAIL — sandbox setup has only ${SBX_PARENT_STYLES} style usages (need ≥3)"
+    fi
+else
+    echo "E27: FAIL — sandbox setup wizard unstyled"
+fi
+
+# E28: Auto/run/prd commands — at least 1 uses styles in non-Display output
+AUTO_STYLED=0
+for f in auto run prd; do
+    has_engine_import "cmd/${f}.go" && has_style_usage "cmd/${f}.go" && AUTO_STYLED=$((AUTO_STYLED + 1))
+done
+if [ "$AUTO_STYLED" -ge 1 ]; then
+    SCORE=$((SCORE + 1)); echo "E28: PASS — ${AUTO_STYLED}/3 workflow commands styled"
+else
+    echo "E28: FAIL — auto/run/prd all unstyled"
 fi
 
 # Coverage
