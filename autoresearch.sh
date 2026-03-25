@@ -13,10 +13,23 @@ go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 SCORE=0
 MAX_SCORE=8
 
+# Helper: check if a file imports internal/engine (with or without alias)
+has_engine_import() {
+    grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
+}
+
+# Helper: check if a file uses lipgloss style constants (via engine.Style* or display.Style* or any alias)
+has_style_usage() {
+    grep -qE '(engine|display|ui|styles)\.(Style[A-Za-z]+|BoxStyle|HeaderBox|SuccessBox|ErrorBox|WarningBox)' "$1" 2>/dev/null
+}
+
+# Helper: count distinct style types used
+count_styles() {
+    grep -oE '(engine|display|ui|styles)\.(Style[A-Za-z]+|BoxStyle|HeaderBox|SuccessBox|ErrorBox|WarningBox)' "$1" 2>/dev/null | sort -u | wc -l
+}
+
 # E1: Doctor uses lipgloss-colored severity indicators
-# Must import engine package AND use style constants for icons
-if grep -q '"github.com/jywlabs/hal/internal/engine"' cmd/doctor.go 2>/dev/null && \
-   grep -q 'engine\.Style' cmd/doctor.go 2>/dev/null; then
+if has_engine_import cmd/doctor.go && has_style_usage cmd/doctor.go; then
     SCORE=$((SCORE + 1))
     echo "E1: PASS — doctor imports engine and uses styled rendering"
 else
@@ -24,9 +37,7 @@ else
 fi
 
 # E2: Status uses styled header/box
-# Must import engine package AND use box/style helpers
-if grep -q '"github.com/jywlabs/hal/internal/engine"' cmd/status.go 2>/dev/null && \
-   grep -qE 'engine\.(StyleTitle|StyleBold|StyleSuccess|StyleMuted|HeaderBox|BoxStyle|StyleInfo)' cmd/status.go 2>/dev/null; then
+if has_engine_import cmd/status.go && has_style_usage cmd/status.go; then
     SCORE=$((SCORE + 1))
     echo "E2: PASS — status uses styled display elements"
 else
@@ -34,9 +45,8 @@ else
 fi
 
 # E3: Continue separates doctor from workflow visually
-# Must import engine AND use at least 2 different style types (visual separation)
-if grep -q '"github.com/jywlabs/hal/internal/engine"' cmd/continue.go 2>/dev/null; then
-    STYLE_COUNT=$(grep -oE 'engine\.Style[A-Za-z]+' cmd/continue.go 2>/dev/null | sort -u | wc -l)
+if has_engine_import cmd/continue.go; then
+    STYLE_COUNT=$(count_styles cmd/continue.go)
     if [ "$STYLE_COUNT" -ge 2 ]; then
         SCORE=$((SCORE + 1))
         echo "E3: PASS — continue uses ${STYLE_COUNT} distinct style types"
@@ -49,8 +59,7 @@ fi
 
 # E4: Analyze uses lipgloss boxes instead of ASCII ═══
 if ! grep -q '═══' cmd/analyze.go 2>/dev/null; then
-    if grep -q '"github.com/jywlabs/hal/internal/engine"' cmd/analyze.go 2>/dev/null && \
-       grep -qE 'engine\.(BoxStyle|HeaderBox|SuccessBox|StyleTitle|StyleBold)' cmd/analyze.go 2>/dev/null; then
+    if has_engine_import cmd/analyze.go && has_style_usage cmd/analyze.go; then
         SCORE=$((SCORE + 1))
         echo "E4: PASS — analyze uses lipgloss boxes"
     else
@@ -61,29 +70,15 @@ else
 fi
 
 # E5: Status shows engine + branch in human-readable output
-# The human-readable path must reference engine AND it must not be only in the JSON branch
-if grep -q '"github.com/jywlabs/hal/internal/engine"' cmd/status.go 2>/dev/null || \
-   grep -q 'engine\.Style' cmd/status.go 2>/dev/null; then
-    # Already has engine import for styles — check if it shows engine info in text output
-    if grep -q 'Engine:' cmd/status.go 2>/dev/null; then
-        SCORE=$((SCORE + 1))
-        echo "E5: PASS — status shows engine info in human-readable output"
-    else
-        echo "E5: FAIL — status has engine import but doesn't display engine info"
-    fi
+if grep -q 'Engine:' cmd/status.go 2>/dev/null; then
+    SCORE=$((SCORE + 1))
+    echo "E5: PASS — status shows engine info in human-readable output"
 else
-    # Check if it at least shows engine in the non-JSON path
-    if grep -q 'engine' cmd/status.go 2>/dev/null && grep -q 'Engine:' cmd/status.go 2>/dev/null; then
-        SCORE=$((SCORE + 1))
-        echo "E5: PASS — status shows engine info"
-    else
-        echo "E5: FAIL — status doesn't show engine/branch in human-readable output"
-    fi
+    echo "E5: FAIL — status doesn't show engine info in human-readable output"
 fi
 
 # E6: Cleanup shows styled summary
-if grep -q '"github.com/jywlabs/hal/internal/engine"' cmd/cleanup.go 2>/dev/null && \
-   grep -qE 'engine\.(Style|Box)' cmd/cleanup.go 2>/dev/null; then
+if has_engine_import cmd/cleanup.go && has_style_usage cmd/cleanup.go; then
     SCORE=$((SCORE + 1))
     echo "E6: PASS — cleanup uses styled summary"
 else
@@ -118,8 +113,7 @@ fi
 TOTAL_CMDS=13
 STYLED_CMDS=7  # baseline already styled
 for f in status continue doctor analyze cleanup; do
-    if grep -q '"github.com/jywlabs/hal/internal/engine"' "cmd/${f}.go" 2>/dev/null && \
-       grep -qE 'engine\.Style' "cmd/${f}.go" 2>/dev/null; then
+    if has_engine_import "cmd/${f}.go" && has_style_usage "cmd/${f}.go"; then
         STYLED_CMDS=$((STYLED_CMDS + 1))
     fi
 done

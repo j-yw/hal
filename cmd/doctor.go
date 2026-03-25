@@ -8,6 +8,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/doctor"
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -102,26 +103,38 @@ func runDoctorFn(dir string, jsonMode bool, out io.Writer) error {
 
 	// Human-readable output
 	fmt.Fprintf(out, "Engine:   %s\n", engine)
-	fmt.Fprintf(out, "Checks:   %d/%d passed\n\n", result.PassedChecks, result.TotalChecks)
+	checksLabel := fmt.Sprintf("%d/%d passed", result.PassedChecks, result.TotalChecks)
+	if result.PassedChecks == result.TotalChecks {
+		checksLabel = display.StyleSuccess.Render(checksLabel)
+	} else {
+		checksLabel = display.StyleWarning.Render(checksLabel)
+	}
+	fmt.Fprintf(out, "Checks:   %s\n\n", checksLabel)
 	for _, c := range result.Checks {
-		icon := "✓"
+		var icon string
 		switch c.Status {
 		case doctor.StatusFail:
-			icon = "✗"
+			icon = display.StyleError.Render("✗")
 		case doctor.StatusWarn:
-			icon = "⚠"
+			icon = display.StyleWarning.Render("⚠")
 		case doctor.StatusSkip:
-			icon = "−"
+			icon = display.StyleMuted.Render("−")
+		default:
+			icon = display.StyleSuccess.Render("✓")
 		}
 		fmt.Fprintf(out, "  %s  %s\n", icon, c.Message)
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, result.Summary)
+	if result.OverallStatus == doctor.StatusPass {
+		fmt.Fprintln(out, display.StyleSuccess.Render(result.Summary))
+	} else {
+		fmt.Fprintln(out, display.StyleWarning.Render(result.Summary))
+	}
 
 	if result.PrimaryRemediation != nil {
 		fmt.Fprintln(out)
-		fmt.Fprintf(out, "Fix:      %s\n", result.PrimaryRemediation.Command)
+		fmt.Fprintf(out, "Fix:      %s\n", display.StyleInfo.Render(result.PrimaryRemediation.Command))
 	}
 
 	return nil
