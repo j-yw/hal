@@ -400,9 +400,9 @@ func deriveArchiveName(halDir string) string {
 // promptForName asks the user for an archive name with a default suggestion.
 func promptForName(defaultName string, in io.Reader, out io.Writer) string {
 	if defaultName != "" {
-		fmt.Fprintf(out, "Archive name [%s]: ", defaultName)
+		fmt.Fprintf(out, "%s [%s]: ", engine.StyleBold.Render("Archive name"), engine.StyleMuted.Render(defaultName))
 	} else {
-		fmt.Fprint(out, "Archive name: ")
+		fmt.Fprintf(out, "%s: ", engine.StyleBold.Render("Archive name"))
 	}
 
 	reader := bufio.NewReader(in)
