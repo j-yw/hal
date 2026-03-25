@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	ui "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -300,33 +301,33 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		return nil
 	}
 
-	fmt.Fprintln(out, "Initialized .hal/")
+	fmt.Fprintf(out, "%s Initialized .hal/\n", ui.StyleSuccess.Render("[OK]"))
 	fmt.Fprintln(out)
 
 	if len(created) > 0 {
-		fmt.Fprintln(out, "Created:")
+		fmt.Fprintf(out, "%s\n", ui.StyleBold.Render("Created:"))
 		for _, f := range created {
-			fmt.Fprintf(out, "  .hal/%s\n", f)
+			fmt.Fprintf(out, "  %s .hal/%s\n", ui.StyleSuccess.Render("+"), f)
 		}
 	}
 
 	if len(skipped) > 0 {
-		fmt.Fprintln(out, "Already existed (preserved):")
+		fmt.Fprintf(out, "%s\n", ui.StyleMuted.Render("Already existed (preserved):"))
 		for _, f := range skipped {
-			fmt.Fprintf(out, "  .hal/%s\n", f)
+			fmt.Fprintf(out, "  %s .hal/%s\n", ui.StyleMuted.Render("·"), f)
 		}
 	}
 
 	refreshChanged := refresh.hasChanges()
 	if len(created) == 0 && len(skipped) > 0 && !refreshChanged && !(doRefresh && dryRun) {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "All files already exist. No changes made.")
+		fmt.Fprintln(out, ui.StyleMuted.Render("All files already exist. No changes made."))
 	} else {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Next steps:")
-		fmt.Fprintln(out, "  1. hal doctor          Check environment health")
-		fmt.Fprintln(out, "  2. hal plan \"desc\"      Generate a PRD")
-		fmt.Fprintln(out, "  3. hal run             Execute stories")
+		fmt.Fprintf(out, "%s\n", ui.StyleBold.Render("Next steps:"))
+		fmt.Fprintf(out, "  1. %s  Check environment health\n", ui.StyleInfo.Render("hal doctor"))
+		fmt.Fprintf(out, "  2. %s  Generate a PRD\n", ui.StyleInfo.Render("hal plan \"desc\""))
+		fmt.Fprintf(out, "  3. %s          Execute stories\n", ui.StyleInfo.Render("hal run"))
 	}
 
 	return nil
