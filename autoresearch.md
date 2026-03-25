@@ -76,6 +76,15 @@ Improve the usefulness, information density, and visual consistency of all `hal`
 - **E19**: Sandbox start/stop/delete styled with [OK] success badges.
 - **E20**: Sandbox list summary with colored running/stopped counts, bold total, muted cost.
 
+### Wave 5: Full coverage (22→29/29)
+- **E23 version**: StyleTitle for "hal", StyleAccent for HAL quote, muted build info.
+- **E24 links**: Colored ✓✗⚠ icons, bold engine names, [OK] refresh/clean badges.
+- **E25 standards**: Styled titles, warnings, info-styled commands, muted hints.
+- **E26 report**: Bold summary label, info-styled numbered recommendations.
+- **E27 sandbox setup**: 8 section headers replaced from `── X ──` ASCII to lipgloss Bold/Title.
+- **E28 auto**: Styled no-reports warning with [!] badge and info-styled path.
+- **E29 prd**: Colored ✓/✗ for file presence, info-styled branch, success-styled counts, [OK] badge.
+
 ### Key patterns discovered
 - Use aliased import (`display`, `ui`) when local `engine` variable exists
 - `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts
