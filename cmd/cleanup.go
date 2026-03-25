@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -163,12 +164,12 @@ func runCleanupFn(halDir string, dryRun bool, w io.Writer) error {
 		}
 
 		if dryRun {
-			fmt.Fprintf(w, "Would remove: %s\n", path)
+			fmt.Fprintf(w, "  %s Would remove: %s\n", display.StyleWarning.Render("○"), path)
 		} else {
 			if err := os.Remove(path); err != nil {
 				return fmt.Errorf("failed to remove %s: %w", file, err)
 			}
-			fmt.Fprintf(w, "Removed: %s\n", path)
+			fmt.Fprintf(w, "  %s Removed: %s\n", display.StyleSuccess.Render("✓"), path)
 		}
 		removed++
 	}
@@ -187,12 +188,12 @@ func runCleanupFn(halDir string, dryRun bool, w io.Writer) error {
 		}
 
 		if dryRun {
-			fmt.Fprintf(w, "Would remove: %s/\n", path)
+			fmt.Fprintf(w, "  %s Would remove: %s/\n", display.StyleWarning.Render("○"), path)
 		} else {
 			if err := os.RemoveAll(path); err != nil {
 				return fmt.Errorf("failed to remove %s: %w", dir, err)
 			}
-			fmt.Fprintf(w, "Removed: %s/\n", path)
+			fmt.Fprintf(w, "  %s Removed: %s/\n", display.StyleSuccess.Render("✓"), path)
 		}
 		removed++
 	}
@@ -204,22 +205,24 @@ func runCleanupFn(halDir string, dryRun bool, w io.Writer) error {
 			continue
 		}
 		if dryRun {
-			fmt.Fprintf(w, "Would remove: %s\n", link)
+			fmt.Fprintf(w, "  %s Would remove: %s\n", display.StyleWarning.Render("○"), link)
 		} else {
 			if err := os.RemoveAll(link); err != nil {
 				return fmt.Errorf("failed to remove %s: %w", link, err)
 			}
-			fmt.Fprintf(w, "Removed: %s\n", link)
+			fmt.Fprintf(w, "  %s Removed: %s\n", display.StyleSuccess.Render("✓"), link)
 		}
 		removed++
 	}
 
 	if removed == 0 {
-		fmt.Fprintln(w, "No orphaned files found.")
+		fmt.Fprintf(w, "  %s No orphaned files found.\n", display.StyleSuccess.Render("✓"))
 	} else if dryRun {
-		fmt.Fprintf(w, "\nWould remove %d item(s). Run without --dry-run to remove.\n", removed)
+		fmt.Fprintf(w, "\n%s Would remove %d item(s). Run without --dry-run to remove.\n",
+			display.StyleWarning.Render("[!]"), removed)
 	} else {
-		fmt.Fprintf(w, "\nRemoved %d item(s).\n", removed)
+		fmt.Fprintf(w, "\n%s Removed %d item(s).\n",
+			display.StyleSuccess.Render("[OK]"), removed)
 	}
 
 	return nil
