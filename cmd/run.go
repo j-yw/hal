@@ -333,6 +333,15 @@ func showRunSummary(out io.Writer, result loop.Result) {
 			engine.StyleBold.Render("Duration:"), formatRunDuration(result.Duration))
 	}
 
+	// Show last story worked on
+	if result.LastStoryID != "" {
+		storyLabel := engine.StyleInfo.Render(result.LastStoryID)
+		if result.LastStoryTitle != "" {
+			storyLabel += " — " + result.LastStoryTitle
+		}
+		fmt.Fprintf(out, "%s %s\n", engine.StyleBold.Render("Last story:"), storyLabel)
+	}
+
 	// Show PRD progress from loop result
 	if result.TotalStories > 0 {
 		fmt.Fprintf(out, "%s Progress: %d/%d stories complete",

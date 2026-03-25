@@ -16,13 +16,15 @@ import (
 
 // Result represents the outcome of the loop execution.
 type Result struct {
-	Iterations      int           // Number of iterations run
-	Complete        bool          // Whether all tasks were completed
-	Success         bool          // Whether the loop finished successfully
-	Error           error         // Any error that occurred
-	Duration        time.Duration // Wall-clock time for the entire loop
-	CompletedStories int          // Number of stories marked as complete
-	TotalStories     int          // Total number of stories in the PRD
+	Iterations       int           // Number of iterations run
+	Complete         bool          // Whether all tasks were completed
+	Success          bool          // Whether the loop finished successfully
+	Error            error         // Any error that occurred
+	Duration         time.Duration // Wall-clock time for the entire loop
+	CompletedStories int           // Number of stories marked as complete
+	TotalStories     int           // Total number of stories in the PRD
+	LastStoryID      string        // ID of the last story worked on
+	LastStoryTitle   string        // Title of the last story worked on
 }
 
 // Config holds configuration for the loop.
@@ -193,6 +195,12 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 		}
 
 		r.display.ShowIterationHeader(i, r.config.MaxIterations, storyInfo)
+
+		// Track which story this iteration worked on
+		if storyInfo != nil {
+			result.LastStoryID = storyInfo.ID
+			result.LastStoryTitle = storyInfo.Title
+		}
 
 		// Execute with retry
 		execResult := r.executeWithRetry(ctx, prompt)

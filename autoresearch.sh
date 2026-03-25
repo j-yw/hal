@@ -92,7 +92,23 @@ grep -qE 'collectFilesAffected' internal/compound/review_loop.go 2>/dev/null && 
 # E44: Auto completion summary includes branch info
 sed -n '/pipeline.Run/,/ShowCommandSuccess/p' cmd/auto.go 2>/dev/null | grep -qiE 'branch' && { SCORE=$((SCORE+1)); echo "E44: PASS"; } || echo "E44: FAIL"
 
-MAX_SCORE=44
+# === E45-E48: Wave 9 — Synthesis and summary ===
+
+# E45: Review markdown has an outcome/assessment line that synthesizes the overall result
+grep -qE 'Outcome|Assessment|Overview|Result:' internal/compound/review_loop_report.go 2>/dev/null && \
+  sed -n '/Run Metadata/,/Iterations/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qiE 'outcome|assessment|result|overview' && \
+  { SCORE=$((SCORE+1)); echo "E45: PASS"; } || echo "E45: FAIL"
+
+# E46: Run summary shows which specific story completed (not just count)
+sed -n '/func showRunSummary/,/^func /p' cmd/run.go 2>/dev/null | grep -qiE 'story.*ID|story.*title|NextStory|CurrentStory|FindStory' && { SCORE=$((SCORE+1)); echo "E46: PASS"; } || echo "E46: FAIL"
+
+# E47: loop.Result includes last completed story info
+sed -n '/type Result struct/,/^}/p' internal/loop/loop.go 2>/dev/null | grep -qiE 'lastStory|nextStory|storyID|currentStory' && { SCORE=$((SCORE+1)); echo "E47: PASS"; } || echo "E47: FAIL"
+
+# E48: Review totals rendered with fix rate percentage
+sed -n '/Totals/,/Stop Reason/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qE 'rate|%%|percent|fix.*ratio' && { SCORE=$((SCORE+1)); echo "E48: PASS"; } || echo "E48: FAIL"
+
+MAX_SCORE=48
 
 echo ""
 echo "=== Score: ${SCORE}/${MAX_SCORE} ==="

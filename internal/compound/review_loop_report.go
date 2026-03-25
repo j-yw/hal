@@ -141,6 +141,7 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	if !result.StartedAt.IsZero() && !result.EndedAt.IsZero() {
 		sb.WriteString(fmt.Sprintf("- Duration: %s\n", formatDuration(result.EndedAt.Sub(result.StartedAt))))
 	}
+	sb.WriteString(fmt.Sprintf("- Outcome: %s\n", synthesizeOutcome(result)))
 	sb.WriteString("\n")
 
 	sb.WriteString("## Iterations\n\n")
@@ -213,6 +214,10 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString(fmt.Sprintf("- Valid Issues: %d\n", result.Totals.ValidIssues))
 	sb.WriteString(fmt.Sprintf("- Invalid Issues: %d\n", result.Totals.InvalidIssues))
 	sb.WriteString(fmt.Sprintf("- Fixes Applied: %d\n", result.Totals.FixesApplied))
+	if result.Totals.ValidIssues > 0 {
+		fixRate := result.Totals.FixesApplied * 100 / result.Totals.ValidIssues
+		sb.WriteString(fmt.Sprintf("- Fix rate: %d%%\n", fixRate))
+	}
 	if result.Duration > 0 {
 		sb.WriteString(fmt.Sprintf("- Duration: %s\n", formatDuration(result.Duration)))
 	}
@@ -250,6 +255,22 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString("\n")
 
 	return sb.String(), nil
+}
+
+// synthesizeOutcome produces a high-level outcome line from review loop results.
+func synthesizeOutcome(result *ReviewLoopResult) string {
+	if result.Totals.IssuesFound == 0 {
+		return "Clean — no issues found."
+	}
+	if result.Totals.ValidIssues == 0 {
+		return fmt.Sprintf("Reviewed — %d issue(s) found, none valid.", result.Totals.IssuesFound)
+	}
+	if result.Totals.FixesApplied == result.Totals.ValidIssues {
+		return fmt.Sprintf("All %d valid issue(s) fixed.", result.Totals.ValidIssues)
+	}
+	return fmt.Sprintf("%d/%d valid issue(s) fixed, %d remaining.",
+		result.Totals.FixesApplied, result.Totals.ValidIssues,
+		result.Totals.ValidIssues-result.Totals.FixesApplied)
 }
 
 // countSeverities tallies severity levels across all iteration issue details.
