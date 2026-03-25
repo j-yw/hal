@@ -62,8 +62,20 @@ Improve the usefulness, information density, and visual consistency of all `hal`
 - **E10 init**: [OK] badge, bold headers, colored file indicators, info-styled commands.
 - **E11 archive**: Styled prompt name with bold/muted.
 
+### Wave 3: Extended coverage + deeper integration (11→18/18)
+- **E9 repair**: Colored ✓/✗/○ per step, [OK]/[!] summaries.
+- **E10 init**: [OK] badge, bold headers, colored file indicators, info-styled commands, styled gitignore messages.
+- **E11 archive**: Styled prompt name with bold/muted.
+- **E12-E14**: Added styled titles (StyleTitle) to doctor, status, continue for visual consistency.
+- **E15**: Init gitignore messages styled with ✓ icons + muted parenthetical (13 total style usages).
+- **E16**: Doctor has title + check count integration.
+- **E17**: Sandbox status fully styled — colored status/IPs/cost/lifecycle, bold section headers.
+- **E18**: Sandbox list table headers bold, status column color-coded.
+
 ### Key patterns discovered
 - Use aliased import (`display`, `ui`) when local `engine` variable exists
 - `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts
 - `strings.Contains` tests survive lipgloss wrapping — ANSI escapes don't break substring matching
+- Always check test assertions before changing field label text — tests check exact substrings like "Name:       my-sandbox"
+- Keep field labels intact, only style the values
 - `autoresearch.sh` gets overwritten by revert cycles from prior sessions — must rewrite after each keep

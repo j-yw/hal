@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=18
+MAX_SCORE=20
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -180,6 +180,25 @@ if has_engine_import cmd/sandbox_list.go && has_style_usage cmd/sandbox_list.go;
     SCORE=$((SCORE + 1)); echo "E18: PASS — sandbox list styled"
 else
     echo "E18: FAIL — sandbox list plain"
+fi
+
+# E19: Sandbox start/stop/delete use styled output
+SBX_STYLED=0
+for f in sandbox_start sandbox_stop sandbox_delete; do
+    has_engine_import "cmd/${f}.go" && has_style_usage "cmd/${f}.go" && SBX_STYLED=$((SBX_STYLED + 1))
+done
+if [ "$SBX_STYLED" -ge 2 ]; then
+    SCORE=$((SCORE + 1)); echo "E19: PASS — ${SBX_STYLED}/3 sandbox commands styled"
+else
+    echo "E19: FAIL — only ${SBX_STYLED}/3 sandbox commands styled"
+fi
+
+# E20: Sandbox list summary line is styled (check for ≥4 style usages in file = headers + status + summary)
+LIST_STYLES=$(grep -cE '(engine|display|ui)\.Style' cmd/sandbox_list.go 2>/dev/null || echo 0)
+if [ "$LIST_STYLES" -ge 4 ]; then
+    SCORE=$((SCORE + 1)); echo "E20: PASS — sandbox list has ${LIST_STYLES} style usages (deep integration)"
+else
+    echo "E20: FAIL — sandbox list has only ${LIST_STYLES} style usages (need ≥4)"
 fi
 
 # Coverage

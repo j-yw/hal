@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -554,7 +555,7 @@ func runSingleCreate(
 		fmt.Fprintf(out, "warning: could not save local state: %v\n", saveErr)
 	}
 
-	fmt.Fprintf(out, "Sandbox started: %s (provider: %s)\n", name, sandboxCfg.Provider)
+	fmt.Fprintf(out, "%s Sandbox started: %s %s\n", display.StyleSuccess.Render("[OK]"), display.StyleBold.Render(name), display.StyleMuted.Render("(provider: "+sandboxCfg.Provider+")"))
 	if result.IP != "" {
 		if sandboxCfg.TailscaleLockdown {
 			fmt.Fprintf(out, "  Public IP:    %s (blocked -- Tailscale only)\n", result.IP)

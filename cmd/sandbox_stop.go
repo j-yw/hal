@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -267,7 +268,7 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 		fmt.Fprintf(out, "warning: failed to update registry for %q: %v\n", target.Name, err)
 	}
 
-	fmt.Fprintf(out, "Stopped %s\n", target.Name)
+	fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
 	return nil
 }
 
@@ -311,7 +312,7 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 				if regErr := updateStoppedState(target); regErr != nil {
 					fmt.Fprintf(out, "Stopped %s (warning: registry update failed: %v)\n", target.Name, regErr)
 				} else {
-					fmt.Fprintf(out, "Stopped %s\n", target.Name)
+					fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
 				}
 				results = append(results, stopResult{Name: target.Name, Success: true})
 			}

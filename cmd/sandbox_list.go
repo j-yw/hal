@@ -351,8 +351,11 @@ func renderSandboxSummary(out io.Writer, instances []*sandbox.SandboxState, now 
 		costStr = fmt.Sprintf("$%.2f", totalCost)
 	}
 
-	fmt.Fprintf(out, "\n%d sandboxes (%d running, %d stopped)  •  Est. total: %s\n",
-		total, running, stopped, costStr)
+	summary := fmt.Sprintf("%d sandboxes", total)
+	runLabel := display.StyleSuccess.Render(fmt.Sprintf("%d running", running))
+	stopLabel := display.StyleWarning.Render(fmt.Sprintf("%d stopped", stopped))
+	fmt.Fprintf(out, "\n%s (%s, %s)  •  Est. total: %s\n",
+		display.StyleBold.Render(summary), runLabel, stopLabel, display.StyleMuted.Render(costStr))
 }
 
 // formatAge formats a duration into a human-readable age string.

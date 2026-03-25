@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -260,7 +261,7 @@ func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandb
 		fmt.Fprintf(out, "warning: failed to remove registry entry for %q: %v\n", target.Name, err)
 	}
 
-	fmt.Fprintf(out, "Deleted %s\n", target.Name)
+	fmt.Fprintf(out, "%s Deleted %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
 	return nil
 }
 
@@ -304,7 +305,7 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provi
 				if regErr := sandboxDeleteRemoveInstance(target.Name); regErr != nil {
 					fmt.Fprintf(out, "Deleted %s (warning: registry removal failed: %v)\n", target.Name, regErr)
 				} else {
-					fmt.Fprintf(out, "Deleted %s\n", target.Name)
+					fmt.Fprintf(out, "%s Deleted %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
 				}
 				results = append(results, deleteResult{Name: target.Name, Success: true})
 			}
