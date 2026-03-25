@@ -102,9 +102,9 @@ func resolveProviderFromGlobalConfig(providerName string) (sandbox.Provider, err
 // SandboxListResponse is the machine-readable JSON output for hal sandbox list --json.
 // Follows the sandbox-list-v1 contract.
 type SandboxListResponse struct {
-	ContractVersion string              `json:"contractVersion"`
-	Sandboxes       []SandboxListEntry  `json:"sandboxes"`
-	Totals          SandboxListTotals   `json:"totals"`
+	ContractVersion string             `json:"contractVersion"`
+	Sandboxes       []SandboxListEntry `json:"sandboxes"`
+	Totals          SandboxListTotals  `json:"totals"`
 }
 
 // SandboxListEntry represents one sandbox in the JSON list output.
@@ -199,11 +199,12 @@ func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Pr
 	defer cancel()
 
 	info := sandbox.ConnectInfoFromState(inst)
-	if err := provider.Status(ctx, info, io.Discard); err != nil {
+	status, err := queryProviderLiveStatus(ctx, provider, info, inst.Status)
+	if err != nil {
 		inst.Status = sandbox.StatusUnknown
 		return
 	}
-	// Success: provider confirmed reachability — status stays as-is from registry
+	updateInstanceStatus(inst, status)
 }
 
 // renderSandboxListJSON renders the sandbox list as machine-readable JSON.

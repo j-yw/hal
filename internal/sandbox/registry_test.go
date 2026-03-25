@@ -106,6 +106,62 @@ func TestForceWriteInstance_Overwrites(t *testing.T) {
 	}
 }
 
+func TestForceWriteInstance_RetriesWhenRenameCannotReplace(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		ID:     "old-id",
+		Name:   "frontend",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() failed: %v", err)
+	}
+
+	statePath := filepath.Join(home, sandboxesDirName, "frontend.json")
+	tmpPath := statePath + ".tmp"
+	backupPath := statePath + ".bak"
+
+	originalRename := renameRegistryFile
+	originalRemove := removeRegistryFile
+	t.Cleanup(func() {
+		renameRegistryFile = originalRename
+		removeRegistryFile = originalRemove
+	})
+
+	renameAttempts := 0
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if oldPath == tmpPath && newPath == statePath {
+			renameAttempts++
+			if renameAttempts == 1 {
+				return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: fs.ErrExist}
+			}
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	if err := ForceWriteInstance(&SandboxState{
+		ID:     "new-id",
+		Name:   "frontend",
+		Status: StatusStopped,
+	}); err != nil {
+		t.Fatalf("ForceWriteInstance() failed: %v", err)
+	}
+
+	loaded, err := LoadInstance("frontend")
+	if err != nil {
+		t.Fatalf("LoadInstance() failed: %v", err)
+	}
+	if loaded.ID != "new-id" {
+		t.Fatalf("loaded id = %q, want %q", loaded.ID, "new-id")
+	}
+	if loaded.Status != StatusStopped {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, StatusStopped)
+	}
+	if _, err := os.Stat(backupPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("backup file should be removed after overwrite fallback")
+	}
+}
+
 func TestLoadInstance_NotFoundWrapsErrNotExist(t *testing.T) {
 	setSandboxHome(t)
 

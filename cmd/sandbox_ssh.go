@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"io"
 	"os"
 	"os/exec"
@@ -57,8 +59,16 @@ func runSandboxSSH(args []string, out io.Writer, provider sandbox.Provider) erro
 // It resolves a target from the global registry, builds ConnectInfo, and dispatches
 // to SSH or Exec depending on whether remote command args are present.
 func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provider, testMode bool) error {
+	// Best-effort migration of legacy local state before resolving targets.
+	if err := runSandboxAutoMigrate(".", out); err != nil {
+		return err
+	}
+
 	// Parse args: optional NAME followed by optional [-- command args...]
-	name, remoteArgs := parseSSHArgs(args)
+	name, remoteArgs, err := parseSSHArgs(args)
+	if err != nil {
+		return err
+	}
 
 	// Resolve target instance from global registry
 	instance, hint, err := resolveSSHTarget(name)
@@ -114,16 +124,18 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 // parseSSHArgs separates the optional sandbox name from remote command args.
 // The first arg before "--" is treated as the sandbox name unless it starts
 // with "-" (a flag-like token). Everything after "--" is the remote command.
+// Multiple args without "--" are rejected to avoid silently dropping tokens.
 //
 // Examples:
 //
-//	[]                         → name="", remoteArgs=nil
-//	["my-sandbox"]             → name="my-sandbox", remoteArgs=nil
-//	["my-sandbox", "--", "ls"] → name="my-sandbox", remoteArgs=["ls"]
-//	["--", "ls"]               → name="", remoteArgs=["ls"]
-func parseSSHArgs(args []string) (string, []string) {
+//	[]                         → name="", remoteArgs=nil, err=nil
+//	["my-sandbox"]             → name="my-sandbox", remoteArgs=nil, err=nil
+//	["my-sandbox", "--", "ls"] → name="my-sandbox", remoteArgs=["ls"], err=nil
+//	["--", "ls"]               → name="", remoteArgs=["ls"], err=nil
+//	["my-sandbox", "ls"]       → err != nil
+func parseSSHArgs(args []string) (string, []string, error) {
 	if len(args) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 
 	// Find the position of "--"
@@ -139,6 +151,9 @@ func parseSSHArgs(args []string) (string, []string) {
 	var remoteArgs []string
 
 	if dashIdx == -1 {
+		if len(args) > 1 {
+			return "", nil, fmt.Errorf("unexpected extra arguments without \"--\"; use: hal sandbox ssh [NAME] -- <command args...>")
+		}
 		// No "--" found; first non-flag arg is the name
 		if len(args) > 0 && !isFlag(args[0]) {
 			name = args[0]
@@ -154,7 +169,7 @@ func parseSSHArgs(args []string) (string, []string) {
 		}
 	}
 
-	return name, remoteArgs
+	return name, remoteArgs, nil
 }
 
 // isFlag returns true if the arg looks like a flag (starts with "-").
@@ -164,16 +179,21 @@ func isFlag(arg string) bool {
 
 // resolveSSHTarget resolves a sandbox from the global registry.
 // If name is provided, loads that specific instance.
-// If name is empty, auto-resolves using ResolveDefault (no filter).
+// If name is empty, auto-resolves using ResolveDefault with a running-only filter.
 func resolveSSHTarget(name string) (*sandbox.SandboxState, string, error) {
 	if name != "" {
 		instance, err := sandboxSSHLoadInstance(name)
 		if err != nil {
-			return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, "", fmt.Errorf("sandbox %q not found in registry: %w", name, err)
+			}
+			return nil, "", fmt.Errorf("load sandbox %q: %w", name, err)
 		}
 		return instance, "", nil
 	}
 
-	// Auto-resolve: no filter (any status)
-	return sandbox.ResolveDefault(nil)
+	// Auto-resolve: running sandboxes only.
+	return sandbox.ResolveDefault(func(s *sandbox.SandboxState) bool {
+		return s.Status == sandbox.StatusRunning
+	})
 }

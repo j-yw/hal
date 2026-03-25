@@ -261,10 +261,11 @@ func TestMigrate_StateFile(t *testing.T) {
 			seedRegistry: func(t *testing.T) {
 				t.Helper()
 				if err := ForceWriteInstance(&SandboxState{
-					ID:       "test-id-002",
-					Name:     "already-there",
-					Provider: "daytona",
-					Status:   StatusRunning,
+					ID:          "test-id-002",
+					Name:        "already-there",
+					Provider:    "daytona",
+					WorkspaceID: "test-id-002",
+					Status:      StatusRunning,
 				}); err != nil {
 					t.Fatalf("seed registry: %v", err)
 				}
@@ -294,6 +295,37 @@ func TestMigrate_StateFile(t *testing.T) {
 				}
 				if inst.Provider != "daytona" {
 					t.Errorf("Provider = %q, want %q", inst.Provider, "daytona")
+				}
+			},
+		},
+		{
+			name: "backfills workspace ID from legacy ID when missing",
+			setupLocal: func(t *testing.T, projectDir string) {
+				t.Helper()
+				writeSandboxJSON(t, projectDir, &SandboxState{
+					ID:       "do-legacy-id",
+					Name:     "do-legacy-box",
+					Provider: "digitalocean",
+					Status:   StatusRunning,
+				})
+			},
+			wantLocalDeleted: true,
+			wantRegistered:   true,
+			checkRegistry: func(t *testing.T) {
+				t.Helper()
+				inst, err := LoadInstance("do-legacy-box")
+				if err != nil {
+					t.Fatalf("LoadInstance: %v", err)
+				}
+				if inst.WorkspaceID != "do-legacy-id" {
+					t.Errorf("WorkspaceID = %q, want %q", inst.WorkspaceID, "do-legacy-id")
+				}
+				info := ConnectInfoFromState(inst)
+				if info == nil {
+					t.Fatal("ConnectInfoFromState = nil, want non-nil")
+				}
+				if info.WorkspaceID != "do-legacy-id" {
+					t.Errorf("ConnectInfo.WorkspaceID = %q, want %q", info.WorkspaceID, "do-legacy-id")
 				}
 			},
 		},
@@ -663,6 +695,48 @@ func TestMigrate_StateFile_ExistingRegistryConflictPreservesLocal(t *testing.T) 
 	}
 	if existing.ID != "global-id" {
 		t.Fatalf("existing global entry should be preserved, ID=%q", existing.ID)
+	}
+}
+
+func TestMigrate_StateFile_AlreadyMigratedLegacyWorkspaceIDBackfill(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "hal-global")
+	t.Setenv(halConfigHomeEnv, globalHome)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	writeSandboxJSON(t, projectDir, &SandboxState{
+		ID:       "legacy-id",
+		Name:     "legacy-box",
+		Provider: "daytona",
+		Status:   StatusRunning,
+	})
+
+	if err := ForceWriteInstance(&SandboxState{
+		ID:          "legacy-id",
+		Name:        "legacy-box",
+		Provider:    "daytona",
+		WorkspaceID: "legacy-id",
+		Status:      StatusRunning,
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	if err := Migrate(projectDir, nil); err != nil {
+		t.Fatalf("Migrate() unexpected error: %v", err)
+	}
+
+	localPath := filepath.Join(projectDir, template.HalDir, template.SandboxFile)
+	if _, statErr := os.Stat(localPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("local sandbox.json should be removed after idempotent rerun, stat err = %v", statErr)
+	}
+
+	existing, loadErr := LoadInstance("legacy-box")
+	if loadErr != nil {
+		t.Fatalf("LoadInstance after idempotent rerun: %v", loadErr)
+	}
+	if existing.WorkspaceID != "legacy-id" {
+		t.Fatalf("existing global entry WorkspaceID = %q, want %q", existing.WorkspaceID, "legacy-id")
 	}
 }
 

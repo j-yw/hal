@@ -679,6 +679,83 @@ func TestRunSandboxStart_GlobalConfigSizeDefaults(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStart_GlobalConfigDrivesEffectiveRuntimeConfig(t *testing.T) {
+	dir := t.TempDir()
+	globalDir := filepath.Join(dir, "globalcfg")
+	t.Setenv("HAL_CONFIG_HOME", globalDir)
+
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	globalCfg := &sandbox.GlobalConfig{
+		Provider:          "hetzner",
+		TailscaleLockdown: true,
+		Env: map[string]string{
+			"TAILSCALE_AUTHKEY": "tskey-global",
+			"GIT_AUTHOR_NAME":   "Global Name",
+		},
+		Daytona: sandbox.DaytonaGlobalConfig{
+			APIKey:    "global-daytona-key",
+			ServerURL: "https://daytona.example",
+		},
+		Hetzner: sandbox.HetznerGlobalConfig{
+			SSHKey:     "global-hetzner-key",
+			ServerType: "cx22",
+		},
+	}
+	if err := sandbox.SaveGlobalConfig(globalCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	originalResolveProvider := resolveSandboxProvider
+	t.Cleanup(func() {
+		resolveSandboxProvider = originalResolveProvider
+	})
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb"},
+	}
+
+	var gotProvider string
+	var gotCfg sandbox.ProviderConfig
+	resolveSandboxProvider = func(provider string, cfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+		gotProvider = provider
+		gotCfg = cfg
+		return mock, nil
+	}
+
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotProvider != "hetzner" {
+		t.Fatalf("provider = %q, want %q", gotProvider, "hetzner")
+	}
+	if !gotCfg.TailscaleLockdown {
+		t.Fatal("TailscaleLockdown = false, want true from global config")
+	}
+	if gotCfg.HetznerSSHKey != "global-hetzner-key" {
+		t.Fatalf("HetznerSSHKey = %q, want %q", gotCfg.HetznerSSHKey, "global-hetzner-key")
+	}
+	if gotCfg.DaytonaAPIKey != "global-daytona-key" {
+		t.Fatalf("DaytonaAPIKey = %q, want %q", gotCfg.DaytonaAPIKey, "global-daytona-key")
+	}
+	if gotCfg.DaytonaServerURL != "https://daytona.example" {
+		t.Fatalf("DaytonaServerURL = %q, want %q", gotCfg.DaytonaServerURL, "https://daytona.example")
+	}
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(mock.createCalls))
+	}
+	if mock.createCalls[0].Env["TAILSCALE_AUTHKEY"] != "tskey-global" {
+		t.Fatalf("TAILSCALE_AUTHKEY = %q, want %q", mock.createCalls[0].Env["TAILSCALE_AUTHKEY"], "tskey-global")
+	}
+	if mock.createCalls[0].Env["GIT_AUTHOR_NAME"] != "Global Name" {
+		t.Fatalf("GIT_AUTHOR_NAME = %q, want %q", mock.createCalls[0].Env["GIT_AUTHOR_NAME"], "Global Name")
+	}
+}
+
 func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 	dir := t.TempDir()
 	globalDir := filepath.Join(dir, "globalcfg")
@@ -1851,6 +1928,61 @@ func TestRunSandboxStart_ForceReplaceSuccess(t *testing.T) {
 	}
 	if !strings.Contains(output, "Sandbox started") {
 		t.Errorf("output should confirm new sandbox started: %q", output)
+	}
+}
+
+func TestRunSandboxStart_ForceReplaceUsesExistingProviderForDelete(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	existing := &sandbox.SandboxState{
+		ID:          "old-id-1234",
+		Name:        "my-sandbox",
+		Provider:    "digitalocean",
+		WorkspaceID: "do-123",
+		Status:      sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	createProvider := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new"},
+	}
+	deleteProvider := &mockProvider{}
+
+	origResolve := sandboxStartResolveProviderForForceDelete
+	t.Cleanup(func() {
+		sandboxStartResolveProviderForForceDelete = origResolve
+	})
+	var gotProviderName string
+	sandboxStartResolveProviderForForceDelete = func(providerName string) (sandbox.Provider, error) {
+		gotProviderName = providerName
+		if providerName != "digitalocean" {
+			return nil, fmt.Errorf("unexpected provider %q", providerName)
+		}
+		return deleteProvider, nil
+	}
+
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, createProvider, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotProviderName != "digitalocean" {
+		t.Fatalf("resolved delete provider = %q, want %q", gotProviderName, "digitalocean")
+	}
+	if len(deleteProvider.deleteCalls) != 1 {
+		t.Fatalf("existing provider delete calls = %d, want 1", len(deleteProvider.deleteCalls))
+	}
+	if got := deleteProvider.deleteCalls[0].Info.WorkspaceID; got != "do-123" {
+		t.Fatalf("existing provider delete workspace = %q, want %q", got, "do-123")
+	}
+	if len(createProvider.deleteCalls) != 0 {
+		t.Fatalf("new provider delete calls = %d, want 0", len(createProvider.deleteCalls))
+	}
+	if len(createProvider.createCalls) != 1 {
+		t.Fatalf("new provider create calls = %d, want 1", len(createProvider.createCalls))
 	}
 }
 

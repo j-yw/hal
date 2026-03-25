@@ -18,6 +18,7 @@ import (
 type liveTestProvider struct {
 	statusErr   error
 	statusDelay time.Duration
+	statusOut   string
 }
 
 func (p *liveTestProvider) Create(_ context.Context, _ string, _ map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
@@ -47,6 +48,9 @@ func (p *liveTestProvider) Status(ctx context.Context, _ *sandbox.ConnectInfo, o
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	if p.statusOut != "" {
+		fmt.Fprint(out, p.statusOut)
 	}
 	return p.statusErr
 }
@@ -1248,18 +1252,37 @@ func TestQueryOneStatus_Success(t *testing.T) {
 		ID:       "id-1",
 		Name:     "test",
 		Provider: "hetzner",
-		Status:   sandbox.StatusRunning,
+		Status:   sandbox.StatusStopped,
 		IP:       "1.2.3.4",
 	}
 
 	resolve := func(name string) (sandbox.Provider, error) {
-		return &liveTestProvider{statusErr: nil}, nil
+		return &liveTestProvider{statusErr: nil, statusOut: "status: running"}, nil
 	}
 
 	queryOneStatus(inst, resolve)
 
 	if inst.Status != sandbox.StatusRunning {
 		t.Errorf("status = %q, want %q after successful query", inst.Status, sandbox.StatusRunning)
+	}
+}
+
+func TestQueryOneStatus_SuccessMapsStoppedStatus(t *testing.T) {
+	inst := &sandbox.SandboxState{
+		ID:       "12345",
+		Name:     "test",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusRunning,
+	}
+
+	resolve := func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusErr: nil, statusOut: "Status off"}, nil
+	}
+
+	queryOneStatus(inst, resolve)
+
+	if inst.Status != sandbox.StatusStopped {
+		t.Errorf("status = %q, want %q after successful query", inst.Status, sandbox.StatusStopped)
 	}
 }
 

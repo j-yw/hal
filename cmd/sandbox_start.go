@@ -18,6 +18,7 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"gopkg.in/yaml.v3"
 )
 
 var sandboxStartCmd = &cobra.Command{
@@ -81,6 +82,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 }
 
 var resolveSandboxProvider = sandbox.ProviderFromConfig
+var sandboxStartResolveProviderForForceDelete = resolveProviderFromGlobalConfig
 
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
@@ -222,6 +224,11 @@ func runSandboxStartWithDeps(
 		return err
 	}
 
+	localConfig, err := loadSandboxStartLocalConfig(dir)
+	if err != nil {
+		return fmt.Errorf("loading sandbox config: %w", err)
+	}
+
 	// Load sandbox config (provider, env, hetzner settings)
 	sandboxCfg, err := compound.LoadSandboxConfig(dir)
 	if err != nil {
@@ -235,7 +242,7 @@ func runSandboxStartWithDeps(
 		globalCfg = nil
 	}
 	if globalCfg != nil {
-		mergeGlobalSizeDefaults(sandboxCfg, globalCfg)
+		mergeGlobalSandboxDefaults(sandboxCfg, globalCfg, localConfig)
 	}
 
 	// Apply --size override to the active provider's size field
@@ -250,6 +257,9 @@ func runSandboxStartWithDeps(
 		dayCfg, err := compound.LoadDaytonaConfig(dir)
 		if err != nil {
 			return fmt.Errorf("loading config: %w", err)
+		}
+		if globalCfg != nil {
+			mergeGlobalDaytonaConfig(dayCfg, globalCfg, localConfig)
 		}
 
 		provCfg := sandbox.ProviderConfig{
@@ -494,9 +504,26 @@ func runSingleCreate(
 		}
 		// --force: delete the existing sandbox before creating a new one
 		fmt.Fprintf(out, "Replacing existing sandbox %q...\n", name)
+		deleteProvider := provider
+		existingProvider := strings.TrimSpace(existing.Provider)
+		activeProvider := strings.TrimSpace(sandboxCfg.Provider)
+		if deleteProvider == nil || (existingProvider != "" && existingProvider != activeProvider) {
+			providerName := existingProvider
+			if providerName == "" {
+				providerName = activeProvider
+			}
+			if providerName == "" {
+				return fmt.Errorf("resolving provider for existing sandbox %q: provider is not set", name)
+			}
+			var err error
+			deleteProvider, err = sandboxStartResolveProviderForForceDelete(providerName)
+			if err != nil {
+				return fmt.Errorf("resolving provider for existing sandbox %q: %w", name, err)
+			}
+		}
 		info := sandbox.ConnectInfoFromState(existing)
 		ctx := context.Background()
-		if err := provider.Delete(ctx, info, out); err != nil {
+		if err := deleteProvider.Delete(ctx, info, out); err != nil {
 			return fmt.Errorf("force-delete of existing sandbox %q failed: %w", name, err)
 		}
 		if err := sandbox.RemoveInstance(name); err != nil {
@@ -570,10 +597,71 @@ func runSingleCreate(
 	return nil
 }
 
-// mergeGlobalSizeDefaults fills empty provider-specific size fields in
-// localCfg with values from globalCfg. This ensures provider size defaults
-// from global config apply when --size is not set.
-func mergeGlobalSizeDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbox.GlobalConfig) {
+type sandboxStartLocalConfig struct {
+	sandboxProvider          *string
+	sandboxTailscaleLockdown *bool
+	sandboxEnv               map[string]string
+	daytonaAPIKey            *string
+	daytonaServerURL         *string
+}
+
+func loadSandboxStartLocalConfig(dir string) (*sandboxStartLocalConfig, error) {
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &sandboxStartLocalConfig{}, nil
+		}
+		return nil, err
+	}
+
+	var raw struct {
+		Sandbox struct {
+			Provider          *string           `yaml:"provider"`
+			TailscaleLockdown *bool             `yaml:"tailscaleLockdown"`
+			Env               map[string]string `yaml:"env"`
+		} `yaml:"sandbox"`
+		Daytona struct {
+			APIKey    *string `yaml:"apiKey"`
+			ServerURL *string `yaml:"serverURL"`
+		} `yaml:"daytona"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+
+	return &sandboxStartLocalConfig{
+		sandboxProvider:          raw.Sandbox.Provider,
+		sandboxTailscaleLockdown: raw.Sandbox.TailscaleLockdown,
+		sandboxEnv:               raw.Sandbox.Env,
+		daytonaAPIKey:            raw.Daytona.APIKey,
+		daytonaServerURL:         raw.Daytona.ServerURL,
+	}, nil
+}
+
+// mergeGlobalSandboxDefaults merges global sandbox config into the effective
+// runtime config while preserving explicit project-local legacy values.
+func mergeGlobalSandboxDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbox.GlobalConfig, localRaw *sandboxStartLocalConfig) {
+	if localRaw == nil {
+		localRaw = &sandboxStartLocalConfig{}
+	}
+	if localRaw.sandboxProvider == nil && strings.TrimSpace(globalCfg.Provider) != "" {
+		localCfg.Provider = globalCfg.Provider
+	}
+	if localRaw.sandboxTailscaleLockdown == nil {
+		localCfg.TailscaleLockdown = globalCfg.TailscaleLockdown
+	}
+	if len(globalCfg.Env) > 0 {
+		mergedEnv := make(map[string]string, len(globalCfg.Env)+len(localCfg.Env))
+		for k, v := range globalCfg.Env {
+			mergedEnv[k] = v
+		}
+		for k, v := range localCfg.Env {
+			mergedEnv[k] = v
+		}
+		localCfg.Env = mergedEnv
+	}
+
 	// Hetzner
 	if localCfg.Hetzner.ServerType == "" {
 		localCfg.Hetzner.ServerType = globalCfg.Hetzner.ServerType
@@ -603,6 +691,21 @@ func mergeGlobalSizeDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbo
 	}
 	if localCfg.Lightsail.KeyPairName == "" {
 		localCfg.Lightsail.KeyPairName = globalCfg.Lightsail.KeyPairName
+	}
+}
+
+func mergeGlobalDaytonaConfig(localCfg *compound.DaytonaConfig, globalCfg *sandbox.GlobalConfig, localRaw *sandboxStartLocalConfig) {
+	if localCfg == nil || globalCfg == nil {
+		return
+	}
+	if localRaw == nil {
+		localRaw = &sandboxStartLocalConfig{}
+	}
+	if localRaw.daytonaAPIKey == nil {
+		localCfg.APIKey = globalCfg.Daytona.APIKey
+	}
+	if localRaw.daytonaServerURL == nil {
+		localCfg.ServerURL = globalCfg.Daytona.ServerURL
 	}
 }
 

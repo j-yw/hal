@@ -489,7 +489,12 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	}
 
 	// ── Save ──
-	envVars := make(map[string]string)
+	envVars := make(map[string]string, len(existingGlobal.Env))
+	for key, value := range existingGlobal.Env {
+		if value != "" {
+			envVars[key] = value
+		}
+	}
 	for _, f := range sandboxEnvFields {
 		if v, ok := collected[f.key]; ok && v != "" {
 			envVars[f.key] = v

@@ -158,6 +158,30 @@ func TestRunSandboxStatus_LiveQueryFailed(t *testing.T) {
 	assertContains(t, output, "Live query: failed (connection refused)")
 }
 
+func TestRunSandboxStatus_UsesProviderReportedStatus(t *testing.T) {
+	setupStatusTest(t)
+
+	saveStatusTestInstance(t, &sandbox.SandboxState{
+		Name:      "live-stopped",
+		Provider:  "digitalocean",
+		ID:        "droplet-123",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	mock := &mockStatusProvider{statusOut: "Status off"}
+	var out bytes.Buffer
+
+	err := runSandboxStatusWithDeps("live-stopped", &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	assertContains(t, output, "Status:     stopped")
+	assertContains(t, output, "Live query: ok")
+}
+
 func TestRunSandboxStatus_NotFound(t *testing.T) {
 	setupStatusTest(t)
 
