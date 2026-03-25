@@ -588,18 +588,56 @@ func TestExtractCommand(t *testing.T) {
 		input    string
 		expected string
 	}{
+		// Single-quoted wrappers
 		{"/usr/bin/bash -lc 'echo hello'", "echo hello"},
 		{"/bin/bash -lc 'ls -la'", "ls -la"},
 		{"/usr/bin/bash -c 'git status'", "git status"},
-		{"echo hello", "echo hello"},                     // No wrapper
-		{"/usr/bin/bash -lc ''", "/usr/bin/bash -lc ''"}, // Empty command - no extraction possible (start > end)
 		{"/usr/bin/bash -lc 'single'", "single"},
+
+		// Double-quoted wrappers (Codex style)
+		{`/usr/bin/bash -lc "echo hello"`, "echo hello"},
+		{`/usr/bin/bash -lc "ls -la"`, "ls -la"},
+		{`/usr/bin/bash -c "git status"`, "git status"},
+
+		// Multi-line with shell preamble (Codex style)
+		{"/usr/bin/bash -lc \"set -e\nls -ld .claude/skills\"", "ls -ld .claude/skills"},
+		{"/usr/bin/bash -lc \"set -euo pipefail\ngit diff HEAD\"", "git diff HEAD"},
+		{"/usr/bin/bash -lc \"set -e\nset -o pipefail\nrg -n foo\"", "rg -n foo"},
+
+		// No wrapper
+		{"echo hello", "echo hello"},
+
+		// Empty command - no extraction possible (start > end)
+		{"/usr/bin/bash -lc ''", "/usr/bin/bash -lc ''"},
+		{`/usr/bin/bash -lc ""`, `/usr/bin/bash -lc ""`},
 	}
 
 	for _, tc := range tests {
 		result := extractCommand(tc.input)
 		if result != tc.expected {
 			t.Errorf("extractCommand(%q): expected %q, got %q", tc.input, tc.expected, result)
+		}
+	}
+}
+
+func TestFirstMeaningfulLine(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"echo hello", "echo hello"},
+		{"set -e\nls -la", "ls -la"},
+		{"set -euo pipefail\nset -o pipefail\ngit status", "git status"},
+		{"set -e", "set -e"},           // All preamble — return last
+		{"\n\nset -e\n\n", "set -e"},   // Blank lines + preamble only
+		{"", ""},                        // Empty
+		{"\n\n", "\n\n"},               // Only newlines — falls through
+	}
+
+	for _, tc := range tests {
+		result := firstMeaningfulLine(tc.input)
+		if result != tc.expected {
+			t.Errorf("firstMeaningfulLine(%q): expected %q, got %q", tc.input, tc.expected, result)
 		}
 	}
 }

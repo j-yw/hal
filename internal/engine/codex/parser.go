@@ -388,22 +388,69 @@ func extractErrorMessage(raw map[string]interface{}) string {
 
 // extractCommand extracts the actual command from bash wrapper like:
 // "/usr/bin/bash -lc 'echo hello world'" -> "echo hello world"
+// "/usr/bin/bash -lc \"set -e\nls -la\"" -> "ls -la"
 func extractCommand(command string) string {
-	// Look for bash -lc pattern
-	if idx := strings.Index(command, "-lc '"); idx != -1 {
-		start := idx + 5
-		if end := strings.LastIndex(command, "'"); end > start {
-			return command[start:end]
+	extracted := extractBashPayload(command)
+	// Strip shell preamble lines (set -e, set -euo pipefail, etc.)
+	// and collapse to first meaningful line for display.
+	return firstMeaningfulLine(extracted)
+}
+
+// extractBashPayload unwraps the command string from bash -lc/-c wrappers
+// with either single or double quotes.
+func extractBashPayload(command string) string {
+	// Try -lc first (more specific), then -c
+	for _, flag := range []string{"-lc ", "-c "} {
+		idx := strings.Index(command, flag)
+		if idx == -1 {
+			continue
+		}
+		rest := command[idx+len(flag):]
+		if len(rest) == 0 {
+			continue
+		}
+		quote := rest[0]
+		if quote == '\'' || quote == '"' {
+			start := 1
+			end := strings.LastIndexByte(rest, quote)
+			if end > start {
+				return rest[start:end]
+			}
 		}
 	}
-
-	// Look for bash -c pattern
-	if idx := strings.Index(command, "-c '"); idx != -1 {
-		start := idx + 4
-		if end := strings.LastIndex(command, "'"); end > start {
-			return command[start:end]
-		}
-	}
-
 	return command
+}
+
+// firstMeaningfulLine returns the first line that isn't a shell preamble
+// (set -e, set -euo pipefail, etc.). If every line is preamble, returns
+// the last line. Newlines are never included in the result.
+func firstMeaningfulLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if isShellPreamble(trimmed) {
+			continue
+		}
+		return trimmed
+	}
+	// All lines were preamble — return last non-empty one
+	for i := len(lines) - 1; i >= 0; i-- {
+		if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
+			return trimmed
+		}
+	}
+	return s
+}
+
+// isShellPreamble reports whether a line is a common shell safety preamble
+// that adds no display value (set -e, set -euo pipefail, etc.).
+func isShellPreamble(line string) bool {
+	// Match "set -e", "set -euo pipefail", "set -eu", etc.
+	if strings.HasPrefix(line, "set -") {
+		return true
+	}
+	return false
 }
