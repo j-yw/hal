@@ -279,6 +279,7 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 			ValidIssues:   iteration.ValidIssues,
 			InvalidIssues: iteration.InvalidIssues,
 			FixesApplied:  iteration.FixesApplied,
+			FilesAffected: collectFilesAffected([]ReviewLoopIteration{iteration}),
 		},
 		Iterations: []ReviewLoopIteration{iteration},
 	}, nil
