@@ -9,6 +9,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/doctor"
+	ui "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -105,7 +106,7 @@ func runRepairFn(dir string, dryRun bool, jsonMode bool, out io.Writer) error {
 			fmt.Fprintln(out, string(data))
 			return nil
 		}
-		fmt.Fprintln(out, "No repairs needed. Hal is healthy.")
+		fmt.Fprintf(out, "%s No repairs needed. Hal is healthy.\n", ui.StyleSuccess.Render("[OK]"))
 		return nil
 	}
 
@@ -139,9 +140,9 @@ func runRepairFn(dir string, dryRun bool, jsonMode bool, out io.Writer) error {
 			fmt.Fprintln(out, string(data))
 			return nil
 		}
-		fmt.Fprintln(out, "Issues found but no safe auto-repairs available.")
+		fmt.Fprintf(out, "%s Issues found but no safe auto-repairs available.\n", ui.StyleWarning.Render("[!]"))
 		for _, r := range remaining {
-			fmt.Fprintf(out, "  - %s\n", r)
+			fmt.Fprintf(out, "  %s %s\n", ui.StyleMuted.Render("•"), r)
 		}
 		return nil
 	}
@@ -156,7 +157,7 @@ func runRepairFn(dir string, dryRun bool, jsonMode bool, out io.Writer) error {
 				Status:  "skipped",
 			})
 			if !jsonMode {
-				fmt.Fprintf(out, "[dry-run] Would run: %s\n", step.command)
+				fmt.Fprintf(out, "  %s [dry-run] Would run: %s\n", ui.StyleWarning.Render("○"), step.command)
 			}
 			continue
 		}
@@ -171,12 +172,12 @@ func runRepairFn(dir string, dryRun bool, jsonMode bool, out io.Writer) error {
 			action.Status = "failed"
 			action.Error = err.Error()
 			if !jsonMode {
-				fmt.Fprintf(out, "✗ %s: %v\n", step.command, err)
+				fmt.Fprintf(out, "  %s %s: %v\n", ui.StyleError.Render("✗"), step.command, err)
 			}
 		} else {
 			action.Status = "applied"
 			if !jsonMode {
-				fmt.Fprintf(out, "✓ %s\n", step.command)
+				fmt.Fprintf(out, "  %s %s\n", ui.StyleSuccess.Render("✓"), step.command)
 			}
 		}
 		applied = append(applied, action)
@@ -211,11 +212,14 @@ func runRepairFn(dir string, dryRun bool, jsonMode bool, out io.Writer) error {
 
 	fmt.Fprintln(out)
 	if dryRun {
-		fmt.Fprintf(out, "Would apply %d repair(s). Run without --dry-run to apply.\n", len(steps))
+		fmt.Fprintf(out, "%s Would apply %d repair(s). Run without --dry-run to apply.\n",
+			ui.StyleWarning.Render("[!]"), len(steps))
 	} else if allOK {
-		fmt.Fprintf(out, "Applied %d repair(s). Hal is now healthy.\n", len(steps))
+		fmt.Fprintf(out, "%s Applied %d repair(s). Hal is now healthy.\n",
+			ui.StyleSuccess.Render("[OK]"), len(steps))
 	} else {
-		fmt.Fprintf(out, "Applied %d repair(s). %d issue(s) remain. Run hal doctor for details.\n", len(steps), len(remaining))
+		fmt.Fprintf(out, "%s Applied %d repair(s). %d issue(s) remain. Run hal doctor for details.\n",
+			ui.StyleWarning.Render("[!]"), len(steps), len(remaining))
 	}
 
 	return nil

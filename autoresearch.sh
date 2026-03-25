@@ -11,7 +11,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=8
+MAX_SCORE=11
 
 # Helper: check if a file imports internal/engine (with or without alias)
 has_engine_import() {
@@ -109,10 +109,34 @@ else
     echo "E8: FAIL — JSON output paths may have changed"
 fi
 
+# E9: Repair uses styled output
+if has_engine_import cmd/repair.go && has_style_usage cmd/repair.go; then
+    SCORE=$((SCORE + 1))
+    echo "E9: PASS — repair uses styled rendering"
+else
+    echo "E9: FAIL — repair uses plain fmt.Fprintf"
+fi
+
+# E10: Init uses styled output for success/next steps
+if has_engine_import cmd/init.go && has_style_usage cmd/init.go; then
+    SCORE=$((SCORE + 1))
+    echo "E10: PASS — init uses styled rendering"
+else
+    echo "E10: FAIL — init uses plain fmt.Fprintf"
+fi
+
+# E11: Archive list uses styled output
+if has_engine_import cmd/archive.go && has_style_usage cmd/archive.go; then
+    SCORE=$((SCORE + 1))
+    echo "E11: PASS — archive uses styled rendering"
+else
+    echo "E11: FAIL — archive uses plain fmt.Fprintf"
+fi
+
 # Coverage calculation
 TOTAL_CMDS=13
 STYLED_CMDS=7
-for f in status continue doctor analyze cleanup; do
+for f in status continue doctor analyze cleanup repair init archive; do
     if has_engine_import "cmd/${f}.go" && has_style_usage "cmd/${f}.go"; then
         STYLED_CMDS=$((STYLED_CMDS + 1))
     fi
