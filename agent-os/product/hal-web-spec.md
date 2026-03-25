@@ -33,11 +33,11 @@ Mapped to hal CLI commands:
 | Write spec | You write markdown in the editor | Creating a `prd-*.md` file |
 | Generate tasks | Spec is split into 8-15 small tasks | `hal convert` + `hal explode` |
 | Execute | All tasks are built, one by one, automatically | `hal run` |
-| Review | AI reviews its own code and fixes issues | `hal review --base main` |
+| Review | AI reviews its own code and fixes issues | `hal review --base <project.default_branch> --json` |
 | Report | Summary of what was built + what to do next | `hal report` |
 | PR | Push branch, create draft pull request | `git push` + `gh pr create` |
 
-**Key fact:** `hal run` already runs ALL tasks to completion. Each completed task = a git commit. If anything crashes, `hal run` picks up from the next incomplete task. You never lose progress.
+**Key fact:** `hal run` executes up to its configured iteration limit per invocation and reports whether the PRD is complete. The server should call `hal run --json`, stop successfully only when `ok=true` and `complete=true`, continue when `ok=true` and `complete=false`, and surface failures when `ok=false`. Completed work is preserved between invocations, but partial work from an interrupted in-progress story is not guaranteed to survive.
 
 ---
 
@@ -95,12 +95,12 @@ Each spec has a **pipeline** — an ordered list of steps that run automatically
 
 | Step | What it does | hal command |
 |------|-------------|-------------|
-| **Execute** | Build all tasks | `hal run -i 50 --json` |
-| **Review** | AI reviews code, fixes issues, repeats until clean | `hal review --base main --json` |
+| **Execute** | Build tasks until the PRD is complete | Server-side loop: run `hal run --json`, stop successfully only when `ok=true` and `complete=true`, continue when `ok=true` and `complete=false`, and surface/handle failures when `ok=false` instead of looping blindly |
+| **Review** | AI reviews code, fixes issues, repeats until clean | `hal review --base <project.default_branch> --json` (with the base branch resolved from project configuration, defaulting to `main`) |
 | **Report** | Generate summary + recommendations | `hal report --json` |
 | **Gate** | Pause and wait for PM to approve/reject | (server-side) |
 | **Create PR** | Push branch, open draft PR | `git push` + `gh pr create` |
-| **Auto Next** | Use report to pick next feature automatically | `hal auto --report <path>` |
+| **Auto Next** | Use report to propose the next feature automatically, then pause for approval again | Proposed proposal-only command/mode (TBD). Do not use current `hal auto`, which runs the full pipeline. |
 
 ### Presets (Pick One)
 
@@ -150,45 +150,39 @@ This is the most advanced mode. After one feature is done:
 
 ## 5. Resilience (What Happens When Things Break)
 
-### Why It's Simpler Than You Think
+### Current hal Guarantees
 
-hal already handles recovery. After any crash:
-- **`prd.json`** tracks which tasks are done (`passes: true`). Each completion is a git commit.
-- **`auto-state.json`** tracks which pipeline step was last completed.
-- Running `hal run` again skips completed tasks and picks up the next one.
+Today's CLI already preserves enough state to support limited resumable workflows:
+- **`prd.json`** records task completion (`passes: true`). Completed work is also captured in git history, so later `hal run` invocations continue from the remaining stories.
+- **`auto-state.json`** records the last completed pipeline step for `hal auto --resume`.
+- Standalone stages like review, report, and PR creation do not have a separate persisted pipeline resume contract today.
+- LLM/API failures already have retry behavior in the existing CLI flow.
 
-So the server's job is simple: **detect the failure, reconnect to the sandbox, re-run the current step.** hal does the rest.
+These are the guarantees this spec can rely on today. They describe persisted workflow state, not a running web server or remote process supervisor.
 
-### The Three Recovery Rules
+### Recovery Rules for the Current CLI
 
-**Rule 1: The sandbox is the source of truth.**
-The server never guesses. It reads `prd.json` from the sandbox to know what's done.
+**Rule 1: Persisted state is the source of truth.**
+Recovery should read `prd.json` and related state files before deciding what remains to do.
 
-**Rule 2: Every hal command is safe to re-run.**
-`hal run` skips completed tasks. `hal auto --resume` continues from the last step. You can call them as many times as you want.
+**Rule 2: Resume behavior must build on existing hal semantics.**
+The web layer should treat `hal run` as repeatable story execution driven by `prd.json`, and use `hal auto --resume` only for the compound pipeline's saved-step resume. If the web app needs resumable review/report/PR orchestration, it must persist that stage state itself.
 
-**Rule 3: hal runs inside `nohup` in the sandbox.**
-Even if SSH drops, hal keeps running. The server just reconnects and tails the log file.
+**Rule 3: Remote execution recovery is future work.**
+Background execution, SSH reconnects, heartbeat monitoring, and server-restart recovery are proposed Phase 3 capabilities, not behavior that exists in hal today.
 
-### What Happens During Each Failure
+### Current Behavior vs. Planned Web Behavior
 
-| Failure | What actually happens | What you see |
-|---------|----------------------|-------------|
-| **You close the browser** | Nothing. Server keeps running. | When you reopen, board shows current progress. |
-| **Your WiFi drops** | Same as above. Server doesn't care about your browser. | Reconnects automatically when you're back. |
-| **SSH to sandbox drops** | hal keeps running (nohup). Server reconnects in ~5s and tails the log again. | Brief "Reconnecting..." then back to normal. Might see "T-006 completed while disconnected." |
-| **Sandbox VM reboots** | hal process dies, but filesystem survives. Server detects via heartbeat, waits for VM to come back, re-runs `hal run`. | "Sandbox restarting... Recovered. Resuming from T-005." |
-| **Sandbox VM dies permanently** | Server waits 10 min, then marks as failed. | "Sandbox lost. 5/8 tasks were saved. [Restart sandbox & resume] or [Stop]" |
-| **Server crashes** | Sandbox keeps running. On server restart, it checks all active pipelines, reconnects to sandboxes, syncs state. | "Server recovered. Reconnecting..." then back to normal. |
-| **LLM rate limit / timeout** | hal retries automatically (3 attempts, exponential backoff). | You might see "T-005: retry 2/3 (rate limited)" in the log. |
+| Scenario | What is true today | Planned web/server behavior |
+|---------|--------------------|-----------------------------|
+| **CLI process exits or crashes** | Persisted files remain. `hal run` can continue from remaining stories in `prd.json`, and `hal auto --resume` can continue from saved auto pipeline state. | Server detects failure and resumes the right step automatically. |
+| **LLM rate limit / timeout** | hal already retries automatically (3 attempts, exponential backoff). | Same behavior should surface in the web UI with live status. |
+| **Browser closes / WiFi drops** | Not applicable yet because there is no shipped web server. | Browser can disconnect without interrupting server-side progress. |
+| **SSH drops / sandbox reboot / server restart** | Not implemented in today's CLI. | Phase 3 adds runner wrapper, heartbeat monitoring, reconnect logic, and restart recovery. |
 
 ### Stop / Pause / Resume
 
-| Action | What happens |
-|--------|-------------|
-| **Pause** | Server sends SIGTERM to hal. hal saves `prd.json` and exits. Tasks completed so far are kept. Click Resume to continue. |
-| **Resume** | Server re-runs `hal run`. hal reads `prd.json`, skips completed tasks, continues. |
-| **Stop** | Server kills hal. Spec goes back to "Approved" column. All completed tasks and commits are preserved. You can re-execute later. |
+Pause, resume, and stop controls are also proposed server behavior. The implementation should preserve hal's existing state files and git-backed progress, but the actual web controls and signal-handling flow belong to Phase 3 work.
 
 ---
 
@@ -202,8 +196,10 @@ Even if SSH drops, hal keeps running. The server just reconnects and tails the l
               │ REST API + WebSocket
 ┌─────────────▼──────────────┐
 │     Hal Server             │
-│     (Go, same binary as    │
-│      hal CLI: `hal serve`) │
+│     (Go, proposed as a     │
+│      future `hal serve`    │
+│      command in the same   │
+│      binary)               │
 │                            │
 │  • SQLite database         │
 │  • Pipeline executor       │
@@ -224,10 +220,10 @@ Even if SSH drops, hal keeps running. The server just reconnects and tails the l
 └────────────────────────────┘
 ```
 
-**Why `hal serve` is part of the same binary:**
+**Why a future `hal serve` command should live in the same binary:**
 - Server imports the same Go types as the CLI (`engine.PRD`, `sandbox.SandboxState`, etc.)
 - No serialization bugs between server and CLI
-- One binary to install: `hal serve --port 8080`
+- One binary to install once the server exists
 
 **Why sandboxes:**
 - Each project runs in isolation (no cross-contamination)
@@ -383,7 +379,7 @@ Events:
 | Backend | Go (net/http + chi) | Same language as hal, shares types |
 | Database | SQLite (modernc.org/sqlite) | Single-file, no setup, embedded in binary |
 | SSH | golang.org/x/crypto/ssh | Execute hal commands in sandboxes |
-| Deployment | Single binary (`hal serve`) | Frontend embedded via `//go:embed` |
+| Deployment | Single binary (proposed future `hal serve`) | Frontend embedded via `//go:embed` |
 
 ---
 
@@ -392,12 +388,12 @@ Events:
 ### Phase 1 — Core (4 weeks)
 **Goal:** You can write a spec, see tasks on a board, execute them, and watch progress.
 
-- `hal serve` command with HTTP server + SQLite
+- Add a new `hal serve` command with HTTP server + SQLite
 - Project and spec CRUD
 - Spec editor (Tiptap markdown)
 - Auto-generate tasks from spec (convert + explode)
 - Task board (kanban)
-- Execute button → runs `hal run` locally
+- Execute button → server-side loop runs `hal run --json` locally until `complete=true`
 - WebSocket log streaming
 - Tasks update in real-time as hal completes them
 
@@ -426,7 +422,7 @@ Events:
 ### Phase 4 — Compound Loop + Polish (3 weeks)
 **Goal:** Continuous feature development loop with PM checkpoints.
 
-- Auto Next stage (uses `hal auto` to propose next feature)
+- Auto Next stage backed by a proposal-only command or mode, separate from today's full `hal auto` pipeline
 - Continuous pipeline preset
 - Queue priority (drag-drop reorder specs)
 - Stop conditions (budget, errors, time window)
@@ -478,7 +474,7 @@ Nothing starts without you clicking a button. Nothing advances past a gate witho
 | Question | Current answer |
 |----------|---------------|
 | Auth? | No auth in Phase 1 (localhost only). Add in Phase 4+. |
-| Hosted version? | Start local-only (`hal serve`). Hosted version is a separate decision. |
+| Hosted version? | Start local-only with a future `hal serve` command. Hosted version is a separate decision. |
 | Multiple sandboxes? | One per project default. Parallel execution (multiple sandboxes) in Phase 4. |
-| Can PM edit auto-generated specs? | Yes. Auto Next creates a Draft that PM can edit before approving. |
+| Can PM edit auto-generated specs? | Yes. Auto Next should create a Draft that PM can edit before approving. |
 | Gate timeout? | No timeout by default. Optional: auto-approve after N hours if quality checks pass. |
