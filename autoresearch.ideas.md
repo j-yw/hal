@@ -1,12 +1,20 @@
-# Autoresearch Deferred Ideas — Hal CLI Output Quality
+# Autoresearch Ideas — Hal CLI Output Quality
 
-## Session complete — 29/29 evals, score 3→29 (+867%)
+## Session summary: 3 → 41 (+1267%), 26 experiments, 24 files modified
 
-All user-facing commands now use lipgloss styling. Remaining work is structural.
+### What was done (7 waves)
+1. **Style adoption** — All commands now import and use lipgloss styles from `internal/engine/`
+2. **Titles** — doctor, status, continue have StyleTitle headers
+3. **Information density** — status shows git branch + Summary, doctor shows scope + per-check remediation, continue shows engine + next story + branch + summary
+4. **Structural** — archive list moved from internal FormatList to cmd-layer styled renderer, sandbox setup wizard prompts styled with bold labels + muted defaults
 
-## Structural improvements (future sessions)
-- **Archive FormatList styling** — list rendering is in `internal/archive/archive.go`, not cmd layer. Would need style injection or move rendering to cmd layer.
-- **Glamour for analyze description** — render analysis rationale/description as markdown through glamour for richer output.
-- **Non-TTY graceful degradation testing** — verify all styled output degrades cleanly when piped (lipgloss should handle this but untested).
-- **Color theme awareness** — detect light/dark terminal via `lipgloss.HasDarkBackground()` and adjust the color palette.
-- **Sandbox setup wizard interactive refinement** — the prompts could use lipgloss input styling (highlight defaults, color prompt labels).
+### Remaining (diminishing returns)
+- `run.go`, `validate.go`, `review.go` — only JSON output lines, no user-facing text to style
+- `sandbox_ssh.go` — single hint line
+- `ux.go` — deprecation warning (used by many commands)
+
+### Future directions (beyond this session's scope)
+- **Glamour for analyze description** — render analysis fields as markdown for richer formatting
+- **Color theme awareness** — `lipgloss.HasDarkBackground()` adaptive palette
+- **Non-TTY testing** — automated tests that verify piped output is clean
+- **Progress bars** — sandbox batch start/stop could use Display system progress bars

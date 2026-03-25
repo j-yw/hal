@@ -96,6 +96,11 @@ Improve the usefulness, information density, and visual consistency of all `hal`
 - **E37**: Continue shows next story ID + title in manual workflow path.
 - **E38**: Continue shows branch name in manual workflow, colored story completion.
 
+### Wave 7: Structural improvements (38→41)
+- **E39**: Archive list moved from `internal/archive.FormatList` to cmd-layer `formatArchiveListStyled` with bold headers, info-styled names, muted dates/paths, and archive count footer.
+- **E40**: Sandbox `promptField` function styled with bold labels and muted default hints.
+- **E41**: Sandbox setup saved confirmation uses `[OK]` badge with muted config path.
+
 ### Key patterns discovered
 - Use aliased import (`display`, `ui`) when local `engine` variable exists
 - `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts
