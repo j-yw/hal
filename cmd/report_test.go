@@ -315,41 +315,6 @@ func TestRunReportWithDepsNormalizesEngineName(t *testing.T) {
 	}
 }
 
-func TestRunReportWithDepsJSONSuppressesHumanOutput(t *testing.T) {
-	var out bytes.Buffer
-
-	deps := reportDeps{
-		newDisplay: engine.NewDisplay,
-		buildHeaderCtx: func(engineName string) engine.HeaderContext {
-			t.Fatal("buildHeaderCtx should not be called in json mode")
-			return engine.HeaderContext{}
-		},
-		runReview: func(ctx context.Context, eng engine.Engine, display *engine.Display, dir string, opts compound.ReviewOptions) (*compound.ReviewResult, error) {
-			display.ShowInfo("this should be suppressed\n")
-			return &compound.ReviewResult{
-				ReportPath: ".hal/reports/review-20260215.md",
-				Summary:    "machine readable",
-			}, nil
-		},
-	}
-
-	err := runReportWithDeps(context.Background(), ".", true, false, true, "codex", &out, deps)
-	if err != nil {
-		t.Fatalf("runReportWithDeps returned error: %v", err)
-	}
-
-	var result ReportResult
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("output is not valid json: %v\n%s", err, out.String())
-	}
-	if result.Summary != "machine readable" {
-		t.Fatalf("summary = %q, want %q", result.Summary, "machine readable")
-	}
-	if strings.Contains(out.String(), "this should be suppressed") {
-		t.Fatalf("output %q should not contain suppressed display text", out.String())
-	}
-}
-
 func TestRunReportUsesCommandContext(t *testing.T) {
 	originalDeps := defaultReportDeps
 	originalDryRun := reportDryRunFlag
