@@ -256,6 +256,30 @@ func showReviewResult(out io.Writer, display *engine.Display, result *compound.R
 		fmt.Fprintf(out, "%s %s\n", engine.StyleBold.Render("Summary:"), result.Summary)
 	}
 
+	if len(result.Issues) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s %d issue(s) found during session\n", engine.StyleBold.Render("Issues:"), len(result.Issues))
+		for _, issue := range result.Issues {
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleWarning.Render("•"), issue)
+		}
+	}
+
+	if len(result.PatternsAdded) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s %d pattern(s) added to AGENTS.md\n", engine.StyleBold.Render("Patterns:"), len(result.PatternsAdded))
+		for _, pattern := range result.PatternsAdded {
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleSuccess.Render("•"), pattern)
+		}
+	}
+
+	if len(result.TechDebt) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", engine.StyleBold.Render("Tech Debt:"))
+		for _, debt := range result.TechDebt {
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleMuted.Render("•"), debt)
+		}
+	}
+
 	if len(result.Recommendations) > 0 {
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "%s\n", engine.StyleBold.Render("Recommendations:"))

@@ -119,6 +119,8 @@ func Review(ctx context.Context, eng engine.Engine, display *engine.Display, dir
 		Summary:         parsed.Summary,
 		PatternsAdded:   parsed.Patterns,
 		Recommendations: parsed.Recommendations,
+		Issues:          parsed.Issues,
+		TechDebt:        parsed.TechDebt,
 	}, nil
 }
 

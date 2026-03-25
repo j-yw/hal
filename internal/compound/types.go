@@ -44,6 +44,8 @@ type ReviewResult struct {
 	Summary         string   `json:"summary"`
 	PatternsAdded   []string `json:"patternsAdded"`
 	Recommendations []string `json:"recommendations"`
+	Issues          []string `json:"issues,omitempty"`
+	TechDebt        []string `json:"techDebt,omitempty"`
 }
 
 // ReviewOptions controls review behavior.
