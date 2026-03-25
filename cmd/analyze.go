@@ -254,40 +254,46 @@ func outputAnalysisJSON(result *compound.AnalysisResult, w io.Writer) error {
 }
 
 func outputAnalysisText(result *compound.AnalysisResult, halDir string, branchPrefix string, w io.Writer) error {
+	// Title
+	title := engine.StyleTitle.Render("ANALYSIS RESULT")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "═══════════════════════════════════════════════════════════════")
-	fmt.Fprintln(w, "  ANALYSIS RESULT")
-	fmt.Fprintln(w, "═══════════════════════════════════════════════════════════════")
-	fmt.Fprintln(w)
-
-	fmt.Fprintf(w, "  Priority Item:    %s\n", result.PriorityItem)
+	fmt.Fprintf(w, "  %s\n", title)
 	fmt.Fprintln(w)
 
-	fmt.Fprintln(w, "  Description:")
+	// Priority item (bold)
+	fmt.Fprintf(w, "  %s    %s\n", engine.StyleBold.Render("Priority Item:"), result.PriorityItem)
+	fmt.Fprintln(w)
+
+	// Description
+	fmt.Fprintf(w, "  %s\n", engine.StyleBold.Render("Description:"))
 	fmt.Fprintf(w, "    %s\n", result.Description)
 	fmt.Fprintln(w)
 
-	fmt.Fprintln(w, "  Rationale:")
+	// Rationale
+	fmt.Fprintf(w, "  %s\n", engine.StyleBold.Render("Rationale:"))
 	fmt.Fprintf(w, "    %s\n", result.Rationale)
 	fmt.Fprintln(w)
 
+	// Acceptance Criteria
 	if len(result.AcceptanceCriteria) > 0 {
-		fmt.Fprintln(w, "  Acceptance Criteria:")
+		fmt.Fprintf(w, "  %s\n", engine.StyleBold.Render("Acceptance Criteria:"))
 		for _, criterion := range result.AcceptanceCriteria {
-			fmt.Fprintf(w, "    - %s\n", criterion)
+			fmt.Fprintf(w, "    %s %s\n", engine.StyleSuccess.Render("•"), criterion)
 		}
 		fmt.Fprintln(w)
 	}
 
-	fmt.Fprintf(w, "  Estimated Tasks:  %d\n", result.EstimatedTasks)
-	fmt.Fprintf(w, "  Suggested Branch: %s%s\n", branchPrefix, result.BranchName)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "═══════════════════════════════════════════════════════════════")
+	// Stats line
+	fmt.Fprintf(w, "  %s  %s\n",
+		engine.StyleMuted.Render(fmt.Sprintf("Tasks: %d", result.EstimatedTasks)),
+		engine.StyleMuted.Render(fmt.Sprintf("Branch: %s%s", branchPrefix, result.BranchName)),
+	)
 	fmt.Fprintln(w)
 
-	fmt.Fprintln(w, "Next steps:")
-	fmt.Fprintln(w, "  1. hal auto --report <path>  # Run full pipeline")
-	fmt.Fprintf(w, "  2. Or manually create a PRD in %s/\n", halDir)
+	// Next steps
+	fmt.Fprintf(w, "  %s\n", engine.StyleBold.Render("Next steps:"))
+	fmt.Fprintf(w, "    1. %s  %s\n", engine.StyleInfo.Render("hal auto --report <path>"), engine.StyleMuted.Render("# Run full pipeline"))
+	fmt.Fprintf(w, "    2. %s\n", engine.StyleMuted.Render(fmt.Sprintf("Or manually create a PRD in %s/", halDir)))
 	fmt.Fprintln(w)
 
 	return nil
