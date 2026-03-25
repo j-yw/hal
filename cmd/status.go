@@ -94,6 +94,7 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 
 	// Human-readable output
 	engine, _ := compound.LoadDefaultEngine(dir)
+	gitBranch, _ := compound.CurrentBranchOptional()
 
 	// Header
 	fmt.Fprintf(out, "%s\n", display.StyleTitle.Render("Status"))
@@ -101,6 +102,9 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	fmt.Fprintf(out, "%s     %s\n", display.StyleBold.Render("State:"), result.State)
 	if engine != "" {
 		fmt.Fprintf(out, "%s    %s\n", display.StyleBold.Render("Engine:"), engine)
+	}
+	if gitBranch != "" {
+		fmt.Fprintf(out, "%s %s\n", display.StyleBold.Render("Git branch:"), display.StyleInfo.Render(gitBranch))
 	}
 	fmt.Fprintln(out)
 
@@ -159,6 +163,11 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	if result.NextAction.ID != "" {
 		fmt.Fprintf(out, "%s    %s\n", display.StyleBold.Render("Action:"), display.StyleInfo.Render(result.NextAction.Command))
 		fmt.Fprintf(out, "          %s\n", display.StyleMuted.Render(result.NextAction.Description))
+	}
+
+	if result.Summary != "" {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", display.StyleMuted.Render(result.Summary))
 	}
 
 	return nil

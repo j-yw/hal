@@ -123,7 +123,12 @@ func runDoctorFn(dir string, jsonMode bool, out io.Writer) error {
 		default:
 			icon = display.StyleSuccess.Render("✓")
 		}
-		fmt.Fprintf(out, "  %s  %s\n", icon, c.Message)
+		// Show scope for failed/warned checks to help diagnose
+		if c.Scope != "" && (c.Status == doctor.StatusFail || c.Status == doctor.StatusWarn) {
+			fmt.Fprintf(out, "  %s  %s %s\n", icon, c.Message, display.StyleMuted.Render("["+c.Scope+"]"))
+		} else {
+			fmt.Fprintf(out, "  %s  %s\n", icon, c.Message)
+		}
 	}
 
 	fmt.Fprintln(out)

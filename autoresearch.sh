@@ -92,22 +92,15 @@ else
     echo "E31: FAIL — continue doesn't show engine name"
 fi
 
-# E32: Doctor shows check scope or severity in human output
-if grep -qE '\.Scope|\.Severity|scope|severity' cmd/doctor.go 2>/dev/null && \
-   grep -qE 'Scope|Severity' cmd/doctor.go 2>/dev/null | grep -v 'json' 2>/dev/null; then
-    SCORE=$((SCORE+1)); echo "E32: PASS — doctor shows scope/severity"
+# E32: Doctor shows check scope or severity in human output block
+if sed -n '/Human-readable/,/return nil/p' cmd/doctor.go 2>/dev/null | grep -qE 'c\.Scope|c\.Severity'; then
+    SCORE=$((SCORE+1)); echo "E32: PASS — doctor renders check metadata"
 else
-    # Simpler: just check if c.Scope or c.Severity appears in the human output block
-    if sed -n '/Human-readable/,/return nil/p' cmd/doctor.go 2>/dev/null | grep -qE 'c\.Scope\|c\.Severity'; then
-        SCORE=$((SCORE+1)); echo "E32: PASS — doctor renders check metadata"
-    else
-        echo "E32: FAIL — doctor doesn't show check scope/severity"
-    fi
+    echo "E32: FAIL — doctor doesn't show check scope/severity"
 fi
 
 # E33: Status shows git branch from environment (not just PRD branch)
-# The status command should show the current git branch for context
-if grep -qE 'CurrentBranch\|git.*branch\|gitBranch' cmd/status.go 2>/dev/null; then
+if grep -qE 'CurrentBranch|gitBranch' cmd/status.go 2>/dev/null; then
     SCORE=$((SCORE+1)); echo "E33: PASS — status shows git branch"
 else
     echo "E33: FAIL — status doesn't show current git branch"
