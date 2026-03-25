@@ -85,6 +85,17 @@ Improve the usefulness, information density, and visual consistency of all `hal`
 - **E28 auto**: Styled no-reports warning with [!] badge and info-styled path.
 - **E29 prd**: Colored ✓/✗ for file presence, info-styled branch, success-styled counts, [OK] badge.
 
+### Wave 6: Information density (29→38)
+- **E30**: Status now displays the `Summary` field from StatusResult.
+- **E31**: Continue already showed engine (passed at baseline).
+- **E32**: Doctor shows `[scope]` suffix (repo/engine_local/etc.) on failed/warned checks.
+- **E33**: Status shows current git branch via `compound.CurrentBranchOptional()`.
+- **E34**: Continue shows engine name in the healthy workflow path.
+- **E35**: Doctor shows per-check remediation hints (`fix: hal init`) under failed checks.
+- **E36**: Continue shows summary text at the bottom.
+- **E37**: Continue shows next story ID + title in manual workflow path.
+- **E38**: Continue shows branch name in manual workflow, colored story completion.
+
 ### Key patterns discovered
 - Use aliased import (`display`, `ui`) when local `engine` variable exists
 - `archive.go` can use `engine.Style*` directly since only `engine.PRD` conflicts
