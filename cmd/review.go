@@ -209,6 +209,7 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 	if err != nil {
 		return fmt.Errorf("review loop failed with %s: %w", engineName, err)
 	}
+	result.Engine = engineName
 
 	if deps.writeReports != nil {
 		if _, _, err := deps.writeReports(".", result); err != nil {
@@ -268,6 +269,7 @@ func runReviewLoopJSON(ctx context.Context, req reviewRequest, out io.Writer, de
 	if err != nil {
 		return fmt.Errorf("review loop failed with %s: %w", engineName, err)
 	}
+	result.Engine = engineName
 
 	// Write reports
 	if deps.writeReports != nil {

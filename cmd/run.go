@@ -40,6 +40,7 @@ var (
 type RunResult struct {
 	ContractVersion int            `json:"contractVersion"`
 	OK              bool           `json:"ok"`
+	Engine          string         `json:"engine,omitempty"`
 	Iterations      int            `json:"iterations"`
 	Complete        bool           `json:"complete"`
 	StoryID         string         `json:"storyId,omitempty"`
@@ -303,7 +304,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	result := runner.Run(context.Background())
 
 	if jsonMode {
-		return outputRunJSON(out, result, story, dryRun)
+		return outputRunJSON(out, result, story, dryRun, resolvedEngine)
 	}
 
 	// Show completion summary in terminal mode
@@ -323,6 +324,9 @@ func showRunSummary(out io.Writer, result loop.Result) {
 	if result.Complete {
 		fmt.Fprintf(out, "%s All stories complete after %d iteration(s).\n",
 			engine.StyleSuccess.Render("✓"), result.Iterations)
+	} else if result.Error != nil {
+		fmt.Fprintf(out, "%s Failed after %d iteration(s).\n",
+			engine.StyleError.Render("✗"), result.Iterations)
 	} else if result.Success {
 		fmt.Fprintf(out, "%s Completed %d iteration(s). Stories remain.\n",
 			engine.StyleInfo.Render("→"), result.Iterations)
@@ -376,10 +380,11 @@ func outputRunJSONError(out io.Writer, errMsg string) error {
 	return nil
 }
 
-func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool) error {
+func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string) error {
 	jr := RunResult{
 		ContractVersion: 1,
 		OK:              result.Success,
+		Engine:          engineName,
 		Iterations:      result.Iterations,
 		StoryID:         storyID,
 		DryRun:          dryRun,

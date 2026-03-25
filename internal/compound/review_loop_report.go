@@ -132,6 +132,9 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 
 	sb.WriteString("## Run Metadata\n\n")
 	sb.WriteString(fmt.Sprintf("- Command: `%s`\n", strings.TrimSpace(result.Command)))
+	if result.Engine != "" {
+		sb.WriteString(fmt.Sprintf("- Engine: %s\n", strings.TrimSpace(result.Engine)))
+	}
 	sb.WriteString(fmt.Sprintf("- Base Branch: `%s`\n", strings.TrimSpace(result.BaseBranch)))
 	sb.WriteString(fmt.Sprintf("- Current Branch: `%s`\n", strings.TrimSpace(result.CurrentBranch)))
 	sb.WriteString(fmt.Sprintf("- Requested Iterations: %d\n", result.RequestedIterations))

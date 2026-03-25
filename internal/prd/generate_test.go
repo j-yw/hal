@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -320,6 +319,16 @@ func TestParseBatchAnswers(t *testing.T) {
 			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
 		},
 		{
+			name:  "fully concatenated",
+			input: "1A2B3C",
+			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
+		},
+		{
+			name:  "concatenated lowercase",
+			input: "1a2b3c",
+			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
+		},
+		{
 			name:  "partial answers",
 			input: "1B, 3A",
 			want:  map[int]string{1: "Option B", 3: "Yes"},
@@ -442,5 +451,4 @@ func TestParseBatchAnswers_InvalidOptionShowsValidOptions(t *testing.T) {
 	}
 }
 
-// Suppress unused import warnings — sort is used in error message validation above.
-var _ = sort.Strings
+

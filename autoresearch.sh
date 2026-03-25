@@ -100,7 +100,21 @@ echo "$ITER_BLOCK" | grep -qiE 'reason|Reason|invalid.*:' && { SCORE=$((SCORE+1)
 # E56: Auto JSON failure path includes duration
 sed -n '/func outputAutoJSON/,/^}/p' cmd/auto.go 2>/dev/null | grep -qiE 'duration|elapsed|Duration' && { SCORE=$((SCORE+1)); echo "E56: PASS"; } || echo "E56: FAIL"
 
-MAX_SCORE=56
+# === E57-E60: Wave 13 — Error paths + engine tracking ===
+
+# E57: showRunSummary handles error case (not just success/complete)
+sed -n '/func showRunSummary/,/^func /p' cmd/run.go 2>/dev/null | grep -qiE 'Error|error|failed|Failed' && { SCORE=$((SCORE+1)); echo "E57: PASS"; } || echo "E57: FAIL"
+
+# E58: ReviewLoopResult includes engine name
+sed -n '/type ReviewLoopResult/,/^}/p' internal/compound/types.go 2>/dev/null | grep -qiE 'engine' && { SCORE=$((SCORE+1)); echo "E58: PASS"; } || echo "E58: FAIL"
+
+# E59: Review markdown metadata shows engine used
+sed -n '/Run Metadata/,/## Iterations/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qiE 'engine|Engine' && { SCORE=$((SCORE+1)); echo "E59: PASS"; } || echo "E59: FAIL"
+
+# E60: RunResult JSON includes engine name
+sed -n '/type RunResult/,/^}/p' cmd/run.go 2>/dev/null | grep -qiE 'engine' && { SCORE=$((SCORE+1)); echo "E60: PASS"; } || echo "E60: FAIL"
+
+MAX_SCORE=60
 
 echo ""
 echo "=== Score: ${SCORE}/${MAX_SCORE} ==="

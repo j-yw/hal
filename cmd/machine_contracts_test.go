@@ -644,7 +644,7 @@ func TestNextActionFieldsConsistent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run("run_"+tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			if err := outputRunJSON(&buf, tt.result, "", false); err != nil {
+			if err := outputRunJSON(&buf, tt.result, "", false, "codex"); err != nil {
 				t.Fatalf("outputRunJSON error: %v", err)
 			}
 			var jr RunResult

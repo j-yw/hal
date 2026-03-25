@@ -59,6 +59,7 @@ type ReviewLoopResult struct {
 	Command             string                `json:"command"`
 	BaseBranch          string                `json:"baseBranch"`
 	CurrentBranch       string                `json:"currentBranch"`
+	Engine              string                `json:"engine,omitempty"`
 	RequestedIterations int                   `json:"requestedIterations"`
 	CompletedIterations int                   `json:"completedIterations"`
 	StopReason          string                `json:"stopReason"`
