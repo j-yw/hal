@@ -10,7 +10,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=38
+MAX_SCORE=41
 
 has_engine_import() { grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null; }
 has_style_usage() { grep -qE '(engine|display|ui|styles)\.(Style[A-Za-z]+|BoxStyle|HeaderBox|SuccessBox|ErrorBox|WarningBox)' "$1" 2>/dev/null; }
@@ -141,6 +141,33 @@ if sed -n '/Human-readable/,/return nil/p' cmd/continue.go 2>/dev/null | grep -q
     SCORE=$((SCORE+1)); echo "E38: PASS — continue shows branch in manual workflow"
 else
     echo "E38: FAIL — continue doesn't show branch"
+fi
+
+# E39: Archive list rendered with cmd-layer styling (not delegating to internal FormatList)
+if grep -q 'formatArchiveListStyled' cmd/archive.go 2>/dev/null && \
+   ! grep -q 'archive\.FormatList' cmd/archive.go 2>/dev/null; then
+    SCORE=$((SCORE+1)); echo "E39: PASS — archive list uses cmd-layer styled renderer"
+else
+    echo "E39: FAIL — archive list still delegates to internal FormatList"
+fi
+
+# E40: Sandbox setup prompts have styled labels (promptField uses styles)
+if grep -q 'promptField' cmd/sandbox.go 2>/dev/null; then
+    PROMPT_STYLES=$(sed -n '/func promptField/,/^}/p' cmd/sandbox.go 2>/dev/null | grep -cE '(engine|display|ui)\.Style' || echo 0)
+    if [ "$PROMPT_STYLES" -ge 2 ]; then
+        SCORE=$((SCORE+1)); echo "E40: PASS — promptField has ${PROMPT_STYLES} style usages"
+    else
+        echo "E40: FAIL — promptField has only ${PROMPT_STYLES} style usages (need ≥2)"
+    fi
+else
+    echo "E40: FAIL — no promptField function found"
+fi
+
+# E41: Sandbox setup saved confirmation is styled
+if grep -qE '(engine|display|ui)\.Style.*(Saved|saved|OK)' cmd/sandbox.go 2>/dev/null; then
+    SCORE=$((SCORE+1)); echo "E41: PASS — sandbox setup saved confirmation styled"
+else
+    echo "E41: FAIL — sandbox setup saved line unstyled"
 fi
 
 echo ""

@@ -253,7 +253,9 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	case "lightsail":
 		defaultChoice = "4"
 	}
-	fmt.Fprintf(out, "  (1) Daytona  (2) Hetzner  (3) DigitalOcean  (4) Lightsail [%s]: ", defaultChoice)
+	fmt.Fprintf(out, "  %s Daytona  %s Hetzner  %s DigitalOcean  %s Lightsail [%s]: ",
+		ui.StyleBold.Render("(1)"), ui.StyleBold.Render("(2)"), ui.StyleBold.Render("(3)"), ui.StyleBold.Render("(4)"),
+		ui.StyleMuted.Render(defaultChoice))
 	line, _ := reader.ReadString('\n')
 	choice := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
 	if choice == "" {
@@ -468,7 +470,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	lockdown := false
 	if selectedProvider != "daytona" {
-		fmt.Fprintf(out, "  Lock down to Tailscale only? (y/n) [%s]: ", yesNoDefault(existingGlobal.TailscaleLockdown))
+		fmt.Fprintf(out, "  %s (y/n) [%s]: ", ui.StyleBold.Render("Lock down to Tailscale only?"), ui.StyleMuted.Render(yesNoDefault(existingGlobal.TailscaleLockdown)))
 		line, _ := reader.ReadString('\n')
 		v := strings.ToLower(strings.TrimSpace(strings.TrimRight(line, "\r\n")))
 		switch v {
@@ -535,7 +537,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	// ── Summary ──
 	fmt.Fprintln(out, "")
-	fmt.Fprintf(out, "  ── Saved to %s ──\n", sandbox.GlobalConfigPath())
+	fmt.Fprintf(out, "  %s Saved to %s\n", ui.StyleSuccess.Render("[OK]"), ui.StyleMuted.Render(sandbox.GlobalConfigPath()))
 	fmt.Fprintln(out, "")
 	fmt.Fprintf(out, "  Provider:   %s\n", selectedProvider)
 
@@ -654,9 +656,9 @@ func promptField(
 	}
 
 	if hint != "" {
-		fmt.Fprintf(out, "  %s [%s]: ", field.label, hint)
+		fmt.Fprintf(out, "  %s [%s]: ", ui.StyleBold.Render(field.label), ui.StyleMuted.Render(hint))
 	} else {
-		fmt.Fprintf(out, "  %s: ", field.label)
+		fmt.Fprintf(out, "  %s: ", ui.StyleBold.Render(field.label))
 	}
 
 	var val string
