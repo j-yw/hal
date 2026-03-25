@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
@@ -30,6 +32,7 @@ type AutoResult struct {
 	OK              bool            `json:"ok"`
 	Resumed         bool            `json:"resumed,omitempty"`
 	Duration        string          `json:"duration,omitempty"`
+	Branch          string          `json:"branch,omitempty"`
 	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	Summary         string          `json:"summary"`
@@ -262,13 +265,20 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	elapsed := time.Since(autoStart)
 
+	autoBranch, _ := compound.CurrentBranchOptional()
+
 	if jsonMode {
+		summary := "Auto pipeline completed successfully."
+		if autoBranch != "" {
+			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
+		}
 		jr := AutoResult{
 			ContractVersion: 1,
 			OK:              true,
 			Resumed:         resume,
 			Duration:        elapsed.Round(time.Second).String(),
-			Summary:         "Auto pipeline completed successfully.",
+			Summary:         summary,
+			Branch:          autoBranch,
 			NextAction: &AutoNextAction{
 				ID:          "run_report",
 				Command:     "hal report",
@@ -284,10 +294,16 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	}
 
 	// Show pipeline summary
-	autoBranch, _ := compound.CurrentBranchOptional()
 	summaryParts := []string{fmt.Sprintf("Duration: %s", elapsed.Round(time.Second))}
 	if autoBranch != "" {
 		summaryParts = append(summaryParts, fmt.Sprintf("Branch: %s", autoBranch))
+	}
+	// Show PRD task progress if available
+	if prd, err := engine.LoadPRDFile(filepath.Join(dir, template.HalDir), template.AutoPRDFile); err == nil {
+		completed, total := prd.Progress()
+		if total > 0 {
+			summaryParts = append(summaryParts, fmt.Sprintf("Tasks: %d/%d", completed, total))
+		}
 	}
 	display.ShowCommandSuccess("Auto pipeline completed!", strings.Join(summaryParts, " · "))
 

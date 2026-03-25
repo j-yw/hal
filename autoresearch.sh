@@ -108,7 +108,15 @@ sed -n '/type Result struct/,/^}/p' internal/loop/loop.go 2>/dev/null | grep -qi
 # E48: Review totals rendered with fix rate percentage
 sed -n '/Totals/,/Stop Reason/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qE 'rate|%%|percent|fix.*ratio' && { SCORE=$((SCORE+1)); echo "E48: PASS"; } || echo "E48: FAIL"
 
-MAX_SCORE=48
+# === E49-E50: Wave 10 — Final polish ===
+
+# E49: Auto JSON success includes branch info
+sed -n '/pipeline.Run/,/fmt.Fprintln.*data/p' cmd/auto.go 2>/dev/null | grep -qiE 'branch' && { SCORE=$((SCORE+1)); echo "E49: PASS"; } || echo "E49: FAIL"
+
+# E50: Auto terminal shows PRD progress at completion
+sed -n '/pipeline.Run/,/ShowCommandSuccess/p' cmd/auto.go 2>/dev/null | grep -qiE 'prd|progress|stories|tasks' && { SCORE=$((SCORE+1)); echo "E50: PASS"; } || echo "E50: FAIL"
+
+MAX_SCORE=50
 
 echo ""
 echo "=== Score: ${SCORE}/${MAX_SCORE} ==="
