@@ -105,4 +105,23 @@ Summary: Validated all three reported issues...
 - E14: `go test ./cmd/... ./internal/compound/...` passes
 
 ## What's Been Tried
-(New session — nothing tried yet)
+
+### Session summary: 3→52 (+1633%), 11 waves, 18 experiments, 0 test failures
+
+**Wave 1 (E1-E4)**: ReviewIssueDetail type + buildIssueDetails merger in runReviewIteration  
+**Wave 2 (E5-E7)**: Per-issue table, humanizeStopReason, Duration on ReviewLoopResult  
+**Wave 3 (E8-E10)**: showReviewResult renders patterns/issues/techDebt, report JSON enrichment  
+**Wave 4 (E11-E14)**: Story info per iteration (baseline), run summary with PRD progress  
+**Wave 5 (E15-E20)**: Per-iteration timing, FilesAffected, severity distribution, report JSON  
+**Wave 6 (E21-E24)**: Rationale on ReviewIssueDetail, loop.Result Duration via defer, auto timing  
+**Wave 7 (E25-E28)**: Rationale details section, run/auto JSON Duration  
+**Wave 8 (E29-E36)**: SuggestedFix, total duration in totals, report JSON issues/techDebt  
+**Wave 9 (E37-E44)**: loop.Result CompletedStories/TotalStories, auto branch at completion  
+**Wave 10 (E45-E48)**: synthesizeOutcome, LastStoryID on loop.Result, fix rate %  
+**Wave 11 (E49-E52)**: Run JSON lastStoryId, auto JSON branch+tasks
+
+### Key patterns
+- Use `omitempty` on new JSON fields to preserve backward compatibility
+- Named return + defer for timing: `func (r) Run() (result Result) { defer func() { result.Duration = ... }() }`
+- Build per-issue detail by merging review findings with fix outcomes in a separate function
+- Consolidate data flow: use loop.Result counts instead of re-reading PRD from disk

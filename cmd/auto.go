@@ -265,7 +265,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Run the pipeline
 	if err := pipeline.Run(ctx, opts); err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, resume, err.Error(), autoFailurePipeline, pipeline.HasState())
+			return outputAutoJSON(out, false, resume, err.Error(), autoFailurePipeline, pipeline.HasState(), time.Since(autoStart))
 		}
 		return err
 	}
@@ -324,12 +324,15 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func outputAutoJSON(out io.Writer, ok bool, resumed bool, summary string, failure autoFailureKind, resumable bool) error {
+func outputAutoJSON(out io.Writer, ok bool, resumed bool, summary string, failure autoFailureKind, resumable bool, opts ...time.Duration) error {
 	jr := AutoResult{
 		ContractVersion: 1,
 		OK:              ok,
 		Resumed:         resumed,
 		Summary:         summary,
+	}
+	if len(opts) > 0 && opts[0] > 0 {
+		jr.Duration = opts[0].Round(time.Second).String()
 	}
 	if ok {
 		jr.NextAction = &AutoNextAction{

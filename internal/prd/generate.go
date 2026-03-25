@@ -241,13 +241,13 @@ func parseQuestionsResponse(response string) ([]Question, error) {
 	return qr.Questions, nil
 }
 
-// collectAnswersStyled collects answers using styled display boxes.
+// collectAnswersStyled displays all questions at once and collects answers in a
+// single batch input like "1A, 2B, 3C, 4B, 5A".
 func collectAnswersStyled(questions []Question, display *engine.Display) (map[int]string, error) {
-	answers := make(map[int]string)
 	reader := bufio.NewReader(os.Stdin)
 
+	// Show all questions at once
 	for _, q := range questions {
-		// Convert options to display format
 		displayOpts := make([]engine.QuestionOption, len(q.Options))
 		for i, opt := range q.Options {
 			displayOpts[i] = engine.QuestionOption{
@@ -257,47 +257,128 @@ func collectAnswersStyled(questions []Question, display *engine.Display) (map[in
 			}
 		}
 
-		// Show styled question box
 		if display != nil {
 			display.ShowQuestion(q.Number, q.Text, displayOpts)
 		} else {
-			// Fallback to plain display
 			fmt.Printf("\n%d. %s\n", q.Number, q.Text)
 			for _, opt := range q.Options {
 				fmt.Printf("   %s. %s\n", opt.Letter, opt.Label)
 			}
 		}
+	}
 
-		fmt.Print("Your answer: ")
+	// Build example string from actual question numbers
+	example := buildAnswerExample(questions)
+	fmt.Printf("\nYour answers (e.g. %s): ", example)
 
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		input = strings.TrimSpace(input)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
 
-		// Check if it's a letter option
-		upperInput := strings.ToUpper(input)
-		for _, opt := range q.Options {
-			if opt.Letter == upperInput {
-				if strings.Contains(strings.ToLower(opt.Label), "other") {
-					fmt.Print("Please specify: ")
-					custom, err := reader.ReadString('\n')
-					if err != nil {
-						return nil, err
-					}
-					answers[q.Number] = strings.TrimSpace(custom)
-				} else {
-					answers[q.Number] = opt.Label
-				}
-				break
+	// Build option lookup: questionNumber -> letter -> label
+	optionMap := buildOptionMap(questions)
+
+	answers, err := parseBatchAnswers(strings.TrimSpace(input), optionMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for "Other" options that need custom text
+	for qNum, label := range answers {
+		if strings.Contains(strings.ToLower(label), "other") {
+			fmt.Printf("Q%d — please specify: ", qNum)
+			custom, err := reader.ReadString('\n')
+			if err != nil {
+				return nil, err
 			}
+			answers[qNum] = strings.TrimSpace(custom)
 		}
-		if _, ok := answers[q.Number]; !ok {
-			// User typed custom answer
-			answers[q.Number] = input
+	}
+
+	return answers, nil
+}
+
+// buildAnswerExample generates an example answer string like "1A, 2B, 3C".
+func buildAnswerExample(questions []Question) string {
+	parts := make([]string, 0, len(questions))
+	letters := []string{"A", "B", "C", "D"}
+	for i, q := range questions {
+		letter := letters[i%len(letters)]
+		parts = append(parts, fmt.Sprintf("%d%s", q.Number, letter))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// buildOptionMap creates a lookup: questionNumber -> uppercase letter -> label.
+func buildOptionMap(questions []Question) map[int]map[string]string {
+	m := make(map[int]map[string]string, len(questions))
+	for _, q := range questions {
+		opts := make(map[string]string, len(q.Options))
+		for _, opt := range q.Options {
+			opts[strings.ToUpper(opt.Letter)] = opt.Label
 		}
-		fmt.Println()
+		m[q.Number] = opts
+	}
+	return m
+}
+
+// parseBatchAnswers parses a compact answer string like "1A, 2B, 3C" into a map
+// of question number -> selected label. Supports formats:
+//   - "1A, 2B, 3C"        (with commas)
+//   - "1A 2B 3C"           (space-separated)
+//   - "1a,2b,3c"           (lowercase, no spaces)
+//   - "1A,2B,3C,4B,5A"    (mixed)
+func parseBatchAnswers(input string, optionMap map[int]map[string]string) (map[int]string, error) {
+	answers := make(map[int]string)
+
+	// Normalize: replace commas with spaces, then split on whitespace
+	input = strings.ReplaceAll(input, ",", " ")
+	tokens := strings.Fields(input)
+
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("no answers provided")
+	}
+
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if len(token) < 2 {
+			return nil, fmt.Errorf("invalid answer %q — expected format like 1A", token)
+		}
+
+		// Split into number prefix and letter suffix
+		// Find where digits end: "1A" → num="1" letter="A", "12B" → num="12" letter="B"
+		splitIdx := 0
+		for splitIdx < len(token) && token[splitIdx] >= '0' && token[splitIdx] <= '9' {
+			splitIdx++
+		}
+		if splitIdx == 0 || splitIdx == len(token) {
+			return nil, fmt.Errorf("invalid answer %q — expected format like 1A", token)
+		}
+
+		numStr := token[:splitIdx]
+		letter := strings.ToUpper(token[splitIdx:])
+
+		var qNum int
+		if _, err := fmt.Sscanf(numStr, "%d", &qNum); err != nil {
+			return nil, fmt.Errorf("invalid question number in %q", token)
+		}
+
+		opts, ok := optionMap[qNum]
+		if !ok {
+			return nil, fmt.Errorf("unknown question number %d in %q", qNum, token)
+		}
+
+		label, ok := opts[letter]
+		if !ok {
+			validLetters := make([]string, 0, len(opts))
+			for l := range opts {
+				validLetters = append(validLetters, l)
+			}
+			return nil, fmt.Errorf("invalid option %s for question %d (valid: %s)", letter, qNum, strings.Join(validLetters, ", "))
+		}
+
+		answers[qNum] = label
 	}
 
 	return answers, nil

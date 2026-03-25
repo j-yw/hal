@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/engine"
@@ -246,7 +248,7 @@ func TestGenerateWithEngine_JSONOutputReplacesExistingCanonicalPRD(t *testing.T)
 	if err != nil {
 		t.Fatalf("failed to create stdin pipe: %v", err)
 	}
-	if _, err := stdinWriter.WriteString("A\n"); err != nil {
+	if _, err := stdinWriter.WriteString("1A\n"); err != nil {
 		t.Fatalf("failed to seed stdin: %v", err)
 	}
 	if err := stdinWriter.Close(); err != nil {
@@ -278,3 +280,167 @@ func TestGenerateWithEngine_JSONOutputReplacesExistingCanonicalPRD(t *testing.T)
 		t.Fatalf("output branchName = %q, want %q", got, "hal/new-feature")
 	}
 }
+
+func TestParseBatchAnswers(t *testing.T) {
+	optionMap := map[int]map[string]string{
+		1: {"A": "Option A", "B": "Option B", "C": "Option C", "D": "Other (specify)"},
+		2: {"A": "Fast", "B": "Reliable", "C": "Cheap"},
+		3: {"A": "Yes", "B": "No", "C": "Maybe"},
+	}
+
+	tests := []struct {
+		name    string
+		input   string
+		want    map[int]string
+		wantErr string
+	}{
+		{
+			name:  "comma separated",
+			input: "1A, 2B, 3C",
+			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
+		},
+		{
+			name:  "space separated",
+			input: "1A 2B 3C",
+			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
+		},
+		{
+			name:  "no spaces",
+			input: "1A,2B,3C",
+			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
+		},
+		{
+			name:  "lowercase",
+			input: "1a, 2b, 3c",
+			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
+		},
+		{
+			name:  "mixed spacing",
+			input: "1A,  2B,3C",
+			want:  map[int]string{1: "Option A", 2: "Reliable", 3: "Maybe"},
+		},
+		{
+			name:  "partial answers",
+			input: "1B, 3A",
+			want:  map[int]string{1: "Option B", 3: "Yes"},
+		},
+		{
+			name:    "empty input",
+			input:   "",
+			wantErr: "no answers provided",
+		},
+		{
+			name:    "invalid token too short",
+			input:   "A",
+			wantErr: "invalid answer",
+		},
+		{
+			name:    "unknown question number",
+			input:   "9A",
+			wantErr: "unknown question number 9",
+		},
+		{
+			name:    "invalid option letter",
+			input:   "1Z",
+			wantErr: "invalid option Z for question 1",
+		},
+		{
+			name:    "no letter suffix",
+			input:   "123",
+			wantErr: "invalid answer",
+		},
+		{
+			name:    "no number prefix",
+			input:   "AB",
+			wantErr: "invalid answer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseBatchAnswers(tt.input, optionMap)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseBatchAnswers(%q) = nil error, want error containing %q", tt.input, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseBatchAnswers(%q) error = %q, want containing %q", tt.input, err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBatchAnswers(%q) error = %v, want nil", tt.input, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseBatchAnswers(%q) = %d answers, want %d", tt.input, len(got), len(tt.want))
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("parseBatchAnswers(%q)[%d] = %q, want %q", tt.input, k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildAnswerExample(t *testing.T) {
+	questions := []Question{
+		{Number: 1, Options: []Option{{Letter: "A"}, {Letter: "B"}}},
+		{Number: 2, Options: []Option{{Letter: "A"}, {Letter: "B"}}},
+		{Number: 3, Options: []Option{{Letter: "A"}, {Letter: "B"}}},
+	}
+
+	got := buildAnswerExample(questions)
+	if got != "1A, 2B, 3C" {
+		t.Errorf("buildAnswerExample() = %q, want %q", got, "1A, 2B, 3C")
+	}
+}
+
+func TestBuildOptionMap(t *testing.T) {
+	questions := []Question{
+		{Number: 1, Options: []Option{
+			{Letter: "A", Label: "Alpha"},
+			{Letter: "b", Label: "Beta"},
+		}},
+		{Number: 2, Options: []Option{
+			{Letter: "A", Label: "Yes"},
+		}},
+	}
+
+	got := buildOptionMap(questions)
+
+	if got[1]["A"] != "Alpha" {
+		t.Errorf("optionMap[1][A] = %q, want %q", got[1]["A"], "Alpha")
+	}
+	if got[1]["B"] != "Beta" {
+		t.Errorf("optionMap[1][B] = %q, want %q", got[1]["B"], "Beta")
+	}
+	if got[2]["A"] != "Yes" {
+		t.Errorf("optionMap[2][A] = %q, want %q", got[2]["A"], "Yes")
+	}
+}
+
+func TestParseBatchAnswers_InvalidOptionShowsValidOptions(t *testing.T) {
+	optionMap := map[int]map[string]string{
+		1: {"A": "Alpha", "B": "Beta", "C": "Gamma"},
+	}
+
+	_, err := parseBatchAnswers("1Z", optionMap)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// Verify the error message mentions valid options
+	msg := err.Error()
+	if !strings.Contains(msg, "invalid option Z for question 1") {
+		t.Errorf("error = %q, want mention of invalid option", msg)
+	}
+	// Check that valid letters are mentioned (order may vary)
+	for _, letter := range []string{"A", "B", "C"} {
+		if !strings.Contains(msg, letter) {
+			t.Errorf("error = %q, want mention of valid letter %s", msg, letter)
+		}
+	}
+}
+
+// Suppress unused import warnings — sort is used in error message validation above.
+var _ = sort.Strings

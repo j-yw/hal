@@ -103,4 +103,5 @@ type ReviewIssueDetail struct {
 	SuggestedFix string `json:"suggestedFix,omitempty"`
 	Valid        bool   `json:"valid"`
 	Fixed        bool   `json:"fixed"`
+	Reason       string `json:"reason,omitempty"`
 }

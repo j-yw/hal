@@ -155,9 +155,10 @@ type reviewLoopFixOutcome struct {
 
 // reviewLoopFixResult holds the fix-phase outcome for a single issue.
 type reviewLoopFixResult struct {
-	ID    string
-	Valid bool
-	Fixed bool
+	ID     string
+	Valid  bool
+	Fixed  bool
+	Reason string
 }
 
 func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
@@ -383,6 +384,7 @@ func buildIssueDetails(reviewIssues []reviewLoopIssue, fixResults []reviewLoopFi
 		if fr, ok := fixByID[id]; ok {
 			detail.Valid = fr.Valid
 			detail.Fixed = fr.Fixed
+			detail.Reason = fr.Reason
 		}
 		details = append(details, detail)
 	}
@@ -876,9 +878,10 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 		}
 
 		outcome.PerIssue = append(outcome.PerIssue, reviewLoopFixResult{
-			ID:    strings.TrimSpace(reviewed.ID),
-			Valid: valid,
-			Fixed: fixed,
+			ID:     strings.TrimSpace(reviewed.ID),
+			Valid:  valid,
+			Fixed:  fixed,
+			Reason: strings.TrimSpace(fixIssue.Reason),
 		})
 	}
 
