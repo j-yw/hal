@@ -75,11 +75,9 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 	ctx, cancel := context.WithTimeout(context.Background(), liveStatusTimeout)
 	defer cancel()
 
-	status, liveErr := queryProviderLiveStatus(ctx, p, info, instance.Status)
+	liveErr := p.Status(ctx, info, io.Discard)
 	if liveErr != nil {
 		instance.Status = sandbox.StatusUnknown
-	} else {
-		instance.Status = status
 	}
 
 	// Display detailed info

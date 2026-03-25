@@ -13,11 +13,6 @@ import (
 
 const sandboxStateFileExt = ".json"
 
-var (
-	renameRegistryFile = os.Rename
-	removeRegistryFile = os.Remove
-)
-
 // SaveInstance persists a sandbox instance in the global registry.
 //
 // The write is atomic (temp file + rename) and will fail if an entry already
@@ -67,48 +62,12 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("write sandbox %q: %w", instance.Name, err)
 	}
-	if err := saveRegistryFile(tmpPath, path, overwrite); err != nil {
-		_ = removeRegistryFile(tmpPath)
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("save sandbox %q: %w", instance.Name, err)
 	}
 
 	return nil
-}
-
-// saveRegistryFile persists a prepared temp file to its final path. Overwrite
-// writes fall back to a backup/restore flow on platforms where rename cannot
-// replace an existing file.
-func saveRegistryFile(tmpPath, path string, overwrite bool) error {
-	if !overwrite {
-		return renameRegistryFile(tmpPath, path)
-	}
-
-	if err := renameRegistryFile(tmpPath, path); err == nil {
-		return nil
-	} else if !isRenameNoReplaceError(err) {
-		return err
-	}
-
-	backupPath := path + ".bak"
-	if err := removeRegistryFile(backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	if err := renameRegistryFile(path, backupPath); err != nil {
-		return err
-	}
-	if err := renameRegistryFile(tmpPath, path); err != nil {
-		if restoreErr := renameRegistryFile(backupPath, path); restoreErr != nil {
-			return fmt.Errorf("%w (restore failed: %v)", err, restoreErr)
-		}
-		return err
-	}
-
-	_ = removeRegistryFile(backupPath)
-	return nil
-}
-
-func isRenameNoReplaceError(err error) bool {
-	return errors.Is(err, fs.ErrExist) || os.IsExist(err)
 }
 
 // LoadInstance loads a sandbox instance from the global registry.

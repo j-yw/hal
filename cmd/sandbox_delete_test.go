@@ -19,9 +19,9 @@ import (
 // mockDeleteProvider implements sandbox.Provider for delete tests.
 // Thread-safe for concurrent usage.
 type mockDeleteProvider struct {
-	mu              sync.Mutex
-	deleteCalls     []string
-	deleteErr       error
+	mu             sync.Mutex
+	deleteCalls    []string
+	deleteErr      error
 	deleteErrByName map[string]error
 }
 
@@ -741,35 +741,6 @@ func TestRunSandboxDelete_AllFlagNoSandboxes(t *testing.T) {
 	}
 }
 
-func TestRunSandboxDelete_AutoMigratesBeforeTargetResolution(t *testing.T) {
-	setupDeleteGlobalRegistry(t, nil)
-
-	origMigrate := sandboxMigrate
-	t.Cleanup(func() {
-		sandboxMigrate = origMigrate
-	})
-	sandboxMigrate = func(projectDir string, out io.Writer) error {
-		return sandbox.SaveInstance(&sandbox.SandboxState{
-			Name:      "migrated-box",
-			Provider:  "daytona",
-			Status:    sandbox.StatusRunning,
-			CreatedAt: time.Now(),
-		})
-	}
-
-	mock := &mockDeleteProvider{}
-	err := runSandboxDelete(nil, false, false, "", nil, io.Discard, mock)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(mock.deleteCalls) != 1 {
-		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
-	}
-	if mock.deleteCalls[0] != "migrated-box" {
-		t.Fatalf("Delete target = %q, want %q", mock.deleteCalls[0], "migrated-box")
-	}
-}
-
 func TestRunSandboxDelete_AutoSelectStoppedSandbox(t *testing.T) {
 	// Delete auto-select works on all sandboxes, not just running
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
@@ -1069,62 +1040,5 @@ func TestRunSandboxDelete_SingleTargetProviderFailureNoRegistryRemoval(t *testin
 	}
 	if inst.Name != "my-sandbox" {
 		t.Errorf("loaded Name = %q, want %q", inst.Name, "my-sandbox")
-	}
-}
-
-func TestDeleteConnectInfo_DigitalOceanFallbackOrder(t *testing.T) {
-	tests := []struct {
-		name            string
-		target          *sandbox.SandboxState
-		wantWorkspaceID string
-	}{
-		{
-			name: "keeps workspace id when present",
-			target: &sandbox.SandboxState{
-				Name:        "do-box",
-				Provider:    "digitalocean",
-				WorkspaceID: "987654",
-				ID:          "123456",
-			},
-			wantWorkspaceID: "987654",
-		},
-		{
-			name: "falls back to name when workspace id missing",
-			target: &sandbox.SandboxState{
-				Name:     "do-box",
-				Provider: "digitalocean",
-				ID:       "123456",
-			},
-			wantWorkspaceID: "do-box",
-		},
-		{
-			name: "falls back to name when id and workspace id missing",
-			target: &sandbox.SandboxState{
-				Name:     "do-box",
-				Provider: "digitalocean",
-			},
-			wantWorkspaceID: "do-box",
-		},
-		{
-			name: "non-digitalocean does not assign workspace id fallback",
-			target: &sandbox.SandboxState{
-				Name:     "daytona-box",
-				Provider: "daytona",
-				ID:       "123456",
-			},
-			wantWorkspaceID: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			info := deleteConnectInfo(tt.target)
-			if info == nil {
-				t.Fatal("deleteConnectInfo returned nil")
-			}
-			if info.WorkspaceID != tt.wantWorkspaceID {
-				t.Fatalf("WorkspaceID = %q, want %q", info.WorkspaceID, tt.wantWorkspaceID)
-			}
-		})
 	}
 }

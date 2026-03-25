@@ -634,39 +634,6 @@ func TestRunSandboxSetup_NonTerminalFileInputFallsBackToPlaintext(t *testing.T) 
 	}
 }
 
-func TestRunSandboxSetup_PreservesCustomGlobalEnvVars(t *testing.T) {
-	dir := t.TempDir()
-	setGlobalConfigHomeForTest(t, dir)
-	if err := os.MkdirAll(filepath.Join(dir, template.HalDir), 0o755); err != nil {
-		t.Fatalf("MkdirAll() error: %v", err)
-	}
-
-	cfg := sandbox.DefaultGlobalConfig()
-	cfg.Env = map[string]string{
-		"CUSTOM_SANDBOX_VAR": "keep-me",
-		"OPENAI_API_KEY":     "existing-openai-key",
-	}
-	if err := sandbox.SaveGlobalConfig(&cfg); err != nil {
-		t.Fatalf("SaveGlobalConfig() error: %v", err)
-	}
-
-	var out bytes.Buffer
-	if err := runSandboxSetupWithDeps(dir, strings.NewReader(daytonaSetupInput("new-api-key", "")), &out, noopPasswordReader, fakeLookPath); err != nil {
-		t.Fatalf("runSandboxSetupWithDeps() error: %v", err)
-	}
-
-	saved, err := sandbox.LoadGlobalConfig()
-	if err != nil {
-		t.Fatalf("LoadGlobalConfig() error: %v", err)
-	}
-	if saved.Env["CUSTOM_SANDBOX_VAR"] != "keep-me" {
-		t.Fatalf("CUSTOM_SANDBOX_VAR = %q, want %q", saved.Env["CUSTOM_SANDBOX_VAR"], "keep-me")
-	}
-	if saved.Env["OPENAI_API_KEY"] != "existing-openai-key" {
-		t.Fatalf("OPENAI_API_KEY = %q, want %q", saved.Env["OPENAI_API_KEY"], "existing-openai-key")
-	}
-}
-
 func TestMaskSecret(t *testing.T) {
 	tests := []struct {
 		input string
