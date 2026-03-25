@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/standards"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -110,9 +111,10 @@ func runStandardsListFn(halDir string, w io.Writer) error {
 	// Check if standards directory exists
 	standardsDir := filepath.Join(halDir, template.StandardsDir)
 	if _, err := os.Stat(standardsDir); os.IsNotExist(err) {
-		fmt.Fprintln(w, "No standards directory found.")
+		fmt.Fprintf(w, "%s No standards directory found.\n", display.StyleWarning.Render("[!]"))
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Run 'hal init' first, then use 'hal standards discover' to create standards.")
+		fmt.Fprintf(w, "Run %s first, then use %s to create standards.\n",
+			display.StyleInfo.Render("hal init"), display.StyleInfo.Render("hal standards discover"))
 		return nil
 	}
 
@@ -128,13 +130,14 @@ func runStandardsListFn(halDir string, w io.Writer) error {
 	}
 
 	if count == 0 {
-		fmt.Fprintln(w, "No standards found in .hal/standards/")
+		fmt.Fprintf(w, "%s No standards found in .hal/standards/\n", display.StyleWarning.Render("[!]"))
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Run 'hal standards discover' to extract standards from your codebase.")
+		fmt.Fprintf(w, "Run %s to extract standards from your codebase.\n",
+			display.StyleInfo.Render("hal standards discover"))
 		return nil
 	}
 
-	fmt.Fprintf(w, "Standards: %d files\n", count)
+	fmt.Fprintf(w, "%s %s\n", display.StyleTitle.Render("Standards:"), display.StyleBold.Render(fmt.Sprintf("%d files", count)))
 	fmt.Fprintln(w)
 
 	if index != "" {
@@ -167,7 +170,7 @@ func runStandardsListFn(halDir string, w io.Writer) error {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Standards are injected into every 'hal run' iteration automatically.")
+	fmt.Fprintf(w, "%s\n", display.StyleMuted.Render("Standards are injected into every 'hal run' iteration automatically."))
 	return nil
 }
 
@@ -178,36 +181,38 @@ func runStandardsDiscover(cmd *cobra.Command, args []string) error {
 func runStandardsDiscoverFn(halDir string, w io.Writer) error {
 	// Check init
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
-		fmt.Fprintln(w, "No .hal/ directory found. Run 'hal init' first.")
+		fmt.Fprintf(w, "%s No .hal/ directory found. Run %s first.\n",
+			display.StyleWarning.Render("[!]"), display.StyleInfo.Render("hal init"))
 		return nil
 	}
 
-	fmt.Fprintln(w, "Standards discovery requires an interactive agent session.")
+	fmt.Fprintf(w, "%s\n", display.StyleBold.Render("Standards discovery requires an interactive agent session."))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Use one of the following:")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Claude Code:")
-	fmt.Fprintln(w, "    /hal/discover-standards")
+	fmt.Fprintf(w, "  %s\n", display.StyleBold.Render("Claude Code:"))
+	fmt.Fprintf(w, "    %s\n", display.StyleInfo.Render("/hal/discover-standards"))
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Pi:")
+	fmt.Fprintf(w, "  %s\n", display.StyleBold.Render("Pi:"))
 	fmt.Fprintln(w, "    Load the discover-standards skill and run interactively")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Codex:")
+	fmt.Fprintf(w, "  %s\n", display.StyleBold.Render("Codex:"))
 	fmt.Fprintln(w, "    Ask the agent to read .hal/commands/discover-standards.md")
 	fmt.Fprintln(w, "    and follow the process described there")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "The discovery flow will:")
-	fmt.Fprintln(w, "  1. Scan your codebase and identify focus areas")
-	fmt.Fprintln(w, "  2. Present patterns found in each area")
-	fmt.Fprintln(w, "  3. Walk through each standard: ask → draft → confirm → save")
-	fmt.Fprintln(w, "  4. Update .hal/standards/index.yml")
+	fmt.Fprintf(w, "  1. %s\n", "Scan your codebase and identify focus areas")
+	fmt.Fprintf(w, "  2. %s\n", "Present patterns found in each area")
+	fmt.Fprintf(w, "  3. %s\n", "Walk through each standard: ask → draft → confirm → save")
+	fmt.Fprintf(w, "  4. %s\n", "Update .hal/standards/index.yml")
 	fmt.Fprintln(w)
 
 	count, _ := standards.Count(halDir)
 	if count > 0 {
-		fmt.Fprintf(w, "You currently have %d standard(s) configured.\n", count)
+		fmt.Fprintf(w, "%s You currently have %d standard(s) configured.\n",
+			display.StyleSuccess.Render("✓"), count)
 	} else {
-		fmt.Fprintln(w, "No standards configured yet. Discovery will create your first ones.")
+		fmt.Fprintf(w, "%s\n", display.StyleMuted.Render("No standards configured yet. Discovery will create your first ones."))
 	}
 
 	return nil

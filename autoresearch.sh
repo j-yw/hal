@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=22
+MAX_SCORE=26
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -200,6 +200,38 @@ if [ "$SBX_FAIL" -ge 2 ]; then
     SCORE=$((SCORE + 1)); echo "E22: PASS — ${SBX_FAIL}/3 sandbox commands have styled failures"
 else
     echo "E22: FAIL — only ${SBX_FAIL}/3 sandbox commands have styled failures"
+fi
+
+# E23: Version command styled
+if has_engine_import cmd/version.go && has_style_usage cmd/version.go; then
+    SCORE=$((SCORE + 1)); echo "E23: PASS — version styled"
+else
+    echo "E23: FAIL — version plain"
+fi
+
+# E24: Links command styled (status/clean/refresh)
+if has_engine_import cmd/links.go && has_style_usage cmd/links.go; then
+    SCORE=$((SCORE + 1)); echo "E24: PASS — links styled"
+else
+    echo "E24: FAIL — links plain"
+fi
+
+# E25: Standards command styled
+if has_engine_import cmd/standards.go && has_style_usage cmd/standards.go; then
+    SCORE=$((SCORE + 1)); echo "E25: PASS — standards styled"
+else
+    echo "E25: FAIL — standards plain"
+fi
+
+# E26: Report/auto commands styled (prd.go or report.go or auto.go)
+MISC_STYLED=0
+for f in prd report auto; do
+    has_engine_import "cmd/${f}.go" && has_style_usage "cmd/${f}.go" && MISC_STYLED=$((MISC_STYLED + 1))
+done
+if [ "$MISC_STYLED" -ge 1 ]; then
+    SCORE=$((SCORE + 1)); echo "E26: PASS — ${MISC_STYLED}/3 additional commands styled"
+else
+    echo "E26: FAIL — prd/report/auto all unstyled"
 fi
 
 # Coverage

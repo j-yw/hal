@@ -253,14 +253,14 @@ func showReviewResult(out io.Writer, display *engine.Display, result *compound.R
 
 	if result.Summary != "" {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Summary:", result.Summary)
+		fmt.Fprintf(out, "%s %s\n", engine.StyleBold.Render("Summary:"), result.Summary)
 	}
 
 	if len(result.Recommendations) > 0 {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Recommendations:")
+		fmt.Fprintf(out, "%s\n", engine.StyleBold.Render("Recommendations:"))
 		for i, rec := range result.Recommendations {
-			fmt.Fprintf(out, "  %d. %s\n", i+1, rec)
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleInfo.Render(fmt.Sprintf("%d.", i+1)), rec)
 		}
 	}
 }
