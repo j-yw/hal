@@ -16,11 +16,13 @@ import (
 
 // Result represents the outcome of the loop execution.
 type Result struct {
-	Iterations int           // Number of iterations run
-	Complete   bool          // Whether all tasks were completed
-	Success    bool          // Whether the loop finished successfully
-	Error      error         // Any error that occurred
-	Duration   time.Duration // Wall-clock time for the entire loop
+	Iterations      int           // Number of iterations run
+	Complete        bool          // Whether all tasks were completed
+	Success         bool          // Whether the loop finished successfully
+	Error           error         // Any error that occurred
+	Duration        time.Duration // Wall-clock time for the entire loop
+	CompletedStories int          // Number of stories marked as complete
+	TotalStories     int          // Total number of stories in the PRD
 }
 
 // Config holds configuration for the loop.
@@ -88,7 +90,13 @@ func New(cfg Config) (*Runner, error) {
 // Run executes the Hal loop.
 func (r *Runner) Run(ctx context.Context) (result Result) {
 	loopStart := time.Now()
-	defer func() { result.Duration = time.Since(loopStart) }()
+	defer func() {
+		result.Duration = time.Since(loopStart)
+		// Capture final PRD story counts when available
+		if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
+			result.CompletedStories, result.TotalStories = prd.Progress()
+		}
+	}()
 
 	// Load prompt
 	prompt, err := r.loadPrompt()

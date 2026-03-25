@@ -1,8 +1,14 @@
 #!/bin/bash
 set -euo pipefail
-SKILL="/home/v/.agents/skills/markshare/SKILL.md"
-[ -f "$SKILL" ] || { echo "FAIL: SKILL.md missing"; exit 1; }
-grep -q "PHASE 1: Get API Key" "$SKILL" || { echo "FAIL: Phase 1 missing"; exit 1; }
-grep -q "PHASE 4: Report Result" "$SKILL" || { echo "FAIL: Phase 4 missing"; exit 1; }
-python3 -m py_compile /home/v/.agents/skills/markshare/autoresearch-markshare/run_markshare_eval.py || { echo "FAIL: eval harness broken"; exit 1; }
-echo "OK"
+
+# Build must pass
+go build ./... 2>&1 | tail -5
+
+# All cmd + compound + loop tests must pass
+go test ./cmd/... ./internal/compound/... ./internal/loop/... -count=1 -timeout 120s 2>&1 | grep -E "FAIL|ok " | tail -20
+
+# Verify JSON contract tests specifically
+go test ./cmd/... -run "TestMachine|TestContract|Test.*JSON" -count=1 -timeout 30s 2>&1 | grep -E "FAIL|ok " | tail -10
+
+# Verify review loop report tests
+go test ./internal/compound/... -run "TestReviewLoop|TestWriteReview" -count=1 -timeout 30s 2>&1 | grep -E "FAIL|ok " | tail -10

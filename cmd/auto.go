@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -282,8 +283,13 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Show success message
-	display.ShowCommandSuccess("Auto pipeline completed!", fmt.Sprintf("Duration: %s", elapsed.Round(time.Second)))
+	// Show pipeline summary
+	autoBranch, _ := compound.CurrentBranchOptional()
+	summaryParts := []string{fmt.Sprintf("Duration: %s", elapsed.Round(time.Second))}
+	if autoBranch != "" {
+		summaryParts = append(summaryParts, fmt.Sprintf("Branch: %s", autoBranch))
+	}
+	display.ShowCommandSuccess("Auto pipeline completed!", strings.Join(summaryParts, " · "))
 
 	return nil
 }
