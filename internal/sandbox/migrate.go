@@ -98,6 +98,12 @@ func migrateState(projectDir string, out io.Writer) error {
 		state.Provider = "daytona"
 	}
 
+	// Legacy state used "id" for provider lifecycle target. Backfill workspaceId
+	// before the existing-entry check so reruns compare normalized state.
+	if strings.TrimSpace(state.WorkspaceID) == "" && strings.TrimSpace(state.ID) != "" {
+		state.WorkspaceID = strings.TrimSpace(state.ID)
+	}
+
 	// Check if already migrated (entry exists in global registry).
 	if existing, err := LoadInstance(state.Name); err == nil {
 		if !equivalentMigrationState(&state, existing) {
@@ -119,12 +125,6 @@ func migrateState(projectDir string, out io.Writer) error {
 	// Ensure global directory exists before writing.
 	if err := EnsureGlobalDir(); err != nil {
 		return fmt.Errorf("ensure global dir for state migration: %w", err)
-	}
-
-	// Legacy state used "id" for provider lifecycle target. Backfill workspaceId
-	// so ConnectInfoFromState remains valid after migration.
-	if strings.TrimSpace(state.WorkspaceID) == "" && strings.TrimSpace(state.ID) != "" {
-		state.WorkspaceID = strings.TrimSpace(state.ID)
 	}
 
 	// Save to global registry (uses atomic temp-file + rename internally).
