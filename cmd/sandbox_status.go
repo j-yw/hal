@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 )
@@ -89,60 +90,72 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr error) {
 	now := sandboxStatusNow()
 
-	fmt.Fprintf(out, "Name:       %s\n", inst.Name)
-	fmt.Fprintf(out, "ID:         %s\n", inst.ID)
-	fmt.Fprintf(out, "Provider:   %s\n", inst.Provider)
-	fmt.Fprintf(out, "Status:     %s\n", inst.Status)
+	// Identity
+	fmt.Fprintf(out, "%s       %s\n", display.StyleBold.Render("Name:"), display.StyleTitle.Render(inst.Name))
+	fmt.Fprintf(out, "%s         %s\n", display.StyleBold.Render("ID:"), display.StyleMuted.Render(inst.ID))
+	fmt.Fprintf(out, "%s   %s\n", display.StyleBold.Render("Provider:"), inst.Provider)
+
+	// Status with color
+	var statusText string
+	switch inst.Status {
+	case sandbox.StatusRunning:
+		statusText = display.StyleSuccess.Render(string(inst.Status))
+	case sandbox.StatusStopped:
+		statusText = display.StyleWarning.Render(string(inst.Status))
+	default:
+		statusText = display.StyleMuted.Render(string(inst.Status))
+	}
+	fmt.Fprintf(out, "%s     %s\n", display.StyleBold.Render("Status:"), statusText)
 
 	if liveErr != nil {
-		fmt.Fprintf(out, "Live query: failed (%s)\n", liveErr)
+		fmt.Fprintf(out, "Live query: %s\n", display.StyleError.Render(fmt.Sprintf("failed (%s)", liveErr)))
 	} else {
-		fmt.Fprintln(out, "Live query: ok")
+		fmt.Fprintf(out, "Live query: %s\n", display.StyleSuccess.Render("ok"))
 	}
 
 	fmt.Fprintln(out)
 
 	// Networking
-	fmt.Fprintln(out, "Networking:")
+	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Networking:"))
 	if inst.IP != "" {
-		fmt.Fprintf(out, "  Public IP:          %s\n", inst.IP)
+		fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleInfo.Render(inst.IP))
 	} else {
-		fmt.Fprintln(out, "  Public IP:          —")
+		fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleMuted.Render("—"))
 	}
 	if inst.TailscaleIP != "" {
-		fmt.Fprintf(out, "  Tailscale IP:       %s\n", inst.TailscaleIP)
+		fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleInfo.Render(inst.TailscaleIP))
 	} else {
-		fmt.Fprintln(out, "  Tailscale IP:       —")
+		fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleMuted.Render("—"))
 	}
 	if inst.TailscaleHostname != "" {
 		fmt.Fprintf(out, "  Tailscale Hostname: %s\n", inst.TailscaleHostname)
 	}
 	preferredIP := sandbox.PreferredIP(inst)
 	if preferredIP != "" {
-		fmt.Fprintf(out, "  Active SSH IP:      %s\n", preferredIP)
+		fmt.Fprintf(out, "  Active SSH IP:      %s\n", display.StyleSuccess.Render(preferredIP))
 	}
 
 	if inst.WorkspaceID != "" {
-		fmt.Fprintf(out, "  Workspace ID:       %s\n", inst.WorkspaceID)
+		fmt.Fprintf(out, "  Workspace ID:       %s\n", display.StyleMuted.Render(inst.WorkspaceID))
 	}
 
 	fmt.Fprintln(out)
 
 	// Lifecycle
-	fmt.Fprintln(out, "Lifecycle:")
-	fmt.Fprintf(out, "  Created:      %s (%s ago)\n", inst.CreatedAt.Format(time.RFC3339), formatAge(now.Sub(inst.CreatedAt)))
+	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Lifecycle:"))
+	fmt.Fprintf(out, "  Created:      %s %s\n", inst.CreatedAt.Format(time.RFC3339), display.StyleMuted.Render(fmt.Sprintf("(%s ago)", formatAge(now.Sub(inst.CreatedAt)))))
 	if inst.StoppedAt != nil {
-		fmt.Fprintf(out, "  Stopped:      %s (%s ago)\n", inst.StoppedAt.Format(time.RFC3339), formatAge(now.Sub(*inst.StoppedAt)))
+		fmt.Fprintf(out, "  Stopped:      %s %s\n", inst.StoppedAt.Format(time.RFC3339), display.StyleMuted.Render(fmt.Sprintf("(%s ago)", formatAge(now.Sub(*inst.StoppedAt)))))
 	}
 
 	fmt.Fprintln(out)
 
 	// Config
-	fmt.Fprintln(out, "Config:")
+	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Config:"))
 	if inst.AutoShutdown {
-		fmt.Fprintf(out, "  Auto-shutdown: on (%dh idle)\n", inst.IdleHours)
+		fmt.Fprintf(out, "  Auto-shutdown: %s %s\n", display.StyleSuccess.Render("on"), display.StyleMuted.Render(fmt.Sprintf("(%dh idle)", inst.IdleHours)))
 	} else {
-		fmt.Fprintln(out, "  Auto-shutdown: off")
+		fmt.Fprintf(out, "  Auto-shutdown: %s\n", display.StyleMuted.Render("off"))
 	}
 	if inst.Size != "" {
 		fmt.Fprintf(out, "  Size:          %s\n", inst.Size)
@@ -151,18 +164,18 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr erro
 	// Cost
 	cost := sandbox.EstimatedCost(inst, func() time.Time { return now })
 	if cost >= 0 {
-		fmt.Fprintf(out, "  Est. cost:     $%.2f\n", cost)
+		fmt.Fprintf(out, "  Est. cost:     %s\n", display.StyleWarning.Render(fmt.Sprintf("$%.2f", cost)))
 	}
 
 	// Labels
 	if inst.Repo != "" || inst.SnapshotID != "" {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Labels:")
+		fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Labels:"))
 		if inst.Repo != "" {
 			fmt.Fprintf(out, "  Repo:       %s\n", inst.Repo)
 		}
 		if inst.SnapshotID != "" {
-			fmt.Fprintf(out, "  Snapshot:   %s\n", inst.SnapshotID)
+			fmt.Fprintf(out, "  Snapshot:   %s\n", display.StyleMuted.Render(inst.SnapshotID))
 		}
 	}
 }

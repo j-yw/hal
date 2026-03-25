@@ -12,7 +12,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=16
+MAX_SCORE=18
 
 has_engine_import() {
     grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null
@@ -166,6 +166,20 @@ else
     else
         echo "E16: FAIL — doctor title doesn't include check count"
     fi
+fi
+
+# E17: Sandbox status uses styled output
+if has_engine_import cmd/sandbox_status.go && has_style_usage cmd/sandbox_status.go; then
+    SCORE=$((SCORE + 1)); echo "E17: PASS — sandbox status styled"
+else
+    echo "E17: FAIL — sandbox status plain"
+fi
+
+# E18: Sandbox list table has styled headers
+if has_engine_import cmd/sandbox_list.go && has_style_usage cmd/sandbox_list.go; then
+    SCORE=$((SCORE + 1)); echo "E18: PASS — sandbox list styled"
+else
+    echo "E18: FAIL — sandbox list plain"
 fi
 
 # Coverage

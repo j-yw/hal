@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 )
@@ -280,7 +281,7 @@ func renderSandboxListJSON(out io.Writer, instances []*sandbox.SandboxState, now
 // renderSandboxTable renders the sandbox list as a formatted table.
 func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now time.Time) {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPROVIDER\tSTATUS\tTAILSCALE\tAGE\tAUTO-OFF\tEST.COST")
+	fmt.Fprintf(w, "%s\n", display.StyleBold.Render("NAME\tPROVIDER\tSTATUS\tTAILSCALE\tAGE\tAUTO-OFF\tEST.COST"))
 
 	for _, inst := range instances {
 		tailscale := "—"
@@ -297,10 +298,21 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 
 		cost := formatCost(sandbox.EstimatedCost(inst, func() time.Time { return now }))
 
+		// Color-code status
+		statusStr := string(inst.Status)
+		switch inst.Status {
+		case sandbox.StatusRunning:
+			statusStr = display.StyleSuccess.Render(statusStr)
+		case sandbox.StatusStopped:
+			statusStr = display.StyleWarning.Render(statusStr)
+		default:
+			statusStr = display.StyleMuted.Render(statusStr)
+		}
+
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			inst.Name,
 			inst.Provider,
-			inst.Status,
+			statusStr,
 			tailscale,
 			age,
 			autoOff,
