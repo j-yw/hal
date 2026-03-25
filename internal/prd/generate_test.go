@@ -451,4 +451,104 @@ func TestParseBatchAnswers_InvalidOptionShowsValidOptions(t *testing.T) {
 	}
 }
 
+func TestParseBatchAnswers_DuplicateLastWins(t *testing.T) {
+	optionMap := map[int]map[string]string{
+		1: {"A": "Alpha", "B": "Beta"},
+		2: {"A": "Yes", "B": "No"},
+	}
 
+	got, err := parseBatchAnswers("1A, 1B, 2A", optionMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got[1] != "Beta" {
+		t.Errorf("answers[1] = %q, want %q (last wins)", got[1], "Beta")
+	}
+	if got[2] != "Yes" {
+		t.Errorf("answers[2] = %q, want %q", got[2], "Yes")
+	}
+}
+
+func TestSplitConcatenatedAnswers(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"1A2B3C", "1A 2B 3C"},
+		{"1a2b3c", "1a 2b 3c"},
+		{"12A3B", "12A 3B"},
+		{"1A 2B", "1A 2B"},
+		{"1A,2B", "1A,2B"},
+		{"1A", "1A"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitConcatenatedAnswers(tt.input)
+			if got != tt.want {
+				t.Errorf("splitConcatenatedAnswers(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindMissingQuestions(t *testing.T) {
+	questions := []Question{
+		{Number: 1}, {Number: 2}, {Number: 3},
+	}
+
+	tests := []struct {
+		name    string
+		answers map[int]string
+		want    []int
+	}{
+		{"all answered", map[int]string{1: "a", 2: "b", 3: "c"}, nil},
+		{"missing Q2", map[int]string{1: "a", 3: "c"}, []int{2}},
+		{"missing Q1 Q3", map[int]string{2: "b"}, []int{1, 3}},
+		{"none answered", map[int]string{}, []int{1, 2, 3}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findMissingQuestions(questions, tt.answers)
+			if len(got) != len(tt.want) {
+				t.Fatalf("findMissingQuestions() = %v, want %v", got, tt.want)
+			}
+			for i, v := range got {
+				if v != tt.want[i] {
+					t.Errorf("findMissingQuestions()[%d] = %d, want %d", i, v, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestFormatMissingQuestions(t *testing.T) {
+	got := formatMissingQuestions([]int{1, 3, 5})
+	want := "Q1, Q3, Q5"
+	if got != want {
+		t.Errorf("formatMissingQuestions() = %q, want %q", got, want)
+	}
+}
+
+func TestIsOtherOption(t *testing.T) {
+	tests := []struct {
+		label string
+		want  bool
+	}{
+		{"Other (specify)", true},
+		{"other", true},
+		{"Other approach", true},
+		{"Performance", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.label, func(t *testing.T) {
+			got := isOtherOption(tt.label)
+			if got != tt.want {
+				t.Errorf("isOtherOption(%q) = %v, want %v", tt.label, got, tt.want)
+			}
+		})
+	}
+}
