@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
@@ -95,6 +96,7 @@ func init() {
 }
 
 func runAuto(cmd *cobra.Command, args []string) error {
+	autoStart := time.Now()
 	ctx := context.Background()
 	out := io.Writer(os.Stdout)
 	dir := "."
@@ -261,7 +263,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	}
 
 	// Show success message
-	display.ShowCommandSuccess("Auto pipeline completed!", "")
+	elapsed := time.Since(autoStart).Round(time.Second)
+	display.ShowCommandSuccess("Auto pipeline completed!", fmt.Sprintf("Duration: %s", elapsed))
 
 	return nil
 }

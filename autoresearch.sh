@@ -181,7 +181,41 @@ else
     echo "E20: FAIL — ReviewLoopResult lacks files tracking"
 fi
 
-MAX_SCORE=20
+# === E21-E24: Wave 3 — Content depth ===
+
+# E21: ReviewIssueDetail includes rationale (not just title/severity)
+if sed -n '/type ReviewIssueDetail/,/^}/p' internal/compound/types.go 2>/dev/null | \
+   grep -qiE 'rationale|reason|description'; then
+    SCORE=$((SCORE + 1)); echo "E21: PASS — issue details include rationale"
+else
+    echo "E21: FAIL — issue details lack rationale/reason"
+fi
+
+# E22: Run terminal shows elapsed time after loop completes
+if sed -n '/func showRunSummary/,/^}/p' cmd/run.go 2>/dev/null | \
+   grep -qiE 'time|duration|elapsed|took'; then
+    SCORE=$((SCORE + 1)); echo "E22: PASS — run summary shows elapsed time"
+else
+    echo "E22: FAIL — run summary lacks elapsed time"
+fi
+
+# E23: loop.Result tracks elapsed time (Duration or StartedAt/EndedAt)
+if sed -n '/type Result struct/,/^}/p' internal/loop/loop.go 2>/dev/null | \
+   grep -qiE 'duration|elapsed|time|started'; then
+    SCORE=$((SCORE + 1)); echo "E23: PASS — loop Result tracks timing"
+else
+    echo "E23: FAIL — loop Result has no timing data"
+fi
+
+# E24: Auto pipeline shows step timing or total elapsed
+if grep -qE 'Duration|duration|elapsed|Elapsed|time\.Since' cmd/auto.go 2>/dev/null || \
+   grep -qE 'Duration|duration|elapsed' internal/compound/pipeline.go 2>/dev/null; then
+    SCORE=$((SCORE + 1)); echo "E24: PASS — auto pipeline tracks timing"
+else
+    echo "E24: FAIL — auto pipeline lacks timing info"
+fi
+
+MAX_SCORE=24
 
 echo ""
 echo "=== Results ==="

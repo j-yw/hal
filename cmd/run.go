@@ -326,6 +326,12 @@ func showRunSummary(out io.Writer, result loop.Result) {
 			engine.StyleInfo.Render("→"), result.Iterations)
 	}
 
+	// Show elapsed time
+	if result.Duration > 0 {
+		fmt.Fprintf(out, "%s %s\n",
+			engine.StyleBold.Render("Duration:"), formatRunDuration(result.Duration))
+	}
+
 	// Show PRD progress if available
 	prdPath := filepath.Join(template.HalDir, template.PRDFile)
 	if prd, err := engine.LoadPRDFile(template.HalDir, template.PRDFile); err == nil {
@@ -339,6 +345,17 @@ func showRunSummary(out io.Writer, result loop.Result) {
 		fmt.Fprintln(out)
 		_ = prdPath // used for Progress call context
 	}
+}
+
+// formatRunDuration renders a duration as a human-friendly string.
+func formatRunDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 func outputRunJSONError(out io.Writer, errMsg string) error {
