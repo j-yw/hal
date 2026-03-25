@@ -178,6 +178,23 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 					}
 					sb.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s |\n", i+1, issue.Severity, fileLoc, title, fixMark))
 				}
+
+				// Show rationale for each issue when available
+				hasRationale := false
+				for _, issue := range iteration.Issues {
+					if issue.Rationale != "" {
+						hasRationale = true
+						break
+					}
+				}
+				if hasRationale {
+					sb.WriteString("\n**Details:**\n")
+					for i, issue := range iteration.Issues {
+						if issue.Rationale != "" {
+							sb.WriteString(fmt.Sprintf("%d. **%s** — %s\n", i+1, issue.Title, issue.Rationale))
+						}
+					}
+				}
 			}
 
 			sb.WriteString(fmt.Sprintf("\n**Summary:** %s\n\n", strings.TrimSpace(iteration.Summary)))

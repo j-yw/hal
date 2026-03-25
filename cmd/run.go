@@ -38,12 +38,13 @@ var (
 
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
-	ContractVersion int          `json:"contractVersion"`
-	OK              bool         `json:"ok"`
-	Iterations      int          `json:"iterations"`
-	Complete        bool         `json:"complete"`
-	StoryID         string       `json:"storyId,omitempty"`
-	DryRun          bool         `json:"dryRun,omitempty"`
+	ContractVersion int            `json:"contractVersion"`
+	OK              bool           `json:"ok"`
+	Iterations      int            `json:"iterations"`
+	Complete        bool           `json:"complete"`
+	StoryID         string         `json:"storyId,omitempty"`
+	DryRun          bool           `json:"dryRun,omitempty"`
+	Duration        string         `json:"duration,omitempty"`
 	PRD             *RunPRDInfo    `json:"prd,omitempty"`
 	NextAction      *RunNextAction `json:"nextAction,omitempty"`
 	Error           string         `json:"error,omitempty"`
@@ -378,6 +379,9 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		StoryID:         storyID,
 		DryRun:          dryRun,
 		Complete:        result.Complete,
+	}
+	if result.Duration > 0 {
+		jr.Duration = result.Duration.Round(time.Second).String()
 	}
 
 	// Try to read PRD state post-loop

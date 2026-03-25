@@ -12,214 +12,74 @@ go test ./cmd/... ./internal/compound/... -count=1 -timeout 120s 2>&1 | tail -20
 SCORE=0
 
 # === E1-E4: Issue detail propagation ===
+sed -n '/type ReviewLoopIteration/,/^}/p' internal/compound/types.go 2>/dev/null | grep -qE '\[\].*Review.*Issue' && { SCORE=$((SCORE+1)); echo "E1: PASS"; } || echo "E1: FAIL"
 
-# E1: ReviewLoopIteration has a field for per-issue details (a slice type, not just int counts)
-if sed -n '/type ReviewLoopIteration/,/^}/p' internal/compound/types.go 2>/dev/null | \
-   grep -qE '\[\].*Review.*Issue'; then
-    SCORE=$((SCORE + 1)); echo "E1: PASS — iteration struct has issue detail slice"
-else
-    echo "E1: FAIL — ReviewLoopIteration lacks per-issue detail slice"
-fi
+grep -qE 'iteration\.\w*(Issues|Details)\s*=\s*(append\(|make\(|\[\]|build)' internal/compound/review_loop.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E2: PASS"; } || echo "E2: FAIL"
 
-# E2: runReviewIteration populates issue details (assigns to a slice, not just int counts)
-if grep -qE 'iteration\.\w*(Issues|Details)\s*=\s*(append\(|make\(|\[\]|build)' internal/compound/review_loop.go 2>/dev/null || \
-   grep -qE 'append\(iteration\.\w*(Issues|Details)' internal/compound/review_loop.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E2: PASS — runReviewIteration populates issue detail slice"
-else
-    echo "E2: FAIL — runReviewIteration only stores counts, discards issue data"
-fi
-
-# E3: ReviewLoopMarkdown renders per-issue detail (title or file) inside the iteration loop
 ITER_BLOCK=$(sed -n '/for.*iteration/,/^[[:space:]]*}/p' internal/compound/review_loop_report.go 2>/dev/null)
-if echo "$ITER_BLOCK" | grep -qE '\.(Title|File|Severity)\b' 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E3: PASS — markdown renders issue details per iteration"
-else
-    echo "E3: FAIL — markdown only renders counts, no per-issue detail"
-fi
+echo "$ITER_BLOCK" | grep -qE '\.(Title|File|Severity)\b' && { SCORE=$((SCORE+1)); echo "E3: PASS"; } || echo "E3: FAIL"
 
-# E4: Issue detail type has both review fields (Severity/Title) AND fix fields (Valid/Fixed)
-if sed -n '/type Review.*Issue.*Detail/,/^}/p' internal/compound/types.go 2>/dev/null | \
-   grep -qE '(Valid|Fixed)' 2>/dev/null && \
-   sed -n '/type Review.*Issue.*Detail/,/^}/p' internal/compound/types.go 2>/dev/null | \
-   grep -qE '(Severity|Title)' 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E4: PASS — issue details include both review and fix fields"
-else
-    echo "E4: FAIL — no issue detail type with both review and fix outcome fields"
-fi
+DETAIL_TYPE=$(sed -n '/type Review.*Issue.*Detail/,/^}/p' internal/compound/types.go 2>/dev/null)
+echo "$DETAIL_TYPE" | grep -qE '(Valid|Fixed)' && echo "$DETAIL_TYPE" | grep -qE '(Severity|Title)' && { SCORE=$((SCORE+1)); echo "E4: PASS"; } || echo "E4: FAIL"
 
 # === E5-E7: Review output enrichment ===
+echo "$ITER_BLOCK" | grep -qE '\.File' && echo "$ITER_BLOCK" | grep -qE 'range.*\.(Issues|Details)' && { SCORE=$((SCORE+1)); echo "E5: PASS"; } || echo "E5: FAIL"
 
-# E5: Markdown renders severity or file:line per issue inside iteration blocks
-if echo "$ITER_BLOCK" | grep -qE '(severity|Severity|file.*line|File.*Line|\.File)' 2>/dev/null && \
-   echo "$ITER_BLOCK" | grep -qE 'range.*\.(Issues|Details)' 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E5: PASS — markdown includes severity/file info per issue"
-else
-    echo "E5: FAIL — markdown lacks per-issue severity or file breakdown"
-fi
+grep -qE 'humanizeStop|formatStop' internal/compound/review_loop_report.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E6: PASS"; } || echo "E6: FAIL"
 
-# E6: Stop reason rendered as human-friendly text (mapped from code to sentence)
-if grep -qE 'no.valid.issues.*:=|no_valid_issues.*"[A-Z]|stopReason.*switch|humanizeStop|formatStop|friendlyStop' internal/compound/review_loop_report.go 2>/dev/null || \
-   sed -n '/Stop Reason/,/WriteString/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qE 'switch|map|case|"no'; then
-    SCORE=$((SCORE + 1)); echo "E6: PASS — stop reason has human-friendly rendering"
-else
-    echo "E6: FAIL — stop reason is raw code like 'no_valid_issues'"
-fi
-
-# E7: Duration/timing tracked in types or report
-if sed -n '/type ReviewLoop\(Result\|Iteration\)/,/^}/p' internal/compound/types.go 2>/dev/null | \
-   grep -qiE 'duration|elapsed'; then
-    SCORE=$((SCORE + 1)); echo "E7: PASS — duration tracked in review types"
-else
-    echo "E7: FAIL — no duration/timing in review types"
-fi
+sed -n '/type ReviewLoop\(Result\|Iteration\)/,/^}/p' internal/compound/types.go 2>/dev/null | grep -qiE 'duration|elapsed' && { SCORE=$((SCORE+1)); echo "E7: PASS"; } || echo "E7: FAIL"
 
 # === E8-E10: Report command enrichment ===
+sed -n '/func showReviewResult/,/^}/p' cmd/report.go 2>/dev/null | grep -qE 'Pattern' && { SCORE=$((SCORE+1)); echo "E8: PASS"; } || echo "E8: FAIL"
 
-# E8: showReviewResult actually renders patterns to terminal (not just has field in struct)
-if sed -n '/func showReviewResult/,/^}/p' cmd/report.go 2>/dev/null | \
-   grep -qE 'Pattern'; then
-    SCORE=$((SCORE + 1)); echo "E8: PASS — report renders patterns to terminal"
-else
-    echo "E8: FAIL — report doesn't render patterns (only summary + recommendations)"
-fi
+sed -n '/func showReviewResult/,/^}/p' cmd/report.go 2>/dev/null | grep -qiE 'TechDebt|tech.debt' && { SCORE=$((SCORE+1)); echo "E9: PASS"; } || echo "E9: FAIL"
 
-# E9: Report terminal output shows tech debt info
-if sed -n '/func showReviewResult/,/^}/p' cmd/report.go 2>/dev/null | \
-   grep -qiE 'techDebt|tech.debt|issue' || \
-   grep -qE 'TechDebt' cmd/report.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E9: PASS — report surfaces tech debt or issues"
-else
-    echo "E9: FAIL — report doesn't surface tech debt"
-fi
+sed -n '/func showReviewResult/,/^}/p' cmd/report.go 2>/dev/null | grep -qiE 'issue|Issue' && { SCORE=$((SCORE+1)); echo "E10: PASS"; } || echo "E10: FAIL"
 
-# E10: Report terminal output shows issue count or summary stats
-if sed -n '/func showReviewResult/,/^}/p' cmd/report.go 2>/dev/null | \
-   grep -qiE 'issue|Issue|found|problem'; then
-    SCORE=$((SCORE + 1)); echo "E10: PASS — report shows issue info"
-else
-    echo "E10: FAIL — report terminal output lacks issue information"
-fi
+# === E11-E14 ===
+grep -qE 'ShowIterationHeader.*story' internal/loop/loop.go 2>/dev/null && grep -qE 'StoryInfo' internal/loop/loop.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E11: PASS"; } || echo "E11: FAIL"
 
-# === E11-E13: Run command enrichment ===
+RUN_HUMAN=$(sed -n '/result := runner.Run/,/return nil/p' cmd/run.go 2>/dev/null | grep -v 'jsonMode\|outputRunJSON')
+echo "$RUN_HUMAN" | grep -qiE 'progress|stories|complete|prd|Display|Show' && { SCORE=$((SCORE+1)); echo "E12: PASS"; } || echo "E12: FAIL"
 
-# E11: Run shows story ID per iteration (ShowIterationHeader takes StoryInfo)
-if grep -qE 'ShowIterationHeader.*story' internal/loop/loop.go 2>/dev/null && \
-   grep -qE 'StoryInfo' internal/loop/loop.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E11: PASS — run shows story info per iteration"
-else
-    echo "E11: FAIL — run doesn't show story info per iteration"
-fi
+grep -qE 'StoryID.*json.*storyId' cmd/run.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E13: PASS"; } || echo "E13: FAIL"
 
-# E12: Run human-readable (non-JSON) output shows PRD progress or completion stats
-RUN_HUMAN_PATH=$(sed -n '/result := runner.Run/,/return nil/p' cmd/run.go 2>/dev/null | grep -v 'jsonMode\|outputRunJSON')
-if echo "$RUN_HUMAN_PATH" | grep -qiE 'progress|stories|complete|prd|Display|Show'; then
-    SCORE=$((SCORE + 1)); echo "E12: PASS — run terminal shows progress/completion info"
-else
-    echo "E12: FAIL — run terminal path returns bare error or nil, no progress summary"
-fi
+[ "$TEST_PASS" -eq 1 ] && { SCORE=$((SCORE+1)); echo "E14: PASS"; } || echo "E14: FAIL"
 
-# E13: Run JSON includes story ID
-if grep -qE 'StoryID.*json.*storyId' cmd/run.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E13: PASS — run JSON has story ID"
-else
-    echo "E13: FAIL — run JSON lacks story ID"
-fi
+# === E15-E20 ===
+sed -n '/func.*runAnalyzeStep/,/^func /p' internal/compound/pipeline.go 2>/dev/null | grep -qE 'ShowInfo|display' && { SCORE=$((SCORE+1)); echo "E15: PASS"; } || echo "E15: FAIL"
 
-# === E14: Tests pass ===
-if [ "$TEST_PASS" -eq 1 ]; then
-    SCORE=$((SCORE + 1)); echo "E14: PASS — all tests pass"
-else
-    echo "E14: FAIL — tests failed"
-fi
+grep -qE 'Files\s*(Affected|Changed|Modified)' internal/compound/review_loop_report.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E16: PASS"; } || echo "E16: FAIL"
 
-# === E15-E20: Wave 2 — Deeper enrichment ===
+sed -n '/type ReviewLoopIteration/,/^}/p' internal/compound/types.go 2>/dev/null | grep -qiE 'duration|elapsed' && { SCORE=$((SCORE+1)); echo "E17: PASS"; } || echo "E17: FAIL"
 
-# E15: Auto pipeline surfaces analysis result during execution
-if grep -qE 'PriorityItem|priorityItem|Analysis.*display|display.*Analysis|ShowInfo.*analys|ShowInfo.*priority|ShowInfo.*branch' internal/compound/pipeline.go 2>/dev/null || \
-   sed -n '/runAnalyzeStep/,/^}/p' internal/compound/pipeline.go 2>/dev/null | grep -qE 'ShowInfo|display'; then
-    SCORE=$((SCORE + 1)); echo "E15: PASS — auto pipeline shows analysis details"
-else
-    echo "E15: FAIL — auto pipeline doesn't surface analysis results"
-fi
+grep -qE 'Issues.*json.*issues' cmd/report.go 2>/dev/null && grep -qE 'TechDebt.*json.*techDebt' cmd/report.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E18: PASS"; } || echo "E18: FAIL"
 
-# E16: Review markdown shows files affected across all iterations
-if grep -qE 'Files\s*(Affected|Changed|Modified)|files.*changed|Affected.*Files' internal/compound/review_loop_report.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E16: PASS — review shows files affected"
-else
-    echo "E16: FAIL — review doesn't show files affected summary"
-fi
+sed -n '/Totals/,/Stop Reason/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qiE 'severity|Severity' && { SCORE=$((SCORE+1)); echo "E19: PASS"; } || echo "E19: FAIL"
 
-# E17: ReviewLoopIteration tracks per-iteration duration
-if sed -n '/type ReviewLoopIteration/,/^}/p' internal/compound/types.go 2>/dev/null | \
-   grep -qiE 'duration|elapsed|startedAt|endedAt'; then
-    SCORE=$((SCORE + 1)); echo "E17: PASS — per-iteration timing tracked"
-else
-    echo "E17: FAIL — no per-iteration timing in ReviewLoopIteration"
-fi
+sed -n '/type ReviewLoop\(Result\|Totals\)/,/^}/p' internal/compound/types.go 2>/dev/null | grep -qiE 'files|affected' && { SCORE=$((SCORE+1)); echo "E20: PASS"; } || echo "E20: FAIL"
 
-# E18: Report JSON includes issues and tech debt (additive to existing contract)
-if grep -qE 'Issues.*json.*issues' cmd/report.go 2>/dev/null && \
-   grep -qE 'TechDebt.*json.*techDebt' cmd/report.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E18: PASS — report JSON contract includes issues and tech debt"
-else
-    echo "E18: FAIL — report JSON lacks issues/tech debt fields"
-fi
+# === E21-E24 ===
+echo "$DETAIL_TYPE" | grep -qiE 'rationale|reason' && { SCORE=$((SCORE+1)); echo "E21: PASS"; } || echo "E21: FAIL"
 
-# E19: Review totals show severity distribution
-if grep -qE 'severity|Severity|High|Critical|high.*:.*[0-9]|critical.*:.*[0-9]' internal/compound/review_loop_report.go 2>/dev/null && \
-   sed -n '/Totals/,/Stop Reason/p' internal/compound/review_loop_report.go 2>/dev/null | grep -qiE 'severity|high|critical'; then
-    SCORE=$((SCORE + 1)); echo "E19: PASS — review totals include severity distribution"
-else
-    echo "E19: FAIL — review totals lack severity distribution"
-fi
+sed -n '/func showRunSummary/,/^}/p' cmd/run.go 2>/dev/null | grep -qiE 'time|duration|elapsed|took' && { SCORE=$((SCORE+1)); echo "E22: PASS"; } || echo "E22: FAIL"
 
-# E20: ReviewLoopResult has FilesAffected or similar summary field
-if sed -n '/type ReviewLoop\(Result\|Totals\)/,/^}/p' internal/compound/types.go 2>/dev/null | \
-   grep -qiE 'files|affected|changed'; then
-    SCORE=$((SCORE + 1)); echo "E20: PASS — ReviewLoopResult tracks files affected"
-else
-    echo "E20: FAIL — ReviewLoopResult lacks files tracking"
-fi
+sed -n '/type Result struct/,/^}/p' internal/loop/loop.go 2>/dev/null | grep -qiE 'duration|elapsed' && { SCORE=$((SCORE+1)); echo "E23: PASS"; } || echo "E23: FAIL"
 
-# === E21-E24: Wave 3 — Content depth ===
+grep -qE 'Duration|duration|time\.Since' cmd/auto.go 2>/dev/null && { SCORE=$((SCORE+1)); echo "E24: PASS"; } || echo "E24: FAIL"
 
-# E21: ReviewIssueDetail includes rationale (not just title/severity)
-if sed -n '/type ReviewIssueDetail/,/^}/p' internal/compound/types.go 2>/dev/null | \
-   grep -qiE 'rationale|reason|description'; then
-    SCORE=$((SCORE + 1)); echo "E21: PASS — issue details include rationale"
-else
-    echo "E21: FAIL — issue details lack rationale/reason"
-fi
+# === E25-E28 ===
+echo "$ITER_BLOCK" | grep -qE '\.Rationale\b' && { SCORE=$((SCORE+1)); echo "E25: PASS"; } || echo "E25: FAIL"
 
-# E22: Run terminal shows elapsed time after loop completes
-if sed -n '/func showRunSummary/,/^}/p' cmd/run.go 2>/dev/null | \
-   grep -qiE 'time|duration|elapsed|took'; then
-    SCORE=$((SCORE + 1)); echo "E22: PASS — run summary shows elapsed time"
-else
-    echo "E22: FAIL — run summary lacks elapsed time"
-fi
+sed -n '/type RunResult/,/^}/p' cmd/run.go 2>/dev/null | grep -qiE 'duration' && { SCORE=$((SCORE+1)); echo "E26: PASS"; } || echo "E26: FAIL"
 
-# E23: loop.Result tracks elapsed time (Duration or StartedAt/EndedAt)
-if sed -n '/type Result struct/,/^}/p' internal/loop/loop.go 2>/dev/null | \
-   grep -qiE 'duration|elapsed|time|started'; then
-    SCORE=$((SCORE + 1)); echo "E23: PASS — loop Result tracks timing"
-else
-    echo "E23: FAIL — loop Result has no timing data"
-fi
+sed -n '/type AutoResult/,/^}/p' cmd/auto.go 2>/dev/null | grep -qiE 'duration|elapsed' && { SCORE=$((SCORE+1)); echo "E27: PASS"; } || echo "E27: FAIL"
 
-# E24: Auto pipeline shows step timing or total elapsed
-if grep -qE 'Duration|duration|elapsed|Elapsed|time\.Since' cmd/auto.go 2>/dev/null || \
-   grep -qE 'Duration|duration|elapsed' internal/compound/pipeline.go 2>/dev/null; then
-    SCORE=$((SCORE + 1)); echo "E24: PASS — auto pipeline tracks timing"
-else
-    echo "E24: FAIL — auto pipeline lacks timing info"
-fi
+echo "$ITER_BLOCK" | grep -qiE 'duration|Duration' && { SCORE=$((SCORE+1)); echo "E28: PASS"; } || echo "E28: FAIL"
 
-MAX_SCORE=24
+MAX_SCORE=28
 
 echo ""
-echo "=== Results ==="
-echo "Score: ${SCORE}/${MAX_SCORE}"
-echo ""
+echo "=== Score: ${SCORE}/${MAX_SCORE} ==="
 echo "METRIC content_quality_score=${SCORE}"
 echo "METRIC test_pass=${TEST_PASS}"

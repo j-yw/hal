@@ -28,6 +28,7 @@ type AutoResult struct {
 	ContractVersion int             `json:"contractVersion"`
 	OK              bool            `json:"ok"`
 	Resumed         bool            `json:"resumed,omitempty"`
+	Duration        string          `json:"duration,omitempty"`
 	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	Summary         string          `json:"summary"`
@@ -258,13 +259,31 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	elapsed := time.Since(autoStart)
+
 	if jsonMode {
-		return outputAutoJSON(out, true, resume, "Auto pipeline completed successfully.", autoFailureNone, false)
+		jr := AutoResult{
+			ContractVersion: 1,
+			OK:              true,
+			Resumed:         resume,
+			Duration:        elapsed.Round(time.Second).String(),
+			Summary:         "Auto pipeline completed successfully.",
+			NextAction: &AutoNextAction{
+				ID:          "run_report",
+				Command:     "hal report",
+				Description: "Generate a report for the completed auto pipeline work.",
+			},
+		}
+		data, err := json.MarshalIndent(jr, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal auto result: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
 	}
 
 	// Show success message
-	elapsed := time.Since(autoStart).Round(time.Second)
-	display.ShowCommandSuccess("Auto pipeline completed!", fmt.Sprintf("Duration: %s", elapsed))
+	display.ShowCommandSuccess("Auto pipeline completed!", fmt.Sprintf("Duration: %s", elapsed.Round(time.Second)))
 
 	return nil
 }
