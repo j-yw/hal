@@ -43,6 +43,7 @@ type RunResult struct {
 	Iterations      int            `json:"iterations"`
 	Complete        bool           `json:"complete"`
 	StoryID         string         `json:"storyId,omitempty"`
+	LastStoryID     string         `json:"lastStoryId,omitempty"`
 	DryRun          bool           `json:"dryRun,omitempty"`
 	Duration        string         `json:"duration,omitempty"`
 	PRD             *RunPRDInfo    `json:"prd,omitempty"`
@@ -386,6 +387,9 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 	}
 	if result.Duration > 0 {
 		jr.Duration = result.Duration.Round(time.Second).String()
+	}
+	if result.LastStoryID != "" {
+		jr.LastStoryID = result.LastStoryID
 	}
 
 	// Story progress from loop result

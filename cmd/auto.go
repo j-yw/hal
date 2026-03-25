@@ -28,14 +28,21 @@ var (
 
 // AutoResult is the machine-readable output of hal auto --json.
 type AutoResult struct {
-	ContractVersion int             `json:"contractVersion"`
-	OK              bool            `json:"ok"`
-	Resumed         bool            `json:"resumed,omitempty"`
-	Duration        string          `json:"duration,omitempty"`
-	Branch          string          `json:"branch,omitempty"`
-	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
-	Error           string          `json:"error,omitempty"`
-	Summary         string          `json:"summary"`
+	ContractVersion int              `json:"contractVersion"`
+	OK              bool             `json:"ok"`
+	Resumed         bool             `json:"resumed,omitempty"`
+	Duration        string           `json:"duration,omitempty"`
+	Branch          string           `json:"branch,omitempty"`
+	Tasks           *AutoTasksInfo   `json:"tasks,omitempty"`
+	NextAction      *AutoNextAction  `json:"nextAction,omitempty"`
+	Error           string           `json:"error,omitempty"`
+	Summary         string           `json:"summary"`
+}
+
+// AutoTasksInfo provides task completion progress for the auto pipeline.
+type AutoTasksInfo struct {
+	Completed int `json:"completed"`
+	Total     int `json:"total"`
 }
 
 // AutoNextAction suggests what to do after the auto pipeline.
@@ -284,6 +291,13 @@ func runAuto(cmd *cobra.Command, args []string) error {
 				Command:     "hal report",
 				Description: "Generate a report for the completed auto pipeline work.",
 			},
+		}
+		// Add task progress if available
+		if prd, err := engine.LoadPRDFile(filepath.Join(dir, template.HalDir), template.AutoPRDFile); err == nil {
+			completed, total := prd.Progress()
+			if total > 0 {
+				jr.Tasks = &AutoTasksInfo{Completed: completed, Total: total}
+			}
 		}
 		data, err := json.MarshalIndent(jr, "", "  ")
 		if err != nil {

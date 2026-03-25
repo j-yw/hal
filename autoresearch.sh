@@ -116,7 +116,15 @@ sed -n '/pipeline.Run/,/fmt.Fprintln.*data/p' cmd/auto.go 2>/dev/null | grep -qi
 # E50: Auto terminal shows PRD progress at completion
 sed -n '/pipeline.Run/,/ShowCommandSuccess/p' cmd/auto.go 2>/dev/null | grep -qiE 'prd|progress|stories|tasks' && { SCORE=$((SCORE+1)); echo "E50: PASS"; } || echo "E50: FAIL"
 
-MAX_SCORE=50
+# === E51-E52: Wave 11 — Machine-readable completeness ===
+
+# E51: Run JSON includes last story worked on
+sed -n '/type RunResult/,/^}/p' cmd/run.go 2>/dev/null | grep -qiE 'lastStory|last.*story' && { SCORE=$((SCORE+1)); echo "E51: PASS"; } || echo "E51: FAIL"
+
+# E52: Auto JSON includes task/story progress
+sed -n '/type AutoResult/,/^}/p' cmd/auto.go 2>/dev/null | grep -qiE 'tasks|stories|progress' && { SCORE=$((SCORE+1)); echo "E52: PASS"; } || echo "E52: FAIL"
+
+MAX_SCORE=52
 
 echo ""
 echo "=== Score: ${SCORE}/${MAX_SCORE} ==="
