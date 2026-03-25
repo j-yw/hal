@@ -140,8 +140,21 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Health:"), ui.StyleSuccess.Render(healthLabel))
 		if statusResult.Manual != nil {
+			if statusResult.Manual.BranchName != "" {
+				fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Branch:"), ui.StyleInfo.Render(statusResult.Manual.BranchName))
+			}
 			storyLabel := fmt.Sprintf("%d/%d complete", statusResult.Manual.CompletedStories, statusResult.Manual.TotalStories)
+			if statusResult.Manual.CompletedStories == statusResult.Manual.TotalStories && statusResult.Manual.TotalStories > 0 {
+				storyLabel = ui.StyleSuccess.Render(storyLabel)
+			}
 			fmt.Fprintf(out, "Stories:  %s\n", storyLabel)
+			if statusResult.Manual.NextStory != nil {
+				label := ui.StyleInfo.Render(statusResult.Manual.NextStory.ID)
+				if statusResult.Manual.NextStory.Title != "" {
+					label += " — " + statusResult.Manual.NextStory.Title
+				}
+				fmt.Fprintf(out, "Up next:  %s\n", label)
+			}
 		}
 		if statusResult.Compound != nil {
 			if statusResult.Compound.Step != "" {

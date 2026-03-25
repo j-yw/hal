@@ -10,7 +10,7 @@ TEST_PASS=1
 go test ./cmd/... -count=1 -timeout 120s 2>&1 | tail -20 || TEST_PASS=0
 
 SCORE=0
-MAX_SCORE=36
+MAX_SCORE=38
 
 has_engine_import() { grep -q 'github.com/jywlabs/hal/internal/engine' "$1" 2>/dev/null; }
 has_style_usage() { grep -qE '(engine|display|ui|styles)\.(Style[A-Za-z]+|BoxStyle|HeaderBox|SuccessBox|ErrorBox|WarningBox)' "$1" 2>/dev/null; }
@@ -126,6 +126,21 @@ if grep -qE 'summary|Summary' cmd/continue.go 2>/dev/null && \
     SCORE=$((SCORE+1)); echo "E36: PASS — continue shows summary"
 else
     echo "E36: FAIL — continue doesn't show summary text"
+fi
+
+# E37: Continue shows next story in manual workflow
+if grep -qE 'NextStory|nextStory|NextStory\.ID' cmd/continue.go 2>/dev/null && \
+   sed -n '/Human-readable/,/return nil/p' cmd/continue.go 2>/dev/null | grep -qE 'NextStory'; then
+    SCORE=$((SCORE+1)); echo "E37: PASS — continue shows next story"
+else
+    echo "E37: FAIL — continue doesn't show next story details"
+fi
+
+# E38: Continue shows branch in manual workflow
+if sed -n '/Human-readable/,/return nil/p' cmd/continue.go 2>/dev/null | grep -qE 'BranchName|Branch'; then
+    SCORE=$((SCORE+1)); echo "E38: PASS — continue shows branch in manual workflow"
+else
+    echo "E38: FAIL — continue doesn't show branch"
 fi
 
 echo ""
