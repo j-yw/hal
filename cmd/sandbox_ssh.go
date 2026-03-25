@@ -59,6 +59,10 @@ func runSandboxSSH(args []string, out io.Writer, provider sandbox.Provider) erro
 // It resolves a target from the global registry, builds ConnectInfo, and dispatches
 // to SSH or Exec depending on whether remote command args are present.
 func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provider, testMode bool) error {
+	if err := runSandboxAutoMigrate(".", out); err != nil {
+		return err
+	}
+
 	// Parse args: optional NAME followed by optional [-- command args...]
 	name, remoteArgs := parseSSHArgs(args)
 

@@ -430,6 +430,40 @@ func TestRunSandboxSSH_ConnectInfoUsesPreferredIP(t *testing.T) {
 	}
 }
 
+func TestRunSandboxSSH_AutoMigratesLegacyState(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "my-sandbox",
+		Provider:  "daytona",
+		IP:        "10.0.0.1",
+		CreatedAt: time.Now(),
+		Status:    sandbox.StatusRunning,
+	})
+
+	origMigrate := sandboxMigrate
+	t.Cleanup(func() {
+		sandboxMigrate = origMigrate
+	})
+
+	called := false
+	sandboxMigrate = func(projectDir string, out io.Writer) error {
+		called = true
+		if projectDir != "." {
+			t.Fatalf("projectDir = %q, want %q", projectDir, ".")
+		}
+		return nil
+	}
+
+	mock := &mockSSHProvider{}
+
+	if err := runSandboxSSHWithDeps([]string{"my-sandbox"}, io.Discard, mock, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !called {
+		t.Fatal("expected legacy sandbox migration to run")
+	}
+}
+
 func TestParseSSHArgs(t *testing.T) {
 	tests := []struct {
 		name       string
