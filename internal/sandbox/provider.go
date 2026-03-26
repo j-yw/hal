@@ -33,10 +33,13 @@ func ConnectInfoFromState(instance *SandboxState) *ConnectInfo {
 		return nil
 	}
 
+	normalized := *instance
+	normalizeRegistryInstance(&normalized, normalized.Name)
+
 	return &ConnectInfo{
-		Name:        instance.Name,
-		IP:          PreferredIP(instance),
-		WorkspaceID: instance.WorkspaceID,
+		Name:        normalized.Name,
+		IP:          PreferredIP(&normalized),
+		WorkspaceID: normalized.WorkspaceID,
 	}
 }
 

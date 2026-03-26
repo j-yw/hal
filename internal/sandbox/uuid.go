@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -153,4 +154,35 @@ func formatUUIDv7(unixMilli uint64, randA uint16, randB uint64) string {
 	raw[15] = byte(randB)
 
 	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+func isUUIDv7(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if len(value) != 36 {
+		return false
+	}
+
+	for i, ch := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if ch != '-' {
+				return false
+			}
+			continue
+		}
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+
+	if value[14] != '7' {
+		return false
+	}
+
+	switch value[19] {
+	case '8', '9', 'a', 'b':
+		return true
+	default:
+		return false
+	}
 }

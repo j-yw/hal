@@ -104,7 +104,7 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("    set -a\n")
 	b.WriteString("    . /root/.env\n")
 	b.WriteString("    set +a\n")
-	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/j-yw/hal/main/sandbox/setup.sh | bash\n")
+	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
 
 	return b.String()
 }
@@ -184,15 +184,16 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	}
 
 	// Droplet exists on DO from this point — clean up on any failure.
+	cleanupTarget := strings.TrimSpace(name)
 	cleanupDroplet := func(reason string) {
 		fmt.Fprintf(safeOut, "Cleaning up %s after failure (%s)...\n", name, reason)
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		delCmd := d.commandContext(delCtx, "doctl", "compute", "droplet", "delete", name, "--force")
+		delCmd := d.commandContext(delCtx, "doctl", "compute", "droplet", "delete", cleanupTarget, "--force")
 		delCmd.Stdout = io.Discard
 		delCmd.Stderr = io.Discard
 		if delErr := delCmd.Run(); delErr != nil {
-			fmt.Fprintf(safeOut, "Warning: failed to clean up droplet %s: %v (delete manually with: doctl compute droplet delete %s --force)\n", name, delErr, name)
+			fmt.Fprintf(safeOut, "Warning: failed to clean up droplet %s: %v (delete manually with: doctl compute droplet delete %s --force)\n", name, delErr, cleanupTarget)
 		} else {
 			fmt.Fprintf(safeOut, "Cleaned up droplet %s\n", name)
 		}
@@ -214,6 +215,9 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	}
 
 	id, ip := parseDODropletInfo(ipBuf.String())
+	if trimmedID := strings.TrimSpace(id); trimmedID != "" {
+		cleanupTarget = trimmedID
+	}
 	if strings.TrimSpace(ip) == "" {
 		cleanupDroplet("no public IP")
 		return nil, fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", name)
@@ -338,17 +342,50 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, ou
 	return nil
 }
 
+func (d *DigitalOceanProvider) resolveConnectIP(info *ConnectInfo) (string, error) {
+	if info != nil {
+		if ip := strings.TrimSpace(info.IP); ip != "" {
+			return ip, nil
+		}
+	}
+
+	target := ""
+	if info != nil {
+		target = strings.TrimSpace(info.WorkspaceID)
+	}
+	if target == "" {
+		return "", fmt.Errorf("sandbox IP is required")
+	}
+
+	cmd := d.commandContext(context.Background(), "doctl", "compute", "droplet", "get", target,
+		"--format", "ID,PublicIPv4",
+		"--no-header",
+	)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Run(); err != nil {
+		return "", wrapDoctlError("compute droplet get", err, stderrBuf.String())
+	}
+
+	_, ip := parseDODropletInfo(stdoutBuf.String())
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return "", fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", target)
+	}
+	return ip, nil
+}
+
 func (d *DigitalOceanProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
 	}
 
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
-	if ip == "" {
-		return nil, fmt.Errorf("sandbox IP is required")
+	ip, err := d.resolveConnectIP(info)
+	if err != nil {
+		return nil, err
 	}
 
 	cmd := exec.Command("ssh",
@@ -367,12 +404,9 @@ func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd
 		return nil, err
 	}
 
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
-	if ip == "" {
-		return nil, fmt.Errorf("sandbox IP is required")
+	ip, err := d.resolveConnectIP(info)
+	if err != nil {
+		return nil, err
 	}
 
 	cmdArgs := []string{

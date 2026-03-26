@@ -77,7 +77,7 @@ func generateCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("    set -a\n")
 	b.WriteString("    . /root/.env\n")
 	b.WriteString("    set +a\n")
-	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/j-yw/hal/main/sandbox/setup.sh | bash\n")
+	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
 
 	return b.String()
 }
@@ -198,7 +198,12 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 		sshCmd.Stdout = safeOut
 		sshCmd.Stderr = &lockStderr
 		if err := sshCmd.Run(); err != nil {
-			fmt.Fprintf(safeOut, "Warning: firewall lockdown failed on %s: %v (apply manually)\n", name, err)
+			cleanupServer("firewall lockdown failed")
+			lockMsg := strings.TrimSpace(lockStderr.String())
+			if lockMsg != "" {
+				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %s: %w", lockMsg, err)
+			}
+			return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w", err)
 		}
 	}
 	return result, nil

@@ -20,6 +20,7 @@ func TestMigrate_ConfigFile(t *testing.T) {
 		name           string
 		setupLocal     func(t *testing.T, projectDir string)
 		seedGlobal     *GlobalConfig
+		seedGlobalRaw  string
 		wantGlobal     *GlobalConfig
 		wantGlobalFile bool
 	}{
@@ -43,6 +44,18 @@ func TestMigrate_ConfigFile(t *testing.T) {
 			wantGlobalFile: true,
 		},
 		{
+			name: "keeps partial global config unchanged when global file exists",
+			setupLocal: func(t *testing.T, projectDir string) {
+				t.Helper()
+				writeProjectConfig(t, projectDir, localSandboxConfigYAML)
+			},
+			seedGlobalRaw: "provider: hetzner\n" +
+				"digitalocean:\n" +
+				"  sshKey: do-global-key\n",
+			wantGlobal:     partialGlobalConfigWithDefaults(),
+			wantGlobalFile: true,
+		},
+		{
 			name:           "no-op when local project sandbox config is missing",
 			wantGlobalFile: false,
 		},
@@ -62,6 +75,14 @@ func TestMigrate_ConfigFile(t *testing.T) {
 			if tt.seedGlobal != nil {
 				if err := SaveGlobalConfig(tt.seedGlobal); err != nil {
 					t.Fatalf("SaveGlobalConfig(seed) error: %v", err)
+				}
+			} else if tt.seedGlobalRaw != "" {
+				if err := EnsureGlobalDir(); err != nil {
+					t.Fatalf("EnsureGlobalDir() error: %v", err)
+				}
+				path := filepath.Join(globalHome, globalConfigFileName)
+				if err := os.WriteFile(path, []byte(tt.seedGlobalRaw), 0o600); err != nil {
+					t.Fatalf("write raw global config: %v", err)
 				}
 			}
 
@@ -199,6 +220,13 @@ func existingGlobalConfig() *GlobalConfig {
 	}
 }
 
+func partialGlobalConfigWithDefaults() *GlobalConfig {
+	cfg := DefaultGlobalConfig()
+	cfg.Provider = "hetzner"
+	cfg.DigitalOcean.SSHKey = "do-global-key"
+	return &cfg
+}
+
 func TestMigrate_StateFile(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -231,8 +259,11 @@ func TestMigrate_StateFile(t *testing.T) {
 				if err != nil {
 					t.Fatalf("LoadInstance after migration: %v", err)
 				}
-				if inst.ID != "test-id-001" {
-					t.Errorf("ID = %q, want %q", inst.ID, "test-id-001")
+				if !isUUIDv7(inst.ID) {
+					t.Errorf("ID = %q, want UUIDv7", inst.ID)
+				}
+				if inst.WorkspaceID != "" {
+					t.Errorf("WorkspaceID = %q, want empty", inst.WorkspaceID)
 				}
 				if inst.Provider != "hetzner" {
 					t.Errorf("Provider = %q, want %q", inst.Provider, "hetzner")
@@ -299,11 +330,11 @@ func TestMigrate_StateFile(t *testing.T) {
 			},
 		},
 		{
-			name: "backfills workspace ID from legacy ID when missing",
+			name: "backfills digitalocean workspace ID from numeric legacy ID when missing",
 			setupLocal: func(t *testing.T, projectDir string) {
 				t.Helper()
 				writeSandboxJSON(t, projectDir, &SandboxState{
-					ID:       "do-legacy-id",
+					ID:       "123456789",
 					Name:     "do-legacy-box",
 					Provider: "digitalocean",
 					Status:   StatusRunning,
@@ -317,15 +348,18 @@ func TestMigrate_StateFile(t *testing.T) {
 				if err != nil {
 					t.Fatalf("LoadInstance: %v", err)
 				}
-				if inst.WorkspaceID != "do-legacy-id" {
-					t.Errorf("WorkspaceID = %q, want %q", inst.WorkspaceID, "do-legacy-id")
+				if !isUUIDv7(inst.ID) {
+					t.Errorf("ID = %q, want UUIDv7", inst.ID)
+				}
+				if inst.WorkspaceID != "123456789" {
+					t.Errorf("WorkspaceID = %q, want %q", inst.WorkspaceID, "123456789")
 				}
 				info := ConnectInfoFromState(inst)
 				if info == nil {
 					t.Fatal("ConnectInfoFromState = nil, want non-nil")
 				}
-				if info.WorkspaceID != "do-legacy-id" {
-					t.Errorf("ConnectInfo.WorkspaceID = %q, want %q", info.WorkspaceID, "do-legacy-id")
+				if info.WorkspaceID != "123456789" {
+					t.Errorf("ConnectInfo.WorkspaceID = %q, want %q", info.WorkspaceID, "123456789")
 				}
 			},
 		},
@@ -496,8 +530,8 @@ func TestMigrate_StateFile_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadInstance after second migration: %v", err)
 	}
-	if inst.ID != "idem-id" {
-		t.Errorf("ID = %q, want %q", inst.ID, "idem-id")
+	if !isUUIDv7(inst.ID) {
+		t.Errorf("ID = %q, want UUIDv7", inst.ID)
 	}
 }
 
@@ -525,8 +559,8 @@ func TestMigrate_StateFile_NilWriterNoOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadInstance: %v", err)
 	}
-	if inst.ID != "silent-id" {
-		t.Errorf("ID = %q, want %q", inst.ID, "silent-id")
+	if !isUUIDv7(inst.ID) {
+		t.Errorf("ID = %q, want UUIDv7", inst.ID)
 	}
 
 	// Local file deleted.
@@ -737,6 +771,236 @@ func TestMigrate_StateFile_AlreadyMigratedLegacyWorkspaceIDBackfill(t *testing.T
 	}
 	if existing.WorkspaceID != "legacy-id" {
 		t.Fatalf("existing global entry WorkspaceID = %q, want %q", existing.WorkspaceID, "legacy-id")
+	}
+}
+
+func TestMigrate_StateFile_DoesNotBackfillWorkspaceIDFromUUIDv7(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "hal-global")
+	t.Setenv(halConfigHomeEnv, globalHome)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	id := "01234567-89ab-7cde-8f01-234567890abc"
+	writeSandboxJSON(t, projectDir, &SandboxState{
+		ID:       id,
+		Name:     "uuid-box",
+		Provider: "hetzner",
+		Status:   StatusRunning,
+	})
+
+	if err := Migrate(projectDir, nil); err != nil {
+		t.Fatalf("Migrate() unexpected error: %v", err)
+	}
+
+	inst, err := LoadInstance("uuid-box")
+	if err != nil {
+		t.Fatalf("LoadInstance: %v", err)
+	}
+	if inst.ID != id {
+		t.Fatalf("ID = %q, want %q", inst.ID, id)
+	}
+	if inst.WorkspaceID != "" {
+		t.Fatalf("WorkspaceID = %q, want empty", inst.WorkspaceID)
+	}
+}
+
+func TestMigrate_StateFile_AlreadyMigratedMergesMissingRegistryFields(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "hal-global")
+	t.Setenv(halConfigHomeEnv, globalHome)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	stoppedAt := time.Date(2026, 3, 21, 16, 0, 0, 0, time.UTC)
+	writeSandboxJSON(t, projectDir, &SandboxState{
+		ID:                "legacy-id",
+		Name:              "legacy-box",
+		Provider:          "daytona",
+		IP:                "203.0.113.10",
+		TailscaleIP:       "100.64.0.10",
+		TailscaleHostname: "legacy-box.tail",
+		Status:            StatusRunning,
+		CreatedAt:         time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC),
+		StoppedAt:         &stoppedAt,
+		AutoShutdown:      true,
+		IdleHours:         24,
+		Repo:              "jywlabs/hal",
+		Size:              "small",
+		SnapshotID:        "snap-001",
+	})
+
+	if err := ForceWriteInstance(&SandboxState{
+		ID:       "legacy-id",
+		Name:     "legacy-box",
+		Provider: "daytona",
+		Status:   StatusUnknown,
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	if err := Migrate(projectDir, nil); err != nil {
+		t.Fatalf("Migrate() unexpected error: %v", err)
+	}
+
+	localPath := filepath.Join(projectDir, template.HalDir, template.SandboxFile)
+	if _, statErr := os.Stat(localPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("local sandbox.json should be removed after merge, stat err = %v", statErr)
+	}
+
+	existing, err := LoadInstance("legacy-box")
+	if err != nil {
+		t.Fatalf("LoadInstance after merge: %v", err)
+	}
+	if existing.IP != "203.0.113.10" {
+		t.Fatalf("IP = %q, want %q", existing.IP, "203.0.113.10")
+	}
+	if existing.TailscaleIP != "100.64.0.10" {
+		t.Fatalf("TailscaleIP = %q, want %q", existing.TailscaleIP, "100.64.0.10")
+	}
+	if existing.Status != StatusRunning {
+		t.Fatalf("Status = %q, want %q", existing.Status, StatusRunning)
+	}
+	if existing.StoppedAt == nil || !existing.StoppedAt.Equal(stoppedAt) {
+		t.Fatalf("StoppedAt = %v, want %v", existing.StoppedAt, stoppedAt)
+	}
+	if existing.WorkspaceID != "" {
+		t.Fatalf("WorkspaceID = %q, want empty", existing.WorkspaceID)
+	}
+	if existing.Repo != "jywlabs/hal" {
+		t.Fatalf("Repo = %q, want %q", existing.Repo, "jywlabs/hal")
+	}
+	if existing.SnapshotID != "snap-001" {
+		t.Fatalf("SnapshotID = %q, want %q", existing.SnapshotID, "snap-001")
+	}
+}
+
+func TestMigrate_StateFile_LateRegistryCollisionPreservesLocal(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "hal-global")
+	t.Setenv(halConfigHomeEnv, globalHome)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	writeSandboxJSON(t, projectDir, &SandboxState{
+		ID:       "legacy-id",
+		Name:     "legacy-box",
+		Provider: "daytona",
+		Status:   StatusRunning,
+	})
+
+	originalRename := renameRegistryFile
+	t.Cleanup(func() {
+		renameRegistryFile = originalRename
+	})
+
+	injected := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !injected && strings.HasSuffix(newPath, filepath.Join(sandboxesDirName, "legacy-box.json")) {
+			injected = true
+			data, err := json.MarshalIndent(&SandboxState{
+				ID:       "competing-id",
+				Name:     "legacy-box",
+				Provider: "daytona",
+				Status:   StatusStopped,
+			}, "", "  ")
+			if err != nil {
+				t.Fatalf("marshal competing sandbox: %v", err)
+			}
+			if err := os.WriteFile(newPath, append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("write competing sandbox: %v", err)
+			}
+			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: fs.ErrExist}
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	err := Migrate(projectDir, nil)
+	if err == nil {
+		t.Fatal("expected collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), `save migrated sandbox state: sandbox "legacy-box" already exists`) {
+		t.Fatalf("error %q missing collision context", err.Error())
+	}
+
+	localPath := filepath.Join(projectDir, template.HalDir, template.SandboxFile)
+	if _, statErr := os.Stat(localPath); statErr != nil {
+		t.Fatalf("local sandbox.json should be preserved, stat err = %v", statErr)
+	}
+
+	existing, loadErr := LoadInstance("legacy-box")
+	if loadErr != nil {
+		t.Fatalf("LoadInstance after collision: %v", loadErr)
+	}
+	if existing.ID != "competing-id" {
+		t.Fatalf("existing global entry should be preserved, ID=%q", existing.ID)
+	}
+}
+
+func TestMigrate_StateFile_ExistingEntryFieldMismatchPreservesLocal(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "hal-global")
+	t.Setenv(halConfigHomeEnv, globalHome)
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	sandboxID := "0195c7fb-66e6-7b4b-8123-123456789abc"
+	createdAt := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	stoppedAt := time.Date(2026, 3, 22, 12, 0, 0, 0, time.UTC)
+	writeSandboxJSON(t, projectDir, &SandboxState{
+		ID:                sandboxID,
+		Name:              "legacy-box",
+		Provider:          "daytona",
+		IP:                "203.0.113.10",
+		TailscaleIP:       "100.64.0.10",
+		TailscaleHostname: "legacy-box.tail",
+		Status:            StatusRunning,
+		CreatedAt:         createdAt,
+		StoppedAt:         &stoppedAt,
+		IdleHours:         24,
+		Size:              "small",
+		Repo:              "jywlabs/hal",
+		SnapshotID:        "snap-001",
+	})
+
+	if err := ForceWriteInstance(&SandboxState{
+		ID:                sandboxID,
+		Name:              "legacy-box",
+		Provider:          "daytona",
+		IP:                "203.0.113.11",
+		TailscaleIP:       "100.64.0.11",
+		TailscaleHostname: "stale-box.tail",
+		Status:            StatusStopped,
+		CreatedAt:         createdAt.Add(-time.Hour),
+		Size:              "medium",
+		Repo:              "other/repo",
+		SnapshotID:        "snap-999",
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	err := Migrate(projectDir, nil)
+	if err == nil {
+		t.Fatal("expected conflict error, got nil")
+	}
+	if !strings.Contains(err.Error(), `legacy sandbox state "legacy-box" conflicts with existing global sandbox state`) {
+		t.Fatalf("error %q missing conflict context", err.Error())
+	}
+
+	localPath := filepath.Join(projectDir, template.HalDir, template.SandboxFile)
+	if _, statErr := os.Stat(localPath); statErr != nil {
+		t.Fatalf("local sandbox.json should be preserved, stat err = %v", statErr)
+	}
+
+	existing, loadErr := LoadInstance("legacy-box")
+	if loadErr != nil {
+		t.Fatalf("LoadInstance after conflict: %v", loadErr)
+	}
+	if existing.IP != "203.0.113.11" {
+		t.Fatalf("existing global entry should remain unchanged, IP=%q", existing.IP)
+	}
+	if existing.Status != StatusStopped {
+		t.Fatalf("existing global entry should remain unchanged, Status=%q", existing.Status)
 	}
 }
 

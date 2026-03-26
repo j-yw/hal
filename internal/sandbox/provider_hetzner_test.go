@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGenerateCloudInit_WithEnvVars(t *testing.T) {
@@ -194,6 +195,53 @@ func TestHetznerProvider_Create_ServerIPFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hcloud server ip failed") {
 		t.Errorf("error %q should mention 'hcloud server ip failed'", err.Error())
+	}
+}
+
+func TestHetznerProvider_Create_LockdownFailsWhenFirewallLockdownFails(t *testing.T) {
+	var calls [][]string
+	sshCalls := 0
+
+	hp := &HetznerProvider{
+		SSHKey:            "key",
+		ServerType:        "cx22",
+		Image:             "ubuntu-24.04",
+		TailscaleLockdown: true,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 2 && args[0] == "server" && args[1] == "ip" {
+				return exec.CommandContext(ctx, "echo", "10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			sshCalls++
+			if sshCalls == 1 {
+				return exec.CommandContext(ctx, "echo", "100.64.0.99")
+			}
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		},
+	}
+
+	var out bytes.Buffer
+	_, err := hp.Create(context.Background(), "test-server", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when firewall lockdown fails in lockdown mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to apply firewall lockdown in lockdown mode") {
+		t.Errorf("error %q should mention lockdown firewall failure", err.Error())
+	}
+
+	var sawCleanupDelete bool
+	for _, call := range calls {
+		if strings.Join(call, " ") == "hcloud server delete test-server" {
+			sawCleanupDelete = true
+			break
+		}
+	}
+	if !sawCleanupDelete {
+		t.Fatalf("expected cleanup delete call after lockdown failure, calls=%v", calls)
 	}
 }
 

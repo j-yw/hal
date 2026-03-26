@@ -392,6 +392,35 @@ func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
 	}
 }
 
+func TestDigitalOceanProvider_SSH_ResolvesIPFromWorkspaceID(t *testing.T) {
+	var capturedArgs []string
+	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+		},
+	}
+
+	cmd, err := dp.SSH(&ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"})
+	if err != nil {
+		t.Fatalf("SSH() unexpected error: %v", err)
+	}
+
+	joinedLookup := strings.Join(capturedArgs, " ")
+	if !strings.Contains(joinedLookup, "doctl compute droplet get 123456789") {
+		t.Fatalf("SSH() lookup args = %q, want droplet lookup by workspace ID", joinedLookup)
+	}
+	if !strings.Contains(joinedLookup, "--format ID,PublicIPv4") {
+		t.Fatalf("SSH() lookup args = %q, want PublicIPv4 format request", joinedLookup)
+	}
+
+	joinedSSH := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joinedSSH, "root@10.20.30.40") {
+		t.Fatalf("SSH() command = %q, want resolved IP", joinedSSH)
+	}
+}
+
 func TestDigitalOceanProvider_Exec_MissingIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
@@ -403,6 +432,35 @@ func TestDigitalOceanProvider_Exec_MissingIP(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sandbox IP is required") {
 		t.Errorf("Exec() error %q should mention missing IP", err.Error())
+	}
+}
+
+func TestDigitalOceanProvider_Exec_ResolvesIPFromWorkspaceID(t *testing.T) {
+	var capturedArgs []string
+	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+		},
+	}
+
+	cmd, err := dp.Exec(&ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, []string{"ls"})
+	if err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+
+	joinedLookup := strings.Join(capturedArgs, " ")
+	if !strings.Contains(joinedLookup, "doctl compute droplet get 123456789") {
+		t.Fatalf("Exec() lookup args = %q, want droplet lookup by workspace ID", joinedLookup)
+	}
+	if !strings.Contains(joinedLookup, "--format ID,PublicIPv4") {
+		t.Fatalf("Exec() lookup args = %q, want PublicIPv4 format request", joinedLookup)
+	}
+
+	joinedExec := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joinedExec, "root@10.20.30.40") {
+		t.Fatalf("Exec() command = %q, want resolved IP", joinedExec)
 	}
 }
 
@@ -543,7 +601,7 @@ func TestDigitalOceanProvider_Create_LockdownFailsWhenFirewallLockdownFails(t *t
 
 	var sawCleanupDelete bool
 	for _, call := range calls {
-		if strings.Join(call, " ") == "doctl compute droplet delete test-droplet --force" {
+		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
 			sawCleanupDelete = true
 			break
 		}

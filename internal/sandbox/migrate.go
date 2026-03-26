@@ -98,17 +98,37 @@ func migrateState(projectDir string, out io.Writer) error {
 		state.Provider = "daytona"
 	}
 
-	// Legacy state used "id" for provider lifecycle target. Backfill workspaceId
-	// before the existing-entry check so reruns compare normalized state.
-	if strings.TrimSpace(state.WorkspaceID) == "" && strings.TrimSpace(state.ID) != "" {
-		state.WorkspaceID = strings.TrimSpace(state.ID)
+	legacyID := strings.TrimSpace(state.ID)
+
+	// Legacy provider state only used "id" as a lifecycle target for specific
+	// providers. Backfill workspaceId before the existing-entry check so reruns
+	// compare normalized state without copying new UUIDv7 sandbox IDs.
+	if strings.TrimSpace(state.WorkspaceID) == "" && shouldBackfillLegacyWorkspaceID(state.Provider, legacyID) {
+		state.WorkspaceID = legacyID
+	}
+	if !isUUIDv7(state.ID) {
+		state.ID = ""
 	}
 
 	// Check if already migrated (entry exists in global registry).
 	if existing, err := LoadInstance(state.Name); err == nil {
-		if !equivalentMigrationState(&state, existing) {
+		if !compatibleMigrationState(&state, existing) {
 			return fmt.Errorf("legacy sandbox state %q conflicts with existing global sandbox state", state.Name)
 		}
+
+		if merged, changed := mergeMissingMigrationState(existing, &state); changed {
+			if err := ForceWriteInstance(merged); err != nil {
+				return fmt.Errorf("merge existing global sandbox state %q: %w", state.Name, err)
+			}
+			existing, err = LoadInstance(state.Name)
+			if err != nil {
+				return fmt.Errorf("verify migrated sandbox state: read-back failed for %q: %w", state.Name, err)
+			}
+		}
+		if !migrationStatePreserved(&state, existing) {
+			return fmt.Errorf("verify migrated sandbox state: existing entry %q is missing persisted legacy fields", state.Name)
+		}
+
 		// Already in registry — remove local file and return.
 		if removeErr := os.Remove(localPath); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
 			return fmt.Errorf("remove already-migrated local state: %w", removeErr)
@@ -127,8 +147,19 @@ func migrateState(projectDir string, out io.Writer) error {
 		return fmt.Errorf("ensure global dir for state migration: %w", err)
 	}
 
+	if strings.TrimSpace(state.ID) == "" {
+		id, err := NewV7()
+		if err != nil {
+			return fmt.Errorf("generate sandbox id for migrated state: %w", err)
+		}
+		state.ID = id
+	}
+
 	// Save to global registry (uses atomic temp-file + rename internally).
-	if err := ForceWriteInstance(&state); err != nil {
+	if err := SaveInstance(&state); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("save migrated sandbox state: sandbox %q already exists", state.Name)
+		}
 		return fmt.Errorf("save migrated sandbox state: %w", err)
 	}
 
@@ -137,9 +168,8 @@ func migrateState(projectDir string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("verify migrated sandbox state: read-back failed for %q: %w", state.Name, err)
 	}
-	if readBack.Name != state.Name || readBack.ID != state.ID {
-		return fmt.Errorf("verify migrated sandbox state: read-back mismatch for %q (name=%q id=%q, expected name=%q id=%q)",
-			state.Name, readBack.Name, readBack.ID, state.Name, state.ID)
+	if !migrationStatePreserved(&state, readBack) {
+		return fmt.Errorf("verify migrated sandbox state: read-back mismatch for %q", state.Name)
 	}
 
 	// Verification passed — safe to delete local file.
@@ -154,14 +184,219 @@ func migrateState(projectDir string, out io.Writer) error {
 	return nil
 }
 
-func equivalentMigrationState(local, global *SandboxState) bool {
+func shouldBackfillLegacyWorkspaceID(provider, legacyID string) bool {
+	if legacyID == "" || isUUIDv7(legacyID) {
+		return false
+	}
+	return strings.TrimSpace(provider) == "digitalocean" && isLegacyDigitalOceanDropletID(legacyID)
+}
+
+func compatibleMigrationState(local, global *SandboxState) bool {
 	if local == nil || global == nil {
 		return false
 	}
-	return local.Name == global.Name &&
-		local.ID == global.ID &&
-		local.WorkspaceID == global.WorkspaceID &&
-		normalizeMigrationProvider(local.Provider) == normalizeMigrationProvider(global.Provider)
+	if local.Name != global.Name ||
+		!migrationValuesCompatible(local.ID, global.ID) ||
+		!migrationValuesCompatible(local.WorkspaceID, global.WorkspaceID) ||
+		normalizeMigrationProvider(local.Provider) != normalizeMigrationProvider(global.Provider) {
+		return false
+	}
+
+	if !migrationValuesCompatible(local.IP, global.IP) {
+		return false
+	}
+	if !migrationValuesCompatible(local.TailscaleIP, global.TailscaleIP) {
+		return false
+	}
+	if !migrationValuesCompatible(local.TailscaleHostname, global.TailscaleHostname) {
+		return false
+	}
+	if !migrationStatusCompatible(local.Status, global.Status) {
+		return false
+	}
+	if !local.CreatedAt.IsZero() && !global.CreatedAt.IsZero() && !global.CreatedAt.Equal(local.CreatedAt) {
+		return false
+	}
+	if local.StoppedAt != nil && global.StoppedAt != nil && !global.StoppedAt.Equal(*local.StoppedAt) {
+		return false
+	}
+	if local.AutoShutdown && !global.AutoShutdown {
+		return false
+	}
+	if local.IdleHours != 0 && global.IdleHours != 0 && global.IdleHours != local.IdleHours {
+		return false
+	}
+	if !migrationValuesCompatible(local.Size, global.Size) {
+		return false
+	}
+	if !migrationValuesCompatible(local.Repo, global.Repo) {
+		return false
+	}
+	if !migrationValuesCompatible(local.SnapshotID, global.SnapshotID) {
+		return false
+	}
+
+	return true
+}
+
+func migrationValuesCompatible(local, global string) bool {
+	local = strings.TrimSpace(local)
+	global = strings.TrimSpace(global)
+	return local == "" || global == "" || local == global
+}
+
+func migrationStatePreserved(local, global *SandboxState) bool {
+	if !compatibleMigrationState(local, global) {
+		return false
+	}
+
+	if !migrationValuePreserved(local.ID, global.ID) {
+		return false
+	}
+	if !migrationValuePreserved(local.WorkspaceID, global.WorkspaceID) {
+		return false
+	}
+	if !migrationValuePreserved(local.IP, global.IP) {
+		return false
+	}
+	if !migrationValuePreserved(local.TailscaleIP, global.TailscaleIP) {
+		return false
+	}
+	if !migrationValuePreserved(local.TailscaleHostname, global.TailscaleHostname) {
+		return false
+	}
+
+	if !migrationStatusPreserved(local.Status, global.Status) {
+		return false
+	}
+
+	if !local.CreatedAt.IsZero() && (global.CreatedAt.IsZero() || !global.CreatedAt.Equal(local.CreatedAt)) {
+		return false
+	}
+	if local.StoppedAt != nil && (global.StoppedAt == nil || !global.StoppedAt.Equal(*local.StoppedAt)) {
+		return false
+	}
+	if local.AutoShutdown && !global.AutoShutdown {
+		return false
+	}
+	if local.IdleHours != 0 && global.IdleHours != local.IdleHours {
+		return false
+	}
+	if !migrationValuePreserved(local.Size, global.Size) {
+		return false
+	}
+	if !migrationValuePreserved(local.Repo, global.Repo) {
+		return false
+	}
+	if !migrationValuePreserved(local.SnapshotID, global.SnapshotID) {
+		return false
+	}
+
+	return true
+}
+
+func migrationValuePreserved(local, global string) bool {
+	local = strings.TrimSpace(local)
+	if local == "" {
+		return true
+	}
+	return strings.TrimSpace(global) == local
+}
+
+func mergeMissingMigrationState(existing, local *SandboxState) (*SandboxState, bool) {
+	if existing == nil || local == nil {
+		return existing, false
+	}
+
+	merged := *existing
+	changed := false
+
+	if strings.TrimSpace(merged.ID) == "" && strings.TrimSpace(local.ID) != "" {
+		merged.ID = local.ID
+		changed = true
+	}
+	if strings.TrimSpace(merged.Provider) == "" && strings.TrimSpace(local.Provider) != "" {
+		merged.Provider = local.Provider
+		changed = true
+	}
+	if strings.TrimSpace(merged.WorkspaceID) == "" && strings.TrimSpace(local.WorkspaceID) != "" {
+		merged.WorkspaceID = local.WorkspaceID
+		changed = true
+	}
+	if strings.TrimSpace(merged.IP) == "" && strings.TrimSpace(local.IP) != "" {
+		merged.IP = local.IP
+		changed = true
+	}
+	if strings.TrimSpace(merged.TailscaleIP) == "" && strings.TrimSpace(local.TailscaleIP) != "" {
+		merged.TailscaleIP = local.TailscaleIP
+		changed = true
+	}
+	if strings.TrimSpace(merged.TailscaleHostname) == "" && strings.TrimSpace(local.TailscaleHostname) != "" {
+		merged.TailscaleHostname = local.TailscaleHostname
+		changed = true
+	}
+	if needsMigrationStatus(merged.Status) && normalizeMigrationStatus(local.Status) != "" {
+		merged.Status = normalizeMigrationStatus(local.Status)
+		changed = true
+	}
+	if merged.CreatedAt.IsZero() && !local.CreatedAt.IsZero() {
+		merged.CreatedAt = local.CreatedAt
+		changed = true
+	}
+	if merged.StoppedAt == nil && local.StoppedAt != nil {
+		stoppedAt := *local.StoppedAt
+		merged.StoppedAt = &stoppedAt
+		changed = true
+	}
+	if !merged.AutoShutdown && local.AutoShutdown {
+		merged.AutoShutdown = true
+		changed = true
+	}
+	if merged.IdleHours == 0 && local.IdleHours != 0 {
+		merged.IdleHours = local.IdleHours
+		changed = true
+	}
+	if strings.TrimSpace(merged.Size) == "" && strings.TrimSpace(local.Size) != "" {
+		merged.Size = local.Size
+		changed = true
+	}
+	if strings.TrimSpace(merged.Repo) == "" && strings.TrimSpace(local.Repo) != "" {
+		merged.Repo = local.Repo
+		changed = true
+	}
+	if strings.TrimSpace(merged.SnapshotID) == "" && strings.TrimSpace(local.SnapshotID) != "" {
+		merged.SnapshotID = local.SnapshotID
+		changed = true
+	}
+
+	return &merged, changed
+}
+
+func needsMigrationStatus(status string) bool {
+	status = normalizeMigrationStatus(status)
+	return status == "" || status == StatusUnknown
+}
+
+func migrationStatusCompatible(local, global string) bool {
+	local = normalizeMigrationStatus(local)
+	if local == "" || local == StatusUnknown {
+		return true
+	}
+
+	global = normalizeMigrationStatus(global)
+	return global == "" || global == StatusUnknown || global == local
+}
+
+func migrationStatusPreserved(local, global string) bool {
+	local = normalizeMigrationStatus(local)
+	if local == "" || local == StatusUnknown {
+		return true
+	}
+	return normalizeMigrationStatus(global) == local
+}
+
+func normalizeMigrationStatus(status string) string {
+	return strings.TrimSpace(strings.ToLower(status))
 }
 
 func normalizeMigrationProvider(provider string) string {

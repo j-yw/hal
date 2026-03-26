@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -9,6 +11,11 @@ import (
 )
 
 const globalConfigFileName = "sandbox-config.yaml"
+
+var (
+	renameGlobalConfigFile = os.Rename
+	removeGlobalConfigFile = os.Remove
+)
 
 // GlobalConfigPath returns the full path to sandbox-config.yaml in GlobalDir().
 func GlobalConfigPath() string {
@@ -205,14 +212,39 @@ func SaveGlobalConfig(cfg *GlobalConfig) error {
 		return fmt.Errorf("write global sandbox config: %w", err)
 	}
 	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
+		_ = removeGlobalConfigFile(tmpPath)
 		return fmt.Errorf("set global sandbox config permissions: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := saveGlobalConfigFile(tmpPath, path); err != nil {
+		_ = removeGlobalConfigFile(tmpPath)
 		return fmt.Errorf("save global sandbox config: %w", err)
 	}
 
+	return nil
+}
+
+func saveGlobalConfigFile(tmpPath, path string) error {
+	if err := renameGlobalConfigFile(tmpPath, path); err == nil {
+		return nil
+	} else if !isRenameNoReplaceError(err) {
+		return err
+	}
+
+	backupPath := path + ".bak"
+	if err := removeGlobalConfigFile(backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := renameGlobalConfigFile(path, backupPath); err != nil {
+		return err
+	}
+	if err := renameGlobalConfigFile(tmpPath, path); err != nil {
+		if restoreErr := renameGlobalConfigFile(backupPath, path); restoreErr != nil {
+			return fmt.Errorf("%w (restore failed: %v)", err, restoreErr)
+		}
+		return err
+	}
+
+	_ = removeGlobalConfigFile(backupPath)
 	return nil
 }
 

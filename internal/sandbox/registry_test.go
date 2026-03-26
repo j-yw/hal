@@ -73,6 +73,32 @@ func TestSaveInstance_NameCollision(t *testing.T) {
 	}
 }
 
+func TestSaveRegistryFileExclusive_DoesNotReplaceExisting(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() failed: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "worker-01.json")
+	if err := os.WriteFile(path, []byte("first\n"), 0o600); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+
+	err := saveRegistryFileExclusive(path, []byte("second\n"))
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("saveRegistryFileExclusive() error = %v, want fs.ErrExist", err)
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile() failed: %v", readErr)
+	}
+	if string(data) != "first\n" {
+		t.Fatalf("file contents = %q, want %q", string(data), "first\n")
+	}
+}
+
 func TestForceWriteInstance_Overwrites(t *testing.T) {
 	setSandboxHome(t)
 
@@ -162,6 +188,183 @@ func TestForceWriteInstance_RetriesWhenRenameCannotReplace(t *testing.T) {
 	}
 }
 
+func TestStageInstanceRemoval_CommitFailureBlocksReuseUntilResolved(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		ID:     "old-id",
+		Name:   "frontend",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() failed: %v", err)
+	}
+
+	statePath := filepath.Join(home, sandboxesDirName, "frontend.json")
+	backupPath := statePath + pendingRemovalRegistryFileExt
+
+	originalRemove := removeRegistryFile
+	t.Cleanup(func() {
+		removeRegistryFile = originalRemove
+	})
+
+	removeRegistryFile = func(path string) error {
+		if path == backupPath {
+			if _, err := os.Stat(path); err == nil {
+				return &os.PathError{Op: "remove", Path: path, Err: fs.ErrPermission}
+			}
+		}
+		return originalRemove(path)
+	}
+
+	pending, err := StageInstanceRemoval("frontend")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval() failed: %v", err)
+	}
+	if err := pending.Commit(); err == nil {
+		t.Fatal("Commit() error = nil, want error")
+	}
+
+	if _, err := os.Stat(statePath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("active registry file should be absent after staged removal, got %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("staged backup should remain when commit fails: %v", err)
+	}
+	loaded, err := LoadInstance("frontend")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error while staged backup exists: %v", err)
+	}
+	if loaded.ID != "old-id" {
+		t.Fatalf("LoadInstance() id = %q, want %q", loaded.ID, "old-id")
+	}
+
+	removeRegistryFile = originalRemove
+	err = SaveInstance(&SandboxState{
+		ID:     "new-id",
+		Name:   "frontend",
+		Status: StatusStopped,
+	})
+	if err == nil {
+		t.Fatal("SaveInstance() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "pending removal") {
+		t.Fatalf("SaveInstance() error = %q, want pending-removal guidance", err.Error())
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("active registry file should still be absent while pending removal exists, got %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("staged backup should remain after failed save: %v", err)
+	}
+
+	loaded, err = LoadInstance("frontend")
+	if err != nil {
+		t.Fatalf("LoadInstance() should still return staged backup after failed save: %v", err)
+	}
+	if loaded.ID != "old-id" {
+		t.Fatalf("LoadInstance() id after failed save = %q, want %q", loaded.ID, "old-id")
+	}
+}
+
+func TestStageInstanceRemoval_RetryReusesExistingStagedBackup(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		ID:     "old-id",
+		Name:   "frontend",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() failed: %v", err)
+	}
+
+	statePath := filepath.Join(home, sandboxesDirName, "frontend.json")
+	backupPath := statePath + pendingRemovalRegistryFileExt
+
+	first, err := StageInstanceRemoval("frontend")
+	if err != nil {
+		t.Fatalf("first StageInstanceRemoval() failed: %v", err)
+	}
+	if first == nil || !first.active {
+		t.Fatalf("first pending removal = %#v, want active staged removal", first)
+	}
+
+	retry, err := StageInstanceRemoval("frontend")
+	if err != nil {
+		t.Fatalf("retry StageInstanceRemoval() failed: %v", err)
+	}
+	if retry == nil || !retry.active {
+		t.Fatalf("retry pending removal = %#v, want active staged removal", retry)
+	}
+	if retry.path != statePath || retry.backupPath != backupPath {
+		t.Fatalf("retry pending removal paths = (%q, %q), want (%q, %q)", retry.path, retry.backupPath, statePath, backupPath)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("active registry file should stay absent during retry, got %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("staged backup should still exist on retry: %v", err)
+	}
+
+	if err := retry.Rollback(); err != nil {
+		t.Fatalf("retry Rollback() failed: %v", err)
+	}
+
+	loaded, err := LoadInstance("frontend")
+	if err != nil {
+		t.Fatalf("LoadInstance() after rollback failed: %v", err)
+	}
+	if loaded.ID != "old-id" {
+		t.Fatalf("loaded id = %q, want %q", loaded.ID, "old-id")
+	}
+	if _, err := os.Stat(backupPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("backup file should be removed after rollback, got %v", err)
+	}
+}
+
+func TestListInstances_IncludesStagedRemovalWhenActiveMissing(t *testing.T) {
+	setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		ID:     "old-id",
+		Name:   "frontend",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance(frontend) failed: %v", err)
+	}
+	if err := SaveInstance(&SandboxState{
+		ID:     "other-id",
+		Name:   "api",
+		Status: StatusStopped,
+	}); err != nil {
+		t.Fatalf("SaveInstance(api) failed: %v", err)
+	}
+
+	pending, err := StageInstanceRemoval("frontend")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval() failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = pending.Rollback()
+	})
+
+	instances, err := ListInstances()
+	if err != nil {
+		t.Fatalf("ListInstances() unexpected error: %v", err)
+	}
+	if len(instances) != 2 {
+		t.Fatalf("ListInstances() len = %d, want 2", len(instances))
+	}
+
+	gotNames := []string{instances[0].Name, instances[1].Name}
+	wantNames := []string{"api", "frontend"}
+	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("ListInstances() names = %v, want %v", gotNames, wantNames)
+	}
+	if instances[1].ID != "old-id" {
+		t.Fatalf("staged instance id = %q, want %q", instances[1].ID, "old-id")
+	}
+}
+
 func TestLoadInstance_NotFoundWrapsErrNotExist(t *testing.T) {
 	setSandboxHome(t)
 
@@ -171,6 +374,120 @@ func TestLoadInstance_NotFoundWrapsErrNotExist(t *testing.T) {
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("expected errors.Is(err, fs.ErrNotExist) to be true, got %v", err)
+	}
+}
+
+func TestLoadInstance_NormalizesLegacyDigitalOceanWorkspaceID(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() failed: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "do-box.json")
+	data := []byte("{\n  \"id\": \"123456789\",\n  \"name\": \"do-box\",\n  \"provider\": \"digitalocean\",\n  \"status\": \"running\"\n}\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	loaded, err := LoadInstance("do-box")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.WorkspaceID != "123456789" {
+		t.Fatalf("loaded workspace = %q, want %q", loaded.WorkspaceID, "123456789")
+	}
+}
+
+func TestLoadInstance_DoesNotBackfillModernDigitalOceanHALID(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() failed: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "do-box.json")
+	data := []byte("{\n  \"id\": \"019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f\",\n  \"name\": \"do-box\",\n  \"provider\": \"digitalocean\",\n  \"status\": \"running\"\n}\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	loaded, err := LoadInstance("do-box")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.WorkspaceID != "" {
+		t.Fatalf("loaded workspace = %q, want empty", loaded.WorkspaceID)
+	}
+}
+
+func TestListInstances_NormalizesLegacyDigitalOceanWorkspaceID(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() failed: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "do-box.json")
+	data := []byte("{\n  \"id\": \"123456789\",\n  \"name\": \"do-box\",\n  \"provider\": \"digitalocean\",\n  \"status\": \"running\"\n}\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	instances, err := ListInstances()
+	if err != nil {
+		t.Fatalf("ListInstances() unexpected error: %v", err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("ListInstances() len = %d, want 1", len(instances))
+	}
+	if instances[0].WorkspaceID != "123456789" {
+		t.Fatalf("WorkspaceID = %q, want %q", instances[0].WorkspaceID, "123456789")
+	}
+}
+
+func TestLoadInstance_BackfillsMissingLegacyID(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		data     string
+		wantID   string
+	}{
+		{
+			name:     "workspace fallback",
+			filename: "workspace-box",
+			data:     "{\n  \"name\": \"workspace-box\",\n  \"provider\": \"daytona\",\n  \"workspaceId\": \"ws-123\",\n  \"status\": \"running\"\n}\n",
+			wantID:   "ws-123",
+		},
+		{
+			name:     "name fallback",
+			filename: "name-box",
+			data:     "{\n  \"name\": \"name-box\",\n  \"provider\": \"daytona\",\n  \"status\": \"running\"\n}\n",
+			wantID:   "name-box",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := setSandboxHome(t)
+
+			if err := EnsureGlobalDir(); err != nil {
+				t.Fatalf("EnsureGlobalDir() failed: %v", err)
+			}
+
+			path := filepath.Join(home, sandboxesDirName, tt.filename+".json")
+			if err := os.WriteFile(path, []byte(tt.data), 0o600); err != nil {
+				t.Fatalf("WriteFile() failed: %v", err)
+			}
+
+			loaded, err := LoadInstance(tt.filename)
+			if err != nil {
+				t.Fatalf("LoadInstance() unexpected error: %v", err)
+			}
+			if loaded.ID != tt.wantID {
+				t.Fatalf("loaded ID = %q, want %q", loaded.ID, tt.wantID)
+			}
+		})
 	}
 }
 
@@ -322,6 +639,39 @@ func TestResolveDefault(t *testing.T) {
 				t.Fatalf("hint = %q, want %q", hint, tt.wantHint)
 			}
 		})
+	}
+}
+
+func TestResolveDefault_IgnoresStagedRemovalEntries(t *testing.T) {
+	setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{Name: "api-backend", Status: StatusRunning}); err != nil {
+		t.Fatalf("SaveInstance(api-backend) failed: %v", err)
+	}
+	if err := SaveInstance(&SandboxState{Name: "frontend", Status: StatusRunning}); err != nil {
+		t.Fatalf("SaveInstance(frontend) failed: %v", err)
+	}
+
+	pending, err := StageInstanceRemoval("frontend")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval() failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = pending.Rollback()
+	})
+
+	got, hint, err := ResolveDefault(nil)
+	if err != nil {
+		t.Fatalf("ResolveDefault() unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected resolved sandbox, got nil")
+	}
+	if got.Name != "api-backend" {
+		t.Fatalf("resolved name = %q, want %q", got.Name, "api-backend")
+	}
+	if hint != `connecting to only active sandbox "api-backend"` {
+		t.Fatalf("hint = %q, want %q", hint, `connecting to only active sandbox "api-backend"`)
 	}
 }
 

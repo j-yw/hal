@@ -218,6 +218,18 @@ func TestConnectInfoFromState(t *testing.T) {
 				WorkspaceID: "ws-123",
 			},
 		},
+		{
+			name: "backfills legacy digitalocean workspace id",
+			instance: &SandboxState{
+				Name:     "do-box",
+				Provider: "digitalocean",
+				ID:       "123456789",
+			},
+			want: &ConnectInfo{
+				Name:        "do-box",
+				WorkspaceID: "123456789",
+			},
+		},
 	}
 
 	for _, tt := range tests {

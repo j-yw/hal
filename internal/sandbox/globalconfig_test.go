@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -259,6 +261,51 @@ func TestSaveGlobalConfig(t *testing.T) {
 	}
 	if loaded.DigitalOcean.Size != cfg.DigitalOcean.Size {
 		t.Fatalf("loaded digitalocean.size = %q, want %q", loaded.DigitalOcean.Size, cfg.DigitalOcean.Size)
+	}
+}
+
+func TestSaveGlobalConfig_RetriesWhenRenameCannotReplace(t *testing.T) {
+	home := setGlobalConfigHome(t)
+
+	if err := SaveGlobalConfig(&GlobalConfig{Provider: "daytona"}); err != nil {
+		t.Fatalf("initial SaveGlobalConfig() failed: %v", err)
+	}
+
+	configPath := filepath.Join(home, globalConfigFileName)
+	tmpPath := configPath + ".tmp"
+	backupPath := configPath + ".bak"
+
+	originalRename := renameGlobalConfigFile
+	originalRemove := removeGlobalConfigFile
+	t.Cleanup(func() {
+		renameGlobalConfigFile = originalRename
+		removeGlobalConfigFile = originalRemove
+	})
+
+	renameAttempts := 0
+	renameGlobalConfigFile = func(oldPath, newPath string) error {
+		if oldPath == tmpPath && newPath == configPath {
+			renameAttempts++
+			if renameAttempts == 1 {
+				return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: fs.ErrExist}
+			}
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	if err := SaveGlobalConfig(&GlobalConfig{Provider: "digitalocean"}); err != nil {
+		t.Fatalf("SaveGlobalConfig() failed: %v", err)
+	}
+
+	loaded, err := LoadGlobalConfig()
+	if err != nil {
+		t.Fatalf("LoadGlobalConfig() failed: %v", err)
+	}
+	if loaded.Provider != "digitalocean" {
+		t.Fatalf("loaded provider = %q, want %q", loaded.Provider, "digitalocean")
+	}
+	if _, err := os.Stat(backupPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("backup file should be removed after overwrite fallback")
 	}
 }
 

@@ -97,7 +97,7 @@ func generateLightsailCloudInit(env map[string]string, tailscaleLockdown bool) s
 	b.WriteString("fi\n")
 
 	// Run full setup (system packages, Node.js, Go, etc.) — this takes a while
-	b.WriteString("curl -fsSL https://raw.githubusercontent.com/j-yw/hal/main/sandbox/setup.sh | bash\n")
+	b.WriteString("curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
 
 	return b.String()
 }
@@ -259,7 +259,12 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 		sshCmd.Stdout = safeOut
 		sshCmd.Stderr = &lockStderr
 		if err := sshCmd.Run(); err != nil {
-			fmt.Fprintf(safeOut, "Warning: firewall lockdown failed on %s: %v (apply manually)\n", name, err)
+			cleanupInstance("firewall lockdown failed")
+			lockMsg := strings.TrimSpace(lockStderr.String())
+			if lockMsg != "" {
+				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %s: %w", lockMsg, err)
+			}
+			return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w", err)
 		}
 	}
 	return result, nil
