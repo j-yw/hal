@@ -88,6 +88,7 @@ func TestResolveStopTargets_ExplicitNames(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
 		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "legacy-box", Provider: "daytona", Status: "", CreatedAt: time.Now()},
 		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
@@ -108,14 +109,19 @@ func TestResolveStopTargets_ExplicitNames(t *testing.T) {
 			wantNames: []string{"api-backend", "frontend"}, // sorted
 		},
 		{
+			name:      "legacy migrated blank status is stoppable by name",
+			args:      []string{"legacy-box"},
+			wantNames: []string{"legacy-box"},
+		},
+		{
 			name:      "duplicate names are de-duplicated",
 			args:      []string{"frontend", "frontend", "api-backend"},
 			wantNames: []string{"api-backend", "frontend"},
 		},
 		{
-			name:    "stopped sandbox targeted by name returns error",
-			args:    []string{"worker-01"},
-			wantErr: "is not running",
+			name:      "stale stopped sandbox targeted by name is still stoppable",
+			args:      []string{"worker-01"},
+			wantNames: []string{"worker-01"},
 		},
 		{
 			name:    "unknown name returns error",
@@ -168,10 +174,11 @@ func TestResolveStopTargets_AllFlag(t *testing.T) {
 			name: "returns all running sandboxes",
 			instances: []*sandbox.SandboxState{
 				{Name: "backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "legacy-box", Provider: "daytona", Status: "", CreatedAt: time.Now()},
 				{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 				{Name: "stopped-one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 			},
-			wantNames: []string{"backend", "frontend"},
+			wantNames: []string{"backend", "frontend", "legacy-box"},
 		},
 		{
 			name: "no running sandboxes returns error",
@@ -926,6 +933,80 @@ func TestRunSandboxStop_AllSuccessExitsZero(t *testing.T) {
 	err := runSandboxStop(nil, true, "", &out, mock)
 	if err != nil {
 		t.Fatalf("expected nil error when all succeed, got: %v", err)
+	}
+}
+
+func TestRunSandboxStop_SingleTargetRegistryWriteFailureReturnsError(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	origForceWrite := sandboxStopForceWrite
+	sandboxStopForceWrite = func(*sandbox.SandboxState) error {
+		return fmt.Errorf("registry unavailable")
+	}
+	t.Cleanup(func() { sandboxStopForceWrite = origForceWrite })
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"my-sandbox"}, false, "", &out, mock)
+	if err == nil || !strings.Contains(err.Error(), "persisting stopped state") {
+		t.Fatalf("runSandboxStop() err = %v, want stopped-state persistence error", err)
+	}
+	if strings.Contains(out.String(), "Stopped my-sandbox") {
+		t.Fatalf("output %q should not report success", out.String())
+	}
+
+	inst, loadErr := sandbox.LoadInstance("my-sandbox")
+	if loadErr != nil {
+		t.Fatalf("expected registry entry to remain loadable: %v", loadErr)
+	}
+	if inst.Status != sandbox.StatusRunning {
+		t.Fatalf("registry status = %q, want %q", inst.Status, sandbox.StatusRunning)
+	}
+}
+
+func TestRunSandboxStop_MultiTargetRegistryWriteFailureCountsAsFailure(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	origForceWrite := sandboxStopForceWrite
+	sandboxStopForceWrite = func(state *sandbox.SandboxState) error {
+		if state.Name == "bravo" {
+			return fmt.Errorf("registry unavailable")
+		}
+		return origForceWrite(state)
+	}
+	t.Cleanup(func() { sandboxStopForceWrite = origForceWrite })
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxStop([]string{"alpha", "bravo"}, false, "", &out, mock)
+	if err == nil || !strings.Contains(err.Error(), "1/2 sandbox stops failed") {
+		t.Fatalf("runSandboxStop() err = %v, want 1/2 sandbox stops failed", err)
+	}
+	if !strings.Contains(out.String(), "Failed bravo: persisting stopped state: registry unavailable") {
+		t.Fatalf("output %q should report bravo persistence failure", out.String())
+	}
+
+	alpha, err := sandbox.LoadInstance("alpha")
+	if err != nil {
+		t.Fatalf("failed to load alpha: %v", err)
+	}
+	if alpha.Status != sandbox.StatusStopped {
+		t.Fatalf("alpha status = %q, want %q", alpha.Status, sandbox.StatusStopped)
+	}
+
+	bravo, err := sandbox.LoadInstance("bravo")
+	if err != nil {
+		t.Fatalf("failed to load bravo: %v", err)
+	}
+	if bravo.Status != sandbox.StatusRunning {
+		t.Fatalf("bravo status = %q, want %q", bravo.Status, sandbox.StatusRunning)
 	}
 }
 

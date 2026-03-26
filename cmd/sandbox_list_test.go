@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // liveTestProvider implements sandbox.Provider for live query tests.
@@ -192,6 +195,45 @@ func TestRunSandboxList_AutoMigratesLegacyState(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "migrated-box") {
 		t.Fatalf("output missing migrated sandbox: %q", buf.String())
+	}
+}
+
+func TestRunSandboxList_JSONNormalizesLegacyBlankStatusToRunning(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "legacy-id",
+		Name:      "legacy-box",
+		Provider:  "daytona",
+		Status:    "",
+		CreatedAt: now.Add(-2 * time.Hour),
+	})
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, true, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp SandboxListResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("JSON parse error: %v\nraw: %s", err, buf.String())
+	}
+
+	if len(resp.Sandboxes) != 1 {
+		t.Fatalf("expected 1 sandbox, got %d", len(resp.Sandboxes))
+	}
+	if resp.Sandboxes[0].Status != sandbox.StatusRunning {
+		t.Fatalf("status = %q, want %q", resp.Sandboxes[0].Status, sandbox.StatusRunning)
+	}
+	if resp.Totals.Running != 1 {
+		t.Fatalf("totals.running = %d, want 1", resp.Totals.Running)
+	}
+	if resp.Totals.Stopped != 0 {
+		t.Fatalf("totals.stopped = %d, want 0", resp.Totals.Stopped)
 	}
 }
 
@@ -983,7 +1025,40 @@ func TestRunSandboxList_Live_SuccessKeepsStatus(t *testing.T) {
 	}
 }
 
-func TestRunSandboxList_Live_FailureSetsUnknown(t *testing.T) {
+func TestQueryOneStatus_PersistsStatusChange(t *testing.T) {
+	inst := &sandbox.SandboxState{
+		Name:     "live-dev",
+		Provider: "hetzner",
+		Status:   sandbox.StatusRunning,
+	}
+
+	origForceWrite := sandboxListForceWrite
+	persisted := 0
+	sandboxListForceWrite = func(saved *sandbox.SandboxState) error {
+		persisted++
+		if saved.Status != sandbox.StatusStopped {
+			t.Fatalf("persisted status = %q, want %q", saved.Status, sandbox.StatusStopped)
+		}
+		return nil
+	}
+	t.Cleanup(func() { sandboxListForceWrite = origForceWrite })
+
+	resolve := func(string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusOut: "Status off"}, nil
+	}
+
+	if err := queryOneStatus(inst, resolve); err != nil {
+		t.Fatalf("queryOneStatus() unexpected error: %v", err)
+	}
+	if inst.Status != sandbox.StatusStopped {
+		t.Fatalf("instance status = %q, want %q", inst.Status, sandbox.StatusStopped)
+	}
+	if persisted != 1 {
+		t.Fatalf("persisted writes = %d, want 1", persisted)
+	}
+}
+
+func TestRunSandboxList_Live_FailurePreservesStoredStatus(t *testing.T) {
 	setupListTest(t)
 
 	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
@@ -1013,13 +1088,18 @@ func TestRunSandboxList_Live_FailureSetsUnknown(t *testing.T) {
 	}
 
 	out := buf.String()
-	// Status should be "unknown" after failed live query
-	if !strings.Contains(out, "unknown") {
-		t.Errorf("expected 'unknown' status after live failure, got: %s", out)
+	if !strings.Contains(out, "running") {
+		t.Errorf("expected stored status after live failure, got: %s", out)
+	}
+	if strings.Contains(out, "unknown") {
+		t.Errorf("did not expect 'unknown' status after live failure, got: %s", out)
+	}
+	if !strings.Contains(out, `warning: live status lookup failed for "fail-dev": provider unreachable`) {
+		t.Errorf("expected live warning after failure, got: %s", out)
 	}
 }
 
-func TestRunSandboxList_Live_TimeoutSetsUnknown(t *testing.T) {
+func TestRunSandboxList_Live_TimeoutPreservesStoredStatus(t *testing.T) {
 	setupListTest(t)
 
 	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
@@ -1035,15 +1115,6 @@ func TestRunSandboxList_Live_TimeoutSetsUnknown(t *testing.T) {
 		Size:      "cx22",
 	})
 
-	// Provider with delay exceeding the timeout
-	slowProvider := &liveTestProvider{statusDelay: 30 * time.Second}
-	orig := sandboxListResolveProvider
-	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
-		return slowProvider, nil
-	}
-	t.Cleanup(func() { sandboxListResolveProvider = orig })
-
-	// Use a short timeout by calling queryOneStatus directly to avoid waiting 10s
 	inst := &sandbox.SandboxState{
 		ID:        "id-1",
 		Name:      "timeout-dev",
@@ -1053,25 +1124,15 @@ func TestRunSandboxList_Live_TimeoutSetsUnknown(t *testing.T) {
 		IP:        "1.2.3.4",
 	}
 
-	// Override queryOneStatus to test with short timeout
 	resolve := func(name string) (sandbox.Provider, error) {
-		return &liveTestProvider{statusDelay: 1 * time.Second}, nil
+		return &liveTestProvider{statusErr: context.DeadlineExceeded}, nil
 	}
 
-	// Use queryLiveStatuses helper directly with patched provider that times out via context
-	provider, _ := resolve("hetzner")
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	info := sandbox.ConnectInfoFromState(inst)
-	err := provider.Status(ctx, info, io.Discard)
-
-	if err == nil {
-		t.Fatal("expected timeout error")
+	if err := queryOneStatus(inst, resolve); err == nil {
+		t.Fatal("expected queryOneStatus timeout error")
 	}
-	// After timeout, status should be set to unknown
-	inst.Status = sandbox.StatusUnknown // simulating what queryOneStatus does
-	if inst.Status != sandbox.StatusUnknown {
-		t.Errorf("expected status %q after timeout, got %q", sandbox.StatusUnknown, inst.Status)
+	if inst.Status != sandbox.StatusRunning {
+		t.Errorf("expected status %q after timeout, got %q", sandbox.StatusRunning, inst.Status)
 	}
 }
 
@@ -1103,9 +1164,21 @@ func TestRunSandboxList_Live_ProviderResolveError(t *testing.T) {
 	}
 
 	out := buf.String()
-	// Provider resolution failure should set status to "unknown"
-	if !strings.Contains(out, "unknown") {
-		t.Errorf("expected 'unknown' status when provider resolution fails, got: %s", out)
+	lines := strings.Split(out, "\n")
+	foundRow := false
+	for _, line := range lines {
+		if strings.Contains(line, "resolve-fail") && !strings.Contains(line, "warning:") {
+			foundRow = true
+			if !strings.Contains(line, "running") {
+				t.Errorf("expected stored status when provider resolution fails, got: %s", line)
+			}
+		}
+	}
+	if !foundRow {
+		t.Fatalf("missing sandbox row in output: %s", out)
+	}
+	if !strings.Contains(out, `warning: live status lookup failed for "resolve-fail": unknown provider: unknown-provider`) {
+		t.Errorf("expected live warning when provider resolution fails, got: %s", out)
 	}
 }
 
@@ -1151,24 +1224,26 @@ func TestRunSandboxList_Live_MixedResults(t *testing.T) {
 	}
 
 	out := buf.String()
-	// api-dev should remain "running", web-dev should be "unknown"
+	// api-dev should remain "running", web-dev should keep its stored status.
 	lines := strings.Split(out, "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "api-dev") {
+		if strings.Contains(line, "api-dev") && !strings.Contains(line, "warning:") {
 			if !strings.Contains(line, "running") {
 				t.Errorf("api-dev should be 'running' after successful live query, got: %s", line)
 			}
 		}
-		if strings.Contains(line, "web-dev") {
-			if !strings.Contains(line, "unknown") {
-				t.Errorf("web-dev should be 'unknown' after failed live query, got: %s", line)
+		if strings.Contains(line, "web-dev") && !strings.Contains(line, "warning:") {
+			if !strings.Contains(line, "running") {
+				t.Errorf("web-dev should keep stored status after failed live query, got: %s", line)
 			}
 		}
 	}
 
-	// Summary should count unknown separately
-	if !strings.Contains(out, "1 running") {
-		t.Errorf("expected 1 running in summary, got: %s", out)
+	if !strings.Contains(out, "2 running") {
+		t.Errorf("expected 2 running in summary, got: %s", out)
+	}
+	if !strings.Contains(out, `warning: live status lookup failed for "web-dev": DO API error`) {
+		t.Errorf("expected live warning in mixed-results output, got: %s", out)
 	}
 }
 
@@ -1227,12 +1302,88 @@ func TestRunSandboxList_Live_JSONOutput(t *testing.T) {
 		t.Fatalf("JSON parse error: %v\nraw: %s", err, buf.String())
 	}
 
-	// Live query failed, so status should be "unknown" in JSON output
+	// Live query failed, so the registry status should be preserved in JSON output.
 	if len(resp.Sandboxes) != 1 {
 		t.Fatalf("expected 1 sandbox, got %d", len(resp.Sandboxes))
 	}
-	if resp.Sandboxes[0].Status != sandbox.StatusUnknown {
-		t.Errorf("status = %q, want %q after live failure", resp.Sandboxes[0].Status, sandbox.StatusUnknown)
+	if resp.Sandboxes[0].Status != sandbox.StatusRunning {
+		t.Errorf("status = %q, want %q after live failure", resp.Sandboxes[0].Status, sandbox.StatusRunning)
+	}
+}
+
+func TestRunSandboxList_JSONBackfillsLegacyID(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	writeInstance(t, &sandbox.SandboxState{
+		Name:        "legacy-box",
+		Provider:    "daytona",
+		WorkspaceID: "ws-legacy",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   now,
+	})
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, true, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp SandboxListResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("JSON parse error: %v\nraw: %s", err, buf.String())
+	}
+	if len(resp.Sandboxes) != 1 {
+		t.Fatalf("expected 1 sandbox, got %d", len(resp.Sandboxes))
+	}
+	if resp.Sandboxes[0].ID != "ws-legacy" {
+		t.Fatalf("id = %q, want %q", resp.Sandboxes[0].ID, "ws-legacy")
+	}
+}
+
+func TestRunSandboxList_Live_WarnsWhenLocalSyncFails(t *testing.T) {
+	projectDir := setupListTest(t)
+	t.Chdir(projectDir)
+
+	halDir := filepath.Join(projectDir, template.HalDir)
+	if err := os.MkdirAll(filepath.Join(halDir, template.SandboxFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll sandbox path: %v", err)
+	}
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "warn-box",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-5 * time.Hour),
+	})
+
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusOut: "Status: off"}, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	assertContains(t, out, `warning: local sandbox state sync failed for "warn-box":`)
+	if strings.Contains(out, `warning: live status lookup failed for "warn-box"`) {
+		t.Fatalf("expected local sync warning, got %q", out)
+	}
+
+	loaded, err := sandbox.LoadInstance("warn-box")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.Status != sandbox.StatusStopped {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, sandbox.StatusStopped)
 	}
 }
 
@@ -1289,8 +1440,9 @@ func TestQueryOneStatus_Success(t *testing.T) {
 		return &liveTestProvider{statusErr: nil, statusOut: "status: running"}, nil
 	}
 
-	queryOneStatus(inst, resolve)
-
+	if err := queryOneStatus(inst, resolve); err != nil {
+		t.Fatalf("queryOneStatus() unexpected error: %v", err)
+	}
 	if inst.Status != sandbox.StatusRunning {
 		t.Errorf("status = %q, want %q after successful query", inst.Status, sandbox.StatusRunning)
 	}
@@ -1308,8 +1460,9 @@ func TestQueryOneStatus_SuccessMapsStoppedStatus(t *testing.T) {
 		return &liveTestProvider{statusErr: nil, statusOut: "Status off"}, nil
 	}
 
-	queryOneStatus(inst, resolve)
-
+	if err := queryOneStatus(inst, resolve); err != nil {
+		t.Fatalf("queryOneStatus() unexpected error: %v", err)
+	}
 	if inst.Status != sandbox.StatusStopped {
 		t.Errorf("status = %q, want %q after successful query", inst.Status, sandbox.StatusStopped)
 	}
@@ -1328,10 +1481,12 @@ func TestQueryOneStatus_Failure(t *testing.T) {
 		return &liveTestProvider{statusErr: fmt.Errorf("connection refused")}, nil
 	}
 
-	queryOneStatus(inst, resolve)
-
-	if inst.Status != sandbox.StatusUnknown {
-		t.Errorf("status = %q, want %q after failed query", inst.Status, sandbox.StatusUnknown)
+	err := queryOneStatus(inst, resolve)
+	if err == nil {
+		t.Fatal("expected queryOneStatus() error, got nil")
+	}
+	if inst.Status != sandbox.StatusRunning {
+		t.Errorf("status = %q, want %q after failed query", inst.Status, sandbox.StatusRunning)
 	}
 }
 
@@ -1348,10 +1503,12 @@ func TestQueryOneStatus_ProviderResolveFailure(t *testing.T) {
 		return nil, fmt.Errorf("unknown provider: %s", name)
 	}
 
-	queryOneStatus(inst, resolve)
-
-	if inst.Status != sandbox.StatusUnknown {
-		t.Errorf("status = %q, want %q after resolve failure", inst.Status, sandbox.StatusUnknown)
+	err := queryOneStatus(inst, resolve)
+	if err == nil {
+		t.Fatal("expected queryOneStatus() error, got nil")
+	}
+	if inst.Status != sandbox.StatusRunning {
+		t.Errorf("status = %q, want %q after resolve failure", inst.Status, sandbox.StatusRunning)
 	}
 }
 

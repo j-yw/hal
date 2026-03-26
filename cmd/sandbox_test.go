@@ -36,8 +36,8 @@ func setGlobalConfigHomeForTest(t *testing.T, dir string) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 }
 
-// newlines for all env-var prompts: anthropic, openai, github, git name, git email, tailscale key
-const emptyEnvInputs = "\n\n\n\n\n\n"
+// newlines for all env-var prompts: anthropic, openai, github, git name, git email, tailscale key, tailscale hostname
+const emptyEnvInputs = "\n\n\n\n\n\n\n"
 
 // daytonaSetupInput builds stdin input for the Daytona setup path:
 // provider choice "1", api key, server url, then env var prompts.
@@ -171,7 +171,7 @@ func TestRunSandboxSetup(t *testing.T) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
 			stdinInput: "1\nmy-key\n\nsk-ant-test\nsk-openai\nghp-token\nj-yw\nj@example.com\ntskey-auth-xxx\n",
-			wantOutput: "6 env vars configured",
+			wantOutput: "7 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -247,7 +247,7 @@ func TestRunSandboxSetup(t *testing.T) {
 			},
 			// 2 vars: sk-ant-test (anthropic), j-yw (git name)
 			stdinInput: "2\nmy-ssh-key\n\n\nsk-ant-test\n\n\nj-yw\n\n\n",
-			wantOutput: "2 env vars configured",
+			wantOutput: "3 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -261,6 +261,9 @@ func TestRunSandboxSetup(t *testing.T) {
 				}
 				if cfg.Env["GIT_USER_NAME"] != "j-yw" {
 					t.Errorf("GIT_USER_NAME = %q, want %q", cfg.Env["GIT_USER_NAME"], "j-yw")
+				}
+				if cfg.Env["TAILSCALE_HOSTNAME"] != "hal-sandbox" {
+					t.Errorf("TAILSCALE_HOSTNAME = %q, want %q", cfg.Env["TAILSCALE_HOSTNAME"], "hal-sandbox")
 				}
 			},
 		},
@@ -399,7 +402,7 @@ func TestRunSandboxSetup(t *testing.T) {
 				os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
 			},
 			stdinInput: "3\nab:cd:ef\n\nsk-ant-test\n\n\nj-yw\n\n\n",
-			wantOutput: "2 env vars configured",
+			wantOutput: "3 env vars configured",
 			checkFn: func(t *testing.T, dir string) {
 				cfg, err := compound.LoadSandboxConfig(dir)
 				if err != nil {
@@ -513,6 +516,37 @@ func TestRunSandboxSetup(t *testing.T) {
 				tt.checkFn(t, dir)
 			}
 		})
+	}
+}
+
+func TestRunSandboxSetup_PreservesExistingTailscaleHostname(t *testing.T) {
+	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
+	if err := os.MkdirAll(filepath.Join(dir, template.HalDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	cfg := sandbox.DefaultGlobalConfig()
+	cfg.Provider = "digitalocean"
+	cfg.DigitalOcean.SSHKey = "old-fp"
+	cfg.DigitalOcean.Size = "s-1vcpu-1gb"
+	cfg.Env["TAILSCALE_HOSTNAME"] = "custom-host"
+	if err := sandbox.SaveGlobalConfig(&cfg); err != nil {
+		t.Fatalf("SaveGlobalConfig() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	in := strings.NewReader("\n\n\n" + emptyEnvInputs)
+	if err := runSandboxSetupWithDeps(dir, in, &out, noopPasswordReader, fakeLookPath); err != nil {
+		t.Fatalf("runSandboxSetupWithDeps() error: %v", err)
+	}
+
+	updated, err := sandbox.LoadGlobalConfig()
+	if err != nil {
+		t.Fatalf("LoadGlobalConfig() error: %v", err)
+	}
+	if got := updated.Env["TAILSCALE_HOSTNAME"]; got != "custom-host" {
+		t.Errorf("TAILSCALE_HOSTNAME = %q, want %q", got, "custom-host")
 	}
 }
 

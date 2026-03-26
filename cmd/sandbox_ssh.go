@@ -3,10 +3,11 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
@@ -120,12 +121,15 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 // parseSSHArgs separates the optional sandbox name from remote command args.
 // The first arg before "--" is treated as the sandbox name unless it starts
 // with "-" (a flag-like token). Everything after "--" is the remote command.
+// Without "--", any remaining args after the name are treated as the remote
+// command for convenience.
 //
 // Examples:
 //
 //	[]                         → name="", remoteArgs=nil
 //	["my-sandbox"]             → name="my-sandbox", remoteArgs=nil
 //	["my-sandbox", "--", "ls"] → name="my-sandbox", remoteArgs=["ls"]
+//	["my-sandbox", "ls", "-la"] → name="my-sandbox", remoteArgs=["ls", "-la"]
 //	["--", "ls"]               → name="", remoteArgs=["ls"]
 func parseSSHArgs(args []string) (string, []string) {
 	if len(args) == 0 {
@@ -145,9 +149,13 @@ func parseSSHArgs(args []string) (string, []string) {
 	var remoteArgs []string
 
 	if dashIdx == -1 {
-		// No "--" found; first non-flag arg is the name
+		// No "--" found; first non-flag arg is the name and any trailing args
+		// are treated as the remote command.
 		if len(args) > 0 && !isFlag(args[0]) {
 			name = args[0]
+			if len(args) > 1 {
+				remoteArgs = args[1:]
+			}
 		}
 	} else {
 		// Everything before "--" may contain the name
@@ -183,8 +191,19 @@ func resolveSSHTarget(name string) (*sandbox.SandboxState, string, error) {
 		return instance, "", nil
 	}
 
-	// Auto-resolve: running sandboxes only.
-	return sandbox.ResolveDefault(func(s *sandbox.SandboxState) bool {
-		return s.Status == sandbox.StatusRunning
-	})
+	// Legacy project-scoped sandbox state predates lifecycle status and migrates
+	// into the registry with a blank status, so SSH treats blank as runnable.
+	return sandbox.ResolveDefault(isRunnableSSHTarget)
+}
+
+func isRunnableSSHTarget(inst *sandbox.SandboxState) bool {
+	if inst == nil {
+		return false
+	}
+	switch strings.TrimSpace(inst.Status) {
+	case "", sandbox.StatusRunning:
+		return true
+	default:
+		return false
+	}
 }

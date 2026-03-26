@@ -60,21 +60,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 		repo, _ := cmd.Flags().GetString("repo")
 		envSlice, _ := cmd.Flags().GetStringArray("env")
 		envVars := parseEnvFlags(envSlice)
-
-		// Resolve auto-shutdown settings from flags
-		opts := autoShutdownOpts{}
-		if cmd.Flags().Changed("no-auto-shutdown") {
-			v := true
-			opts.noAutoShutdown = &v
-		}
-		if cmd.Flags().Changed("auto-shutdown") {
-			v, _ := cmd.Flags().GetBool("auto-shutdown")
-			opts.autoShutdown = &v
-		}
-		if cmd.Flags().Changed("idle-hours") {
-			v, _ := cmd.Flags().GetInt("idle-hours")
-			opts.idleHours = &v
-		}
+		opts := autoShutdownOptsFromCommand(cmd)
 
 		return runSandboxStart(".", name, count, force, size, repo, envVars, opts, os.Stdout, nil)
 	},
@@ -82,6 +68,17 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 
 var resolveSandboxProvider = sandbox.ProviderFromConfig
 var sandboxStartResolveProviderForForceDelete = resolveProviderFromGlobalConfig
+var newSandboxID = sandbox.NewV7
+
+type sandboxStartPendingRemoval interface {
+	Commit() error
+	Rollback() error
+	AlreadyStaged() bool
+}
+
+var sandboxStartStageInstanceRemoval = func(name string) (sandboxStartPendingRemoval, error) {
+	return sandbox.StageInstanceRemoval(name)
+}
 
 func init() {
 	sandboxStartCmd.Flags().StringP("name", "n", "", "sandbox name (defaults to current git branch)")
@@ -121,6 +118,28 @@ type autoShutdownOpts struct {
 	autoShutdown   *bool // --auto-shutdown flag
 	noAutoShutdown *bool // --no-auto-shutdown flag
 	idleHours      *int  // --idle-hours flag
+}
+
+func autoShutdownOptsFromCommand(cmd *cobra.Command) autoShutdownOpts {
+	opts := autoShutdownOpts{}
+	if cmd == nil {
+		return opts
+	}
+
+	if cmd.Flags().Changed("no-auto-shutdown") {
+		v, _ := cmd.Flags().GetBool("no-auto-shutdown")
+		opts.noAutoShutdown = &v
+	}
+	if cmd.Flags().Changed("auto-shutdown") {
+		v, _ := cmd.Flags().GetBool("auto-shutdown")
+		opts.autoShutdown = &v
+	}
+	if cmd.Flags().Changed("idle-hours") {
+		v, _ := cmd.Flags().GetInt("idle-hours")
+		opts.idleHours = &v
+	}
+
+	return opts
 }
 
 // sandboxStartDeps holds injectable dependencies for runSandboxStartWithDeps.
@@ -229,14 +248,17 @@ func runSandboxStartWithDeps(
 		return fmt.Errorf("loading sandbox config: %w", err)
 	}
 
-	// Load global config for provider size defaults
+	// Load global sandbox config for runtime defaults.
+	useGlobalConfig := false
 	globalCfg, err := sandbox.LoadGlobalConfig()
 	if err != nil {
 		// Non-fatal: continue with local config alone
 		globalCfg = nil
+	} else if _, statErr := os.Stat(sandbox.GlobalConfigPath()); statErr == nil {
+		useGlobalConfig = true
 	}
 	if globalCfg != nil {
-		mergeGlobalSizeDefaults(sandboxCfg, globalCfg)
+		mergeGlobalStartDefaults(sandboxCfg, globalCfg, useGlobalConfig)
 	}
 
 	// Apply --size override to the active provider's size field
@@ -253,9 +275,20 @@ func runSandboxStartWithDeps(
 			return fmt.Errorf("loading config: %w", err)
 		}
 
+		daytonaAPIKey := dayCfg.APIKey
+		daytonaServerURL := dayCfg.ServerURL
+		if useGlobalConfig && globalCfg != nil {
+			if strings.TrimSpace(globalCfg.Daytona.APIKey) != "" {
+				daytonaAPIKey = globalCfg.Daytona.APIKey
+			}
+			if strings.TrimSpace(globalCfg.Daytona.ServerURL) != "" {
+				daytonaServerURL = globalCfg.Daytona.ServerURL
+			}
+		}
+
 		provCfg := sandbox.ProviderConfig{
-			DaytonaAPIKey:             dayCfg.APIKey,
-			DaytonaServerURL:          dayCfg.ServerURL,
+			DaytonaAPIKey:             daytonaAPIKey,
+			DaytonaServerURL:          daytonaServerURL,
 			HetznerSSHKey:             sandboxCfg.Hetzner.SSHKey,
 			HetznerServerType:         sandboxCfg.Hetzner.ServerType,
 			HetznerImage:              sandboxCfg.Hetzner.Image,
@@ -310,20 +343,32 @@ func runSandboxStartWithDeps(
 
 	// Batch mode: --count N creates multiple sandboxes
 	if count > 1 {
-		targets, err := batchPreflight(name, count)
+		targets, err := batchPreflightWithOptions(name, count, force, provider, sandboxCfg.Provider, out)
 		if err != nil {
 			return err
 		}
-		return runBatchCreate(targets, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
+		return runBatchCreate(targets, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
 	}
 
 	// Single sandbox creation
 	return runSingleCreate(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
 }
 
-// batchPreflight generates batch names and validates that none already exist
-// in the global registry. Returns the list of target names on success.
 func batchPreflight(base string, count int) ([]string, error) {
+	return batchPreflightWithOptions(base, count, false, nil, "", io.Discard)
+}
+
+// batchPreflightWithOptions generates batch names and validates global registry
+// access for every target. When force is true, collisions are allowed here and
+// handled later during per-target creation once the batch preflight succeeds.
+func batchPreflightWithOptions(
+	base string,
+	count int,
+	force bool,
+	provider sandbox.Provider,
+	activeProvider string,
+	out io.Writer,
+) ([]string, error) {
 	targets, err := sandbox.BatchNames(base, count)
 	if err != nil {
 		return nil, fmt.Errorf("generating batch names: %w", err)
@@ -332,7 +377,11 @@ func batchPreflight(base string, count int) ([]string, error) {
 	// Check each target name against the global registry
 	var collisions []string
 	for _, name := range targets {
-		if _, err := sandbox.LoadInstance(name); err == nil {
+		_, err := sandbox.LoadActiveInstance(name)
+		if err == nil {
+			if force {
+				continue
+			}
 			collisions = append(collisions, name)
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("batch preflight failed: checking sandbox %q: %w", name, err)
@@ -353,12 +402,138 @@ type batchResult struct {
 	Err     error
 }
 
+func cleanupCreatedSandbox(
+	ctx context.Context,
+	provider sandbox.Provider,
+	providerName, name string,
+	result *sandbox.SandboxResult,
+	out io.Writer,
+) error {
+	info := &sandbox.ConnectInfo{Name: strings.TrimSpace(name)}
+	if result != nil {
+		info.WorkspaceID = strings.TrimSpace(result.ID)
+		info.IP = strings.TrimSpace(result.TailscaleIP)
+		if info.IP == "" {
+			info.IP = strings.TrimSpace(result.IP)
+		}
+	}
+	if strings.TrimSpace(providerName) == "digitalocean" && info.WorkspaceID == "" {
+		return fmt.Errorf("cleanup created sandbox %q after registration failure: missing DigitalOcean droplet ID for rollback", name)
+	}
+	if err := provider.Delete(ctx, info, out); err != nil {
+		return fmt.Errorf("cleanup created sandbox %q after registration failure: %w", name, err)
+	}
+	return nil
+}
+
+func ensureSandboxTargetAvailable(
+	name string,
+	force bool,
+	provider sandbox.Provider,
+	activeProvider string,
+	out io.Writer,
+) error {
+	loadExisting := sandbox.LoadActiveInstance
+	if force {
+		loadExisting = sandbox.LoadInstance
+	}
+
+	existing, loadErr := loadExisting(name)
+	if loadErr == nil {
+		if !force {
+			return fmt.Errorf("sandbox %q already exists", name)
+		}
+		return replaceExistingSandbox(existing, provider, activeProvider, out)
+	}
+	if !errors.Is(loadErr, fs.ErrNotExist) {
+		return fmt.Errorf("checking existing sandbox in registry: %w", loadErr)
+	}
+
+	if force {
+		return nil
+	}
+
+	if _, pendingErr := sandbox.LoadInstance(name); pendingErr == nil {
+		return fmt.Errorf("sandbox %q has a pending removal; rerun with --force to resume cleanup before creating a replacement", name)
+	} else if !errors.Is(pendingErr, fs.ErrNotExist) {
+		return fmt.Errorf("checking pending sandbox removal in registry: %w", pendingErr)
+	}
+
+	return nil
+}
+
+func replaceExistingSandbox(
+	existing *sandbox.SandboxState,
+	provider sandbox.Provider,
+	activeProvider string,
+	out io.Writer,
+) error {
+	if existing == nil {
+		return fmt.Errorf("existing sandbox state is required")
+	}
+
+	name := strings.TrimSpace(existing.Name)
+	fmt.Fprintf(out, "Replacing existing sandbox %q...\n", name)
+
+	deleteProvider := provider
+	existingProvider := strings.TrimSpace(existing.Provider)
+	activeProvider = strings.TrimSpace(activeProvider)
+	if deleteProvider == nil || (existingProvider != "" && existingProvider != activeProvider) {
+		providerName := existingProvider
+		if providerName == "" {
+			providerName = activeProvider
+		}
+		if providerName == "" {
+			return fmt.Errorf("resolving provider for existing sandbox %q: provider is not set", name)
+		}
+		var err error
+		deleteProvider, err = sandboxStartResolveProviderForForceDelete(providerName)
+		if err != nil {
+			return fmt.Errorf("resolving provider for existing sandbox %q: %w", name, err)
+		}
+	}
+
+	info := sandbox.ConnectInfoFromState(existing)
+	pendingRemoval, err := sandboxStartStageInstanceRemoval(name)
+	if err != nil {
+		return fmt.Errorf("staging existing registry entry %q: %w", name, err)
+	}
+
+	ctx := context.Background()
+	if err := deleteProvider.Delete(ctx, info, out); err != nil && !finalizeInterruptedStartReplaceRetry(pendingRemoval, err) {
+		if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("force-delete of existing sandbox %q failed: %w (registry rollback failed: %v)", name, err, rollbackErr)
+		}
+		return fmt.Errorf("force-delete of existing sandbox %q failed: %w", name, err)
+	}
+	if err := removeMatchingLocalSandboxState(filepath.Join(".", template.HalDir), existing); err != nil {
+		fmt.Fprintf(out, "warning: failed to remove local sandbox state for %q: %v\n", name, err)
+	}
+	if err := pendingRemoval.Commit(); err != nil {
+		return fmt.Errorf("failed to finalize registry cleanup for %q: %w", name, err)
+	}
+	return nil
+}
+
+func finalizeInterruptedStartReplaceRetry(pendingRemoval sandboxStartPendingRemoval, err error) bool {
+	if err == nil || pendingRemoval == nil || !pendingRemoval.AlreadyStaged() {
+		return false
+	}
+
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "not found") ||
+		strings.Contains(text, "does not exist") ||
+		strings.Contains(text, "doesn't exist") ||
+		strings.Contains(text, "no such")
+}
+
 // runBatchCreate executes batch sandbox creation after preflight passes.
 // provider.Create runs concurrently for all targets using errgroup.
 // Only successful creations are persisted to the global registry.
 // Returns an error when any target fails (exit code 1).
 func runBatchCreate(
 	targets []string,
+	force bool,
 	provider sandbox.Provider,
 	sandboxCfg *compound.SandboxConfig,
 	mergedEnv map[string]string,
@@ -380,7 +555,7 @@ func runBatchCreate(
 	for _, name := range targets {
 		name := name // capture for goroutine
 		g.Go(func() error {
-			err := createBatchTarget(name, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, out)
+			err := createBatchTarget(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, out)
 
 			mu.Lock()
 			if err != nil {
@@ -423,6 +598,7 @@ func runBatchCreate(
 // sandbox name so concurrent goroutine output stays readable.
 func createBatchTarget(
 	name string,
+	force bool,
 	provider sandbox.Provider,
 	sandboxCfg *compound.SandboxConfig,
 	mergedEnv map[string]string,
@@ -437,15 +613,21 @@ func createBatchTarget(
 	for k, v := range mergedEnv {
 		perEnv[k] = v
 	}
-	perEnv["TAILSCALE_HOSTNAME"] = name
+	perEnv["TAILSCALE_HOSTNAME"] = sandbox.TailscaleHostname(name)
 	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
+	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, prefixedOut); err != nil {
+		return err
+	}
 	result, err := provider.Create(ctx, name, perEnv, prefixedOut)
 	if err != nil {
 		return err
 	}
 
-	id, err := sandbox.NewV7()
+	id, err := newSandboxID()
 	if err != nil {
+		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, prefixedOut); cleanupErr != nil {
+			return fmt.Errorf("generating ID: %w; %v", err, cleanupErr)
+		}
 		return fmt.Errorf("generating ID: %w", err)
 	}
 
@@ -466,6 +648,9 @@ func createBatchTarget(
 	}
 
 	if err := sandbox.SaveInstance(state); err != nil {
+		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, prefixedOut); cleanupErr != nil {
+			return fmt.Errorf("registering: %w; %v", err, cleanupErr)
+		}
 		return fmt.Errorf("registering: %w", err)
 	}
 
@@ -486,42 +671,8 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
-	// Check for existing sandbox with the same name
-	existing, loadErr := sandbox.LoadInstance(name)
-	if loadErr == nil {
-		// Sandbox exists
-		if !force {
-			return fmt.Errorf("sandbox %q already exists", name)
-		}
-		// --force: delete the existing sandbox before creating a new one
-		fmt.Fprintf(out, "Replacing existing sandbox %q...\n", name)
-		deleteProvider := provider
-		existingProvider := strings.TrimSpace(existing.Provider)
-		activeProvider := strings.TrimSpace(sandboxCfg.Provider)
-		if deleteProvider == nil || (existingProvider != "" && existingProvider != activeProvider) {
-			providerName := existingProvider
-			if providerName == "" {
-				providerName = activeProvider
-			}
-			if providerName == "" {
-				return fmt.Errorf("resolving provider for existing sandbox %q: provider is not set", name)
-			}
-			var err error
-			deleteProvider, err = sandboxStartResolveProviderForForceDelete(providerName)
-			if err != nil {
-				return fmt.Errorf("resolving provider for existing sandbox %q: %w", name, err)
-			}
-		}
-		info := sandbox.ConnectInfoFromState(existing)
-		ctx := context.Background()
-		if err := deleteProvider.Delete(ctx, info, out); err != nil {
-			return fmt.Errorf("force-delete of existing sandbox %q failed: %w", name, err)
-		}
-		if err := sandbox.RemoveInstance(name); err != nil {
-			return fmt.Errorf("removing existing registry entry %q: %w", name, err)
-		}
-	} else if !errors.Is(loadErr, fs.ErrNotExist) {
-		return fmt.Errorf("checking existing sandbox in registry: %w", loadErr)
+	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, out); err != nil {
+		return err
 	}
 
 	envCount := len(mergedEnv)
@@ -532,7 +683,7 @@ func runSingleCreate(
 	}
 
 	// Always set a per-sandbox hostname so legacy static values are replaced.
-	mergedEnv["TAILSCALE_HOSTNAME"] = name
+	mergedEnv["TAILSCALE_HOSTNAME"] = sandbox.TailscaleHostname(name)
 
 	ctx := context.Background()
 	result, err := provider.Create(ctx, name, mergedEnv, out)
@@ -541,8 +692,11 @@ func runSingleCreate(
 	}
 
 	// Generate UUIDv7 for the sandbox ID
-	id, err := sandbox.NewV7()
+	id, err := newSandboxID()
 	if err != nil {
+		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, out); cleanupErr != nil {
+			return fmt.Errorf("generating sandbox ID: %w; %v", err, cleanupErr)
+		}
 		return fmt.Errorf("generating sandbox ID: %w", err)
 	}
 
@@ -565,6 +719,9 @@ func runSingleCreate(
 
 	// Persist to global registry
 	if err := sandbox.SaveInstance(state); err != nil {
+		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, out); cleanupErr != nil {
+			return fmt.Errorf("registering sandbox: %w; %v", err, cleanupErr)
+		}
 		return fmt.Errorf("registering sandbox: %w", err)
 	}
 
@@ -588,38 +745,61 @@ func runSingleCreate(
 	return nil
 }
 
-// mergeGlobalSizeDefaults fills empty provider-specific size fields in
-// localCfg with values from globalCfg. This ensures provider size defaults
-// from global config apply when --size is not set.
-func mergeGlobalSizeDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbox.GlobalConfig) {
-	// Hetzner
-	if localCfg.Hetzner.ServerType == "" {
+// mergeGlobalStartDefaults overlays globally configured runtime settings onto
+// the local sandbox config used by `hal sandbox start`. When a real global
+// config file exists, it is authoritative for provider selection and Tailscale
+// lockdown. Env values are merged so project-only entries are preserved while
+// global keys win, and provider-specific fields use global values only as
+// fallbacks when local config does not already set them.
+func mergeGlobalStartDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbox.GlobalConfig, useGlobalConfig bool) {
+	if localCfg == nil || globalCfg == nil {
+		return
+	}
+
+	if useGlobalConfig {
+		if provider := strings.TrimSpace(globalCfg.Provider); provider != "" {
+			localCfg.Provider = provider
+		}
+		if len(localCfg.Env) > 0 || len(globalCfg.Env) > 0 {
+			mergedEnv := make(map[string]string, len(localCfg.Env)+len(globalCfg.Env))
+			for k, v := range localCfg.Env {
+				mergedEnv[k] = v
+			}
+			for k, v := range globalCfg.Env {
+				mergedEnv[k] = v
+			}
+			localCfg.Env = mergedEnv
+		}
+		localCfg.TailscaleLockdown = globalCfg.TailscaleLockdown
+	}
+
+	if strings.TrimSpace(localCfg.Hetzner.ServerType) == "" && strings.TrimSpace(globalCfg.Hetzner.ServerType) != "" {
 		localCfg.Hetzner.ServerType = globalCfg.Hetzner.ServerType
 	}
-	if localCfg.Hetzner.SSHKey == "" {
+	if strings.TrimSpace(localCfg.Hetzner.SSHKey) == "" && strings.TrimSpace(globalCfg.Hetzner.SSHKey) != "" {
 		localCfg.Hetzner.SSHKey = globalCfg.Hetzner.SSHKey
 	}
-	if localCfg.Hetzner.Image == "" {
+	if strings.TrimSpace(localCfg.Hetzner.Image) == "" && strings.TrimSpace(globalCfg.Hetzner.Image) != "" {
 		localCfg.Hetzner.Image = globalCfg.Hetzner.Image
 	}
-	// DigitalOcean
-	if localCfg.DigitalOcean.Size == "" {
+
+	if strings.TrimSpace(localCfg.DigitalOcean.Size) == "" && strings.TrimSpace(globalCfg.DigitalOcean.Size) != "" {
 		localCfg.DigitalOcean.Size = globalCfg.DigitalOcean.Size
 	}
-	if localCfg.DigitalOcean.SSHKey == "" {
+	if strings.TrimSpace(localCfg.DigitalOcean.SSHKey) == "" && strings.TrimSpace(globalCfg.DigitalOcean.SSHKey) != "" {
 		localCfg.DigitalOcean.SSHKey = globalCfg.DigitalOcean.SSHKey
 	}
-	// Lightsail
-	if localCfg.Lightsail.Bundle == "" {
+
+	if strings.TrimSpace(localCfg.Lightsail.Bundle) == "" && strings.TrimSpace(globalCfg.Lightsail.Bundle) != "" {
 		localCfg.Lightsail.Bundle = globalCfg.Lightsail.Bundle
 	}
-	if localCfg.Lightsail.Region == "" {
+	if strings.TrimSpace(localCfg.Lightsail.Region) == "" && strings.TrimSpace(globalCfg.Lightsail.Region) != "" {
 		localCfg.Lightsail.Region = globalCfg.Lightsail.Region
 	}
-	if localCfg.Lightsail.AvailabilityZone == "" {
+	if strings.TrimSpace(localCfg.Lightsail.AvailabilityZone) == "" && strings.TrimSpace(globalCfg.Lightsail.AvailabilityZone) != "" {
 		localCfg.Lightsail.AvailabilityZone = globalCfg.Lightsail.AvailabilityZone
 	}
-	if localCfg.Lightsail.KeyPairName == "" {
+	if strings.TrimSpace(localCfg.Lightsail.KeyPairName) == "" && strings.TrimSpace(globalCfg.Lightsail.KeyPairName) != "" {
 		localCfg.Lightsail.KeyPairName = globalCfg.Lightsail.KeyPairName
 	}
 }

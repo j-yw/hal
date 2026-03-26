@@ -196,6 +196,7 @@ var sandboxEnvFields = []setupField{
 	{key: "GIT_USER_NAME", label: "Git name"},
 	{key: "GIT_USER_EMAIL", label: "Git email"},
 	{key: "TAILSCALE_AUTHKEY", label: "Tailscale auth key", secret: true},
+	{key: "TAILSCALE_HOSTNAME", label: "Tailscale hostname", defVal: "hal-sandbox"},
 }
 
 // hetzner-specific setup fields

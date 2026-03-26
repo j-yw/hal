@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -74,6 +75,13 @@ const liveStatusTimeout = 10 * time.Second
 // using global config. Package-level var for test injection.
 var sandboxListResolveProvider = resolveProviderFromGlobalConfig
 
+// sandboxListLoadActiveInstance checks whether a sandbox still has an active
+// registry entry before a live refresh persists updates.
+var sandboxListLoadActiveInstance = sandbox.LoadActiveInstance
+
+// sandboxListForceWrite persists live status updates back to the registry.
+var sandboxListForceWrite = sandbox.ForceWriteInstance
+
 // resolveProviderFromGlobalConfig creates a Provider from global config settings.
 func resolveProviderFromGlobalConfig(providerName string) (sandbox.Provider, error) {
 	globalCfg, err := sandbox.LoadGlobalConfig()
@@ -138,6 +146,11 @@ type SandboxListTotals struct {
 	EstimatedCost *float64 `json:"estimatedCost,omitempty"`
 }
 
+type liveStatusWarning struct {
+	Name string
+	Err  error
+}
+
 // runSandboxList renders sandbox list as table (default) or JSON (--json).
 // When liveMode is true, queries each sandbox's provider for fresh status before rendering.
 func runSandboxList(out io.Writer, jsonMode, liveMode bool) error {
@@ -156,13 +169,15 @@ func runSandboxList(out io.Writer, jsonMode, liveMode bool) error {
 	}
 
 	// Live mode: query each provider for fresh status
+	liveWarnings := []liveStatusWarning(nil)
 	if liveMode && len(instances) > 0 {
-		queryLiveStatuses(instances, sandboxListResolveProvider)
+		liveWarnings = queryLiveStatuses(instances, sandboxListResolveProvider)
 	}
 
 	now := sandboxListNow()
 
 	if jsonMode {
+		renderLiveStatusWarnings(warnOut, liveWarnings)
 		return renderSandboxListJSON(out, instances, now)
 	}
 
@@ -176,32 +191,45 @@ func runSandboxList(out io.Writer, jsonMode, liveMode bool) error {
 
 	// Render summary
 	renderSandboxSummary(out, instances, now)
+	renderLiveStatusWarnings(out, liveWarnings)
 
 	return nil
 }
 
 // queryLiveStatuses queries each sandbox's provider for current status.
 // Instances are updated in-place. Each query has a 10s timeout.
-// If a query fails or times out, the instance's status is set to "unknown".
-func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) {
+// Failures preserve the persisted status and are returned as warnings.
+func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) []liveStatusWarning {
 	var wg sync.WaitGroup
+	warnings := make(chan liveStatusWarning, len(instances))
 	for _, inst := range instances {
 		wg.Add(1)
 		go func(inst *sandbox.SandboxState) {
 			defer wg.Done()
-			queryOneStatus(inst, resolve)
+			if err := queryOneStatus(inst, resolve); err != nil {
+				warnings <- liveStatusWarning{Name: inst.Name, Err: err}
+			}
 		}(inst)
 	}
 	wg.Wait()
+	close(warnings)
+
+	result := make([]liveStatusWarning, 0, len(warnings))
+	for warning := range warnings {
+		result = append(result, warning)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result
 }
 
 // queryOneStatus queries a single sandbox's provider for current status.
 // Updates the instance's status in-place based on the query result.
-func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) {
+func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) error {
 	provider, err := resolve(inst.Provider)
 	if err != nil {
-		inst.Status = sandbox.StatusUnknown
-		return
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), liveStatusTimeout)
@@ -210,10 +238,29 @@ func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Pr
 	info := sandbox.ConnectInfoFromState(inst)
 	status, err := queryProviderLiveStatus(ctx, provider, info, inst.Status)
 	if err != nil {
-		inst.Status = sandbox.StatusUnknown
+		return err
+	}
+	writeTarget, err := liveStatusWriteTarget(inst.Name, sandboxListLoadActiveInstance, sandboxListForceWrite)
+	if err != nil {
+		return fmt.Errorf("load active sandbox %q: %w", inst.Name, err)
+	}
+	if err := persistLiveStatus(inst, status, sandboxListNow(), writeTarget); err != nil {
+		if _, ok := asLocalStateSyncWarning(err); ok {
+			return err
+		}
+		return fmt.Errorf("persist live status for %q: %w", inst.Name, err)
+	}
+	return nil
+}
+
+func renderLiveStatusWarnings(out io.Writer, warnings []liveStatusWarning) {
+	if out == nil || len(warnings) == 0 {
 		return
 	}
-	updateInstanceStatus(inst, status)
+
+	for _, warning := range warnings {
+		fmt.Fprint(out, formatLiveStatusWarning(warning.Name, warning.Err))
+	}
 }
 
 // renderSandboxListJSON renders the sandbox list as machine-readable JSON.
@@ -400,8 +447,22 @@ func formatCost(cost float64) string {
 
 // updateInstanceStatus updates an instance's status in-place.
 // Used by the --live path (US-024) to update status before rendering.
-func updateInstanceStatus(inst *sandbox.SandboxState, status string) {
-	if strings.TrimSpace(status) != "" {
-		inst.Status = status
+func updateInstanceStatus(inst *sandbox.SandboxState, status string, now time.Time) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return
+	}
+
+	previousStatus := inst.Status
+	inst.Status = status
+
+	switch status {
+	case sandbox.StatusRunning:
+		inst.StoppedAt = nil
+	case sandbox.StatusStopped:
+		if previousStatus != sandbox.StatusStopped || inst.StoppedAt == nil {
+			stoppedAt := now
+			inst.StoppedAt = &stoppedAt
+		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -60,8 +61,15 @@ var sandboxDeleteListInstances = sandbox.ListInstances
 // sandboxDeleteLoadInstance is injectable for testing named target resolution.
 var sandboxDeleteLoadInstance = sandbox.LoadInstance
 
-// sandboxDeleteRemoveInstance is injectable for testing registry removal.
-var sandboxDeleteRemoveInstance = sandbox.RemoveInstance
+type sandboxDeletePendingRemoval interface {
+	Commit() error
+	Rollback() error
+	AlreadyStaged() bool
+}
+
+var sandboxDeleteStageInstanceRemoval = func(name string) (sandboxDeletePendingRemoval, error) {
+	return sandbox.StageInstanceRemoval(name)
+}
 
 // runSandboxDelete is the public entry point for the delete command.
 func runSandboxDelete(args []string, allFlag, yesFlag bool, pattern string, in io.Reader, out io.Writer, provider sandbox.Provider) error {
@@ -94,11 +102,11 @@ func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern stri
 
 	// Single target: delete inline for simple output
 	if len(targets) == 1 {
-		return deleteOneTarget(targets[0], out, provider)
+		return deleteOneTarget(targets[0], ".", out, provider)
 	}
 
 	// Multiple targets: delete concurrently using errgroup
-	return deleteMultipleTargets(targets, out, provider)
+	return deleteMultipleTargets(targets, ".", out, provider)
 }
 
 // resolveDeleteTargets resolves which sandboxes to delete based on positional args,
@@ -242,7 +250,7 @@ type deleteResult struct {
 
 // deleteOneTarget deletes a single sandbox, removes it from the registry, and reports the result.
 // If provider is nil, resolves from global config.
-func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
+func deleteOneTarget(target *sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider) error {
 	p := provider
 	if p == nil {
 		var err error
@@ -256,13 +264,27 @@ func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandb
 
 	ctx := context.Background()
 	info := deleteConnectInfo(target)
-	if err := p.Delete(ctx, info, out); err != nil {
+	if err := validateDeleteConnectInfo(target, info); err != nil {
+		return err
+	}
+	pendingRemoval, err := sandboxDeleteStageInstanceRemoval(target.Name)
+	if err != nil {
+		return fmt.Errorf("staging registry entry for %q: %w", target.Name, err)
+	}
+	if err := p.Delete(ctx, info, out); err != nil && !finalizeInterruptedDeleteRetry(pendingRemoval, err) {
+		if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("sandbox delete failed for %q: %w (registry rollback failed: %v)", target.Name, err, rollbackErr)
+		}
 		return fmt.Errorf("sandbox delete failed for %q: %w", target.Name, err)
 	}
 
-	// Remove from global registry after successful provider delete
-	if err := sandboxDeleteRemoveInstance(target.Name); err != nil {
-		fmt.Fprintf(out, "warning: failed to remove registry entry for %q: %v\n", target.Name, err)
+	halDir := filepath.Join(projectDir, template.HalDir)
+	if err := removeMatchingLocalSandboxState(halDir, target); err != nil {
+		fmt.Fprintf(out, "warning: failed to remove local sandbox state for %q: %v\n", target.Name, err)
+	}
+
+	if err := pendingRemoval.Commit(); err != nil {
+		return fmt.Errorf("failed to finalize registry cleanup for %q: %w", target.Name, err)
 	}
 
 	fmt.Fprintf(out, "%s Deleted %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
@@ -272,7 +294,7 @@ func deleteOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandb
 // deleteMultipleTargets deletes multiple sandboxes concurrently using errgroup.
 // Each target emits one result line; successful deletes are removed from the registry.
 // Returns an error if any target fails.
-func deleteMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
+func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider) error {
 	var (
 		mu      sync.Mutex
 		results = make([]deleteResult, 0, len(targets))
@@ -298,19 +320,39 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provi
 
 			ctx := context.Background()
 			info := deleteConnectInfo(target)
-			err := p.Delete(ctx, info, io.Discard)
+			err := validateDeleteConnectInfo(target, info)
+			var pendingRemoval sandboxDeletePendingRemoval
+			if err == nil {
+				pendingRemoval, err = sandboxDeleteStageInstanceRemoval(target.Name)
+			}
+			if err == nil {
+				err = p.Delete(ctx, info, io.Discard)
+				if err != nil && !finalizeInterruptedDeleteRetry(pendingRemoval, err) {
+					if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
+						err = fmt.Errorf("sandbox delete failed: %w (registry rollback failed: %v)", err, rollbackErr)
+					} else {
+						err = fmt.Errorf("sandbox delete failed: %w", err)
+					}
+				}
+			}
+			var localCleanupErr error
+			if err == nil {
+				halDir := filepath.Join(projectDir, template.HalDir)
+				localCleanupErr = removeMatchingLocalSandboxState(halDir, target)
+				if commitErr := pendingRemoval.Commit(); commitErr != nil {
+					err = fmt.Errorf("failed to finalize registry cleanup for %q: %w", target.Name, commitErr)
+				}
+			}
 
 			mu.Lock()
 			if err != nil {
 				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
 				results = append(results, deleteResult{Name: target.Name, Success: false, Err: err})
 			} else {
-				// Remove from global registry after successful provider delete
-				if regErr := sandboxDeleteRemoveInstance(target.Name); regErr != nil {
-					fmt.Fprintf(out, "Deleted %s (warning: registry removal failed: %v)\n", target.Name, regErr)
-				} else {
-					fmt.Fprintf(out, "%s Deleted %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+				if localCleanupErr != nil {
+					fmt.Fprintf(out, "warning: failed to remove local sandbox state for %q: %v\n", target.Name, localCleanupErr)
 				}
+				fmt.Fprintf(out, "%s Deleted %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
 				results = append(results, deleteResult{Name: target.Name, Success: true})
 			}
 			mu.Unlock()
@@ -336,6 +378,18 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provi
 	return nil
 }
 
+func finalizeInterruptedDeleteRetry(pendingRemoval sandboxDeletePendingRemoval, err error) bool {
+	if err == nil || pendingRemoval == nil || !pendingRemoval.AlreadyStaged() {
+		return false
+	}
+
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "not found") ||
+		strings.Contains(text, "does not exist") ||
+		strings.Contains(text, "doesn't exist") ||
+		strings.Contains(text, "no such")
+}
+
 func deleteConnectInfo(target *sandbox.SandboxState) *sandbox.ConnectInfo {
 	info := sandbox.ConnectInfoFromState(target)
 	if info == nil {
@@ -347,10 +401,15 @@ func deleteConnectInfo(target *sandbox.SandboxState) *sandbox.ConnectInfo {
 	if strings.TrimSpace(info.Name) == "" {
 		info.Name = strings.TrimSpace(target.Name)
 	}
-	if target.Provider == "digitalocean" && strings.TrimSpace(info.WorkspaceID) == "" {
-		if name := strings.TrimSpace(target.Name); name != "" {
-			info.WorkspaceID = name
-		}
-	}
 	return info
+}
+
+func validateDeleteConnectInfo(target *sandbox.SandboxState, info *sandbox.ConnectInfo) error {
+	if target == nil {
+		return nil
+	}
+	if target.Provider == "digitalocean" && strings.TrimSpace(info.WorkspaceID) == "" {
+		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID", target.Name)
+	}
+	return nil
 }

@@ -2,16 +2,20 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -49,6 +53,9 @@ func init() {
 
 // sandboxStopListInstances is injectable for testing.
 var sandboxStopListInstances = sandbox.ListInstances
+
+// sandboxStopLoadInstance is injectable for testing.
+var sandboxStopLoadInstance = sandbox.LoadInstance
 
 // sandboxStopNow is injectable for deterministic tests.
 var sandboxStopNow = func() time.Time { return time.Now() }
@@ -122,7 +129,8 @@ func resolveStopTargets(args []string, allFlag bool, pattern string) ([]*sandbox
 	return resolveStopAutoSelect()
 }
 
-// resolveStopByNames loads each named sandbox from the registry.
+// resolveStopByNames loads each named sandbox from the registry without
+// rejecting explicit targets based on cached lifecycle status.
 func resolveStopByNames(names []string) ([]*sandbox.SandboxState, string, error) {
 	seen := make(map[string]bool, len(names))
 	targets := make([]*sandbox.SandboxState, 0, len(names))
@@ -133,12 +141,12 @@ func resolveStopByNames(names []string) ([]*sandbox.SandboxState, string, error)
 		}
 		seen[name] = true
 
-		instance, err := sandbox.LoadInstance(name)
+		instance, err := sandboxStopLoadInstance(name)
 		if err != nil {
-			return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
-		}
-		if instance.Status != sandbox.StatusRunning {
-			return nil, "", fmt.Errorf("sandbox %q is not running", name)
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, "", fmt.Errorf("sandbox %q not found in registry", name)
+			}
+			return nil, "", fmt.Errorf("load sandbox %q from registry: %w", name, err)
 		}
 		targets = append(targets, instance)
 	}
@@ -217,11 +225,26 @@ func resolveStopAutoSelect() ([]*sandbox.SandboxState, string, error) {
 	}
 }
 
-// filterRunning returns only instances with Status == StatusRunning.
+// Legacy project-scoped sandbox state predates lifecycle status and migrates
+// into the registry with a blank status, so stop treats blank as stoppable.
+func isRunningStopTarget(inst *sandbox.SandboxState) bool {
+	if inst == nil {
+		return false
+	}
+	switch strings.TrimSpace(inst.Status) {
+	case "", sandbox.StatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+// filterRunning returns only running instances, including legacy migrated
+// entries whose status is blank.
 func filterRunning(instances []*sandbox.SandboxState) []*sandbox.SandboxState {
 	result := make([]*sandbox.SandboxState, 0, len(instances))
 	for _, inst := range instances {
-		if inst.Status == sandbox.StatusRunning {
+		if isRunningStopTarget(inst) {
 			result = append(result, inst)
 		}
 	}
@@ -267,9 +290,11 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 		return fmt.Errorf("sandbox stop failed for %q: %w", target.Name, err)
 	}
 
-	// Update registry: status → stopped, stoppedAt → now
-	if err := updateStoppedState(target); err != nil {
-		fmt.Fprintf(out, "warning: failed to update registry for %q: %v\n", target.Name, err)
+	if err := persistStoppedState(target); err != nil {
+		return fmt.Errorf("persisting stopped state for %q: %w", target.Name, err)
+	}
+	if err := syncMatchingLocalSandboxState(filepath.Join(".", template.HalDir), target); err != nil {
+		fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, err)
 	}
 
 	fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
@@ -312,13 +337,16 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
 				results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
 			} else {
-				// Update registry: status → stopped, stoppedAt → now
-				if regErr := updateStoppedState(target); regErr != nil {
-					fmt.Fprintf(out, "Stopped %s (warning: registry update failed: %v)\n", target.Name, regErr)
+				if regErr := persistStoppedState(target); regErr != nil {
+					fmt.Fprintf(out, "%s Failed %s: persisting stopped state: %v\n", display.StyleError.Render("[!!]"), target.Name, regErr)
+					results = append(results, stopResult{Name: target.Name, Success: false, Err: regErr})
 				} else {
+					if syncErr := syncMatchingLocalSandboxState(filepath.Join(".", template.HalDir), target); syncErr != nil {
+						fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, syncErr)
+					}
 					fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+					results = append(results, stopResult{Name: target.Name, Success: true})
 				}
-				results = append(results, stopResult{Name: target.Name, Success: true})
 			}
 			mu.Unlock()
 
@@ -343,10 +371,17 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 	return nil
 }
 
-// updateStoppedState updates a sandbox's registry entry to stopped status.
-func updateStoppedState(target *sandbox.SandboxState) error {
+func persistStoppedState(target *sandbox.SandboxState) error {
 	now := sandboxStopNow()
 	target.Status = sandbox.StatusStopped
 	target.StoppedAt = &now
 	return sandboxStopForceWrite(target)
+}
+
+// updateStoppedState updates a sandbox's registry entry to stopped status.
+func updateStoppedState(target *sandbox.SandboxState) error {
+	if err := persistStoppedState(target); err != nil {
+		return err
+	}
+	return syncMatchingLocalSandboxState(filepath.Join(".", template.HalDir), target)
 }

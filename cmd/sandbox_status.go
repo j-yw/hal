@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"time"
 
@@ -43,8 +45,34 @@ var sandboxStatusLoadInstance = sandbox.LoadInstance
 // sandboxStatusResolveProvider is injectable for testing.
 var sandboxStatusResolveProvider = resolveProviderFromGlobalConfig
 
+// sandboxStatusLoadActiveInstance checks whether a sandbox still has an active
+// registry entry before a live refresh persists updates.
+var sandboxStatusLoadActiveInstance = sandbox.LoadActiveInstance
+
+// sandboxStatusForceWrite persists successful live status refreshes.
+var sandboxStatusForceWrite = sandbox.ForceWriteInstance
+
 // sandboxStatusNow is injectable for deterministic tests.
 var sandboxStatusNow = func() time.Time { return time.Now() }
+
+func liveStatusWriteTarget(
+	name string,
+	loadActive func(string) (*sandbox.SandboxState, error),
+	write func(*sandbox.SandboxState) error,
+) (func(*sandbox.SandboxState) error, error) {
+	if write == nil || loadActive == nil {
+		return write, nil
+	}
+
+	if _, err := loadActive(name); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return write, nil
+}
 
 // runSandboxStatus is the public entry point for hal sandbox status NAME.
 func runSandboxStatus(name string, out io.Writer, provider sandbox.Provider) error {
@@ -62,7 +90,10 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 	// Load instance from global registry
 	instance, err := sandboxStatusLoadInstance(name)
 	if err != nil {
-		return fmt.Errorf("sandbox %q not found in registry", name)
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("sandbox %q not found in registry", name)
+		}
+		return fmt.Errorf("load sandbox %q from registry: %w", name, err)
 	}
 
 	// Resolve provider if not injected
@@ -80,20 +111,31 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 	defer cancel()
 
 	status, liveErr := queryProviderLiveStatus(ctx, p, info, instance.Status)
-	if liveErr != nil {
-		instance.Status = sandbox.StatusUnknown
-	} else {
-		instance.Status = status
+	var liveWarning error
+	if liveErr == nil {
+		writeTarget, err := liveStatusWriteTarget(instance.Name, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
+		if err != nil {
+			liveErr = fmt.Errorf("load active sandbox %q: %w", instance.Name, err)
+		} else if err := persistLiveStatus(instance, status, sandboxStatusNow(), writeTarget); err != nil {
+			if _, ok := asLocalStateSyncWarning(err); ok {
+				liveWarning = err
+			} else {
+				liveErr = fmt.Errorf("persist live status: %w", err)
+			}
+		}
 	}
 
 	// Display detailed info
-	renderSandboxDetail(out, instance, liveErr)
+	renderSandboxDetail(out, instance, liveErr, liveWarning)
+	if liveErr != nil {
+		return fmt.Errorf("live sandbox status for %q: %w", instance.Name, liveErr)
+	}
 
 	return nil
 }
 
 // renderSandboxDetail renders all SandboxState fields in a detailed view.
-func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr error) {
+func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liveWarning error) {
 	now := sandboxStatusNow()
 
 	// Identity
@@ -117,6 +159,9 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr erro
 		fmt.Fprintf(out, "Live query: %s\n", display.StyleError.Render(fmt.Sprintf("failed (%s)", liveErr)))
 	} else {
 		fmt.Fprintf(out, "Live query: %s\n", display.StyleSuccess.Render("ok"))
+	}
+	if liveWarning != nil {
+		fmt.Fprintf(out, "Warning:    %s\n", display.StyleWarning.Render(formatLocalStateSyncWarning(liveWarning)))
 	}
 
 	fmt.Fprintln(out)

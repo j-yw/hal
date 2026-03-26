@@ -5,12 +5,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // mockStatusProvider implements sandbox.Provider for status tests.
@@ -149,12 +152,14 @@ func TestRunSandboxStatus_LiveQueryFailed(t *testing.T) {
 	var out bytes.Buffer
 
 	err := runSandboxStatusWithDeps("fail-sandbox", &out, mock)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
+	assertContains(t, err.Error(), `live sandbox status for "fail-sandbox"`)
+	assertContains(t, err.Error(), "connection refused")
 
 	output := out.String()
-	assertContains(t, output, "Status:     unknown")
+	assertContains(t, output, "Status:     running")
 	assertContains(t, output, "Live query: failed (connection refused)")
 }
 
@@ -169,7 +174,7 @@ func TestRunSandboxStatus_UsesProviderReportedStatus(t *testing.T) {
 		CreatedAt: time.Now(),
 	})
 
-	mock := &mockStatusProvider{statusOut: "Status off"}
+	mock := &mockStatusProvider{statusOut: "Status: off"}
 	var out bytes.Buffer
 
 	err := runSandboxStatusWithDeps("live-stopped", &out, mock)
@@ -182,6 +187,76 @@ func TestRunSandboxStatus_UsesProviderReportedStatus(t *testing.T) {
 	assertContains(t, output, "Live query: ok")
 }
 
+func TestRunSandboxStatus_PersistsProviderReportedStatus(t *testing.T) {
+	setupStatusTest(t)
+
+	saveStatusTestInstance(t, &sandbox.SandboxState{
+		Name:      "persisted-status",
+		Provider:  "daytona",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	mock := &mockStatusProvider{statusOut: "Status: off"}
+	var out bytes.Buffer
+
+	if err := runSandboxStatusWithDeps("persisted-status", &out, mock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	loaded, err := sandbox.LoadInstance("persisted-status")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.Status != sandbox.StatusStopped {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, sandbox.StatusStopped)
+	}
+}
+
+func TestRunSandboxStatus_ContinuesWhenLocalSyncFails(t *testing.T) {
+	projectDir := t.TempDir()
+	t.Chdir(projectDir)
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(projectDir, "config"))
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", projectDir)
+	if err := sandbox.EnsureGlobalDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	halDir := filepath.Join(projectDir, template.HalDir)
+	if err := os.MkdirAll(filepath.Join(halDir, template.SandboxFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll sandbox path: %v", err)
+	}
+
+	saveStatusTestInstance(t, &sandbox.SandboxState{
+		ID:        "id-1",
+		Name:      "warn-box",
+		Provider:  "daytona",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	mock := &mockStatusProvider{statusOut: "Status: off"}
+	var out bytes.Buffer
+
+	if err := runSandboxStatusWithDeps("warn-box", &out, mock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	assertContains(t, output, "Live query: ok")
+	assertContains(t, output, "Warning:")
+	assertContains(t, output, "local sandbox state sync failed")
+
+	loaded, err := sandbox.LoadInstance("warn-box")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.Status != sandbox.StatusStopped {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, sandbox.StatusStopped)
+	}
+}
+
 func TestRunSandboxStatus_NotFound(t *testing.T) {
 	setupStatusTest(t)
 
@@ -191,6 +266,27 @@ func TestRunSandboxStatus_NotFound(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	assertContains(t, err.Error(), `sandbox "nonexistent" not found in registry`)
+}
+
+func TestRunSandboxStatus_LoadInstanceError(t *testing.T) {
+	setupStatusTest(t)
+
+	origLoad := sandboxStatusLoadInstance
+	sandboxStatusLoadInstance = func(name string) (*sandbox.SandboxState, error) {
+		return nil, fmt.Errorf("parse sandbox %q: invalid character", name)
+	}
+	t.Cleanup(func() { sandboxStatusLoadInstance = origLoad })
+
+	var out bytes.Buffer
+	err := runSandboxStatusWithDeps("broken", &out, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertContains(t, err.Error(), `load sandbox "broken" from registry`)
+	assertContains(t, err.Error(), `parse sandbox "broken"`)
+	if strings.Contains(err.Error(), "not found in registry") {
+		t.Fatalf("expected parse error to be preserved, got %q", err.Error())
+	}
 }
 
 func TestRunSandboxStatus_ProviderResolveError(t *testing.T) {

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // mockDeleteProvider implements sandbox.Provider for delete tests.
@@ -23,6 +27,38 @@ type mockDeleteProvider struct {
 	deleteCalls     []string
 	deleteErr       error
 	deleteErrByName map[string]error
+}
+
+type mockDeletePendingRemoval struct {
+	inner       sandboxDeletePendingRemoval
+	commitErr   error
+	rollbackErr error
+	alreadyStaged bool
+}
+
+func (m *mockDeletePendingRemoval) Commit() error {
+	if m.inner != nil {
+		if err := m.inner.Commit(); err != nil {
+			return err
+		}
+	}
+	return m.commitErr
+}
+
+func (m *mockDeletePendingRemoval) Rollback() error {
+	if m.inner != nil {
+		if err := m.inner.Rollback(); err != nil {
+			return err
+		}
+	}
+	return m.rollbackErr
+}
+
+func (m *mockDeletePendingRemoval) AlreadyStaged() bool {
+	if m.inner != nil {
+		return m.inner.AlreadyStaged()
+	}
+	return m.alreadyStaged
 }
 
 func (m *mockDeleteProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
@@ -69,6 +105,19 @@ func (m *mockDeleteProvider) Status(ctx context.Context, info *sandbox.ConnectIn
 	return nil
 }
 
+func writeDeleteLocalState(t *testing.T, projectDir string, state *sandbox.SandboxState) string {
+	t.Helper()
+
+	halDir := filepath.Join(projectDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := sandbox.SaveState(halDir, state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	return filepath.Join(halDir, template.SandboxFile)
+}
+
 func setupDeleteGlobalRegistry(t *testing.T, instances []*sandbox.SandboxState) {
 	t.Helper()
 	dir := t.TempDir()
@@ -82,6 +131,268 @@ func setupDeleteGlobalRegistry(t *testing.T, instances []*sandbox.SandboxState) 
 		if err := sandbox.ForceWriteInstance(inst); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestRunSandboxDelete_RemovesConflictingLocalState(t *testing.T) {
+	projectDir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Chdir(%q): %v", projectDir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{
+			ID:          "global-id",
+			Name:        "my-sandbox",
+			Provider:    "daytona",
+			WorkspaceID: "workspace-global",
+			Status:      sandbox.StatusRunning,
+			CreatedAt:   time.Now(),
+		},
+	})
+
+	localPath := writeDeleteLocalState(t, projectDir, &sandbox.SandboxState{
+		ID:          "local-id",
+		Name:        "my-sandbox",
+		Provider:    "daytona",
+		WorkspaceID: "workspace-local",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   time.Now(),
+	})
+
+	var out bytes.Buffer
+	if err := runSandboxDelete([]string{"my-sandbox"}, false, false, "", nil, &out, &mockDeleteProvider{}); err != nil {
+		t.Fatalf("runSandboxDelete: %v", err)
+	}
+
+	if _, err := os.Stat(localPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local sandbox state should be removed, stat err = %v", err)
+	}
+}
+
+func TestRunSandboxDelete_AllRemovesMatchingLocalState(t *testing.T) {
+	projectDir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Chdir(%q): %v", projectDir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{
+			ID:          "global-api",
+			Name:        "api-backend",
+			Provider:    "daytona",
+			WorkspaceID: "workspace-api",
+			Status:      sandbox.StatusRunning,
+			CreatedAt:   time.Now(),
+		},
+		{
+			ID:          "global-frontend",
+			Name:        "frontend",
+			Provider:    "daytona",
+			WorkspaceID: "workspace-frontend",
+			Status:      sandbox.StatusRunning,
+			CreatedAt:   time.Now(),
+		},
+	})
+
+	localPath := writeDeleteLocalState(t, projectDir, &sandbox.SandboxState{
+		ID:          "local-frontend",
+		Name:        "frontend",
+		Provider:    "daytona",
+		WorkspaceID: "workspace-local-frontend",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   time.Now(),
+	})
+
+	var out bytes.Buffer
+	if err := runSandboxDelete(nil, true, true, "", nil, &out, &mockDeleteProvider{}); err != nil {
+		t.Fatalf("runSandboxDelete: %v", err)
+	}
+
+	if _, err := os.Stat(localPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local sandbox state should be removed, stat err = %v", err)
+	}
+}
+
+func TestDeleteOneTarget_RemovesRegistryWhenLocalCleanupFails(t *testing.T) {
+	projectDir := t.TempDir()
+	target := &sandbox.SandboxState{
+		ID:          "global-id",
+		Name:        "my-sandbox",
+		Provider:    "daytona",
+		WorkspaceID: "workspace-global",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   time.Now(),
+	}
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	halDir := filepath.Join(projectDir, template.HalDir)
+	if err := os.MkdirAll(filepath.Join(halDir, template.SandboxFile), 0o755); err != nil {
+		t.Fatalf("mkdir local sandbox path: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := deleteOneTarget(target, projectDir, &out, &mockDeleteProvider{}); err != nil {
+		t.Fatalf("deleteOneTarget: %v", err)
+	}
+	if _, err := sandbox.LoadInstance(target.Name); err == nil {
+		t.Fatalf("registry entry for %q should be removed", target.Name)
+	}
+	if !strings.Contains(out.String(), "warning: failed to remove local sandbox state") {
+		t.Fatalf("output %q should include local cleanup warning", out.String())
+	}
+}
+
+func TestDeleteMultipleTargets_RemovesRegistryWhenLocalCleanupFails(t *testing.T) {
+	projectDir := t.TempDir()
+	target := &sandbox.SandboxState{
+		ID:          "global-id",
+		Name:        "worker-01",
+		Provider:    "daytona",
+		WorkspaceID: "workspace-global",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   time.Now(),
+	}
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	halDir := filepath.Join(projectDir, template.HalDir)
+	if err := os.MkdirAll(filepath.Join(halDir, template.SandboxFile), 0o755); err != nil {
+		t.Fatalf("mkdir local sandbox path: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := deleteMultipleTargets([]*sandbox.SandboxState{target}, projectDir, &out, &mockDeleteProvider{}); err != nil {
+		t.Fatalf("deleteMultipleTargets: %v", err)
+	}
+	if _, err := sandbox.LoadInstance(target.Name); err == nil {
+		t.Fatalf("registry entry for %q should be removed", target.Name)
+	}
+	if !strings.Contains(out.String(), "warning: failed to remove local sandbox state") {
+		t.Fatalf("output %q should include local cleanup warning", out.String())
+	}
+}
+
+func TestDeleteOneTarget_FailsWhenCommitFails(t *testing.T) {
+	projectDir := t.TempDir()
+	target := &sandbox.SandboxState{
+		ID:          "global-id",
+		Name:        "my-sandbox",
+		Provider:    "daytona",
+		WorkspaceID: "workspace-global",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   time.Now(),
+	}
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	origStage := sandboxDeleteStageInstanceRemoval
+	sandboxDeleteStageInstanceRemoval = func(name string) (sandboxDeletePendingRemoval, error) {
+		inner, err := sandbox.StageInstanceRemoval(name)
+		if err != nil {
+			return nil, err
+		}
+		return &mockDeletePendingRemoval{
+			inner:     inner,
+			commitErr: fmt.Errorf("registry unavailable"),
+		}, nil
+	}
+	t.Cleanup(func() {
+		sandboxDeleteStageInstanceRemoval = origStage
+	})
+
+	var out bytes.Buffer
+	err := deleteOneTarget(target, projectDir, &out, &mockDeleteProvider{})
+	if err == nil {
+		t.Fatal("deleteOneTarget() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "failed to finalize registry cleanup") {
+		t.Fatalf("error %q should include finalize failure", err)
+	}
+	if strings.Contains(out.String(), "Deleted my-sandbox") {
+		t.Fatalf("output %q should not report success", out.String())
+	}
+}
+
+func TestDeleteMultipleTargets_FailsWhenCommitFails(t *testing.T) {
+	projectDir := t.TempDir()
+	target := &sandbox.SandboxState{
+		ID:          "global-id",
+		Name:        "worker-01",
+		Provider:    "daytona",
+		WorkspaceID: "workspace-global",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   time.Now(),
+	}
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	origStage := sandboxDeleteStageInstanceRemoval
+	sandboxDeleteStageInstanceRemoval = func(name string) (sandboxDeletePendingRemoval, error) {
+		inner, err := sandbox.StageInstanceRemoval(name)
+		if err != nil {
+			return nil, err
+		}
+		return &mockDeletePendingRemoval{
+			inner:     inner,
+			commitErr: fmt.Errorf("registry unavailable"),
+		}, nil
+	}
+	t.Cleanup(func() {
+		sandboxDeleteStageInstanceRemoval = origStage
+	})
+
+	var out bytes.Buffer
+	err := deleteMultipleTargets([]*sandbox.SandboxState{target}, projectDir, &out, &mockDeleteProvider{})
+	if err == nil {
+		t.Fatal("deleteMultipleTargets() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "1/1 sandbox deletes failed") {
+		t.Fatalf("error %q should report failed delete count", err)
+	}
+	if !strings.Contains(out.String(), "failed to finalize registry cleanup") {
+		t.Fatalf("output %q should include finalize failure", out.String())
+	}
+	if strings.Contains(out.String(), "Deleted worker-01") {
+		t.Fatalf("output %q should not report success", out.String())
+	}
+}
+
+func TestDeleteOneTarget_RemovesMatchingLocalState(t *testing.T) {
+	projectDir := t.TempDir()
+	target := &sandbox.SandboxState{
+		ID:          "global-id",
+		Name:        "my-sandbox",
+		Provider:    "daytona",
+		WorkspaceID: "workspace-global",
+		Status:      sandbox.StatusRunning,
+		CreatedAt:   time.Now(),
+	}
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	halDir := writeDeleteLocalState(t, projectDir, target)
+
+	var out bytes.Buffer
+	if err := deleteOneTarget(target, projectDir, &out, &mockDeleteProvider{}); err != nil {
+		t.Fatalf("deleteOneTarget: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(halDir, template.SandboxFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("sandbox.json stat err = %v, want fs.ErrNotExist", err)
 	}
 }
 
@@ -837,6 +1148,27 @@ func TestRunSandboxDelete_RegistryPreservedOnProviderFailure(t *testing.T) {
 	}
 }
 
+func TestRunSandboxDelete_RetryWithStagedRegistryEntryCommitsOnNotFound(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	if _, err := sandbox.StageInstanceRemoval("my-sandbox"); err != nil {
+		t.Fatalf("setup: stage instance removal: %v", err)
+	}
+
+	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: not found")}
+	var out bytes.Buffer
+
+	err := runSandboxDelete([]string{"my-sandbox"}, false, false, "", nil, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, loadErr := sandbox.LoadInstance("my-sandbox"); loadErr == nil {
+		t.Fatal("expected staged registry entry to be finalized after not-found retry")
+	}
+}
+
 func TestRunSandboxDelete_ConcurrentMultipleTargets(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
 		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
@@ -1041,7 +1373,7 @@ func TestRunSandboxDelete_PartialFailureResultLines(t *testing.T) {
 	if !strings.Contains(output, "Deleted alpha") {
 		t.Errorf("output %q missing success line for alpha", output)
 	}
-	if !strings.Contains(output, "Failed bravo: API error") {
+	if !strings.Contains(output, "Failed bravo: sandbox delete failed: API error") {
 		t.Errorf("output %q missing failure line for bravo", output)
 	}
 }
@@ -1089,21 +1421,21 @@ func TestDeleteConnectInfo_DigitalOceanFallbackOrder(t *testing.T) {
 			wantWorkspaceID: "987654",
 		},
 		{
-			name: "falls back to name when workspace id missing",
+			name: "falls back to legacy id when workspace id missing",
 			target: &sandbox.SandboxState{
 				Name:     "do-box",
 				Provider: "digitalocean",
 				ID:       "123456",
 			},
-			wantWorkspaceID: "do-box",
+			wantWorkspaceID: "123456",
 		},
 		{
-			name: "falls back to name when id and workspace id missing",
+			name: "leaves workspace id empty when no droplet id is available",
 			target: &sandbox.SandboxState{
 				Name:     "do-box",
 				Provider: "digitalocean",
 			},
-			wantWorkspaceID: "do-box",
+			wantWorkspaceID: "",
 		},
 		{
 			name: "non-digitalocean does not assign workspace id fallback",

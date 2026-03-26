@@ -496,6 +496,12 @@ func TestParseSSHArgs(t *testing.T) {
 			wantRemote: []string{"ls", "-la"},
 		},
 		{
+			name:       "name with trailing command without dash-dash",
+			args:       []string{"my-sandbox", "ls", "-la"},
+			wantName:   "my-sandbox",
+			wantRemote: []string{"ls", "-la"},
+		},
+		{
 			name:       "dash-dash only (no name)",
 			args:       []string{"--", "ls"},
 			wantName:   "",
@@ -560,6 +566,48 @@ func TestResolveSSHTarget_ByName(t *testing.T) {
 	}
 }
 
+func TestResolveSSHTarget_ByNameAllowsExplicitTargetWithStoppedStatus(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "stopped-box",
+		Provider:  "daytona",
+		IP:        "10.0.0.1",
+		CreatedAt: time.Now(),
+		Status:    sandbox.StatusStopped,
+	})
+
+	instance, hint, err := resolveSSHTarget("stopped-box")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hint != "" {
+		t.Errorf("expected no hint for explicit name, got %q", hint)
+	}
+	if instance.Name != "stopped-box" {
+		t.Errorf("Name = %q, want %q", instance.Name, "stopped-box")
+	}
+}
+
+func TestResolveSSHTarget_ByNameAllowsLegacyBlankStatus(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "legacy-box",
+		Provider:  "daytona",
+		IP:        "10.0.0.1",
+		CreatedAt: time.Now(),
+		Status:    "",
+	})
+
+	instance, hint, err := resolveSSHTarget("legacy-box")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hint != "" {
+		t.Errorf("expected no hint for explicit name, got %q", hint)
+	}
+	if instance.Name != "legacy-box" {
+		t.Errorf("Name = %q, want %q", instance.Name, "legacy-box")
+	}
+}
+
 func TestResolveSSHTarget_AutoResolveSingle(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "only-one",
@@ -578,6 +626,27 @@ func TestResolveSSHTarget_AutoResolveSingle(t *testing.T) {
 	}
 	if instance.Name != "only-one" {
 		t.Errorf("Name = %q, want %q", instance.Name, "only-one")
+	}
+}
+
+func TestResolveSSHTarget_AutoResolveSingleLegacyBlankStatus(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "legacy-box",
+		Provider:  "daytona",
+		IP:        "10.0.0.1",
+		CreatedAt: time.Now(),
+		Status:    "",
+	})
+
+	instance, hint, err := resolveSSHTarget("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(hint, `connecting to only active sandbox "legacy-box"`) {
+		t.Errorf("hint %q should contain auto-connect message", hint)
+	}
+	if instance.Name != "legacy-box" {
+		t.Errorf("Name = %q, want %q", instance.Name, "legacy-box")
 	}
 }
 

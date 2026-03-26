@@ -17,6 +17,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/spf13/cobra"
 )
 
 // uuidV7Pattern matches the 8-4-4-4-12 hex format of a UUIDv7.
@@ -110,9 +111,63 @@ func setupStartTest(t *testing.T, dir string) {
 	}
 }
 
+func makeSandboxesDirReadOnly(t *testing.T) {
+	t.Helper()
+	if err := sandbox.EnsureGlobalDir(); err != nil {
+		t.Fatalf("setup: ensure global dir: %v", err)
+	}
+	dir := sandbox.SandboxesDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("setup: chmod sandboxes dir read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o700)
+	})
+}
+
 func fakeBranchResolver(branch string, err error) branchResolver {
 	return func() (string, error) {
 		return branch, err
+	}
+}
+
+func TestMergeGlobalStartDefaults_ReplacesAuthoritativeEnv(t *testing.T) {
+	localCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env: map[string]string{
+			"KEEP":   "legacy",
+			"SHARED": "local",
+		},
+		TailscaleLockdown: false,
+	}
+	globalCfg := &sandbox.GlobalConfig{
+		Provider: "digitalocean",
+		Env: map[string]string{
+			"NEW":    "value",
+			"SHARED": "global",
+		},
+		TailscaleLockdown: true,
+	}
+
+	mergeGlobalStartDefaults(localCfg, globalCfg, true)
+
+	if localCfg.Provider != "digitalocean" {
+		t.Fatalf("Provider = %q, want %q", localCfg.Provider, "digitalocean")
+	}
+	if !localCfg.TailscaleLockdown {
+		t.Fatal("TailscaleLockdown = false, want true")
+	}
+	if len(localCfg.Env) != 2 {
+		t.Fatalf("len(Env) = %d, want 2", len(localCfg.Env))
+	}
+	if localCfg.Env["NEW"] != "value" {
+		t.Fatalf("Env[NEW] = %q, want %q", localCfg.Env["NEW"], "value")
+	}
+	if localCfg.Env["SHARED"] != "global" {
+		t.Fatalf("Env[SHARED] = %q, want %q", localCfg.Env["SHARED"], "global")
+	}
+	if _, ok := localCfg.Env["KEEP"]; ok {
+		t.Fatalf("Env contains stale local key KEEP: %#v", localCfg.Env)
 	}
 }
 
@@ -286,8 +341,8 @@ func TestRunSandboxStart_OverridesLegacyTailscaleHostname(t *testing.T) {
 	}
 
 	env := mock.createCalls[0].Env
-	if env["TAILSCALE_HOSTNAME"] != "sb" {
-		t.Errorf("TAILSCALE_HOSTNAME = %q, want %q", env["TAILSCALE_HOSTNAME"], "sb")
+	if env["TAILSCALE_HOSTNAME"] != sandbox.TailscaleHostname("sb") {
+		t.Errorf("TAILSCALE_HOSTNAME = %q, want %q", env["TAILSCALE_HOSTNAME"], sandbox.TailscaleHostname("sb"))
 	}
 	if env["API_KEY"] != "sk-from-config" {
 		t.Errorf("API_KEY = %q, want %q", env["API_KEY"], "sk-from-config")
@@ -323,8 +378,8 @@ func TestRunSandboxStart_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *test
 	}
 
 	for _, call := range mock.createCalls {
-		if got := call.Env["TAILSCALE_HOSTNAME"]; got != call.Name {
-			t.Errorf("%s: TAILSCALE_HOSTNAME = %q, want %q", call.Name, got, call.Name)
+		if got := call.Env["TAILSCALE_HOSTNAME"]; got != sandbox.TailscaleHostname(call.Name) {
+			t.Errorf("%s: TAILSCALE_HOSTNAME = %q, want %q", call.Name, got, sandbox.TailscaleHostname(call.Name))
 		}
 	}
 }
@@ -520,6 +575,107 @@ func TestRunSandboxStart_ResolvesLightsailProviderConfig(t *testing.T) {
 	}
 	if gotCfg.LightsailKeyPairName != "hal-keypair" {
 		t.Errorf("LightsailKeyPairName = %q, want %q", gotCfg.LightsailKeyPairName, "hal-keypair")
+	}
+}
+
+func TestRunSandboxStart_GlobalConfigOverridesLegacyRuntimeConfig(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
+
+	localCfg := &compound.SandboxConfig{
+		Provider: "daytona",
+		Env: map[string]string{
+			"LOCAL_ONLY": "local",
+			"SHARED":     "local",
+		},
+	}
+	if err := compound.SaveSandboxConfig(dir, localCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	globalCfg := sandbox.DefaultGlobalConfig()
+	globalCfg.Provider = "lightsail"
+	globalCfg.Env = map[string]string{
+		"GLOBAL_ONLY":       "global",
+		"SHARED":            "global",
+		"TAILSCALE_AUTHKEY": "tskey-auth-123",
+	}
+	globalCfg.TailscaleLockdown = true
+	globalCfg.Lightsail.Region = "us-west-2"
+	globalCfg.Lightsail.AvailabilityZone = "us-west-2b"
+	globalCfg.Lightsail.Bundle = "medium_3_0"
+	globalCfg.Lightsail.KeyPairName = "global-keypair"
+	if err := sandbox.SaveGlobalConfig(&globalCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	originalResolveProvider := resolveSandboxProvider
+	t.Cleanup(func() {
+		resolveSandboxProvider = originalResolveProvider
+	})
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb"},
+	}
+
+	var gotProvider string
+	var gotCfg sandbox.ProviderConfig
+	resolveSandboxProvider = func(provider string, cfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+		gotProvider = provider
+		gotCfg = cfg
+		return mock, nil
+	}
+
+	if err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotProvider != "lightsail" {
+		t.Errorf("provider = %q, want %q", gotProvider, "lightsail")
+	}
+	if !gotCfg.TailscaleLockdown {
+		t.Error("expected TailscaleLockdown to come from global config")
+	}
+	if gotCfg.LightsailRegion != "us-west-2" {
+		t.Errorf("LightsailRegion = %q, want %q", gotCfg.LightsailRegion, "us-west-2")
+	}
+	if gotCfg.LightsailAvailabilityZone != "us-west-2b" {
+		t.Errorf("LightsailAvailabilityZone = %q, want %q", gotCfg.LightsailAvailabilityZone, "us-west-2b")
+	}
+	if gotCfg.LightsailBundle != "medium_3_0" {
+		t.Errorf("LightsailBundle = %q, want %q", gotCfg.LightsailBundle, "medium_3_0")
+	}
+	if gotCfg.LightsailKeyPairName != "global-keypair" {
+		t.Errorf("LightsailKeyPairName = %q, want %q", gotCfg.LightsailKeyPairName, "global-keypair")
+	}
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+
+	gotEnv := mock.createCalls[0].Env
+	if gotEnv["GLOBAL_ONLY"] != "global" {
+		t.Errorf("GLOBAL_ONLY = %q, want %q", gotEnv["GLOBAL_ONLY"], "global")
+	}
+	if gotEnv["LOCAL_ONLY"] != "local" {
+		t.Errorf("LOCAL_ONLY = %q, want %q", gotEnv["LOCAL_ONLY"], "local")
+	}
+	if gotEnv["SHARED"] != "global" {
+		t.Errorf("SHARED = %q, want %q", gotEnv["SHARED"], "global")
+	}
+	if gotEnv["TAILSCALE_AUTHKEY"] != "tskey-auth-123" {
+		t.Errorf("TAILSCALE_AUTHKEY = %q, want %q", gotEnv["TAILSCALE_AUTHKEY"], "tskey-auth-123")
+	}
+
+	instance, err := sandbox.LoadInstance("sb")
+	if err != nil {
+		t.Fatalf("loading registry entry: %v", err)
+	}
+	if instance.Provider != "lightsail" {
+		t.Errorf("saved provider = %q, want %q", instance.Provider, "lightsail")
 	}
 }
 
@@ -835,6 +991,46 @@ func TestResolveAutoShutdown(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAutoShutdownOptsFromCommand(t *testing.T) {
+	newCommand := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "start"}
+		cmd.Flags().Bool("auto-shutdown", true, "")
+		cmd.Flags().Bool("no-auto-shutdown", false, "")
+		cmd.Flags().Int("idle-hours", 0, "")
+		return cmd
+	}
+
+	t.Run("explicit false preserves no-auto-shutdown=false", func(t *testing.T) {
+		cmd := newCommand()
+		if err := cmd.Flags().Set("no-auto-shutdown", "false"); err != nil {
+			t.Fatalf("set no-auto-shutdown=false: %v", err)
+		}
+
+		opts := autoShutdownOptsFromCommand(cmd)
+		if opts.noAutoShutdown == nil {
+			t.Fatal("noAutoShutdown should be set when flag is provided explicitly")
+		}
+		if *opts.noAutoShutdown {
+			t.Fatalf("noAutoShutdown = %v, want false", *opts.noAutoShutdown)
+		}
+	})
+
+	t.Run("explicit true sets no-auto-shutdown=true", func(t *testing.T) {
+		cmd := newCommand()
+		if err := cmd.Flags().Set("no-auto-shutdown", "true"); err != nil {
+			t.Fatalf("set no-auto-shutdown=true: %v", err)
+		}
+
+		opts := autoShutdownOptsFromCommand(cmd)
+		if opts.noAutoShutdown == nil {
+			t.Fatal("noAutoShutdown should be set when flag is provided explicitly")
+		}
+		if !*opts.noAutoShutdown {
+			t.Fatalf("noAutoShutdown = %v, want true", *opts.noAutoShutdown)
+		}
+	})
 }
 
 func TestInjectAutoShutdownEnv(t *testing.T) {
@@ -1157,6 +1353,36 @@ func TestBatchPreflight_MultipleCollisions(t *testing.T) {
 	}
 }
 
+func TestBatchPreflightWithOptions_ForceDoesNotDeleteExistingTargets(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL_CONFIG_HOME", dir)
+
+	if err := sandbox.SaveInstance(&sandbox.SandboxState{
+		Name:        "worker-02",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	mock := &mockProvider{}
+
+	targets, err := batchPreflightWithOptions("worker", 3, true, mock, "daytona", io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Join(targets, ","); got != "worker-01,worker-02,worker-03" {
+		t.Fatalf("targets = %q, want %q", got, "worker-01,worker-02,worker-03")
+	}
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("delete calls = %d, want 0 during preflight", len(mock.deleteCalls))
+	}
+	if _, err := sandbox.LoadInstance("worker-02"); err != nil {
+		t.Fatalf("existing instance should remain after preflight: %v", err)
+	}
+}
+
 func TestBatchPreflight_RegistryReadError(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HAL_CONFIG_HOME", dir)
@@ -1175,6 +1401,32 @@ func TestBatchPreflight_RegistryReadError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "batch preflight failed: checking sandbox \"worker-02\"") {
 		t.Errorf("error %q should include preflight read failure context", err.Error())
+	}
+}
+
+func TestBatchPreflightWithOptions_IgnoresStagedRegistryBackup(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	if err := sandbox.SaveInstance(&sandbox.SandboxState{
+		Name:        "worker-02",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+	if _, err := sandbox.StageInstanceRemoval("worker-02"); err != nil {
+		t.Fatalf("setup: stage instance removal: %v", err)
+	}
+
+	mock := &mockProvider{}
+	targets, err := batchPreflightWithOptions("worker", 3, false, mock, "daytona", io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Join(targets, ","); got != "worker-01,worker-02,worker-03" {
+		t.Fatalf("targets = %q, want %q", got, "worker-01,worker-02,worker-03")
 	}
 }
 
@@ -1278,6 +1530,48 @@ func TestRunSandboxStart_BatchPreflightBlocksCreate(t *testing.T) {
 	// provider.Create should NOT have been called
 	if len(mock.createCalls) != 0 {
 		t.Errorf("expected 0 Create calls (preflight should block), got %d", len(mock.createCalls))
+	}
+}
+
+func TestRunSandboxStart_BatchForceReplacesExistingTargets(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	if err := sandbox.SaveInstance(&sandbox.SandboxState{
+		Name:        "worker-02",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}); err != nil {
+		t.Fatalf("setup: save existing: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+	}
+
+	if err := runSandboxStartWithDeps(dir, "worker", 3, true, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := mock.sortedCreateCallNames(); strings.Join(got, ",") != "worker-01,worker-02,worker-03" {
+		t.Fatalf("create targets = %v, want all batch targets", got)
+	}
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("delete calls = %d, want 1", len(mock.deleteCalls))
+	}
+	if got := mock.deleteCalls[0].Info.Name; got != "worker-02" {
+		t.Fatalf("delete target = %q, want %q", got, "worker-02")
+	}
+
+	for _, name := range []string{"worker-01", "worker-02", "worker-03"} {
+		instance, err := sandbox.LoadInstance(name)
+		if err != nil {
+			t.Fatalf("LoadInstance(%q): %v", name, err)
+		}
+		if instance.Status != sandbox.StatusRunning {
+			t.Fatalf("%s status = %q, want %q", name, instance.Status, sandbox.StatusRunning)
+		}
 	}
 }
 
@@ -1780,6 +2074,105 @@ func TestRunSandboxStart_CollisionWithoutForce(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStart_StagedRegistryBackupRequiresForce(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	existing := &sandbox.SandboxState{
+		ID:          "old-id",
+		Name:        "my-sandbox",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+	if _, err := sandbox.StageInstanceRemoval("my-sandbox"); err != nil {
+		t.Fatalf("setup: stage instance removal: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "pending removal") {
+		t.Fatalf("error = %q, want pending-removal guidance", err.Error())
+	}
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("delete calls = %d, want 0", len(mock.deleteCalls))
+	}
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("create calls = %d, want 0", len(mock.createCalls))
+	}
+
+	instance, loadErr := sandbox.LoadInstance("my-sandbox")
+	if loadErr != nil {
+		t.Fatalf("LoadInstance() after blocked recreate: %v", loadErr)
+	}
+	if instance.WorkspaceID != "ws-old" {
+		t.Fatalf("LoadInstance() workspace = %q, want %q", instance.WorkspaceID, "ws-old")
+	}
+}
+
+func TestRunSandboxStart_ForceReplaceResumesStagedRegistryBackup(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	existing := &sandbox.SandboxState{
+		ID:          "old-id-1234",
+		Name:        "my-sandbox",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		IP:          "10.0.0.1",
+		Status:      sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+	if _, err := sandbox.StageInstanceRemoval("my-sandbox"); err != nil {
+		t.Fatalf("setup: stage instance removal: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new", IP: "10.0.0.2"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("delete calls = %d, want 1", len(mock.deleteCalls))
+	}
+	if mock.deleteCalls[0].Info == nil {
+		t.Fatal("Delete called with nil ConnectInfo")
+	}
+	if mock.deleteCalls[0].Info.WorkspaceID != "ws-old" {
+		t.Fatalf("Delete ConnectInfo.WorkspaceID = %q, want %q", mock.deleteCalls[0].Info.WorkspaceID, "ws-old")
+	}
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(mock.createCalls))
+	}
+
+	instance, loadErr := sandbox.LoadInstance("my-sandbox")
+	if loadErr != nil {
+		t.Fatalf("LoadInstance() after force replace: %v", loadErr)
+	}
+	if instance.WorkspaceID != "ws-new" {
+		t.Fatalf("LoadInstance() workspace = %q, want %q", instance.WorkspaceID, "ws-new")
+	}
+
+	backupPath := filepath.Join(sandbox.SandboxesDir(), "my-sandbox.json.replacing")
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Fatalf("staged backup should be removed after successful force replace, got %v", err)
+	}
+}
+
 func TestRunSandboxStart_ForceReplaceSuccess(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
@@ -2079,6 +2472,119 @@ func TestRunSandboxStart_RegistryReadErrorStopsCreate(t *testing.T) {
 	}
 }
 
+func TestRunSingleCreate_RegistrationFailureRollsBackCreatedSandbox(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+	makeSandboxesDirReadOnly(t)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{
+			Name:        "sb",
+			ID:          "ws-123",
+			IP:          "203.0.113.10",
+			TailscaleIP: "100.64.0.10",
+		},
+	}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := runSingleCreate("sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "registering sandbox") {
+		t.Fatalf("error %q should include registration context", err.Error())
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call for rollback, got %d", len(mock.deleteCalls))
+	}
+
+	info := mock.deleteCalls[0].Info
+	if info == nil {
+		t.Fatal("Delete called with nil ConnectInfo")
+	}
+	if info.Name != "sb" {
+		t.Fatalf("Delete ConnectInfo.Name = %q, want %q", info.Name, "sb")
+	}
+	if info.WorkspaceID != "ws-123" {
+		t.Fatalf("Delete ConnectInfo.WorkspaceID = %q, want %q", info.WorkspaceID, "ws-123")
+	}
+	if info.IP != "100.64.0.10" {
+		t.Fatalf("Delete ConnectInfo.IP = %q, want %q", info.IP, "100.64.0.10")
+	}
+
+	if _, loadErr := sandbox.LoadInstance("sb"); loadErr == nil {
+		t.Fatal("sandbox should not be registered after registration failure")
+	}
+}
+
+func TestRunSingleCreate_IDGenerationFailureRollsBackCreatedSandbox(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	origNewSandboxID := newSandboxID
+	t.Cleanup(func() {
+		newSandboxID = origNewSandboxID
+	})
+	newSandboxID = func() (string, error) {
+		return "", fmt.Errorf("uuid failed")
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{
+			Name:        "sb",
+			ID:          "ws-123",
+			IP:          "203.0.113.10",
+			TailscaleIP: "100.64.0.10",
+		},
+	}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := runSingleCreate("sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "generating sandbox ID") {
+		t.Fatalf("error %q should include ID generation context", err.Error())
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call for rollback, got %d", len(mock.deleteCalls))
+	}
+
+	if _, loadErr := sandbox.LoadInstance("sb"); loadErr == nil {
+		t.Fatal("sandbox should not be registered after ID generation failure")
+	}
+}
+
+func TestCleanupCreatedSandbox_DigitalOceanRequiresWorkspaceIDForRollback(t *testing.T) {
+	mock := &mockProvider{}
+
+	err := cleanupCreatedSandbox(
+		context.Background(),
+		mock,
+		"digitalocean",
+		"sb",
+		&sandbox.SandboxResult{Name: "sb"},
+		io.Discard,
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing DigitalOcean droplet ID for rollback") {
+		t.Fatalf("error %q should mention missing droplet ID", err.Error())
+	}
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected no Delete call, got %d", len(mock.deleteCalls))
+	}
+}
+
 func TestSandboxStartCommandForceFlag(t *testing.T) {
 	f := sandboxStartCmd.Flags().Lookup("force")
 	if f == nil {
@@ -2148,7 +2654,7 @@ func TestRunBatchCreate_ConcurrentExecution(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2189,7 +2695,7 @@ func TestRunBatchCreate_PartialFailure(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 
 	// Should return error when any target fails
 	if err == nil {
@@ -2254,7 +2760,7 @@ func TestRunBatchCreate_AllFail(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 
 	if err == nil {
 		t.Fatal("expected error when all fail, got nil")
@@ -2297,7 +2803,7 @@ func TestRunBatchCreate_SummaryFormatAllSuccess(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2324,7 +2830,7 @@ func TestRunBatchCreate_ExitCodeOnPartialFailure(t *testing.T) {
 	targets := []string{"worker-01", "worker-02"}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
 	// Must return error (exit code 1) when any target fails
 	if err == nil {
@@ -2343,7 +2849,7 @@ func TestRunBatchCreate_ExitCodeOnAllSuccess(t *testing.T) {
 	targets := []string{"worker-01", "worker-02"}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
 	// Must return nil (exit code 0) when all succeed
 	if err != nil {
@@ -2366,7 +2872,7 @@ func TestRunBatchCreate_ProgressLinePerTarget(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	_ = runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	_ = runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 
 	output := out.String()
 
@@ -2384,6 +2890,95 @@ func TestRunBatchCreate_ProgressLinePerTarget(t *testing.T) {
 	}
 	if failureCount != 1 {
 		t.Errorf("expected 1 failure line, got %d", failureCount)
+	}
+}
+
+func TestCreateBatchTarget_RegistrationFailureRollsBackCreatedSandbox(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+	makeSandboxesDirReadOnly(t)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{
+			Name: "worker-01",
+			ID:   "ws-batch",
+			IP:   "203.0.113.20",
+		},
+	}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", io.Discard)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "registering:") {
+		t.Fatalf("error %q should include registration context", err.Error())
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call for rollback, got %d", len(mock.deleteCalls))
+	}
+
+	info := mock.deleteCalls[0].Info
+	if info == nil {
+		t.Fatal("Delete called with nil ConnectInfo")
+	}
+	if info.Name != "worker-01" {
+		t.Fatalf("Delete ConnectInfo.Name = %q, want %q", info.Name, "worker-01")
+	}
+	if info.WorkspaceID != "ws-batch" {
+		t.Fatalf("Delete ConnectInfo.WorkspaceID = %q, want %q", info.WorkspaceID, "ws-batch")
+	}
+	if info.IP != "203.0.113.20" {
+		t.Fatalf("Delete ConnectInfo.IP = %q, want %q", info.IP, "203.0.113.20")
+	}
+
+	if _, loadErr := sandbox.LoadInstance("worker-01"); loadErr == nil {
+		t.Fatal("sandbox should not be registered after registration failure")
+	}
+}
+
+func TestCreateBatchTarget_IDGenerationFailureRollsBackCreatedSandbox(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	origNewSandboxID := newSandboxID
+	t.Cleanup(func() {
+		newSandboxID = origNewSandboxID
+	})
+	newSandboxID = func() (string, error) {
+		return "", fmt.Errorf("uuid failed")
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{
+			Name: "worker-01",
+			ID:   "ws-batch",
+			IP:   "203.0.113.20",
+		},
+	}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", io.Discard)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "generating ID") {
+		t.Fatalf("error %q should include ID generation context", err.Error())
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call for rollback, got %d", len(mock.deleteCalls))
+	}
+
+	if _, loadErr := sandbox.LoadInstance("worker-01"); loadErr == nil {
+		t.Fatal("sandbox should not be registered after ID generation failure")
 	}
 }
 
@@ -2451,7 +3046,7 @@ func TestRunBatchCreate_OnlySuccessfulPersisted(t *testing.T) {
 	targets := []string{"worker-01", "worker-02", "worker-03", "worker-04"}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	_ = runBatchCreate(targets, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	_ = runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
 	// Only worker-02 and worker-04 should be in registry
 	instances, err := sandbox.ListInstances()
