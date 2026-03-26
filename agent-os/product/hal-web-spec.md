@@ -69,6 +69,8 @@ Two levels: specs (features) on the outer board, tasks (stories) inside each spe
 - **Waiting** — paused at a human checkpoint (PM must act)
 - **Done** — PR created, ready to merge
 
+Phase 1 and Phase 2 must allow only one **Running** spec per project/worktree. Today's CLI keeps active workflow state in repo-global `.hal/prd.json`, `.hal/progress.txt`, and `.hal/auto-state.json`, so additional approved specs stay queued until the active run finishes, is archived, or moves to an isolated sandbox/worktree.
+
 ### Inner Board — Tasks Within a Spec
 
 Click into "Search" to see its tasks:
@@ -83,7 +85,8 @@ Click into "Search" to see its tasks:
                                      └──────────────┘
 ```
 
-Tasks move automatically as hal completes them. You can also click a single task and run it individually.
+Tasks move automatically as the server observes hal completing them.
+Phase 1 should not promise click-to-run single-task execution yet: the current `hal run --story <task-id>` flag is not a dependable story-scoped server contract because the loop still validates completion against the whole PRD.
 
 ---
 
@@ -96,11 +99,11 @@ Each spec has a **pipeline** — an ordered list of steps that run automatically
 | Step | What it does | hal command |
 |------|-------------|-------------|
 | **Execute** | Build tasks until the PRD is complete | Server-side loop: run `hal run --json`, stop successfully only when `ok=true` and `complete=true`, continue when `ok=true` and `complete=false`, and surface/handle failures when `ok=false` instead of looping blindly |
-| **Review** | AI reviews code, fixes issues, repeats until clean | `hal review --base <project.default_branch> --json` (with the base branch resolved from project configuration, defaulting to `main`) |
-| **Report** | Generate summary + recommendations | `hal report --json` |
+| **Review** | AI reviews code in bounded iterations, fixes valid issues, and can stop either when no valid issues remain or when it hits the iteration cap; the server must inspect the review-loop JSON (`stopReason`, totals such as valid issues/fixes applied) and only advance when the run ends clean | `hal review --base <project.default_branch> --json` (with the base branch resolved from project configuration, defaulting to `main`) |
+| **Report** | Generate summary + recommendations without mutating source files, but still write report artifacts under `.hal/reports/`. `--skip-agents` only skips the `AGENTS.md` update. This uses today's legacy session-reporting command, not a diff-scoped continuation of `hal review`; because `hal report` has no `--base`, `--spec`, or diff input, its JSON must be treated as best-effort session context only. The server must persist the authoritative per-spec review scope and generate the canonical stage summary from stored diff/PRD/task data instead of assuming the CLI can reconstruct the exact reviewed work. | `hal report --json --skip-agents` (best-effort legacy session report, not an authoritative per-spec contract) |
 | **Gate** | Pause and wait for PM to approve/reject | (server-side) |
 | **Create PR** | Push branch, open draft PR | `git push` + `gh pr create` |
-| **Auto Next** | Use report to propose the next feature automatically, then pause for approval again | Proposed proposal-only command/mode (TBD). Do not use current `hal auto`, which runs the full pipeline. |
+| **Auto Next** | Use report output only as optional context for proposing the next feature automatically, then pause for approval again | Proposed proposal-only command/mode (TBD). Do not use current `hal auto`, which runs the full pipeline. The web server must ignore `report.nextAction` from today's `hal report --json` contract because it currently points to `hal auto`. |
 
 ### Presets (Pick One)
 
@@ -124,6 +127,8 @@ Execute → Review → ⏸ Gate → PR
 Execute → Review → Report → ⏸ Gate → PR
 ```
 
+Treat `Review` as a gated success condition, not just a completed command. If the review-loop result reports `stopReason: "max_iterations"` or still shows unresolved valid issues, stop the pipeline and require intervention instead of proceeding to `Report` or `Create PR`.
+
 **Continuous** — keep building features in a loop (with checkpoints):
 ```
 Execute → Review → Report → ⏸ Gate → Auto Next → ⏸ Gate → Execute → ...
@@ -135,10 +140,10 @@ You can also drag-and-drop steps to build a custom pipeline.
 
 This is the most advanced mode. After one feature is done:
 
-1. Hal generates a **report** summarizing what was built
+1. The server generates an authoritative per-spec **report** from stored diff/PRD/task data, optionally attaching `hal report` output only as best-effort legacy session context
 2. Pipeline **pauses** — you review the report
 3. You click **Approve**
-4. Hal reads the report and **proposes the next feature** to build
+4. Hal reads that server-scoped report and **proposes the next feature** to build
 5. Pipeline **pauses again** — you see "hal wants to build Search Feature (10 tasks) — approve?"
 6. You approve, edit, or reject the proposal
 7. If approved, hal starts building the next feature
@@ -154,9 +159,9 @@ This is the most advanced mode. After one feature is done:
 
 Today's CLI already preserves enough state to support limited resumable workflows:
 - **`prd.json`** records task completion (`passes: true`). Completed work is also captured in git history, so later `hal run` invocations continue from the remaining stories.
-- **`auto-state.json`** records the last completed pipeline step for `hal auto --resume`.
+- **`auto-state.json`** records the current pipeline step that `hal auto --resume` should run next. The pipeline updates it after successful step transitions and saves it again on failure or cancellation.
 - Standalone stages like review, report, and PR creation do not have a separate persisted pipeline resume contract today.
-- LLM/API failures already have retry behavior in the existing CLI flow.
+- LLM/API retry behavior is command-specific in the existing CLI flow, not a pipeline-wide guarantee.
 
 These are the guarantees this spec can rely on today. They describe persisted workflow state, not a running web server or remote process supervisor.
 
@@ -176,7 +181,7 @@ Background execution, SSH reconnects, heartbeat monitoring, and server-restart r
 | Scenario | What is true today | Planned web/server behavior |
 |---------|--------------------|-----------------------------|
 | **CLI process exits or crashes** | Persisted files remain. `hal run` can continue from remaining stories in `prd.json`, and `hal auto --resume` can continue from saved auto pipeline state. | Server detects failure and resumes the right step automatically. |
-| **LLM rate limit / timeout** | hal already retries automatically (3 attempts, exponential backoff). | Same behavior should surface in the web UI with live status. |
+| **LLM rate limit / timeout** | Retry behavior is command-specific today: `hal run` retries retryable failures automatically (3 attempts, exponential backoff), `hal review` retries prompt calls, and `hal report` does not currently expose the same built-in contract. | The web/server layer should surface available retries clearly and add its own retry/error-handling policy for stages that do not already provide one. |
 | **Browser closes / WiFi drops** | Not applicable yet because there is no shipped web server. | Browser can disconnect without interrupting server-side progress. |
 | **SSH drops / sandbox reboot / server restart** | Not implemented in today's CLI. | Phase 3 adds runner wrapper, heartbeat monitoring, reconnect logic, and restart recovery. |
 
@@ -327,8 +332,9 @@ POST   /api/specs/:sid/execute           Start pipeline execution
 ### Tasks
 ```
 GET    /api/specs/:sid/tasks             List tasks for spec
-POST   /api/tasks/:tid/run              Run single task
 ```
+
+Single-task execution from the board is deferred until hal exposes a reliably story-scoped run contract.
 
 ### Pipeline Control
 ```
@@ -358,12 +364,14 @@ GET    /api/projects/:pid/sandbox/status Sandbox health
 WS /ws/specs/:sid
 
 Events:
-  task_changed       {taskId, status}          Task moved to done/running/failed
+  task_changed       {taskId, status}          Server-synthesized task status update
   pipeline_progress  {stage, iteration, total}  Current stage progress
   pipeline_log       {line, timestamp}          Log line from hal
   gate_waiting       {stageIndex, label}        PM needs to act
   pipeline_status    {status}                   running/paused/recovering/done
 ```
+
+For Phase 1, `task_changed` must not assume `hal run --json` emits live task lifecycle events. The server should derive `done` from `.hal/prd.json` (`passes: true`), expose `running` and `failed` from server-local execution state and/or parsed log output while a `hal run` process is active, and treat the final `hal run --json` payload as invocation summary only.
 
 ---
 
@@ -375,7 +383,7 @@ Events:
 | Editor | Tiptap | Rich markdown for PMs (not code editor) |
 | Drag-drop | @hello-pangea/dnd | Board and pipeline builder |
 | State | Zustand | Simple, lightweight |
-| Real-time | WebSocket | Log streaming + task updates |
+| Real-time | WebSocket | Log streaming + server-synthesized task updates |
 | Backend | Go (net/http + chi) | Same language as hal, shares types |
 | Database | SQLite (modernc.org/sqlite) | Single-file, no setup, embedded in binary |
 | SSH | golang.org/x/crypto/ssh | Execute hal commands in sandboxes |
@@ -393,17 +401,18 @@ Events:
 - Spec editor (Tiptap markdown)
 - Auto-generate tasks from spec (convert + explode)
 - Task board (kanban)
-- Execute button → server-side loop runs `hal run --json` locally until `complete=true`
+- Execute button → server-side loop runs `hal run --json` locally for the single active spec in that project/worktree: continue when `ok=true && complete=false`, finish when `ok=true && complete=true`, and stop/report failure when `ok=false`
 - WebSocket log streaming
-- Tasks update in real-time as hal completes them
+- Tasks update in real-time from server-side state: mark `done` by observing `.hal/prd.json` (`passes: true`) and expose `running`/`failed` from the active process state or parsed log output instead of assuming `hal run --json` streams task lifecycle events
+- Phase 1 and Phase 2 execution stay serialized per project/worktree because `.hal/prd.json`, `progress.txt`, and `auto-state.json` are repo-global. The board may show many approved specs in queue, but only one spec may execute/review/report locally at a time until per-spec worktrees or sandboxes exist.
 
 ### Phase 2 — Pipeline + Gates (3 weeks)
 **Goal:** Review, report, and approval gates work.
 
 - Pipeline model (stages as JSON array)
 - Presets: simple, with_review, with_approval, compound
-- Review stage (runs `hal review --json`)
-- Report stage (runs `hal report --json`)
+- Review stage (runs `hal review --base <project.default_branch> --json`; server inspects `stopReason` and unresolved valid-issue totals before advancing)
+- Report stage (treats `hal report --json --skip-agents` only as best-effort legacy session context; the authoritative per-spec report is generated server-side from stored scope/diff/PRD data, and the server ignores `report.nextAction`)
 - Gate stage (pauses pipeline, shows approve/reject/retry)
 - Pipeline progress bar on spec cards
 - Frontend pipeline builder (drag-drop stages)
