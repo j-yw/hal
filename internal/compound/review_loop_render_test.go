@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestReviewLoopTerminalRenderNilResult(t *testing.T) {
@@ -176,8 +177,8 @@ func TestReviewLoopTerminalRenderIssueTable(t *testing.T) {
 			},
 		},
 		Totals: ReviewLoopTotals{
-			IssuesFound: 2,
-			ValidIssues: 2,
+			IssuesFound:  2,
+			ValidIssues:  2,
 			FixesApplied: 1,
 		},
 	}
@@ -205,6 +206,42 @@ func TestReviewLoopTerminalRenderIssueTable(t *testing.T) {
 		if !strings.Contains(out, content) {
 			t.Errorf("table output missing %q", content)
 		}
+	}
+}
+
+func TestReviewLoopTerminalRenderTruncatesIssueTitlesSafely(t *testing.T) {
+	result := &ReviewLoopResult{
+		Iterations: []ReviewLoopIteration{
+			{
+				Iteration:    1,
+				IssuesFound:  1,
+				ValidIssues:  1,
+				FixesApplied: 1,
+				Summary:      "Applied one fix",
+				Status:       "fixed",
+				Issues: []ReviewIssueDetail{
+					{
+						Title:    strings.Repeat("界", 8) + "ab",
+						Severity: "low",
+						File:     "internal/compound/review_loop_render.go",
+						Line:     222,
+						Valid:    true,
+						Fixed:    true,
+					},
+				},
+			},
+		},
+	}
+
+	out, err := ReviewLoopTerminalRender(result, 60)
+	if err != nil {
+		t.Fatalf("ReviewLoopTerminalRender() unexpected error: %v", err)
+	}
+	if !utf8.ValidString(out) {
+		t.Fatal("ReviewLoopTerminalRender() returned invalid UTF-8")
+	}
+	if !strings.Contains(out, "...") {
+		t.Fatal("expected truncated issue title with ellipsis in terminal output")
 	}
 }
 

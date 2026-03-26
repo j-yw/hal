@@ -227,7 +227,7 @@ func renderIssueTable(issues []ReviewIssueDetail, width int) string {
 			maxTitle = 20
 		}
 		if len(title) > maxTitle {
-			title = title[:maxTitle-3] + "..."
+			title = truncateUTF8(title, maxTitle-3) + "..."
 		}
 
 		fixMark := "—"

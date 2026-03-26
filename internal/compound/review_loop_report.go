@@ -180,7 +180,14 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 					if len(title) > 60 {
 						title = truncateUTF8(title, 57) + "..."
 					}
-					sb.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s |\n", i+1, issue.Severity, fileLoc, title, fixMark))
+					sb.WriteString(fmt.Sprintf(
+						"| %d | %s | %s | %s | %s |\n",
+						i+1,
+						escapeMarkdownTableCell(issue.Severity),
+						escapeMarkdownTableCell(fileLoc),
+						escapeMarkdownTableCell(title),
+						escapeMarkdownTableCell(fixMark),
+					))
 				}
 
 				// Show rationale/reason for each issue when available
@@ -260,6 +267,13 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString("\n")
 
 	return sb.String(), nil
+}
+
+func escapeMarkdownTableCell(value string) string {
+	normalized := strings.ReplaceAll(value, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = strings.ReplaceAll(normalized, "|", "\\|")
+	return strings.ReplaceAll(normalized, "\n", "<br>")
 }
 
 // synthesizeOutcome produces a high-level outcome line from review loop results.

@@ -229,6 +229,41 @@ func TestReviewLoopMarkdownTruncatesIssueTitlesSafely(t *testing.T) {
 	}
 }
 
+func TestReviewLoopMarkdownEscapesTableCells(t *testing.T) {
+	result := &ReviewLoopResult{
+		Iterations: []ReviewLoopIteration{
+			{
+				Iteration:    1,
+				IssuesFound:  1,
+				ValidIssues:  1,
+				FixesApplied: 1,
+				Summary:      "Applied one fix",
+				Status:       "fixed",
+				Issues: []ReviewIssueDetail{
+					{
+						Title:    "bad | title\nnext line",
+						Severity: "low",
+						File:     "internal/compound/review|loop_report.go",
+						Line:     171,
+						Valid:    true,
+						Fixed:    true,
+					},
+				},
+			},
+		},
+	}
+
+	markdown, err := ReviewLoopMarkdown(result)
+	if err != nil {
+		t.Fatalf("ReviewLoopMarkdown() unexpected error: %v", err)
+	}
+
+	expectedRow := "| 1 | low | internal/compound/review\\|loop_report.go:171 | bad \\| title<br>next line | ✓ |"
+	if !strings.Contains(markdown, expectedRow) {
+		t.Fatalf("markdown report missing escaped table row %q", expectedRow)
+	}
+}
+
 func TestHumanizeStopReasonNoValidIssuesAfterInvalidFindings(t *testing.T) {
 	result := &ReviewLoopResult{
 		CompletedIterations: 2,
