@@ -218,6 +218,38 @@ func TestRunSandboxStatus_ProviderResolveError(t *testing.T) {
 	assertContains(t, err.Error(), "no hetzner credentials")
 }
 
+func TestRunSandboxStatus_AutoMigratesLegacyState(t *testing.T) {
+	setupStatusTest(t)
+
+	origMigrate := sandboxMigrate
+	t.Cleanup(func() {
+		sandboxMigrate = origMigrate
+	})
+	sandboxMigrate = func(projectDir string, out io.Writer) error {
+		if projectDir != "." {
+			t.Fatalf("projectDir = %q, want %q", projectDir, ".")
+		}
+		return sandbox.SaveInstance(&sandbox.SandboxState{
+			Name:      "migrated-box",
+			Provider:  "daytona",
+			Status:    sandbox.StatusRunning,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	mock := &mockStatusProvider{}
+	var out bytes.Buffer
+
+	if err := runSandboxStatusWithDeps("migrated-box", &out, mock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.statusCalls) != 1 {
+		t.Fatalf("expected 1 provider status call, got %d", len(mock.statusCalls))
+	}
+	assertContains(t, out.String(), "Name:       migrated-box")
+}
+
 func TestRunSandboxStatus_MinimalFields(t *testing.T) {
 	setupStatusTest(t)
 

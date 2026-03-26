@@ -72,6 +72,10 @@ type stopResult struct {
 // It resolves targets from the global registry, stops them concurrently,
 // updates the registry for successful stops, and reports results.
 func runSandboxStopWithDeps(args []string, allFlag bool, pattern string, out io.Writer, provider sandbox.Provider) error {
+	if err := runSandboxAutoMigrate(".", out); err != nil {
+		return err
+	}
+
 	targets, hint, err := resolveStopTargets(args, allFlag, pattern)
 	if err != nil {
 		return err

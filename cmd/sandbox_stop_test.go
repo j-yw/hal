@@ -114,7 +114,7 @@ func TestResolveStopTargets_ExplicitNames(t *testing.T) {
 		},
 		{
 			name:    "stopped sandbox targeted by name returns error",
-			args:      []string{"worker-01"},
+			args:    []string{"worker-01"},
 			wantErr: "is not running",
 		},
 		{
@@ -576,6 +576,41 @@ func TestRunSandboxStop_PrintsStoppingMessage(t *testing.T) {
 
 	if !strings.Contains(out.String(), `Stopping sandbox "my-box"`) {
 		t.Errorf("output %q missing stopping message", out.String())
+	}
+}
+
+func TestRunSandboxStop_AutoMigratesLegacyState(t *testing.T) {
+	setupStopGlobalRegistry(t, nil)
+
+	origMigrate := sandboxMigrate
+	t.Cleanup(func() {
+		sandboxMigrate = origMigrate
+	})
+	sandboxMigrate = func(projectDir string, out io.Writer) error {
+		if projectDir != "." {
+			t.Fatalf("projectDir = %q, want %q", projectDir, ".")
+		}
+		return sandbox.SaveInstance(&sandbox.SandboxState{
+			Name:      "migrated-box",
+			Provider:  "daytona",
+			Status:    sandbox.StatusRunning,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	mock := &mockStopProvider{}
+	var out bytes.Buffer
+
+	if err := runSandboxStop(nil, false, "", &out, mock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sorted := mock.sortedStopCalls()
+	if len(sorted) != 1 {
+		t.Fatalf("expected 1 Stop call, got %d", len(sorted))
+	}
+	if sorted[0] != "migrated-box" {
+		t.Fatalf("Stop target = %q, want %q", sorted[0], "migrated-box")
 	}
 }
 

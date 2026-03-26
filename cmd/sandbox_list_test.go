@@ -166,6 +166,35 @@ func TestRunSandboxList_SingleRunning(t *testing.T) {
 	}
 }
 
+func TestRunSandboxList_AutoMigratesLegacyState(t *testing.T) {
+	setupListTest(t)
+
+	origMigrate := sandboxMigrate
+	t.Cleanup(func() {
+		sandboxMigrate = origMigrate
+	})
+	sandboxMigrate = func(projectDir string, out io.Writer) error {
+		if projectDir != "." {
+			t.Fatalf("projectDir = %q, want %q", projectDir, ".")
+		}
+		return sandbox.SaveInstance(&sandbox.SandboxState{
+			Name:      "migrated-box",
+			Provider:  "daytona",
+			Status:    sandbox.StatusRunning,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "migrated-box") {
+		t.Fatalf("output missing migrated sandbox: %q", buf.String())
+	}
+}
+
 func TestRunSandboxList_MultipleWithMixedStatus(t *testing.T) {
 	setupListTest(t)
 

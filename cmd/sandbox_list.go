@@ -141,6 +141,15 @@ type SandboxListTotals struct {
 // runSandboxList renders sandbox list as table (default) or JSON (--json).
 // When liveMode is true, queries each sandbox's provider for fresh status before rendering.
 func runSandboxList(out io.Writer, jsonMode, liveMode bool) error {
+	warnOut := out
+	if jsonMode {
+		// Keep machine-readable stdout clean when migration emits warnings.
+		warnOut = os.Stderr
+	}
+	if err := runSandboxAutoMigrate(".", warnOut); err != nil {
+		return err
+	}
+
 	instances, err := sandbox.ListInstances()
 	if err != nil {
 		return fmt.Errorf("listing sandboxes: %w", err)

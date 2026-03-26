@@ -55,6 +55,10 @@ func runSandboxStatus(name string, out io.Writer, provider sandbox.Provider) err
 // It loads the instance from the global registry, queries the provider for live status,
 // and displays all SandboxState fields.
 func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provider) error {
+	if err := runSandboxAutoMigrate(".", out); err != nil {
+		return err
+	}
+
 	// Load instance from global registry
 	instance, err := sandboxStatusLoadInstance(name)
 	if err != nil {
