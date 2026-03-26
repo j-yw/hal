@@ -42,7 +42,7 @@ func init() {
 }
 
 // sandboxSSHLoadInstance is injectable for testing.
-var sandboxSSHLoadInstance = sandbox.LoadInstance
+var sandboxSSHLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxSSHResolveProvider is injectable for testing.
 var sandboxSSHResolveProvider = resolveProviderFromGlobalConfig

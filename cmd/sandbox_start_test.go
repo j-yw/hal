@@ -835,7 +835,7 @@ func TestRunSandboxStart_GlobalConfigSizeDefaults(t *testing.T) {
 	}
 }
 
-func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
+func TestRunSandboxStart_GlobalConfigOverridesLegacyLocalSizeWhenPresent(t *testing.T) {
 	dir := t.TempDir()
 	globalDir := filepath.Join(dir, "globalcfg")
 	t.Setenv("HAL_CONFIG_HOME", globalDir)
@@ -845,7 +845,7 @@ func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Local config has an explicit size
+	// Local config mirrors legacy project settings from before global migration.
 	sandboxCfg := &compound.SandboxConfig{
 		Provider: "hetzner",
 		Env:      map[string]string{},
@@ -857,11 +857,12 @@ func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Global config has a different size default
+	// Global config is authoritative once sandbox-config.yaml exists.
 	globalCfg := &sandbox.GlobalConfig{
 		Provider: "hetzner",
 		Hetzner: sandbox.HetznerGlobalConfig{
 			ServerType: "cx22",
+			SSHKey:     "global-key",
 		},
 	}
 	if err := sandbox.SaveGlobalConfig(globalCfg); err != nil {
@@ -887,9 +888,42 @@ func TestRunSandboxStart_LocalConfigOverridesGlobalSize(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Local config should take priority over global
-	if gotCfg.HetznerServerType != "cx42" {
-		t.Errorf("HetznerServerType = %q, want %q (local override)", gotCfg.HetznerServerType, "cx42")
+	// Global config should override mirrored local values.
+	if gotCfg.HetznerServerType != "cx22" {
+		t.Errorf("HetznerServerType = %q, want %q (global override)", gotCfg.HetznerServerType, "cx22")
+	}
+	if gotCfg.HetznerSSHKey != "global-key" {
+		t.Errorf("HetznerSSHKey = %q, want %q (global override)", gotCfg.HetznerSSHKey, "global-key")
+	}
+}
+
+func TestRunSandboxStart_ReturnsErrorForBrokenGlobalConfig(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	if err := os.MkdirAll(filepath.Dir(sandbox.GlobalConfigPath()), 0o755); err != nil {
+		t.Fatalf("MkdirAll(global config dir): %v", err)
+	}
+	if err := os.WriteFile(sandbox.GlobalConfigPath(), []byte("provider: [\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(global config): %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error for broken global config")
+	}
+	if !strings.Contains(err.Error(), "loading global sandbox config") {
+		t.Fatalf("error = %q, want loading global sandbox config context", err.Error())
+	}
+	if !strings.Contains(err.Error(), "rerun 'hal sandbox setup'") {
+		t.Fatalf("error = %q, want rerun guidance", err.Error())
+	}
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("create calls = %d, want 0", len(mock.createCalls))
 	}
 }
 
@@ -1404,7 +1438,7 @@ func TestBatchPreflight_RegistryReadError(t *testing.T) {
 	}
 }
 
-func TestBatchPreflightWithOptions_IgnoresStagedRegistryBackup(t *testing.T) {
+func TestBatchPreflightWithOptions_DetectsStagedRegistryBackup(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
 
@@ -1422,11 +1456,72 @@ func TestBatchPreflightWithOptions_IgnoresStagedRegistryBackup(t *testing.T) {
 
 	mock := &mockProvider{}
 	targets, err := batchPreflightWithOptions("worker", 3, false, mock, "daytona", io.Discard)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-	if got := strings.Join(targets, ","); got != "worker-01,worker-02,worker-03" {
-		t.Fatalf("targets = %q, want %q", got, "worker-01,worker-02,worker-03")
+	if !strings.Contains(err.Error(), "batch preflight failed: sandboxes already exist: worker-02") {
+		t.Fatalf("error = %q, want staged-removal collision", err.Error())
+	}
+	if targets != nil {
+		t.Fatalf("targets = %v, want nil", targets)
+	}
+}
+
+func TestBatchPreflightWithOptions_DeduplicatesActiveCollision(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	if err := sandbox.SaveInstance(&sandbox.SandboxState{
+		Name:        "worker-02",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	mock := &mockProvider{}
+	targets, err := batchPreflightWithOptions("worker", 3, false, mock, "daytona", io.Discard)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if strings.Count(err.Error(), "worker-02") != 1 {
+		t.Fatalf("error = %q, want worker-02 reported once", err.Error())
+	}
+	if targets != nil {
+		t.Fatalf("targets = %v, want nil", targets)
+	}
+}
+
+func TestRunSandboxStart_BatchBlocksPendingRemovalBeforeCreate(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	if err := sandbox.SaveInstance(&sandbox.SandboxState{
+		Name:        "worker-02",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+	if _, err := sandbox.StageInstanceRemoval("worker-02"); err != nil {
+		t.Fatalf("setup: stage instance removal: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{ID: "ws-batch"},
+	}
+
+	err := runSandboxStartWithDeps(dir, "worker", 3, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "batch preflight failed: sandboxes already exist: worker-02") {
+		t.Fatalf("error = %q, want preflight collision", err.Error())
+	}
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("create calls = %d, want 0", len(mock.createCalls))
 	}
 }
 

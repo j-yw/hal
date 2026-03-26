@@ -252,8 +252,11 @@ func runSandboxStartWithDeps(
 	useGlobalConfig := false
 	globalCfg, err := sandbox.LoadGlobalConfig()
 	if err != nil {
-		// Non-fatal: continue with local config alone
-		globalCfg = nil
+		if errors.Is(err, fs.ErrNotExist) {
+			globalCfg = nil
+		} else {
+			return fmt.Errorf("loading global sandbox config: %w; fix %s or rerun 'hal sandbox setup'", err, sandbox.GlobalConfigPath())
+		}
 	} else if _, statErr := os.Stat(sandbox.GlobalConfigPath()); statErr == nil {
 		useGlobalConfig = true
 	}
@@ -278,12 +281,8 @@ func runSandboxStartWithDeps(
 		daytonaAPIKey := dayCfg.APIKey
 		daytonaServerURL := dayCfg.ServerURL
 		if useGlobalConfig && globalCfg != nil {
-			if strings.TrimSpace(globalCfg.Daytona.APIKey) != "" {
-				daytonaAPIKey = globalCfg.Daytona.APIKey
-			}
-			if strings.TrimSpace(globalCfg.Daytona.ServerURL) != "" {
-				daytonaServerURL = globalCfg.Daytona.ServerURL
-			}
+			daytonaAPIKey = globalCfg.Daytona.APIKey
+			daytonaServerURL = globalCfg.Daytona.ServerURL
 		}
 
 		provCfg := sandbox.ProviderConfig{
@@ -382,6 +381,18 @@ func batchPreflightWithOptions(
 			if force {
 				continue
 			}
+			collisions = append(collisions, name)
+			continue
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("batch preflight failed: checking sandbox %q: %w", name, err)
+		}
+
+		if force {
+			continue
+		}
+
+		_, err = sandbox.LoadInstance(name)
+		if err == nil {
 			collisions = append(collisions, name)
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("batch preflight failed: checking sandbox %q: %w", name, err)
@@ -500,7 +511,11 @@ func replaceExistingSandbox(
 	}
 
 	ctx := context.Background()
-	if err := deleteProvider.Delete(ctx, info, out); err != nil && !finalizeInterruptedStartReplaceRetry(pendingRemoval, err) {
+	providerForRetry := ""
+	if existing != nil {
+		providerForRetry = strings.TrimSpace(existing.Provider)
+	}
+	if err := deleteProvider.Delete(ctx, info, out); err != nil && !finalizeInterruptedStartReplaceRetry(providerForRetry, pendingRemoval, err) {
 		if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
 			return fmt.Errorf("force-delete of existing sandbox %q failed: %w (registry rollback failed: %v)", name, err, rollbackErr)
 		}
@@ -515,16 +530,12 @@ func replaceExistingSandbox(
 	return nil
 }
 
-func finalizeInterruptedStartReplaceRetry(pendingRemoval sandboxStartPendingRemoval, err error) bool {
+func finalizeInterruptedStartReplaceRetry(provider string, pendingRemoval sandboxStartPendingRemoval, err error) bool {
 	if err == nil || pendingRemoval == nil || !pendingRemoval.AlreadyStaged() {
 		return false
 	}
 
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "not found") ||
-		strings.Contains(text, "does not exist") ||
-		strings.Contains(text, "doesn't exist") ||
-		strings.Contains(text, "no such")
+	return isMissingSandboxDeleteError(provider, err)
 }
 
 // runBatchCreate executes batch sandbox creation after preflight passes.
@@ -747,10 +758,9 @@ func runSingleCreate(
 
 // mergeGlobalStartDefaults overlays globally configured runtime settings onto
 // the local sandbox config used by `hal sandbox start`. When a real global
-// config file exists, it is authoritative for provider selection and Tailscale
-// lockdown. Env values are merged so project-only entries are preserved while
-// global keys win, and provider-specific fields use global values only as
-// fallbacks when local config does not already set them.
+// config file exists, it is authoritative for runtime settings and provider
+// credentials; project-local copies remain only as a fallback when there is no
+// global sandbox config yet.
 func mergeGlobalStartDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbox.GlobalConfig, useGlobalConfig bool) {
 	if localCfg == nil || globalCfg == nil {
 		return
@@ -760,17 +770,32 @@ func mergeGlobalStartDefaults(localCfg *compound.SandboxConfig, globalCfg *sandb
 		if provider := strings.TrimSpace(globalCfg.Provider); provider != "" {
 			localCfg.Provider = provider
 		}
-		if len(localCfg.Env) > 0 || len(globalCfg.Env) > 0 {
-			mergedEnv := make(map[string]string, len(localCfg.Env)+len(globalCfg.Env))
-			for k, v := range localCfg.Env {
-				mergedEnv[k] = v
-			}
+		if len(globalCfg.Env) > 0 {
+			authoritativeEnv := make(map[string]string, len(globalCfg.Env))
 			for k, v := range globalCfg.Env {
-				mergedEnv[k] = v
+				authoritativeEnv[k] = v
 			}
-			localCfg.Env = mergedEnv
+			localCfg.Env = authoritativeEnv
+		} else {
+			localCfg.Env = nil
 		}
 		localCfg.TailscaleLockdown = globalCfg.TailscaleLockdown
+		localCfg.Hetzner = compound.HetznerConfig{
+			ServerType: globalCfg.Hetzner.ServerType,
+			SSHKey:     globalCfg.Hetzner.SSHKey,
+			Image:      globalCfg.Hetzner.Image,
+		}
+		localCfg.DigitalOcean = compound.DigitalOceanConfig{
+			Size:   globalCfg.DigitalOcean.Size,
+			SSHKey: globalCfg.DigitalOcean.SSHKey,
+		}
+		localCfg.Lightsail = compound.LightsailConfig{
+			Bundle:           globalCfg.Lightsail.Bundle,
+			Region:           globalCfg.Lightsail.Region,
+			AvailabilityZone: globalCfg.Lightsail.AvailabilityZone,
+			KeyPairName:      globalCfg.Lightsail.KeyPairName,
+		}
+		return
 	}
 
 	if strings.TrimSpace(localCfg.Hetzner.ServerType) == "" && strings.TrimSpace(globalCfg.Hetzner.ServerType) != "" {

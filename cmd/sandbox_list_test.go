@@ -93,6 +93,84 @@ func TestRunSandboxList_EmptyRegistry(t *testing.T) {
 	}
 }
 
+func TestRunSandboxList_JSONExcludesStagedRemovalBackups(t *testing.T) {
+	setupListTest(t)
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "test-id-1",
+		Name:      "staged-only",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC),
+	})
+	if _, err := sandbox.StageInstanceRemoval("staged-only"); err != nil {
+		t.Fatalf("StageInstanceRemoval(%q): %v", "staged-only", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, true, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp SandboxListResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() failed: %v", err)
+	}
+	if len(resp.Sandboxes) != 0 {
+		t.Fatalf("sandboxes len = %d, want 0", len(resp.Sandboxes))
+	}
+	if resp.Totals.Total != 0 {
+		t.Fatalf("totals.total = %d, want 0", resp.Totals.Total)
+	}
+}
+
+func TestRunSandboxList_LiveExcludesStagedRemovalBackups(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "active-id",
+		Name:      "active-box",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-2 * time.Hour),
+		Size:      "cx22",
+	})
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "staged-id",
+		Name:      "staged-only",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-1 * time.Hour),
+		Size:      "cx22",
+	})
+	if _, err := sandbox.StageInstanceRemoval("staged-only"); err != nil {
+		t.Fatalf("StageInstanceRemoval(%q): %v", "staged-only", err)
+	}
+
+	orig := sandboxListResolveProvider
+	sandboxListResolveProvider = func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{}, nil
+	}
+	t.Cleanup(func() { sandboxListResolveProvider = orig })
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if strings.Contains(out, "staged-only") {
+		t.Fatalf("staged-removal backup should be excluded from live list output, got: %s", out)
+	}
+	if !strings.Contains(out, "active-box") {
+		t.Fatalf("active sandbox missing from live list output, got: %s", out)
+	}
+}
+
 func TestRunSandboxList_SingleRunning(t *testing.T) {
 	setupListTest(t)
 
@@ -1540,5 +1618,40 @@ func TestSandboxListCommand_LiveFlag(t *testing.T) {
 	}
 	if f.DefValue != "false" {
 		t.Errorf("--live default = %q, want %q", f.DefValue, "false")
+	}
+}
+
+func TestSandboxListCommand_UsesCommandOutputWriter(t *testing.T) {
+	setupListTest(t)
+	writeInstance(t, &sandbox.SandboxState{
+		Name:      "writer-box",
+		Provider:  "daytona",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	origOut := sandboxListCmd.OutOrStdout()
+	origErr := sandboxListCmd.ErrOrStderr()
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	sandboxListCmd.SetOut(&out)
+	sandboxListCmd.SetErr(&errBuf)
+	t.Cleanup(func() {
+		sandboxListCmd.SetOut(origOut)
+		sandboxListCmd.SetErr(origErr)
+	})
+
+	if err := sandboxListCmd.Flags().Set("json", "false"); err != nil {
+		t.Fatalf("set --json: %v", err)
+	}
+	if err := sandboxListCmd.Flags().Set("live", "false"); err != nil {
+		t.Fatalf("set --live: %v", err)
+	}
+
+	if err := sandboxListCmd.RunE(sandboxListCmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	if !strings.Contains(out.String(), "writer-box") {
+		t.Fatalf("command output missing sandbox name: %q", out.String())
 	}
 }

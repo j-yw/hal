@@ -30,9 +30,9 @@ type mockDeleteProvider struct {
 }
 
 type mockDeletePendingRemoval struct {
-	inner       sandboxDeletePendingRemoval
-	commitErr   error
-	rollbackErr error
+	inner         sandboxDeletePendingRemoval
+	commitErr     error
+	rollbackErr   error
 	alreadyStaged bool
 }
 
@@ -492,6 +492,43 @@ func TestResolveDeleteTargets_ExplicitNames_PreservesRegistryErrors(t *testing.T
 	}
 }
 
+func TestResolveDeleteTargets_RejectsConflictingSelectors(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		allFlag bool
+		pattern string
+	}{
+		{
+			name:    "names with all",
+			args:    []string{"api-backend"},
+			allFlag: true,
+		},
+		{
+			name:    "names with pattern",
+			args:    []string{"api-backend"},
+			pattern: "api-*",
+		},
+		{
+			name:    "all with pattern",
+			allFlag: true,
+			pattern: "api-*",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := resolveDeleteTargets(tt.args, tt.allFlag, tt.pattern)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), "mutually exclusive") {
+				t.Fatalf("error %q does not contain %q", err.Error(), "mutually exclusive")
+			}
+		})
+	}
+}
+
 func TestResolveDeleteTargets_AllFlag(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -690,6 +727,56 @@ func TestResolveDeleteTargets_AutoSelect(t *testing.T) {
 	}
 }
 
+func TestResolveDeleteTargets_NonExplicitSelectorsIgnoreStagedRemovalEntries(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+	})
+
+	pending, err := sandbox.StageInstanceRemoval("worker-01")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval() failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = pending.Rollback()
+	})
+
+	allTargets, _, err := resolveDeleteTargets(nil, true, "")
+	if err != nil {
+		t.Fatalf("resolveDeleteTargets(--all) unexpected error: %v", err)
+	}
+	if len(allTargets) != 1 || allTargets[0].Name != "api-backend" {
+		t.Fatalf("resolveDeleteTargets(--all) = %v, want only api-backend", allTargets)
+	}
+
+	autoTargets, hint, err := resolveDeleteTargets(nil, false, "")
+	if err != nil {
+		t.Fatalf("resolveDeleteTargets(auto) unexpected error: %v", err)
+	}
+	if len(autoTargets) != 1 || autoTargets[0].Name != "api-backend" {
+		t.Fatalf("resolveDeleteTargets(auto) = %v, want only api-backend", autoTargets)
+	}
+	if hint != `Deleting only sandbox "api-backend"...` {
+		t.Fatalf("auto-select hint = %q, want %q", hint, `Deleting only sandbox "api-backend"...`)
+	}
+
+	_, _, err = resolveDeleteTargets(nil, false, "worker-*")
+	if err == nil {
+		t.Fatal("expected pattern error, got nil")
+	}
+	if !strings.Contains(err.Error(), `no sandboxes matching pattern "worker-*"`) {
+		t.Fatalf("pattern error = %q", err.Error())
+	}
+
+	namedTargets, _, err := resolveDeleteTargets([]string{"worker-01"}, false, "")
+	if err != nil {
+		t.Fatalf("resolveDeleteTargets(explicit) unexpected error: %v", err)
+	}
+	if len(namedTargets) != 1 || namedTargets[0].Name != "worker-01" {
+		t.Fatalf("resolveDeleteTargets(explicit) = %v, want only worker-01", namedTargets)
+	}
+}
+
 func TestConfirmDeleteAll(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -776,6 +863,35 @@ func TestRunSandboxDelete_AutoSelectSingleSandbox(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
 		{Name: "only-one", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
+
+	mock := &mockDeleteProvider{}
+	var out bytes.Buffer
+
+	err := runSandboxDelete(nil, false, false, "", nil, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if mock.deleteCalls[0] != "only-one" {
+		t.Errorf("Delete name = %q, want %q", mock.deleteCalls[0], "only-one")
+	}
+	if !strings.Contains(out.String(), `Deleting only sandbox "only-one"`) {
+		t.Errorf("output %q missing auto-select hint", out.String())
+	}
+}
+
+func TestRunSandboxDelete_AutoSelectIgnoresStagedRemovalBackups(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "only-one", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "staged-backup", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+	})
+
+	if _, err := sandbox.StageInstanceRemoval("staged-backup"); err != nil {
+		t.Fatalf("setup: stage instance removal: %v", err)
+	}
 
 	mock := &mockDeleteProvider{}
 	var out bytes.Buffer
@@ -1038,6 +1154,63 @@ func TestSandboxDeleteCommand_Flags(t *testing.T) {
 	}
 }
 
+func TestSandboxDeleteCommand_UsesCommandIOStreamsWhenPrompting(t *testing.T) {
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "writer-box", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	origOut := sandboxDeleteCmd.OutOrStdout()
+	origIn := sandboxDeleteCmd.InOrStdin()
+	origOSStdin := os.Stdin
+	origOSStdout := os.Stdout
+	var out bytes.Buffer
+	stdinFile, err := os.CreateTemp(t.TempDir(), "sandbox-delete-stdin-*")
+	if err != nil {
+		t.Fatalf("CreateTemp(stdin): %v", err)
+	}
+	if _, err := stdinFile.WriteString("yes\n"); err != nil {
+		t.Fatalf("WriteString(stdin): %v", err)
+	}
+	if _, err := stdinFile.Seek(0, 0); err != nil {
+		t.Fatalf("Seek(stdin): %v", err)
+	}
+	stdoutFile, err := os.CreateTemp(t.TempDir(), "sandbox-delete-stdout-*")
+	if err != nil {
+		t.Fatalf("CreateTemp(stdout): %v", err)
+	}
+
+	os.Stdin = stdinFile
+	os.Stdout = stdoutFile
+	sandboxDeleteCmd.SetOut(&out)
+	sandboxDeleteCmd.SetIn(strings.NewReader("no\n"))
+	if err := sandboxDeleteCmd.Flags().Set("all", "true"); err != nil {
+		t.Fatalf("Flags().Set(all): %v", err)
+	}
+	if err := sandboxDeleteCmd.Flags().Set("yes", "false"); err != nil {
+		t.Fatalf("Flags().Set(yes): %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stdin = origOSStdin
+		os.Stdout = origOSStdout
+		_ = stdinFile.Close()
+		_ = stdoutFile.Close()
+		sandboxDeleteCmd.SetOut(origOut)
+		sandboxDeleteCmd.SetIn(origIn)
+		_ = sandboxDeleteCmd.Flags().Set("all", "false")
+		_ = sandboxDeleteCmd.Flags().Set("yes", "false")
+	})
+
+	if err := sandboxDeleteCmd.RunE(sandboxDeleteCmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	if !strings.Contains(out.String(), "Delete all sandboxes? [y/N] ") {
+		t.Fatalf("command output missing confirmation prompt: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Aborted.") {
+		t.Fatalf("command output missing abort line: %q", out.String())
+	}
+}
+
 func TestRunSandboxDelete_AllFlagNoSandboxes(t *testing.T) {
 	setupDeleteGlobalRegistry(t, nil)
 
@@ -1163,6 +1336,35 @@ func TestRunSandboxDelete_RetryWithStagedRegistryEntryCommitsOnNotFound(t *testi
 	err := runSandboxDelete([]string{"my-sandbox"}, false, false, "", nil, &out, mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, loadErr := sandbox.LoadInstance("my-sandbox"); loadErr == nil {
+		t.Fatal("expected staged registry entry to be finalized after not-found retry")
+	}
+}
+
+func TestDeleteMultipleTargets_RetryWithStagedRegistryEntryCommitsOnNotFound(t *testing.T) {
+	projectDir := t.TempDir()
+	target := &sandbox.SandboxState{
+		Name:      "my-sandbox",
+		Provider:  "daytona",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	}
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	if _, err := sandbox.StageInstanceRemoval("my-sandbox"); err != nil {
+		t.Fatalf("setup: stage instance removal: %v", err)
+	}
+
+	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: not found")}
+	var out bytes.Buffer
+
+	err := deleteMultipleTargets([]*sandbox.SandboxState{target}, projectDir, &out, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "Deleted my-sandbox") {
+		t.Fatalf("output %q missing success line", out.String())
 	}
 	if _, loadErr := sandbox.LoadInstance("my-sandbox"); loadErr == nil {
 		t.Fatal("expected staged registry entry to be finalized after not-found retry")

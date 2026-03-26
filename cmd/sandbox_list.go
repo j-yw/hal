@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"sort"
@@ -35,13 +37,18 @@ A dash (—) is shown when rate data is unavailable (e.g., Daytona provider).
 The default path reads local registry data only and does not call provider APIs.
 Use --live to fetch fresh status from each provider before rendering.
 Use --json for machine-readable output following the sandbox-list-v1 contract.`,
+	Args: noArgsValidation(),
 	Example: `  hal sandbox list
   hal sandbox list --live
   hal sandbox list --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		jsonMode := sandboxListJSONFlag
 		liveMode := sandboxListLiveFlag
+		out := io.Writer(os.Stdout)
+		errOut := io.Writer(os.Stderr)
 		if cmd != nil {
+			out = cmd.OutOrStdout()
+			errOut = cmd.ErrOrStderr()
 			if f := cmd.Flags().Lookup("json"); f != nil {
 				v, err := cmd.Flags().GetBool("json")
 				if err == nil {
@@ -55,7 +62,7 @@ Use --json for machine-readable output following the sandbox-list-v1 contract.`,
 				}
 			}
 		}
-		return runSandboxList(os.Stdout, jsonMode, liveMode)
+		return runSandboxListWithWriters(out, errOut, jsonMode, liveMode)
 	},
 }
 
@@ -74,6 +81,10 @@ const liveStatusTimeout = 10 * time.Second
 // sandboxListResolveProvider resolves a sandbox.Provider by provider name
 // using global config. Package-level var for test injection.
 var sandboxListResolveProvider = resolveProviderFromGlobalConfig
+
+// sandboxListInstances resolves only active registry entries so staged delete
+// backups never appear in list output or live-refresh state.
+var sandboxListInstances = sandbox.ListActiveInstances
 
 // sandboxListLoadActiveInstance checks whether a sandbox still has an active
 // registry entry before a live refresh persists updates.
@@ -154,16 +165,23 @@ type liveStatusWarning struct {
 // runSandboxList renders sandbox list as table (default) or JSON (--json).
 // When liveMode is true, queries each sandbox's provider for fresh status before rendering.
 func runSandboxList(out io.Writer, jsonMode, liveMode bool) error {
+	return runSandboxListWithWriters(out, nil, jsonMode, liveMode)
+}
+
+func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) error {
 	warnOut := out
 	if jsonMode {
 		// Keep machine-readable stdout clean when migration emits warnings.
-		warnOut = os.Stderr
+		warnOut = errOut
+		if warnOut == nil {
+			warnOut = os.Stderr
+		}
 	}
 	if err := runSandboxAutoMigrate(".", warnOut); err != nil {
 		return err
 	}
 
-	instances, err := sandbox.ListInstances()
+	instances, err := sandboxListInstances()
 	if err != nil {
 		return fmt.Errorf("listing sandboxes: %w", err)
 	}
@@ -206,6 +224,13 @@ func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (
 		wg.Add(1)
 		go func(inst *sandbox.SandboxState) {
 			defer wg.Done()
+			if _, err := sandboxListLoadActiveInstance(inst.Name); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return
+				}
+				warnings <- liveStatusWarning{Name: inst.Name, Err: fmt.Errorf("load active sandbox %q: %w", inst.Name, err)}
+				return
+			}
 			if err := queryOneStatus(inst, resolve); err != nil {
 				warnings <- liveStatusWarning{Name: inst.Name, Err: err}
 			}

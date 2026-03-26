@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -44,7 +43,7 @@ Resolved targets are de-duplicated and sorted by name before execution.`,
 		allFlag, _ := cmd.Flags().GetBool("all")
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxDelete(args, allFlag, yesFlag, pattern, os.Stdin, os.Stdout, nil)
+		return runSandboxDelete(args, allFlag, yesFlag, pattern, cmd.InOrStdin(), cmd.OutOrStdout(), nil)
 	},
 }
 
@@ -55,8 +54,11 @@ func init() {
 	sandboxDeleteCmd.Flags().String("pattern", "", "Delete sandboxes matching a glob pattern")
 }
 
-// sandboxDeleteListInstances is injectable for testing.
-var sandboxDeleteListInstances = sandbox.ListInstances
+// sandboxDeleteListActiveInstances is injectable for testing and resolves only
+// active registry entries so bulk delete selectors never treat staged removal
+// backups as live targets. Explicit name flows still use LoadInstance so an
+// interrupted delete can be resumed intentionally.
+var sandboxDeleteListActiveInstances = sandbox.ListActiveInstances
 
 // sandboxDeleteLoadInstance is injectable for testing named target resolution.
 var sandboxDeleteLoadInstance = sandbox.LoadInstance
@@ -114,10 +116,14 @@ func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern stri
 //
 // Resolution rules:
 //   - Explicit names: load each from registry
-//   - --all: all sandboxes
-//   - --pattern: sandboxes matching the glob
-//   - No args/flags: auto-resolve (1 → select, 0 → error, >1 → error)
+//   - --all: all active sandboxes
+//   - --pattern: active sandboxes matching the glob
+//   - No args/flags: auto-resolve from active sandboxes (1 → select, 0 → error, >1 → error)
 func resolveDeleteTargets(args []string, allFlag bool, pattern string) ([]*sandbox.SandboxState, string, error) {
+	if err := validateDeleteSelectors(args, allFlag, pattern); err != nil {
+		return nil, "", err
+	}
+
 	// Explicit names take precedence
 	if len(args) > 0 {
 		return resolveDeleteByNames(args)
@@ -135,6 +141,23 @@ func resolveDeleteTargets(args []string, allFlag bool, pattern string) ([]*sandb
 
 	// No args, no flags: auto-resolve from all sandboxes
 	return resolveDeleteAutoSelect()
+}
+
+func validateDeleteSelectors(args []string, allFlag bool, pattern string) error {
+	selectors := 0
+	if len(args) > 0 {
+		selectors++
+	}
+	if allFlag {
+		selectors++
+	}
+	if pattern != "" {
+		selectors++
+	}
+	if selectors > 1 {
+		return fmt.Errorf("sandbox names, --all, and --pattern are mutually exclusive")
+	}
+	return nil
 }
 
 // resolveDeleteByNames loads each named sandbox from the registry.
@@ -162,9 +185,9 @@ func resolveDeleteByNames(names []string) ([]*sandbox.SandboxState, string, erro
 	return targets, "", nil
 }
 
-// resolveDeleteAll returns all sandboxes from the registry.
+// resolveDeleteAll returns all active sandboxes from the registry.
 func resolveDeleteAll() ([]*sandbox.SandboxState, string, error) {
-	instances, err := sandboxDeleteListInstances()
+	instances, err := sandboxDeleteListActiveInstances()
 	if err != nil {
 		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
 	}
@@ -184,7 +207,7 @@ func resolveDeleteByPattern(pattern string) ([]*sandbox.SandboxState, string, er
 		return nil, "", fmt.Errorf("invalid pattern %q: %w", pattern, err)
 	}
 
-	instances, err := sandboxDeleteListInstances()
+	instances, err := sandboxDeleteListActiveInstances()
 	if err != nil {
 		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
 	}
@@ -206,9 +229,9 @@ func resolveDeleteByPattern(pattern string) ([]*sandbox.SandboxState, string, er
 }
 
 // resolveDeleteAutoSelect auto-resolves when no args or flags are provided.
-// Rules: 1 → select + hint, 0 → error, >1 → error with choices.
+// Rules: 1 active → select + hint, 0 → error, >1 → error with choices.
 func resolveDeleteAutoSelect() ([]*sandbox.SandboxState, string, error) {
-	instances, err := sandboxDeleteListInstances()
+	instances, err := sandboxDeleteListActiveInstances()
 	if err != nil {
 		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
 	}
@@ -271,7 +294,7 @@ func deleteOneTarget(target *sandbox.SandboxState, projectDir string, out io.Wri
 	if err != nil {
 		return fmt.Errorf("staging registry entry for %q: %w", target.Name, err)
 	}
-	if err := p.Delete(ctx, info, out); err != nil && !finalizeInterruptedDeleteRetry(pendingRemoval, err) {
+	if err := p.Delete(ctx, info, out); err != nil && !finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
 		if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
 			return fmt.Errorf("sandbox delete failed for %q: %w (registry rollback failed: %v)", target.Name, err, rollbackErr)
 		}
@@ -327,11 +350,15 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, o
 			}
 			if err == nil {
 				err = p.Delete(ctx, info, io.Discard)
-				if err != nil && !finalizeInterruptedDeleteRetry(pendingRemoval, err) {
-					if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
-						err = fmt.Errorf("sandbox delete failed: %w (registry rollback failed: %v)", err, rollbackErr)
+				if err != nil {
+					if finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
+						err = nil
 					} else {
-						err = fmt.Errorf("sandbox delete failed: %w", err)
+						if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
+							err = fmt.Errorf("sandbox delete failed: %w (registry rollback failed: %v)", err, rollbackErr)
+						} else {
+							err = fmt.Errorf("sandbox delete failed: %w", err)
+						}
 					}
 				}
 			}
@@ -378,16 +405,12 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, o
 	return nil
 }
 
-func finalizeInterruptedDeleteRetry(pendingRemoval sandboxDeletePendingRemoval, err error) bool {
+func finalizeInterruptedDeleteRetry(provider string, pendingRemoval sandboxDeletePendingRemoval, err error) bool {
 	if err == nil || pendingRemoval == nil || !pendingRemoval.AlreadyStaged() {
 		return false
 	}
 
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "not found") ||
-		strings.Contains(text, "does not exist") ||
-		strings.Contains(text, "doesn't exist") ||
-		strings.Contains(text, "no such")
+	return isMissingSandboxDeleteError(provider, err)
 }
 
 func deleteConnectInfo(target *sandbox.SandboxState) *sandbox.ConnectInfo {

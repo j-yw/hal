@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -41,7 +40,7 @@ Resolved targets are de-duplicated and sorted by name before execution.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		allFlag, _ := cmd.Flags().GetBool("all")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxStop(args, allFlag, pattern, os.Stdout, nil)
+		return runSandboxStop(args, allFlag, pattern, cmd.OutOrStdout(), nil)
 	},
 }
 
@@ -51,11 +50,13 @@ func init() {
 	sandboxStopCmd.Flags().String("pattern", "", "Stop sandboxes matching a glob pattern")
 }
 
-// sandboxStopListInstances is injectable for testing.
-var sandboxStopListInstances = sandbox.ListInstances
+// sandboxStopListInstances is injectable for testing and resolves only active
+// registry entries so staged delete backups are never treated as stop targets.
+var sandboxStopListInstances = sandbox.ListActiveInstances
 
-// sandboxStopLoadInstance is injectable for testing.
-var sandboxStopLoadInstance = sandbox.LoadInstance
+// sandboxStopLoadInstance is injectable for testing and resolves only active
+// registry entries so explicit names do not revive staged delete backups.
+var sandboxStopLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxStopNow is injectable for deterministic tests.
 var sandboxStopNow = func() time.Time { return time.Now() }
@@ -110,6 +111,10 @@ func runSandboxStopWithDeps(args []string, allFlag bool, pattern string, out io.
 //   - --pattern: running sandboxes matching the glob
 //   - No args/flags: auto-resolve (1 running → select, 0 → error, >1 → error)
 func resolveStopTargets(args []string, allFlag bool, pattern string) ([]*sandbox.SandboxState, string, error) {
+	if err := validateStopSelectors(args, allFlag, pattern); err != nil {
+		return nil, "", err
+	}
+
 	// Explicit names take precedence
 	if len(args) > 0 {
 		return resolveStopByNames(args)
@@ -127,6 +132,23 @@ func resolveStopTargets(args []string, allFlag bool, pattern string) ([]*sandbox
 
 	// No args, no flags: auto-resolve from running sandboxes
 	return resolveStopAutoSelect()
+}
+
+func validateStopSelectors(args []string, allFlag bool, pattern string) error {
+	selectors := 0
+	if len(args) > 0 {
+		selectors++
+	}
+	if allFlag {
+		selectors++
+	}
+	if pattern != "" {
+		selectors++
+	}
+	if selectors > 1 {
+		return fmt.Errorf("sandbox names, --all, and --pattern are mutually exclusive")
+	}
+	return nil
 }
 
 // resolveStopByNames loads each named sandbox from the registry without

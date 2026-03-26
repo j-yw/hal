@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/spf13/cobra"
 )
 
 // mockStopProvider implements sandbox.Provider for stop tests.
@@ -160,6 +161,30 @@ func TestResolveStopTargets_ExplicitNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSandboxStopCommand_UsesCobraOutput(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
+		{Name: "alpha", Provider: "missing", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "missing", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+	})
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.Flags().Bool("all", false, "")
+	cmd.Flags().String("pattern", "", "")
+	if err := cmd.Flags().Set("all", "true"); err != nil {
+		t.Fatalf("set all flag: %v", err)
+	}
+
+	err := sandboxStopCmd.RunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(out.String(), "Failed alpha:") && !strings.Contains(out.String(), "Failed bravo:") {
+		t.Fatalf("command output = %q, want failure lines written to Cobra output", out.String())
 	}
 }
 

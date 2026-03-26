@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -21,6 +22,13 @@ var liveRunningTokens = map[string]struct{}{
 	"started": {},
 	"online":  {},
 	"ready":   {},
+}
+
+var liveNegatedRunningTokens = map[string]struct{}{
+	"running": {},
+	"active":  {},
+	"started": {},
+	"online":  {},
 }
 
 var liveStoppedTokens = map[string]struct{}{
@@ -96,11 +104,27 @@ func normalizeLiveStatus(output, fallback string) string {
 }
 
 func parseLiveStatus(output string) string {
+	if value := parseSingleValueLiveStatus(output); value != "" {
+		return value
+	}
 	value := parseStructuredLiveStatusValue(output)
 	if value == "" {
 		return sandbox.StatusUnknown
 	}
 	return classifyLiveStatusValue(value)
+}
+
+func parseSingleValueLiveStatus(output string) string {
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) != 1 {
+		return ""
+	}
+
+	status := classifyLiveStatusValue(fields[0])
+	if status == sandbox.StatusUnknown {
+		return ""
+	}
+	return status
 }
 
 func parseStructuredLiveStatusValue(output string) string {
@@ -238,6 +262,10 @@ func classifyLiveStatusValue(value string) string {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 	})
 
+	if hasNegatedRunningStatus(tokens) {
+		return sandbox.StatusStopped
+	}
+
 	hasStopped := hasAnyStatusToken(tokens, liveStoppedTokens)
 	hasRunning := hasAnyStatusToken(tokens, liveRunningTokens)
 
@@ -249,6 +277,18 @@ func classifyLiveStatusValue(value string) string {
 	default:
 		return sandbox.StatusUnknown
 	}
+}
+
+func hasNegatedRunningStatus(tokens []string) bool {
+	for i := 0; i+1 < len(tokens); i++ {
+		if tokens[i] != "not" {
+			continue
+		}
+		if _, ok := liveNegatedRunningTokens[tokens[i+1]]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAnyStatusToken(tokens []string, candidates map[string]struct{}) bool {
@@ -273,6 +313,9 @@ func persistLiveStatus(instance *sandbox.SandboxState, status string, now time.T
 	}
 
 	if err := write(instance); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		instance.Status = previousStatus
 		instance.StoppedAt = previousStoppedAt
 		return err

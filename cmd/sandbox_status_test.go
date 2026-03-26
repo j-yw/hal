@@ -574,6 +574,34 @@ func TestSandboxStatusCommand_Metadata(t *testing.T) {
 	}
 }
 
+func TestSandboxStatusCommand_UsesCommandOutputWriterWhenListing(t *testing.T) {
+	setupListTest(t)
+	writeInstance(t, &sandbox.SandboxState{
+		Name:      "writer-box",
+		Provider:  "daytona",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	origOut := sandboxStatusCmd.OutOrStdout()
+	origErr := sandboxStatusCmd.ErrOrStderr()
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	sandboxStatusCmd.SetOut(&out)
+	sandboxStatusCmd.SetErr(&errBuf)
+	t.Cleanup(func() {
+		sandboxStatusCmd.SetOut(origOut)
+		sandboxStatusCmd.SetErr(origErr)
+	})
+
+	if err := sandboxStatusCmd.RunE(sandboxStatusCmd, []string{}); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	if !strings.Contains(out.String(), "writer-box") {
+		t.Fatalf("command output missing sandbox name: %q", out.String())
+	}
+}
+
 // assertContains is a test helper that checks if output contains a substring.
 func assertContains(t *testing.T, output, want string) {
 	t.Helper()

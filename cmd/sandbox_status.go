@@ -28,10 +28,16 @@ sandboxes in the global registry.`,
   hal sandbox status`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			return runSandboxList(os.Stdout, false, false)
+		out := io.Writer(os.Stdout)
+		errOut := io.Writer(os.Stderr)
+		if cmd != nil {
+			out = cmd.OutOrStdout()
+			errOut = cmd.ErrOrStderr()
 		}
-		return runSandboxStatus(args[0], os.Stdout, nil)
+		if len(args) == 0 {
+			return runSandboxListWithWriters(out, errOut, false, false)
+		}
+		return runSandboxStatus(args[0], out, nil)
 	},
 }
 
@@ -71,7 +77,12 @@ func liveStatusWriteTarget(
 		return nil, err
 	}
 
-	return write, nil
+	return func(updated *sandbox.SandboxState) error {
+		if _, err := loadActive(name); err != nil {
+			return err
+		}
+		return write(updated)
+	}, nil
 }
 
 // runSandboxStatus is the public entry point for hal sandbox status NAME.
