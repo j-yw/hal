@@ -264,21 +264,15 @@ func outputAnalysisText(result *compound.AnalysisResult, halDir string, branchPr
 	fmt.Fprintf(w, "  %s    %s\n", engine.StyleBold.Render("Priority Item:"), result.PriorityItem)
 	fmt.Fprintln(w)
 
-	// Description — render as markdown for richer formatting
+	// Description
 	fmt.Fprintf(w, "  %s\n", engine.StyleBold.Render("Description:"))
-	if rendered, err := renderMarkdownWithGlamour(result.Description); err == nil {
-		fmt.Fprint(w, rendered)
-	} else {
-		fmt.Fprintf(w, "    %s\n", result.Description)
-	}
+	fmt.Fprintf(w, "    %s\n", result.Description)
+	fmt.Fprintln(w)
 
-	// Rationale — render as markdown for richer formatting
+	// Rationale
 	fmt.Fprintf(w, "  %s\n", engine.StyleBold.Render("Rationale:"))
-	if rendered, err := renderMarkdownWithGlamour(result.Rationale); err == nil {
-		fmt.Fprint(w, rendered)
-	} else {
-		fmt.Fprintf(w, "    %s\n", result.Rationale)
-	}
+	fmt.Fprintf(w, "    %s\n", result.Rationale)
+	fmt.Fprintln(w)
 
 	// Acceptance Criteria
 	if len(result.AcceptanceCriteria) > 0 {

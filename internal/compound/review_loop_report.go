@@ -178,7 +178,7 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 					}
 					title := issue.Title
 					if len(title) > 60 {
-						title = title[:57] + "..."
+						title = truncateUTF8(title, 57) + "..."
 					}
 					sb.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s |\n", i+1, issue.Severity, fileLoc, title, fixMark))
 				}
@@ -256,7 +256,7 @@ func ReviewLoopMarkdown(result *ReviewLoopResult) (string, error) {
 	sb.WriteString("\n")
 
 	sb.WriteString("## Stop Reason\n\n")
-	sb.WriteString(humanizeStopReason(result.StopReason, result.CompletedIterations))
+	sb.WriteString(humanizeStopReason(result))
 	sb.WriteString("\n")
 
 	return sb.String(), nil
@@ -293,10 +293,30 @@ func countSeverities(iterations []ReviewLoopIteration) map[string]int {
 }
 
 // humanizeStopReason converts internal stop reason codes to user-friendly text.
-func humanizeStopReason(reason string, completedIterations int) string {
-	switch strings.TrimSpace(reason) {
+func humanizeStopReason(result *ReviewLoopResult) string {
+	if result == nil {
+		return "Unknown."
+	}
+
+	completedIterations := result.CompletedIterations
+	switch strings.TrimSpace(result.StopReason) {
 	case "no_valid_issues":
-		return fmt.Sprintf("Clean review pass — no issues found in iteration %d.", completedIterations)
+		if len(result.Iterations) > 0 {
+			last := result.Iterations[len(result.Iterations)-1]
+			iteration := last.Iteration
+			if iteration == 0 {
+				iteration = completedIterations
+			}
+			switch {
+			case last.ValidIssues == 0 && last.IssuesFound == 0:
+				return fmt.Sprintf("Clean review pass — no issues found in iteration %d.", iteration)
+			case last.ValidIssues == 0 && last.InvalidIssues > 0:
+				return fmt.Sprintf("No valid issues remained in iteration %d; %d finding(s) were ruled invalid.", iteration, last.InvalidIssues)
+			case last.ValidIssues == 0:
+				return fmt.Sprintf("No valid issues remained in iteration %d.", iteration)
+			}
+		}
+		return fmt.Sprintf("No valid issues remained after iteration %d.", completedIterations)
 	case "max_iterations":
 		return fmt.Sprintf("Reached maximum of %d iterations.", completedIterations)
 	case "single_iteration":
@@ -304,7 +324,7 @@ func humanizeStopReason(reason string, completedIterations int) string {
 	case "":
 		return "Unknown."
 	default:
-		return strings.TrimSpace(reason)
+		return strings.TrimSpace(result.StopReason)
 	}
 }
 

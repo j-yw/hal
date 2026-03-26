@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -119,10 +120,10 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 		StartedAt:           time.Date(2026, 2, 15, 18, 0, 0, 0, time.UTC),
 		EndedAt:             time.Date(2026, 2, 15, 18, 3, 0, 0, time.UTC),
 		Totals: ReviewLoopTotals{
-			IssuesFound:   3,
-			ValidIssues:   2,
+			IssuesFound:   2,
+			ValidIssues:   1,
 			InvalidIssues: 1,
-			FixesApplied:  2,
+			FixesApplied:  1,
 		},
 		Iterations: []ReviewLoopIteration{
 			{
@@ -136,12 +137,12 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 			},
 			{
 				Iteration:     2,
-				IssuesFound:   1,
-				ValidIssues:   1,
+				IssuesFound:   0,
+				ValidIssues:   0,
 				InvalidIssues: 0,
-				FixesApplied:  1,
-				Summary:       "Applied final fix",
-				Status:        "fixed",
+				FixesApplied:  0,
+				Summary:       "No issues remain",
+				Status:        "clean",
 			},
 		},
 	}
@@ -179,9 +180,9 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 		"### Iteration 1",
 		"### Iteration 2",
 		"**Summary:** Applied one fix",
-		"**Summary:** Applied final fix",
-		"- Issues Found: 3",
-		"- Fixes Applied: 2",
+		"**Summary:** No issues remain",
+		"- Issues Found: 2",
+		"- Fixes Applied: 1",
 		"Clean review pass",
 		"Duration:",
 	}
@@ -189,6 +190,69 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("markdown report missing required content %q", snippet)
 		}
+	}
+}
+
+func TestReviewLoopMarkdownTruncatesIssueTitlesSafely(t *testing.T) {
+	result := &ReviewLoopResult{
+		Iterations: []ReviewLoopIteration{
+			{
+				Iteration:    1,
+				IssuesFound:  1,
+				ValidIssues:  1,
+				FixesApplied: 1,
+				Summary:      "Applied one fix",
+				Status:       "fixed",
+				Issues: []ReviewIssueDetail{
+					{
+						Title:    strings.Repeat("界", 58) + "ab",
+						Severity: "low",
+						File:     "internal/compound/review_loop_report.go",
+						Line:     181,
+						Valid:    true,
+						Fixed:    true,
+					},
+				},
+			},
+		},
+	}
+
+	markdown, err := ReviewLoopMarkdown(result)
+	if err != nil {
+		t.Fatalf("ReviewLoopMarkdown() unexpected error: %v", err)
+	}
+	if !utf8.ValidString(markdown) {
+		t.Fatal("ReviewLoopMarkdown() returned invalid UTF-8")
+	}
+	if !strings.Contains(markdown, "... |") {
+		t.Fatal("expected truncated issue title with ellipsis in markdown table")
+	}
+}
+
+func TestHumanizeStopReasonNoValidIssuesAfterInvalidFindings(t *testing.T) {
+	result := &ReviewLoopResult{
+		CompletedIterations: 2,
+		StopReason:          "no_valid_issues",
+		Iterations: []ReviewLoopIteration{
+			{
+				Iteration:     1,
+				IssuesFound:   1,
+				ValidIssues:   1,
+				InvalidIssues: 0,
+			},
+			{
+				Iteration:     2,
+				IssuesFound:   1,
+				ValidIssues:   0,
+				InvalidIssues: 1,
+			},
+		},
+	}
+
+	got := humanizeStopReason(result)
+	want := "No valid issues remained in iteration 2; 1 finding(s) were ruled invalid."
+	if got != want {
+		t.Fatalf("humanizeStopReason() = %q, want %q", got, want)
 	}
 }
 

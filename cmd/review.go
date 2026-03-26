@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/charmbracelet/glamour"
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
@@ -149,8 +148,7 @@ type reviewLoopDeps struct {
 	writeReports        func(dir string, result *compound.ReviewLoopResult) (jsonPath string, markdownPath string, err error)
 	writeJSONReport     func(dir string, result *compound.ReviewLoopResult) (string, error)
 	writeMarkdownReport func(dir string, result *compound.ReviewLoopResult) (string, error)
-	buildMarkdown       func(result *compound.ReviewLoopResult) (string, error)
-	renderMarkdown      func(markdown string) (string, error)
+	renderTerminal      func(result *compound.ReviewLoopResult, width int) (string, error)
 }
 
 var defaultReviewLoopDeps = reviewLoopDeps{
@@ -159,8 +157,7 @@ var defaultReviewLoopDeps = reviewLoopDeps{
 	writeReports:        compound.WriteReviewLoopReports,
 	writeJSONReport:     compound.WriteReviewLoopJSONReport,
 	writeMarkdownReport: compound.WriteReviewLoopMarkdownReport,
-	buildMarkdown:       compound.ReviewLoopMarkdown,
-	renderMarkdown:      renderMarkdownWithGlamour,
+	renderTerminal:      compound.ReviewLoopTerminalRender,
 }
 
 func runReviewLoopCommand(ctx context.Context, req reviewRequest, out io.Writer) error {
@@ -186,11 +183,8 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 	if deps.writeMarkdownReport == nil {
 		deps.writeMarkdownReport = compound.WriteReviewLoopMarkdownReport
 	}
-	if deps.buildMarkdown == nil {
-		deps.buildMarkdown = compound.ReviewLoopMarkdown
-	}
-	if deps.renderMarkdown == nil {
-		deps.renderMarkdown = renderMarkdownWithGlamour
+	if deps.renderTerminal == nil {
+		deps.renderTerminal = compound.ReviewLoopTerminalRender
 	}
 
 	engineName := normalizeReviewEngine(req.Engine)
@@ -225,14 +219,10 @@ func runReviewLoopWithDeps(ctx context.Context, req reviewRequest, out io.Writer
 		}
 	}
 
-	markdown, err := deps.buildMarkdown(result)
+	termWidth := engine.GetTerminalWidth()
+	rendered, err := deps.renderTerminal(result, termWidth)
 	if err != nil {
-		return fmt.Errorf("failed to build review loop markdown summary: %w", err)
-	}
-
-	rendered, err := deps.renderMarkdown(markdown)
-	if err != nil {
-		return fmt.Errorf("failed to render review loop markdown summary: %w", err)
+		return fmt.Errorf("failed to render review loop summary: %w", err)
 	}
 
 	if out != nil {
@@ -271,7 +261,6 @@ func runReviewLoopJSON(ctx context.Context, req reviewRequest, out io.Writer, de
 	}
 	result.Engine = engineName
 
-	// Write reports
 	if deps.writeReports != nil {
 		if _, _, err := deps.writeReports(".", result); err != nil {
 			return fmt.Errorf("failed to write review loop reports: %w", err)
@@ -285,27 +274,12 @@ func runReviewLoopJSON(ctx context.Context, req reviewRequest, out io.Writer, de
 		}
 	}
 
-	// Output as JSON to stdout
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal review result: %w", err)
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
-}
-
-func renderMarkdownWithGlamour(markdown string) (string, error) {
-	renderer, err := glamour.NewTermRenderer(glamour.WithAutoStyle())
-	if err != nil {
-		return "", fmt.Errorf("failed to create glamour renderer: %w", err)
-	}
-
-	rendered, err := renderer.Render(markdown)
-	if err != nil {
-		return "", fmt.Errorf("failed to render markdown with glamour: %w", err)
-	}
-
-	return rendered, nil
 }
 
 func normalizeReviewEngine(name string) string {
