@@ -321,6 +321,29 @@ func TestSaveGlobalConfig_Nil(t *testing.T) {
 	}
 }
 
+func TestLoadGlobalConfig_FailsWhenHomeUnavailable(t *testing.T) {
+	origHomeFn := userHomeDirFn
+	t.Cleanup(func() {
+		userHomeDirFn = origHomeFn
+	})
+
+	t.Setenv(halConfigHomeEnv, "")
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", "")
+
+	userHomeDirFn = func() (string, error) {
+		return "", errors.New("no home")
+	}
+
+	_, err := LoadGlobalConfig()
+	if !errors.Is(err, errGlobalDirUnavailable) {
+		t.Fatalf("LoadGlobalConfig() error = %v, want %v", err, errGlobalDirUnavailable)
+	}
+	if !strings.Contains(err.Error(), "resolve global sandbox config path") {
+		t.Fatalf("error = %q, want resolve global sandbox config path prefix", err.Error())
+	}
+}
+
 func setGlobalConfigHome(t *testing.T) string {
 	t.Helper()
 

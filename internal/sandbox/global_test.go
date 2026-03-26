@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +107,48 @@ func TestGlobalDir_FallbacksWhenHomeUnavailable(t *testing.T) {
 	got := GlobalDir()
 	if got != "" {
 		t.Fatalf("GlobalDir() = %q, want empty when no configured home is available", got)
+	}
+}
+
+func TestSandboxesDir_FallbacksWhenHomeUnavailable(t *testing.T) {
+	origHomeFn := userHomeDirFn
+	t.Cleanup(func() {
+		userHomeDirFn = origHomeFn
+	})
+
+	t.Setenv(halConfigHomeEnv, "")
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", "")
+
+	userHomeDirFn = func() (string, error) {
+		return "", errors.New("no home")
+	}
+
+	if got := SandboxesDir(); got != "" {
+		t.Fatalf("SandboxesDir() = %q, want empty when no configured home is available", got)
+	}
+}
+
+func TestEnsureGlobalDir_FailsWhenHomeUnavailable(t *testing.T) {
+	origHomeFn := userHomeDirFn
+	t.Cleanup(func() {
+		userHomeDirFn = origHomeFn
+	})
+
+	t.Setenv(halConfigHomeEnv, "")
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", "")
+
+	userHomeDirFn = func() (string, error) {
+		return "", errors.New("no home")
+	}
+
+	err := EnsureGlobalDir()
+	if !errors.Is(err, errGlobalDirUnavailable) {
+		t.Fatalf("EnsureGlobalDir() error = %v, want %v", err, errGlobalDirUnavailable)
+	}
+	if !strings.Contains(err.Error(), errGlobalDirUnavailable.Error()) {
+		t.Fatalf("error = %q, want to contain %q", err.Error(), errGlobalDirUnavailable.Error())
 	}
 }
 

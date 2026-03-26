@@ -39,19 +39,22 @@ func Migrate(projectDir string, out io.Writer) error {
 
 // migrateConfig handles config migration (.hal/config.yaml → global sandbox-config.yaml).
 func migrateConfig(projectDir string, out io.Writer) error {
-	globalPath := filepath.Join(GlobalDir(), globalConfigFileName)
-	if _, err := os.Stat(globalPath); err == nil {
-		return nil
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("stat global sandbox config: %w", err)
-	}
-
 	cfg, hasLegacyConfig, err := loadLegacyProjectConfig(projectDir)
 	if err != nil {
 		return err
 	}
 	if !hasLegacyConfig {
 		return nil
+	}
+
+	globalPath, err := globalConfigPath()
+	if err != nil {
+		return fmt.Errorf("resolve global sandbox config path: %w", err)
+	}
+	if _, err := os.Stat(globalPath); err == nil {
+		return nil
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("stat global sandbox config: %w", err)
 	}
 
 	if err := SaveGlobalConfig(cfg); err != nil {
@@ -93,8 +96,16 @@ func migrateState(projectDir string, out io.Writer) error {
 		return fmt.Errorf("legacy sandbox state has empty name — cannot migrate")
 	}
 
-	// Auto-migrate legacy provider field (same as LoadState).
-	if state.Provider == "" {
+	// Prefer the legacy project sandbox.provider when backfilling providerless
+	// sandbox.json state, then fall back to Daytona defaults.
+	if strings.TrimSpace(state.Provider) == "" {
+		provider, err := legacyMigrationProvider(projectDir)
+		if err != nil {
+			return err
+		}
+		state.Provider = provider
+	}
+	if strings.TrimSpace(state.Provider) == "" {
 		state.Provider = "daytona"
 	}
 
@@ -404,6 +415,17 @@ func normalizeMigrationProvider(provider string) string {
 		return "daytona"
 	}
 	return provider
+}
+
+func legacyMigrationProvider(projectDir string) (string, error) {
+	cfg, hasLegacyConfig, err := loadLegacyProjectConfig(projectDir)
+	if err != nil {
+		return "", err
+	}
+	if !hasLegacyConfig {
+		return "", nil
+	}
+	return strings.TrimSpace(cfg.Provider), nil
 }
 
 type rawLegacyProjectConfig struct {

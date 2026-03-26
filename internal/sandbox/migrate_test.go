@@ -330,6 +330,39 @@ func TestMigrate_StateFile(t *testing.T) {
 			},
 		},
 		{
+			name: "uses legacy project config provider when global config already exists",
+			setupLocal: func(t *testing.T, projectDir string) {
+				t.Helper()
+				writeProjectConfig(t, projectDir, localSandboxConfigYAML)
+				writeSandboxJSON(t, projectDir, &SandboxState{
+					ID:       "legacy-id",
+					Name:     "legacy-config-box",
+					Provider: "",
+					Status:   StatusRunning,
+				})
+			},
+			seedRegistry: func(t *testing.T) {
+				t.Helper()
+				cfg := DefaultGlobalConfig()
+				cfg.Provider = "daytona"
+				if err := SaveGlobalConfig(&cfg); err != nil {
+					t.Fatalf("SaveGlobalConfig(seed) error: %v", err)
+				}
+			},
+			wantLocalDeleted: true,
+			wantRegistered:   true,
+			checkRegistry: func(t *testing.T) {
+				t.Helper()
+				inst, err := LoadInstance("legacy-config-box")
+				if err != nil {
+					t.Fatalf("LoadInstance: %v", err)
+				}
+				if inst.Provider != "digitalocean" {
+					t.Errorf("Provider = %q, want %q", inst.Provider, "digitalocean")
+				}
+			},
+		},
+		{
 			name: "backfills digitalocean workspace ID from numeric legacy ID when missing",
 			setupLocal: func(t *testing.T, projectDir string) {
 				t.Helper()

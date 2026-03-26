@@ -132,6 +132,29 @@ func TestForceWriteInstance_Overwrites(t *testing.T) {
 	}
 }
 
+func TestListInstances_FailsWhenHomeUnavailable(t *testing.T) {
+	origHomeFn := userHomeDirFn
+	t.Cleanup(func() {
+		userHomeDirFn = origHomeFn
+	})
+
+	t.Setenv(halConfigHomeEnv, "")
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", "")
+
+	userHomeDirFn = func() (string, error) {
+		return "", errors.New("no home")
+	}
+
+	_, err := ListInstances()
+	if !errors.Is(err, errGlobalDirUnavailable) {
+		t.Fatalf("ListInstances() error = %v, want %v", err, errGlobalDirUnavailable)
+	}
+	if !strings.Contains(err.Error(), "resolve sandboxes dir") {
+		t.Fatalf("error = %q, want resolve sandboxes dir prefix", err.Error())
+	}
+}
+
 func TestForceWriteInstance_RetriesWhenRenameCannotReplace(t *testing.T) {
 	home := setSandboxHome(t)
 
@@ -185,6 +208,64 @@ func TestForceWriteInstance_RetriesWhenRenameCannotReplace(t *testing.T) {
 	}
 	if _, err := os.Stat(backupPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("backup file should be removed after overwrite fallback")
+	}
+}
+
+func TestForceWriteInstance_BlocksWhilePendingRemovalExists(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		ID:     "old-id",
+		Name:   "frontend",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() failed: %v", err)
+	}
+
+	pending, err := StageInstanceRemoval("frontend")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval() failed: %v", err)
+	}
+	if pending == nil || !pending.active {
+		t.Fatalf("pending removal = %#v, want active staged removal", pending)
+	}
+
+	statePath := filepath.Join(home, sandboxesDirName, "frontend.json")
+	backupPath := statePath + pendingRemovalRegistryFileExt
+	if _, err := os.Stat(statePath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("active registry file should be absent while pending removal exists, got %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("staged backup should exist before overwrite: %v", err)
+	}
+
+	err = ForceWriteInstance(&SandboxState{
+		ID:     "new-id",
+		Name:   "frontend",
+		Status: StatusStopped,
+	})
+	if err == nil {
+		t.Fatal("ForceWriteInstance() error = nil, want pending-removal guidance")
+	}
+	if !strings.Contains(err.Error(), "pending removal") {
+		t.Fatalf("ForceWriteInstance() error = %q, want pending-removal guidance", err.Error())
+	}
+
+	loaded, err := LoadInstance("frontend")
+	if err != nil {
+		t.Fatalf("LoadInstance() failed while staged backup exists: %v", err)
+	}
+	if loaded.ID != "old-id" {
+		t.Fatalf("loaded id = %q, want %q", loaded.ID, "old-id")
+	}
+	if loaded.Status != StatusRunning {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, StatusRunning)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("active registry file should remain absent while pending removal exists, got %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("staged backup should remain after failed overwrite, got %v", err)
 	}
 }
 

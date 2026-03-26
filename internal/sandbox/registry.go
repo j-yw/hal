@@ -75,6 +75,10 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 		if pendingExists {
 			return fmt.Errorf("sandbox %q has a pending removal; resolve the staged deletion before creating a replacement", instance.Name)
 		}
+	} else {
+		if err := prepareRegistryOverwrite(path, instance.Name); err != nil {
+			return err
+		}
 	}
 
 	data, err := json.MarshalIndent(instance, "", "  ")
@@ -103,6 +107,31 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	}
 
 	return nil
+}
+
+func prepareRegistryOverwrite(path, name string) error {
+	pendingPath := path + pendingRemovalRegistryFileExt
+	pendingExists, err := registryFileExists(pendingPath)
+	if err != nil {
+		return fmt.Errorf("check sandbox %q staged registry entry: %w", name, err)
+	}
+	if !pendingExists {
+		return nil
+	}
+
+	activeExists, err := registryFileExists(path)
+	if err != nil {
+		return fmt.Errorf("check sandbox %q registry entry: %w", name, err)
+	}
+
+	if activeExists {
+		if err := removeRegistryFile(pendingPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("clear sandbox %q staged registry entry: %w", name, err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("sandbox %q has a pending removal; resolve the staged deletion before overwriting registry state", name)
 }
 
 func saveRegistryFileExclusive(path string, data []byte) (err error) {
@@ -330,7 +359,11 @@ func ListActiveInstances() ([]*SandboxState, error) {
 }
 
 func listInstances(includeStagedFallback bool) ([]*SandboxState, error) {
-	entries, err := os.ReadDir(SandboxesDir())
+	sandboxesDir, err := sandboxesDirPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandboxes dir: %w", err)
+	}
+	entries, err := os.ReadDir(sandboxesDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -348,7 +381,7 @@ func listInstances(includeStagedFallback bool) ([]*SandboxState, error) {
 		name := strings.TrimSuffix(entry.Name(), sandboxStateFileExt)
 		activeNames[name] = struct{}{}
 
-		path := filepath.Join(SandboxesDir(), entry.Name())
+		path := filepath.Join(sandboxesDir, entry.Name())
 		instance, err := loadRegistryInstanceFile(path, name)
 		if err != nil {
 			if strings.HasPrefix(err.Error(), "parse sandbox ") {
@@ -371,7 +404,7 @@ func listInstances(includeStagedFallback bool) ([]*SandboxState, error) {
 				continue
 			}
 
-			path := filepath.Join(SandboxesDir(), entry.Name())
+			path := filepath.Join(sandboxesDir, entry.Name())
 			instance, err := loadRegistryInstanceFile(path, name)
 			if err != nil {
 				if strings.HasPrefix(err.Error(), "parse sandbox ") {
@@ -510,9 +543,33 @@ func isLegacyDigitalOceanDropletID(id string) bool {
 	return true
 }
 
+func validateRegistryPathName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("sandbox name is required")
+	}
+	if trimmed != name {
+		return fmt.Errorf("must not have leading or trailing whitespace")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("must not be %q or %q", ".", "..")
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return fmt.Errorf("must not contain path separators")
+	}
+	return nil
+}
+
 func instancePath(name string) (string, error) {
-	if err := ValidateName(name); err != nil {
+	// Registry paths must remain compatible with legacy sandbox names that were
+	// persisted before strict name validation existed. New-sandbox validation is
+	// enforced by higher-level creation flows.
+	if err := validateRegistryPathName(name); err != nil {
 		return "", fmt.Errorf("invalid sandbox name: %w", err)
 	}
-	return filepath.Join(SandboxesDir(), name+sandboxStateFileExt), nil
+	sandboxesDir, err := sandboxesDirPath()
+	if err != nil {
+		return "", fmt.Errorf("resolve sandboxes dir: %w", err)
+	}
+	return filepath.Join(sandboxesDir, name+sandboxStateFileExt), nil
 }

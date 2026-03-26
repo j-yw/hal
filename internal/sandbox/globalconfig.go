@@ -19,7 +19,19 @@ var (
 
 // GlobalConfigPath returns the full path to sandbox-config.yaml in GlobalDir().
 func GlobalConfigPath() string {
-	return filepath.Join(GlobalDir(), globalConfigFileName)
+	path, err := globalConfigPath()
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+func globalConfigPath() (string, error) {
+	dir, err := resolveGlobalDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, globalConfigFileName), nil
 }
 
 // GlobalConfig stores sandbox provider settings in the global hal config dir.
@@ -123,7 +135,11 @@ func DefaultGlobalConfig() GlobalConfig {
 // LoadGlobalConfig reads sandbox-config.yaml from the global hal config
 // directory. Missing files return DefaultGlobalConfig.
 func LoadGlobalConfig() (*GlobalConfig, error) {
-	data, err := os.ReadFile(GlobalConfigPath())
+	path, err := globalConfigPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve global sandbox config path: %w", err)
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg := DefaultGlobalConfig()
@@ -200,13 +216,16 @@ func SaveGlobalConfig(cfg *GlobalConfig) error {
 	if err := EnsureGlobalDir(); err != nil {
 		return err
 	}
+	path, err := globalConfigPath()
+	if err != nil {
+		return fmt.Errorf("resolve global sandbox config path: %w", err)
+	}
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal global sandbox config: %w", err)
 	}
 
-	path := GlobalConfigPath()
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("write global sandbox config: %w", err)

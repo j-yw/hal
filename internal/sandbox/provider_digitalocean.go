@@ -152,6 +152,27 @@ func parseDODropletInfo(output string) (id string, ip string) {
 	}
 }
 
+func (d *DigitalOceanProvider) lookupDropletID(ctx context.Context, name string, out io.Writer) (string, error) {
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
+		"--format", "ID",
+		"--no-header",
+	)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	if err := cmd.Run(); err != nil {
+		return "", wrapDoctlError("compute droplet get", err, stderrBuf.String())
+	}
+
+	id, _ := parseDODropletInfo(stdoutBuf.String())
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("doctl compute droplet get returned no ID for %q", name)
+	}
+	return id, nil
+}
+
 func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
@@ -184,9 +205,19 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	}
 
 	// Droplet exists on DO from this point — clean up on any failure.
-	cleanupTarget := strings.TrimSpace(name)
+	cleanupTarget := ""
 	cleanupDroplet := func(reason string) {
 		fmt.Fprintf(safeOut, "Cleaning up %s after failure (%s)...\n", name, reason)
+		if strings.TrimSpace(cleanupTarget) == "" {
+			lookupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			resolvedID, lookupErr := d.lookupDropletID(lookupCtx, name, safeOut)
+			cancel()
+			if lookupErr != nil {
+				fmt.Fprintf(safeOut, "Warning: failed to resolve droplet ID for cleanup of %s: %v\n", name, lookupErr)
+				return
+			}
+			cleanupTarget = resolvedID
+		}
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		delCmd := d.commandContext(delCtx, "doctl", "compute", "droplet", "delete", cleanupTarget, "--force")
