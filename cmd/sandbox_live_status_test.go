@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"io/fs"
 	"strings"
 	"testing"
@@ -68,6 +69,16 @@ func TestPersistLiveStatus_ClearsStaleStoppedAtOnConfirmedRunningStatus(t *testi
 	}
 	if inst.StoppedAt != nil {
 		t.Fatalf("StoppedAt = %v, want nil", inst.StoppedAt)
+	}
+}
+
+func TestNormalizeLiveStatus_ReturnsErrorWhenOutputIsUnparseable(t *testing.T) {
+	status, err := normalizeLiveStatus("Recent event: shutdown requested during last maintenance window")
+	if status != sandbox.StatusUnknown {
+		t.Fatalf("status = %q, want %q", status, sandbox.StatusUnknown)
+	}
+	if !errors.Is(err, errLiveStatusUnparseable) {
+		t.Fatalf("error = %v, want %v", err, errLiveStatusUnparseable)
 	}
 }
 
@@ -147,6 +158,77 @@ func TestLiveStatusWriteTarget_SkipsPersistWhenSandboxDeletedAfterTargetCreation
 	}
 }
 
+func TestLiveStatusWriteTarget_MergesStatusIntoFreshActiveInstance(t *testing.T) {
+	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+	inst := &sandbox.SandboxState{
+		Name:      "merged-box",
+		Status:    sandbox.StatusStopped,
+		CreatedAt: now.Add(-2 * time.Hour),
+		IP:        "203.0.113.10",
+		Repo:      "stale-repo",
+	}
+
+	loadCalls := 0
+	var wrote *sandbox.SandboxState
+	writeTarget, err := liveStatusWriteTarget(
+		inst.Name,
+		func(string) (*sandbox.SandboxState, error) {
+			loadCalls++
+			return &sandbox.SandboxState{
+				Name:              inst.Name,
+				Status:            sandbox.StatusStopped,
+				CreatedAt:         now.Add(-2 * time.Hour),
+				IP:                "203.0.113.25",
+				TailscaleIP:       "100.64.0.25",
+				TailscaleHostname: "fresh-host",
+				Repo:              "fresh-repo",
+				SnapshotID:        "snap-123",
+			}, nil
+		},
+		func(updated *sandbox.SandboxState) error {
+			wrote = updated
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("liveStatusWriteTarget() unexpected error: %v", err)
+	}
+
+	if err := persistLiveStatus(inst, sandbox.StatusRunning, now, writeTarget); err != nil {
+		t.Fatalf("persistLiveStatus() unexpected error: %v", err)
+	}
+	if loadCalls != 2 {
+		t.Fatalf("loadCalls = %d, want 2", loadCalls)
+	}
+	if wrote == nil {
+		t.Fatal("write target did not receive an updated instance")
+	}
+	if wrote == inst {
+		t.Fatal("write target reused stale in-memory instance")
+	}
+	if wrote.Status != sandbox.StatusRunning {
+		t.Fatalf("written Status = %q, want %q", wrote.Status, sandbox.StatusRunning)
+	}
+	if wrote.StoppedAt != nil {
+		t.Fatalf("written StoppedAt = %v, want nil", wrote.StoppedAt)
+	}
+	if wrote.IP != "203.0.113.25" {
+		t.Fatalf("written IP = %q, want fresh registry value", wrote.IP)
+	}
+	if wrote.TailscaleIP != "100.64.0.25" {
+		t.Fatalf("written TailscaleIP = %q, want fresh registry value", wrote.TailscaleIP)
+	}
+	if wrote.TailscaleHostname != "fresh-host" {
+		t.Fatalf("written TailscaleHostname = %q, want fresh registry value", wrote.TailscaleHostname)
+	}
+	if wrote.Repo != "fresh-repo" {
+		t.Fatalf("written Repo = %q, want fresh registry value", wrote.Repo)
+	}
+	if wrote.SnapshotID != "snap-123" {
+		t.Fatalf("written SnapshotID = %q, want fresh registry value", wrote.SnapshotID)
+	}
+}
+
 func TestParseLiveStatus_IgnoresUnrelatedTokensOutsideStatusFields(t *testing.T) {
 	output := "Recent event: shutdown requested during last maintenance window"
 
@@ -160,6 +242,14 @@ func TestParseLiveStatus_ParsesLabeledStatusField(t *testing.T) {
 
 	if status := parseLiveStatus(output); status != sandbox.StatusRunning {
 		t.Fatalf("parseLiveStatus() = %q, want %q", status, sandbox.StatusRunning)
+	}
+}
+
+func TestParseLiveIP_ParsesWhitespaceSeparatedLabeledIPField(t *testing.T) {
+	output := "Public IPv4    203.0.113.10"
+
+	if ip := parseLiveIP(output); ip != "203.0.113.10" {
+		t.Fatalf("parseLiveIP() = %q, want %q", ip, "203.0.113.10")
 	}
 }
 

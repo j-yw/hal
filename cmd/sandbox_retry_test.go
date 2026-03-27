@@ -1,112 +1,44 @@
 package cmd
 
-import (
-	"fmt"
-	"testing"
-)
+import "testing"
 
-type retryTestPendingRemoval struct {
-	alreadyStaged bool
-}
-
-func (r *retryTestPendingRemoval) Commit() error {
-	return nil
-}
-
-func (r *retryTestPendingRemoval) Rollback() error {
-	return nil
-}
-
-func (r *retryTestPendingRemoval) AlreadyStaged() bool {
-	return r.alreadyStaged
-}
-
-func TestFinalizeInterruptedDeleteRetry(t *testing.T) {
-	pendingRemoval := &retryTestPendingRemoval{alreadyStaged: true}
+func TestIsMissingSandboxDeleteError_DigitalOcean(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name     string
-		provider string
-		err      error
-		want     bool
+		errText  string
+		expected bool
 	}{
 		{
-			name:     "digitalocean cli missing does not finalize",
-			provider: "digitalocean",
-			err:      fmt.Errorf("doctl not found: install from https://docs.digitalocean.com/reference/doctl/how-to/install/ and run 'doctl auth init'"),
-			want:     false,
+			name:     "missing droplet is treated as already deleted",
+			errText:  "doctl compute droplet delete failed with exit code 1: GET https://api.digitalocean.com/v2/droplets/123: 404 The resource you requested could not be found.: exit status 1",
+			expected: true,
 		},
 		{
-			name:     "digitalocean remote missing finalizes",
-			provider: "digitalocean",
-			err:      fmt.Errorf("doctl compute droplet delete failed with exit code 1: droplet not found"),
-			want:     true,
+			name:     "dns failure is not treated as missing",
+			errText:  "doctl compute droplet delete failed with exit code 1: Get https://api.digitalocean.com/v2/droplets/123: dial tcp: lookup api.digitalocean.com: no such host: exit status 1",
+			expected: false,
 		},
 		{
-			name:     "lightsail cli missing does not finalize",
-			provider: "lightsail",
-			err:      fmt.Errorf("aws CLI not found: install with 'brew install awscli' and run 'aws configure'"),
-			want:     false,
-		},
-		{
-			name:     "lightsail remote missing finalizes",
-			provider: "lightsail",
-			err:      fmt.Errorf("aws lightsail delete-instance failed with exit code 1: instance does not exist"),
-			want:     true,
+			name:     "auth failure is not treated as missing",
+			errText:  "doctl compute droplet delete failed with exit code 1: POST https://api.digitalocean.com/v2/droplets/123/actions: 401 Unable to authenticate you: exit status 1",
+			expected: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := finalizeInterruptedDeleteRetry(tt.provider, pendingRemoval, tt.err)
-			if got != tt.want {
-				t.Fatalf("finalizeInterruptedDeleteRetry(%q, %v) = %v, want %v", tt.provider, tt.err, got, tt.want)
+			t.Parallel()
+			if got := isMissingSandboxDeleteError("digitalocean", testingError(tt.errText)); got != tt.expected {
+				t.Fatalf("isMissingSandboxDeleteError() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
 }
 
-func TestFinalizeInterruptedStartReplaceRetry(t *testing.T) {
-	pendingRemoval := &retryTestPendingRemoval{alreadyStaged: true}
+type testingError string
 
-	tests := []struct {
-		name     string
-		provider string
-		err      error
-		want     bool
-	}{
-		{
-			name:     "digitalocean cli missing does not finalize",
-			provider: "digitalocean",
-			err:      fmt.Errorf("doctl not found: install from https://docs.digitalocean.com/reference/doctl/how-to/install/ and run 'doctl auth init'"),
-			want:     false,
-		},
-		{
-			name:     "digitalocean remote missing finalizes",
-			provider: "digitalocean",
-			err:      fmt.Errorf("doctl compute droplet delete failed with exit code 1: droplet not found"),
-			want:     true,
-		},
-		{
-			name:     "lightsail cli missing does not finalize",
-			provider: "lightsail",
-			err:      fmt.Errorf("aws CLI not found: install with 'brew install awscli' and run 'aws configure'"),
-			want:     false,
-		},
-		{
-			name:     "lightsail remote missing finalizes",
-			provider: "lightsail",
-			err:      fmt.Errorf("aws lightsail delete-instance failed with exit code 1: instance does not exist"),
-			want:     true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := finalizeInterruptedStartReplaceRetry(tt.provider, pendingRemoval, tt.err)
-			if got != tt.want {
-				t.Fatalf("finalizeInterruptedStartReplaceRetry(%q, %v) = %v, want %v", tt.provider, tt.err, got, tt.want)
-			}
-		})
-	}
+func (e testingError) Error() string {
+	return string(e)
 }

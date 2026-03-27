@@ -104,7 +104,8 @@ func TestRunSandboxStatus_DetailedView(t *testing.T) {
 	assertContains(t, output, "ID:         01234567-89ab-7cde-8f01-234567890abc")
 	assertContains(t, output, "Provider:   hetzner")
 	assertContains(t, output, "Status:     running")
-	assertContains(t, output, "Live query: ok")
+	assertContains(t, output, "Live query: status refreshed")
+	assertContains(t, output, "Note:       Non-status details below are cached from the registry.")
 
 	// Networking
 	assertContains(t, output, "Public IP:          203.0.113.1")
@@ -184,7 +185,7 @@ func TestRunSandboxStatus_UsesProviderReportedStatus(t *testing.T) {
 
 	output := out.String()
 	assertContains(t, output, "Status:     stopped")
-	assertContains(t, output, "Live query: ok")
+	assertContains(t, output, "Live query: status refreshed")
 }
 
 func TestRunSandboxStatus_PersistsProviderReportedStatus(t *testing.T) {
@@ -211,6 +212,38 @@ func TestRunSandboxStatus_PersistsProviderReportedStatus(t *testing.T) {
 	if loaded.Status != sandbox.StatusStopped {
 		t.Fatalf("loaded status = %q, want %q", loaded.Status, sandbox.StatusStopped)
 	}
+}
+
+func TestRunSandboxStatus_PersistsProviderReportedPublicIP(t *testing.T) {
+	setupStatusTest(t)
+
+	saveStatusTestInstance(t, &sandbox.SandboxState{
+		Name:      "persisted-ip",
+		Provider:  "digitalocean",
+		ID:        "droplet-123",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	mock := &mockStatusProvider{
+		statusOut: "ID  Name  Status  Public IPv4\ndroplet-123  persisted-ip  active  203.0.113.25\n",
+	}
+	var out bytes.Buffer
+
+	if err := runSandboxStatusWithDeps("persisted-ip", &out, mock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	loaded, err := sandbox.LoadInstance("persisted-ip")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.IP != "203.0.113.25" {
+		t.Fatalf("loaded IP = %q, want %q", loaded.IP, "203.0.113.25")
+	}
+
+	output := out.String()
+	assertContains(t, output, "Public IP:          203.0.113.25")
 }
 
 func TestRunSandboxStatus_ContinuesWhenLocalSyncFails(t *testing.T) {
@@ -244,7 +277,8 @@ func TestRunSandboxStatus_ContinuesWhenLocalSyncFails(t *testing.T) {
 	}
 
 	output := out.String()
-	assertContains(t, output, "Live query: ok")
+	assertContains(t, output, "Live query: status refreshed")
+	assertContains(t, output, "Note:       Non-status details below are cached from the registry.")
 	assertContains(t, output, "Warning:")
 	assertContains(t, output, "local sandbox state sync failed")
 

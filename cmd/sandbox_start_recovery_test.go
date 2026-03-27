@@ -51,7 +51,7 @@ func TestReplaceExistingSandbox_CommitsInterruptedDeleteRetry(t *testing.T) {
 		Name:        "frontend",
 		Provider:    "daytona",
 		WorkspaceID: "ws-123",
-	}, provider, "daytona", out)
+	}, provider, "daytona", "", out)
 	if err != nil {
 		t.Fatalf("replaceExistingSandbox() unexpected error: %v", err)
 	}

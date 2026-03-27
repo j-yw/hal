@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"time"
 
 	display "github.com/jywlabs/hal/internal/engine"
@@ -78,10 +79,20 @@ func liveStatusWriteTarget(
 	}
 
 	return func(updated *sandbox.SandboxState) error {
-		if _, err := loadActive(name); err != nil {
+		current, err := loadActive(name)
+		if err != nil {
 			return err
 		}
-		return write(updated)
+		if current == nil {
+			return fs.ErrNotExist
+		}
+
+		current.Status = updated.Status
+		current.StoppedAt = cloneStoppedAt(updated.StoppedAt)
+		if ip := strings.TrimSpace(updated.IP); ip != "" {
+			current.IP = ip
+		}
+		return write(current)
 	}, nil
 }
 
@@ -121,13 +132,13 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 	ctx, cancel := context.WithTimeout(context.Background(), liveStatusTimeout)
 	defer cancel()
 
-	status, liveErr := queryProviderLiveStatus(ctx, p, info, instance.Status)
+	liveStatus, liveErr := queryProviderLiveStatus(ctx, p, info)
 	var liveWarning error
 	if liveErr == nil {
 		writeTarget, err := liveStatusWriteTarget(instance.Name, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
 		if err != nil {
 			liveErr = fmt.Errorf("load active sandbox %q: %w", instance.Name, err)
-		} else if err := persistLiveStatus(instance, status, sandboxStatusNow(), writeTarget); err != nil {
+		} else if err := persistLiveStatusResult(instance, liveStatus, sandboxStatusNow(), writeTarget); err != nil {
 			if _, ok := asLocalStateSyncWarning(err); ok {
 				liveWarning = err
 			} else {
@@ -169,7 +180,8 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liv
 	if liveErr != nil {
 		fmt.Fprintf(out, "Live query: %s\n", display.StyleError.Render(fmt.Sprintf("failed (%s)", liveErr)))
 	} else {
-		fmt.Fprintf(out, "Live query: %s\n", display.StyleSuccess.Render("ok"))
+		fmt.Fprintf(out, "Live query: %s\n", display.StyleSuccess.Render("status refreshed"))
+		fmt.Fprintf(out, "Note:       %s\n", display.StyleMuted.Render("Non-status details below are cached from the registry."))
 	}
 	if liveWarning != nil {
 		fmt.Fprintf(out, "Warning:    %s\n", display.StyleWarning.Render(formatLocalStateSyncWarning(liveWarning)))
@@ -205,9 +217,17 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liv
 
 	// Lifecycle
 	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Lifecycle:"))
-	fmt.Fprintf(out, "  Created:      %s %s\n", inst.CreatedAt.Format(time.RFC3339), display.StyleMuted.Render(fmt.Sprintf("(%s ago)", formatAge(now.Sub(inst.CreatedAt)))))
+	if inst.CreatedAt.IsZero() {
+		fmt.Fprintf(out, "  Created:      %s\n", display.StyleMuted.Render("unknown"))
+	} else {
+		fmt.Fprintf(out, "  Created:      %s %s\n", inst.CreatedAt.Format(time.RFC3339), display.StyleMuted.Render(fmt.Sprintf("(%s ago)", formatAge(now.Sub(inst.CreatedAt)))))
+	}
 	if inst.StoppedAt != nil {
-		fmt.Fprintf(out, "  Stopped:      %s %s\n", inst.StoppedAt.Format(time.RFC3339), display.StyleMuted.Render(fmt.Sprintf("(%s ago)", formatAge(now.Sub(*inst.StoppedAt)))))
+		if inst.StoppedAt.IsZero() {
+			fmt.Fprintf(out, "  Stopped:      %s\n", display.StyleMuted.Render("unknown"))
+		} else {
+			fmt.Fprintf(out, "  Stopped:      %s %s\n", inst.StoppedAt.Format(time.RFC3339), display.StyleMuted.Render(fmt.Sprintf("(%s ago)", formatAge(now.Sub(*inst.StoppedAt)))))
+		}
 	}
 
 	fmt.Fprintln(out)

@@ -97,6 +97,42 @@ func TestSaveRegistryFileExclusive_DoesNotReplaceExisting(t *testing.T) {
 	if string(data) != "first\n" {
 		t.Fatalf("file contents = %q, want %q", string(data), "first\n")
 	}
+	matches, globErr := filepath.Glob(path + ".tmp-*")
+	if globErr != nil {
+		t.Fatalf("Glob() failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp files should be removed after collision, found %v", matches)
+	}
+}
+
+func TestSaveRegistryFileExclusive_CreatesFile(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() failed: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "worker-02.json")
+
+	if err := saveRegistryFileExclusive(path, []byte("first\n")); err != nil {
+		t.Fatalf("saveRegistryFileExclusive() unexpected error: %v", err)
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile() failed: %v", readErr)
+	}
+	if string(data) != "first\n" {
+		t.Fatalf("file contents = %q, want %q", string(data), "first\n")
+	}
+	matches, globErr := filepath.Glob(path + ".tmp-*")
+	if globErr != nil {
+		t.Fatalf("Glob() failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp files should be removed after successful save, found %v", matches)
+	}
 }
 
 func TestForceWriteInstance_Overwrites(t *testing.T) {

@@ -247,22 +247,19 @@ func resolveStopAutoSelect() ([]*sandbox.SandboxState, string, error) {
 	}
 }
 
-// Legacy project-scoped sandbox state predates lifecycle status and migrates
-// into the registry with a blank status, so stop treats blank as stoppable.
 func isRunningStopTarget(inst *sandbox.SandboxState) bool {
 	if inst == nil {
 		return false
 	}
 	switch strings.TrimSpace(inst.Status) {
-	case "", sandbox.StatusRunning:
+	case sandbox.StatusRunning:
 		return true
 	default:
 		return false
 	}
 }
 
-// filterRunning returns only running instances, including legacy migrated
-// entries whose status is blank.
+// filterRunning returns only running instances.
 func filterRunning(instances []*sandbox.SandboxState) []*sandbox.SandboxState {
 	result := make([]*sandbox.SandboxState, 0, len(instances))
 	for _, inst := range instances {

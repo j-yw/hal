@@ -191,8 +191,6 @@ func resolveSSHTarget(name string) (*sandbox.SandboxState, string, error) {
 		return instance, "", nil
 	}
 
-	// Legacy project-scoped sandbox state predates lifecycle status and migrates
-	// into the registry with a blank status, so SSH treats blank as runnable.
 	return sandbox.ResolveDefault(isRunnableSSHTarget)
 }
 
@@ -201,7 +199,7 @@ func isRunnableSSHTarget(inst *sandbox.SandboxState) bool {
 		return false
 	}
 	switch strings.TrimSpace(inst.Status) {
-	case "", sandbox.StatusRunning:
+	case sandbox.StatusRunning:
 		return true
 	default:
 		return false

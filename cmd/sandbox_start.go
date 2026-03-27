@@ -55,6 +55,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		count, _ := cmd.Flags().GetInt("count")
+		countExplicit := cmd.Flags().Changed("count")
 		force, _ := cmd.Flags().GetBool("force")
 		size, _ := cmd.Flags().GetString("size")
 		repo, _ := cmd.Flags().GetString("repo")
@@ -62,7 +63,7 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 		envVars := parseEnvFlags(envSlice)
 		opts := autoShutdownOptsFromCommand(cmd)
 
-		return runSandboxStart(".", name, count, force, size, repo, envVars, opts, os.Stdout, nil)
+		return runSandboxStart(".", name, count, countExplicit, force, size, repo, envVars, opts, os.Stdout, nil)
 	},
 }
 
@@ -198,6 +199,7 @@ func injectAutoShutdownEnv(env map[string]string, autoShutdown bool, idleHours i
 func runSandboxStart(
 	dir, name string,
 	count int,
+	countExplicit bool,
 	force bool,
 	size, repo string,
 	envVars map[string]string,
@@ -211,7 +213,7 @@ func runSandboxStart(
 		provider = deps.provider
 		getBranch = deps.getBranch
 	}
-	return runSandboxStartWithDeps(dir, name, count, force, size, repo, envVars, shutdownOpts, out, provider, getBranch)
+	return runSandboxStartWithDepsAndCountOption(dir, name, count, countExplicit, force, size, repo, envVars, shutdownOpts, out, provider, getBranch)
 }
 
 // runSandboxStartWithDeps contains the testable logic for the sandbox start command.
@@ -225,6 +227,23 @@ func runSandboxStart(
 func runSandboxStartWithDeps(
 	dir, name string,
 	count int,
+	force bool,
+	size, repo string,
+	envVars map[string]string,
+	shutdownOpts autoShutdownOpts,
+	out io.Writer,
+	provider sandbox.Provider,
+	getBranch branchResolver,
+) error {
+	return runSandboxStartWithDepsAndCountOption(dir, name, count, false, force, size, repo, envVars, shutdownOpts, out, provider, getBranch)
+}
+
+// runSandboxStartWithDepsAndCountOption contains the sandbox start logic with
+// explicit count-flag semantics from the Cobra command layer.
+func runSandboxStartWithDepsAndCountOption(
+	dir, name string,
+	count int,
+	countExplicit bool,
 	force bool,
 	size, repo string,
 	envVars map[string]string,
@@ -317,6 +336,9 @@ func runSandboxStartWithDeps(
 		}
 		name = sandbox.SandboxNameFromBranch(branch)
 	}
+	if err := sandbox.ValidateName(name); err != nil {
+		return err
+	}
 
 	// Resolve auto-shutdown from global config + flag overrides
 	autoShutdown, idleHours := resolveAutoShutdown(globalCfg, shutdownOpts)
@@ -338,6 +360,10 @@ func runSandboxStartWithDeps(
 		if authKey == "" {
 			return fmt.Errorf("tailscale lockdown requires TAILSCALE_AUTHKEY (set sandbox.env.TAILSCALE_AUTHKEY or pass --env TAILSCALE_AUTHKEY=...)")
 		}
+	}
+
+	if countExplicit && count < 1 {
+		return fmt.Errorf("count must be at least 1")
 	}
 
 	// Batch mode: --count N creates multiple sandboxes
@@ -442,6 +468,7 @@ func ensureSandboxTargetAvailable(
 	force bool,
 	provider sandbox.Provider,
 	activeProvider string,
+	halDir string,
 	out io.Writer,
 ) error {
 	loadExisting := sandbox.LoadActiveInstance
@@ -454,7 +481,7 @@ func ensureSandboxTargetAvailable(
 		if !force {
 			return fmt.Errorf("sandbox %q already exists", name)
 		}
-		return replaceExistingSandbox(existing, provider, activeProvider, out)
+		return replaceExistingSandbox(existing, provider, activeProvider, halDir, out)
 	}
 	if !errors.Is(loadErr, fs.ErrNotExist) {
 		return fmt.Errorf("checking existing sandbox in registry: %w", loadErr)
@@ -477,6 +504,7 @@ func replaceExistingSandbox(
 	existing *sandbox.SandboxState,
 	provider sandbox.Provider,
 	activeProvider string,
+	halDir string,
 	out io.Writer,
 ) error {
 	if existing == nil {
@@ -521,7 +549,11 @@ func replaceExistingSandbox(
 		}
 		return fmt.Errorf("force-delete of existing sandbox %q failed: %w", name, err)
 	}
-	if err := removeMatchingLocalSandboxState(filepath.Join(".", template.HalDir), existing); err != nil {
+	localHalDir := strings.TrimSpace(halDir)
+	if localHalDir == "" {
+		localHalDir = filepath.Join(".", template.HalDir)
+	}
+	if err := removeMatchingLocalSandboxState(localHalDir, existing); err != nil {
 		fmt.Fprintf(out, "warning: failed to remove local sandbox state for %q: %v\n", name, err)
 	}
 	if err := pendingRemoval.Commit(); err != nil {
@@ -531,7 +563,7 @@ func replaceExistingSandbox(
 }
 
 func finalizeInterruptedStartReplaceRetry(provider string, pendingRemoval sandboxStartPendingRemoval, err error) bool {
-	if err == nil || pendingRemoval == nil || !pendingRemoval.AlreadyStaged() {
+	if err == nil || pendingRemoval == nil {
 		return false
 	}
 
@@ -566,8 +598,7 @@ func runBatchCreate(
 	for _, name := range targets {
 		name := name // capture for goroutine
 		g.Go(func() error {
-			err := createBatchTarget(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, out)
-
+			err := createBatchTarget(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
 			mu.Lock()
 			if err != nil {
 				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), name, err)
@@ -616,6 +647,7 @@ func createBatchTarget(
 	autoShutdown bool,
 	idleHours int,
 	size, repo string,
+	halDir string,
 	out io.Writer,
 ) error {
 	ctx := context.Background()
@@ -626,7 +658,7 @@ func createBatchTarget(
 	}
 	perEnv["TAILSCALE_HOSTNAME"] = sandbox.TailscaleHostname(name)
 	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
-	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, prefixedOut); err != nil {
+	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, halDir, prefixedOut); err != nil {
 		return err
 	}
 	result, err := provider.Create(ctx, name, perEnv, prefixedOut)
@@ -682,7 +714,7 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
-	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, out); err != nil {
+	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, halDir, out); err != nil {
 		return err
 	}
 
@@ -758,9 +790,9 @@ func runSingleCreate(
 
 // mergeGlobalStartDefaults overlays globally configured runtime settings onto
 // the local sandbox config used by `hal sandbox start`. When a real global
-// config file exists, it is authoritative for runtime settings and provider
-// credentials; project-local copies remain only as a fallback when there is no
-// global sandbox config yet.
+// config file exists, it is authoritative for provider selection and runtime
+// credentials, while project-local env keys remain as an overlay on top of
+// global env defaults.
 func mergeGlobalStartDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbox.GlobalConfig, useGlobalConfig bool) {
 	if localCfg == nil || globalCfg == nil {
 		return
@@ -770,12 +802,15 @@ func mergeGlobalStartDefaults(localCfg *compound.SandboxConfig, globalCfg *sandb
 		if provider := strings.TrimSpace(globalCfg.Provider); provider != "" {
 			localCfg.Provider = provider
 		}
-		if len(globalCfg.Env) > 0 {
-			authoritativeEnv := make(map[string]string, len(globalCfg.Env))
+		if len(globalCfg.Env) > 0 || len(localCfg.Env) > 0 {
+			mergedEnv := make(map[string]string, len(globalCfg.Env)+len(localCfg.Env))
 			for k, v := range globalCfg.Env {
-				authoritativeEnv[k] = v
+				mergedEnv[k] = v
 			}
-			localCfg.Env = authoritativeEnv
+			for k, v := range localCfg.Env {
+				mergedEnv[k] = v
+			}
+			localCfg.Env = mergedEnv
 		} else {
 			localCfg.Env = nil
 		}

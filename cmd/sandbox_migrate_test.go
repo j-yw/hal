@@ -183,4 +183,31 @@ func TestSandboxMigrateCommand_Metadata(t *testing.T) {
 	if !strings.Contains(cmd.Example, "hal sandbox migrate") {
 		t.Fatalf("Example should contain command path, got %q", cmd.Example)
 	}
+	if !strings.Contains(cmd.Long, ".hal/sandbox.json") {
+		t.Fatalf("Long should mention sandbox state migration, got %q", cmd.Long)
+	}
+	if !strings.Contains(cmd.Long, "removes the local state") {
+		t.Fatalf("Long should mention local state file removal, got %q", cmd.Long)
+	}
+}
+
+func TestSandboxMigrateCommand_RunEUsesCommandOutput(t *testing.T) {
+	originalMigrate := sandboxMigrate
+	t.Cleanup(func() { sandboxMigrate = originalMigrate })
+
+	sandboxMigrate = func(projectDir string, out io.Writer) error {
+		return nil
+	}
+
+	cmd := *sandboxMigrateCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := cmd.RunE(&cmd, nil); err != nil {
+		t.Fatalf("RunE returned error: %v", err)
+	}
+
+	if out.String() != "Nothing to migrate\n" {
+		t.Fatalf("output = %q, want %q", out.String(), "Nothing to migrate\n")
+	}
 }

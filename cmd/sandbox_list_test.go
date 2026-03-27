@@ -93,6 +93,47 @@ func TestRunSandboxList_EmptyRegistry(t *testing.T) {
 	}
 }
 
+func TestResolveProviderFromGlobalConfig_IgnoresProjectConfigWhenGlobalFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", dir)
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir(%q) error: %v", dir, err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `daytona:
+  apiKey: local-key
+  serverURL: https://daytona.example
+sandbox:
+  provider: daytona
+`)
+
+	provider, err := resolveProviderFromGlobalConfig("daytona")
+	if err != nil {
+		t.Fatalf("resolveProviderFromGlobalConfig() error: %v", err)
+	}
+
+	daytonaProvider, ok := provider.(*sandbox.DaytonaProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *sandbox.DaytonaProvider", provider)
+	}
+	if daytonaProvider.APIKey != "" {
+		t.Fatalf("APIKey = %q, want empty global default", daytonaProvider.APIKey)
+	}
+	if daytonaProvider.ServerURL != "" {
+		t.Fatalf("ServerURL = %q, want empty global default", daytonaProvider.ServerURL)
+	}
+}
+
 func TestRunSandboxList_JSONExcludesStagedRemovalBackups(t *testing.T) {
 	setupListTest(t)
 
@@ -1523,6 +1564,42 @@ func TestQueryOneStatus_Success(t *testing.T) {
 	}
 	if inst.Status != sandbox.StatusRunning {
 		t.Errorf("status = %q, want %q after successful query", inst.Status, sandbox.StatusRunning)
+	}
+}
+
+func TestQueryOneStatus_SuccessUpdatesPublicIPFromLiveStatus(t *testing.T) {
+	setupListTest(t)
+
+	inst := &sandbox.SandboxState{
+		ID:       "id-1",
+		Name:     "test",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusStopped,
+	}
+	writeInstance(t, inst)
+
+	resolve := func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{
+			statusOut: "ID  Name  Status  Public IPv4\n123  test  active  203.0.113.25\n",
+		}, nil
+	}
+
+	if err := queryOneStatus(inst, resolve); err != nil {
+		t.Fatalf("queryOneStatus() unexpected error: %v", err)
+	}
+	if inst.Status != sandbox.StatusRunning {
+		t.Fatalf("status = %q, want %q after successful query", inst.Status, sandbox.StatusRunning)
+	}
+	if inst.IP != "203.0.113.25" {
+		t.Fatalf("IP = %q, want %q after successful query", inst.IP, "203.0.113.25")
+	}
+
+	loaded, err := sandbox.LoadInstance("test")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.IP != "203.0.113.25" {
+		t.Fatalf("loaded IP = %q, want %q", loaded.IP, "203.0.113.25")
 	}
 }
 

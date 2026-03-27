@@ -173,6 +173,38 @@ func (d *DigitalOceanProvider) lookupDropletID(ctx context.Context, name string,
 	return id, nil
 }
 
+func (d *DigitalOceanProvider) resolveLifecycleTarget(ctx context.Context, info *ConnectInfo, out io.Writer) (string, error) {
+	if info != nil {
+		if target := strings.TrimSpace(info.WorkspaceID); target != "" {
+			return target, nil
+		}
+		if name := strings.TrimSpace(info.Name); name != "" {
+			return d.lookupDropletID(ctx, name, out)
+		}
+	}
+	return "", fmt.Errorf("sandbox workspace ID is required")
+}
+
+func (d *DigitalOceanProvider) lookupDropletIP(ctx context.Context, target string) (string, error) {
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
+		"--format", "PublicIPv4",
+		"--no-header",
+	)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Run(); err != nil {
+		return "", wrapDoctlError("compute droplet get", err, stderrBuf.String())
+	}
+
+	ip := strings.TrimSpace(stdoutBuf.String())
+	if ip == "" {
+		return "", fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", target)
+	}
+	return ip, nil
+}
+
 func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
@@ -301,15 +333,11 @@ func (d *DigitalOceanProvider) Stop(ctx context.Context, info *ConnectInfo, out 
 		return err
 	}
 
-	target := ""
-	if info != nil {
-		target = strings.TrimSpace(info.WorkspaceID)
-	}
-	if target == "" {
-		return fmt.Errorf("sandbox workspace ID is required")
-	}
-
 	safeOut := synchronizedWriter(out)
+	target, err := d.resolveLifecycleTarget(ctx, info, safeOut)
+	if err != nil {
+		return err
+	}
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", target)
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = safeOut
@@ -326,15 +354,11 @@ func (d *DigitalOceanProvider) Delete(ctx context.Context, info *ConnectInfo, ou
 		return err
 	}
 
-	target := ""
-	if info != nil {
-		target = strings.TrimSpace(info.WorkspaceID)
-	}
-	if target == "" {
-		return fmt.Errorf("sandbox workspace ID is required")
-	}
-
 	safeOut := synchronizedWriter(out)
+	target, err := d.resolveLifecycleTarget(ctx, info, safeOut)
+	if err != nil {
+		return err
+	}
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "delete", target, "--force")
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = safeOut
@@ -351,15 +375,11 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, ou
 		return err
 	}
 
-	target := ""
-	if info != nil {
-		target = strings.TrimSpace(info.WorkspaceID)
-	}
-	if target == "" {
-		return fmt.Errorf("sandbox workspace ID is required")
-	}
-
 	safeOut := synchronizedWriter(out)
+	target, err := d.resolveLifecycleTarget(ctx, info, safeOut)
+	if err != nil {
+		return err
+	}
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
 		"--format", "ID,Name,Status,PublicIPv4",
 	)
@@ -378,42 +398,26 @@ func (d *DigitalOceanProvider) resolveConnectIP(info *ConnectInfo) (string, erro
 		if ip := strings.TrimSpace(info.IP); ip != "" {
 			return ip, nil
 		}
+		target := strings.TrimSpace(info.WorkspaceID)
+		if target == "" {
+			target = strings.TrimSpace(info.Name)
+		}
+		if target != "" {
+			if err := d.ensureDoctl(); err != nil {
+				return "", err
+			}
+			ip, err := d.lookupDropletIP(context.Background(), target)
+			if err != nil {
+				return "", err
+			}
+			info.IP = ip
+			return ip, nil
+		}
 	}
-
-	target := ""
-	if info != nil {
-		target = strings.TrimSpace(info.WorkspaceID)
-	}
-	if target == "" {
-		return "", fmt.Errorf("sandbox IP is required")
-	}
-
-	cmd := d.commandContext(context.Background(), "doctl", "compute", "droplet", "get", target,
-		"--format", "ID,PublicIPv4",
-		"--no-header",
-	)
-	var stdoutBuf bytes.Buffer
-	var stderrBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
-
-	if err := cmd.Run(); err != nil {
-		return "", wrapDoctlError("compute droplet get", err, stderrBuf.String())
-	}
-
-	_, ip := parseDODropletInfo(stdoutBuf.String())
-	ip = strings.TrimSpace(ip)
-	if ip == "" {
-		return "", fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", target)
-	}
-	return ip, nil
+	return "", fmt.Errorf("sandbox IP is required")
 }
 
 func (d *DigitalOceanProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	if err := d.ensureDoctl(); err != nil {
-		return nil, err
-	}
-
 	ip, err := d.resolveConnectIP(info)
 	if err != nil {
 		return nil, err
@@ -431,10 +435,6 @@ func (d *DigitalOceanProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	if err := d.ensureDoctl(); err != nil {
-		return nil, err
-	}
-
 	ip, err := d.resolveConnectIP(info)
 	if err != nil {
 		return nil, err

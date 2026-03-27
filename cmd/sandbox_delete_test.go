@@ -883,7 +883,7 @@ func TestRunSandboxDelete_AutoSelectSingleSandbox(t *testing.T) {
 	}
 }
 
-func TestRunSandboxDelete_AutoSelectIgnoresStagedRemovalBackups(t *testing.T) {
+func TestRunSandboxDelete_AutoSelectErrorsWithActiveAndStagedEntries(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
 		{Name: "only-one", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 		{Name: "staged-backup", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
@@ -897,18 +897,17 @@ func TestRunSandboxDelete_AutoSelectIgnoresStagedRemovalBackups(t *testing.T) {
 	var out bytes.Buffer
 
 	err := runSandboxDelete(nil, false, false, "", nil, &out, mock)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-
-	if len(mock.deleteCalls) != 1 {
-		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	if !strings.Contains(err.Error(), "multiple sandboxes found: only-one, staged-backup") {
+		t.Fatalf("error = %q, want ambiguity including staged entry", err)
 	}
-	if mock.deleteCalls[0] != "only-one" {
-		t.Errorf("Delete name = %q, want %q", mock.deleteCalls[0], "only-one")
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected 0 Delete calls, got %d", len(mock.deleteCalls))
 	}
-	if !strings.Contains(out.String(), `Deleting only sandbox "only-one"`) {
-		t.Errorf("output %q missing auto-select hint", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("output = %q, want no delete output on ambiguity", out.String())
 	}
 }
 
@@ -1660,5 +1659,32 @@ func TestDeleteConnectInfo_DigitalOceanFallbackOrder(t *testing.T) {
 				t.Fatalf("WorkspaceID = %q, want %q", info.WorkspaceID, tt.wantWorkspaceID)
 			}
 		})
+	}
+}
+
+func TestValidateDeleteConnectInfo_DigitalOceanAllowsNameFallback(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "do-box",
+		Provider: "digitalocean",
+	}
+
+	err := validateDeleteConnectInfo(target, &sandbox.ConnectInfo{Name: "do-box"})
+	if err != nil {
+		t.Fatalf("validateDeleteConnectInfo() unexpected error: %v", err)
+	}
+}
+
+func TestValidateDeleteConnectInfo_DigitalOceanRequiresIdentifier(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "do-box",
+		Provider: "digitalocean",
+	}
+
+	err := validateDeleteConnectInfo(target, &sandbox.ConnectInfo{})
+	if err == nil {
+		t.Fatal("validateDeleteConnectInfo() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing DigitalOcean droplet ID and name") {
+		t.Fatalf("error = %q, want missing identifier message", err.Error())
 	}
 }

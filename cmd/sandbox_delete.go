@@ -54,11 +54,10 @@ func init() {
 	sandboxDeleteCmd.Flags().String("pattern", "", "Delete sandboxes matching a glob pattern")
 }
 
-// sandboxDeleteListActiveInstances is injectable for testing and resolves only
-// active registry entries so bulk delete selectors never treat staged removal
-// backups as live targets. Explicit name flows still use LoadInstance so an
-// interrupted delete can be resumed intentionally.
-var sandboxDeleteListActiveInstances = sandbox.ListActiveInstances
+// sandboxDeleteListInstances is injectable for testing and resolves registry
+// entries including staged removal fallbacks so interrupted deletes can be
+// recovered through bulk selection paths.
+var sandboxDeleteListInstances = sandbox.ListInstances
 
 // sandboxDeleteLoadInstance is injectable for testing named target resolution.
 var sandboxDeleteLoadInstance = sandbox.LoadInstance
@@ -116,9 +115,9 @@ func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern stri
 //
 // Resolution rules:
 //   - Explicit names: load each from registry
-//   - --all: all active sandboxes
-//   - --pattern: active sandboxes matching the glob
-//   - No args/flags: auto-resolve from active sandboxes (1 → select, 0 → error, >1 → error)
+//   - --all: all sandboxes, including staged removal fallbacks
+//   - --pattern: sandboxes matching the glob, including staged removal fallbacks
+//   - No args/flags: auto-resolve from all deletable sandboxes, including staged removal fallbacks
 func resolveDeleteTargets(args []string, allFlag bool, pattern string) ([]*sandbox.SandboxState, string, error) {
 	if err := validateDeleteSelectors(args, allFlag, pattern); err != nil {
 		return nil, "", err
@@ -185,9 +184,10 @@ func resolveDeleteByNames(names []string) ([]*sandbox.SandboxState, string, erro
 	return targets, "", nil
 }
 
-// resolveDeleteAll returns all active sandboxes from the registry.
+// resolveDeleteAll returns all sandboxes from the registry, including staged
+// removal fallbacks for interrupted delete recovery.
 func resolveDeleteAll() ([]*sandbox.SandboxState, string, error) {
-	instances, err := sandboxDeleteListActiveInstances()
+	instances, err := sandboxDeleteListInstances()
 	if err != nil {
 		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
 	}
@@ -207,7 +207,7 @@ func resolveDeleteByPattern(pattern string) ([]*sandbox.SandboxState, string, er
 		return nil, "", fmt.Errorf("invalid pattern %q: %w", pattern, err)
 	}
 
-	instances, err := sandboxDeleteListActiveInstances()
+	instances, err := sandboxDeleteListInstances()
 	if err != nil {
 		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
 	}
@@ -229,9 +229,9 @@ func resolveDeleteByPattern(pattern string) ([]*sandbox.SandboxState, string, er
 }
 
 // resolveDeleteAutoSelect auto-resolves when no args or flags are provided.
-// Rules: 1 active → select + hint, 0 → error, >1 → error with choices.
+// Rules: 1 match → select + hint, 0 → error, >1 → error with choices.
 func resolveDeleteAutoSelect() ([]*sandbox.SandboxState, string, error) {
-	instances, err := sandboxDeleteListActiveInstances()
+	instances, err := sandboxDeleteListInstances()
 	if err != nil {
 		return nil, "", fmt.Errorf("listing sandboxes: %w", err)
 	}
@@ -406,7 +406,10 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, o
 }
 
 func finalizeInterruptedDeleteRetry(provider string, pendingRemoval sandboxDeletePendingRemoval, err error) bool {
-	if err == nil || pendingRemoval == nil || !pendingRemoval.AlreadyStaged() {
+	if err == nil || pendingRemoval == nil {
+		return false
+	}
+	if !pendingRemoval.AlreadyStaged() {
 		return false
 	}
 
@@ -431,8 +434,14 @@ func validateDeleteConnectInfo(target *sandbox.SandboxState, info *sandbox.Conne
 	if target == nil {
 		return nil
 	}
-	if target.Provider == "digitalocean" && strings.TrimSpace(info.WorkspaceID) == "" {
-		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID", target.Name)
+	if target.Provider != "digitalocean" {
+		return nil
+	}
+	if info == nil {
+		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID and name", target.Name)
+	}
+	if strings.TrimSpace(info.WorkspaceID) == "" && strings.TrimSpace(info.Name) == "" {
+		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID and name", target.Name)
 	}
 	return nil
 }

@@ -241,6 +241,66 @@ func TestDigitalOceanProvider_Status_VerifiesArgs(t *testing.T) {
 	}
 }
 
+func TestDigitalOceanProvider_LifecycleOpsResolveWorkspaceIDFromName(t *testing.T) {
+	tests := []struct {
+		name       string
+		run        func(*DigitalOceanProvider) error
+		wantSecond string
+	}{
+		{
+			name: "stop",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+			wantSecond: "doctl compute droplet-action shutdown 123456789",
+		},
+		{
+			name: "delete",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+			wantSecond: "doctl compute droplet delete 123456789 --force",
+		},
+		{
+			name: "status",
+			run: func(p *DigitalOceanProvider) error {
+				return p.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			},
+			wantSecond: "doctl compute droplet get 123456789 --format ID,Name,Status,PublicIPv4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls [][]string
+			dp := &DigitalOceanProvider{
+				lookPath: doctlLookPathStub,
+				cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+					calls = append(calls, append([]string{name}, args...))
+					if len(calls) == 1 {
+						return exec.CommandContext(ctx, "echo", "123456789")
+					}
+					return exec.CommandContext(ctx, "true")
+				},
+			}
+
+			err := tt.run(dp)
+			if err != nil {
+				t.Fatalf("unexpected error resolving lifecycle target by name: %v", err)
+			}
+			if len(calls) != 2 {
+				t.Fatalf("call count = %d, want 2", len(calls))
+			}
+			if got := strings.Join(calls[0], " "); got != "doctl compute droplet get my-droplet --format ID --no-header" {
+				t.Fatalf("lookup args = %q, want name-based droplet ID lookup", got)
+			}
+			if got := strings.Join(calls[1], " "); got != tt.wantSecond {
+				t.Fatalf("lifecycle args = %q, want %q", got, tt.wantSecond)
+			}
+		})
+	}
+}
+
 func TestDigitalOceanProvider_RequiresWorkspaceIDForLifecycleOps(t *testing.T) {
 	tests := []struct {
 		name string
@@ -249,19 +309,19 @@ func TestDigitalOceanProvider_RequiresWorkspaceIDForLifecycleOps(t *testing.T) {
 		{
 			name: "stop",
 			run: func(p *DigitalOceanProvider) error {
-				return p.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+				return p.Stop(context.Background(), &ConnectInfo{}, &bytes.Buffer{})
 			},
 		},
 		{
 			name: "delete",
 			run: func(p *DigitalOceanProvider) error {
-				return p.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+				return p.Delete(context.Background(), &ConnectInfo{}, &bytes.Buffer{})
 			},
 		},
 		{
 			name: "status",
 			run: func(p *DigitalOceanProvider) error {
-				return p.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+				return p.Status(context.Background(), &ConnectInfo{}, &bytes.Buffer{})
 			},
 		},
 	}
@@ -285,13 +345,13 @@ func TestDigitalOceanProvider_RequiresWorkspaceIDForLifecycleOps(t *testing.T) {
 				t.Fatalf("error = %q, want missing workspace ID message", err.Error())
 			}
 			if called {
-				t.Fatalf("expected no doctl invocation when workspace ID is missing")
+				t.Fatalf("expected no doctl invocation when workspace ID and name are missing")
 			}
 		})
 	}
 }
 
-func TestDigitalOceanProvider_DoctlNotFound(t *testing.T) {
+func TestDigitalOceanProvider_DoctlNotFoundForLifecycleCommands(t *testing.T) {
 	// Save original PATH and set empty to ensure doctl is not found
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", "")
@@ -324,16 +384,6 @@ func TestDigitalOceanProvider_DoctlNotFound(t *testing.T) {
 	statusErr := dp.Status(ctx, &ConnectInfo{Name: "test"}, &out)
 	if statusErr == nil || !strings.Contains(statusErr.Error(), "doctl not found") {
 		t.Errorf("Status() error = %v, want 'doctl not found'", statusErr)
-	}
-
-	_, sshErr := dp.SSH(&ConnectInfo{Name: "test"})
-	if sshErr == nil || !strings.Contains(sshErr.Error(), "doctl not found") {
-		t.Errorf("SSH() error = %v, want 'doctl not found'", sshErr)
-	}
-
-	_, execErr := dp.Exec(&ConnectInfo{Name: "test"}, []string{"ls"})
-	if execErr == nil || !strings.Contains(execErr.Error(), "doctl not found") {
-		t.Errorf("Exec() error = %v, want 'doctl not found'", execErr)
 	}
 }
 
@@ -383,7 +433,7 @@ func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
 		lookPath: doctlLookPathStub,
 	}
 
-	_, err := dp.SSH(&ConnectInfo{Name: "my-droplet"})
+	_, err := dp.SSH(&ConnectInfo{})
 	if err == nil {
 		t.Fatal("SSH() expected error for missing IP, got nil")
 	}
@@ -393,12 +443,12 @@ func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
 }
 
 func TestDigitalOceanProvider_SSH_ResolvesIPFromWorkspaceID(t *testing.T) {
-	var capturedArgs []string
+	var calls [][]string
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			capturedArgs = append([]string{name}, args...)
-			return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			calls = append(calls, append([]string{name}, args...))
+			return exec.CommandContext(ctx, "echo", "10.20.30.40")
 		},
 	}
 
@@ -406,18 +456,15 @@ func TestDigitalOceanProvider_SSH_ResolvesIPFromWorkspaceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
-
-	joinedLookup := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joinedLookup, "doctl compute droplet get 123456789") {
-		t.Fatalf("SSH() lookup args = %q, want droplet lookup by workspace ID", joinedLookup)
+	if len(calls) != 1 {
+		t.Fatalf("SSH() doctl calls = %d, want 1", len(calls))
 	}
-	if !strings.Contains(joinedLookup, "--format ID,PublicIPv4") {
-		t.Fatalf("SSH() lookup args = %q, want PublicIPv4 format request", joinedLookup)
+	lookupArgs := strings.Join(calls[0], " ")
+	if !strings.Contains(lookupArgs, "doctl compute droplet get 123456789 --format PublicIPv4 --no-header") {
+		t.Fatalf("SSH() lookup args = %q", lookupArgs)
 	}
-
-	joinedSSH := strings.Join(cmd.Args, " ")
-	if !strings.Contains(joinedSSH, "root@10.20.30.40") {
-		t.Fatalf("SSH() command = %q, want resolved IP", joinedSSH)
+	if got := strings.Join(cmd.Args, " "); !strings.Contains(got, "root@10.20.30.40") {
+		t.Fatalf("SSH() command = %q, want resolved IP", got)
 	}
 }
 
@@ -426,7 +473,7 @@ func TestDigitalOceanProvider_Exec_MissingIP(t *testing.T) {
 		lookPath: doctlLookPathStub,
 	}
 
-	_, err := dp.Exec(&ConnectInfo{Name: "my-droplet"}, []string{"ls"})
+	_, err := dp.Exec(&ConnectInfo{}, []string{"ls"})
 	if err == nil {
 		t.Fatal("Exec() expected error for missing IP, got nil")
 	}
@@ -435,32 +482,29 @@ func TestDigitalOceanProvider_Exec_MissingIP(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_Exec_ResolvesIPFromWorkspaceID(t *testing.T) {
-	var capturedArgs []string
+func TestDigitalOceanProvider_Exec_ResolvesIPFromName(t *testing.T) {
+	var calls [][]string
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			capturedArgs = append([]string{name}, args...)
-			return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			calls = append(calls, append([]string{name}, args...))
+			return exec.CommandContext(ctx, "echo", "10.20.30.40")
 		},
 	}
 
-	cmd, err := dp.Exec(&ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, []string{"ls"})
+	cmd, err := dp.Exec(&ConnectInfo{Name: "my-droplet"}, []string{"ls"})
 	if err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
-
-	joinedLookup := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joinedLookup, "doctl compute droplet get 123456789") {
-		t.Fatalf("Exec() lookup args = %q, want droplet lookup by workspace ID", joinedLookup)
+	if len(calls) != 1 {
+		t.Fatalf("Exec() doctl calls = %d, want 1", len(calls))
 	}
-	if !strings.Contains(joinedLookup, "--format ID,PublicIPv4") {
-		t.Fatalf("Exec() lookup args = %q, want PublicIPv4 format request", joinedLookup)
+	lookupArgs := strings.Join(calls[0], " ")
+	if !strings.Contains(lookupArgs, "doctl compute droplet get my-droplet --format PublicIPv4 --no-header") {
+		t.Fatalf("Exec() lookup args = %q", lookupArgs)
 	}
-
-	joinedExec := strings.Join(cmd.Args, " ")
-	if !strings.Contains(joinedExec, "root@10.20.30.40") {
-		t.Fatalf("Exec() command = %q, want resolved IP", joinedExec)
+	if got := strings.Join(cmd.Args, " "); !strings.Contains(got, "root@10.20.30.40") {
+		t.Fatalf("Exec() command = %q, want resolved IP", got)
 	}
 }
 

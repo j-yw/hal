@@ -82,16 +82,44 @@ func runSandboxAutoMigrate(projectDir string, out io.Writer) error {
 	return nil
 }
 
-// resolveProviderFromState creates a Provider from the state's provider field
-// and the project config. Used by stop, delete, status, and ssh commands.
-func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.Provider, error) {
+func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
+	globalCfg, err := sandbox.LoadGlobalConfig()
+	if err != nil {
+		return "", sandbox.ProviderConfig{}, fmt.Errorf("loading global sandbox config: %w", err)
+	}
+
+	globalConfigPath := sandbox.GlobalConfigPath()
+	if globalConfigPath == "" {
+		return "", sandbox.ProviderConfig{}, fmt.Errorf("resolve global sandbox config path")
+	}
+	if _, err := os.Stat(globalConfigPath); err == nil {
+		providerName, provCfg := providerConfigFromGlobal(globalCfg)
+		return providerName, provCfg, nil
+	} else if !os.IsNotExist(err) {
+		return "", sandbox.ProviderConfig{}, fmt.Errorf("stat global sandbox config: %w", err)
+	}
+
+	legacyConfigPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
+	if _, err := os.Stat(legacyConfigPath); err != nil {
+		if os.IsNotExist(err) {
+			providerName, provCfg := providerConfigFromGlobal(globalCfg)
+			return providerName, provCfg, nil
+		}
+		return "", sandbox.ProviderConfig{}, fmt.Errorf("stat legacy sandbox config: %w", err)
+	}
+
 	sandboxCfg, err := compound.LoadSandboxConfig(dir)
 	if err != nil {
-		return nil, fmt.Errorf("loading sandbox config: %w", err)
+		return "", sandbox.ProviderConfig{}, fmt.Errorf("loading legacy sandbox config: %w", err)
 	}
 	dayCfg, err := compound.LoadDaytonaConfig(dir)
 	if err != nil {
-		return nil, fmt.Errorf("loading daytona config: %w", err)
+		return "", sandbox.ProviderConfig{}, fmt.Errorf("loading legacy daytona config: %w", err)
+	}
+
+	providerName := "daytona"
+	if sandboxCfg != nil && strings.TrimSpace(sandboxCfg.Provider) != "" {
+		providerName = strings.TrimSpace(sandboxCfg.Provider)
 	}
 
 	provCfg := sandbox.ProviderConfig{}
@@ -112,44 +140,59 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 		provCfg.TailscaleLockdown = sandboxCfg.TailscaleLockdown
 	}
 
-	return sandbox.ProviderFromConfig(state.Provider, provCfg)
+	return providerName, provCfg, nil
+}
+
+func providerConfigFromGlobal(cfg *sandbox.GlobalConfig) (string, sandbox.ProviderConfig) {
+	providerName := "daytona"
+	if cfg != nil && strings.TrimSpace(cfg.Provider) != "" {
+		providerName = strings.TrimSpace(cfg.Provider)
+	}
+
+	provCfg := sandbox.ProviderConfig{}
+	if cfg != nil {
+		provCfg.DaytonaAPIKey = cfg.Daytona.APIKey
+		provCfg.DaytonaServerURL = cfg.Daytona.ServerURL
+		provCfg.HetznerSSHKey = cfg.Hetzner.SSHKey
+		provCfg.HetznerServerType = cfg.Hetzner.ServerType
+		provCfg.HetznerImage = cfg.Hetzner.Image
+		provCfg.DigitalOceanSSHKey = cfg.DigitalOcean.SSHKey
+		provCfg.DigitalOceanSize = cfg.DigitalOcean.Size
+		provCfg.LightsailRegion = cfg.Lightsail.Region
+		provCfg.LightsailAvailabilityZone = cfg.Lightsail.AvailabilityZone
+		provCfg.LightsailBundle = cfg.Lightsail.Bundle
+		provCfg.LightsailKeyPairName = cfg.Lightsail.KeyPairName
+		provCfg.TailscaleLockdown = cfg.TailscaleLockdown
+	}
+
+	return providerName, provCfg
+}
+
+// resolveProviderFromState creates a Provider from the state's provider field
+// and current sandbox config. Global config is authoritative; project-local
+// .hal/config.yaml is only used as a legacy fallback when no global config
+// exists. Used by stop, delete, status, and ssh commands.
+func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.Provider, error) {
+	configuredProvider, provCfg, err := resolveProviderConfig(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	providerName := configuredProvider
+	if state != nil && strings.TrimSpace(state.Provider) != "" {
+		providerName = strings.TrimSpace(state.Provider)
+	}
+
+	return sandbox.ProviderFromConfig(providerName, provCfg)
 }
 
 // resolveProviderFromName creates a Provider for delete-by-name paths where no
 // matching local sandbox state exists. It uses the configured sandbox provider.
 func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
-	sandboxCfg, err := compound.LoadSandboxConfig(dir)
+	providerName, provCfg, err := resolveProviderConfig(dir)
 	if err != nil {
-		return nil, fmt.Errorf("loading sandbox config: %w", err)
+		return nil, err
 	}
-	dayCfg, err := compound.LoadDaytonaConfig(dir)
-	if err != nil {
-		return nil, fmt.Errorf("loading daytona config: %w", err)
-	}
-
-	provCfg := sandbox.ProviderConfig{}
-	if dayCfg != nil {
-		provCfg.DaytonaAPIKey = dayCfg.APIKey
-		provCfg.DaytonaServerURL = dayCfg.ServerURL
-	}
-	if sandboxCfg != nil {
-		provCfg.HetznerSSHKey = sandboxCfg.Hetzner.SSHKey
-		provCfg.HetznerServerType = sandboxCfg.Hetzner.ServerType
-		provCfg.HetznerImage = sandboxCfg.Hetzner.Image
-		provCfg.DigitalOceanSSHKey = sandboxCfg.DigitalOcean.SSHKey
-		provCfg.DigitalOceanSize = sandboxCfg.DigitalOcean.Size
-		provCfg.LightsailRegion = sandboxCfg.Lightsail.Region
-		provCfg.LightsailAvailabilityZone = sandboxCfg.Lightsail.AvailabilityZone
-		provCfg.LightsailBundle = sandboxCfg.Lightsail.Bundle
-		provCfg.LightsailKeyPairName = sandboxCfg.Lightsail.KeyPairName
-		provCfg.TailscaleLockdown = sandboxCfg.TailscaleLockdown
-	}
-
-	providerName := sandboxCfg.Provider
-	if strings.TrimSpace(providerName) == "" {
-		providerName = "daytona"
-	}
-
 	return sandbox.ProviderFromConfig(providerName, provCfg)
 }
 

@@ -82,8 +82,8 @@ const liveStatusTimeout = 10 * time.Second
 // using global config. Package-level var for test injection.
 var sandboxListResolveProvider = resolveProviderFromGlobalConfig
 
-// sandboxListInstances resolves only active registry entries so staged delete
-// backups never appear in list output or live-refresh state.
+// sandboxListInstances resolves active registry entries for default local list
+// rendering, excluding staged removal backups used only for delete recovery.
 var sandboxListInstances = sandbox.ListActiveInstances
 
 // sandboxListLoadActiveInstance checks whether a sandbox still has an active
@@ -93,7 +93,8 @@ var sandboxListLoadActiveInstance = sandbox.LoadActiveInstance
 // sandboxListForceWrite persists live status updates back to the registry.
 var sandboxListForceWrite = sandbox.ForceWriteInstance
 
-// resolveProviderFromGlobalConfig creates a Provider from global config settings.
+// resolveProviderFromGlobalConfig creates a Provider from global config settings
+// or global defaults when the config file has not been written yet.
 func resolveProviderFromGlobalConfig(providerName string) (sandbox.Provider, error) {
 	globalCfg, err := sandbox.LoadGlobalConfig()
 	if err != nil {
@@ -163,7 +164,7 @@ type liveStatusWarning struct {
 }
 
 // runSandboxList renders sandbox list as table (default) or JSON (--json).
-// When liveMode is true, queries each sandbox's provider for fresh status before rendering.
+// When liveMode is true, queries each active sandbox's provider for fresh status before rendering.
 func runSandboxList(out io.Writer, jsonMode, liveMode bool) error {
 	return runSandboxListWithWriters(out, nil, jsonMode, liveMode)
 }
@@ -214,7 +215,7 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 	return nil
 }
 
-// queryLiveStatuses queries each sandbox's provider for current status.
+// queryLiveStatuses queries each active sandbox's provider for current status.
 // Instances are updated in-place. Each query has a 10s timeout.
 // Failures preserve the persisted status and are returned as warnings.
 func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) []liveStatusWarning {
@@ -261,7 +262,7 @@ func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Pr
 	defer cancel()
 
 	info := sandbox.ConnectInfoFromState(inst)
-	status, err := queryProviderLiveStatus(ctx, provider, info, inst.Status)
+	liveStatus, err := queryProviderLiveStatus(ctx, provider, info)
 	if err != nil {
 		return err
 	}
@@ -269,7 +270,7 @@ func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Pr
 	if err != nil {
 		return fmt.Errorf("load active sandbox %q: %w", inst.Name, err)
 	}
-	if err := persistLiveStatus(inst, status, sandboxListNow(), writeTarget); err != nil {
+	if err := persistLiveStatusResult(inst, liveStatus, sandboxListNow(), writeTarget); err != nil {
 		if _, ok := asLocalStateSyncWarning(err); ok {
 			return err
 		}
@@ -371,7 +372,10 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 			tailscale = inst.TailscaleIP
 		}
 
-		age := formatAge(now.Sub(inst.CreatedAt))
+		age := "—"
+		if !inst.CreatedAt.IsZero() {
+			age = formatAge(now.Sub(inst.CreatedAt))
+		}
 
 		autoOff := "off"
 		if inst.AutoShutdown {

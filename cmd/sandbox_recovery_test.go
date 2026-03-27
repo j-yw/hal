@@ -68,3 +68,54 @@ func TestResolveDeleteAllIncludesStagedEntries(t *testing.T) {
 		t.Fatalf("resolveDeleteAll() targets = %#v, want %q", targets, name)
 	}
 }
+
+func TestResolveDeleteByPatternIncludesStagedEntries(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	name := "staged-worker"
+	if err := sandbox.SaveInstance(&sandbox.SandboxState{Name: name, Status: sandbox.StatusRunning}); err != nil {
+		t.Fatalf("SaveInstance(%q) failed: %v", name, err)
+	}
+	pending, err := sandbox.StageInstanceRemoval(name)
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval(%q) failed: %v", name, err)
+	}
+	t.Cleanup(func() {
+		_ = pending.Rollback()
+	})
+
+	targets, _, err := resolveDeleteByPattern("staged-*")
+	if err != nil {
+		t.Fatalf("resolveDeleteByPattern() failed: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Name != name {
+		t.Fatalf("resolveDeleteByPattern() targets = %#v, want %q", targets, name)
+	}
+}
+
+func TestResolveDeleteAutoSelectFallsBackToStagedEntries(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	name := "staged-worker"
+	if err := sandbox.SaveInstance(&sandbox.SandboxState{Name: name, Status: sandbox.StatusRunning}); err != nil {
+		t.Fatalf("SaveInstance(%q) failed: %v", name, err)
+	}
+	pending, err := sandbox.StageInstanceRemoval(name)
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval(%q) failed: %v", name, err)
+	}
+	t.Cleanup(func() {
+		_ = pending.Rollback()
+	})
+
+	targets, hint, err := resolveDeleteAutoSelect()
+	if err != nil {
+		t.Fatalf("resolveDeleteAutoSelect() failed: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Name != name {
+		t.Fatalf("resolveDeleteAutoSelect() targets = %#v, want %q", targets, name)
+	}
+	if hint != `Deleting only sandbox "staged-worker"...` {
+		t.Fatalf("resolveDeleteAutoSelect() hint = %q, want staged fallback hint", hint)
+	}
+}

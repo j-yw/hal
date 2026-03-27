@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -41,9 +42,15 @@ var liveStoppedTokens = map[string]struct{}{
 }
 
 var liveColumnSplitPattern = regexp.MustCompile(`\s{2,}`)
+var errLiveStatusUnparseable = errors.New("provider status output did not contain a recognizable live status")
 
 type localStateSyncWarning struct {
 	err error
+}
+
+type liveStatusResult struct {
+	Status string
+	IP     string
 }
 
 func (w *localStateSyncWarning) Error() string {
@@ -82,25 +89,24 @@ func formatLiveStatusWarning(name string, err error) string {
 	return fmt.Sprintf("warning: live status lookup failed for %q: %v\n", name, err)
 }
 
-func queryProviderLiveStatus(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, fallback string) (string, error) {
+func queryProviderLiveStatus(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo) (liveStatusResult, error) {
 	var out bytes.Buffer
 	if err := provider.Status(ctx, info, &out); err != nil {
-		return sandbox.StatusUnknown, err
+		return liveStatusResult{Status: sandbox.StatusUnknown}, err
 	}
-	return normalizeLiveStatus(out.String(), fallback), nil
+	status, err := normalizeLiveStatus(out.String())
+	return liveStatusResult{
+		Status: status,
+		IP:     parseLiveIP(out.String()),
+	}, err
 }
 
-func normalizeLiveStatus(output, fallback string) string {
+func normalizeLiveStatus(output string) (string, error) {
 	status := parseLiveStatus(output)
 	if status != sandbox.StatusUnknown {
-		return status
+		return status, nil
 	}
-	switch strings.TrimSpace(strings.ToLower(fallback)) {
-	case sandbox.StatusRunning, sandbox.StatusStopped, sandbox.StatusUnknown:
-		return strings.TrimSpace(strings.ToLower(fallback))
-	default:
-		return sandbox.StatusUnknown
-	}
+	return sandbox.StatusUnknown, errLiveStatusUnparseable
 }
 
 func parseLiveStatus(output string) string {
@@ -141,6 +147,20 @@ func parseStructuredLiveStatusValue(output string) string {
 	return ""
 }
 
+func parseLiveIP(output string) string {
+	lines := strings.Split(output, "\n")
+	if value := parseLabeledLiveIP(lines); value != "" {
+		return value
+	}
+	if value := parsePipedLiveIP(lines); value != "" {
+		return value
+	}
+	if value := parseColumnarLiveIP(lines); value != "" {
+		return value
+	}
+	return ""
+}
+
 func parseLabeledLiveStatus(lines []string) string {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -162,12 +182,41 @@ func parseLabeledLiveStatus(lines []string) string {
 	return ""
 }
 
+func parseLabeledLiveIP(lines []string) string {
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if idx := strings.IndexRune(line, ':'); idx >= 0 {
+			if isLiveIPLabel(normalizeLiveStatusLabel(line[:idx])) {
+				return extractLiveIPValue(line[idx+1:])
+			}
+			continue
+		}
+
+		cells := splitColumnLiveStatusCells(line)
+		if len(cells) == 2 && isLiveIPLabel(normalizeLiveStatusLabel(cells[0])) {
+			return extractLiveIPValue(cells[1])
+		}
+	}
+	return ""
+}
+
 func parsePipedLiveStatus(lines []string) string {
 	return parseTabularLiveStatus(lines, splitPipeLiveStatusCells)
 }
 
 func parseColumnarLiveStatus(lines []string) string {
 	return parseTabularLiveStatus(lines, splitColumnLiveStatusCells)
+}
+
+func parsePipedLiveIP(lines []string) string {
+	return parseTabularLiveIP(lines, splitPipeLiveStatusCells)
+}
+
+func parseColumnarLiveIP(lines []string) string {
+	return parseTabularLiveIP(lines, splitColumnLiveStatusCells)
 }
 
 func parseTabularLiveStatus(lines []string, split func(string) []string) string {
@@ -185,6 +234,28 @@ func parseTabularLiveStatus(lines []string, split func(string) []string) string 
 			}
 			if statusIndex < len(row) {
 				return strings.TrimSpace(row[statusIndex])
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+func parseTabularLiveIP(lines []string, split func(string) []string) string {
+	for i := 0; i < len(lines); i++ {
+		header := split(lines[i])
+		ipIndex := liveIPFieldIndex(header)
+		if ipIndex == -1 {
+			continue
+		}
+
+		for j := i + 1; j < len(lines); j++ {
+			row := split(lines[j])
+			if len(row) == 0 || isLiveStatusDividerRow(row) {
+				continue
+			}
+			if ipIndex < len(row) {
+				return extractLiveIPValue(row[ipIndex])
 			}
 			return ""
 		}
@@ -231,6 +302,15 @@ func liveStatusFieldIndex(cells []string) int {
 	return -1
 }
 
+func liveIPFieldIndex(cells []string) int {
+	for i, cell := range cells {
+		if isLiveIPLabel(normalizeLiveStatusLabel(cell)) {
+			return i
+		}
+	}
+	return -1
+}
+
 func isLiveStatusDividerRow(cells []string) bool {
 	if len(cells) == 0 {
 		return true
@@ -255,6 +335,31 @@ func isLiveStatusLabel(label string) bool {
 		return true
 	}
 	return strings.HasSuffix(label, " status") || strings.HasSuffix(label, " state")
+}
+
+func isLiveIPLabel(label string) bool {
+	switch label {
+	case "ip", "public ip", "public ipv4", "public ipv6", "ipv4", "ipv6":
+		return true
+	}
+	return strings.HasSuffix(label, " ip") || strings.HasSuffix(label, " ipv4") || strings.HasSuffix(label, " ipv6")
+}
+
+func extractLiveIPValue(value string) string {
+	tokens := strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ',', ';', '|', '[', ']', '(', ')', '{', '}', '<', '>', '"', '\'':
+			return true
+		}
+		return unicode.IsSpace(r)
+	})
+
+	for _, token := range tokens {
+		if addr, err := netip.ParseAddr(strings.TrimSpace(token)); err == nil {
+			return addr.String()
+		}
+	}
+	return ""
 }
 
 func classifyLiveStatusValue(value string) string {
@@ -301,14 +406,22 @@ func hasAnyStatusToken(tokens []string, candidates map[string]struct{}) bool {
 }
 
 func persistLiveStatus(instance *sandbox.SandboxState, status string, now time.Time, write func(*sandbox.SandboxState) error) error {
+	return persistLiveStatusResult(instance, liveStatusResult{Status: status}, now, write)
+}
+
+func persistLiveStatusResult(instance *sandbox.SandboxState, result liveStatusResult, now time.Time, write func(*sandbox.SandboxState) error) error {
 	if instance == nil {
 		return nil
 	}
 
 	previousStatus := instance.Status
 	previousStoppedAt := cloneStoppedAt(instance.StoppedAt)
-	updateInstanceStatus(instance, status, now)
-	if (instance.Status == previousStatus && sameStoppedAt(instance.StoppedAt, previousStoppedAt)) || write == nil {
+	previousIP := instance.IP
+	updateInstanceStatus(instance, result.Status, now)
+	if ip := strings.TrimSpace(result.IP); ip != "" {
+		instance.IP = ip
+	}
+	if (instance.Status == previousStatus && sameStoppedAt(instance.StoppedAt, previousStoppedAt) && instance.IP == previousIP) || write == nil {
 		return nil
 	}
 
@@ -318,6 +431,7 @@ func persistLiveStatus(instance *sandbox.SandboxState, status string, now time.T
 		}
 		instance.Status = previousStatus
 		instance.StoppedAt = previousStoppedAt
+		instance.IP = previousIP
 		return err
 	}
 	if err := syncMatchingLocalSandboxState(filepath.Join(".", template.HalDir), instance); err != nil {

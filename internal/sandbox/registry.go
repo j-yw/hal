@@ -506,7 +506,7 @@ func normalizeRegistryInstance(instance *SandboxState, defaultName string) {
 		instance.Name = strings.TrimSpace(defaultName)
 	}
 	if strings.TrimSpace(instance.Status) == "" {
-		instance.Status = StatusRunning
+		instance.Status = StatusUnknown
 	}
 	provider := strings.TrimSpace(instance.Provider)
 	if provider == "" {

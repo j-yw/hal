@@ -131,7 +131,7 @@ func fakeBranchResolver(branch string, err error) branchResolver {
 	}
 }
 
-func TestMergeGlobalStartDefaults_ReplacesAuthoritativeEnv(t *testing.T) {
+func TestMergeGlobalStartDefaults_MergesGlobalDefaultsWithLocalEnv(t *testing.T) {
 	localCfg := &compound.SandboxConfig{
 		Provider: "daytona",
 		Env: map[string]string{
@@ -157,17 +157,17 @@ func TestMergeGlobalStartDefaults_ReplacesAuthoritativeEnv(t *testing.T) {
 	if !localCfg.TailscaleLockdown {
 		t.Fatal("TailscaleLockdown = false, want true")
 	}
-	if len(localCfg.Env) != 2 {
-		t.Fatalf("len(Env) = %d, want 2", len(localCfg.Env))
+	if len(localCfg.Env) != 3 {
+		t.Fatalf("len(Env) = %d, want 3", len(localCfg.Env))
 	}
 	if localCfg.Env["NEW"] != "value" {
 		t.Fatalf("Env[NEW] = %q, want %q", localCfg.Env["NEW"], "value")
 	}
-	if localCfg.Env["SHARED"] != "global" {
-		t.Fatalf("Env[SHARED] = %q, want %q", localCfg.Env["SHARED"], "global")
+	if localCfg.Env["SHARED"] != "local" {
+		t.Fatalf("Env[SHARED] = %q, want %q", localCfg.Env["SHARED"], "local")
 	}
-	if _, ok := localCfg.Env["KEEP"]; ok {
-		t.Fatalf("Env contains stale local key KEEP: %#v", localCfg.Env)
+	if localCfg.Env["KEEP"] != "legacy" {
+		t.Fatalf("Env[KEEP] = %q, want %q", localCfg.Env["KEEP"], "legacy")
 	}
 }
 
@@ -1679,8 +1679,7 @@ func TestRunSandboxStart_CountOneIsSingle(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	// count=1 should behave as single sandbox creation
-	err := runSandboxStartWithDeps(dir, "sb", 1, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxStartWithDepsAndCountOption(dir, "sb", 1, true, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1692,13 +1691,57 @@ func TestRunSandboxStart_CountOneIsSingle(t *testing.T) {
 		t.Errorf("Create name = %q, want %q", mock.createCalls[0].Name, "sb")
 	}
 
-	// Should be in registry as "sb", not "sb-01"
 	instance, err := sandbox.LoadInstance("sb")
 	if err != nil {
 		t.Fatalf("instance not in registry: %v", err)
 	}
 	if instance.Name != "sb" {
 		t.Errorf("instance.Name = %q, want %q", instance.Name, "sb")
+	}
+
+	halDir := filepath.Join(dir, template.HalDir)
+	state, err := sandbox.LoadState(halDir)
+	if err != nil {
+		t.Fatalf("local state not saved: %v", err)
+	}
+	if state.Name != "sb" {
+		t.Errorf("state.Name = %q, want %q", state.Name, "sb")
+	}
+}
+
+func TestRunSandboxStart_CountZeroExplicitReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{}
+
+	err := runSandboxStartWithDepsAndCountOption(dir, "sb", 0, true, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "count must be at least 1") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "count must be at least 1")
+	}
+	if len(mock.createCalls) != 0 {
+		t.Errorf("expected 0 Create calls, got %d", len(mock.createCalls))
+	}
+}
+
+func TestRunSandboxStart_InvalidExplicitNameReturnsValidationError(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{}
+
+	err := runSandboxStartWithDeps(dir, "Bad-Name", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != "must be lowercase alphanumeric and hyphens" {
+		t.Errorf("error = %q, want %q", err.Error(), "must be lowercase alphanumeric and hyphens")
+	}
+	if len(mock.createCalls) != 0 {
+		t.Errorf("expected 0 Create calls, got %d", len(mock.createCalls))
 	}
 }
 
@@ -2034,7 +2077,7 @@ func TestRunSandboxStart_ViaRunSandboxStart(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxStart(dir, "sb", 0, false, "cx42", "github.com/org/repo", nil, autoShutdownOpts{}, &out, deps)
+	err := runSandboxStart(dir, "sb", 0, false, false, "cx42", "github.com/org/repo", nil, autoShutdownOpts{}, &out, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2061,7 +2104,7 @@ func TestRunSandboxStart_ViaRunSandboxStartNilDeps(t *testing.T) {
 
 	// With nil deps, runSandboxStart passes nil provider and nil getBranch
 	// This should fail trying to resolve provider since no daytona config
-	err := runSandboxStart(dir, "sb", 0, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil)
+	err := runSandboxStart(dir, "sb", 0, false, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil)
 	// Expected: resolving provider errors because daytona config is incomplete
 	if err == nil {
 		t.Fatal("expected error with nil deps (no provider configured), got nil")
@@ -2443,6 +2486,45 @@ func TestRunSandboxStart_ForceDeleteFails(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStart_ForceMissingDeleteContinuesReplacement(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	existing := &sandbox.SandboxState{
+		ID:       "old-id",
+		Name:     "my-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "my-sandbox", ID: "ws-new"},
+		deleteErr:    fmt.Errorf("workspace not found (404)"),
+	}
+
+	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.deleteCalls) != 1 {
+		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
+	}
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+
+	instance, err := sandbox.LoadInstance("my-sandbox")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if instance.WorkspaceID != "ws-new" {
+		t.Fatalf("replacement sandbox WorkspaceID = %q, want %q", instance.WorkspaceID, "ws-new")
+	}
+}
+
 func TestRunSandboxStart_ForceNewID(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
@@ -2714,7 +2796,7 @@ func TestRunSandboxStart_ForceViaRunSandboxStart(t *testing.T) {
 	deps := &sandboxStartDeps{provider: mock}
 
 	var out bytes.Buffer
-	err := runSandboxStart(dir, "sb", 0, true, "", "", nil, autoShutdownOpts{}, &out, deps)
+	err := runSandboxStart(dir, "sb", 0, false, true, "", "", nil, autoShutdownOpts{}, &out, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3002,7 +3084,7 @@ func TestCreateBatchTarget_RegistrationFailureRollsBackCreatedSandbox(t *testing
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", io.Discard)
+	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -3057,7 +3139,7 @@ func TestCreateBatchTarget_IDGenerationFailureRollsBackCreatedSandbox(t *testing
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", io.Discard)
+	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

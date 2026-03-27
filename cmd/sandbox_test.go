@@ -36,6 +36,115 @@ func setGlobalConfigHomeForTest(t *testing.T, dir string) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 }
 
+func TestResolveProviderFromState_UsesGlobalConfigOverLegacyProjectConfig(t *testing.T) {
+	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
+
+	if err := os.MkdirAll(filepath.Join(dir, template.HalDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	globalCfg := sandbox.DefaultGlobalConfig()
+	globalCfg.Provider = "daytona"
+	globalCfg.Daytona.APIKey = "global-api-key"
+	globalCfg.Daytona.ServerURL = "https://global.daytona.example"
+	if err := sandbox.SaveGlobalConfig(&globalCfg); err != nil {
+		t.Fatalf("SaveGlobalConfig() error: %v", err)
+	}
+
+	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `sandbox:
+  provider: daytona
+daytona:
+  apiKey: local-api-key
+  serverURL: https://local.daytona.example
+`)
+
+	provider, err := resolveProviderFromState(dir, &sandbox.SandboxState{Provider: "daytona"})
+	if err != nil {
+		t.Fatalf("resolveProviderFromState() error: %v", err)
+	}
+
+	daytonaProvider, ok := provider.(*sandbox.DaytonaProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *sandbox.DaytonaProvider", provider)
+	}
+	if daytonaProvider.APIKey != "global-api-key" {
+		t.Errorf("APIKey = %q, want %q", daytonaProvider.APIKey, "global-api-key")
+	}
+	if daytonaProvider.ServerURL != "https://global.daytona.example" {
+		t.Errorf("ServerURL = %q, want %q", daytonaProvider.ServerURL, "https://global.daytona.example")
+	}
+}
+
+func TestResolveProviderFromName_UsesGlobalConfigWithoutProjectConfig(t *testing.T) {
+	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
+
+	globalCfg := sandbox.DefaultGlobalConfig()
+	globalCfg.Provider = "digitalocean"
+	globalCfg.DigitalOcean.SSHKey = "global-fingerprint"
+	globalCfg.DigitalOcean.Size = "s-2vcpu-2gb"
+	if err := sandbox.SaveGlobalConfig(&globalCfg); err != nil {
+		t.Fatalf("SaveGlobalConfig() error: %v", err)
+	}
+
+	provider, err := resolveProviderFromName(dir, "example")
+	if err != nil {
+		t.Fatalf("resolveProviderFromName() error: %v", err)
+	}
+
+	digitalOceanProvider, ok := provider.(*sandbox.DigitalOceanProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *sandbox.DigitalOceanProvider", provider)
+	}
+	if digitalOceanProvider.SSHKey != "global-fingerprint" {
+		t.Errorf("SSHKey = %q, want %q", digitalOceanProvider.SSHKey, "global-fingerprint")
+	}
+	if digitalOceanProvider.Size != "s-2vcpu-2gb" {
+		t.Errorf("Size = %q, want %q", digitalOceanProvider.Size, "s-2vcpu-2gb")
+	}
+}
+
+func TestResolveProviderFromName_FallsBackToLegacyProjectConfigWhenGlobalMissing(t *testing.T) {
+	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
+
+	if err := os.MkdirAll(filepath.Join(dir, template.HalDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `sandbox:
+  provider: lightsail
+  lightsail:
+    region: us-west-2
+    availabilityZone: us-west-2a
+    bundle: medium_2_0
+    keyPairName: legacy-key
+`)
+
+	provider, err := resolveProviderFromName(dir, "example")
+	if err != nil {
+		t.Fatalf("resolveProviderFromName() error: %v", err)
+	}
+
+	lightsailProvider, ok := provider.(*sandbox.LightsailProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *sandbox.LightsailProvider", provider)
+	}
+	if lightsailProvider.Region != "us-west-2" {
+		t.Errorf("Region = %q, want %q", lightsailProvider.Region, "us-west-2")
+	}
+	if lightsailProvider.AvailabilityZone != "us-west-2a" {
+		t.Errorf("AvailabilityZone = %q, want %q", lightsailProvider.AvailabilityZone, "us-west-2a")
+	}
+	if lightsailProvider.Bundle != "medium_2_0" {
+		t.Errorf("Bundle = %q, want %q", lightsailProvider.Bundle, "medium_2_0")
+	}
+	if lightsailProvider.KeyPairName != "legacy-key" {
+		t.Errorf("KeyPairName = %q, want %q", lightsailProvider.KeyPairName, "legacy-key")
+	}
+}
+
 // newlines for all env-var prompts: anthropic, openai, github, git name, git email, tailscale key, tailscale hostname
 const emptyEnvInputs = "\n\n\n\n\n\n\n"
 

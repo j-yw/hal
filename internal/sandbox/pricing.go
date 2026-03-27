@@ -26,6 +26,9 @@ var hourlyRates = map[string]map[string]float64{
 // Returns -1 if the provider or size is unknown.
 // Cost always accrues from CreatedAt (stopped sandboxes still charge).
 func EstimatedCost(instance *SandboxState, now func() time.Time) float64 {
+	if instance == nil || instance.CreatedAt.IsZero() {
+		return -1
+	}
 	providerRates, ok := hourlyRates[instance.Provider]
 	if !ok {
 		return -1
