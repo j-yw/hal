@@ -56,6 +56,25 @@ func TestSaveInstanceAndLoadInstance(t *testing.T) {
 	}
 }
 
+func TestSaveInstance_AssignsUUIDv7WhenMissingID(t *testing.T) {
+	setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		Name:   "worker-01",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() unexpected error: %v", err)
+	}
+
+	loaded, err := LoadInstance("worker-01")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if !isUUIDv7(loaded.ID) {
+		t.Fatalf("loaded ID = %q, want UUIDv7", loaded.ID)
+	}
+}
+
 func TestSaveInstance_NameCollision(t *testing.T) {
 	setSandboxHome(t)
 
@@ -561,6 +580,9 @@ func TestListInstances_NormalizesLegacyDigitalOceanWorkspaceID(t *testing.T) {
 	if instances[0].WorkspaceID != "123456789" {
 		t.Fatalf("WorkspaceID = %q, want %q", instances[0].WorkspaceID, "123456789")
 	}
+	if !isUUIDv7(instances[0].ID) {
+		t.Fatalf("ID = %q, want UUIDv7", instances[0].ID)
+	}
 }
 
 func TestLoadInstance_BackfillsMissingLegacyID(t *testing.T) {
@@ -568,19 +590,16 @@ func TestLoadInstance_BackfillsMissingLegacyID(t *testing.T) {
 		name     string
 		filename string
 		data     string
-		wantID   string
 	}{
 		{
 			name:     "workspace fallback",
 			filename: "workspace-box",
 			data:     "{\n  \"name\": \"workspace-box\",\n  \"provider\": \"daytona\",\n  \"workspaceId\": \"ws-123\",\n  \"status\": \"running\"\n}\n",
-			wantID:   "ws-123",
 		},
 		{
 			name:     "name fallback",
 			filename: "name-box",
 			data:     "{\n  \"name\": \"name-box\",\n  \"provider\": \"daytona\",\n  \"status\": \"running\"\n}\n",
-			wantID:   "name-box",
 		},
 	}
 
@@ -601,8 +620,8 @@ func TestLoadInstance_BackfillsMissingLegacyID(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadInstance() unexpected error: %v", err)
 			}
-			if loaded.ID != tt.wantID {
-				t.Fatalf("loaded ID = %q, want %q", loaded.ID, tt.wantID)
+			if !isUUIDv7(loaded.ID) {
+				t.Fatalf("loaded ID = %q, want UUIDv7", loaded.ID)
 			}
 		})
 	}

@@ -51,6 +51,9 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	if strings.TrimSpace(instance.Name) == "" {
 		return fmt.Errorf("sandbox name is required")
 	}
+	if err := ensureRegistryInstanceID(instance); err != nil {
+		return err
+	}
 
 	path, err := instancePath(instance.Name)
 	if err != nil {
@@ -296,6 +299,9 @@ func loadRegistryInstanceFile(path, name string) (*SandboxState, error) {
 		return nil, fmt.Errorf("parse sandbox %q: %w", name, err)
 	}
 	normalizeRegistryInstance(&instance, name)
+	if err := repairRegistryInstanceID(path, &instance); err != nil {
+		return nil, fmt.Errorf("repair sandbox %q: %w", name, err)
+	}
 
 	return &instance, nil
 }
@@ -519,16 +525,70 @@ func normalizeRegistryInstance(instance *SandboxState, defaultName string) {
 			instance.WorkspaceID = legacyID
 		}
 	}
-	if strings.TrimSpace(instance.ID) == "" {
-		switch {
-		case strings.TrimSpace(instance.WorkspaceID) != "":
-			instance.ID = strings.TrimSpace(instance.WorkspaceID)
-		case strings.TrimSpace(instance.Name) != "":
-			instance.ID = strings.TrimSpace(instance.Name)
-		default:
-			instance.ID = strings.TrimSpace(defaultName)
-		}
+}
+
+func ensureRegistryInstanceID(instance *SandboxState) error {
+	if instance == nil {
+		return nil
 	}
+
+	instance.ID = strings.TrimSpace(instance.ID)
+	if !needsGeneratedRegistryID(instance) {
+		return nil
+	}
+
+	id, err := NewV7()
+	if err != nil {
+		return fmt.Errorf("generate sandbox id: %w", err)
+	}
+	instance.ID = id
+	return nil
+}
+
+func needsGeneratedRegistryID(instance *SandboxState) bool {
+	if instance == nil {
+		return false
+	}
+
+	if instance.ID == "" {
+		return true
+	}
+
+	return strings.TrimSpace(instance.Provider) == "digitalocean" &&
+		isLegacyDigitalOceanDropletID(instance.ID)
+}
+
+func repairRegistryInstanceID(path string, instance *SandboxState) error {
+	if instance == nil {
+		return nil
+	}
+
+	originalID := strings.TrimSpace(instance.ID)
+	if err := ensureRegistryInstanceID(instance); err != nil {
+		return err
+	}
+	if originalID == instance.ID {
+		return nil
+	}
+	return persistRegistryInstance(path, instance)
+}
+
+func persistRegistryInstance(path string, instance *SandboxState) error {
+	data, err := json.MarshalIndent(instance, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal sandbox %q: %w", instance.Name, err)
+	}
+	data = append(data, '\n')
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return fmt.Errorf("write sandbox %q: %w", instance.Name, err)
+	}
+	if err := saveRegistryFile(tmpPath, path, true); err != nil {
+		_ = removeRegistryFile(tmpPath)
+		return fmt.Errorf("save sandbox %q: %w", instance.Name, err)
+	}
+	return nil
 }
 
 func isLegacyDigitalOceanDropletID(id string) bool {
