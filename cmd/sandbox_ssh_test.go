@@ -464,6 +464,51 @@ func TestRunSandboxSSH_AutoMigratesLegacyState(t *testing.T) {
 	}
 }
 
+func TestSandboxSSHCommand_UsesCommandOutputWriter(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "writer-box",
+		Provider:  "daytona",
+		IP:        "10.0.0.1",
+		CreatedAt: time.Now(),
+		Status:    sandbox.StatusRunning,
+	})
+
+	origOut := sandboxSSHCmd.OutOrStdout()
+	var out bytes.Buffer
+	sandboxSSHCmd.SetOut(&out)
+	t.Cleanup(func() {
+		sandboxSSHCmd.SetOut(origOut)
+	})
+
+	sandboxSSHResolveProvider = func(name string) (sandbox.Provider, error) {
+		return &mockSSHProvider{sshErr: fmt.Errorf("boom")}, nil
+	}
+
+	err := sandboxSSHCmd.RunE(sandboxSSHCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(out.String(), `connecting to only active sandbox "writer-box"`) {
+		t.Fatalf("command output missing auto-resolve hint: %q", out.String())
+	}
+}
+
+func TestSandboxSSHCommand_HelpBypassesCustomParsing(t *testing.T) {
+	origOut := sandboxSSHCmd.OutOrStdout()
+	var out bytes.Buffer
+	sandboxSSHCmd.SetOut(&out)
+	t.Cleanup(func() {
+		sandboxSSHCmd.SetOut(origOut)
+	})
+
+	if err := sandboxSSHCmd.RunE(sandboxSSHCmd, []string{"--help"}); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	if !strings.Contains(out.String(), "Open an interactive SSH session") {
+		t.Fatalf("help output missing command description: %q", out.String())
+	}
+}
+
 func TestParseSSHArgs(t *testing.T) {
 	tests := []struct {
 		name       string

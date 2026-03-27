@@ -566,6 +566,9 @@ func finalizeInterruptedStartReplaceRetry(provider string, pendingRemoval sandbo
 	if err == nil || pendingRemoval == nil {
 		return false
 	}
+	if !pendingRemoval.AlreadyStaged() {
+		return false
+	}
 
 	return isMissingSandboxDeleteError(provider, err)
 }

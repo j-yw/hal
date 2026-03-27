@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -33,12 +32,22 @@ The provider determines the SSH transport.`,
   hal sandbox ssh`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSandboxSSH(args, os.Stdout, nil)
+		if isSandboxSSHHelpRequest(args) {
+			return cmd.Help()
+		}
+		return runSandboxSSH(args, cmd.OutOrStdout(), nil)
 	},
 }
 
 func init() {
 	sandboxCmd.AddCommand(sandboxSSHCmd)
+}
+
+func isSandboxSSHHelpRequest(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	return args[0] == "-h" || args[0] == "--help"
 }
 
 // sandboxSSHLoadInstance is injectable for testing.

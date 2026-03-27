@@ -2486,7 +2486,7 @@ func TestRunSandboxStart_ForceDeleteFails(t *testing.T) {
 	}
 }
 
-func TestRunSandboxStart_ForceMissingDeleteContinuesReplacement(t *testing.T) {
+func TestRunSandboxStart_ForceMissingDeleteFailsWithoutStagedRetry(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
 
@@ -2506,22 +2506,22 @@ func TestRunSandboxStart_ForceMissingDeleteContinuesReplacement(t *testing.T) {
 	}
 
 	err := runSandboxStartWithDeps(dir, "my-sandbox", 0, true, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 	if len(mock.deleteCalls) != 1 {
 		t.Fatalf("expected 1 Delete call, got %d", len(mock.deleteCalls))
 	}
-	if len(mock.createCalls) != 1 {
-		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("expected 0 Create calls, got %d", len(mock.createCalls))
 	}
 
 	instance, err := sandbox.LoadInstance("my-sandbox")
 	if err != nil {
 		t.Fatalf("LoadInstance() unexpected error: %v", err)
 	}
-	if instance.WorkspaceID != "ws-new" {
-		t.Fatalf("replacement sandbox WorkspaceID = %q, want %q", instance.WorkspaceID, "ws-new")
+	if instance.ID != "old-id" {
+		t.Fatalf("sandbox ID = %q, want %q", instance.ID, "old-id")
 	}
 }
 
