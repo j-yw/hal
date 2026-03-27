@@ -422,8 +422,8 @@ func extractBashPayload(command string) string {
 }
 
 // firstMeaningfulLine returns the first line that isn't a shell preamble
-// (set -e, set -euo pipefail, etc.). If every line is preamble, returns
-// the last line. Newlines are never included in the result.
+// or standalone setup step (cd/pushd/popd). If every line is setup-only,
+// returns the last non-empty line. Newlines are never included in the result.
 func firstMeaningfulLine(s string) string {
 	lines := strings.Split(s, "\n")
 	for _, line := range lines {
@@ -431,7 +431,7 @@ func firstMeaningfulLine(s string) string {
 		if trimmed == "" {
 			continue
 		}
-		if isShellPreamble(trimmed) {
+		if isShellPreamble(trimmed) || isShellSetupLine(trimmed) {
 			continue
 		}
 		return trimmed
@@ -453,4 +453,15 @@ func isShellPreamble(line string) bool {
 		return true
 	}
 	return false
+}
+
+// isShellSetupLine reports whether a line is a standalone shell setup step
+// that is usually followed by the real command in a later line.
+func isShellSetupLine(line string) bool {
+	return line == "cd" ||
+		strings.HasPrefix(line, "cd ") ||
+		line == "pushd" ||
+		strings.HasPrefix(line, "pushd ") ||
+		line == "popd" ||
+		strings.HasPrefix(line, "popd ")
 }

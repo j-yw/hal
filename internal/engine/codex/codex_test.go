@@ -603,6 +603,10 @@ func TestExtractCommand(t *testing.T) {
 		{"/usr/bin/bash -lc \"set -e\nls -ld .claude/skills\"", "ls -ld .claude/skills"},
 		{"/usr/bin/bash -lc \"set -euo pipefail\ngit diff HEAD\"", "git diff HEAD"},
 		{"/usr/bin/bash -lc \"set -e\nset -o pipefail\nrg -n foo\"", "rg -n foo"},
+		{"/usr/bin/bash -lc \"cd /repo\nrg -n foo\"", "rg -n foo"},
+		{"/usr/bin/bash -lc \"set -e\ncd /repo\nrg -n foo\"", "rg -n foo"},
+		{"/usr/bin/bash -lc \"pushd /repo\nnpm test\"", "npm test"},
+		{"/usr/bin/bash -lc \"cd /repo && rg -n foo\"", "cd /repo && rg -n foo"},
 
 		// No wrapper
 		{"echo hello", "echo hello"},
@@ -628,6 +632,9 @@ func TestFirstMeaningfulLine(t *testing.T) {
 		{"echo hello", "echo hello"},
 		{"set -e\nls -la", "ls -la"},
 		{"set -euo pipefail\nset -o pipefail\ngit status", "git status"},
+		{"cd /repo\nrg -n foo", "rg -n foo"},
+		{"pushd /repo\nnpm test", "npm test"},
+		{"cd /repo", "cd /repo"}, // Setup only — fall back to the last line
 		{"set -e", "set -e"},           // All preamble — return last
 		{"\n\nset -e\n\n", "set -e"},   // Blank lines + preamble only
 		{"", ""},                        // Empty
