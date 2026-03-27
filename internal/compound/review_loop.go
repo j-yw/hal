@@ -684,7 +684,7 @@ func gitReviewBranchContext(baseBranch, currentBranch string) (reviewBranchConte
 		Commits:       splitNonEmptyLines(commits),
 	}
 
-	if shouldInlineReviewDiff(changedFiles) {
+	if shouldInlineReviewDiff(changedFiles, numstat) {
 		diff, err := gitCommandOutput("diff", mergeBase)
 		if err != nil {
 			return reviewBranchContext{}, err
@@ -718,18 +718,27 @@ func gitCommandOutput(args ...string) (string, error) {
 
 func combineReviewBranchFiles(nameStatusOutput, numstatOutput string) []reviewBranchFile {
 	nameStatusLines := splitNonEmptyLines(nameStatusOutput)
-	numstatLines := splitNonEmptyLines(numstatOutput)
+	numstats := parseReviewBranchNumstats(numstatOutput)
 	files := make([]reviewBranchFile, 0, len(nameStatusLines))
 
-	for i, line := range nameStatusLines {
+	for _, line := range nameStatusLines {
 		file := parseReviewBranchFile(line)
-		if i < len(numstatLines) {
-			applyReviewBranchNumstat(&file, numstatLines[i])
+		for _, key := range reviewBranchFileMatchKeys(file.Path) {
+			if stat, ok := numstats[key]; ok {
+				applyReviewBranchNumstat(&file, stat)
+				break
+			}
 		}
 		files = append(files, file)
 	}
 
 	return files
+}
+
+type reviewBranchNumstat struct {
+	Path      string
+	Additions string
+	Deletions string
 }
 
 func parseReviewBranchFile(line string) reviewBranchFile {
@@ -769,18 +778,59 @@ func normalizeReviewBranchStatus(status string) string {
 	}
 }
 
-func applyReviewBranchNumstat(file *reviewBranchFile, line string) {
+func parseReviewBranchNumstats(output string) map[string]reviewBranchNumstat {
+	lines := splitNonEmptyLines(output)
+	stats := make(map[string]reviewBranchNumstat, len(lines))
+	for _, line := range lines {
+		stat, ok := parseReviewBranchNumstat(line)
+		if !ok || stat.Path == "" {
+			continue
+		}
+		stats[stat.Path] = stat
+	}
+	return stats
+}
+
+func parseReviewBranchNumstat(line string) (reviewBranchNumstat, bool) {
+	parts := strings.SplitN(line, "\t", 3)
+	if len(parts) < 3 {
+		return reviewBranchNumstat{}, false
+	}
+	return reviewBranchNumstat{
+		Additions: strings.TrimSpace(parts[0]),
+		Deletions: strings.TrimSpace(parts[1]),
+		Path:      strings.TrimSpace(parts[2]),
+	}, true
+}
+
+func reviewBranchFileMatchKeys(path string) []string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+
+	keys := []string{path}
+	if before, after, ok := strings.Cut(path, " -> "); ok {
+		before = strings.TrimSpace(before)
+		after = strings.TrimSpace(after)
+		if before != "" {
+			keys = append(keys, before)
+		}
+		if after != "" && after != before {
+			keys = append(keys, after)
+		}
+	}
+	return keys
+}
+
+func applyReviewBranchNumstat(file *reviewBranchFile, stat reviewBranchNumstat) {
 	if file == nil {
 		return
 	}
-	parts := strings.SplitN(line, "\t", 3)
-	if len(parts) < 3 {
-		return
-	}
-	file.Additions = strings.TrimSpace(parts[0])
-	file.Deletions = strings.TrimSpace(parts[1])
+	file.Additions = stat.Additions
+	file.Deletions = stat.Deletions
 	if strings.TrimSpace(file.Path) == "" {
-		file.Path = strings.TrimSpace(parts[2])
+		file.Path = stat.Path
 	}
 }
 
@@ -796,20 +846,24 @@ func splitNonEmptyLines(content string) []string {
 	return out
 }
 
-func shouldInlineReviewDiff(files []reviewBranchFile) bool {
+func shouldInlineReviewDiff(files []reviewBranchFile, numstatOutput string) bool {
 	if len(files) == 0 || len(files) > reviewLoopInlineDiffMaxFiles {
 		return false
 	}
 
 	totalChangedLines := 0
-	for _, file := range files {
-		if file.Additions == "-" || file.Deletions == "-" {
+	for _, line := range splitNonEmptyLines(numstatOutput) {
+		stat, ok := parseReviewBranchNumstat(line)
+		if !ok {
 			return false
 		}
-		if n, err := strconv.Atoi(file.Additions); err == nil {
+		if stat.Additions == "-" || stat.Deletions == "-" {
+			return false
+		}
+		if n, err := strconv.Atoi(stat.Additions); err == nil {
 			totalChangedLines += n
 		}
-		if n, err := strconv.Atoi(file.Deletions); err == nil {
+		if n, err := strconv.Atoi(stat.Deletions); err == nil {
 			totalChangedLines += n
 		}
 	}

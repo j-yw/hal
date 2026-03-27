@@ -297,6 +297,9 @@ func countSeverities(iterations []ReviewLoopIteration) map[string]int {
 	counts := make(map[string]int)
 	for _, iter := range iterations {
 		for _, issue := range iter.Issues {
+			if !issue.Valid {
+				continue
+			}
 			sev := strings.ToLower(strings.TrimSpace(issue.Severity))
 			if sev != "" {
 				counts[sev]++

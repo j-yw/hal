@@ -340,6 +340,28 @@ func TestWriteReviewLoopJSONReportNilResult(t *testing.T) {
 	}
 }
 
+func TestCountSeverities_IgnoresInvalidIssues(t *testing.T) {
+	counts := countSeverities([]ReviewLoopIteration{
+		{
+			Issues: []ReviewIssueDetail{
+				{Severity: "critical", Valid: false},
+				{Severity: "High", Valid: true},
+				{Severity: " low ", Valid: true},
+			},
+		},
+	})
+
+	if _, ok := counts["critical"]; ok {
+		t.Fatalf("countSeverities() counted invalid severity: %#v", counts)
+	}
+	if counts["high"] != 1 {
+		t.Fatalf("countSeverities()[high] = %d, want 1", counts["high"])
+	}
+	if counts["low"] != 1 {
+		t.Fatalf("countSeverities()[low] = %d, want 1", counts["low"])
+	}
+}
+
 func TestWriteReviewLoopMarkdownReportNilResult(t *testing.T) {
 	_, err := writeReviewLoopMarkdownReport(t.TempDir(), nil, time.Now)
 	if err == nil {

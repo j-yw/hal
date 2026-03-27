@@ -839,6 +839,43 @@ func TestParseReviewResponseWithRepairIncompleteOutput(t *testing.T) {
 	}
 }
 
+func TestCombineReviewBranchFilesMatchesNumstatByPath(t *testing.T) {
+	files := combineReviewBranchFiles(
+		"M\tchmod_only.sh\nM\ttracked.txt\n",
+		"5\t3\ttracked.txt\n",
+	)
+
+	if len(files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(files))
+	}
+	if files[0].Path != "chmod_only.sh" {
+		t.Fatalf("files[0].Path = %q, want %q", files[0].Path, "chmod_only.sh")
+	}
+	if files[0].Additions != "" || files[0].Deletions != "" {
+		t.Fatalf("files[0] stats = +%q -%q, want empty stats", files[0].Additions, files[0].Deletions)
+	}
+	if files[1].Path != "tracked.txt" {
+		t.Fatalf("files[1].Path = %q, want %q", files[1].Path, "tracked.txt")
+	}
+	if files[1].Additions != "5" || files[1].Deletions != "3" {
+		t.Fatalf("files[1] stats = +%q -%q, want +%q -%q", files[1].Additions, files[1].Deletions, "5", "3")
+	}
+}
+
+func TestShouldInlineReviewDiffUsesNumstatOutput(t *testing.T) {
+	files := []reviewBranchFile{
+		{Path: "chmod_only.sh"},
+		{Path: "tracked.txt"},
+	}
+
+	if shouldInlineReviewDiff(files, "999999\t0\ttracked.txt\n") {
+		t.Fatal("expected inline diff to be rejected for oversized numstat output")
+	}
+	if !shouldInlineReviewDiff(files, "5\t3\ttracked.txt\n") {
+		t.Fatal("expected inline diff to be allowed for small numstat output")
+	}
+}
+
 func TestParseFixResponseWithRepair(t *testing.T) {
 	reviewed := []reviewLoopIssue{{
 		ID:           "ISSUE-1",

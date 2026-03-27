@@ -259,13 +259,14 @@ func renderIssueTable(issues []ReviewIssueDetail, width int) string {
 			}
 
 			base := lipgloss.NewStyle().Padding(0, 1)
+			issue, ok := reviewLoopIssueAtTableRow(issues, row)
 
 			switch col {
 			case 0: // #
 				return base.Foreground(colorMuted)
 			case 1: // Severity
-				if row >= 0 && row < len(issues) {
-					return base.Foreground(severityColor(issues[row].Severity)).Bold(true)
+				if ok {
+					return base.Foreground(severityColor(issue.Severity)).Bold(true)
 				}
 				return base
 			case 2: // File
@@ -273,11 +274,11 @@ func renderIssueTable(issues []ReviewIssueDetail, width int) string {
 			case 3: // Issue
 				return base
 			case 4: // Fix
-				if row >= 0 && row < len(issues) {
-					if !issues[row].Valid {
+				if ok {
+					if !issue.Valid {
 						return base.Foreground(colorMuted).Italic(true)
 					}
-					if issues[row].Fixed {
+					if issue.Fixed {
 						return base.Foreground(colorSuccess)
 					}
 					return base.Foreground(colorError)
@@ -288,6 +289,14 @@ func renderIssueTable(issues []ReviewIssueDetail, width int) string {
 		})
 
 	return "\n" + t.Render() + "\n"
+}
+
+func reviewLoopIssueAtTableRow(issues []ReviewIssueDetail, row int) (ReviewIssueDetail, bool) {
+	index := row - 1
+	if index < 0 || index >= len(issues) {
+		return ReviewIssueDetail{}, false
+	}
+	return issues[index], true
 }
 
 func severityColor(sev string) lipgloss.Color {

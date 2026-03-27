@@ -352,3 +352,34 @@ func TestReviewLoopTerminalRenderSeverityDistribution(t *testing.T) {
 		t.Errorf("output should contain severity 'high'")
 	}
 }
+
+func TestReviewLoopIssueAtTableRow(t *testing.T) {
+	issues := []ReviewIssueDetail{
+		{ID: "ISSUE-001", Severity: "high", Valid: true, Fixed: true},
+		{ID: "ISSUE-002", Severity: "low", Valid: true, Fixed: false},
+	}
+
+	if _, ok := reviewLoopIssueAtTableRow(issues, 0); ok {
+		t.Fatal("expected header row lookup to fail")
+	}
+
+	first, ok := reviewLoopIssueAtTableRow(issues, 1)
+	if !ok {
+		t.Fatal("expected first data row to resolve to an issue")
+	}
+	if first.ID != "ISSUE-001" {
+		t.Fatalf("first row ID = %q, want %q", first.ID, "ISSUE-001")
+	}
+
+	second, ok := reviewLoopIssueAtTableRow(issues, 2)
+	if !ok {
+		t.Fatal("expected second data row to resolve to an issue")
+	}
+	if second.ID != "ISSUE-002" {
+		t.Fatalf("second row ID = %q, want %q", second.ID, "ISSUE-002")
+	}
+
+	if _, ok := reviewLoopIssueAtTableRow(issues, 3); ok {
+		t.Fatal("expected out-of-range row lookup to fail")
+	}
+}
