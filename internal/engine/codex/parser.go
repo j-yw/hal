@@ -458,6 +458,9 @@ func isShellPreamble(line string) bool {
 // isShellSetupLine reports whether a line is a standalone shell setup step
 // that is usually followed by the real command in a later line.
 func isShellSetupLine(line string) bool {
+	if strings.Contains(line, "&&") || strings.Contains(line, "||") || strings.Contains(line, ";") {
+		return false
+	}
 	return line == "cd" ||
 		strings.HasPrefix(line, "cd ") ||
 		line == "pushd" ||
