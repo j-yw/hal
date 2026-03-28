@@ -164,6 +164,28 @@ func TestRunSandboxStatus_LiveQueryFailed(t *testing.T) {
 	assertContains(t, output, "Live query: failed (connection refused)")
 }
 
+func TestRunSandboxStatus_UnparseableProviderStatusUsesCachedState(t *testing.T) {
+	setupStatusTest(t)
+
+	saveStatusTestInstance(t, &sandbox.SandboxState{
+		Name:      "cached-sandbox",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	mock := &mockStatusProvider{statusOut: "Recent event: shutdown requested during last maintenance window"}
+	var out bytes.Buffer
+
+	if err := runSandboxStatusWithDeps("cached-sandbox", &out, mock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	assertContains(t, output, "Status:     running")
+	assertContains(t, output, "Live query: warning (provider status output was unparseable; using cached state)")
+}
+
 func TestRunSandboxStatus_UsesProviderReportedStatus(t *testing.T) {
 	setupStatusTest(t)
 
@@ -300,6 +322,32 @@ func TestRunSandboxStatus_NotFound(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	assertContains(t, err.Error(), `sandbox "nonexistent" not found in registry`)
+}
+
+func TestRunSandboxStatus_IgnoresStagedRemovalBackup(t *testing.T) {
+	setupStatusTest(t)
+
+	saveStatusTestInstance(t, &sandbox.SandboxState{
+		Name:      "frontend",
+		Provider:  "daytona",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	})
+
+	pending, err := sandbox.StageInstanceRemoval("frontend")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval() failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = pending.Rollback()
+	})
+
+	var out bytes.Buffer
+	err = runSandboxStatusWithDeps("frontend", &out, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertContains(t, err.Error(), `sandbox "frontend" not found in registry`)
 }
 
 func TestRunSandboxStatus_LoadInstanceError(t *testing.T) {

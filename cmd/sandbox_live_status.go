@@ -178,6 +178,10 @@ func parseLabeledLiveStatus(lines []string) string {
 		if len(cells) == 2 && isLiveStatusLabel(normalizeLiveStatusLabel(cells[0])) {
 			return cells[1]
 		}
+		cells = splitPipeLiveStatusCells(line)
+		if len(cells) == 2 && isLiveStatusLabel(normalizeLiveStatusLabel(cells[0])) {
+			return cells[1]
+		}
 	}
 	return ""
 }
@@ -196,6 +200,10 @@ func parseLabeledLiveIP(lines []string) string {
 		}
 
 		cells := splitColumnLiveStatusCells(line)
+		if len(cells) == 2 && isLiveIPLabel(normalizeLiveStatusLabel(cells[0])) {
+			return extractLiveIPValue(cells[1])
+		}
+		cells = splitPipeLiveStatusCells(line)
 		if len(cells) == 2 && isLiveIPLabel(normalizeLiveStatusLabel(cells[0])) {
 			return extractLiveIPValue(cells[1])
 		}
@@ -342,7 +350,7 @@ func isLiveIPLabel(label string) bool {
 	case "ip", "public ip", "public ipv4", "public ipv6", "ipv4", "ipv6":
 		return true
 	}
-	return strings.HasSuffix(label, " ip") || strings.HasSuffix(label, " ipv4") || strings.HasSuffix(label, " ipv6")
+	return false
 }
 
 func extractLiveIPValue(value string) string {

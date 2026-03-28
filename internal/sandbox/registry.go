@@ -51,6 +51,7 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	if strings.TrimSpace(instance.Name) == "" {
 		return fmt.Errorf("sandbox name is required")
 	}
+	normalizeRegistryInstance(instance, instance.Name)
 	if err := ensureRegistryInstanceID(instance); err != nil {
 		return err
 	}
@@ -512,7 +513,7 @@ func normalizeRegistryInstance(instance *SandboxState, defaultName string) {
 		instance.Name = strings.TrimSpace(defaultName)
 	}
 	if strings.TrimSpace(instance.Status) == "" {
-		instance.Status = StatusUnknown
+		instance.Status = StatusRunning
 	}
 	provider := strings.TrimSpace(instance.Provider)
 	if provider == "" {

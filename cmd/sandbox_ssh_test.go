@@ -611,7 +611,7 @@ func TestResolveSSHTarget_ByName(t *testing.T) {
 	}
 }
 
-func TestResolveSSHTarget_ByNameAllowsExplicitTargetWithStoppedStatus(t *testing.T) {
+func TestResolveSSHTarget_ByNameRejectsStoppedStatus(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "stopped-box",
 		Provider:  "daytona",
@@ -621,18 +621,21 @@ func TestResolveSSHTarget_ByNameAllowsExplicitTargetWithStoppedStatus(t *testing
 	})
 
 	instance, hint, err := resolveSSHTarget("stopped-box")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if instance != nil {
+		t.Fatalf("expected nil instance, got %#v", instance)
 	}
 	if hint != "" {
-		t.Errorf("expected no hint for explicit name, got %q", hint)
+		t.Errorf("expected no hint for rejected explicit name, got %q", hint)
 	}
-	if instance.Name != "stopped-box" {
-		t.Errorf("Name = %q, want %q", instance.Name, "stopped-box")
+	if !strings.Contains(err.Error(), `sandbox "stopped-box" is not running`) {
+		t.Errorf("error %q should report stopped sandbox clearly", err.Error())
 	}
 }
 
-func TestResolveSSHTarget_ByNameAllowsLegacyBlankStatus(t *testing.T) {
+func TestResolveSSHTarget_ByNameRejectsUnknownStatus(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "legacy-box",
 		Provider:  "daytona",
@@ -642,14 +645,17 @@ func TestResolveSSHTarget_ByNameAllowsLegacyBlankStatus(t *testing.T) {
 	})
 
 	instance, hint, err := resolveSSHTarget("legacy-box")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if instance != nil {
+		t.Fatalf("expected nil instance, got %#v", instance)
 	}
 	if hint != "" {
-		t.Errorf("expected no hint for explicit name, got %q", hint)
+		t.Errorf("expected no hint for rejected explicit name, got %q", hint)
 	}
-	if instance.Name != "legacy-box" {
-		t.Errorf("Name = %q, want %q", instance.Name, "legacy-box")
+	if !strings.Contains(err.Error(), `sandbox "legacy-box" is not running`) {
+		t.Errorf("error %q should report unknown sandbox as not running", err.Error())
 	}
 }
 
@@ -674,7 +680,7 @@ func TestResolveSSHTarget_AutoResolveSingle(t *testing.T) {
 	}
 }
 
-func TestResolveSSHTarget_AutoResolveSingleLegacyBlankStatus(t *testing.T) {
+func TestResolveSSHTarget_AutoResolveSingleUnknownStatusReturnsError(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "legacy-box",
 		Provider:  "daytona",
@@ -683,15 +689,12 @@ func TestResolveSSHTarget_AutoResolveSingleLegacyBlankStatus(t *testing.T) {
 		Status:    "",
 	})
 
-	instance, hint, err := resolveSSHTarget("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, _, err := resolveSSHTarget("")
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(hint, `connecting to only active sandbox "legacy-box"`) {
-		t.Errorf("hint %q should contain auto-connect message", hint)
-	}
-	if instance.Name != "legacy-box" {
-		t.Errorf("Name = %q, want %q", instance.Name, "legacy-box")
+	if !strings.Contains(err.Error(), "no running sandboxes") {
+		t.Errorf("error %q should contain 'no running sandboxes'", err.Error())
 	}
 }
 

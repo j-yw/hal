@@ -79,12 +79,16 @@ var sandboxListNow = func() time.Time { return time.Now() }
 const liveStatusTimeout = 10 * time.Second
 
 // sandboxListResolveProvider resolves a sandbox.Provider by provider name
-// using global config. Package-level var for test injection.
-var sandboxListResolveProvider = resolveProviderFromGlobalConfig
+// using global config with legacy project-config fallback. Package-level var
+// for test injection.
+var sandboxListResolveProvider = func(providerName string) (sandbox.Provider, error) {
+	return resolveProviderWithFallback(".", providerName)
+}
 
-// sandboxListInstances resolves active registry entries for default local list
-// rendering, excluding staged removal backups used only for delete recovery.
-var sandboxListInstances = sandbox.ListActiveInstances
+// sandboxListInstances resolves registry entries for default local list
+// rendering, including staged-only backups so interrupted delete recovery
+// targets remain visible.
+var sandboxListInstances = sandbox.ListInstances
 
 // sandboxListLoadActiveInstance checks whether a sandbox still has an active
 // registry entry before a live refresh persists updates.
@@ -190,7 +194,12 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 	// Live mode: query each provider for fresh status
 	liveWarnings := []liveStatusWarning(nil)
 	if liveMode && len(instances) > 0 {
-		liveWarnings = queryLiveStatuses(instances, sandboxListResolveProvider)
+		var filterWarnings []liveStatusWarning
+		instances, filterWarnings = filterLiveListInstances(instances, sandboxListLoadActiveInstance)
+		liveWarnings = append(liveWarnings, filterWarnings...)
+		if len(instances) > 0 {
+			liveWarnings = append(liveWarnings, queryLiveStatuses(instances, sandboxListResolveProvider)...)
+		}
 	}
 
 	now := sandboxListNow()
@@ -225,13 +234,6 @@ func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (
 		wg.Add(1)
 		go func(inst *sandbox.SandboxState) {
 			defer wg.Done()
-			if _, err := sandboxListLoadActiveInstance(inst.Name); err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					return
-				}
-				warnings <- liveStatusWarning{Name: inst.Name, Err: fmt.Errorf("load active sandbox %q: %w", inst.Name, err)}
-				return
-			}
 			if err := queryOneStatus(inst, resolve); err != nil {
 				warnings <- liveStatusWarning{Name: inst.Name, Err: err}
 			}
@@ -250,6 +252,22 @@ func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (
 	return result
 }
 
+func filterLiveListInstances(instances []*sandbox.SandboxState, loadActive func(string) (*sandbox.SandboxState, error)) ([]*sandbox.SandboxState, []liveStatusWarning) {
+	filtered := make([]*sandbox.SandboxState, 0, len(instances))
+	warnings := make([]liveStatusWarning, 0)
+	for _, inst := range instances {
+		if _, err := loadActive(inst.Name); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			warnings = append(warnings, liveStatusWarning{Name: inst.Name, Err: fmt.Errorf("load active sandbox %q: %w", inst.Name, err)})
+			continue
+		}
+		filtered = append(filtered, inst)
+	}
+	return filtered, warnings
+}
+
 // queryOneStatus queries a single sandbox's provider for current status.
 // Updates the instance's status in-place based on the query result.
 func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) error {
@@ -264,6 +282,9 @@ func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Pr
 	info := sandbox.ConnectInfoFromState(inst)
 	liveStatus, err := queryProviderLiveStatus(ctx, provider, info)
 	if err != nil {
+		if err == errLiveStatusUnparseable {
+			return nil
+		}
 		return err
 	}
 	writeTarget, err := liveStatusWriteTarget(inst.Name, sandboxListLoadActiveInstance, sandboxListForceWrite)
@@ -289,6 +310,68 @@ func renderLiveStatusWarnings(out io.Writer, warnings []liveStatusWarning) {
 	}
 }
 
+func sandboxListContractID(inst *sandbox.SandboxState) string {
+	if inst == nil {
+		return ""
+	}
+
+	id := strings.TrimSpace(inst.ID)
+	if sandboxListLooksLikeUUIDv7(id) {
+		return id
+	}
+	if id != "" {
+		return id
+	}
+	if workspaceID := strings.TrimSpace(inst.WorkspaceID); workspaceID != "" {
+		return workspaceID
+	}
+	return id
+}
+
+func sandboxListContractStatus(inst *sandbox.SandboxState) string {
+	return sandboxNormalizedStatus(inst)
+}
+
+func sandboxNormalizedStatus(inst *sandbox.SandboxState) string {
+	if inst == nil {
+		return sandbox.StatusUnknown
+	}
+
+	status := strings.TrimSpace(inst.Status)
+	if status == "" {
+		return sandbox.StatusRunning
+	}
+	return status
+}
+
+func sandboxListLooksLikeUUIDv7(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for _, idx := range []int{8, 13, 18, 23} {
+		if value[idx] != '-' {
+			return false
+		}
+	}
+	if strings.ToLower(string(value[14])) != "7" {
+		return false
+	}
+	switch strings.ToLower(string(value[19])) {
+	case "8", "9", "a", "b":
+	default:
+		return false
+	}
+	for i, ch := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') && (ch < 'A' || ch > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 // renderSandboxListJSON renders the sandbox list as machine-readable JSON.
 func renderSandboxListJSON(out io.Writer, instances []*sandbox.SandboxState, now time.Time) error {
 	nowFn := func() time.Time { return now }
@@ -300,11 +383,12 @@ func renderSandboxListJSON(out io.Writer, instances []*sandbox.SandboxState, now
 	hasKnownCost := false
 
 	for _, inst := range instances {
+		contractStatus := sandboxListContractStatus(inst)
 		entry := SandboxListEntry{
-			ID:                inst.ID,
+			ID:                sandboxListContractID(inst),
 			Name:              inst.Name,
 			Provider:          inst.Provider,
-			Status:            inst.Status,
+			Status:            contractStatus,
 			CreatedAt:         inst.CreatedAt,
 			WorkspaceID:       inst.WorkspaceID,
 			IP:                inst.IP,
@@ -328,7 +412,7 @@ func renderSandboxListJSON(out io.Writer, instances []*sandbox.SandboxState, now
 
 		entries = append(entries, entry)
 
-		switch inst.Status {
+		switch contractStatus {
 		case sandbox.StatusRunning:
 			totalRunning++
 		case sandbox.StatusStopped:
@@ -367,6 +451,7 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 	fmt.Fprintf(w, "%s\n", display.StyleBold.Render("NAME\tPROVIDER\tSTATUS\tTAILSCALE\tAGE\tAUTO-OFF\tEST.COST"))
 
 	for _, inst := range instances {
+		normalizedStatus := sandboxNormalizedStatus(inst)
 		tailscale := "—"
 		if inst.TailscaleIP != "" {
 			tailscale = inst.TailscaleIP
@@ -385,8 +470,8 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 		cost := formatCost(sandbox.EstimatedCost(inst, func() time.Time { return now }))
 
 		// Color-code status
-		statusStr := string(inst.Status)
-		switch inst.Status {
+		statusStr := normalizedStatus
+		switch normalizedStatus {
 		case sandbox.StatusRunning:
 			statusStr = display.StyleSuccess.Render(statusStr)
 		case sandbox.StatusStopped:
@@ -418,7 +503,7 @@ func renderSandboxSummary(out io.Writer, instances []*sandbox.SandboxState, now 
 	hasKnownCost := false
 
 	for _, inst := range instances {
-		switch inst.Status {
+		switch sandboxNormalizedStatus(inst) {
 		case sandbox.StatusRunning:
 			running++
 		case sandbox.StatusStopped:

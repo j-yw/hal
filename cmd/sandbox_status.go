@@ -46,11 +46,14 @@ func init() {
 	sandboxCmd.AddCommand(sandboxStatusCmd)
 }
 
-// sandboxStatusLoadInstance is injectable for testing.
-var sandboxStatusLoadInstance = sandbox.LoadInstance
+// sandboxStatusLoadInstance is injectable for testing. Named status lookups
+// should resolve only active registry entries, not staged-removal backups.
+var sandboxStatusLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxStatusResolveProvider is injectable for testing.
-var sandboxStatusResolveProvider = resolveProviderFromGlobalConfig
+var sandboxStatusResolveProvider = func(providerName string) (sandbox.Provider, error) {
+	return resolveProviderWithFallback(".", providerName)
+}
 
 // sandboxStatusLoadActiveInstance checks whether a sandbox still has an active
 // registry entry before a live refresh persists updates.
@@ -134,15 +137,21 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 
 	liveStatus, liveErr := queryProviderLiveStatus(ctx, p, info)
 	var liveWarning error
+	if errors.Is(liveErr, errLiveStatusUnparseable) {
+		liveWarning = fmt.Errorf("provider status output was unparseable; using cached state")
+		liveErr = nil
+	}
 	if liveErr == nil {
 		writeTarget, err := liveStatusWriteTarget(instance.Name, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
 		if err != nil {
 			liveErr = fmt.Errorf("load active sandbox %q: %w", instance.Name, err)
-		} else if err := persistLiveStatusResult(instance, liveStatus, sandboxStatusNow(), writeTarget); err != nil {
-			if _, ok := asLocalStateSyncWarning(err); ok {
-				liveWarning = err
-			} else {
-				liveErr = fmt.Errorf("persist live status: %w", err)
+		} else if liveWarning == nil {
+			if err := persistLiveStatusResult(instance, liveStatus, sandboxStatusNow(), writeTarget); err != nil {
+				if _, ok := asLocalStateSyncWarning(err); ok {
+					liveWarning = err
+				} else {
+					liveErr = fmt.Errorf("persist live status: %w", err)
+				}
 			}
 		}
 	}
@@ -177,13 +186,17 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liv
 	}
 	fmt.Fprintf(out, "%s     %s\n", display.StyleBold.Render("Status:"), statusText)
 
+	_, localSyncWarning := asLocalStateSyncWarning(liveWarning)
+
 	if liveErr != nil {
 		fmt.Fprintf(out, "Live query: %s\n", display.StyleError.Render(fmt.Sprintf("failed (%s)", liveErr)))
+	} else if liveWarning != nil && !localSyncWarning {
+		fmt.Fprintf(out, "Live query: %s\n", display.StyleWarning.Render(fmt.Sprintf("warning (%s)", liveWarning)))
 	} else {
 		fmt.Fprintf(out, "Live query: %s\n", display.StyleSuccess.Render("status refreshed"))
 		fmt.Fprintf(out, "Note:       %s\n", display.StyleMuted.Render("Non-status details below are cached from the registry."))
 	}
-	if liveWarning != nil {
+	if liveWarning != nil && localSyncWarning {
 		fmt.Fprintf(out, "Warning:    %s\n", display.StyleWarning.Render(formatLocalStateSyncWarning(liveWarning)))
 	}
 

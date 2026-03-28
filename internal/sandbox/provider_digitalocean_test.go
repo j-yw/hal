@@ -241,61 +241,51 @@ func TestDigitalOceanProvider_Status_VerifiesArgs(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_LifecycleOpsResolveWorkspaceIDFromName(t *testing.T) {
+func TestDigitalOceanProvider_LifecycleOpsRequireWorkspaceIDEvenWhenNameIsPresent(t *testing.T) {
 	tests := []struct {
-		name       string
-		run        func(*DigitalOceanProvider) error
-		wantSecond string
+		name string
+		run  func(*DigitalOceanProvider) error
 	}{
 		{
 			name: "stop",
 			run: func(p *DigitalOceanProvider) error {
 				return p.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
 			},
-			wantSecond: "doctl compute droplet-action shutdown 123456789",
 		},
 		{
 			name: "delete",
 			run: func(p *DigitalOceanProvider) error {
 				return p.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
 			},
-			wantSecond: "doctl compute droplet delete 123456789 --force",
 		},
 		{
 			name: "status",
 			run: func(p *DigitalOceanProvider) error {
 				return p.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
 			},
-			wantSecond: "doctl compute droplet get 123456789 --format ID,Name,Status,PublicIPv4",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var calls [][]string
+			var called bool
 			dp := &DigitalOceanProvider{
 				lookPath: doctlLookPathStub,
 				cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-					calls = append(calls, append([]string{name}, args...))
-					if len(calls) == 1 {
-						return exec.CommandContext(ctx, "echo", "123456789")
-					}
+					called = true
 					return exec.CommandContext(ctx, "true")
 				},
 			}
 
 			err := tt.run(dp)
-			if err != nil {
-				t.Fatalf("unexpected error resolving lifecycle target by name: %v", err)
+			if err == nil {
+				t.Fatal("expected error for missing workspace ID")
 			}
-			if len(calls) != 2 {
-				t.Fatalf("call count = %d, want 2", len(calls))
+			if !strings.Contains(err.Error(), "sandbox workspace ID is required") {
+				t.Fatalf("error = %q, want missing workspace ID message", err.Error())
 			}
-			if got := strings.Join(calls[0], " "); got != "doctl compute droplet get my-droplet --format ID --no-header" {
-				t.Fatalf("lookup args = %q, want name-based droplet ID lookup", got)
-			}
-			if got := strings.Join(calls[1], " "); got != tt.wantSecond {
-				t.Fatalf("lifecycle args = %q, want %q", got, tt.wantSecond)
+			if called {
+				t.Fatal("expected no doctl invocation when workspace ID is missing")
 			}
 		})
 	}

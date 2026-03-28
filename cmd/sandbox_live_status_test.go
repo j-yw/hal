@@ -253,6 +253,33 @@ func TestParseLiveIP_ParsesWhitespaceSeparatedLabeledIPField(t *testing.T) {
 	}
 }
 
+func TestParseLiveStatus_ParsesPipeDelimitedLabeledStatusField(t *testing.T) {
+	output := "| State | running |"
+
+	if status := parseLiveStatus(output); status != sandbox.StatusRunning {
+		t.Fatalf("parseLiveStatus() = %q, want %q", status, sandbox.StatusRunning)
+	}
+}
+
+func TestParseLiveIP_ParsesPipeDelimitedLabeledIPField(t *testing.T) {
+	output := "| IP | 203.0.113.10 |"
+
+	if ip := parseLiveIP(output); ip != "203.0.113.10" {
+		t.Fatalf("parseLiveIP() = %q, want %q", ip, "203.0.113.10")
+	}
+}
+
+func TestParseLiveIP_PrefersPublicAddressOverTailscaleLabel(t *testing.T) {
+	output := strings.Join([]string{
+		"Tailscale IP: 100.64.0.5",
+		"Public IPv4: 203.0.113.10",
+	}, "\n")
+
+	if ip := parseLiveIP(output); ip != "203.0.113.10" {
+		t.Fatalf("parseLiveIP() = %q, want %q", ip, "203.0.113.10")
+	}
+}
+
 func TestParseLiveStatus_ParsesNegatedRunningStatusField(t *testing.T) {
 	tests := []struct {
 		name   string

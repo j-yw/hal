@@ -87,7 +87,7 @@ func TestReplaceExistingSandbox_RemovesMatchingLocalState(t *testing.T) {
 		},
 	}
 
-	if err := replaceExistingSandbox(existing, provider, existing.Provider, halDir, io.Discard); err != nil {
+	if err := replaceExistingSandbox(existing, provider, existing.Provider, filepath.Dir(halDir), halDir, io.Discard); err != nil {
 		t.Fatalf("replaceExistingSandbox() unexpected error: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestReplaceExistingSandbox_ContinuesWhenLocalCleanupFails(t *testing.T) {
 		},
 	}
 
-	if err := replaceExistingSandbox(existing, provider, existing.Provider, halDir, io.Discard); err != nil {
+	if err := replaceExistingSandbox(existing, provider, existing.Provider, filepath.Dir(halDir), halDir, io.Discard); err != nil {
 		t.Fatalf("replaceExistingSandbox() unexpected error: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestReplaceExistingSandbox_RestoresRegistryWhenDeleteFails(t *testing.T) {
 		},
 	}
 
-	err := replaceExistingSandbox(existing, provider, existing.Provider, filepath.Join(projectDir, template.HalDir), io.Discard)
+	err := replaceExistingSandbox(existing, provider, existing.Provider, projectDir, filepath.Join(projectDir, template.HalDir), io.Discard)
 	if err == nil {
 		t.Fatal("replaceExistingSandbox() error = nil, want error")
 	}
@@ -211,7 +211,7 @@ func TestReplaceExistingSandbox_FailsWhenCommitFails(t *testing.T) {
 		sandboxStartStageInstanceRemoval = origStage
 	})
 
-	err := replaceExistingSandbox(existing, &stubDeleteProvider{}, existing.Provider, filepath.Join(projectDir, template.HalDir), io.Discard)
+	err := replaceExistingSandbox(existing, &stubDeleteProvider{}, existing.Provider, projectDir, filepath.Join(projectDir, template.HalDir), io.Discard)
 	if err == nil {
 		t.Fatal("replaceExistingSandbox() error = nil, want error")
 	}
