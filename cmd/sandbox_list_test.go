@@ -1685,6 +1685,23 @@ func TestQueryOneStatus_SuccessMapsStoppedStatus(t *testing.T) {
 	}
 }
 
+func TestFilterLiveListInstances_PreservesInstanceOnLoadActiveError(t *testing.T) {
+	inst := &sandbox.SandboxState{Name: "warn-box", Status: sandbox.StatusRunning}
+
+	filtered, warnings := filterLiveListInstances([]*sandbox.SandboxState{inst}, func(string) (*sandbox.SandboxState, error) {
+		return nil, fmt.Errorf("registry read failed")
+	})
+	if len(filtered) != 1 || filtered[0] != inst {
+		t.Fatalf("filtered = %#v, want original instance preserved", filtered)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %d, want 1", len(warnings))
+	}
+	if got := warnings[0].Err.Error(); !strings.Contains(got, `load active sandbox "warn-box": registry read failed`) {
+		t.Fatalf("warning = %q, want wrapped loadActive error", got)
+	}
+}
+
 func TestQueryOneStatus_Failure(t *testing.T) {
 	inst := &sandbox.SandboxState{
 		ID:       "id-1",

@@ -92,7 +92,7 @@ func liveStatusWriteTarget(
 
 		current.Status = updated.Status
 		current.StoppedAt = cloneStoppedAt(updated.StoppedAt)
-		if ip := strings.TrimSpace(updated.IP); ip != "" {
+		if ip := strings.TrimSpace(updated.IP); ip != "" || shouldClearLiveIP(updated.Status) {
 			current.IP = ip
 		}
 		return write(current)
