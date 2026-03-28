@@ -136,10 +136,11 @@ type reviewBranchContext struct {
 }
 
 type reviewBranchFile struct {
-	Status    string
-	Path      string
-	Additions string
-	Deletions string
+	Status       string
+	Path         string
+	PreviousPath string
+	Additions    string
+	Deletions    string
 }
 
 type reviewLoopResponse struct {
@@ -752,7 +753,11 @@ func parseReviewBranchFile(line string) reviewBranchFile {
 
 	switch {
 	case len(parts) >= 3 && (status == "R" || status == "C"):
-		path = strings.TrimSpace(parts[1]) + " -> " + strings.TrimSpace(parts[2])
+		return reviewBranchFile{
+			Status:       status,
+			Path:         strings.TrimSpace(parts[2]),
+			PreviousPath: strings.TrimSpace(parts[1]),
+		}
 	case len(parts) >= 2:
 		path = strings.TrimSpace(parts[len(parts)-1])
 	default:
@@ -1028,6 +1033,11 @@ func writeReviewLoopChangedFiles(sb *strings.Builder, files []reviewBranchFile) 
 			path = "(unknown path)"
 		}
 		sb.WriteString(path)
+		if previousPath := strings.TrimSpace(file.PreviousPath); previousPath != "" {
+			sb.WriteString(" (from ")
+			sb.WriteString(previousPath)
+			sb.WriteString(")")
+		}
 
 		switch {
 		case file.Additions == "-" || file.Deletions == "-":
