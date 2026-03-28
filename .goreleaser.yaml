@@ -41,7 +41,7 @@ checksum:
 
 changelog:
   sort: asc
-  use: github
+  use: git
   abbrev: -1
   format: "{{ .Message }}"
   filters:
