@@ -635,7 +635,7 @@ func TestResolveSSHTarget_ByNameRejectsStoppedStatus(t *testing.T) {
 	}
 }
 
-func TestResolveSSHTarget_ByNameRejectsUnknownStatus(t *testing.T) {
+func TestResolveSSHTarget_ByNameAcceptsLegacyBlankStatusAsRunning(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "legacy-box",
 		Provider:  "daytona",
@@ -644,18 +644,12 @@ func TestResolveSSHTarget_ByNameRejectsUnknownStatus(t *testing.T) {
 		Status:    "",
 	})
 
-	instance, hint, err := resolveSSHTarget("legacy-box")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	instance, _, err := resolveSSHTarget("legacy-box")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if instance != nil {
-		t.Fatalf("expected nil instance, got %#v", instance)
-	}
-	if hint != "" {
-		t.Errorf("expected no hint for rejected explicit name, got %q", hint)
-	}
-	if !strings.Contains(err.Error(), `sandbox "legacy-box" is not running`) {
-		t.Errorf("error %q should report unknown sandbox as not running", err.Error())
+	if instance.Name != "legacy-box" {
+		t.Errorf("Name = %q, want %q", instance.Name, "legacy-box")
 	}
 }
 
@@ -680,7 +674,7 @@ func TestResolveSSHTarget_AutoResolveSingle(t *testing.T) {
 	}
 }
 
-func TestResolveSSHTarget_AutoResolveSingleUnknownStatusReturnsError(t *testing.T) {
+func TestResolveSSHTarget_AutoResolveSingleLegacyBlankStatusAsRunning(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "legacy-box",
 		Provider:  "daytona",
@@ -689,12 +683,15 @@ func TestResolveSSHTarget_AutoResolveSingleUnknownStatusReturnsError(t *testing.
 		Status:    "",
 	})
 
-	_, _, err := resolveSSHTarget("")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	instance, hint, err := resolveSSHTarget("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no running sandboxes") {
-		t.Errorf("error %q should contain 'no running sandboxes'", err.Error())
+	if !strings.Contains(hint, `connecting to only active sandbox "legacy-box"`) {
+		t.Errorf("hint %q should contain auto-connect message", hint)
+	}
+	if instance.Name != "legacy-box" {
+		t.Errorf("Name = %q, want %q", instance.Name, "legacy-box")
 	}
 }
 

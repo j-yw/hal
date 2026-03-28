@@ -425,15 +425,24 @@ func persistLiveStatusResult(instance *sandbox.SandboxState, result liveStatusRe
 	previousStatus := instance.Status
 	previousStoppedAt := cloneStoppedAt(instance.StoppedAt)
 	previousIP := instance.IP
+	liveIP := strings.TrimSpace(result.IP)
 	updateInstanceStatus(instance, result.Status, now)
-	if ip := strings.TrimSpace(result.IP); ip != "" {
-		instance.IP = ip
+	if liveIP != "" {
+		instance.IP = liveIP
 	}
 	if (instance.Status == previousStatus && sameStoppedAt(instance.StoppedAt, previousStoppedAt) && instance.IP == previousIP) || write == nil {
 		return nil
 	}
 
-	if err := write(instance); err != nil {
+	// Build a minimal update carrying only live-query fields so the write
+	// target merges them into the current registry entry without overwriting
+	// fields that were not part of the live query.
+	update := &sandbox.SandboxState{
+		Status:    instance.Status,
+		StoppedAt: cloneStoppedAt(instance.StoppedAt),
+		IP:        liveIP,
+	}
+	if err := write(update); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}

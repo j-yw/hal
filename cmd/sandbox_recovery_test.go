@@ -9,7 +9,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 )
 
-func TestRunSandboxListIncludesStagedEntries(t *testing.T) {
+func TestRunSandboxListExcludesStagedEntries(t *testing.T) {
 	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
 
 	cwd, err := os.Getwd()
@@ -40,8 +40,8 @@ func TestRunSandboxListIncludesStagedEntries(t *testing.T) {
 	if err := runSandboxList(&out, false, false); err != nil {
 		t.Fatalf("runSandboxList() failed: %v", err)
 	}
-	if !strings.Contains(out.String(), name) {
-		t.Fatalf("runSandboxList() output = %q, want sandbox %q", out.String(), name)
+	if strings.Contains(out.String(), name) {
+		t.Fatalf("runSandboxList() output = %q, should not contain staged sandbox %q", out.String(), name)
 	}
 }
 

@@ -85,10 +85,9 @@ var sandboxListResolveProvider = func(providerName string) (sandbox.Provider, er
 	return resolveProviderWithFallback(".", providerName)
 }
 
-// sandboxListInstances resolves registry entries for default local list
-// rendering, including staged-only backups so interrupted delete recovery
-// targets remain visible.
-var sandboxListInstances = sandbox.ListInstances
+// sandboxListInstances resolves active registry entries for the default local
+// list, excluding staged removal backups used only for delete recovery.
+var sandboxListInstances = sandbox.ListActiveInstances
 
 // sandboxListLoadActiveInstance checks whether a sandbox still has an active
 // registry entry before a live refresh persists updates.

@@ -163,8 +163,8 @@ func TestMergeGlobalStartDefaults_MergesGlobalDefaultsWithLocalEnv(t *testing.T)
 	if localCfg.Env["NEW"] != "value" {
 		t.Fatalf("Env[NEW] = %q, want %q", localCfg.Env["NEW"], "value")
 	}
-	if localCfg.Env["SHARED"] != "local" {
-		t.Fatalf("Env[SHARED] = %q, want %q", localCfg.Env["SHARED"], "local")
+	if localCfg.Env["SHARED"] != "global" {
+		t.Fatalf("Env[SHARED] = %q, want %q (global wins)", localCfg.Env["SHARED"], "global")
 	}
 	if localCfg.Env["KEEP"] != "legacy" {
 		t.Fatalf("Env[KEEP] = %q, want %q", localCfg.Env["KEEP"], "legacy")

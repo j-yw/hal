@@ -89,7 +89,7 @@ func TestRunSandboxStatus_DetailedView(t *testing.T) {
 		Repo:              "github.com/example/repo",
 	})
 
-	mock := &mockStatusProvider{}
+	mock := &mockStatusProvider{statusOut: "Status: active"}
 	var out bytes.Buffer
 
 	err := runSandboxStatusWithDeps("my-sandbox", &out, mock)
