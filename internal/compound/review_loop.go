@@ -786,7 +786,11 @@ func parseReviewBranchNumstats(output string) map[string]reviewBranchNumstat {
 		if !ok || stat.Path == "" {
 			continue
 		}
-		stats[stat.Path] = stat
+		for _, key := range reviewBranchFileMatchKeys(stat.Path) {
+			if _, exists := stats[key]; !exists {
+				stats[key] = stat
+			}
+		}
 	}
 	return stats
 }
@@ -809,18 +813,72 @@ func reviewBranchFileMatchKeys(path string) []string {
 		return nil
 	}
 
-	keys := []string{path}
-	if before, after, ok := strings.Cut(path, " -> "); ok {
-		before = strings.TrimSpace(before)
-		after = strings.TrimSpace(after)
-		if before != "" {
-			keys = append(keys, before)
+	keys := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	addKey := func(key string) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return
 		}
-		if after != "" && after != before {
-			keys = append(keys, after)
+		if _, exists := seen[key]; exists {
+			return
 		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+
+	addKey(path)
+	if before, after, ok := parseReviewBranchRenamePath(path); ok {
+		addKey(before)
+		addKey(after)
+		addKey(before + " -> " + after)
+		addKey(before + " => " + after)
 	}
 	return keys
+}
+
+func parseReviewBranchRenamePath(path string) (string, string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", "", false
+	}
+
+	if before, after, ok := strings.Cut(path, " -> "); ok {
+		return strings.TrimSpace(before), strings.TrimSpace(after), true
+	}
+
+	if before, after, ok := expandReviewBranchBraceRename(path); ok {
+		return before, after, true
+	}
+
+	if before, after, ok := strings.Cut(path, " => "); ok {
+		return strings.TrimSpace(before), strings.TrimSpace(after), true
+	}
+
+	return "", "", false
+}
+
+func expandReviewBranchBraceRename(path string) (string, string, bool) {
+	open := strings.Index(path, "{")
+	close := strings.Index(path, "}")
+	if open < 0 || close <= open {
+		return "", "", false
+	}
+
+	inner := path[open+1 : close]
+	beforeInner, afterInner, ok := strings.Cut(inner, " => ")
+	if !ok {
+		return "", "", false
+	}
+
+	prefix := path[:open]
+	suffix := path[close+1:]
+	before := strings.TrimSpace(prefix + beforeInner + suffix)
+	after := strings.TrimSpace(prefix + afterInner + suffix)
+	if before == "" || after == "" {
+		return "", "", false
+	}
+	return before, after, true
 }
 
 func applyReviewBranchNumstat(file *reviewBranchFile, stat reviewBranchNumstat) {

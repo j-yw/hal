@@ -862,6 +862,52 @@ func TestCombineReviewBranchFilesMatchesNumstatByPath(t *testing.T) {
 	}
 }
 
+func TestCombineReviewBranchFilesMatchesRenameNumstatFormats(t *testing.T) {
+	tests := []struct {
+		name       string
+		nameStatus string
+		numstat    string
+		wantPath   string
+	}{
+		{
+			name:       "simple rename syntax",
+			nameStatus: "R100\told.txt\tnew.txt\n",
+			numstat:    "5\t3\told.txt => new.txt\n",
+			wantPath:   "old.txt -> new.txt",
+		},
+		{
+			name:       "brace expanded rename syntax",
+			nameStatus: "R086\tdocs/old.txt\tdocs/new.txt\n",
+			numstat:    "7\t4\tdocs/{old.txt => new.txt}\n",
+			wantPath:   "docs/old.txt -> docs/new.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := combineReviewBranchFiles(tt.nameStatus, tt.numstat)
+			if len(files) != 1 {
+				t.Fatalf("len(files) = %d, want 1", len(files))
+			}
+			if files[0].Path != tt.wantPath {
+				t.Fatalf("files[0].Path = %q, want %q", files[0].Path, tt.wantPath)
+			}
+			if files[0].Additions != "7" && tt.name == "brace expanded rename syntax" {
+				t.Fatalf("files[0].Additions = %q, want %q", files[0].Additions, "7")
+			}
+			if files[0].Deletions != "4" && tt.name == "brace expanded rename syntax" {
+				t.Fatalf("files[0].Deletions = %q, want %q", files[0].Deletions, "4")
+			}
+			if files[0].Additions != "5" && tt.name == "simple rename syntax" {
+				t.Fatalf("files[0].Additions = %q, want %q", files[0].Additions, "5")
+			}
+			if files[0].Deletions != "3" && tt.name == "simple rename syntax" {
+				t.Fatalf("files[0].Deletions = %q, want %q", files[0].Deletions, "3")
+			}
+		})
+	}
+}
+
 func TestShouldInlineReviewDiffUsesNumstatOutput(t *testing.T) {
 	files := []reviewBranchFile{
 		{Path: "chmod_only.sh"},
