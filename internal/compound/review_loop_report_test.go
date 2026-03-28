@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -119,10 +120,10 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 		StartedAt:           time.Date(2026, 2, 15, 18, 0, 0, 0, time.UTC),
 		EndedAt:             time.Date(2026, 2, 15, 18, 3, 0, 0, time.UTC),
 		Totals: ReviewLoopTotals{
-			IssuesFound:   3,
-			ValidIssues:   2,
+			IssuesFound:   2,
+			ValidIssues:   1,
 			InvalidIssues: 1,
-			FixesApplied:  2,
+			FixesApplied:  1,
 		},
 		Iterations: []ReviewLoopIteration{
 			{
@@ -136,12 +137,12 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 			},
 			{
 				Iteration:     2,
-				IssuesFound:   1,
-				ValidIssues:   1,
+				IssuesFound:   0,
+				ValidIssues:   0,
 				InvalidIssues: 0,
-				FixesApplied:  1,
-				Summary:       "Applied final fix",
-				Status:        "fixed",
+				FixesApplied:  0,
+				Summary:       "No issues remain",
+				Status:        "clean",
 			},
 		},
 	}
@@ -178,18 +179,115 @@ func TestWriteReviewLoopMarkdownReportCreatesFileWithRequiredHeadings(t *testing
 	requiredContent := []string{
 		"### Iteration 1",
 		"### Iteration 2",
-		"- Summary: Applied one fix",
-		"- Summary: Applied final fix",
-		"- Issues Found: 3",
-		"- Valid Issues: 2",
-		"- Invalid Issues: 1",
-		"- Fixes Applied: 2",
-		"no_valid_issues",
+		"**Summary:** Applied one fix",
+		"**Summary:** No issues remain",
+		"- Issues Found: 2",
+		"- Fixes Applied: 1",
+		"Clean review pass",
+		"Duration:",
 	}
 	for _, snippet := range requiredContent {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("markdown report missing required content %q", snippet)
 		}
+	}
+}
+
+func TestReviewLoopMarkdownTruncatesIssueTitlesSafely(t *testing.T) {
+	result := &ReviewLoopResult{
+		Iterations: []ReviewLoopIteration{
+			{
+				Iteration:    1,
+				IssuesFound:  1,
+				ValidIssues:  1,
+				FixesApplied: 1,
+				Summary:      "Applied one fix",
+				Status:       "fixed",
+				Issues: []ReviewIssueDetail{
+					{
+						Title:    strings.Repeat("界", 58) + "ab",
+						Severity: "low",
+						File:     "internal/compound/review_loop_report.go",
+						Line:     181,
+						Valid:    true,
+						Fixed:    true,
+					},
+				},
+			},
+		},
+	}
+
+	markdown, err := ReviewLoopMarkdown(result)
+	if err != nil {
+		t.Fatalf("ReviewLoopMarkdown() unexpected error: %v", err)
+	}
+	if !utf8.ValidString(markdown) {
+		t.Fatal("ReviewLoopMarkdown() returned invalid UTF-8")
+	}
+	if !strings.Contains(markdown, "... |") {
+		t.Fatal("expected truncated issue title with ellipsis in markdown table")
+	}
+}
+
+func TestReviewLoopMarkdownEscapesTableCells(t *testing.T) {
+	result := &ReviewLoopResult{
+		Iterations: []ReviewLoopIteration{
+			{
+				Iteration:    1,
+				IssuesFound:  1,
+				ValidIssues:  1,
+				FixesApplied: 1,
+				Summary:      "Applied one fix",
+				Status:       "fixed",
+				Issues: []ReviewIssueDetail{
+					{
+						Title:    "bad | title\nnext line",
+						Severity: "low",
+						File:     "internal/compound/review|loop_report.go",
+						Line:     171,
+						Valid:    true,
+						Fixed:    true,
+					},
+				},
+			},
+		},
+	}
+
+	markdown, err := ReviewLoopMarkdown(result)
+	if err != nil {
+		t.Fatalf("ReviewLoopMarkdown() unexpected error: %v", err)
+	}
+
+	expectedRow := "| 1 | low | internal/compound/review\\|loop_report.go:171 | bad \\| title<br>next line | ✓ |"
+	if !strings.Contains(markdown, expectedRow) {
+		t.Fatalf("markdown report missing escaped table row %q", expectedRow)
+	}
+}
+
+func TestHumanizeStopReasonNoValidIssuesAfterInvalidFindings(t *testing.T) {
+	result := &ReviewLoopResult{
+		CompletedIterations: 2,
+		StopReason:          "no_valid_issues",
+		Iterations: []ReviewLoopIteration{
+			{
+				Iteration:     1,
+				IssuesFound:   1,
+				ValidIssues:   1,
+				InvalidIssues: 0,
+			},
+			{
+				Iteration:     2,
+				IssuesFound:   1,
+				ValidIssues:   0,
+				InvalidIssues: 1,
+			},
+		},
+	}
+
+	got := humanizeStopReason(result)
+	want := "No valid issues remained in iteration 2; 1 finding(s) were ruled invalid."
+	if got != want {
+		t.Fatalf("humanizeStopReason() = %q, want %q", got, want)
 	}
 }
 
@@ -239,6 +337,28 @@ func TestWriteReviewLoopJSONReportNilResult(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "review loop result is required") {
 		t.Fatalf("error %q does not contain expected message", err.Error())
+	}
+}
+
+func TestCountSeverities_IgnoresInvalidIssues(t *testing.T) {
+	counts := countSeverities([]ReviewLoopIteration{
+		{
+			Issues: []ReviewIssueDetail{
+				{Severity: "critical", Valid: false},
+				{Severity: "High", Valid: true},
+				{Severity: " low ", Valid: true},
+			},
+		},
+	})
+
+	if _, ok := counts["critical"]; ok {
+		t.Fatalf("countSeverities() counted invalid severity: %#v", counts)
+	}
+	if counts["high"] != 1 {
+		t.Fatalf("countSeverities()[high] = %d, want 1", counts["high"])
+	}
+	if counts["low"] != 1 {
+		t.Fatalf("countSeverities()[low] = %d, want 1", counts["low"])
 	}
 }
 

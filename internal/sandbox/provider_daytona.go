@@ -54,6 +54,13 @@ func upsertEnvVar(env []string, key, value string) []string {
 	return append(env, prefix+value)
 }
 
+func daytonaTargetName(info *ConnectInfo) (string, error) {
+	if info == nil || strings.TrimSpace(info.Name) == "" {
+		return "", fmt.Errorf("sandbox name is required")
+	}
+	return strings.TrimSpace(info.Name), nil
+}
+
 func (d *DaytonaProvider) applyCredentials(cmd *exec.Cmd) {
 	env := cmd.Env
 	if len(env) == 0 {
@@ -189,8 +196,12 @@ func (d *DaytonaProvider) Create(ctx context.Context, name string, env map[strin
 	return &SandboxResult{Name: name}, nil
 }
 
-func (d *DaytonaProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (d *DaytonaProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.validateCredentials(); err != nil {
+		return err
+	}
+	name, err := daytonaTargetName(info)
+	if err != nil {
 		return err
 	}
 	cmd := d.commandContext(ctx, "daytona", "stop", name)
@@ -207,8 +218,12 @@ func (d *DaytonaProvider) Stop(ctx context.Context, name string, out io.Writer) 
 	return nil
 }
 
-func (d *DaytonaProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (d *DaytonaProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.validateCredentials(); err != nil {
+		return err
+	}
+	name, err := daytonaTargetName(info)
+	if err != nil {
 		return err
 	}
 	cmd := d.commandContext(ctx, "daytona", "delete", name, "--yes")
@@ -225,8 +240,12 @@ func (d *DaytonaProvider) Delete(ctx context.Context, name string, out io.Writer
 	return nil
 }
 
-func (d *DaytonaProvider) SSH(name string) (*exec.Cmd, error) {
+func (d *DaytonaProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 	if err := d.validateCredentials(); err != nil {
+		return nil, err
+	}
+	name, err := daytonaTargetName(info)
+	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command("daytona", "ssh", name)
@@ -237,8 +256,12 @@ func (d *DaytonaProvider) SSH(name string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (d *DaytonaProvider) Exec(name string, args []string) (*exec.Cmd, error) {
+func (d *DaytonaProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
 	if err := d.validateCredentials(); err != nil {
+		return nil, err
+	}
+	name, err := daytonaTargetName(info)
+	if err != nil {
 		return nil, err
 	}
 	cmdArgs := []string{"ssh", name, "--"}
@@ -251,8 +274,12 @@ func (d *DaytonaProvider) Exec(name string, args []string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (d *DaytonaProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (d *DaytonaProvider) Status(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.validateCredentials(); err != nil {
+		return err
+	}
+	name, err := daytonaTargetName(info)
+	if err != nil {
 		return err
 	}
 	cmd := d.commandContext(ctx, "daytona", "info", name)

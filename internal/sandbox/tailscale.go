@@ -4,16 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
 )
 
 func preferredIP(state *SandboxState) string {
-	if strings.TrimSpace(state.TailscaleIP) != "" {
-		return strings.TrimSpace(state.TailscaleIP)
-	}
-	return strings.TrimSpace(state.IP)
+	return PreferredIP(state)
 }
 
 func withLockdownEnv(env map[string]string, lockdown bool) map[string]string {
@@ -30,6 +28,10 @@ func withLockdownEnv(env map[string]string, lockdown bool) map[string]string {
 }
 
 func fetchTailscaleIP(ctx context.Context, user, publicIP string, runSSH func(context.Context, string, ...string) *exec.Cmd, sleepFn func(time.Duration), attempts int, delay time.Duration) (string, error) {
+	return fetchTailscaleIPWithProgress(ctx, user, publicIP, runSSH, sleepFn, attempts, delay, nil)
+}
+
+func fetchTailscaleIPWithProgress(ctx context.Context, user, publicIP string, runSSH func(context.Context, string, ...string) *exec.Cmd, sleepFn func(time.Duration), attempts int, delay time.Duration, out io.Writer) (string, error) {
 	if attempts <= 0 {
 		attempts = 1
 	}
@@ -67,6 +69,10 @@ func fetchTailscaleIP(ctx context.Context, user, publicIP string, runSSH func(co
 			lastErr = fmt.Errorf("empty tailscale ip")
 		} else {
 			lastErr = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+
+		if out != nil {
+			fmt.Fprintf(out, "  Tailscale attempt %d/%d for %s...\n", i+1, attempts, publicIP)
 		}
 
 		if i < attempts-1 {

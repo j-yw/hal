@@ -1,28 +1,40 @@
 ## hal sandbox stop
 
-Stop a running sandbox
+Stop one or more running sandboxes
 
 ### Synopsis
 
-Stop a running sandbox.
+Stop one or more running sandboxes.
 
-Reads the sandbox name and provider from .hal/sandbox.json.
-The provider is used to determine how to stop the sandbox (daytona CLI, hcloud CLI, or doctl CLI).
+Targets can be specified as positional arguments, with --all for every running
+sandbox, or with --pattern to match a glob pattern.
+
+When no arguments or flags are provided, the command auto-resolves:
+  - If exactly one sandbox is running, it is selected automatically.
+  - If zero running sandboxes exist, an error is returned.
+  - If multiple are running, an error lists the available choices.
+
+Resolved targets are de-duplicated and sorted by name before execution.
 
 ```
-hal sandbox stop [flags]
+hal sandbox stop [NAME ...] [flags]
 ```
 
 ### Examples
 
 ```
-  hal sandbox stop
+  hal sandbox stop my-sandbox
+  hal sandbox stop api-backend frontend
+  hal sandbox stop --all
+  hal sandbox stop --pattern "worker-*"
 ```
 
 ### Options
 
 ```
-  -h, --help   help for stop
+      --all              Stop all running sandboxes
+  -h, --help             help for stop
+      --pattern string   Stop sandboxes matching a glob pattern
 ```
 
 ### SEE ALSO

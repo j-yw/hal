@@ -84,6 +84,12 @@ func NewDisplay(out io.Writer) *Display {
 // When output is not a TTY (e.g., piped to another process), the spinner
 // is suppressed to avoid dumping ANSI escape sequences into captured output.
 func (d *Display) StartSpinner(msg string) {
+	// Sanitize: spinner must be single-line to avoid \r\033[2K leaving
+	// orphaned lines on each tick.
+	if i := strings.IndexByte(msg, '\n'); i != -1 {
+		msg = msg[:i]
+	}
+
 	d.spinMu.Lock()
 	if d.spinning {
 		// Spinner already running: just update the message in place.

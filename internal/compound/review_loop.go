@@ -9,17 +9,24 @@ import (
 	"io"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
 )
 
 const (
-	reviewLoopDiffMaxLen    = 20000
-	reviewPromptMaxRetries  = 2
-	reviewPromptBaseBackoff = 2 * time.Second
+	reviewLoopInlineDiffMaxLen     = 20000
+	reviewLoopPromptContextMaxLen  = 20000
+	reviewLoopInlineDiffMaxFiles   = 12
+	reviewLoopInlineDiffMaxChanges = 400
+	reviewLoopPromptMaxFiles       = 120
+	reviewLoopPromptMaxCommits     = 20
+	reviewPromptMaxRetries         = 2
+	reviewPromptBaseBackoff        = 2 * time.Second
 )
 
 var errNoJSONObject = errors.New("no JSON object found in response")
@@ -82,9 +89,9 @@ func RunSingleReviewIteration(ctx context.Context, eng engine.Engine, baseBranch
 
 func newReviewIterationDeps(eng engine.Engine, display *engine.Display) reviewIterationDeps {
 	deps := reviewIterationDeps{
-		now:             time.Now,
-		currentBranch:   CurrentBranch,
-		diffAgainstBase: gitDiffAgainstBaseBranch,
+		now:           time.Now,
+		currentBranch: CurrentBranch,
+		branchContext: gitReviewBranchContext,
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			// Use StreamPrompt to avoid no-TTY hangs in detached runs and keep
 			// event handling behavior consistent with other command flows.
@@ -109,13 +116,31 @@ func newReviewIterationDeps(eng engine.Engine, display *engine.Display) reviewIt
 type reviewIterationDeps struct {
 	now                 func() time.Time
 	currentBranch       func() (string, error)
-	diffAgainstBase     func(baseBranch string) (string, error)
+	branchContext       func(baseBranch, currentBranch string) (reviewBranchContext, error)
 	prompt              func(ctx context.Context, prompt string) (string, error)
 	sleep               func(ctx context.Context, d time.Duration) error
 	onIterationStart    func(current, max int)
 	onIterationComplete func(current int)
 	maxRetries          int
 	retryDelay          time.Duration
+}
+
+type reviewBranchContext struct {
+	BaseBranch    string
+	CurrentBranch string
+	MergeBase     string
+	DiffShortStat string
+	ChangedFiles  []reviewBranchFile
+	Commits       []string
+	InlineDiff    string
+}
+
+type reviewBranchFile struct {
+	Status       string
+	Path         string
+	PreviousPath string
+	Additions    string
+	Deletions    string
 }
 
 type reviewLoopResponse struct {
@@ -150,6 +175,15 @@ type reviewLoopFixOutcome struct {
 	ValidIssues   int
 	InvalidIssues int
 	FixesApplied  int
+	PerIssue      []reviewLoopFixResult // per-issue valid/fixed keyed by ID
+}
+
+// reviewLoopFixResult holds the fix-phase outcome for a single issue.
+type reviewLoopFixResult struct {
+	ID     string
+	Valid  bool
+	Fixed  bool
+	Reason string
 }
 
 func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
@@ -204,7 +238,31 @@ func runReviewLoop(ctx context.Context, baseBranch string, requestedIterations i
 	}
 
 	result.EndedAt = deps.now()
+	result.Duration = result.EndedAt.Sub(result.StartedAt)
+	result.Totals.FilesAffected = collectFilesAffected(result.Iterations)
 	return result, nil
+}
+
+// collectFilesAffected gathers unique file paths from all iteration issue details.
+func collectFilesAffected(iterations []ReviewLoopIteration) []string {
+	seen := make(map[string]struct{})
+	for _, iter := range iterations {
+		for _, issue := range iter.Issues {
+			f := strings.TrimSpace(issue.File)
+			if f != "" {
+				seen[f] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	files := make([]string, 0, len(seen))
+	for f := range seen {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	return files
 }
 
 func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedIterations int, deps reviewIterationDeps) (*ReviewLoopResult, error) {
@@ -241,23 +299,27 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 		StopReason:          "single_iteration",
 		StartedAt:           startedAt,
 		EndedAt:             endedAt,
+		Duration:            endedAt.Sub(startedAt),
 		Totals: ReviewLoopTotals{
 			IssuesFound:   iteration.IssuesFound,
 			ValidIssues:   iteration.ValidIssues,
 			InvalidIssues: iteration.InvalidIssues,
 			FixesApplied:  iteration.FixesApplied,
+			FilesAffected: collectFilesAffected([]ReviewLoopIteration{iteration}),
 		},
 		Iterations: []ReviewLoopIteration{iteration},
 	}, nil
 }
 
 func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, deps reviewIterationDeps) (ReviewLoopIteration, error) {
-	diff, err := deps.diffAgainstBase(baseBranch)
+	iterStart := deps.now()
+
+	branchContext, err := deps.branchContext(baseBranch, currentBranch)
 	if err != nil {
-		return ReviewLoopIteration{}, fmt.Errorf("failed to diff against base branch %q: %w", baseBranch, err)
+		return ReviewLoopIteration{}, fmt.Errorf("failed to gather review context against base branch %q: %w", baseBranch, err)
 	}
 
-	reviewPrompt := buildReviewLoopPrompt(baseBranch, currentBranch, diff)
+	reviewPrompt := buildReviewLoopPrompt(branchContext)
 	reviewResponse, err := promptWithRetry(ctx, deps, reviewPrompt)
 	if err != nil {
 		return ReviewLoopIteration{}, fmt.Errorf("review step failed: %w", err)
@@ -288,6 +350,7 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 	}
 
 	if issuesFound == 0 {
+		iteration.Duration = deps.now().Sub(iterStart)
 		return iteration, nil
 	}
 
@@ -314,7 +377,43 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 		iteration.Summary = strings.TrimSpace(parsedFix.Summary)
 	}
 
+	// Build per-issue detail by merging review findings with fix outcomes.
+	iteration.Issues = buildIssueDetails(parsedReview.Issues, parsedFix.PerIssue)
+
+	iteration.Duration = deps.now().Sub(iterStart)
 	return iteration, nil
+}
+
+// buildIssueDetails merges review-phase issue data with fix-phase outcomes
+// into a single per-issue detail list suitable for reporting.
+func buildIssueDetails(reviewIssues []reviewLoopIssue, fixResults []reviewLoopFixResult) []ReviewIssueDetail {
+	fixByID := make(map[string]reviewLoopFixResult, len(fixResults))
+	for _, fr := range fixResults {
+		fixByID[fr.ID] = fr
+	}
+
+	details := make([]ReviewIssueDetail, 0, len(reviewIssues))
+	for _, ri := range reviewIssues {
+		id := strings.TrimSpace(ri.ID)
+		detail := ReviewIssueDetail{
+			ID:           id,
+			Title:        strings.TrimSpace(ri.Title),
+			Severity:     strings.TrimSpace(ri.Severity),
+			File:         strings.TrimSpace(ri.File),
+			Line:         ri.Line,
+			Rationale:    strings.TrimSpace(ri.Rationale),
+			SuggestedFix: strings.TrimSpace(ri.SuggestedFix),
+			Valid:        true, // default: valid unless fix phase says otherwise
+			Fixed:        false,
+		}
+		if fr, ok := fixByID[id]; ok {
+			detail.Valid = fr.Valid
+			detail.Fixed = fr.Fixed
+			detail.Reason = fr.Reason
+		}
+		details = append(details, detail)
+	}
+	return details
 }
 
 func normalizeReviewLoopDeps(baseBranch string, requestedIterations int, deps reviewIterationDeps) (string, reviewIterationDeps, error) {
@@ -332,8 +431,8 @@ func normalizeReviewLoopDeps(baseBranch string, requestedIterations int, deps re
 	if deps.currentBranch == nil {
 		deps.currentBranch = CurrentBranch
 	}
-	if deps.diffAgainstBase == nil {
-		deps.diffAgainstBase = gitDiffAgainstBaseBranch
+	if deps.branchContext == nil {
+		deps.branchContext = gitReviewBranchContext
 	}
 	if deps.prompt == nil {
 		return "", deps, fmt.Errorf("prompt function is required")
@@ -464,7 +563,7 @@ Return ONLY valid JSON (no markdown fences, no prose) with this exact shape:
   ]
 }
 
-If there are no issues, return "issues": [] and explain that in summary.`, truncateForPrompt(rawResponse, reviewLoopDiffMaxLen))
+If there are no issues, return "issues": [] and explain that in summary.`, truncateForPrompt(rawResponse, reviewLoopPromptContextMaxLen))
 }
 
 func buildFixRepairPrompt(reviewedIssues []reviewLoopIssue, rawResponse string) (string, error) {
@@ -496,7 +595,7 @@ Return ONLY valid JSON (no markdown fences, no prose) with this exact shape:
 
 Rules:
 - Include every input issue id exactly once in output issues[]
-- Set fixed=false whenever valid=false`, string(issuesJSON), truncateForPrompt(rawResponse, reviewLoopDiffMaxLen)), nil
+- Set fixed=false whenever valid=false`, string(issuesJSON), truncateForPrompt(rawResponse, reviewLoopPromptContextMaxLen)), nil
 }
 
 func retryBackoff(base time.Duration, attempt int) time.Duration {
@@ -546,34 +645,55 @@ func truncateForPrompt(content string, maxLen int) string {
 	if len(trimmed) <= maxLen {
 		return trimmed
 	}
-	return trimmed[:maxLen] + "\n... (truncated)"
+	return truncateUTF8(trimmed, maxLen) + "\n... (truncated)"
 }
 
-func gitDiffAgainstBaseBranch(baseBranch string) (string, error) {
-	mergeBaseCmd := exec.Command("git", "merge-base", baseBranch, "HEAD")
-	var mergeBaseStdout, mergeBaseStderr bytes.Buffer
-	mergeBaseCmd.Stdout = &mergeBaseStdout
-	mergeBaseCmd.Stderr = &mergeBaseStderr
-
-	if err := mergeBaseCmd.Run(); err != nil {
-		return "", fmt.Errorf("git merge-base %s HEAD failed: %w (stderr: %s)", baseBranch, err, strings.TrimSpace(mergeBaseStderr.String()))
+func gitReviewBranchContext(baseBranch, currentBranch string) (reviewBranchContext, error) {
+	mergeBase, err := gitCommandOutput("merge-base", baseBranch, "HEAD")
+	if err != nil {
+		return reviewBranchContext{}, err
 	}
-
-	mergeBase := strings.TrimSpace(mergeBaseStdout.String())
+	mergeBase = strings.TrimSpace(mergeBase)
 	if mergeBase == "" {
-		return "", fmt.Errorf("git merge-base %s HEAD returned empty output", baseBranch)
+		return reviewBranchContext{}, fmt.Errorf("git merge-base %s HEAD returned empty output", baseBranch)
 	}
 
-	cmd := exec.Command("git", "diff", mergeBase)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git diff %s failed: %w (stderr: %s)", mergeBase, err, strings.TrimSpace(stderr.String()))
+	nameStatus, err := gitCommandOutput("diff", "--name-status", mergeBase)
+	if err != nil {
+		return reviewBranchContext{}, err
+	}
+	numstat, err := gitCommandOutput("diff", "--numstat", mergeBase)
+	if err != nil {
+		return reviewBranchContext{}, err
+	}
+	shortStat, err := gitCommandOutput("diff", "--shortstat", mergeBase)
+	if err != nil {
+		return reviewBranchContext{}, err
+	}
+	commits, err := gitCommandOutput("log", "--oneline", "--no-merges", mergeBase+"..HEAD")
+	if err != nil {
+		return reviewBranchContext{}, err
 	}
 
-	return stdout.String(), nil
+	changedFiles := combineReviewBranchFiles(nameStatus, numstat)
+	ctx := reviewBranchContext{
+		BaseBranch:    baseBranch,
+		CurrentBranch: currentBranch,
+		MergeBase:     mergeBase,
+		DiffShortStat: strings.TrimSpace(shortStat),
+		ChangedFiles:  changedFiles,
+		Commits:       splitNonEmptyLines(commits),
+	}
+
+	if shouldInlineReviewDiff(changedFiles, numstat) {
+		diff, err := gitCommandOutput("diff", mergeBase)
+		if err != nil {
+			return reviewBranchContext{}, err
+		}
+		ctx.InlineDiff = truncateReviewDiff(strings.TrimSpace(diff), reviewLoopInlineDiffMaxLen)
+	}
+
+	return ctx, nil
 }
 
 func reviewLoopSkillPreamble() string {
@@ -584,7 +704,237 @@ func reviewLoopSkillPreamble() string {
 	return strings.TrimSpace(content)
 }
 
-func buildReviewLoopPrompt(baseBranch, currentBranch, diff string) string {
+func gitCommandOutput(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s failed: %w (stderr: %s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+
+	return stdout.String(), nil
+}
+
+func combineReviewBranchFiles(nameStatusOutput, numstatOutput string) []reviewBranchFile {
+	nameStatusLines := splitNonEmptyLines(nameStatusOutput)
+	numstats := parseReviewBranchNumstats(numstatOutput)
+	files := make([]reviewBranchFile, 0, len(nameStatusLines))
+
+	for _, line := range nameStatusLines {
+		file := parseReviewBranchFile(line)
+		for _, key := range reviewBranchFileMatchKeys(file.Path) {
+			if stat, ok := numstats[key]; ok {
+				applyReviewBranchNumstat(&file, stat)
+				break
+			}
+		}
+		files = append(files, file)
+	}
+
+	return files
+}
+
+type reviewBranchNumstat struct {
+	Path      string
+	Additions string
+	Deletions string
+}
+
+func parseReviewBranchFile(line string) reviewBranchFile {
+	parts := strings.Split(line, "\t")
+	if len(parts) == 0 {
+		return reviewBranchFile{}
+	}
+
+	status := normalizeReviewBranchStatus(parts[0])
+	path := ""
+
+	switch {
+	case len(parts) >= 3 && (status == "R" || status == "C"):
+		return reviewBranchFile{
+			Status:       status,
+			Path:         strings.TrimSpace(parts[2]),
+			PreviousPath: strings.TrimSpace(parts[1]),
+		}
+	case len(parts) >= 2:
+		path = strings.TrimSpace(parts[len(parts)-1])
+	default:
+		path = strings.TrimSpace(line)
+	}
+
+	return reviewBranchFile{
+		Status: status,
+		Path:   path,
+	}
+}
+
+func normalizeReviewBranchStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return "?"
+	}
+	switch status[0] {
+	case 'R', 'C':
+		return status[:1]
+	default:
+		return status
+	}
+}
+
+func parseReviewBranchNumstats(output string) map[string]reviewBranchNumstat {
+	lines := splitNonEmptyLines(output)
+	stats := make(map[string]reviewBranchNumstat, len(lines))
+	for _, line := range lines {
+		stat, ok := parseReviewBranchNumstat(line)
+		if !ok || stat.Path == "" {
+			continue
+		}
+		for _, key := range reviewBranchFileMatchKeys(stat.Path) {
+			if _, exists := stats[key]; !exists {
+				stats[key] = stat
+			}
+		}
+	}
+	return stats
+}
+
+func parseReviewBranchNumstat(line string) (reviewBranchNumstat, bool) {
+	parts := strings.SplitN(line, "\t", 3)
+	if len(parts) < 3 {
+		return reviewBranchNumstat{}, false
+	}
+	return reviewBranchNumstat{
+		Additions: strings.TrimSpace(parts[0]),
+		Deletions: strings.TrimSpace(parts[1]),
+		Path:      strings.TrimSpace(parts[2]),
+	}, true
+}
+
+func reviewBranchFileMatchKeys(path string) []string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+
+	keys := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	addKey := func(key string) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return
+		}
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+
+	addKey(path)
+	if before, after, ok := parseReviewBranchRenamePath(path); ok {
+		addKey(before)
+		addKey(after)
+		addKey(before + " -> " + after)
+		addKey(before + " => " + after)
+	}
+	return keys
+}
+
+func parseReviewBranchRenamePath(path string) (string, string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", "", false
+	}
+
+	if before, after, ok := strings.Cut(path, " -> "); ok {
+		return strings.TrimSpace(before), strings.TrimSpace(after), true
+	}
+
+	if before, after, ok := expandReviewBranchBraceRename(path); ok {
+		return before, after, true
+	}
+
+	if before, after, ok := strings.Cut(path, " => "); ok {
+		return strings.TrimSpace(before), strings.TrimSpace(after), true
+	}
+
+	return "", "", false
+}
+
+func expandReviewBranchBraceRename(path string) (string, string, bool) {
+	open := strings.Index(path, "{")
+	close := strings.Index(path, "}")
+	if open < 0 || close <= open {
+		return "", "", false
+	}
+
+	inner := path[open+1 : close]
+	beforeInner, afterInner, ok := strings.Cut(inner, " => ")
+	if !ok {
+		return "", "", false
+	}
+
+	prefix := path[:open]
+	suffix := path[close+1:]
+	before := strings.TrimSpace(prefix + beforeInner + suffix)
+	after := strings.TrimSpace(prefix + afterInner + suffix)
+	if before == "" || after == "" {
+		return "", "", false
+	}
+	return before, after, true
+}
+
+func applyReviewBranchNumstat(file *reviewBranchFile, stat reviewBranchNumstat) {
+	if file == nil {
+		return
+	}
+	file.Additions = stat.Additions
+	file.Deletions = stat.Deletions
+	if strings.TrimSpace(file.Path) == "" {
+		file.Path = stat.Path
+	}
+}
+
+func splitNonEmptyLines(content string) []string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func shouldInlineReviewDiff(files []reviewBranchFile, numstatOutput string) bool {
+	if len(files) == 0 || len(files) > reviewLoopInlineDiffMaxFiles {
+		return false
+	}
+
+	totalChangedLines := 0
+	for _, line := range splitNonEmptyLines(numstatOutput) {
+		stat, ok := parseReviewBranchNumstat(line)
+		if !ok {
+			return false
+		}
+		if stat.Additions == "-" || stat.Deletions == "-" {
+			return false
+		}
+		if n, err := strconv.Atoi(stat.Additions); err == nil {
+			totalChangedLines += n
+		}
+		if n, err := strconv.Atoi(stat.Deletions); err == nil {
+			totalChangedLines += n
+		}
+	}
+
+	return totalChangedLines <= reviewLoopInlineDiffMaxChanges
+}
+
+func buildReviewLoopPrompt(ctx reviewBranchContext) string {
 	var sb strings.Builder
 
 	if preamble := reviewLoopSkillPreamble(); preamble != "" {
@@ -593,18 +943,37 @@ func buildReviewLoopPrompt(baseBranch, currentBranch, diff string) string {
 	}
 
 	sb.WriteString("You are a strict static analyzer. Evaluate the current branch changes against the base branch and return machine-readable findings.\n\n")
-	sb.WriteString("Start with the provided diff, then inspect related repository files and context before finalizing findings.\n\n")
-	sb.WriteString(fmt.Sprintf("Base branch: %s\n", baseBranch))
-	sb.WriteString(fmt.Sprintf("Current branch: %s\n\n", currentBranch))
+	sb.WriteString("Start from the branch review context below, then inspect only the directly related repository files and targeted diffs before finalizing findings.\n\n")
+	sb.WriteString(fmt.Sprintf("Base branch: %s\n", ctx.BaseBranch))
+	sb.WriteString(fmt.Sprintf("Current branch: %s\n", ctx.CurrentBranch))
+	sb.WriteString(fmt.Sprintf("Merge base: %s\n\n", ctx.MergeBase))
 
-	diff = strings.TrimSpace(diff)
-	if diff == "" {
-		diff = "(No diff found between base branch and current branch.)"
+	if strings.TrimSpace(ctx.DiffShortStat) != "" {
+		sb.WriteString("Diff summary:\n")
+		sb.WriteString(ctx.DiffShortStat)
+		sb.WriteString("\n\n")
 	}
 
-	sb.WriteString("Diff to analyze:\n```diff\n")
-	sb.WriteString(truncateReviewDiff(diff, reviewLoopDiffMaxLen))
-	sb.WriteString("\n```\n\n")
+	sb.WriteString("Changed files:\n")
+	writeReviewLoopChangedFiles(&sb, ctx.ChangedFiles)
+	sb.WriteString("\n")
+
+	if len(ctx.Commits) > 0 {
+		sb.WriteString("Recent commits since merge-base:\n")
+		writeReviewLoopCommits(&sb, ctx.Commits)
+		sb.WriteString("\n")
+	}
+
+	if inlineDiff := strings.TrimSpace(ctx.InlineDiff); inlineDiff != "" {
+		sb.WriteString("Inline diff preview:\n```diff\n")
+		sb.WriteString(truncateReviewDiff(inlineDiff, reviewLoopInlineDiffMaxLen))
+		sb.WriteString("\n```\n\n")
+	} else {
+		sb.WriteString("Inline diff preview omitted because the change set is large or not a good fit for prompt embedding.\n")
+		sb.WriteString("Fetch targeted diffs as needed with `git diff ")
+		sb.WriteString(ctx.MergeBase)
+		sb.WriteString(" -- <path>`.\n\n")
+	}
 
 	sb.WriteString(`Return ONLY valid JSON (no markdown fences, no prose) with this schema:
 {
@@ -623,8 +992,12 @@ func buildReviewLoopPrompt(baseBranch, currentBranch, diff string) string {
 }
 
 Rules:
+- Start from the changed files, diff summary, and recent commits above.
+- If an inline diff preview is present, use it as a starting point only; do not assume it is exhaustive.
+- When you need patch detail, fetch targeted diffs with git diff <merge-base> -- <path>.
+- Avoid running git diff <merge-base> for the entire repo unless the changed file list is very small and you still need it.
 - Use repository tools and shell commands to inspect code and validate findings.
-- Keep analysis diff-driven: start with files in the diff, then inspect only directly related code paths as needed.
+- Keep analysis diff-driven: start with changed files, then inspect only directly related code paths as needed.
 - Hard limit for this step: at most 8 total tool/command calls.
 - Do not run hal commands or go run . commands.
 - Avoid broad or expensive commands (for example: avoid full-repo sweeps and go test ./...).
@@ -636,6 +1009,75 @@ Rules:
 `)
 
 	return sb.String()
+}
+
+func writeReviewLoopChangedFiles(sb *strings.Builder, files []reviewBranchFile) {
+	if len(files) == 0 {
+		sb.WriteString("- (no changed files reported)\n")
+		return
+	}
+
+	limit := len(files)
+	if limit > reviewLoopPromptMaxFiles {
+		limit = reviewLoopPromptMaxFiles
+	}
+
+	for _, file := range files[:limit] {
+		sb.WriteString("- ")
+		if file.Status != "" {
+			sb.WriteString(file.Status)
+			sb.WriteString(" ")
+		}
+		path := strings.TrimSpace(file.Path)
+		if path == "" {
+			path = "(unknown path)"
+		}
+		sb.WriteString(path)
+		if previousPath := strings.TrimSpace(file.PreviousPath); previousPath != "" {
+			sb.WriteString(" (from ")
+			sb.WriteString(previousPath)
+			sb.WriteString(")")
+		}
+
+		switch {
+		case file.Additions == "-" || file.Deletions == "-":
+			sb.WriteString(" (binary)")
+		case file.Additions != "" || file.Deletions != "":
+			sb.WriteString(" (+")
+			sb.WriteString(zeroIfEmpty(file.Additions))
+			sb.WriteString(" -")
+			sb.WriteString(zeroIfEmpty(file.Deletions))
+			sb.WriteString(")")
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(files) > limit {
+		sb.WriteString(fmt.Sprintf("- ... %d more files omitted\n", len(files)-limit))
+	}
+}
+
+func writeReviewLoopCommits(sb *strings.Builder, commits []string) {
+	limit := len(commits)
+	if limit > reviewLoopPromptMaxCommits {
+		limit = reviewLoopPromptMaxCommits
+	}
+	for _, commit := range commits[:limit] {
+		sb.WriteString("- ")
+		sb.WriteString(commit)
+		sb.WriteString("\n")
+	}
+	if len(commits) > limit {
+		sb.WriteString(fmt.Sprintf("- ... %d more commits omitted\n", len(commits)-limit))
+	}
+}
+
+func zeroIfEmpty(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "0"
+	}
+	return value
 }
 
 func buildReviewLoopFixPrompt(baseBranch, currentBranch string, issues []reviewLoopIssue) (string, error) {
@@ -694,7 +1136,22 @@ func truncateReviewDiff(diff string, maxLen int) string {
 	if len(diff) <= maxLen {
 		return diff
 	}
-	return diff[:maxLen] + "\n... (truncated)"
+	return truncateUTF8(diff, maxLen) + "\n... (truncated)"
+}
+
+func truncateUTF8(content string, maxLen int) string {
+	if maxLen <= 0 || content == "" {
+		return ""
+	}
+	if len(content) <= maxLen {
+		return content
+	}
+
+	truncated := content[:maxLen]
+	for len(truncated) > 0 && !utf8.ValidString(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return truncated
 }
 
 func parseReviewLoopResponse(response string) (*reviewLoopResponse, error) {
@@ -785,18 +1242,30 @@ func parseReviewLoopFixResponse(response string, reviewedIssues []reviewLoopIssu
 		return nil, fmt.Errorf("missing fix result for review issue ids: %s", strings.Join(missingIDs, ", "))
 	}
 
-	outcome := &reviewLoopFixOutcome{Summary: strings.TrimSpace(parsed.Summary)}
+	outcome := &reviewLoopFixOutcome{
+		Summary:  strings.TrimSpace(parsed.Summary),
+		PerIssue: make([]reviewLoopFixResult, 0, len(reviewedIssues)),
+	}
 	for _, reviewed := range reviewedIssues {
 		fixIssue := fixByID[strings.TrimSpace(reviewed.ID)]
-		if fixIssue.Valid != nil && *fixIssue.Valid {
+		valid := fixIssue.Valid != nil && *fixIssue.Valid
+		fixed := valid && fixIssue.Fixed != nil && *fixIssue.Fixed
+
+		if valid {
 			outcome.ValidIssues++
-			if fixIssue.Fixed != nil && *fixIssue.Fixed {
+			if fixed {
 				outcome.FixesApplied++
 			}
-			continue
+		} else {
+			outcome.InvalidIssues++
 		}
 
-		outcome.InvalidIssues++
+		outcome.PerIssue = append(outcome.PerIssue, reviewLoopFixResult{
+			ID:     strings.TrimSpace(reviewed.ID),
+			Valid:  valid,
+			Fixed:  fixed,
+			Reason: strings.TrimSpace(fixIssue.Reason),
+		})
 	}
 
 	return outcome, nil

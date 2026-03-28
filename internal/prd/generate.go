@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/engine"
@@ -48,7 +49,7 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 	if display != nil {
 		display.ShowPhase(2, 2, "Generate")
 	}
-	prdContent, err := generatePRD(ctx, eng, prdSkill, description, answers, projectInfo, display)
+	prdContent, err := generatePRD(ctx, eng, prdSkill, description, questions, answers, projectInfo, display)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate PRD: %w", err)
 	}
@@ -241,13 +242,13 @@ func parseQuestionsResponse(response string) ([]Question, error) {
 	return qr.Questions, nil
 }
 
-// collectAnswersStyled collects answers using styled display boxes.
+// collectAnswersStyled displays all questions at once and collects answers in a
+// single batch input like "1A, 2B, 3C, 4B, 5A".
 func collectAnswersStyled(questions []Question, display *engine.Display) (map[int]string, error) {
-	answers := make(map[int]string)
 	reader := bufio.NewReader(os.Stdin)
 
+	// Show all questions at once
 	for _, q := range questions {
-		// Convert options to display format
 		displayOpts := make([]engine.QuestionOption, len(q.Options))
 		for i, opt := range q.Options {
 			displayOpts[i] = engine.QuestionOption{
@@ -257,58 +258,217 @@ func collectAnswersStyled(questions []Question, display *engine.Display) (map[in
 			}
 		}
 
-		// Show styled question box
 		if display != nil {
 			display.ShowQuestion(q.Number, q.Text, displayOpts)
 		} else {
-			// Fallback to plain display
 			fmt.Printf("\n%d. %s\n", q.Number, q.Text)
 			for _, opt := range q.Options {
 				fmt.Printf("   %s. %s\n", opt.Letter, opt.Label)
 			}
 		}
+	}
 
-		fmt.Print("Your answer: ")
+	// Build option lookup: questionNumber -> letter -> label
+	optionMap := buildOptionMap(questions)
 
+	// Collect answers with retry on error or missing questions
+	example := buildAnswerExample(questions)
+	fmt.Printf("\nAnswer all questions, e.g. %s\n", example)
+	fmt.Print("Your answers: ")
+
+	var answers map[int]string
+	for {
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, err
 		}
-		input = strings.TrimSpace(input)
 
-		// Check if it's a letter option
-		upperInput := strings.ToUpper(input)
-		for _, opt := range q.Options {
-			if opt.Letter == upperInput {
-				if strings.Contains(strings.ToLower(opt.Label), "other") {
-					fmt.Print("Please specify: ")
-					custom, err := reader.ReadString('\n')
-					if err != nil {
-						return nil, err
-					}
-					answers[q.Number] = strings.TrimSpace(custom)
-				} else {
-					answers[q.Number] = opt.Label
-				}
-				break
+		answers, err = parseBatchAnswers(strings.TrimSpace(input), optionMap)
+		if err != nil {
+			fmt.Printf("  ✗ %s\n", err)
+			fmt.Print("Your answers: ")
+			continue
+		}
+
+		// Check all questions are answered
+		missing := findMissingQuestions(questions, answers)
+		if len(missing) > 0 {
+			fmt.Printf("  ✗ Missing answers for: %s\n", formatMissingQuestions(missing))
+			fmt.Print("Your answers: ")
+			continue
+		}
+
+		break
+	}
+
+	// Collect custom text for "Other" options — iterate in question order (deterministic)
+	for _, q := range questions {
+		label, ok := answers[q.Number]
+		if !ok {
+			continue
+		}
+		if isOtherOption(label) {
+			fmt.Printf("Q%d — please specify: ", q.Number)
+			custom, err := reader.ReadString('\n')
+			if err != nil {
+				return nil, err
 			}
+			answers[q.Number] = strings.TrimSpace(custom)
 		}
-		if _, ok := answers[q.Number]; !ok {
-			// User typed custom answer
-			answers[q.Number] = input
-		}
-		fmt.Println()
 	}
 
 	return answers, nil
 }
 
-func generatePRD(ctx context.Context, eng engine.Engine, skill, description string, answers map[int]string, projectInfo string, display *engine.Display) (string, error) {
-	// Format answers
+// findMissingQuestions returns question numbers that have no answer.
+func findMissingQuestions(questions []Question, answers map[int]string) []int {
+	var missing []int
+	for _, q := range questions {
+		if _, ok := answers[q.Number]; !ok {
+			missing = append(missing, q.Number)
+		}
+	}
+	return missing
+}
+
+// formatMissingQuestions formats a list of missing question numbers like "Q1, Q3, Q5".
+func formatMissingQuestions(nums []int) string {
+	parts := make([]string, len(nums))
+	for i, n := range nums {
+		parts[i] = fmt.Sprintf("Q%d", n)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// isOtherOption checks if a label represents an "Other (specify)" option.
+func isOtherOption(label string) bool {
+	lower := strings.ToLower(label)
+	return strings.Contains(lower, "other")
+}
+
+// buildAnswerExample generates an example answer string like "1A, 2B, 3C".
+func buildAnswerExample(questions []Question) string {
+	parts := make([]string, 0, len(questions))
+	letters := []string{"A", "B", "C", "D"}
+	for i, q := range questions {
+		letter := letters[i%len(letters)]
+		parts = append(parts, fmt.Sprintf("%d%s", q.Number, letter))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// buildOptionMap creates a lookup: questionNumber -> uppercase letter -> label.
+func buildOptionMap(questions []Question) map[int]map[string]string {
+	m := make(map[int]map[string]string, len(questions))
+	for _, q := range questions {
+		opts := make(map[string]string, len(q.Options))
+		for _, opt := range q.Options {
+			opts[strings.ToUpper(opt.Letter)] = opt.Label
+		}
+		m[q.Number] = opts
+	}
+	return m
+}
+
+// parseBatchAnswers parses a compact answer string like "1A, 2B, 3C" into a map
+// of question number -> selected label. Supports formats:
+//   - "1A, 2B, 3C"        (with commas)
+//   - "1A 2B 3C"           (space-separated)
+//   - "1a,2b,3c"           (lowercase, no spaces)
+//   - "1A,2B,3C,4B,5A"    (mixed)
+//   - "1A2B3C"             (fully concatenated)
+func parseBatchAnswers(input string, optionMap map[int]map[string]string) (map[int]string, error) {
+	answers := make(map[int]string)
+
+	// Normalize: replace commas with spaces, split concatenated tokens (1A2B → 1A 2B),
+	// then split on whitespace.
+	input = strings.ReplaceAll(input, ",", " ")
+	input = splitConcatenatedAnswers(input)
+	tokens := strings.Fields(input)
+
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("no answers provided")
+	}
+
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if len(token) < 2 {
+			return nil, fmt.Errorf("invalid answer %q — expected format like 1A", token)
+		}
+
+		// Split into number prefix and letter suffix
+		// Find where digits end: "1A" → num="1" letter="A", "12B" → num="12" letter="B"
+		splitIdx := 0
+		for splitIdx < len(token) && token[splitIdx] >= '0' && token[splitIdx] <= '9' {
+			splitIdx++
+		}
+		if splitIdx == 0 || splitIdx == len(token) {
+			return nil, fmt.Errorf("invalid answer %q — expected format like 1A", token)
+		}
+
+		numStr := token[:splitIdx]
+		letter := strings.ToUpper(token[splitIdx:])
+
+		var qNum int
+		if _, err := fmt.Sscanf(numStr, "%d", &qNum); err != nil {
+			return nil, fmt.Errorf("invalid question number in %q", token)
+		}
+
+		opts, ok := optionMap[qNum]
+		if !ok {
+			return nil, fmt.Errorf("unknown question number %d in %q", qNum, token)
+		}
+
+		label, ok := opts[letter]
+		if !ok {
+			validLetters := make([]string, 0, len(opts))
+			for l := range opts {
+				validLetters = append(validLetters, l)
+			}
+			sort.Strings(validLetters)
+			return nil, fmt.Errorf("invalid option %s for question %d (valid: %s)", letter, qNum, strings.Join(validLetters, ", "))
+		}
+
+		answers[qNum] = label
+	}
+
+	return answers, nil
+}
+
+// splitConcatenatedAnswers inserts spaces between concatenated answer pairs.
+// "1A2B3C" → "1A 2B 3C", "12A3B" → "12A 3B"
+// Splits at boundaries where a letter is immediately followed by a digit.
+func splitConcatenatedAnswers(input string) string {
+	var result strings.Builder
+	for i := 0; i < len(input); i++ {
+		result.WriteByte(input[i])
+		if i+1 < len(input) && isLetter(input[i]) && isDigit(input[i+1]) {
+			result.WriteByte(' ')
+		}
+	}
+	return result.String()
+}
+
+func isLetter(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+func isDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+func generatePRD(ctx context.Context, eng engine.Engine, skill, description string, questions []Question, answers map[int]string, projectInfo string, display *engine.Display) (string, error) {
+	// Format answers with question text so the engine has full context.
+	// Output: "1. What's the primary goal? → Performance optimization"
+	questionTextByNum := make(map[int]string, len(questions))
+	for _, q := range questions {
+		questionTextByNum[q.Number] = q.Text
+	}
+
 	var answerText strings.Builder
-	for i := 1; i <= len(answers); i++ {
-		if ans, ok := answers[i]; ok {
-			answerText.WriteString(fmt.Sprintf("%d. %s\n", i, ans))
+	for _, q := range questions {
+		if ans, ok := answers[q.Number]; ok {
+			answerText.WriteString(fmt.Sprintf("%d. %s → %s\n", q.Number, q.Text, ans))
 		}
 	}
 

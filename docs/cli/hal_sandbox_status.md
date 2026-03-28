@@ -4,18 +4,22 @@ Show sandbox status
 
 ### Synopsis
 
-Show the current status of a sandbox.
+Show detailed status of a named sandbox, or list all sandboxes.
 
-Reads the sandbox name and provider from .hal/sandbox.json.
-The provider is used to determine how to fetch status (daytona CLI, hcloud CLI, or doctl CLI).
+When a NAME is provided, queries the provider for live status and displays
+all fields: identity, networking, lifecycle, config, and labels.
+
+When no NAME is provided, delegates to 'hal sandbox list' to show all
+sandboxes in the global registry.
 
 ```
-hal sandbox status [flags]
+hal sandbox status [NAME] [flags]
 ```
 
 ### Examples
 
 ```
+  hal sandbox status my-sandbox
   hal sandbox status
 ```
 

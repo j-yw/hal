@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -59,13 +60,13 @@ var versionCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Fprintf(out, "hal %s\n", Version)
-		fmt.Fprintf(out, "  commit:  %s\n", Commit)
-		fmt.Fprintf(out, "  built:   %s\n", BuildDate)
-		fmt.Fprintf(out, "  go:      %s\n", runtime.Version())
-		fmt.Fprintf(out, "  os/arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintf(out, "%s %s\n", display.StyleTitle.Render("hal"), display.StyleBold.Render(Version))
+		fmt.Fprintf(out, "  commit:  %s\n", display.StyleMuted.Render(Commit))
+		fmt.Fprintf(out, "  built:   %s\n", display.StyleMuted.Render(BuildDate))
+		fmt.Fprintf(out, "  go:      %s\n", display.StyleMuted.Render(runtime.Version()))
+		fmt.Fprintf(out, "  os/arch: %s\n", display.StyleMuted.Render(runtime.GOOS+"/"+runtime.GOARCH))
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "  \"I'm completely operational, and all my circuits are functioning perfectly.\"")
+		fmt.Fprintf(out, "  %s\n", display.StyleAccent.Render("\"I'm completely operational, and all my circuits are functioning perfectly.\""))
 		return nil
 	},
 }

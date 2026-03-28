@@ -359,8 +359,36 @@ func runArchiveListFn(halDir string, verbose bool, out io.Writer) error {
 		return err
 	}
 
-	archive.FormatList(archives, out, verbose)
+	formatArchiveListStyled(archives, out, verbose)
 	return nil
+}
+
+// formatArchiveListStyled renders the archive list with lipgloss styling.
+func formatArchiveListStyled(archives []archive.ArchiveInfo, w io.Writer, verbose bool) {
+	if len(archives) == 0 {
+		fmt.Fprintf(w, "%s No archives found.\n", engine.StyleMuted.Render("○"))
+		return
+	}
+
+	if verbose {
+		fmt.Fprintf(w, "%s\n", engine.StyleBold.Render(
+			fmt.Sprintf("%-30s  %-12s  %-10s  %-30s  %s", "NAME", "DATE", "PROGRESS", "BRANCH", "PATH")))
+		for _, a := range archives {
+			progress := fmt.Sprintf("%d/%d", a.Completed, a.Total)
+			fmt.Fprintf(w, "%-30s  %-12s  %-10s  %-30s  %s\n",
+				engine.StyleInfo.Render(a.Name), engine.StyleMuted.Render(a.Date),
+				progress, engine.StyleMuted.Render(a.BranchName), engine.StyleMuted.Render(a.Dir))
+		}
+	} else {
+		fmt.Fprintf(w, "%s\n", engine.StyleBold.Render(
+			fmt.Sprintf("%-30s  %-12s  %s", "NAME", "DATE", "PROGRESS")))
+		for _, a := range archives {
+			progress := fmt.Sprintf("%d/%d", a.Completed, a.Total)
+			fmt.Fprintf(w, "%-30s  %-12s  %s\n",
+				engine.StyleInfo.Render(a.Name), engine.StyleMuted.Render(a.Date), progress)
+		}
+	}
+	fmt.Fprintf(w, "\n%s\n", engine.StyleMuted.Render(fmt.Sprintf("%d archive(s)", len(archives))))
 }
 
 // runArchiveRestoreFn contains the testable logic for the archive restore command.
@@ -400,9 +428,9 @@ func deriveArchiveName(halDir string) string {
 // promptForName asks the user for an archive name with a default suggestion.
 func promptForName(defaultName string, in io.Reader, out io.Writer) string {
 	if defaultName != "" {
-		fmt.Fprintf(out, "Archive name [%s]: ", defaultName)
+		fmt.Fprintf(out, "%s [%s]: ", engine.StyleBold.Render("Archive name"), engine.StyleMuted.Render(defaultName))
 	} else {
-		fmt.Fprint(out, "Archive name: ")
+		fmt.Fprintf(out, "%s: ", engine.StyleBold.Render("Archive name"))
 	}
 
 	reader := bufio.NewReader(in)

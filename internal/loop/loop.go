@@ -16,10 +16,15 @@ import (
 
 // Result represents the outcome of the loop execution.
 type Result struct {
-	Iterations int   // Number of iterations run
-	Complete   bool  // Whether all tasks were completed
-	Success    bool  // Whether the loop finished successfully
-	Error      error // Any error that occurred
+	Iterations       int           // Number of iterations run
+	Complete         bool          // Whether all tasks were completed
+	Success          bool          // Whether the loop finished successfully
+	Error            error         // Any error that occurred
+	Duration         time.Duration // Wall-clock time for the entire loop
+	CompletedStories int           // Number of stories marked as complete
+	TotalStories     int           // Total number of stories in the PRD
+	LastStoryID      string        // ID of the last story worked on
+	LastStoryTitle   string        // Title of the last story worked on
 }
 
 // Config holds configuration for the loop.
@@ -85,7 +90,16 @@ func New(cfg Config) (*Runner, error) {
 }
 
 // Run executes the Hal loop.
-func (r *Runner) Run(ctx context.Context) Result {
+func (r *Runner) Run(ctx context.Context) (result Result) {
+	loopStart := time.Now()
+	defer func() {
+		result.Duration = time.Since(loopStart)
+		// Capture final PRD story counts when available
+		if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
+			result.CompletedStories, result.TotalStories = prd.Progress()
+		}
+	}()
+
 	// Load prompt
 	prompt, err := r.loadPrompt()
 	if err != nil {
@@ -160,7 +174,7 @@ func (r *Runner) Run(ctx context.Context) Result {
 		Branch: branch,
 	}, r.config.MaxIterations)
 
-	result := Result{}
+	result = Result{}
 
 	for i := 1; i <= r.config.MaxIterations; i++ {
 		// Load PRD to get current story info
@@ -181,6 +195,12 @@ func (r *Runner) Run(ctx context.Context) Result {
 		}
 
 		r.display.ShowIterationHeader(i, r.config.MaxIterations, storyInfo)
+
+		// Track which story this iteration worked on
+		if storyInfo != nil {
+			result.LastStoryID = storyInfo.ID
+			result.LastStoryTitle = storyInfo.Title
+		}
 
 		// Execute with retry
 		execResult := r.executeWithRetry(ctx, prompt)

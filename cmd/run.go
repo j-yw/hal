@@ -38,12 +38,15 @@ var (
 
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
-	ContractVersion int          `json:"contractVersion"`
-	OK              bool         `json:"ok"`
-	Iterations      int          `json:"iterations"`
-	Complete        bool         `json:"complete"`
-	StoryID         string       `json:"storyId,omitempty"`
-	DryRun          bool         `json:"dryRun,omitempty"`
+	ContractVersion int            `json:"contractVersion"`
+	OK              bool           `json:"ok"`
+	Engine          string         `json:"engine,omitempty"`
+	Iterations      int            `json:"iterations"`
+	Complete        bool           `json:"complete"`
+	StoryID         string         `json:"storyId,omitempty"`
+	LastStoryID     string         `json:"lastStoryId,omitempty"`
+	DryRun          bool           `json:"dryRun,omitempty"`
+	Duration        string         `json:"duration,omitempty"`
 	PRD             *RunPRDInfo    `json:"prd,omitempty"`
 	NextAction      *RunNextAction `json:"nextAction,omitempty"`
 	Error           string         `json:"error,omitempty"`
@@ -301,18 +304,68 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	result := runner.Run(context.Background())
 
 	if jsonMode {
-		return outputRunJSON(out, result, story, dryRun)
+		return outputRunJSON(out, result, story, dryRun, resolvedEngine)
 	}
+
+	// Show completion summary in terminal mode
+	showRunSummary(out, result)
 
 	// Only return error if there was an actual failure
 	if result.Error != nil {
-		if jsonMode {
-			return outputRunJSON(out, result, story, dryRun)
-		}
 		return fmt.Errorf("loop failed: %w", result.Error)
 	}
 
 	return nil
+}
+
+// showRunSummary renders a human-readable completion summary after the loop finishes.
+func showRunSummary(out io.Writer, result loop.Result) {
+	fmt.Fprintln(out)
+	if result.Complete {
+		fmt.Fprintf(out, "%s All stories complete after %d iteration(s).\n",
+			engine.StyleSuccess.Render("✓"), result.Iterations)
+	} else if result.Error != nil {
+		fmt.Fprintf(out, "%s Failed after %d iteration(s).\n",
+			engine.StyleError.Render("✗"), result.Iterations)
+	} else if result.Success {
+		fmt.Fprintf(out, "%s Completed %d iteration(s). Stories remain.\n",
+			engine.StyleInfo.Render("→"), result.Iterations)
+	}
+
+	// Show elapsed time
+	if result.Duration > 0 {
+		fmt.Fprintf(out, "%s %s\n",
+			engine.StyleBold.Render("Duration:"), formatRunDuration(result.Duration))
+	}
+
+	// Show last story worked on
+	if result.LastStoryID != "" {
+		storyLabel := engine.StyleInfo.Render(result.LastStoryID)
+		if result.LastStoryTitle != "" {
+			storyLabel += " — " + result.LastStoryTitle
+		}
+		fmt.Fprintf(out, "%s %s\n", engine.StyleBold.Render("Last story:"), storyLabel)
+	}
+
+	// Show PRD progress from loop result
+	if result.TotalStories > 0 {
+		fmt.Fprintf(out, "%s Progress: %d/%d stories complete",
+			engine.StyleBold.Render("PRD:"), result.CompletedStories, result.TotalStories)
+		pct := result.CompletedStories * 100 / result.TotalStories
+		fmt.Fprintf(out, " (%d%%)", pct)
+		fmt.Fprintln(out)
+	}
+}
+
+// formatRunDuration renders a duration as a human-friendly string.
+func formatRunDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 func outputRunJSONError(out io.Writer, errMsg string) error {
@@ -327,24 +380,29 @@ func outputRunJSONError(out io.Writer, errMsg string) error {
 	return nil
 }
 
-func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool) error {
+func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string) error {
 	jr := RunResult{
 		ContractVersion: 1,
 		OK:              result.Success,
+		Engine:          engineName,
 		Iterations:      result.Iterations,
 		StoryID:         storyID,
 		DryRun:          dryRun,
 		Complete:        result.Complete,
 	}
+	if result.Duration > 0 {
+		jr.Duration = result.Duration.Round(time.Second).String()
+	}
+	if result.LastStoryID != "" {
+		jr.LastStoryID = result.LastStoryID
+	}
 
-	// Try to read PRD state post-loop
-	prdPath := filepath.Join(template.HalDir, template.PRDFile)
-	if prd, err := engine.LoadPRDFile(template.HalDir, template.PRDFile); err == nil {
-		completed, total := prd.Progress()
+	// Story progress from loop result
+	if result.TotalStories > 0 {
 		jr.PRD = &RunPRDInfo{
-			Path:             prdPath,
-			CompletedStories: completed,
-			TotalStories:     total,
+			Path:             filepath.Join(template.HalDir, template.PRDFile),
+			CompletedStories: result.CompletedStories,
+			TotalStories:     result.TotalStories,
 		}
 	}
 

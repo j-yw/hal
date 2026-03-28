@@ -4,23 +4,29 @@ Open an interactive shell or run a remote command
 
 ### Synopsis
 
-Open an interactive SSH session to the active sandbox, or run a remote command.
+Open an interactive SSH session to a sandbox, or run a remote command.
 
-With no arguments, opens an interactive shell that replaces the current process.
+With just a name, opens an interactive shell that replaces the current process.
 With arguments after --, runs the command in the sandbox and streams output.
 
-The provider (Daytona or Hetzner) determines the SSH transport.
+When no name is provided, the command auto-resolves:
+  - If exactly one sandbox exists, it is selected automatically.
+  - If zero sandboxes exist, an error is returned.
+  - If multiple exist, an error lists the available choices.
+
+The provider determines the SSH transport.
 
 ```
-hal sandbox ssh [-- command args...] [flags]
+hal sandbox ssh [NAME] [-- command args...] [flags]
 ```
 
 ### Examples
 
 ```
+  hal sandbox ssh my-sandbox
+  hal sandbox ssh my-sandbox -- ls -la
+  hal sandbox ssh my-sandbox -- bash -c 'echo hello'
   hal sandbox ssh
-  hal sandbox ssh -- ls -la
-  hal sandbox ssh -- bash -c 'echo hello'
 ```
 
 ### Options

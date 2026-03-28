@@ -6,7 +6,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func testReviewBranchContext(baseBranch, currentBranch string) reviewBranchContext {
+	return reviewBranchContext{
+		BaseBranch:    baseBranch,
+		CurrentBranch: currentBranch,
+		MergeBase:     "abc123def456",
+		DiffShortStat: "1 file changed, 1 insertion(+)",
+		ChangedFiles: []reviewBranchFile{{
+			Status:    "M",
+			Path:      "cmd/review.go",
+			Additions: "1",
+			Deletions: "0",
+		}},
+		Commits:    []string{"1234567 feat: review loop test fixture"},
+		InlineDiff: "diff --git a/cmd/review.go b/cmd/review.go\n+new line",
+	}
+}
 
 func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	start := time.Date(2026, 2, 15, 9, 0, 0, 0, time.UTC)
@@ -23,7 +41,8 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		return current
 	}
 
-	var gotDiffBase string
+	var gotContextBase string
+	var gotContextCurrent string
 	var reviewPrompt string
 	var fixPrompt string
 	promptCalls := 0
@@ -31,9 +50,10 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	deps := reviewIterationDeps{
 		now:           nowFn,
 		currentBranch: func() (string, error) { return "hal/report-review-split", nil },
-		diffAgainstBase: func(baseBranch string) (string, error) {
-			gotDiffBase = baseBranch
-			return "diff --git a/cmd/review.go b/cmd/review.go\n+new line", nil
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			gotContextBase = baseBranch
+			gotContextCurrent = currentBranch
+			return testReviewBranchContext(baseBranch, currentBranch), nil
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			promptCalls++
@@ -96,14 +116,17 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("runSingleReviewIteration() unexpected error: %v", err)
 	}
 
-	if gotDiffBase != "develop" {
-		t.Fatalf("diff base branch = %q, want %q", gotDiffBase, "develop")
+	if gotContextBase != "develop" {
+		t.Fatalf("context base branch = %q, want %q", gotContextBase, "develop")
+	}
+	if gotContextCurrent != "hal/report-review-split" {
+		t.Fatalf("context current branch = %q, want %q", gotContextCurrent, "hal/report-review-split")
 	}
 	if promptCalls != 2 {
 		t.Fatalf("prompt calls = %d, want %d", promptCalls, 2)
 	}
 
-	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Use repository tools and shell commands", "Hard limit for this step: at most 8", "Do not run hal commands or go run . commands", "go test ./..."}
+	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Merge base: abc123def456", "Changed files:", "Recent commits since merge-base:", "Inline diff preview:", "Use repository tools and shell commands", "Hard limit for this step: at most 8", "Do not run hal commands or go run . commands", "go test ./..."}
 	for _, snippet := range reviewPromptSnippets {
 		if !strings.Contains(reviewPrompt, snippet) {
 			t.Fatalf("review prompt missing required schema snippet %q", snippet)
@@ -186,14 +209,14 @@ func TestRunReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
 		return current
 	}
 
-	diffCalls := 0
+	branchContextCalls := 0
 	promptCalls := 0
 	deps := reviewIterationDeps{
 		now:           nowFn,
 		currentBranch: func() (string, error) { return "hal/report-review-split", nil },
-		diffAgainstBase: func(baseBranch string) (string, error) {
-			diffCalls++
-			return "diff --git a/file.go b/file.go", nil
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			branchContextCalls++
+			return testReviewBranchContext(baseBranch, currentBranch), nil
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			promptCalls++
@@ -219,8 +242,8 @@ func TestRunReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
 		t.Fatalf("runReviewLoop() unexpected error: %v", err)
 	}
 
-	if diffCalls != 2 {
-		t.Fatalf("diff calls = %d, want %d", diffCalls, 2)
+	if branchContextCalls != 2 {
+		t.Fatalf("branch context calls = %d, want %d", branchContextCalls, 2)
 	}
 	if promptCalls != 3 {
 		t.Fatalf("prompt calls = %d, want %d", promptCalls, 3)
@@ -258,14 +281,14 @@ func TestRunReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
 }
 
 func TestRunReviewLoopStopsAtMaxIterations(t *testing.T) {
-	diffCalls := 0
+	branchContextCalls := 0
 	promptCalls := 0
 	deps := reviewIterationDeps{
 		now:           time.Now,
 		currentBranch: func() (string, error) { return "hal/report-review-split", nil },
-		diffAgainstBase: func(baseBranch string) (string, error) {
-			diffCalls++
-			return "diff --git a/file.go b/file.go", nil
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			branchContextCalls++
+			return testReviewBranchContext(baseBranch, currentBranch), nil
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			promptCalls++
@@ -288,8 +311,8 @@ func TestRunReviewLoopStopsAtMaxIterations(t *testing.T) {
 		t.Fatalf("runReviewLoop() unexpected error: %v", err)
 	}
 
-	if diffCalls != 2 {
-		t.Fatalf("diff calls = %d, want %d", diffCalls, 2)
+	if branchContextCalls != 2 {
+		t.Fatalf("branch context calls = %d, want %d", branchContextCalls, 2)
 	}
 	if promptCalls != 4 {
 		t.Fatalf("prompt calls = %d, want %d", promptCalls, 4)
@@ -320,8 +343,8 @@ func TestRunReviewLoopCallsIterationCallbacks(t *testing.T) {
 	deps := reviewIterationDeps{
 		now:           time.Now,
 		currentBranch: func() (string, error) { return "feature/test", nil },
-		diffAgainstBase: func(baseBranch string) (string, error) {
-			return "diff --git a/file.go b/file.go", nil
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			return testReviewBranchContext(baseBranch, currentBranch), nil
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			return `{"summary":"No issues","issues":[]}`,
@@ -362,8 +385,8 @@ func TestRunSingleReviewIterationCodexFailure(t *testing.T) {
 	deps := reviewIterationDeps{
 		now:           time.Now,
 		currentBranch: func() (string, error) { return "feature/test", nil },
-		diffAgainstBase: func(baseBranch string) (string, error) {
-			return "diff --git a/file b/file", nil
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			return testReviewBranchContext(baseBranch, currentBranch), nil
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			return "", errors.New("codex command failed")
@@ -384,8 +407,8 @@ func TestRunSingleReviewIterationFixStepFailure(t *testing.T) {
 	deps := reviewIterationDeps{
 		now:           time.Now,
 		currentBranch: func() (string, error) { return "feature/test", nil },
-		diffAgainstBase: func(baseBranch string) (string, error) {
-			return "diff --git a/file b/file", nil
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			return testReviewBranchContext(baseBranch, currentBranch), nil
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			promptCalls++
@@ -416,6 +439,37 @@ func TestRunSingleReviewIterationFixStepFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fix step failed: fix prompt failed") {
 		t.Fatalf("error %q does not contain expected fix-step failure message", err.Error())
+	}
+}
+
+func TestBuildReviewLoopPromptTruncatesDiffOnUTF8Boundary(t *testing.T) {
+	ctx := testReviewBranchContext("main", "feature/test")
+	ctx.InlineDiff = strings.Repeat("a", reviewLoopInlineDiffMaxLen-1) + "étail"
+
+	prompt := buildReviewLoopPrompt(ctx)
+	if !utf8.ValidString(prompt) {
+		t.Fatal("buildReviewLoopPrompt() produced invalid UTF-8")
+	}
+	if !strings.Contains(prompt, "... (truncated)") {
+		t.Fatal("buildReviewLoopPrompt() should include truncation marker")
+	}
+	if strings.Contains(prompt, "étail") {
+		t.Fatal("buildReviewLoopPrompt() should truncate before the split multibyte rune")
+	}
+}
+
+func TestTruncateForPromptPreservesUTF8(t *testing.T) {
+	content := strings.Repeat("b", reviewLoopPromptContextMaxLen-1) + "étail"
+
+	truncated := truncateForPrompt(content, reviewLoopPromptContextMaxLen)
+	if !utf8.ValidString(truncated) {
+		t.Fatal("truncateForPrompt() produced invalid UTF-8")
+	}
+	if !strings.Contains(truncated, "... (truncated)") {
+		t.Fatal("truncateForPrompt() should include truncation marker")
+	}
+	if strings.Contains(truncated, "étail") {
+		t.Fatal("truncateForPrompt() should truncate before the split multibyte rune")
 	}
 }
 
@@ -614,7 +668,14 @@ func TestParseCodexFixResponse(t *testing.T) {
 }
 
 func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
-	prompt := buildReviewLoopPrompt("develop", "feature/test", "diff --git a/a.go b/a.go")
+	ctx := testReviewBranchContext("develop", "feature/test")
+	ctx.MergeBase = "deadbeef"
+	ctx.DiffShortStat = "2 files changed, 5 insertions(+), 1 deletion(-)"
+	ctx.ChangedFiles = []reviewBranchFile{
+		{Status: "M", Path: "cmd/review.go", Additions: "4", Deletions: "1"},
+		{Status: "A", Path: "internal/review/new.go", Additions: "1", Deletions: "0"},
+	}
+	prompt := buildReviewLoopPrompt(ctx)
 
 	required := []string{"id", "title", "severity", "file", "line", "rationale", "suggestedFix"}
 	for _, field := range required {
@@ -627,6 +688,18 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 	if !strings.Contains(prompt, "Use repository tools and shell commands") {
 		t.Fatalf("prompt should allow tool usage, got: %q", prompt)
 	}
+	if !strings.Contains(prompt, "Merge base: deadbeef") {
+		t.Fatalf("prompt should include merge-base context, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Changed files:") {
+		t.Fatalf("prompt should include changed files, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Recent commits since merge-base:") {
+		t.Fatalf("prompt should include recent commits, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "git diff <merge-base> -- <path>") {
+		t.Fatalf("prompt should instruct targeted diff usage, got: %q", prompt)
+	}
 	if !strings.Contains(prompt, "Hard limit for this step: at most 8") {
 		t.Fatalf("prompt should enforce a review command budget, got: %q", prompt)
 	}
@@ -638,6 +711,19 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Do not run any tools or shell commands") {
 		t.Fatalf("prompt should not forbid tools, got: %q", prompt)
+	}
+}
+
+func TestBuildReviewLoopPromptOmitsInlineDiffForLargeContext(t *testing.T) {
+	ctx := testReviewBranchContext("develop", "feature/test")
+	ctx.InlineDiff = ""
+
+	prompt := buildReviewLoopPrompt(ctx)
+	if !strings.Contains(prompt, "Inline diff preview omitted because the change set is large or not a good fit for prompt embedding.") {
+		t.Fatalf("prompt should explain omitted inline diff, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "git diff abc123def456 -- <path>") {
+		t.Fatalf("prompt should include targeted diff command with merge-base, got: %q", prompt)
 	}
 }
 
@@ -750,6 +836,111 @@ func TestParseReviewResponseWithRepairIncompleteOutput(t *testing.T) {
 	}
 	if promptCalled {
 		t.Fatal("repair prompt should not run for incomplete output")
+	}
+}
+
+func TestCombineReviewBranchFilesMatchesNumstatByPath(t *testing.T) {
+	files := combineReviewBranchFiles(
+		"M\tchmod_only.sh\nM\ttracked.txt\n",
+		"5\t3\ttracked.txt\n",
+	)
+
+	if len(files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(files))
+	}
+	if files[0].Path != "chmod_only.sh" {
+		t.Fatalf("files[0].Path = %q, want %q", files[0].Path, "chmod_only.sh")
+	}
+	if files[0].Additions != "" || files[0].Deletions != "" {
+		t.Fatalf("files[0] stats = +%q -%q, want empty stats", files[0].Additions, files[0].Deletions)
+	}
+	if files[1].Path != "tracked.txt" {
+		t.Fatalf("files[1].Path = %q, want %q", files[1].Path, "tracked.txt")
+	}
+	if files[1].Additions != "5" || files[1].Deletions != "3" {
+		t.Fatalf("files[1] stats = +%q -%q, want +%q -%q", files[1].Additions, files[1].Deletions, "5", "3")
+	}
+}
+
+func TestCombineReviewBranchFilesMatchesRenameNumstatFormats(t *testing.T) {
+	tests := []struct {
+		name       string
+		nameStatus string
+		numstat    string
+		wantPath   string
+	}{
+		{
+			name:       "simple rename syntax",
+			nameStatus: "R100\told.txt\tnew.txt\n",
+			numstat:    "5\t3\told.txt => new.txt\n",
+			wantPath:   "new.txt",
+		},
+		{
+			name:       "brace expanded rename syntax",
+			nameStatus: "R086\tdocs/old.txt\tdocs/new.txt\n",
+			numstat:    "7\t4\tdocs/{old.txt => new.txt}\n",
+			wantPath:   "docs/new.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := combineReviewBranchFiles(tt.nameStatus, tt.numstat)
+			if len(files) != 1 {
+				t.Fatalf("len(files) = %d, want 1", len(files))
+			}
+			if files[0].Path != tt.wantPath {
+				t.Fatalf("files[0].Path = %q, want %q", files[0].Path, tt.wantPath)
+			}
+			if files[0].PreviousPath == "" {
+				t.Fatal("files[0].PreviousPath should be populated for rename entries")
+			}
+			if files[0].Additions != "7" && tt.name == "brace expanded rename syntax" {
+				t.Fatalf("files[0].Additions = %q, want %q", files[0].Additions, "7")
+			}
+			if files[0].Deletions != "4" && tt.name == "brace expanded rename syntax" {
+				t.Fatalf("files[0].Deletions = %q, want %q", files[0].Deletions, "4")
+			}
+			if files[0].Additions != "5" && tt.name == "simple rename syntax" {
+				t.Fatalf("files[0].Additions = %q, want %q", files[0].Additions, "5")
+			}
+			if files[0].Deletions != "3" && tt.name == "simple rename syntax" {
+				t.Fatalf("files[0].Deletions = %q, want %q", files[0].Deletions, "3")
+			}
+		})
+	}
+}
+
+func TestWriteReviewLoopChangedFilesUsesPrimaryPathForRenameEntries(t *testing.T) {
+	var sb strings.Builder
+	writeReviewLoopChangedFiles(&sb, []reviewBranchFile{{
+		Status:       "R",
+		Path:         "new.txt",
+		PreviousPath: "old.txt",
+		Additions:    "5",
+		Deletions:    "3",
+	}})
+
+	got := sb.String()
+	if !strings.Contains(got, "- R new.txt (from old.txt) (+5 -3)\n") {
+		t.Fatalf("writeReviewLoopChangedFiles() output = %q", got)
+	}
+	if strings.Contains(got, "old.txt -> new.txt") {
+		t.Fatalf("writeReviewLoopChangedFiles() should not emit rename placeholder path, got %q", got)
+	}
+}
+
+func TestShouldInlineReviewDiffUsesNumstatOutput(t *testing.T) {
+	files := []reviewBranchFile{
+		{Path: "chmod_only.sh"},
+		{Path: "tracked.txt"},
+	}
+
+	if shouldInlineReviewDiff(files, "999999\t0\ttracked.txt\n") {
+		t.Fatal("expected inline diff to be rejected for oversized numstat output")
+	}
+	if !shouldInlineReviewDiff(files, "5\t3\ttracked.txt\n") {
+		t.Fatal("expected inline diff to be allowed for small numstat output")
 	}
 }
 

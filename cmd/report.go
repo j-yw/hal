@@ -27,6 +27,8 @@ type ReportResult struct {
 	Summary         string   `json:"summary,omitempty"`
 	PatternsAdded   []string `json:"patternsAdded,omitempty"`
 	Recommendations []string `json:"recommendations,omitempty"`
+	Issues          []string `json:"issues,omitempty"`
+	TechDebt        []string `json:"techDebt,omitempty"`
 	NextAction      *struct {
 		ID          string `json:"id"`
 		Command     string `json:"command"`
@@ -222,6 +224,8 @@ func outputReportJSON(out io.Writer, result *compound.ReviewResult) error {
 		jr.Summary = result.Summary
 		jr.PatternsAdded = result.PatternsAdded
 		jr.Recommendations = result.Recommendations
+		jr.Issues = result.Issues
+		jr.TechDebt = result.TechDebt
 		if result.ReportPath != "" {
 			jr.NextAction = &struct {
 				ID          string `json:"id"`
@@ -253,14 +257,38 @@ func showReviewResult(out io.Writer, display *engine.Display, result *compound.R
 
 	if result.Summary != "" {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Summary:", result.Summary)
+		fmt.Fprintf(out, "%s %s\n", engine.StyleBold.Render("Summary:"), result.Summary)
+	}
+
+	if len(result.Issues) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s %d issue(s) found during session\n", engine.StyleBold.Render("Issues:"), len(result.Issues))
+		for _, issue := range result.Issues {
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleWarning.Render("•"), issue)
+		}
+	}
+
+	if len(result.PatternsAdded) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s %d pattern(s) added to AGENTS.md\n", engine.StyleBold.Render("Patterns:"), len(result.PatternsAdded))
+		for _, pattern := range result.PatternsAdded {
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleSuccess.Render("•"), pattern)
+		}
+	}
+
+	if len(result.TechDebt) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", engine.StyleBold.Render("Tech Debt:"))
+		for _, debt := range result.TechDebt {
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleMuted.Render("•"), debt)
+		}
 	}
 
 	if len(result.Recommendations) > 0 {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Recommendations:")
+		fmt.Fprintf(out, "%s\n", engine.StyleBold.Render("Recommendations:"))
 		for i, rec := range result.Recommendations {
-			fmt.Fprintf(out, "  %d. %s\n", i+1, rec)
+			fmt.Fprintf(out, "  %s %s\n", engine.StyleInfo.Render(fmt.Sprintf("%d.", i+1)), rec)
 		}
 	}
 }

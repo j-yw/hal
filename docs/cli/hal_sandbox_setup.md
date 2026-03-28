@@ -18,8 +18,9 @@ Then prompts for shared environment variables:
   • Git identity (name, email)
   • Tailscale auth key and hostname — for SSH from mobile
 
-All values are saved to .hal/config.yaml. Re-running setup lets you update
-individual values — press Enter to keep the current value.
+All values are saved to global sandbox config (~/.config/hal/sandbox-config.yaml
+unless HAL_CONFIG_HOME is set). Re-running setup lets you update individual
+values — press Enter to keep the current value.
 
 After setup, 'hal sandbox start' injects all configured env vars automatically.
 

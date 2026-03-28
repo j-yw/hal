@@ -119,6 +119,8 @@ func Review(ctx context.Context, eng engine.Engine, display *engine.Display, dir
 		Summary:         parsed.Summary,
 		PatternsAdded:   parsed.Patterns,
 		Recommendations: parsed.Recommendations,
+		Issues:          parsed.Issues,
+		TechDebt:        parsed.TechDebt,
 	}, nil
 }
 
@@ -495,5 +497,5 @@ func truncateContent(content string, maxLen int) string {
 	if len(content) <= maxLen {
 		return content
 	}
-	return content[:maxLen] + "\n... (truncated)"
+	return truncateUTF8(content, maxLen) + "\n... (truncated)"
 }

@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
@@ -24,12 +28,21 @@ var (
 
 // AutoResult is the machine-readable output of hal auto --json.
 type AutoResult struct {
-	ContractVersion int             `json:"contractVersion"`
-	OK              bool            `json:"ok"`
-	Resumed         bool            `json:"resumed,omitempty"`
-	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
-	Error           string          `json:"error,omitempty"`
-	Summary         string          `json:"summary"`
+	ContractVersion int              `json:"contractVersion"`
+	OK              bool             `json:"ok"`
+	Resumed         bool             `json:"resumed,omitempty"`
+	Duration        string           `json:"duration,omitempty"`
+	Branch          string           `json:"branch,omitempty"`
+	Tasks           *AutoTasksInfo   `json:"tasks,omitempty"`
+	NextAction      *AutoNextAction  `json:"nextAction,omitempty"`
+	Error           string           `json:"error,omitempty"`
+	Summary         string           `json:"summary"`
+}
+
+// AutoTasksInfo provides task completion progress for the auto pipeline.
+type AutoTasksInfo struct {
+	Completed int `json:"completed"`
+	Total     int `json:"total"`
 }
 
 // AutoNextAction suggests what to do after the auto pipeline.
@@ -95,6 +108,7 @@ func init() {
 }
 
 func runAuto(cmd *cobra.Command, args []string) error {
+	autoStart := time.Now()
 	ctx := context.Background()
 	out := io.Writer(os.Stdout)
 	dir := "."
@@ -214,10 +228,10 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			if jsonMode {
 				return outputAutoJSON(out, false, resume, err.Error(), autoFailureNoReports, false)
 			}
-			fmt.Fprintln(out, "No reports found.")
+			fmt.Fprintf(out, "%s No reports found.\n", engine.StyleWarning.Render("[!]"))
 			fmt.Fprintln(out)
-			fmt.Fprintf(out, "Place your reports in %s/ and run this command again.\n", config.ReportsDir)
-			fmt.Fprintln(out, "Reports can be markdown files, text files, or any format the AI can analyze.")
+			fmt.Fprintf(out, "Place your reports in %s and run this command again.\n", engine.StyleInfo.Render(config.ReportsDir+"/"))
+			fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Reports can be markdown files, text files, or any format the AI can analyze."))
 			return nil
 		}
 	}
@@ -251,27 +265,74 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Run the pipeline
 	if err := pipeline.Run(ctx, opts); err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, resume, err.Error(), autoFailurePipeline, pipeline.HasState())
+			return outputAutoJSON(out, false, resume, err.Error(), autoFailurePipeline, pipeline.HasState(), time.Since(autoStart))
 		}
 		return err
 	}
 
+	elapsed := time.Since(autoStart)
+
+	autoBranch, _ := compound.CurrentBranchOptional()
+
 	if jsonMode {
-		return outputAutoJSON(out, true, resume, "Auto pipeline completed successfully.", autoFailureNone, false)
+		summary := "Auto pipeline completed successfully."
+		if autoBranch != "" {
+			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
+		}
+		jr := AutoResult{
+			ContractVersion: 1,
+			OK:              true,
+			Resumed:         resume,
+			Duration:        elapsed.Round(time.Second).String(),
+			Summary:         summary,
+			Branch:          autoBranch,
+			NextAction: &AutoNextAction{
+				ID:          "run_report",
+				Command:     "hal report",
+				Description: "Generate a report for the completed auto pipeline work.",
+			},
+		}
+		// Add task progress if available
+		if prd, err := engine.LoadPRDFile(filepath.Join(dir, template.HalDir), template.AutoPRDFile); err == nil {
+			completed, total := prd.Progress()
+			if total > 0 {
+				jr.Tasks = &AutoTasksInfo{Completed: completed, Total: total}
+			}
+		}
+		data, err := json.MarshalIndent(jr, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal auto result: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
 	}
 
-	// Show success message
-	display.ShowCommandSuccess("Auto pipeline completed!", "")
+	// Show pipeline summary
+	summaryParts := []string{fmt.Sprintf("Duration: %s", elapsed.Round(time.Second))}
+	if autoBranch != "" {
+		summaryParts = append(summaryParts, fmt.Sprintf("Branch: %s", autoBranch))
+	}
+	// Show PRD task progress if available
+	if prd, err := engine.LoadPRDFile(filepath.Join(dir, template.HalDir), template.AutoPRDFile); err == nil {
+		completed, total := prd.Progress()
+		if total > 0 {
+			summaryParts = append(summaryParts, fmt.Sprintf("Tasks: %d/%d", completed, total))
+		}
+	}
+	display.ShowCommandSuccess("Auto pipeline completed!", strings.Join(summaryParts, " · "))
 
 	return nil
 }
 
-func outputAutoJSON(out io.Writer, ok bool, resumed bool, summary string, failure autoFailureKind, resumable bool) error {
+func outputAutoJSON(out io.Writer, ok bool, resumed bool, summary string, failure autoFailureKind, resumable bool, opts ...time.Duration) error {
 	jr := AutoResult{
 		ContractVersion: 1,
 		OK:              ok,
 		Resumed:         resumed,
 		Summary:         summary,
+	}
+	if len(opts) > 0 && opts[0] > 0 {
+		jr.Duration = opts[0].Round(time.Second).String()
 	}
 	if ok {
 		jr.NextAction = &AutoNextAction{

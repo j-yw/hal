@@ -18,9 +18,6 @@ type DigitalOceanProvider struct {
 	SSHKey            string
 	Size              string
 	TailscaleLockdown bool
-	// StateDir is the .hal directory path, needed to look up the droplet IP
-	// from sandbox state for SSH connections.
-	StateDir string
 
 	// cmdContext builds an *exec.Cmd. Defaults to exec.CommandContext.
 	// Override in tests to capture args without running the real CLI.
@@ -87,28 +84,27 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString(encoded)
 	b.WriteString("\n")
 
+	// Install and configure Tailscale FIRST (before setup.sh which takes minutes).
+	// hal polls for /root/.tailscale-ip via SSH, so this must complete quickly.
+	// NOTE: do NOT enable UFW here — hal needs public IP SSH access to read the file.
+	// Lockdown is applied by hal after it reads the Tailscale IP.
 	b.WriteString("runcmd:\n")
 	b.WriteString("  - |\n")
 	b.WriteString("    set -a\n")
 	b.WriteString("    . /root/.env\n")
 	b.WriteString("    set +a\n")
-	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
-	b.WriteString("  - |\n")
-	b.WriteString("    set -a\n")
-	b.WriteString("    . /root/.env\n")
-	b.WriteString("    set +a\n")
 	b.WriteString("    if [ -n \"${TAILSCALE_AUTHKEY:-}\" ]; then\n")
+	b.WriteString("      curl -fsSL https://tailscale.com/install.sh | sh\n")
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
 	b.WriteString("      tailscale ip -4 > /root/.tailscale-ip\n")
-	b.WriteString("      if [ \"$TAILSCALE_LOCKDOWN\" = \"true\" ]; then\n")
-	b.WriteString("        ufw allow in on tailscale0\n")
-	b.WriteString("        ufw allow in on tailscale0 proto udp to any port 60000:61000\n")
-	b.WriteString("        ufw deny 22/tcp\n")
-	b.WriteString("        ufw --force enable\n")
-	b.WriteString("      fi\n")
 	b.WriteString("    fi\n")
+	b.WriteString("  - |\n")
+	b.WriteString("    set -a\n")
+	b.WriteString("    . /root/.env\n")
+	b.WriteString("    set +a\n")
+	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
 
 	return b.String()
 }
@@ -156,35 +152,54 @@ func parseDODropletInfo(output string) (id string, ip string) {
 	}
 }
 
-func isNumericDropletID(value string) bool {
-	if value == "" {
-		return false
+func (d *DigitalOceanProvider) lookupDropletID(ctx context.Context, name string, out io.Writer) (string, error) {
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
+		"--format", "ID",
+		"--no-header",
+	)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = io.MultiWriter(out, &stderrBuf)
+	if err := cmd.Run(); err != nil {
+		return "", wrapDoctlError("compute droplet get", err, stderrBuf.String())
 	}
-	for _, ch := range value {
-		if ch < '0' || ch > '9' {
-			return false
-		}
+
+	id, _ := parseDODropletInfo(stdoutBuf.String())
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("doctl compute droplet get returned no ID for %q", name)
 	}
-	return true
+	return id, nil
 }
 
-func (d *DigitalOceanProvider) resolveDropletTarget(name string) string {
-	target := strings.TrimSpace(name)
-	if target == "" || isNumericDropletID(target) || strings.TrimSpace(d.StateDir) == "" {
-		return target
+func (d *DigitalOceanProvider) resolveLifecycleTarget(ctx context.Context, info *ConnectInfo, _ io.Writer) (string, error) {
+	if info != nil {
+		if target := strings.TrimSpace(info.WorkspaceID); target != "" {
+			return target, nil
+		}
+	}
+	return "", fmt.Errorf("sandbox workspace ID is required")
+}
+
+func (d *DigitalOceanProvider) lookupDropletIP(ctx context.Context, target string) (string, error) {
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
+		"--format", "PublicIPv4",
+		"--no-header",
+	)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Run(); err != nil {
+		return "", wrapDoctlError("compute droplet get", err, stderrBuf.String())
 	}
 
-	state, err := LoadState(d.StateDir)
-	if err != nil {
-		return target
+	ip := strings.TrimSpace(stdoutBuf.String())
+	if ip == "" {
+		return "", fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", target)
 	}
-	if state.Provider != "digitalocean" || strings.TrimSpace(state.WorkspaceID) == "" {
-		return target
-	}
-	if state.Name != target {
-		return target
-	}
-	return strings.TrimSpace(state.WorkspaceID)
+	return ip, nil
 }
 
 func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
@@ -218,6 +233,32 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 		return nil, wrapDoctlError("compute droplet create", err, stderrBuf.String())
 	}
 
+	// Droplet exists on DO from this point — clean up on any failure.
+	cleanupTarget := ""
+	cleanupDroplet := func(reason string) {
+		fmt.Fprintf(safeOut, "Cleaning up %s after failure (%s)...\n", name, reason)
+		if strings.TrimSpace(cleanupTarget) == "" {
+			lookupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			resolvedID, lookupErr := d.lookupDropletID(lookupCtx, name, safeOut)
+			cancel()
+			if lookupErr != nil {
+				fmt.Fprintf(safeOut, "Warning: failed to resolve droplet ID for cleanup of %s: %v\n", name, lookupErr)
+				return
+			}
+			cleanupTarget = resolvedID
+		}
+		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		delCmd := d.commandContext(delCtx, "doctl", "compute", "droplet", "delete", cleanupTarget, "--force")
+		delCmd.Stdout = io.Discard
+		delCmd.Stderr = io.Discard
+		if delErr := delCmd.Run(); delErr != nil {
+			fmt.Fprintf(safeOut, "Warning: failed to clean up droplet %s: %v (delete manually with: doctl compute droplet delete %s --force)\n", name, delErr, cleanupTarget)
+		} else {
+			fmt.Fprintf(safeOut, "Cleaned up droplet %s\n", name)
+		}
+	}
+
 	// Get droplet ID and public IP for persisted state + follow-up lifecycle ops.
 	ipCmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", name,
 		"--format", "ID,PublicIPv4",
@@ -229,33 +270,71 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	ipCmd.Stderr = io.MultiWriter(safeOut, &ipStderr)
 
 	if err := ipCmd.Run(); err != nil {
+		cleanupDroplet("failed to get droplet info")
 		return nil, wrapDoctlError("compute droplet get", err, ipStderr.String())
 	}
 
 	id, ip := parseDODropletInfo(ipBuf.String())
+	if trimmedID := strings.TrimSpace(id); trimmedID != "" {
+		cleanupTarget = trimmedID
+	}
 	if strings.TrimSpace(ip) == "" {
+		cleanupDroplet("no public IP")
 		return nil, fmt.Errorf("doctl compute droplet get returned no PublicIPv4 for %q", name)
 	}
 
 	result := &SandboxResult{ID: id, Name: name, IP: ip}
 	if d.TailscaleLockdown {
-		tailscaleIP, err := fetchTailscaleIP(ctx, "root", ip, d.sshContext, d.sleep, 9, 10*time.Second)
+		fmt.Fprintf(safeOut, "Waiting for Tailscale on %s (cloud-init may take a few minutes)...\n", name)
+		tailscaleIP, err := fetchTailscaleIPWithProgress(ctx, "root", ip, d.sshContext, d.sleep, 18, 10*time.Second, safeOut)
 		if err != nil {
+			cleanupDroplet("tailscale IP unavailable")
 			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
 		}
 		result.TailscaleIP = tailscaleIP
+
+		// Apply firewall lockdown AFTER reading the Tailscale IP.
+		// The cloud-init script intentionally skips lockdown so hal can
+		// SSH via the public IP to read /root/.tailscale-ip first.
+		fmt.Fprintf(safeOut, "Applying firewall lockdown on %s...\n", name)
+		lockdownScript := "ufw allow in on tailscale0 && ufw allow in on tailscale0 proto udp to any port 60000:61000 && ufw deny 22/tcp && ufw --force enable"
+		sshFn := d.sshContext
+		if sshFn == nil {
+			sshFn = exec.CommandContext
+		}
+		sshCmd := sshFn(ctx, "ssh",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "ConnectTimeout=10",
+			fmt.Sprintf("root@%s", ip),
+			lockdownScript,
+		)
+		var lockStderr bytes.Buffer
+		sshCmd.Stdout = safeOut
+		sshCmd.Stderr = &lockStderr
+		if err := sshCmd.Run(); err != nil {
+			cleanupDroplet("firewall lockdown failed")
+			lockMsg := strings.TrimSpace(lockStderr.String())
+			if lockMsg != "" {
+				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %s: %w", lockMsg, err)
+			}
+			return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w", err)
+		}
 	}
 
 	return result, nil
 }
 
-func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Writer) error {
+func (d *DigitalOceanProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	target := d.resolveDropletTarget(name)
 	safeOut := synchronizedWriter(out)
+	target, err := d.resolveLifecycleTarget(ctx, info, safeOut)
+	if err != nil {
+		return err
+	}
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", target)
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = safeOut
@@ -267,13 +346,16 @@ func (d *DigitalOceanProvider) Stop(ctx context.Context, name string, out io.Wri
 	return nil
 }
 
-func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.Writer) error {
+func (d *DigitalOceanProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	target := d.resolveDropletTarget(name)
 	safeOut := synchronizedWriter(out)
+	target, err := d.resolveLifecycleTarget(ctx, info, safeOut)
+	if err != nil {
+		return err
+	}
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "delete", target, "--force")
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = safeOut
@@ -285,13 +367,16 @@ func (d *DigitalOceanProvider) Delete(ctx context.Context, name string, out io.W
 	return nil
 }
 
-func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.Writer) error {
+func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.ensureDoctl(); err != nil {
 		return err
 	}
 
-	target := d.resolveDropletTarget(name)
 	safeOut := synchronizedWriter(out)
+	target, err := d.resolveLifecycleTarget(ctx, info, safeOut)
+	if err != nil {
+		return err
+	}
 	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
 		"--format", "ID,Name,Status,PublicIPv4",
 	)
@@ -305,55 +390,34 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, name string, out io.W
 	return nil
 }
 
-// refreshIP fetches the current public IP from doctl and updates the state file
-// if it has changed. Returns the current IP.
-func (d *DigitalOceanProvider) refreshIP(state *SandboxState) (string, error) {
-	target := d.resolveDropletTarget(state.Name)
-	cmd := d.commandContext(context.Background(), "doctl", "compute", "droplet", "get", target,
-		"--format", "ID,PublicIPv4",
-		"--no-header",
-	)
-	var outBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &stderrBuf
-
-	if err := cmd.Run(); err != nil {
-		return state.IP, nil // fall back to stored IP on API failure
+func (d *DigitalOceanProvider) resolveConnectIP(info *ConnectInfo) (string, error) {
+	if info != nil {
+		if ip := strings.TrimSpace(info.IP); ip != "" {
+			return ip, nil
+		}
+		target := strings.TrimSpace(info.WorkspaceID)
+		if target == "" {
+			target = strings.TrimSpace(info.Name)
+		}
+		if target != "" {
+			if err := d.ensureDoctl(); err != nil {
+				return "", err
+			}
+			ip, err := d.lookupDropletIP(context.Background(), target)
+			if err != nil {
+				return "", err
+			}
+			info.IP = ip
+			return ip, nil
+		}
 	}
-
-	_, freshIP := parseDODropletInfo(outBuf.String())
-	if strings.TrimSpace(freshIP) == "" {
-		return state.IP, nil
-	}
-
-	if freshIP != state.IP {
-		state.IP = freshIP
-		// Best-effort update of state file
-		_ = SaveState(d.StateDir, state)
-	}
-	return freshIP, nil
+	return "", fmt.Errorf("sandbox IP is required")
 }
 
-func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
-	if err := d.ensureDoctl(); err != nil {
-		return nil, err
-	}
-
-	state, err := LoadState(d.StateDir)
+func (d *DigitalOceanProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
+	ip, err := d.resolveConnectIP(info)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
-	}
-
-	ip := preferredIP(state)
-	if ip == "" {
-		refreshedIP, err := d.refreshIP(state)
-		if err != nil {
-			return nil, err
-		}
-		ip = refreshedIP
-	}
-	if ip == "" {
-		return nil, fmt.Errorf("no IP address found for %q", name)
+		return nil, err
 	}
 
 	cmd := exec.Command("ssh",
@@ -367,26 +431,10 @@ func (d *DigitalOceanProvider) SSH(name string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (d *DigitalOceanProvider) Exec(name string, args []string) (*exec.Cmd, error) {
-	if err := d.ensureDoctl(); err != nil {
-		return nil, err
-	}
-
-	state, err := LoadState(d.StateDir)
+func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
+	ip, err := d.resolveConnectIP(info)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox state: %w", err)
-	}
-
-	ip := preferredIP(state)
-	if ip == "" {
-		refreshedIP, err := d.refreshIP(state)
-		if err != nil {
-			return nil, err
-		}
-		ip = refreshedIP
-	}
-	if ip == "" {
-		return nil, fmt.Errorf("no IP address found for %q", name)
+		return nil, err
 	}
 
 	cmdArgs := []string{

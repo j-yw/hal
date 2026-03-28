@@ -8,6 +8,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/doctor"
+	ui "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/spf13/cobra"
 )
@@ -113,38 +114,64 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 	}
 
 	// Human-readable output
+	fmt.Fprintf(out, "%s\n", ui.StyleTitle.Render("Continue"))
 	if !ready {
-		fmt.Fprintln(out, "⚠  Environment needs attention")
+		fmt.Fprintf(out, "%s  Environment needs attention\n", ui.StyleWarning.Render("⚠"))
 		fmt.Fprintln(out)
 		for _, c := range doctorResult.Checks {
-			if c.Status == doctor.StatusFail || c.Status == doctor.StatusWarn {
-				fmt.Fprintf(out, "  %s\n", c.Message)
+			if c.Status == doctor.StatusFail {
+				fmt.Fprintf(out, "  %s  %s\n", ui.StyleError.Render("✗"), c.Message)
+			} else if c.Status == doctor.StatusWarn {
+				fmt.Fprintf(out, "  %s  %s\n", ui.StyleWarning.Render("⚠"), c.Message)
 			}
 		}
 		fmt.Fprintln(out)
-		fmt.Fprintf(out, "Fix:      %s\n", nextCmd)
+		fmt.Fprintf(out, "%s      %s\n", ui.StyleBold.Render("Fix:"), ui.StyleInfo.Render(nextCmd))
 		if statusResult.NextAction.Command != nextCmd {
 			fmt.Fprintln(out)
-			fmt.Fprintf(out, "Then:     %s\n", statusResult.NextAction.Command)
-			fmt.Fprintf(out, "          %s\n", statusResult.NextAction.Description)
+			fmt.Fprintf(out, "%s     %s\n", ui.StyleBold.Render("Then:"), ui.StyleInfo.Render(statusResult.NextAction.Command))
+			fmt.Fprintf(out, "          %s\n", ui.StyleMuted.Render(statusResult.NextAction.Description))
 		}
 	} else {
-		fmt.Fprintf(out, "Workflow: %s (%s)\n", statusResult.WorkflowTrack, statusResult.State)
-		fmt.Fprintf(out, "Health:   %d/%d checks passed\n", doctorResult.PassedChecks, doctorResult.TotalChecks)
+		healthLabel := fmt.Sprintf("%d/%d checks passed", doctorResult.PassedChecks, doctorResult.TotalChecks)
+		fmt.Fprintf(out, "%s %s (%s)\n", ui.StyleBold.Render("Workflow:"), statusResult.WorkflowTrack, statusResult.State)
+		if engine != "" {
+			fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Engine:"), engine)
+		}
+		fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Health:"), ui.StyleSuccess.Render(healthLabel))
 		if statusResult.Manual != nil {
-			fmt.Fprintf(out, "Stories:  %d/%d complete\n", statusResult.Manual.CompletedStories, statusResult.Manual.TotalStories)
+			if statusResult.Manual.BranchName != "" {
+				fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Branch:"), ui.StyleInfo.Render(statusResult.Manual.BranchName))
+			}
+			storyLabel := fmt.Sprintf("%d/%d complete", statusResult.Manual.CompletedStories, statusResult.Manual.TotalStories)
+			if statusResult.Manual.CompletedStories == statusResult.Manual.TotalStories && statusResult.Manual.TotalStories > 0 {
+				storyLabel = ui.StyleSuccess.Render(storyLabel)
+			}
+			fmt.Fprintf(out, "Stories:  %s\n", storyLabel)
+			if statusResult.Manual.NextStory != nil {
+				label := ui.StyleInfo.Render(statusResult.Manual.NextStory.ID)
+				if statusResult.Manual.NextStory.Title != "" {
+					label += " — " + statusResult.Manual.NextStory.Title
+				}
+				fmt.Fprintf(out, "Up next:  %s\n", label)
+			}
 		}
 		if statusResult.Compound != nil {
 			if statusResult.Compound.Step != "" {
 				fmt.Fprintf(out, "Step:     %s\n", statusResult.Compound.Step)
 			}
 			if statusResult.Compound.BranchName != "" {
-				fmt.Fprintf(out, "Branch:   %s\n", statusResult.Compound.BranchName)
+				fmt.Fprintf(out, "Branch:   %s\n", ui.StyleInfo.Render(statusResult.Compound.BranchName))
 			}
 		}
 		fmt.Fprintln(out)
-		fmt.Fprintf(out, "Next:     %s\n", nextCmd)
-		fmt.Fprintf(out, "          %s\n", nextDesc)
+		fmt.Fprintf(out, "%s     %s\n", ui.StyleBold.Render("Next:"), ui.StyleInfo.Render(nextCmd))
+		fmt.Fprintf(out, "          %s\n", ui.StyleMuted.Render(nextDesc))
+	}
+
+	if summary != "" {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", ui.StyleMuted.Render(summary))
 	}
 
 	return nil

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
@@ -195,23 +196,30 @@ func runLinksStatusFn(dir string, jsonMode bool, engineFilter string, out io.Wri
 
 	// Human-readable output
 	for _, es := range engineStatuses {
-		icon := "✓"
+		var icon string
 		switch es.Status {
 		case "warn":
-			icon = "⚠"
+			icon = display.StyleWarning.Render("⚠")
 		case "fail":
-			icon = "✗"
+			icon = display.StyleError.Render("✗")
 		case "skip":
-			icon = "−"
+			icon = display.StyleMuted.Render("−")
+		default:
+			icon = display.StyleSuccess.Render("✓")
 		}
-		fmt.Fprintf(out, "  %s  %s (%s)\n", icon, es.Engine, es.Mode)
-		fmt.Fprintf(out, "     skills: %s\n", es.SkillsDir)
+		linkCount := len(es.Links)
+		countLabel := ""
+		if linkCount > 0 {
+			countLabel = " " + display.StyleMuted.Render(fmt.Sprintf("· %d links", linkCount))
+		}
+		fmt.Fprintf(out, "  %s  %s %s%s\n", icon, display.StyleBold.Render(es.Engine), display.StyleMuted.Render("("+es.Mode+")"), countLabel)
+		fmt.Fprintf(out, "     skills: %s\n", display.StyleMuted.Render(es.SkillsDir))
 		if es.CommandsDir != "" {
-			fmt.Fprintf(out, "     commands: %s\n", es.CommandsDir)
+			fmt.Fprintf(out, "     commands: %s\n", display.StyleMuted.Render(es.CommandsDir))
 		}
 		if len(es.Issues) > 0 {
 			for _, issue := range es.Issues {
-				fmt.Fprintf(out, "     ⚠ %s\n", issue)
+				fmt.Fprintf(out, "     %s %s\n", display.StyleWarning.Render("⚠"), issue)
 			}
 		}
 		fmt.Fprintln(out)
@@ -306,10 +314,10 @@ func runLinksCleanFn(dir string, out io.Writer) error {
 			continue
 		}
 		if err := os.RemoveAll(link); err != nil {
-			fmt.Fprintf(out, "  ✗ failed to remove %s: %v\n", link, err)
+			fmt.Fprintf(out, "  %s failed to remove %s: %v\n", display.StyleError.Render("✗"), link, err)
 			continue
 		}
-		fmt.Fprintf(out, "  ✓ removed %s\n", link)
+		fmt.Fprintf(out, "  %s removed %s\n", display.StyleSuccess.Render("✓"), link)
 		removed++
 	}
 
@@ -331,7 +339,7 @@ func runLinksCleanFn(dir string, out io.Writer) error {
 			}
 			if _, err := os.Stat(linkPath); os.IsNotExist(err) {
 				if err := os.Remove(linkPath); err == nil {
-					fmt.Fprintf(out, "  ✓ removed broken link %s\n", linkPath)
+					fmt.Fprintf(out, "  %s removed broken link %s\n", display.StyleSuccess.Render("✓"), linkPath)
 					removed++
 				}
 			}
@@ -339,9 +347,9 @@ func runLinksCleanFn(dir string, out io.Writer) error {
 	}
 
 	if removed == 0 {
-		fmt.Fprintln(out, "No deprecated or broken links found.")
+		fmt.Fprintf(out, "%s No deprecated or broken links found.\n", display.StyleSuccess.Render("✓"))
 	} else {
-		fmt.Fprintf(out, "\nCleaned %d link(s).\n", removed)
+		fmt.Fprintf(out, "\n%s Cleaned %d link(s).\n", display.StyleSuccess.Render("[OK]"), removed)
 	}
 
 	return nil
@@ -375,13 +383,13 @@ func runLinksRefresh(cmd *cobra.Command, args []string) error {
 		if err := linker.LinkCommands(projectDir); err != nil {
 			fmt.Fprintf(out, "warning: failed to link commands for %s: %v\n", engineName, err)
 		}
-		fmt.Fprintf(out, "Refreshed %s skill links.\n", engineName)
+		fmt.Fprintf(out, "%s Refreshed %s skill links.\n", display.StyleSuccess.Render("[OK]"), engineName)
 		return nil
 	}
 
 	// Refresh all engines (per-engine errors logged as warnings)
 	_ = skills.LinkAllEngines(projectDir)
 	_ = skills.LinkAllCommands(projectDir)
-	fmt.Fprintln(out, "Refreshed skill links for all engines.")
+	fmt.Fprintf(out, "%s Refreshed skill links for all engines.\n", display.StyleSuccess.Render("[OK]"))
 	return nil
 }

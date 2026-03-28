@@ -44,6 +44,8 @@ type ReviewResult struct {
 	Summary         string   `json:"summary"`
 	PatternsAdded   []string `json:"patternsAdded"`
 	Recommendations []string `json:"recommendations"`
+	Issues          []string `json:"issues,omitempty"`
+	TechDebt        []string `json:"techDebt,omitempty"`
 }
 
 // ReviewOptions controls review behavior.
@@ -57,30 +59,50 @@ type ReviewLoopResult struct {
 	Command             string                `json:"command"`
 	BaseBranch          string                `json:"baseBranch"`
 	CurrentBranch       string                `json:"currentBranch"`
+	Engine              string                `json:"engine,omitempty"`
 	RequestedIterations int                   `json:"requestedIterations"`
 	CompletedIterations int                   `json:"completedIterations"`
 	StopReason          string                `json:"stopReason"`
 	StartedAt           time.Time             `json:"startedAt"`
 	EndedAt             time.Time             `json:"endedAt"`
+	Duration            time.Duration         `json:"duration,omitempty"`
 	Totals              ReviewLoopTotals      `json:"totals"`
 	Iterations          []ReviewLoopIteration `json:"iterations"`
 }
 
 // ReviewLoopTotals tracks aggregate counts for a review loop run.
 type ReviewLoopTotals struct {
-	IssuesFound   int `json:"issuesFound"`
-	ValidIssues   int `json:"validIssues"`
-	InvalidIssues int `json:"invalidIssues"`
-	FixesApplied  int `json:"fixesApplied"`
+	IssuesFound   int      `json:"issuesFound"`
+	ValidIssues   int      `json:"validIssues"`
+	InvalidIssues int      `json:"invalidIssues"`
+	FixesApplied  int      `json:"fixesApplied"`
+	FilesAffected []string `json:"filesAffected,omitempty"`
 }
 
 // ReviewLoopIteration contains per-iteration review/fix statistics.
 type ReviewLoopIteration struct {
-	Iteration     int    `json:"iteration"`
-	IssuesFound   int    `json:"issuesFound"`
-	ValidIssues   int    `json:"validIssues"`
-	InvalidIssues int    `json:"invalidIssues"`
-	FixesApplied  int    `json:"fixesApplied"`
-	Summary       string `json:"summary"`
-	Status        string `json:"status"`
+	Iteration     int                  `json:"iteration"`
+	IssuesFound   int                  `json:"issuesFound"`
+	ValidIssues   int                  `json:"validIssues"`
+	InvalidIssues int                  `json:"invalidIssues"`
+	FixesApplied  int                  `json:"fixesApplied"`
+	Summary       string               `json:"summary"`
+	Status        string               `json:"status"`
+	Duration      time.Duration        `json:"duration,omitempty"`
+	Issues        []ReviewIssueDetail  `json:"issues,omitempty"`
+}
+
+// ReviewIssueDetail captures per-issue context from a review iteration,
+// combining the review-phase finding with the fix-phase outcome.
+type ReviewIssueDetail struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Severity     string `json:"severity"`
+	File         string `json:"file"`
+	Line         int    `json:"line,omitempty"`
+	Rationale    string `json:"rationale,omitempty"`
+	SuggestedFix string `json:"suggestedFix,omitempty"`
+	Valid        bool   `json:"valid"`
+	Fixed        bool   `json:"fixed"`
+	Reason       string `json:"reason,omitempty"`
 }
