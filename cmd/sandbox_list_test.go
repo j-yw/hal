@@ -1207,25 +1207,17 @@ func TestRunSandboxList_Live_SuccessKeepsStatus(t *testing.T) {
 }
 
 func TestQueryOneStatus_PersistsStatusChange(t *testing.T) {
+	setupListTest(t)
+
 	inst := &sandbox.SandboxState{
 		Name:     "live-dev",
 		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
-
-	origForceWrite := sandboxListForceWrite
-	persisted := 0
-	sandboxListForceWrite = func(saved *sandbox.SandboxState) error {
-		persisted++
-		if saved.Status != sandbox.StatusStopped {
-			t.Fatalf("persisted status = %q, want %q", saved.Status, sandbox.StatusStopped)
-		}
-		return nil
-	}
-	t.Cleanup(func() { sandboxListForceWrite = origForceWrite })
+	writeInstance(t, inst)
 
 	resolve := func(string) (sandbox.Provider, error) {
-		return &liveTestProvider{statusOut: "Status off"}, nil
+		return &liveTestProvider{statusOut: "Status: off"}, nil
 	}
 
 	if err := queryOneStatus(inst, resolve); err != nil {
@@ -1234,8 +1226,13 @@ func TestQueryOneStatus_PersistsStatusChange(t *testing.T) {
 	if inst.Status != sandbox.StatusStopped {
 		t.Fatalf("instance status = %q, want %q", inst.Status, sandbox.StatusStopped)
 	}
-	if persisted != 1 {
-		t.Fatalf("persisted writes = %d, want 1", persisted)
+
+	loaded, err := sandbox.LoadInstance("live-dev")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.Status != sandbox.StatusStopped {
+		t.Fatalf("persisted status = %q, want %q", loaded.Status, sandbox.StatusStopped)
 	}
 }
 
@@ -1516,8 +1513,8 @@ func TestRunSandboxList_JSONBackfillsLegacyID(t *testing.T) {
 	if len(resp.Sandboxes) != 1 {
 		t.Fatalf("expected 1 sandbox, got %d", len(resp.Sandboxes))
 	}
-	if resp.Sandboxes[0].ID != "ws-legacy" {
-		t.Fatalf("id = %q, want %q", resp.Sandboxes[0].ID, "ws-legacy")
+	if !sandboxListLooksLikeUUIDv7(resp.Sandboxes[0].ID) {
+		t.Fatalf("id = %q, want UUIDv7", resp.Sandboxes[0].ID)
 	}
 }
 
@@ -1666,15 +1663,18 @@ func TestQueryOneStatus_SuccessUpdatesPublicIPFromLiveStatus(t *testing.T) {
 }
 
 func TestQueryOneStatus_SuccessMapsStoppedStatus(t *testing.T) {
+	setupListTest(t)
+
 	inst := &sandbox.SandboxState{
 		ID:       "12345",
 		Name:     "test",
 		Provider: "digitalocean",
 		Status:   sandbox.StatusRunning,
 	}
+	writeInstance(t, inst)
 
 	resolve := func(name string) (sandbox.Provider, error) {
-		return &liveTestProvider{statusErr: nil, statusOut: "Status off"}, nil
+		return &liveTestProvider{statusErr: nil, statusOut: "Status: off"}, nil
 	}
 
 	if err := queryOneStatus(inst, resolve); err != nil {

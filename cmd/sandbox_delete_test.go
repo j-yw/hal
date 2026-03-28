@@ -736,7 +736,7 @@ func TestResolveDeleteTargets_AutoSelect(t *testing.T) {
 	}
 }
 
-func TestResolveDeleteTargets_NonExplicitSelectorsIgnoreStagedRemovalEntries(t *testing.T) {
+func TestResolveDeleteTargets_NonExplicitSelectorsIncludeStagedRemovalEntries(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
 		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
@@ -754,27 +754,24 @@ func TestResolveDeleteTargets_NonExplicitSelectorsIgnoreStagedRemovalEntries(t *
 	if err != nil {
 		t.Fatalf("resolveDeleteTargets(--all) unexpected error: %v", err)
 	}
-	if len(allTargets) != 1 || allTargets[0].Name != "api-backend" {
-		t.Fatalf("resolveDeleteTargets(--all) = %v, want only api-backend", allTargets)
+	if len(allTargets) != 2 {
+		t.Fatalf("resolveDeleteTargets(--all) len = %d, want 2 (active + staged)", len(allTargets))
 	}
 
-	autoTargets, hint, err := resolveDeleteTargets(nil, false, "")
-	if err != nil {
-		t.Fatalf("resolveDeleteTargets(auto) unexpected error: %v", err)
-	}
-	if len(autoTargets) != 1 || autoTargets[0].Name != "api-backend" {
-		t.Fatalf("resolveDeleteTargets(auto) = %v, want only api-backend", autoTargets)
-	}
-	if hint != `Deleting only sandbox "api-backend"...` {
-		t.Fatalf("auto-select hint = %q, want %q", hint, `Deleting only sandbox "api-backend"...`)
-	}
-
-	_, _, err = resolveDeleteTargets(nil, false, "worker-*")
+	_, _, err = resolveDeleteTargets(nil, false, "")
 	if err == nil {
-		t.Fatal("expected pattern error, got nil")
+		t.Fatal("expected ambiguity error, got nil")
 	}
-	if !strings.Contains(err.Error(), `no sandboxes matching pattern "worker-*"`) {
-		t.Fatalf("pattern error = %q", err.Error())
+	if !strings.Contains(err.Error(), "multiple sandboxes found") {
+		t.Fatalf("auto-select error = %q, want ambiguity", err.Error())
+	}
+
+	patternTargets, _, err := resolveDeleteTargets(nil, false, "worker-*")
+	if err != nil {
+		t.Fatalf("resolveDeleteTargets(pattern) unexpected error: %v", err)
+	}
+	if len(patternTargets) != 1 || patternTargets[0].Name != "worker-01" {
+		t.Fatalf("resolveDeleteTargets(pattern) = %v, want worker-01", patternTargets)
 	}
 
 	namedTargets, _, err := resolveDeleteTargets([]string{"worker-01"}, false, "")

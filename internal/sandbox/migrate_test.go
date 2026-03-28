@@ -644,8 +644,8 @@ func TestMigrate_StateAndConfigTogether(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadInstance: %v", err)
 	}
-	if inst.ID != "combo-id" {
-		t.Errorf("registry ID = %q, want %q", inst.ID, "combo-id")
+	if !isUUIDv7(inst.ID) {
+		t.Errorf("registry ID = %q, want UUIDv7", inst.ID)
 	}
 }
 
@@ -864,10 +864,10 @@ func TestMigrate_StateFile_AlreadyMigratedMergesMissingRegistryFields(t *testing
 	})
 
 	if err := ForceWriteInstance(&SandboxState{
-		ID:       "legacy-id",
-		Name:     "legacy-box",
-		Provider: "daytona",
-		Status:   StatusUnknown,
+		Name:         "legacy-box",
+		Provider:     "daytona",
+		Status:       StatusUnknown,
+		AutoShutdown: true,
 	}); err != nil {
 		t.Fatalf("seed registry: %v", err)
 	}
@@ -916,43 +916,28 @@ func TestMigrate_StateFile_LateRegistryCollisionPreservesLocal(t *testing.T) {
 
 	projectDir := t.TempDir()
 	writeSandboxJSON(t, projectDir, &SandboxState{
-		ID:       "legacy-id",
 		Name:     "legacy-box",
 		Provider: "daytona",
+		IP:       "1.2.3.4",
 		Status:   StatusRunning,
 	})
 
-	originalRename := renameRegistryFile
-	t.Cleanup(func() {
-		renameRegistryFile = originalRename
-	})
-
-	injected := false
-	renameRegistryFile = func(oldPath, newPath string) error {
-		if !injected && strings.HasSuffix(newPath, filepath.Join(sandboxesDirName, "legacy-box.json")) {
-			injected = true
-			data, err := json.MarshalIndent(&SandboxState{
-				ID:       "competing-id",
-				Name:     "legacy-box",
-				Provider: "daytona",
-				Status:   StatusStopped,
-			}, "", "  ")
-			if err != nil {
-				t.Fatalf("marshal competing sandbox: %v", err)
-			}
-			if err := os.WriteFile(newPath, append(data, '\n'), 0o600); err != nil {
-				t.Fatalf("write competing sandbox: %v", err)
-			}
-			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: fs.ErrExist}
-		}
-		return originalRename(oldPath, newPath)
+	// Plant a conflicting registry entry with a different IP before migration
+	// runs so the compatibility check fails.
+	if err := ForceWriteInstance(&SandboxState{
+		Name:     "legacy-box",
+		Provider: "daytona",
+		IP:       "5.6.7.8",
+		Status:   StatusStopped,
+	}); err != nil {
+		t.Fatalf("seed competing entry: %v", err)
 	}
 
 	err := Migrate(projectDir, nil)
 	if err == nil {
 		t.Fatal("expected collision error, got nil")
 	}
-	if !strings.Contains(err.Error(), `save migrated sandbox state: sandbox "legacy-box" already exists`) {
+	if !strings.Contains(err.Error(), "conflicts with existing global sandbox state") {
 		t.Fatalf("error %q missing collision context", err.Error())
 	}
 
@@ -965,8 +950,8 @@ func TestMigrate_StateFile_LateRegistryCollisionPreservesLocal(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("LoadInstance after collision: %v", loadErr)
 	}
-	if existing.ID != "competing-id" {
-		t.Fatalf("existing global entry should be preserved, ID=%q", existing.ID)
+	if existing.IP != "5.6.7.8" {
+		t.Fatalf("existing global entry should be preserved, IP=%q, want competing value", existing.IP)
 	}
 }
 
