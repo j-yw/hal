@@ -873,13 +873,13 @@ func TestCombineReviewBranchFilesMatchesRenameNumstatFormats(t *testing.T) {
 			name:       "simple rename syntax",
 			nameStatus: "R100\told.txt\tnew.txt\n",
 			numstat:    "5\t3\told.txt => new.txt\n",
-			wantPath:   "old.txt -> new.txt",
+			wantPath:   "new.txt",
 		},
 		{
 			name:       "brace expanded rename syntax",
 			nameStatus: "R086\tdocs/old.txt\tdocs/new.txt\n",
 			numstat:    "7\t4\tdocs/{old.txt => new.txt}\n",
-			wantPath:   "docs/old.txt -> docs/new.txt",
+			wantPath:   "docs/new.txt",
 		},
 	}
 
@@ -891,6 +891,9 @@ func TestCombineReviewBranchFilesMatchesRenameNumstatFormats(t *testing.T) {
 			}
 			if files[0].Path != tt.wantPath {
 				t.Fatalf("files[0].Path = %q, want %q", files[0].Path, tt.wantPath)
+			}
+			if files[0].PreviousPath == "" {
+				t.Fatal("files[0].PreviousPath should be populated for rename entries")
 			}
 			if files[0].Additions != "7" && tt.name == "brace expanded rename syntax" {
 				t.Fatalf("files[0].Additions = %q, want %q", files[0].Additions, "7")
@@ -905,6 +908,25 @@ func TestCombineReviewBranchFilesMatchesRenameNumstatFormats(t *testing.T) {
 				t.Fatalf("files[0].Deletions = %q, want %q", files[0].Deletions, "3")
 			}
 		})
+	}
+}
+
+func TestWriteReviewLoopChangedFilesUsesPrimaryPathForRenameEntries(t *testing.T) {
+	var sb strings.Builder
+	writeReviewLoopChangedFiles(&sb, []reviewBranchFile{{
+		Status:       "R",
+		Path:         "new.txt",
+		PreviousPath: "old.txt",
+		Additions:    "5",
+		Deletions:    "3",
+	}})
+
+	got := sb.String()
+	if !strings.Contains(got, "- R new.txt (from old.txt) (+5 -3)\n") {
+		t.Fatalf("writeReviewLoopChangedFiles() output = %q", got)
+	}
+	if strings.Contains(got, "old.txt -> new.txt") {
+		t.Fatalf("writeReviewLoopChangedFiles() should not emit rename placeholder path, got %q", got)
 	}
 }
 
