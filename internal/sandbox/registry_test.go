@@ -75,6 +75,39 @@ func TestSaveInstance_AssignsUUIDv7WhenMissingID(t *testing.T) {
 	}
 }
 
+func TestSaveInstance_BackfillsLegacyDigitalOceanWorkspaceIDBeforeGeneratingRegistryID(t *testing.T) {
+	home := setSandboxHome(t)
+
+	if err := SaveInstance(&SandboxState{
+		ID:       "123456789",
+		Name:     "do-box",
+		Provider: "digitalocean",
+		Status:   StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() unexpected error: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "do-box.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"workspaceId": "123456789"`) {
+		t.Fatalf("saved registry entry = %s, want legacy workspace ID preserved", string(data))
+	}
+
+	loaded, err := LoadInstance("do-box")
+	if err != nil {
+		t.Fatalf("LoadInstance() unexpected error: %v", err)
+	}
+	if loaded.WorkspaceID != "123456789" {
+		t.Fatalf("loaded workspace = %q, want %q", loaded.WorkspaceID, "123456789")
+	}
+	if !isUUIDv7(loaded.ID) {
+		t.Fatalf("loaded ID = %q, want UUIDv7", loaded.ID)
+	}
+}
+
 func TestSaveInstance_NameCollision(t *testing.T) {
 	setSandboxHome(t)
 

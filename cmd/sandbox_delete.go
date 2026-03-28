@@ -277,7 +277,7 @@ func deleteOneTarget(target *sandbox.SandboxState, projectDir string, out io.Wri
 	p := provider
 	if p == nil {
 		var err error
-		p, err = resolveProviderFromGlobalConfig(target.Provider)
+		p, err = resolveProviderWithFallback(projectDir, target.Provider)
 		if err != nil {
 			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
 		}
@@ -331,7 +331,7 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, o
 			p := provider
 			if p == nil {
 				var err error
-				p, err = resolveProviderFromGlobalConfig(target.Provider)
+				p, err = resolveProviderWithFallback(projectDir, target.Provider)
 				if err != nil {
 					mu.Lock()
 					fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
@@ -438,10 +438,10 @@ func validateDeleteConnectInfo(target *sandbox.SandboxState, info *sandbox.Conne
 		return nil
 	}
 	if info == nil {
-		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID and name", target.Name)
+		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID", target.Name)
 	}
-	if strings.TrimSpace(info.WorkspaceID) == "" && strings.TrimSpace(info.Name) == "" {
-		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID and name", target.Name)
+	if strings.TrimSpace(info.WorkspaceID) == "" {
+		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID", target.Name)
 	}
 	return nil
 }

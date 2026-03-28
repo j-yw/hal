@@ -295,7 +295,7 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 	p := provider
 	if p == nil {
 		var err error
-		p, err = resolveProviderFromGlobalConfig(target.Provider)
+		p, err = resolveProviderWithFallback(".", target.Provider)
 		if err != nil {
 			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
 		}
@@ -337,7 +337,7 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 			p := provider
 			if p == nil {
 				var err error
-				p, err = resolveProviderFromGlobalConfig(target.Provider)
+				p, err = resolveProviderWithFallback(".", target.Provider)
 				if err != nil {
 					mu.Lock()
 					fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)

@@ -143,6 +143,14 @@ func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
 	return providerName, provCfg, nil
 }
 
+func resolveProviderWithFallback(dir, providerName string) (sandbox.Provider, error) {
+	_, provCfg, err := resolveProviderConfig(dir)
+	if err != nil {
+		return nil, err
+	}
+	return sandbox.ProviderFromConfig(providerName, provCfg)
+}
+
 func providerConfigFromGlobal(cfg *sandbox.GlobalConfig) (string, sandbox.ProviderConfig) {
 	providerName := "daytona"
 	if cfg != nil && strings.TrimSpace(cfg.Provider) != "" {

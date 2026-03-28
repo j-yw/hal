@@ -9,7 +9,7 @@ type missingSandboxDeleteRule struct {
 
 var missingSandboxDeleteRules = map[string]missingSandboxDeleteRule{
 	"digitalocean": {
-		operation: "doctl compute droplet delete failed",
+		operation: "doctl compute droplet ",
 		markers: []string{
 			": 404",
 			"droplet not found",

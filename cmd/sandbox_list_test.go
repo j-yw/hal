@@ -134,6 +134,36 @@ sandbox:
 	}
 }
 
+func TestResolveProviderWithFallback_UsesProjectConfigWhenGlobalFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", dir)
+
+	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `daytona:
+  apiKey: local-key
+  serverURL: https://daytona.example
+sandbox:
+  provider: daytona
+`)
+
+	provider, err := resolveProviderWithFallback(dir, "daytona")
+	if err != nil {
+		t.Fatalf("resolveProviderWithFallback() error: %v", err)
+	}
+
+	daytonaProvider, ok := provider.(*sandbox.DaytonaProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *sandbox.DaytonaProvider", provider)
+	}
+	if daytonaProvider.APIKey != "local-key" {
+		t.Fatalf("APIKey = %q, want %q", daytonaProvider.APIKey, "local-key")
+	}
+	if daytonaProvider.ServerURL != "https://daytona.example" {
+		t.Fatalf("ServerURL = %q, want %q", daytonaProvider.ServerURL, "https://daytona.example")
+	}
+}
+
 func TestRunSandboxList_JSONExcludesStagedRemovalBackups(t *testing.T) {
 	setupListTest(t)
 
@@ -353,6 +383,38 @@ func TestRunSandboxList_JSONNormalizesLegacyBlankStatusToRunning(t *testing.T) {
 	}
 	if resp.Totals.Stopped != 0 {
 		t.Fatalf("totals.stopped = %d, want 0", resp.Totals.Stopped)
+	}
+}
+
+func TestRunSandboxList_HumanOutputNormalizesLegacyBlankStatusToRunning(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "legacy-id",
+		Name:      "legacy-box",
+		Provider:  "daytona",
+		Status:    "",
+		CreatedAt: now.Add(-2 * time.Hour),
+	})
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "legacy-box") {
+		t.Fatalf("output missing sandbox row: %q", out)
+	}
+	if !strings.Contains(out, sandbox.StatusRunning) {
+		t.Fatalf("output missing normalized running status: %q", out)
+	}
+	if !strings.Contains(out, "1 running") {
+		t.Fatalf("summary missing normalized running count: %q", out)
 	}
 }
 
@@ -1642,6 +1704,27 @@ func TestQueryOneStatus_Failure(t *testing.T) {
 	}
 	if inst.Status != sandbox.StatusRunning {
 		t.Errorf("status = %q, want %q after failed query", inst.Status, sandbox.StatusRunning)
+	}
+}
+
+func TestQueryOneStatus_UnparseableUsesCachedState(t *testing.T) {
+	inst := &sandbox.SandboxState{
+		ID:       "id-1",
+		Name:     "test",
+		Provider: "hetzner",
+		Status:   sandbox.StatusRunning,
+		IP:       "1.2.3.4",
+	}
+
+	resolve := func(name string) (sandbox.Provider, error) {
+		return &liveTestProvider{statusErr: errLiveStatusUnparseable}, nil
+	}
+
+	if err := queryOneStatus(inst, resolve); err != nil {
+		t.Fatalf("queryOneStatus() unexpected error: %v", err)
+	}
+	if inst.Status != sandbox.StatusRunning {
+		t.Errorf("status = %q, want cached %q after unparseable output", inst.Status, sandbox.StatusRunning)
 	}
 }
 

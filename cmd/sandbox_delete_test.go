@@ -105,6 +105,15 @@ func (m *mockDeleteProvider) Status(ctx context.Context, info *sandbox.ConnectIn
 	return nil
 }
 
+func TestFinalizeInterruptedDeleteRetry_DigitalOceanLookupNotFound(t *testing.T) {
+	pending := &mockDeletePendingRemoval{alreadyStaged: true}
+	err := fmt.Errorf("doctl compute droplet get failed with exit code 1: droplet not found: exit status 1")
+
+	if !finalizeInterruptedDeleteRetry("digitalocean", pending, err) {
+		t.Fatal("expected finalizeInterruptedDeleteRetry() to treat lookup not-found as a completed delete")
+	}
+}
+
 func writeDeleteLocalState(t *testing.T, projectDir string, state *sandbox.SandboxState) string {
 	t.Helper()
 
@@ -1662,15 +1671,18 @@ func TestDeleteConnectInfo_DigitalOceanFallbackOrder(t *testing.T) {
 	}
 }
 
-func TestValidateDeleteConnectInfo_DigitalOceanAllowsNameFallback(t *testing.T) {
+func TestValidateDeleteConnectInfo_DigitalOceanRequiresWorkspaceID(t *testing.T) {
 	target := &sandbox.SandboxState{
 		Name:     "do-box",
 		Provider: "digitalocean",
 	}
 
 	err := validateDeleteConnectInfo(target, &sandbox.ConnectInfo{Name: "do-box"})
-	if err != nil {
-		t.Fatalf("validateDeleteConnectInfo() unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("validateDeleteConnectInfo() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing DigitalOcean droplet ID") {
+		t.Fatalf("error = %q, want missing droplet ID message", err.Error())
 	}
 }
 
@@ -1684,7 +1696,7 @@ func TestValidateDeleteConnectInfo_DigitalOceanRequiresIdentifier(t *testing.T) 
 	if err == nil {
 		t.Fatal("validateDeleteConnectInfo() expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "missing DigitalOcean droplet ID and name") {
-		t.Fatalf("error = %q, want missing identifier message", err.Error())
+	if !strings.Contains(err.Error(), "missing DigitalOcean droplet ID") {
+		t.Fatalf("error = %q, want missing droplet ID message", err.Error())
 	}
 }

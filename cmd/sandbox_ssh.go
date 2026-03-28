@@ -54,7 +54,9 @@ func isSandboxSSHHelpRequest(args []string) bool {
 var sandboxSSHLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxSSHResolveProvider is injectable for testing.
-var sandboxSSHResolveProvider = resolveProviderFromGlobalConfig
+var sandboxSSHResolveProvider = func(providerName string) (sandbox.Provider, error) {
+	return resolveProviderWithFallback(".", providerName)
+}
 
 // sshResult is returned in test mode to allow inspecting the command that
 // would have been executed.
@@ -197,10 +199,17 @@ func resolveSSHTarget(name string) (*sandbox.SandboxState, string, error) {
 			}
 			return nil, "", fmt.Errorf("load sandbox %q: %w", name, err)
 		}
+		if !isRunnableSSHTarget(instance) {
+			return nil, "", fmt.Errorf("sandbox %q is not running", name)
+		}
 		return instance, "", nil
 	}
 
-	return sandbox.ResolveDefault(isRunnableSSHTarget)
+	instance, hint, err := sandbox.ResolveDefault(isRunnableSSHTarget)
+	if err != nil {
+		return nil, "", err
+	}
+	return instance, hint, nil
 }
 
 func isRunnableSSHTarget(inst *sandbox.SandboxState) bool {

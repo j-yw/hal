@@ -68,7 +68,9 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 }
 
 var resolveSandboxProvider = sandbox.ProviderFromConfig
-var sandboxStartResolveProviderForForceDelete = resolveProviderFromGlobalConfig
+var sandboxStartResolveProviderForForceDelete = func(dir, providerName string) (sandbox.Provider, error) {
+	return resolveProviderWithFallback(dir, providerName)
+}
 var newSandboxID = sandbox.NewV7
 
 type sandboxStartPendingRemoval interface {
@@ -372,11 +374,11 @@ func runSandboxStartWithDepsAndCountOption(
 		if err != nil {
 			return err
 		}
-		return runBatchCreate(targets, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
+		return runBatchCreate(dir, targets, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
 	}
 
 	// Single sandbox creation
-	return runSingleCreate(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
+	return runSingleCreate(dir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
 }
 
 func batchPreflight(base string, count int) ([]string, error) {
@@ -464,6 +466,7 @@ func cleanupCreatedSandbox(
 }
 
 func ensureSandboxTargetAvailable(
+	projectDir string,
 	name string,
 	force bool,
 	provider sandbox.Provider,
@@ -481,7 +484,7 @@ func ensureSandboxTargetAvailable(
 		if !force {
 			return fmt.Errorf("sandbox %q already exists", name)
 		}
-		return replaceExistingSandbox(existing, provider, activeProvider, halDir, out)
+		return replaceExistingSandbox(existing, provider, activeProvider, projectDir, halDir, out)
 	}
 	if !errors.Is(loadErr, fs.ErrNotExist) {
 		return fmt.Errorf("checking existing sandbox in registry: %w", loadErr)
@@ -504,6 +507,7 @@ func replaceExistingSandbox(
 	existing *sandbox.SandboxState,
 	provider sandbox.Provider,
 	activeProvider string,
+	projectDir string,
 	halDir string,
 	out io.Writer,
 ) error {
@@ -526,7 +530,7 @@ func replaceExistingSandbox(
 			return fmt.Errorf("resolving provider for existing sandbox %q: provider is not set", name)
 		}
 		var err error
-		deleteProvider, err = sandboxStartResolveProviderForForceDelete(providerName)
+		deleteProvider, err = sandboxStartResolveProviderForForceDelete(projectDir, providerName)
 		if err != nil {
 			return fmt.Errorf("resolving provider for existing sandbox %q: %w", name, err)
 		}
@@ -578,6 +582,7 @@ func finalizeInterruptedStartReplaceRetry(provider string, pendingRemoval sandbo
 // Only successful creations are persisted to the global registry.
 // Returns an error when any target fails (exit code 1).
 func runBatchCreate(
+	projectDir string,
 	targets []string,
 	force bool,
 	provider sandbox.Provider,
@@ -601,7 +606,7 @@ func runBatchCreate(
 	for _, name := range targets {
 		name := name // capture for goroutine
 		g.Go(func() error {
-			err := createBatchTarget(name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
+			err := createBatchTarget(projectDir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
 			mu.Lock()
 			if err != nil {
 				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), name, err)
@@ -642,6 +647,7 @@ func runBatchCreate(
 // to the global registry on success. Provider output is prefixed with the
 // sandbox name so concurrent goroutine output stays readable.
 func createBatchTarget(
+	projectDir string,
 	name string,
 	force bool,
 	provider sandbox.Provider,
@@ -661,7 +667,7 @@ func createBatchTarget(
 	}
 	perEnv["TAILSCALE_HOSTNAME"] = sandbox.TailscaleHostname(name)
 	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
-	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, halDir, prefixedOut); err != nil {
+	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, prefixedOut); err != nil {
 		return err
 	}
 	result, err := provider.Create(ctx, name, perEnv, prefixedOut)
@@ -706,6 +712,7 @@ func createBatchTarget(
 // runSingleCreate creates one sandbox and persists it to the global registry.
 // If force is true and a sandbox with the same name exists, it is deleted first.
 func runSingleCreate(
+	projectDir string,
 	name string,
 	force bool,
 	provider sandbox.Provider,
@@ -717,7 +724,7 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
-	if err := ensureSandboxTargetAvailable(name, force, provider, sandboxCfg.Provider, halDir, out); err != nil {
+	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, out); err != nil {
 		return err
 	}
 
@@ -794,8 +801,7 @@ func runSingleCreate(
 // mergeGlobalStartDefaults overlays globally configured runtime settings onto
 // the local sandbox config used by `hal sandbox start`. When a real global
 // config file exists, it is authoritative for provider selection and runtime
-// credentials, while project-local env keys remain as an overlay on top of
-// global env defaults.
+// credentials, while project-local env keys fill only keys not set globally.
 func mergeGlobalStartDefaults(localCfg *compound.SandboxConfig, globalCfg *sandbox.GlobalConfig, useGlobalConfig bool) {
 	if localCfg == nil || globalCfg == nil {
 		return
@@ -807,10 +813,10 @@ func mergeGlobalStartDefaults(localCfg *compound.SandboxConfig, globalCfg *sandb
 		}
 		if len(globalCfg.Env) > 0 || len(localCfg.Env) > 0 {
 			mergedEnv := make(map[string]string, len(globalCfg.Env)+len(localCfg.Env))
-			for k, v := range globalCfg.Env {
+			for k, v := range localCfg.Env {
 				mergedEnv[k] = v
 			}
-			for k, v := range localCfg.Env {
+			for k, v := range globalCfg.Env {
 				mergedEnv[k] = v
 			}
 			localCfg.Env = mergedEnv

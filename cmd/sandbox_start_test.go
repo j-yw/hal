@@ -2409,8 +2409,10 @@ func TestRunSandboxStart_ForceReplaceUsesExistingProviderForDelete(t *testing.T)
 	t.Cleanup(func() {
 		sandboxStartResolveProviderForForceDelete = origResolve
 	})
+	var gotDir string
 	var gotProviderName string
-	sandboxStartResolveProviderForForceDelete = func(providerName string) (sandbox.Provider, error) {
+	sandboxStartResolveProviderForForceDelete = func(dir, providerName string) (sandbox.Provider, error) {
+		gotDir = dir
 		gotProviderName = providerName
 		if providerName != "digitalocean" {
 			return nil, fmt.Errorf("unexpected provider %q", providerName)
@@ -2425,6 +2427,9 @@ func TestRunSandboxStart_ForceReplaceUsesExistingProviderForDelete(t *testing.T)
 
 	if gotProviderName != "digitalocean" {
 		t.Fatalf("resolved delete provider = %q, want %q", gotProviderName, "digitalocean")
+	}
+	if gotDir != dir {
+		t.Fatalf("resolved delete provider dir = %q, want %q", gotDir, dir)
 	}
 	if len(deleteProvider.deleteCalls) != 1 {
 		t.Fatalf("existing provider delete calls = %d, want 1", len(deleteProvider.deleteCalls))
@@ -2664,7 +2669,7 @@ func TestRunSingleCreate_RegistrationFailureRollsBackCreatedSandbox(t *testing.T
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := runSingleCreate("sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2720,7 +2725,7 @@ func TestRunSingleCreate_IDGenerationFailureRollsBackCreatedSandbox(t *testing.T
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := runSingleCreate("sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2831,7 +2836,7 @@ func TestRunBatchCreate_ConcurrentExecution(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2872,7 +2877,7 @@ func TestRunBatchCreate_PartialFailure(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 
 	// Should return error when any target fails
 	if err == nil {
@@ -2937,7 +2942,7 @@ func TestRunBatchCreate_AllFail(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 
 	if err == nil {
 		t.Fatal("expected error when all fail, got nil")
@@ -2980,7 +2985,7 @@ func TestRunBatchCreate_SummaryFormatAllSuccess(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3007,7 +3012,7 @@ func TestRunBatchCreate_ExitCodeOnPartialFailure(t *testing.T) {
 	targets := []string{"worker-01", "worker-02"}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
 	// Must return error (exit code 1) when any target fails
 	if err == nil {
@@ -3026,7 +3031,7 @@ func TestRunBatchCreate_ExitCodeOnAllSuccess(t *testing.T) {
 	targets := []string{"worker-01", "worker-02"}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
 	// Must return nil (exit code 0) when all succeed
 	if err != nil {
@@ -3049,7 +3054,7 @@ func TestRunBatchCreate_ProgressLinePerTarget(t *testing.T) {
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
 	var out bytes.Buffer
-	_ = runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
+	_ = runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
 
 	output := out.String()
 
@@ -3084,7 +3089,7 @@ func TestCreateBatchTarget_RegistrationFailureRollsBackCreatedSandbox(t *testing
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
+	err := createBatchTarget(dir, "worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -3139,7 +3144,7 @@ func TestCreateBatchTarget_IDGenerationFailureRollsBackCreatedSandbox(t *testing
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	err := createBatchTarget("worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
+	err := createBatchTarget(dir, "worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -3223,7 +3228,7 @@ func TestRunBatchCreate_OnlySuccessfulPersisted(t *testing.T) {
 	targets := []string{"worker-01", "worker-02", "worker-03", "worker-04"}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
 
-	_ = runBatchCreate(targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	_ = runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
 	// Only worker-02 and worker-04 should be in registry
 	instances, err := sandbox.ListInstances()

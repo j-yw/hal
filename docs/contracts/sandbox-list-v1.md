@@ -18,10 +18,10 @@ These fields are always present on every entry in the `sandboxes` array.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | UUIDv7 identifier for the sandbox instance |
+| `id` | string | Stable sandbox identifier. Current entries use the UUIDv7 registry ID; legacy entries may fall back to the pre-migration external ID for compatibility. |
 | `name` | string | Validated sandbox name (1–59 chars, lowercase alphanumeric + hyphens) |
 | `provider` | string | Provider that manages this sandbox (e.g. `"daytona"`, `"hetzner"`, `"digitalocean"`, `"lightsail"`) |
-| `status` | string | Lifecycle status: `"running"`, `"stopped"`, or `"unknown"` |
+| `status` | string | Lifecycle status: `"running"`, `"stopped"`, or `"unknown"`. Legacy blank statuses are normalized to `"running"` for compatibility. |
 | `createdAt` | string | RFC 3339 timestamp of when the sandbox was created |
 
 ## Sandbox Entry — Optional Fields
