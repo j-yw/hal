@@ -83,20 +83,26 @@ func runSandboxAutoMigrate(projectDir string, out io.Writer) error {
 }
 
 func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
-	globalCfg, err := sandbox.LoadGlobalConfig()
-	if err != nil {
-		return "", sandbox.ProviderConfig{}, fmt.Errorf("loading global sandbox config: %w", err)
+	globalCfg := func() *sandbox.GlobalConfig {
+		cfg := sandbox.DefaultGlobalConfig()
+		return &cfg
+	}()
+	globalConfigPath, err := sandbox.GlobalConfigPathWithError()
+	if err == nil && globalConfigPath != "" {
+		loaded, err := sandbox.LoadGlobalConfig()
+		if err != nil {
+			return "", sandbox.ProviderConfig{}, fmt.Errorf("loading global sandbox config: %w", err)
+		}
+		globalCfg = loaded
 	}
 
-	globalConfigPath := sandbox.GlobalConfigPath()
-	if globalConfigPath == "" {
-		return "", sandbox.ProviderConfig{}, fmt.Errorf("resolve global sandbox config path")
-	}
-	if _, err := os.Stat(globalConfigPath); err == nil {
-		providerName, provCfg := providerConfigFromGlobal(globalCfg)
-		return providerName, provCfg, nil
-	} else if !os.IsNotExist(err) {
-		return "", sandbox.ProviderConfig{}, fmt.Errorf("stat global sandbox config: %w", err)
+	if globalConfigPath != "" {
+		if _, err := os.Stat(globalConfigPath); err == nil {
+			providerName, provCfg := providerConfigFromGlobal(globalCfg)
+			return providerName, provCfg, nil
+		} else if !os.IsNotExist(err) {
+			return "", sandbox.ProviderConfig{}, fmt.Errorf("stat global sandbox config: %w", err)
+		}
 	}
 
 	legacyConfigPath := filepath.Join(dir, template.HalDir, template.ConfigFile)

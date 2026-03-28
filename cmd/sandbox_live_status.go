@@ -429,6 +429,8 @@ func persistLiveStatusResult(instance *sandbox.SandboxState, result liveStatusRe
 	updateInstanceStatus(instance, result.Status, now)
 	if liveIP != "" {
 		instance.IP = liveIP
+	} else if shouldClearLiveIP(instance.Status) {
+		instance.IP = ""
 	}
 	if (instance.Status == previousStatus && sameStoppedAt(instance.StoppedAt, previousStoppedAt) && instance.IP == previousIP) || write == nil {
 		return nil
@@ -455,6 +457,10 @@ func persistLiveStatusResult(instance *sandbox.SandboxState, result liveStatusRe
 		return &localStateSyncWarning{err: err}
 	}
 	return nil
+}
+
+func shouldClearLiveIP(status string) bool {
+	return strings.TrimSpace(status) == sandbox.StatusStopped
 }
 
 func cloneStoppedAt(value *time.Time) *time.Time {

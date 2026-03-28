@@ -67,26 +67,29 @@ func sandboxStateMatchesTarget(local, target *sandbox.SandboxState) bool {
 		return false
 	}
 
-	seen := make(map[string]struct{}, 3)
-	for _, id := range []string{
-		strings.TrimSpace(local.Name),
-		strings.TrimSpace(local.WorkspaceID),
-		strings.TrimSpace(local.ID),
-	} {
-		if id != "" {
-			seen[id] = struct{}{}
-		}
+	localID := strings.TrimSpace(local.ID)
+	targetID := strings.TrimSpace(target.ID)
+	if localID != "" && targetID != "" && localID == targetID {
+		return true
 	}
 
-	for _, id := range []string{
-		strings.TrimSpace(target.Name),
-		strings.TrimSpace(target.WorkspaceID),
-		strings.TrimSpace(target.ID),
-	} {
-		if _, ok := seen[id]; id != "" && ok {
-			return true
-		}
+	localWorkspaceID := strings.TrimSpace(local.WorkspaceID)
+	targetWorkspaceID := strings.TrimSpace(target.WorkspaceID)
+	if localWorkspaceID != "" && targetWorkspaceID != "" && localWorkspaceID == targetWorkspaceID {
+		return true
 	}
 
-	return false
+	localName := strings.TrimSpace(local.Name)
+	targetName := strings.TrimSpace(target.Name)
+	if localName == "" || targetName == "" || localName != targetName {
+		return false
+	}
+
+	localRepo := strings.TrimSpace(local.Repo)
+	targetRepo := strings.TrimSpace(target.Repo)
+	if localRepo != "" && targetRepo != "" && localRepo != targetRepo {
+		return false
+	}
+
+	return true
 }

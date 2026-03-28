@@ -229,6 +229,51 @@ func TestLiveStatusWriteTarget_MergesStatusIntoFreshActiveInstance(t *testing.T)
 	}
 }
 
+func TestLiveStatusWriteTarget_ClearsIPWhenSandboxStops(t *testing.T) {
+	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+	inst := &sandbox.SandboxState{
+		Name:      "stopped-box",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-2 * time.Hour),
+		IP:        "203.0.113.10",
+	}
+
+	var wrote *sandbox.SandboxState
+	writeTarget, err := liveStatusWriteTarget(
+		inst.Name,
+		func(string) (*sandbox.SandboxState, error) {
+			return &sandbox.SandboxState{
+				Name:   inst.Name,
+				Status: sandbox.StatusRunning,
+				IP:     "203.0.113.25",
+			}, nil
+		},
+		func(updated *sandbox.SandboxState) error {
+			wrote = updated
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("liveStatusWriteTarget() unexpected error: %v", err)
+	}
+
+	if err := persistLiveStatusResult(inst, liveStatusResult{Status: sandbox.StatusStopped}, now, writeTarget); err != nil {
+		t.Fatalf("persistLiveStatusResult() unexpected error: %v", err)
+	}
+	if inst.Status != sandbox.StatusStopped {
+		t.Fatalf("Status = %q, want %q", inst.Status, sandbox.StatusStopped)
+	}
+	if inst.IP != "" {
+		t.Fatalf("IP = %q, want empty after stopped live status", inst.IP)
+	}
+	if wrote == nil {
+		t.Fatal("write target did not receive an updated instance")
+	}
+	if wrote.IP != "" {
+		t.Fatalf("written IP = %q, want empty after stopped live status", wrote.IP)
+	}
+}
+
 func TestParseLiveStatus_IgnoresUnrelatedTokensOutsideStatusFields(t *testing.T) {
 	output := "Recent event: shutdown requested during last maintenance window"
 

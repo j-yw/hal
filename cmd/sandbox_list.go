@@ -260,6 +260,7 @@ func filterLiveListInstances(instances []*sandbox.SandboxState, loadActive func(
 				continue
 			}
 			warnings = append(warnings, liveStatusWarning{Name: inst.Name, Err: fmt.Errorf("load active sandbox %q: %w", inst.Name, err)})
+			filtered = append(filtered, inst)
 			continue
 		}
 		filtered = append(filtered, inst)

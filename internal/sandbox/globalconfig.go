@@ -19,11 +19,15 @@ var (
 
 // GlobalConfigPath returns the full path to sandbox-config.yaml in GlobalDir().
 func GlobalConfigPath() string {
-	path, err := globalConfigPath()
+	path, err := GlobalConfigPathWithError()
 	if err != nil {
 		return ""
 	}
 	return path
+}
+
+func GlobalConfigPathWithError() (string, error) {
+	return globalConfigPath()
 }
 
 func globalConfigPath() (string, error) {
