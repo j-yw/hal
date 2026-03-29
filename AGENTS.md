@@ -239,3 +239,8 @@
 - Migration semantics are asymmetric: if `.hal/prd.json` is missing, rename `.hal/auto-prd.json`; if both are semantically equal JSON, delete legacy `.hal/auto-prd.json`; otherwise keep `.hal/prd.json` authoritative and preserve legacy data as `.hal/auto-prd.legacy-<ts>.json`.
 - Warnings for preserved legacy auto PRDs must go to stderr so stdout stays clean for machine-readable command output.
 - Migration tests should inject time (`migrateLegacyAutoPRDWithNow`) to make timestamped legacy backup assertions deterministic.
+
+## Patterns from hal/prd-audit-legacy-auto-prd (2026-03-29)
+
+- `hal prd audit` should treat `.hal/auto-prd.json` and `.hal/auto-prd.legacy-*.json` as migration artifacts, reported as migration issues instead of active manual/auto PRD conflicts.
+- Keep legacy artifact issue text actionable by including the exact `.hal/...` artifact paths and cleanup guidance (`hal auto` migration, `hal cleanup` removal).

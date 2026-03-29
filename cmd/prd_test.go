@@ -167,32 +167,96 @@ func TestRunPRDAuditFn_MarkdownOnly(t *testing.T) {
 	}
 }
 
-func TestRunPRDAuditFn_AutoPRDConflict(t *testing.T) {
-	dir := t.TempDir()
-	halDir := filepath.Join(dir, template.HalDir)
-	os.MkdirAll(halDir, 0755)
-
-	// Both manual and auto PRD
-	os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte(`{"branchName":"hal/x","userStories":[{"id":"US-001","passes":false}]}`), 0644)
-	os.WriteFile(filepath.Join(halDir, template.AutoPRDFile), []byte(`{"branchName":"compound/y","tasks":[{"id":"T-001","passes":false}]}`), 0644)
-
-	var buf bytes.Buffer
-	runPRDAuditFn(dir, true, &buf)
-
-	var result PRDAuditResult
-	json.Unmarshal(buf.Bytes(), &result)
-
-	if result.OK {
-		t.Fatal("should not be OK when both prd.json and auto-prd.json exist")
+func TestRunPRDAuditFn_LegacyAutoPRDMigrationIssues(t *testing.T) {
+	tests := []struct {
+		name               string
+		setup              func(t *testing.T, halDir string)
+		wantMigrationIssue bool
+		wantIssueSubstr    string
+	}{
+		{
+			name: "reports auto-prd.json as migration issue",
+			setup: func(t *testing.T, halDir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(halDir, template.AutoPRDFile), []byte(`{"branchName":"compound/y","tasks":[{"id":"T-001","passes":false}]}`), 0644); err != nil {
+					t.Fatalf("write auto-prd.json: %v", err)
+				}
+			},
+			wantMigrationIssue: true,
+			wantIssueSubstr:    filepath.Join(template.HalDir, template.AutoPRDFile),
+		},
+		{
+			name: "reports legacy backup artifacts as migration issue",
+			setup: func(t *testing.T, halDir string) {
+				t.Helper()
+				legacy := filepath.Join(halDir, "auto-prd.legacy-20260329-120000.json")
+				if err := os.WriteFile(legacy, []byte(`{"branchName":"compound/y"}`), 0644); err != nil {
+					t.Fatalf("write legacy auto-prd backup: %v", err)
+				}
+			},
+			wantMigrationIssue: true,
+			wantIssueSubstr:    filepath.Join(template.HalDir, "auto-prd.legacy-20260329-120000.json"),
+		},
+		{
+			name:               "does not report migration issue when legacy artifacts are absent",
+			wantMigrationIssue: false,
+		},
 	}
-	found := false
-	for _, issue := range result.Issues {
-		if strings.Contains(issue, "auto-prd.json") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("should detect auto-prd conflict, issues: %v", result.Issues)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, template.HalDir)
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("mkdir hal dir: %v", err)
+			}
+
+			if err := os.WriteFile(filepath.Join(halDir, template.PRDFile), []byte(`{"branchName":"hal/x","userStories":[{"id":"US-001","passes":false}]}`), 0644); err != nil {
+				t.Fatalf("write prd.json: %v", err)
+			}
+
+			if tt.setup != nil {
+				tt.setup(t, halDir)
+			}
+
+			var buf bytes.Buffer
+			if err := runPRDAuditFn(dir, true, &buf); err != nil {
+				t.Fatalf("runPRDAuditFn() error = %v", err)
+			}
+
+			var result PRDAuditResult
+			if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+				t.Fatalf("JSON unmarshal error: %v\n%s", err, buf.String())
+			}
+
+			hasMigrationIssue := false
+			hasExpectedPath := tt.wantIssueSubstr == ""
+			for _, issue := range result.Issues {
+				if strings.Contains(issue, "migration issue") {
+					hasMigrationIssue = true
+				}
+				if tt.wantIssueSubstr != "" && strings.Contains(issue, tt.wantIssueSubstr) {
+					hasExpectedPath = true
+				}
+				if strings.Contains(issue, "manual and auto PRDs may conflict") {
+					t.Fatalf("legacy conflict wording should not appear: %v", result.Issues)
+				}
+			}
+
+			if hasMigrationIssue != tt.wantMigrationIssue {
+				t.Fatalf("migration issue presence = %v, want %v (issues=%v)", hasMigrationIssue, tt.wantMigrationIssue, result.Issues)
+			}
+			if !hasExpectedPath {
+				t.Fatalf("expected issue to mention %q, issues: %v", tt.wantIssueSubstr, result.Issues)
+			}
+
+			if tt.wantMigrationIssue && result.OK {
+				t.Fatalf("result should not be OK when migration issues exist: %+v", result)
+			}
+			if !tt.wantMigrationIssue && !result.OK {
+				t.Fatalf("result should be OK when no migration issues exist: %+v", result)
+			}
+		})
 	}
 }
 
