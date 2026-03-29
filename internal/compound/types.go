@@ -12,30 +12,65 @@ type AnalysisResult struct {
 	BranchName         string   `json:"branchName"`
 }
 
-// PipelineState represents the current state of a compound pipeline run.
+// PipelineState represents the current state of an auto pipeline run.
 // This state is persisted to allow resumption from interruptions.
 type PipelineState struct {
-	Step              string          `json:"step"`
-	BaseBranch        string          `json:"baseBranch,omitempty"` // Empty means current HEAD (git default)
-	BranchName        string          `json:"branchName"`
-	ReportPath        string          `json:"reportPath"`
-	PRDPath           string          `json:"prdPath"`
-	StartedAt         time.Time       `json:"startedAt"`
-	LoopIterations    int             `json:"loopIterations,omitempty"`
-	LoopComplete      bool            `json:"loopComplete,omitempty"`
-	LoopMaxIterations int             `json:"loopMaxIterations,omitempty"`
-	Analysis          *AnalysisResult `json:"analysis,omitempty"`
+	Step           string           `json:"step"`
+	BaseBranch     string           `json:"baseBranch,omitempty"` // Empty means current HEAD (git default)
+	BranchName     string           `json:"branchName"`
+	SourceMarkdown string           `json:"sourceMarkdown,omitempty"`
+	ReportPath     string           `json:"reportPath,omitempty"`
+	StartedAt      time.Time        `json:"startedAt"`
+	Validation     *ValidationState `json:"validation,omitempty"`
+	Run            *RunState        `json:"run,omitempty"`
+	Review         *ReviewState     `json:"review,omitempty"`
+	CI             *CIState         `json:"ci,omitempty"`
+	Analysis       *AnalysisResult  `json:"analysis,omitempty"`
 }
 
-// Valid step values for PipelineState.Step
+// ValidationState stores validation telemetry in pipeline state.
+type ValidationState struct {
+	Attempts int    `json:"attempts,omitempty"`
+	Status   string `json:"status,omitempty"`
+}
+
+// RunState stores run-step telemetry in pipeline state.
+type RunState struct {
+	Iterations    int  `json:"iterations,omitempty"`
+	Complete      bool `json:"complete,omitempty"`
+	MaxIterations int  `json:"maxIterations,omitempty"`
+}
+
+// ReviewState stores review-step telemetry in pipeline state.
+type ReviewState struct {
+	Status string `json:"status,omitempty"`
+}
+
+// CIState stores ci-step telemetry in pipeline state.
+type CIState struct {
+	Status string `json:"status,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// Valid step values for PipelineState.Step.
 const (
-	StepAnalyze = "analyze"
-	StepBranch  = "branch"
-	StepPRD     = "prd"
-	StepExplode = "explode"
-	StepLoop    = "loop"
-	StepPR      = "pr"
-	StepDone    = "done"
+	StepAnalyze  = "analyze"
+	StepSpec     = "spec"
+	StepBranch   = "branch"
+	StepConvert  = "convert"
+	StepValidate = "validate"
+	StepRun      = "run"
+	StepReview   = "review"
+	StepReport   = "report"
+	StepCI       = "ci"
+	StepArchive  = "archive"
+	StepDone     = "done"
+
+	// Legacy aliases retained for internal readability while state values remain normalized.
+	StepPRD     = StepSpec
+	StepExplode = StepConvert
+	StepLoop    = StepRun
+	StepPR      = StepCI
 )
 
 // ReviewResult contains the output of a review operation.
@@ -81,15 +116,15 @@ type ReviewLoopTotals struct {
 
 // ReviewLoopIteration contains per-iteration review/fix statistics.
 type ReviewLoopIteration struct {
-	Iteration     int                  `json:"iteration"`
-	IssuesFound   int                  `json:"issuesFound"`
-	ValidIssues   int                  `json:"validIssues"`
-	InvalidIssues int                  `json:"invalidIssues"`
-	FixesApplied  int                  `json:"fixesApplied"`
-	Summary       string               `json:"summary"`
-	Status        string               `json:"status"`
-	Duration      time.Duration        `json:"duration,omitempty"`
-	Issues        []ReviewIssueDetail  `json:"issues,omitempty"`
+	Iteration     int                 `json:"iteration"`
+	IssuesFound   int                 `json:"issuesFound"`
+	ValidIssues   int                 `json:"validIssues"`
+	InvalidIssues int                 `json:"invalidIssues"`
+	FixesApplied  int                 `json:"fixesApplied"`
+	Summary       string              `json:"summary"`
+	Status        string              `json:"status"`
+	Duration      time.Duration       `json:"duration,omitempty"`
+	Issues        []ReviewIssueDetail `json:"issues,omitempty"`
 }
 
 // ReviewIssueDetail captures per-issue context from a review iteration,

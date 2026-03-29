@@ -44,7 +44,27 @@ func (p *Pipeline) SetEngineConfig(cfg *engine.EngineConfig) {
 
 // statePath returns the full path to the state file.
 func (p *Pipeline) statePath() string {
-	return filepath.Join(p.dir, ".hal", stateFileName)
+	return filepath.Join(p.dir, template.HalDir, stateFileName)
+}
+
+type rawPipelineState struct {
+	Step           string           `json:"step"`
+	BaseBranch     string           `json:"baseBranch,omitempty"`
+	BranchName     string           `json:"branchName"`
+	SourceMarkdown string           `json:"sourceMarkdown,omitempty"`
+	ReportPath     string           `json:"reportPath,omitempty"`
+	StartedAt      time.Time        `json:"startedAt"`
+	Validation     *ValidationState `json:"validation,omitempty"`
+	Run            *RunState        `json:"run,omitempty"`
+	Review         *ReviewState     `json:"review,omitempty"`
+	CI             *CIState         `json:"ci,omitempty"`
+	Analysis       *AnalysisResult  `json:"analysis,omitempty"`
+
+	// Legacy fields supported for one-release compatibility.
+	PRDPath           string `json:"prdPath,omitempty"`
+	LoopIterations    int    `json:"loopIterations,omitempty"`
+	LoopComplete      bool   `json:"loopComplete,omitempty"`
+	LoopMaxIterations int    `json:"loopMaxIterations,omitempty"`
 }
 
 // loadState reads the pipeline state from .hal/auto-state.json.
@@ -55,12 +75,53 @@ func (p *Pipeline) loadState() *PipelineState {
 		return nil
 	}
 
-	var state PipelineState
-	if err := json.Unmarshal(data, &state); err != nil {
+	var raw rawPipelineState
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
 
-	return &state
+	state := &PipelineState{
+		Step:           normalizePipelineStep(raw.Step),
+		BaseBranch:     raw.BaseBranch,
+		BranchName:     raw.BranchName,
+		SourceMarkdown: raw.SourceMarkdown,
+		ReportPath:     raw.ReportPath,
+		StartedAt:      raw.StartedAt,
+		Validation:     raw.Validation,
+		Run:            raw.Run,
+		Review:         raw.Review,
+		CI:             raw.CI,
+		Analysis:       raw.Analysis,
+	}
+
+	if state.SourceMarkdown == "" {
+		state.SourceMarkdown = raw.PRDPath
+	}
+
+	if state.Run == nil && (raw.LoopIterations > 0 || raw.LoopComplete || raw.LoopMaxIterations > 0) {
+		state.Run = &RunState{
+			Iterations:    raw.LoopIterations,
+			Complete:      raw.LoopComplete,
+			MaxIterations: raw.LoopMaxIterations,
+		}
+	}
+
+	return state
+}
+
+func normalizePipelineStep(step string) string {
+	switch step {
+	case "prd":
+		return StepSpec
+	case "explode":
+		return StepConvert
+	case "loop":
+		return StepRun
+	case "pr":
+		return StepCI
+	default:
+		return step
+	}
 }
 
 // saveState writes the pipeline state to .hal/auto-state.json atomically.
@@ -314,7 +375,7 @@ func (p *Pipeline) runBranchStep(ctx context.Context, state *PipelineState, opts
 
 // runPRDStep generates a PRD using the autospec skill with analysis context.
 func (p *Pipeline) runPRDStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
-	p.display.ShowInfo("   Step: prd\n")
+	p.display.ShowInfo("   Step: spec\n")
 
 	if state.Analysis == nil {
 		return fmt.Errorf("no analysis result in state")
@@ -329,7 +390,7 @@ func (p *Pipeline) runPRDStep(ctx context.Context, state *PipelineState, opts Ru
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would generate PRD: %s\n", filepath.Base(prdPath))
-		state.PRDPath = prdPath
+		state.SourceMarkdown = prdPath
 		state.Step = StepExplode
 		return nil
 	}
@@ -383,7 +444,7 @@ Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisCont
 
 	if fileWritten {
 		// Engine wrote the file
-		state.PRDPath = prdPath
+		state.SourceMarkdown = prdPath
 		p.display.ShowInfo("   PRD generated: %s\n", filepath.Base(prdPath))
 	} else {
 		// Fallback: write response as PRD content
@@ -403,7 +464,7 @@ Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisCont
 			return fmt.Errorf("failed to write PRD: %w", err)
 		}
 
-		state.PRDPath = prdPath
+		state.SourceMarkdown = prdPath
 		p.display.ShowInfo("   PRD generated: %s\n", filepath.Base(prdPath))
 	}
 
@@ -418,10 +479,10 @@ Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisCont
 
 // runExplodeStep breaks down the PRD into granular tasks.
 func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
-	p.display.ShowInfo("   Step: explode\n")
+	p.display.ShowInfo("   Step: convert\n")
 
-	if state.PRDPath == "" {
-		return fmt.Errorf("no PRD path in state")
+	if state.SourceMarkdown == "" {
+		return fmt.Errorf("no source markdown path in state")
 	}
 
 	outPath := filepath.Join(p.dir, template.HalDir, template.AutoPRDFile)
@@ -433,7 +494,7 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 	}
 
 	// Read PRD content
-	prdContent, err := os.ReadFile(state.PRDPath)
+	prdContent, err := os.ReadFile(state.SourceMarkdown)
 	if err != nil {
 		return fmt.Errorf("failed to read PRD: %w", err)
 	}
@@ -551,7 +612,7 @@ Write the JSON directly to %s using the Write tool.`, explodeSkill, string(prdCo
 
 // runLoopStep executes the Hal loop to complete all tasks in the PRD.
 func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
-	p.display.ShowInfo("   Step: loop\n")
+	p.display.ShowInfo("   Step: run\n")
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would run task loop with max %d iterations\n", p.config.MaxIterations)
@@ -609,9 +670,11 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		p.display.ShowInfo("   Loop stopped after %d iterations (tasks remaining)\n", result.Iterations)
 	}
 
-	state.LoopIterations = result.Iterations
-	state.LoopComplete = result.Complete
-	state.LoopMaxIterations = p.config.MaxIterations
+	state.Run = &RunState{
+		Iterations:    result.Iterations,
+		Complete:      result.Complete,
+		MaxIterations: p.config.MaxIterations,
+	}
 
 	// Save state and advance to next step
 	state.Step = StepPR
@@ -630,7 +693,7 @@ func (p *Pipeline) migrateAutoProgress() error {
 
 // runPRStep pushes the branch and creates a draft pull request.
 func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
-	p.display.ShowInfo("   Step: pr\n")
+	p.display.ShowInfo("   Step: ci\n")
 
 	if opts.SkipPR {
 		p.display.ShowInfo("   Skipping PR creation (--skip-pr)\n")
@@ -749,10 +812,10 @@ func buildTaskStatusSection(prd *engine.PRD, state *PipelineState, maxIterations
 	if completed < total {
 		iterations := 0
 		maxIters := maxIterations
-		if state != nil {
-			iterations = state.LoopIterations
-			if state.LoopMaxIterations > 0 {
-				maxIters = state.LoopMaxIterations
+		if state != nil && state.Run != nil {
+			iterations = state.Run.Iterations
+			if state.Run.MaxIterations > 0 {
+				maxIters = state.Run.MaxIterations
 			}
 		}
 		if iterations > 0 && maxIters > 0 {

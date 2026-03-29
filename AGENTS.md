@@ -216,3 +216,10 @@
 
 - Keep sandbox lifecycle status values centralized in `internal/sandbox/types.go` constants (`StatusRunning`, `StatusStopped`, `StatusUnknown`) instead of duplicating string literals across commands/providers.
 - `SandboxState` JSON tags are camelCase with selective `omitempty`; preserve this contract with focused marshal/unmarshal key assertions in `internal/sandbox/types_test.go` when adding or renaming fields.
+
+## Patterns from compound/single-auto-state-migration (2026-03-29)
+
+- Auto pipeline resume migrations in `internal/compound/pipeline.go` should unmarshal through a raw compatibility struct (`rawPipelineState`) and then normalize into `PipelineState`; this keeps legacy field handling isolated from runtime logic.
+- Legacy auto-state mappings are explicit and literal: `prd -> spec`, `explode -> convert`, `loop -> run`, `pr -> ci`, and `prdPath -> sourceMarkdown` when canonical `sourceMarkdown` is absent.
+- Keep save/load contracts asymmetric during migration: `saveState` writes only unified fields (`sourceMarkdown`, `validation`, `run`, `review`, `ci`), while `loadState` accepts both unified and legacy keys.
+- Lock migration behavior with focused state tests that assert both legacy mapping paths and round-trip JSON key presence/absence (new keys present, legacy keys omitted).
