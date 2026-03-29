@@ -16,7 +16,6 @@ func TestNoArgsCommandsRejectExtraArgsWithValidationCode(t *testing.T) {
 		cmd  *cobra.Command
 	}{
 		{name: "init", cmd: initCmd},
-		{name: "auto", cmd: autoCmd},
 		{name: "cleanup", cmd: cleanupCmd},
 		{name: "version", cmd: versionCmd},
 		{name: "report", cmd: reportCmd},
@@ -26,8 +25,6 @@ func TestNoArgsCommandsRejectExtraArgsWithValidationCode(t *testing.T) {
 		{name: "standards discover", cmd: standardsDiscoverCmd},
 		{name: "sandbox setup", cmd: sandboxSetupCmd},
 		{name: "sandbox start", cmd: sandboxStartCmd},
-
-
 	}
 
 	for _, tt := range tests {
@@ -52,6 +49,34 @@ func TestNoArgsCommandsRejectExtraArgsWithValidationCode(t *testing.T) {
 				t.Fatalf("%s error = %q, want no-args validation message", tt.name, err.Error())
 			}
 		})
+	}
+}
+
+func TestAutoCommandAcceptsAtMostOnePositionalArg(t *testing.T) {
+	if autoCmd.Args == nil {
+		t.Fatal("auto command has no Args validator")
+	}
+
+	if err := autoCmd.Args(autoCmd, nil); err != nil {
+		t.Fatalf("auto should accept zero args, got %v", err)
+	}
+	if err := autoCmd.Args(autoCmd, []string{"path/to/prd.md"}); err != nil {
+		t.Fatalf("auto should accept one arg, got %v", err)
+	}
+
+	err := autoCmd.Args(autoCmd, []string{"one.md", "two.md"})
+	if err == nil {
+		t.Fatal("auto should reject more than one positional arg")
+	}
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("auto returned %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeValidation {
+		t.Fatalf("auto exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+	}
+	if !strings.Contains(err.Error(), "accepts at most 1 arg(s), received 2") {
+		t.Fatalf("auto error = %q, want max-args validation message", err.Error())
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -165,17 +166,19 @@ func (p *Pipeline) HasState() bool {
 
 // RunOptions contains options for the pipeline Run method.
 type RunOptions struct {
-	Resume     bool   // Continue from last saved state
-	DryRun     bool   // Show what would happen without executing
-	SkipPR     bool   // Skip PR creation at the end
-	ReportPath string // Specific report file to use (skips find latest)
-	BaseBranch string // Base branch for creating work branch / PR target
+	Resume         bool   // Continue from last saved state
+	DryRun         bool   // Show what would happen without executing
+	SkipPR         bool   // Skip PR creation at the end
+	ReportPath     string // Specific report file to use (skips find latest)
+	SourceMarkdown string // Positional markdown path (skips analyze/spec)
+	BaseBranch     string // Base branch for creating work branch / PR target
 }
 
 // Run executes the compound pipeline from the current state or from the beginning.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	// Load or create initial state
 	var state *PipelineState
+	var err error
 	if opts.Resume {
 		state = p.loadState()
 		if state == nil {
@@ -183,9 +186,9 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		}
 		p.display.ShowInfo("   Resuming from step: %s\n", state.Step)
 	} else {
-		state = &PipelineState{
-			Step:      StepAnalyze,
-			StartedAt: time.Now(),
+		state, err = p.newInitialState(opts)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -212,15 +215,15 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		switch state.Step {
 		case StepAnalyze:
 			err = p.runAnalyzeStep(ctx, state, opts)
+		case StepSpec:
+			err = p.runPRDStep(ctx, state, opts)
 		case StepBranch:
 			err = p.runBranchStep(ctx, state, opts)
-		case StepPRD:
-			err = p.runPRDStep(ctx, state, opts)
-		case StepExplode:
+		case StepConvert:
 			err = p.runExplodeStep(ctx, state, opts)
-		case StepLoop:
+		case StepRun:
 			err = p.runLoopStep(ctx, state, opts)
-		case StepPR:
+		case StepCI:
 			err = p.runPRStep(ctx, state, opts)
 		case StepDone:
 			// Pipeline completed successfully
@@ -237,6 +240,45 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			return fmt.Errorf("step %s failed: %w", state.Step, err)
 		}
 	}
+}
+
+func (p *Pipeline) newInitialState(opts RunOptions) (*PipelineState, error) {
+	state := &PipelineState{
+		Step:      StepAnalyze,
+		StartedAt: time.Now(),
+	}
+
+	sourceMarkdown := strings.TrimSpace(opts.SourceMarkdown)
+	if sourceMarkdown == "" {
+		return state, nil
+	}
+
+	branchName, err := resolveSourceMarkdownBranchName(sourceMarkdown)
+	if err != nil {
+		return nil, err
+	}
+
+	state.Step = StepBranch
+	state.SourceMarkdown = sourceMarkdown
+	state.BranchName = branchName
+	return state, nil
+}
+
+func resolveSourceMarkdownBranchName(mdPath string) (string, error) {
+	mdContent, err := os.ReadFile(mdPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("markdown PRD not found: %s", mdPath)
+		}
+		return "", fmt.Errorf("failed to read markdown PRD %s: %w", mdPath, err)
+	}
+
+	branchName := prd.ResolveMarkdownBranchName(string(mdContent), mdPath)
+	if branchName == "" {
+		return "", fmt.Errorf("unable to resolve branchName from markdown metadata, title, or filename; pass --branch")
+	}
+
+	return branchName, nil
 }
 
 // initializeBaseBranch resolves and persists the base branch for this run.
@@ -301,7 +343,7 @@ func (p *Pipeline) runAnalyzeStep(ctx context.Context, state *PipelineState, opt
 		}
 		state.Analysis = placeholder
 		state.BranchName = p.config.BranchPrefix + placeholder.BranchName
-		state.Step = StepBranch
+		state.Step = StepSpec
 		return nil
 	}
 
@@ -328,7 +370,7 @@ func (p *Pipeline) runAnalyzeStep(ctx context.Context, state *PipelineState, opt
 	p.display.ShowInfo("   Tasks: ~%d estimated\n", analysis.EstimatedTasks)
 
 	// Save state and advance to next step
-	state.Step = StepBranch
+	state.Step = StepSpec
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
@@ -344,13 +386,18 @@ func (p *Pipeline) runBranchStep(ctx context.Context, state *PipelineState, opts
 		return fmt.Errorf("no branch name set in state")
 	}
 
+	nextStep := StepConvert
+	if strings.TrimSpace(state.SourceMarkdown) == "" {
+		nextStep = StepSpec
+	}
+
 	if opts.DryRun {
 		if state.BaseBranch != "" {
 			p.display.ShowInfo("   [dry-run] Would create branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
 		} else {
 			p.display.ShowInfo("   [dry-run] Would create branch: %s (from current HEAD)\n", state.BranchName)
 		}
-		state.Step = StepPRD
+		state.Step = nextStep
 		return nil
 	}
 
@@ -365,7 +412,7 @@ func (p *Pipeline) runBranchStep(ctx context.Context, state *PipelineState, opts
 	}
 
 	// Save state and advance to next step
-	state.Step = StepPRD
+	state.Step = nextStep
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
@@ -391,7 +438,7 @@ func (p *Pipeline) runPRDStep(ctx context.Context, state *PipelineState, opts Ru
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would generate PRD: %s\n", filepath.Base(prdPath))
 		state.SourceMarkdown = prdPath
-		state.Step = StepExplode
+		state.Step = StepBranch
 		return nil
 	}
 
@@ -469,7 +516,7 @@ Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisCont
 	}
 
 	// Save state and advance to next step
-	state.Step = StepExplode
+	state.Step = StepBranch
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}

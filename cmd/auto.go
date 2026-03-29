@@ -64,31 +64,36 @@ const (
 )
 
 var autoCmd = &cobra.Command{
-	Use:   "auto",
+	Use:   "auto [prd-path]",
 	Short: "Run the full compound engineering pipeline",
-	Args:  noArgsValidation(),
+	Args:  maxArgsValidation(1),
 	Long: `Execute the complete compound engineering automation pipeline.
 
 The pipeline steps are:
   1. analyze  - Find and analyze the latest report to identify priority item
-  2. branch   - Create and checkout a new branch for the work
-  3. prd      - Generate a PRD using the autospec skill
-  4. explode  - Break down the PRD into 8-15 granular tasks
-  5. loop     - Execute the Hal task loop until all tasks pass
-  6. pr       - Push the branch and create a draft pull request
+  2. spec     - Generate a markdown PRD using the autospec skill
+  3. branch   - Create and checkout a new branch for the work
+  4. convert  - Break down the PRD into 8-15 granular tasks
+  5. run      - Execute the Hal task loop until all tasks pass
+  6. ci       - Push the branch and create a draft pull request
+
+If a positional markdown path is provided, auto skips analyze/spec,
+uses that file as sourceMarkdown, and starts from the branch step.
 
 The pipeline saves state after each step, allowing you to resume
 from interruptions using the --resume flag.
 
 Examples:
-  hal auto                     # Run full pipeline with latest report
-  hal auto --report report.md  # Use specific report file
-  hal auto --dry-run           # Show what would happen without executing
-  hal auto --resume            # Continue from last saved state
-  hal auto --skip-pr           # Skip PR creation at the end
-  hal auto --base develop      # Use develop as the base branch
-  hal auto --json              # Machine-readable result output`,
+  hal auto                           # Run full pipeline with latest report
+  hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
+  hal auto --report report.md        # Use specific report file
+  hal auto --dry-run                 # Show what would happen without executing
+  hal auto --resume                  # Continue from last saved state
+  hal auto --skip-pr                 # Skip PR creation at the end
+  hal auto --base develop            # Use develop as the base branch
+  hal auto --json                    # Machine-readable result output`,
 	Example: `  hal auto
+  hal auto .hal/prd-feature.md --dry-run
   hal auto --json
   hal auto --report .hal/reports/report.md
   hal auto --resume
@@ -180,6 +185,11 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	sourceMarkdown := ""
+	if len(args) > 0 {
+		sourceMarkdown = strings.TrimSpace(args[0])
+	}
+
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
 			return outputAutoJSON(out, false, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false)
@@ -230,8 +240,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	pipeline := compound.NewPipeline(config, eng, display, dir)
 	pipeline.SetEngineConfig(engineCfg)
 
-	// Check for reports before starting (unless resuming or report specified)
-	if !resume && reportPath == "" {
+	// Check for reports before starting unless resume/source markdown/report path is provided.
+	if !resume && reportPath == "" && sourceMarkdown == "" {
 		_, err := compound.FindLatestReport(config.ReportsDir)
 		if err != nil {
 			if jsonMode {
@@ -264,11 +274,12 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	// Run options
 	opts := compound.RunOptions{
-		Resume:     resume,
-		DryRun:     dryRun,
-		SkipPR:     skipPR,
-		ReportPath: reportPath,
-		BaseBranch: baseBranch,
+		Resume:         resume,
+		DryRun:         dryRun,
+		SkipPR:         skipPR,
+		ReportPath:     reportPath,
+		SourceMarkdown: sourceMarkdown,
+		BaseBranch:     baseBranch,
 	}
 
 	// Run the pipeline

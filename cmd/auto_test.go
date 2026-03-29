@@ -220,6 +220,72 @@ func TestRunAuto_MigratesLegacyAutoPRDAtStartup(t *testing.T) {
 	}
 }
 
+func TestRunAuto_DryRunWithPositionalMarkdownStartsFromBranch(t *testing.T) {
+	chdirTemp(t)
+
+	mdPath := filepath.Join(".", "feature-prd.md")
+	if err := os.WriteFile(mdPath, []byte("# PRD: Positional Entry\n\n## Scope\n- test\n"), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+
+	if err := runAuto(cmd, []string{mdPath}); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Step: branch") {
+		t.Fatalf("expected branch step in output, got %q", output)
+	}
+	if !strings.Contains(output, "Step: convert") {
+		t.Fatalf("expected convert step in output, got %q", output)
+	}
+	if strings.Contains(output, "Step: analyze") {
+		t.Fatalf("positional markdown should skip analyze, output=%q", output)
+	}
+	if strings.Contains(output, "Step: spec") {
+		t.Fatalf("positional markdown should skip spec, output=%q", output)
+	}
+}
+
+func TestRunAuto_DryRunWithoutPositionalMarkdownRunsAnalyzeSpecBranchBeforeConvert(t *testing.T) {
+	chdirTemp(t)
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	analyzeIdx := strings.Index(output, "Step: analyze")
+	specIdx := strings.Index(output, "Step: spec")
+	branchIdx := strings.Index(output, "Step: branch")
+	convertIdx := strings.Index(output, "Step: convert")
+
+	if analyzeIdx == -1 || specIdx == -1 || branchIdx == -1 || convertIdx == -1 {
+		t.Fatalf("missing expected step sequence in output: %q", output)
+	}
+	if !(analyzeIdx < specIdx && specIdx < branchIdx && branchIdx < convertIdx) {
+		t.Fatalf("unexpected step order, got output: %q", output)
+	}
+}
+
 func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 	tests := []struct {
 		name        string

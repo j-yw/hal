@@ -245,3 +245,9 @@
 
 - `hal prd audit` should treat `.hal/auto-prd.json` and `.hal/auto-prd.legacy-*.json` as migration artifacts, reported as migration issues instead of active manual/auto PRD conflicts.
 - Keep legacy artifact issue text actionable by including the exact `.hal/...` artifact paths and cleanup guidance (`hal auto` migration, `hal cleanup` removal).
+
+## Patterns from compound/auto-entry-resolution (2026-03-29)
+
+- `hal auto` now accepts at most one positional markdown path (`auto [prd-path]`), so command arg contracts should use `maxArgsValidation(1)` and include a dedicated args test for zero/one/two-arg cases.
+- Pipeline start-state selection belongs in `newInitialState(opts)`: with `SourceMarkdown`, set `step=branch`, keep `sourceMarkdown`, and derive `branchName` via `prd.ResolveMarkdownBranchName`; without it, start at `step=analyze`.
+- Auto report preflight (`FindLatestReport`) must be skipped when a positional markdown source is provided, and dry-run command tests should lock both entry flows (`analyze -> spec -> branch -> convert` vs `branch -> convert`).
