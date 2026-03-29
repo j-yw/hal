@@ -515,10 +515,10 @@ func convertPRDToJSON(ctx context.Context, eng engine.Engine, skill, prdContent,
 		if err != nil {
 			return "", fmt.Errorf("failed to inspect output file before conversion: %w", err)
 		}
-		targetBranchName = selectConvertBranchName(branchResolution)
+		targetBranchName = selectConvertBranchName("", branchResolution)
 	}
 
-	prompt := buildConversionPrompt(skill, prdContent, targetBranchName)
+	prompt := buildConversionPrompt(skill, prdContent, targetBranchName, false)
 
 	var response string
 	if display != nil {

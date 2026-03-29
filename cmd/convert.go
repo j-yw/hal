@@ -19,6 +19,8 @@ var (
 	convertValidateFlag bool
 	convertArchiveFlag  bool
 	convertForceFlag    bool
+	convertGranularFlag bool
+	convertBranchFlag   string
 	convertJSONFlag     bool
 )
 
@@ -53,6 +55,8 @@ Examples:
   hal convert .hal/prd-auth.md              # Explicit source path
   hal convert --archive                      # Archive before writing .hal/prd.json
   hal convert .hal/prd.md --force           # Override branch mismatch guard
+  hal convert .hal/prd.md --branch hal/my-feature
+  hal convert .hal/prd.md --granular        # 8-15 atomic T-XXX tasks
   hal convert .hal/prd.md -o custom.json    # Custom output path (no archive)
   hal convert .hal/prd.md --validate        # Also validate after conversion
   hal convert .hal/prd.md -e claude         # Use Claude engine
@@ -60,6 +64,8 @@ Examples:
 	Example: `  hal convert
   hal convert --json
   hal convert --archive
+  hal convert --granular
+  hal convert --branch hal/my-feature
   hal convert .hal/prd-auth.md --validate
   hal convert .hal/prd-auth.md --force
   hal convert .hal/prd-auth.md --engine codex`,
@@ -73,6 +79,8 @@ func init() {
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
 	convertCmd.Flags().BoolVar(&convertArchiveFlag, "archive", false, "Archive existing feature state before writing canonical .hal/prd.json")
 	convertCmd.Flags().BoolVar(&convertForceFlag, "force", false, "Allow canonical overwrite without archive when branch mismatch protection would block")
+	convertCmd.Flags().BoolVar(&convertGranularFlag, "granular", false, "Decompose into 8-15 atomic tasks (T-XXX IDs) for autonomous execution")
+	convertCmd.Flags().StringVar(&convertBranchFlag, "branch", "", "Pin generated branchName (overrides markdown-derived branch)")
 	convertCmd.Flags().BoolVar(&convertJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(convertCmd)
 }
@@ -133,8 +141,10 @@ func runConvertWithDeps(cmd *cobra.Command, args []string, deps convertDeps) err
 	}
 
 	opts := prd.ConvertOptions{
-		Archive: convertArchiveFlag,
-		Force:   convertForceFlag,
+		Archive:    convertArchiveFlag,
+		Force:      convertForceFlag,
+		Granular:   convertGranularFlag,
+		BranchName: convertBranchFlag,
 	}
 
 	// Convert

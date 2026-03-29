@@ -524,6 +524,70 @@ func TestConvertWithEngine_ResolvedBranchPinsOutputAndPrompt(t *testing.T) {
 	}
 }
 
+func TestConvertWithEngine_OptionBranchNamePinsOutputAndPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(halDir, template.PRDFile)
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, `---
+branchName: hal/from-markdown
+---
+
+# PRD: Ignored Title`)
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/wrong-feature"),
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{BranchName: "hal/from-flag"}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	if got := readPRDBranchName(t, outPath); got != "hal/from-flag" {
+		t.Fatalf("output branchName = %q, want %q", got, "hal/from-flag")
+	}
+	if !strings.Contains(eng.lastPrompt, "Use this exact branchName: hal/from-flag.") {
+		t.Fatalf("prompt did not pin explicit option branchName:\n%s", eng.lastPrompt)
+	}
+}
+
+func TestConvertWithEngine_GranularOptionAddsTaskGuidanceToPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+	outPath := filepath.Join(tmpDir, "out.json")
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Granular: true}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	checks := []string{
+		"Decompose into 8-15 atomic tasks, each completable in ONE agent iteration",
+		"IDs are sequential (T-001, T-002, etc.)",
+		"\"id\": \"T-001\"",
+	}
+	for _, want := range checks {
+		if !strings.Contains(eng.lastPrompt, want) {
+			t.Fatalf("granular prompt missing %q:\n%s", want, eng.lastPrompt)
+		}
+	}
+}
+
 func TestConvertWithEngine_ExplicitBranchAnnotationsPinOutputAndPrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 	chdirTo(t, tmpDir)

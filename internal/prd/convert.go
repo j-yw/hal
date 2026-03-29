@@ -22,8 +22,10 @@ import (
 
 // ConvertOptions controls safety behavior during conversion.
 type ConvertOptions struct {
-	Archive bool
-	Force   bool
+	Archive    bool
+	Force      bool
+	Granular   bool
+	BranchName string
 }
 
 // ConvertWithEngine converts a markdown PRD to JSON using the hal skill via an engine.
@@ -64,7 +66,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 	}
 
 	branchResolution := resolveMarkdownBranch(string(mdContent))
-	targetBranchName := selectConvertBranchName(branchResolution)
+	targetBranchName := selectConvertBranchName(opts.BranchName, branchResolution)
 
 	if opts.Archive {
 		archiveOpts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
@@ -84,7 +86,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		}
 	}
 
-	prompt := buildConversionPrompt(halSkill, string(mdContent), targetBranchName)
+	prompt := buildConversionPrompt(halSkill, string(mdContent), targetBranchName, opts.Granular)
 
 	// Execute prompt — AI returns JSON text, but some engines may write the output file directly.
 	var response string
@@ -148,11 +150,22 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 	return nil
 }
 
-func buildConversionPrompt(skill, mdContent, resolvedBranchName string) string {
-	branchRule := `9. Set branchName to a stable feature branch name prefixed with hal/`
+func buildConversionPrompt(skill, mdContent, resolvedBranchName string, granular bool) string {
+	storyRule := "Each story must be completable in ONE iteration (split large stories)"
+	idRule := "IDs are sequential (US-001, US-002, etc.)"
+	modeRule := "Standard mode: produce developer-sized user stories."
+	exampleID := "US-001"
+	if granular {
+		storyRule = "Decompose into 8-15 atomic tasks, each completable in ONE agent iteration"
+		idRule = "IDs are sequential (T-001, T-002, etc.)"
+		modeRule = "Granular mode: produce 8-15 dependency-ordered atomic tasks for autonomous execution."
+		exampleID = "T-001"
+	}
+
+	branchRule := "Set branchName to a stable feature branch name prefixed with hal/"
 	branchExample := "hal/feature-name"
 	if resolvedBranchName != "" {
-		branchRule = fmt.Sprintf("9. Use this exact branchName: %s. Do not invent or rename it.", resolvedBranchName)
+		branchRule = fmt.Sprintf("Use this exact branchName: %s. Do not invent or rename it.", resolvedBranchName)
 		branchExample = resolvedBranchName
 	}
 
@@ -167,15 +180,16 @@ func buildConversionPrompt(skill, mdContent, resolvedBranchName string) string {
 </markdown>
 
 Convert the markdown PRD to JSON format following the skill rules:
-1. Each story must be completable in ONE iteration (split large stories)
+1. %s
 2. Stories ordered by dependency (schema → backend → UI)
 3. Every story has "Typecheck passes" as acceptance criteria
 4. UI stories have "%s"
 5. Acceptance criteria are verifiable (not vague)
-6. IDs are sequential (US-001, US-002, etc.)
+6. %s
 7. Priority based on dependency order
 8. All stories have passes: false and empty notes
-%s
+9. %s
+10. %s
 
 IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
 File saving is handled by the caller. Return ONLY the JSON object (no markdown, no explanation). The format must be:
@@ -185,7 +199,7 @@ File saving is handled by the caller. Return ONLY the JSON object (no markdown, 
   "description": "Feature description",
   "userStories": [
     {
-      "id": "US-001",
+      "id": "%s",
       "title": "Story title",
       "description": "As a user, I want X so that Y",
       "acceptanceCriteria": ["Criterion 1", "Criterion 2", "Typecheck passes"],
@@ -194,7 +208,7 @@ File saving is handled by the caller. Return ONLY the JSON object (no markdown, 
       "notes": ""
     }
   ]
-}`, skill, mdContent, template.BrowserVerificationCriterion, branchRule, branchExample)
+}`, skill, mdContent, storyRule, template.BrowserVerificationCriterion, idRule, modeRule, branchRule, branchExample, exampleID)
 }
 
 var (
@@ -221,7 +235,11 @@ func resolveMarkdownBranchName(mdContent string) string {
 	return resolveMarkdownBranch(mdContent).Name
 }
 
-func selectConvertBranchName(branch markdownBranchResolution) string {
+func selectConvertBranchName(explicitBranch string, branch markdownBranchResolution) string {
+	if pinned := strings.TrimSpace(explicitBranch); pinned != "" {
+		return pinned
+	}
+
 	return branch.Name
 }
 

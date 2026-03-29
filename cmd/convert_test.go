@@ -40,12 +40,18 @@ func preserveConvertFlags(t *testing.T) {
 	origValidate := convertValidateFlag
 	origArchive := convertArchiveFlag
 	origForce := convertForceFlag
+	origGranular := convertGranularFlag
+	origBranch := convertBranchFlag
+	origJSON := convertJSONFlag
 	t.Cleanup(func() {
 		convertEngineFlag = origEngine
 		convertOutputFlag = origOutput
 		convertValidateFlag = origValidate
 		convertArchiveFlag = origArchive
 		convertForceFlag = origForce
+		convertGranularFlag = origGranular
+		convertBranchFlag = origBranch
+		convertJSONFlag = origJSON
 	})
 }
 
@@ -77,19 +83,23 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	return string(output), runErr
 }
 
-func TestConvertUsageIncludesSafetyFlags(t *testing.T) {
+func TestConvertUsageIncludesSafetyAndBranchFlags(t *testing.T) {
 	usage := convertCmd.UsageString()
-	if !strings.Contains(usage, "--archive") {
-		t.Fatalf("convert usage missing --archive flag:\n%s", usage)
+	checks := []string{
+		"--archive",
+		"--force",
+		"--granular",
+		"--branch",
+		"Archive existing feature state before writing canonical .hal/prd.json",
+		"Allow canonical overwrite without archive when branch mismatch protection would block",
+		"Decompose into 8-15 atomic tasks (T-XXX IDs) for autonomous execution",
+		"Pin generated branchName (overrides markdown-derived branch)",
 	}
-	if !strings.Contains(usage, "--force") {
-		t.Fatalf("convert usage missing --force flag:\n%s", usage)
-	}
-	if !strings.Contains(usage, "Archive existing feature state before writing canonical .hal/prd.json") {
-		t.Fatalf("convert usage missing --archive help text:\n%s", usage)
-	}
-	if !strings.Contains(usage, "Allow canonical overwrite without archive when branch mismatch protection would block") {
-		t.Fatalf("convert usage missing --force help text:\n%s", usage)
+
+	for _, want := range checks {
+		if !strings.Contains(usage, want) {
+			t.Fatalf("convert usage missing %q:\n%s", want, usage)
+		}
 	}
 }
 
@@ -126,6 +136,8 @@ func TestRunConvertWithDeps_DefaultSafetyFlagsAreFalse(t *testing.T) {
 	convertValidateFlag = false
 	convertArchiveFlag = false
 	convertForceFlag = false
+	convertGranularFlag = false
+	convertBranchFlag = ""
 
 	called := false
 	deps := convertDeps{
@@ -148,6 +160,12 @@ func TestRunConvertWithDeps_DefaultSafetyFlagsAreFalse(t *testing.T) {
 			}
 			if opts.Force {
 				t.Fatal("opts.Force = true, want false")
+			}
+			if opts.Granular {
+				t.Fatal("opts.Granular = true, want false")
+			}
+			if opts.BranchName != "" {
+				t.Fatalf("opts.BranchName = %q, want empty", opts.BranchName)
 			}
 			if display == nil {
 				t.Fatal("display should not be nil")
@@ -182,6 +200,8 @@ func TestRunConvertWithDeps_ArchiveCustomOutputReturnsError(t *testing.T) {
 	convertValidateFlag = false
 	convertArchiveFlag = true
 	convertForceFlag = false
+	convertGranularFlag = false
+	convertBranchFlag = ""
 
 	deps := convertDeps{
 		newEngine: func(name string) (engine.Engine, error) {
@@ -213,13 +233,17 @@ func TestRunConvertWithDeps_FlagWiring(t *testing.T) {
 		outputFlag string
 		archive    bool
 		force      bool
+		granular   bool
+		branch     string
 		wantOut    string
 	}{
 		{
-			name:       "explicit output passes archive and force options",
+			name:       "explicit output passes all convert options",
 			outputFlag: "custom-prd.json",
 			archive:    true,
 			force:      true,
+			granular:   true,
+			branch:     "hal/pinned-feature",
 			wantOut:    "custom-prd.json",
 		},
 		{
@@ -227,6 +251,8 @@ func TestRunConvertWithDeps_FlagWiring(t *testing.T) {
 			outputFlag: "",
 			archive:    false,
 			force:      false,
+			granular:   false,
+			branch:     "",
 			wantOut:    filepath.Join(template.HalDir, template.PRDFile),
 		},
 	}
@@ -253,6 +279,8 @@ func TestRunConvertWithDeps_FlagWiring(t *testing.T) {
 			convertValidateFlag = false
 			convertArchiveFlag = tt.archive
 			convertForceFlag = tt.force
+			convertGranularFlag = tt.granular
+			convertBranchFlag = tt.branch
 
 			called := false
 			deps := convertDeps{
@@ -275,6 +303,12 @@ func TestRunConvertWithDeps_FlagWiring(t *testing.T) {
 					}
 					if opts.Force != tt.force {
 						t.Fatalf("opts.Force = %v, want %v", opts.Force, tt.force)
+					}
+					if opts.Granular != tt.granular {
+						t.Fatalf("opts.Granular = %v, want %v", opts.Granular, tt.granular)
+					}
+					if opts.BranchName != tt.branch {
+						t.Fatalf("opts.BranchName = %q, want %q", opts.BranchName, tt.branch)
 					}
 					if display == nil {
 						t.Fatal("display should not be nil")
@@ -312,6 +346,8 @@ func TestRunConvertWithDeps_PrintsSelectedSourceMessage(t *testing.T) {
 	convertValidateFlag = false
 	convertArchiveFlag = false
 	convertForceFlag = false
+	convertGranularFlag = false
+	convertBranchFlag = ""
 
 	deps := convertDeps{
 		newEngine: func(name string) (engine.Engine, error) {
@@ -347,6 +383,8 @@ func TestRunConvertWithDeps_ExplicitSourceMustExist(t *testing.T) {
 	convertValidateFlag = false
 	convertArchiveFlag = false
 	convertForceFlag = false
+	convertGranularFlag = false
+	convertBranchFlag = ""
 
 	newEngineCalled := false
 	convertCalled := false
