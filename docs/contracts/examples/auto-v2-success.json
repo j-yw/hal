@@ -1,0 +1,57 @@
+{
+  "contractVersion": 2,
+  "ok": true,
+  "entryMode": "markdown_path",
+  "resumed": false,
+  "duration": "3m42s",
+  "steps": {
+    "analyze": {
+      "status": "skipped",
+      "reason": "markdown_path_provided"
+    },
+    "spec": {
+      "status": "skipped",
+      "reason": "markdown_path_provided"
+    },
+    "branch": {
+      "status": "completed",
+      "branch": "hal/single-auto-pipeline-rewrite-v2-2"
+    },
+    "convert": {
+      "status": "completed",
+      "path": ".hal/prd.json",
+      "tasks": 29
+    },
+    "validate": {
+      "status": "completed",
+      "attempts": 1
+    },
+    "run": {
+      "status": "completed",
+      "iterations": 12
+    },
+    "review": {
+      "status": "completed",
+      "issuesFound": 4,
+      "fixesApplied": 3
+    },
+    "report": {
+      "status": "completed",
+      "path": ".hal/reports/review-2026-03-29-104500.md"
+    },
+    "ci": {
+      "status": "skipped",
+      "reason": "skip_ci_flag"
+    },
+    "archive": {
+      "status": "completed",
+      "path": ".hal/archive/2026-03-29-single-auto-pipeline-rewrite-v2-2"
+    }
+  },
+  "summary": "Auto pipeline completed successfully.",
+  "nextAction": {
+    "id": "run_report",
+    "command": "hal report",
+    "description": "Review and share the generated report artifact."
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "contractVersion": 2,
+  "ok": false,
+  "entryMode": "report_discovery",
+  "resumed": true,
+  "duration": "1m21s",
+  "steps": {
+    "analyze": {
+      "status": "completed"
+    },
+    "spec": {
+      "status": "completed",
+      "path": ".hal/prd-single-auto-pipeline-rewrite.md"
+    },
+    "branch": {
+      "status": "completed",
+      "branch": "hal/single-auto-pipeline-rewrite-v2-2"
+    },
+    "convert": {
+      "status": "completed",
+      "path": ".hal/prd.json",
+      "tasks": 29
+    },
+    "validate": {
+      "status": "failed",
+      "attempts": 3,
+      "reason": "max_fix_attempts",
+      "error": "validation failed after 3 repair attempts"
+    },
+    "run": {
+      "status": "pending"
+    },
+    "review": {
+      "status": "pending"
+    },
+    "report": {
+      "status": "pending"
+    },
+    "ci": {
+      "status": "pending"
+    },
+    "archive": {
+      "status": "pending"
+    }
+  },
+  "error": "step validate failed: validation failed after 3 repair attempts",
+  "summary": "Auto pipeline stopped at validate.",
+  "nextAction": {
+    "id": "resume_auto",
+    "command": "hal auto --resume",
+    "description": "Resume after fixing validation blockers."
+  }
+}

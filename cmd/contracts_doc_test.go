@@ -22,6 +22,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"doctor-v1", "../docs/contracts/doctor-v1.md"},
 		{"continue-v1", "../docs/contracts/continue-v1.md"},
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
+		{"auto-v2", "../docs/contracts/auto-v2.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -127,5 +128,62 @@ func TestContractDocsIncludeCheckIDs(t *testing.T) {
 		if !strings.Contains(content, check.ID) {
 			t.Errorf("doctor-v1.md missing check ID %q", check.ID)
 		}
+	}
+}
+
+func TestContractDocsIncludeAutoV2Fields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/auto-v2.md")
+	if err != nil {
+		t.Skipf("cannot read auto-v2.md: %v", err)
+	}
+	content := string(data)
+
+	requiredTopLevelFields := []string{"contractVersion", "ok", "entryMode", "resumed", "steps", "summary"}
+	for _, f := range requiredTopLevelFields {
+		if !strings.Contains(content, "`"+f+"`") {
+			t.Errorf("auto-v2.md missing required top-level field %q", f)
+		}
+	}
+
+	requiredStepKeys := []string{"analyze", "spec", "branch", "convert", "validate", "run", "review", "report", "ci", "archive"}
+	for _, step := range requiredStepKeys {
+		if !strings.Contains(content, "`"+step+"`") {
+			t.Errorf("auto-v2.md missing required step key %q", step)
+		}
+	}
+
+	requiredStatuses := []string{"completed", "skipped", "failed", "pending"}
+	for _, status := range requiredStatuses {
+		if !strings.Contains(content, "`"+status+"`") {
+			t.Errorf("auto-v2.md missing step status enum %q", status)
+		}
+	}
+
+	if !strings.Contains(content, "Contract Version:** 2") {
+		t.Error("auto-v2.md missing contract version declaration for v2")
+	}
+}
+
+func TestContractDocsIncludeAutoV2Examples(t *testing.T) {
+	successPath := "../docs/contracts/examples/auto-v2-success.json"
+	failurePath := "../docs/contracts/examples/auto-v2-failure.json"
+
+	if _, err := os.Stat(successPath); os.IsNotExist(err) {
+		t.Fatalf("auto v2 success example is missing at %s", successPath)
+	}
+	if _, err := os.Stat(failurePath); os.IsNotExist(err) {
+		t.Fatalf("auto v2 failure example is missing at %s", failurePath)
+	}
+
+	data, err := os.ReadFile("../docs/contracts/auto-v2.md")
+	if err != nil {
+		t.Skipf("cannot read auto-v2.md: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "auto-v2-success.json") {
+		t.Error("auto-v2.md should reference auto-v2-success.json")
+	}
+	if !strings.Contains(content, "auto-v2-failure.json") {
+		t.Error("auto-v2.md should reference auto-v2-failure.json")
 	}
 }
