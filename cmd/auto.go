@@ -27,23 +27,63 @@ var (
 	autoJSONFlag   bool
 )
 
+type autoEntryMode string
+
+const (
+	autoEntryModeMarkdownPath    autoEntryMode = "markdown_path"
+	autoEntryModeReportDiscovery autoEntryMode = "report_discovery"
+)
+
+type autoStepStatus string
+
+const (
+	autoStepStatusCompleted autoStepStatus = "completed"
+	autoStepStatusSkipped   autoStepStatus = "skipped"
+	autoStepStatusFailed    autoStepStatus = "failed"
+	autoStepStatusPending   autoStepStatus = "pending"
+)
+
 // AutoResult is the machine-readable output of hal auto --json.
 type AutoResult struct {
 	ContractVersion int             `json:"contractVersion"`
 	OK              bool            `json:"ok"`
-	Resumed         bool            `json:"resumed,omitempty"`
+	EntryMode       string          `json:"entryMode"`
+	Resumed         bool            `json:"resumed"`
 	Duration        string          `json:"duration,omitempty"`
-	Branch          string          `json:"branch,omitempty"`
-	Tasks           *AutoTasksInfo  `json:"tasks,omitempty"`
-	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
+	Steps           AutoSteps       `json:"steps"`
 	Error           string          `json:"error,omitempty"`
 	Summary         string          `json:"summary"`
+	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
 }
 
-// AutoTasksInfo provides task completion progress for the auto pipeline.
-type AutoTasksInfo struct {
-	Completed int `json:"completed"`
-	Total     int `json:"total"`
+// AutoStep captures status and optional telemetry for one pipeline step.
+type AutoStep struct {
+	Status       autoStepStatus `json:"status"`
+	Reason       string         `json:"reason,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	Duration     string         `json:"duration,omitempty"`
+	Branch       string         `json:"branch,omitempty"`
+	Path         string         `json:"path,omitempty"`
+	Tasks        int            `json:"tasks,omitempty"`
+	Attempts     int            `json:"attempts,omitempty"`
+	Iterations   int            `json:"iterations,omitempty"`
+	IssuesFound  int            `json:"issuesFound,omitempty"`
+	FixesApplied int            `json:"fixesApplied,omitempty"`
+	PRURL        string         `json:"prUrl,omitempty"`
+}
+
+// AutoSteps contains the required fixed step map for auto-v2 JSON output.
+type AutoSteps struct {
+	Analyze  AutoStep `json:"analyze"`
+	Spec     AutoStep `json:"spec"`
+	Branch   AutoStep `json:"branch"`
+	Convert  AutoStep `json:"convert"`
+	Validate AutoStep `json:"validate"`
+	Run      AutoStep `json:"run"`
+	Review   AutoStep `json:"review"`
+	Report   AutoStep `json:"report"`
+	CI       AutoStep `json:"ci"`
+	Archive  AutoStep `json:"archive"`
 }
 
 // AutoNextAction suggests what to do after the auto pipeline.
@@ -63,6 +103,19 @@ const (
 	autoFailureNoResumeState autoFailureKind = "no_resume_state"
 	autoFailurePipeline      autoFailureKind = "pipeline"
 )
+
+var autoStepOrder = []string{
+	compound.StepAnalyze,
+	compound.StepSpec,
+	compound.StepBranch,
+	compound.StepConvert,
+	compound.StepValidate,
+	compound.StepRun,
+	compound.StepReview,
+	compound.StepReport,
+	compound.StepCI,
+	compound.StepArchive,
+}
 
 var autoCmd = &cobra.Command{
 	Use:   "auto [prd-path]",
@@ -206,9 +259,23 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		warnDeprecated(errOut, "--skip-pr is deprecated; use --skip-ci")
 	}
 
+	if resume {
+		if sourceMarkdown != "" {
+			warnResumeInputIgnored(errOut, "positional prd-path")
+			sourceMarkdown = ""
+		}
+		if strings.TrimSpace(reportPath) != "" {
+			warnResumeInputIgnored(errOut, "--report")
+			reportPath = ""
+		}
+	}
+
+	entryMode := determineAutoEntryMode(sourceMarkdown)
+
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false)
+			jr := autoFailureResult(entryMode, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false, "")
+			return outputAutoJSON(out, jr)
 		}
 		return fmt.Errorf("failed to migrate legacy auto-prd.json: %w", err)
 	}
@@ -217,7 +284,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	config, err := compound.LoadConfig(dir)
 	if err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, resume, "failed to load config: "+err.Error(), autoFailureConfig, false)
+			jr := autoFailureResult(entryMode, resume, "failed to load config: "+err.Error(), "failed to load config: "+err.Error(), autoFailureConfig, false, "")
+			return outputAutoJSON(out, jr)
 		}
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -225,7 +293,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, dir)
 	if err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, resume, err.Error(), autoFailureEngine, false)
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureEngine, false, "")
+			return outputAutoJSON(out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -235,7 +304,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	eng, err := engine.NewWithConfig(resolvedEngine, engineCfg)
 	if err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, resume, "failed to create engine: "+err.Error(), autoFailureEngine, false)
+			jr := autoFailureResult(entryMode, resume, "failed to create engine: "+err.Error(), "failed to create engine: "+err.Error(), autoFailureEngine, false, "")
+			return outputAutoJSON(out, jr)
 		}
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
@@ -261,7 +331,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		_, err := compound.FindLatestReport(config.ReportsDir)
 		if err != nil {
 			if jsonMode {
-				return outputAutoJSON(out, false, resume, err.Error(), autoFailureNoReports, false)
+				jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureNoReports, false, compound.StepAnalyze)
+				return outputAutoJSON(out, jr)
 			}
 			fmt.Fprintf(out, "%s No reports found.\n", engine.StyleWarning.Render("[!]"))
 			fmt.Fprintln(out)
@@ -275,7 +346,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	if resume {
 		if !pipeline.HasState() {
 			if jsonMode {
-				return outputAutoJSON(out, false, resume, "no saved state to resume from", autoFailureNoResumeState, false)
+				jr := autoFailureResult(entryMode, resume, "no saved state to resume from", "no saved state to resume from", autoFailureNoResumeState, false, "")
+				return outputAutoJSON(out, jr)
 			}
 			return fmt.Errorf("no saved state to resume from")
 		}
@@ -301,7 +373,13 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Run the pipeline
 	if err := pipeline.Run(ctx, opts); err != nil {
 		if jsonMode {
-			return outputAutoJSON(out, false, resume, err.Error(), autoFailurePipeline, pipeline.HasState(), time.Since(autoStart))
+			failedStep := autoFailedStep(err)
+			summary := err.Error()
+			if failedStep != "" {
+				summary = fmt.Sprintf("Auto pipeline stopped at %s.", failedStep)
+			}
+			jr := autoFailureResult(entryMode, resume, summary, err.Error(), autoFailurePipeline, pipeline.HasState(), failedStep, time.Since(autoStart))
+			return outputAutoJSON(out, jr)
 		}
 		return err
 	}
@@ -315,32 +393,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		if autoBranch != "" {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
-		jr := AutoResult{
-			ContractVersion: 1,
-			OK:              true,
-			Resumed:         resume,
-			Duration:        elapsed.Round(time.Second).String(),
-			Summary:         summary,
-			Branch:          autoBranch,
-			NextAction: &AutoNextAction{
-				ID:          "run_report",
-				Command:     "hal report",
-				Description: "Generate a report for the completed auto pipeline work.",
-			},
-		}
-		// Add task progress if available
-		if prd, err := engine.LoadPRDFile(filepath.Join(dir, template.HalDir), template.AutoPRDFile); err == nil {
-			completed, total := prd.Progress()
-			if total > 0 {
-				jr.Tasks = &AutoTasksInfo{Completed: completed, Total: total}
-			}
-		}
-		data, err := json.MarshalIndent(jr, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal auto result: %w", err)
-		}
-		fmt.Fprintln(out, string(data))
-		return nil
+		jr := autoSuccessResult(entryMode, resume, skipCI, summary, elapsed)
+		return outputAutoJSON(out, jr)
 	}
 
 	// Show pipeline summary
@@ -360,32 +414,209 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func outputAutoJSON(out io.Writer, ok bool, resumed bool, summary string, failure autoFailureKind, resumable bool, opts ...time.Duration) error {
-	jr := AutoResult{
-		ContractVersion: 1,
-		OK:              ok,
-		Resumed:         resumed,
-		Summary:         summary,
-	}
-	if len(opts) > 0 && opts[0] > 0 {
-		jr.Duration = opts[0].Round(time.Second).String()
-	}
-	if ok {
-		jr.NextAction = &AutoNextAction{
-			ID:          "run_report",
-			Command:     "hal report",
-			Description: "Generate a report for the completed auto pipeline work.",
-		}
-	} else {
-		jr.Error = summary
-		jr.NextAction = autoFailureNextAction(failure, resumable)
-	}
+func outputAutoJSON(out io.Writer, jr AutoResult) error {
 	data, err := json.MarshalIndent(jr, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal auto result: %w", err)
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, summary string, duration time.Duration) AutoResult {
+	jr := AutoResult{
+		ContractVersion: 2,
+		OK:              true,
+		EntryMode:       string(entryMode),
+		Resumed:         resumed,
+		Steps:           autoStepsForSuccess(entryMode, skipCI),
+		Summary:         summary,
+		NextAction: &AutoNextAction{
+			ID:          "run_report",
+			Command:     "hal report",
+			Description: "Generate a report for the completed auto pipeline work.",
+		},
+	}
+	if duration > 0 {
+		jr.Duration = duration.Round(time.Second).String()
+	}
+	return jr
+}
+
+func autoFailureResult(entryMode autoEntryMode, resumed bool, summary string, errorMsg string, failure autoFailureKind, resumable bool, failedStep string, opts ...time.Duration) AutoResult {
+	jr := AutoResult{
+		ContractVersion: 2,
+		OK:              false,
+		EntryMode:       string(entryMode),
+		Resumed:         resumed,
+		Steps:           autoStepsForFailure(entryMode, failedStep),
+		Error:           errorMsg,
+		Summary:         summary,
+		NextAction:      autoFailureNextAction(failure, resumable),
+	}
+	if len(opts) > 0 && opts[0] > 0 {
+		jr.Duration = opts[0].Round(time.Second).String()
+	}
+	return jr
+}
+
+func determineAutoEntryMode(sourceMarkdown string) autoEntryMode {
+	if strings.TrimSpace(sourceMarkdown) != "" {
+		return autoEntryModeMarkdownPath
+	}
+	return autoEntryModeReportDiscovery
+}
+
+func warnResumeInputIgnored(errOut io.Writer, input string) {
+	if errOut == nil {
+		return
+	}
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return
+	}
+	fmt.Fprintf(errOut, "warning: --resume ignores %s; using saved state\n", input)
+}
+
+func newPendingAutoSteps() AutoSteps {
+	return AutoSteps{
+		Analyze:  AutoStep{Status: autoStepStatusPending},
+		Spec:     AutoStep{Status: autoStepStatusPending},
+		Branch:   AutoStep{Status: autoStepStatusPending},
+		Convert:  AutoStep{Status: autoStepStatusPending},
+		Validate: AutoStep{Status: autoStepStatusPending},
+		Run:      AutoStep{Status: autoStepStatusPending},
+		Review:   AutoStep{Status: autoStepStatusPending},
+		Report:   AutoStep{Status: autoStepStatusPending},
+		CI:       AutoStep{Status: autoStepStatusPending},
+		Archive:  AutoStep{Status: autoStepStatusPending},
+	}
+}
+
+func newAutoSteps(entryMode autoEntryMode) AutoSteps {
+	steps := newPendingAutoSteps()
+	if entryMode == autoEntryModeMarkdownPath {
+		steps.Analyze.Status = autoStepStatusSkipped
+		steps.Analyze.Reason = "markdown_path_provided"
+		steps.Spec.Status = autoStepStatusSkipped
+		steps.Spec.Reason = "markdown_path_provided"
+	}
+	return steps
+}
+
+func autoStepsForSuccess(entryMode autoEntryMode, skipCI bool) AutoSteps {
+	steps := newAutoSteps(entryMode)
+
+	for _, stepName := range autoStepOrder {
+		step := steps.step(stepName)
+		if step == nil {
+			continue
+		}
+		if step.Status == autoStepStatusSkipped {
+			continue
+		}
+		step.Status = autoStepStatusCompleted
+	}
+
+	if skipCI {
+		if ci := steps.step(compound.StepCI); ci != nil {
+			ci.Status = autoStepStatusSkipped
+			ci.Reason = "skip_ci_flag"
+		}
+		if archive := steps.step(compound.StepArchive); archive != nil {
+			archive.Status = autoStepStatusSkipped
+			archive.Reason = "skip_ci_flag"
+		}
+	}
+
+	return steps
+}
+
+func autoStepsForFailure(entryMode autoEntryMode, failedStep string) AutoSteps {
+	steps := newAutoSteps(entryMode)
+	failureIdx := autoStepIndex(failedStep)
+	if failureIdx < 0 {
+		return steps
+	}
+
+	for idx, stepName := range autoStepOrder {
+		step := steps.step(stepName)
+		if step == nil {
+			continue
+		}
+
+		switch {
+		case idx < failureIdx:
+			if step.Status == autoStepStatusSkipped {
+				continue
+			}
+			step.Status = autoStepStatusCompleted
+		case idx == failureIdx:
+			step.Status = autoStepStatusFailed
+			step.Reason = ""
+		}
+	}
+
+	return steps
+}
+
+func autoStepIndex(step string) int {
+	for idx, stepName := range autoStepOrder {
+		if stepName == step {
+			return idx
+		}
+	}
+	return -1
+}
+
+func autoFailedStep(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	message := strings.TrimSpace(err.Error())
+	if !strings.HasPrefix(message, "step ") {
+		return ""
+	}
+
+	rest := strings.TrimPrefix(message, "step ")
+	idx := strings.Index(rest, " failed:")
+	if idx <= 0 {
+		return ""
+	}
+
+	step := strings.TrimSpace(rest[:idx])
+	if autoStepIndex(step) < 0 {
+		return ""
+	}
+	return step
+}
+
+func (steps *AutoSteps) step(step string) *AutoStep {
+	switch step {
+	case compound.StepAnalyze:
+		return &steps.Analyze
+	case compound.StepSpec:
+		return &steps.Spec
+	case compound.StepBranch:
+		return &steps.Branch
+	case compound.StepConvert:
+		return &steps.Convert
+	case compound.StepValidate:
+		return &steps.Validate
+	case compound.StepRun:
+		return &steps.Run
+	case compound.StepReview:
+		return &steps.Review
+	case compound.StepReport:
+		return &steps.Report
+	case compound.StepCI:
+		return &steps.CI
+	case compound.StepArchive:
+		return &steps.Archive
+	default:
+		return nil
+	}
 }
 
 func autoFailureNextAction(failure autoFailureKind, resumable bool) *AutoNextAction {

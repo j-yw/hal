@@ -252,6 +252,12 @@
 - Pipeline start-state selection belongs in `newInitialState(opts)`: with `SourceMarkdown`, set `step=branch`, keep `sourceMarkdown`, and derive `branchName` via `prd.ResolveMarkdownBranchName`; without it, start at `step=analyze`.
 - Auto report preflight (`FindLatestReport`) must be skipped when a positional markdown source is provided, and dry-run command tests should lock both entry flows (`analyze -> spec -> branch -> convert` vs `branch -> convert`).
 
+## Patterns from compound/auto-json-v2-resume-guards (2026-03-29)
+
+- `hal auto --json` should always emit contract version 2 with a fixed `steps` object that includes every required step key (`analyze` through `archive`) and valid status enums, even on failure paths.
+- Build auto JSON via shared helpers so early returns (config/engine/report preflight/resume errors) and pipeline outcomes stay on the same contract shape.
+- When `--resume` is set, ignore positional markdown paths and `--report` overrides before preflight checks, and emit explicit stderr warnings (`warning: --resume ignores ...; using saved state`) for deterministic script behavior.
+
 ## Patterns from compound/branch-step-idempotency (2026-03-29)
 
 - Branch-step execution should use `EnsureBranchInDir(dir, branchName, baseBranch)` so retries are idempotent: no-op when already on target, checkout when target exists, and create from base only when missing.

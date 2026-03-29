@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,55 @@ func chdirTemp(t *testing.T) {
 	})
 }
 
+func assertAutoJSONContractV2(t *testing.T, data []byte) {
+	t.Helper()
+
+	if !json.Valid(data) {
+		t.Fatalf("stdout is not valid JSON: %q", string(data))
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw output: %v", err)
+	}
+
+	requiredTopLevelFields := []string{"contractVersion", "ok", "entryMode", "resumed", "steps", "summary"}
+	for _, field := range requiredTopLevelFields {
+		if _, ok := raw[field]; !ok {
+			t.Fatalf("auto JSON missing required top-level field %q", field)
+		}
+	}
+
+	if version, ok := raw["contractVersion"].(float64); !ok || int(version) != 2 {
+		t.Fatalf("contractVersion = %v, want 2", raw["contractVersion"])
+	}
+
+	steps, ok := raw["steps"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("steps should be an object, got %T", raw["steps"])
+	}
+
+	requiredStepKeys := []string{"analyze", "spec", "branch", "convert", "validate", "run", "review", "report", "ci", "archive"}
+	validStatuses := map[string]bool{"completed": true, "skipped": true, "failed": true, "pending": true}
+	for _, stepKey := range requiredStepKeys {
+		stepRaw, ok := steps[stepKey]
+		if !ok {
+			t.Fatalf("steps missing required key %q", stepKey)
+		}
+		stepObj, ok := stepRaw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("steps.%s should be an object, got %T", stepKey, stepRaw)
+		}
+		status, ok := stepObj["status"].(string)
+		if !ok {
+			t.Fatalf("steps.%s.status should be a string", stepKey)
+		}
+		if !validStatuses[status] {
+			t.Fatalf("steps.%s.status = %q, want one of completed/skipped/failed/pending", stepKey, status)
+		}
+	}
+}
+
 func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 	chdirTemp(t)
 
@@ -59,9 +109,7 @@ func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 		t.Fatalf("runAuto returned error: %v", err)
 	}
 
-	if !json.Valid(out.Bytes()) {
-		t.Fatalf("stdout is not valid JSON: %q", out.String())
-	}
+	assertAutoJSONContractV2(t, out.Bytes())
 
 	var result AutoResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
@@ -69,6 +117,9 @@ func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 	}
 	if result.OK {
 		t.Fatalf("result.OK = true, want false")
+	}
+	if result.EntryMode != string(autoEntryModeReportDiscovery) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeReportDiscovery)
 	}
 	if !strings.Contains(result.Error, "reports directory does not exist") {
 		t.Fatalf("result.Error = %q, want reports directory guidance", result.Error)
@@ -102,9 +153,7 @@ func TestRunAuto_JSONResumeWithoutStateReturnsJSONOnly(t *testing.T) {
 		t.Fatalf("runAuto returned error: %v", err)
 	}
 
-	if !json.Valid(out.Bytes()) {
-		t.Fatalf("stdout is not valid JSON: %q", out.String())
-	}
+	assertAutoJSONContractV2(t, out.Bytes())
 
 	var result AutoResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
@@ -112,6 +161,12 @@ func TestRunAuto_JSONResumeWithoutStateReturnsJSONOnly(t *testing.T) {
 	}
 	if result.OK {
 		t.Fatalf("result.OK = true, want false")
+	}
+	if result.Resumed != true {
+		t.Fatalf("result.Resumed = false, want true")
+	}
+	if result.EntryMode != string(autoEntryModeReportDiscovery) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeReportDiscovery)
 	}
 	if result.Error != "no saved state to resume from" {
 		t.Fatalf("result.Error = %q, want no saved state to resume from", result.Error)
@@ -154,9 +209,7 @@ func TestRunAuto_JSONResumeWithDoneStateReturnsJSONOnly(t *testing.T) {
 		t.Fatalf("runAuto returned error: %v", err)
 	}
 
-	if !json.Valid(out.Bytes()) {
-		t.Fatalf("stdout is not valid JSON: %q", out.String())
-	}
+	assertAutoJSONContractV2(t, out.Bytes())
 
 	var result AutoResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
@@ -165,8 +218,68 @@ func TestRunAuto_JSONResumeWithDoneStateReturnsJSONOnly(t *testing.T) {
 	if !result.OK {
 		t.Fatalf("result.OK = false, want true; output: %q", out.String())
 	}
+	if result.ContractVersion != 2 {
+		t.Fatalf("result.ContractVersion = %d, want 2", result.ContractVersion)
+	}
 	if strings.Contains(out.String(), "Resuming from step") {
 		t.Fatalf("stdout should not include pipeline resume output: %q", out.String())
+	}
+}
+
+func TestRunAuto_ResumeIgnoresPositionalAndReportInputs(t *testing.T) {
+	chdirTemp(t)
+
+	halDir := template.HalDir
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	statePath := filepath.Join(halDir, template.AutoStateFile)
+	if err := os.WriteFile(statePath, []byte(`{"step":"done"}`), 0644); err != nil {
+		t.Fatalf("write auto-state.json: %v", err)
+	}
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	mdPath := filepath.Join(".", "feature.md")
+	if err := os.WriteFile(mdPath, []byte("# PRD: Resume Ignore Inputs\n"), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	if err := cmd.Flags().Set("resume", "true"); err != nil {
+		t.Fatalf("set resume flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+	var errOut bytes.Buffer
+	cmd.SetErr(&errOut)
+
+	if err := runAuto(cmd, []string{mdPath}); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	assertAutoJSONContractV2(t, out.Bytes())
+
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if result.EntryMode != string(autoEntryModeReportDiscovery) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeReportDiscovery)
+	}
+
+	warnings := errOut.String()
+	if !strings.Contains(warnings, "warning: --resume ignores positional prd-path; using saved state") {
+		t.Fatalf("expected positional-path ignore warning, got %q", warnings)
+	}
+	if !strings.Contains(warnings, "warning: --resume ignores --report; using saved state") {
+		t.Fatalf("expected --report ignore warning, got %q", warnings)
 	}
 }
 
@@ -199,9 +312,7 @@ func TestRunAuto_MigratesLegacyAutoPRDAtStartup(t *testing.T) {
 		t.Fatalf("runAuto returned error: %v", err)
 	}
 
-	if !json.Valid(out.Bytes()) {
-		t.Fatalf("stdout is not valid JSON: %q", out.String())
-	}
+	assertAutoJSONContractV2(t, out.Bytes())
 
 	if _, err := os.Stat(autoPath); !os.IsNotExist(err) {
 		t.Fatalf("auto-prd.json should be migrated away, stat err=%v", err)
@@ -406,14 +517,13 @@ func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			err := outputAutoJSON(&out, false, false, "failed", tt.failure, tt.resumable)
+			jr := autoFailureResult(autoEntryModeReportDiscovery, false, "failed", "failed", tt.failure, tt.resumable, compound.StepValidate)
+			err := outputAutoJSON(&out, jr)
 			if err != nil {
 				t.Fatalf("outputAutoJSON returned error: %v", err)
 			}
 
-			if !json.Valid(out.Bytes()) {
-				t.Fatalf("stdout is not valid JSON: %q", out.String())
-			}
+			assertAutoJSONContractV2(t, out.Bytes())
 
 			var result AutoResult
 			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
