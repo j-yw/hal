@@ -271,3 +271,9 @@
 - Keep validation testable via an injectable `validateWithEngine` variable (defaulting to `prd.ValidateWithEngine`) so pipeline tests can simulate pass/fail/error outcomes without invoking real engines.
 - Persist validation telemetry in `state.Validation` on every attempt (`attempts` counter + status values like `repairing`, `passed`, `failed`) so resumes and JSON reporting can reflect gate progress.
 - Bound validation retries with a single shared limit (currently 3 attempts); on non-terminal failures, save state and retry convert, and on terminal failure, save failed telemetry before returning an actionable blocking error.
+
+## Patterns from compound/run-gate-completion-enforcement (2026-03-29)
+
+- Keep run-gate loop execution injectable via a package-level `runLoopWithConfig` wrapper around `loop.New(...).Run` so tests can assert loop wiring without invoking real engine sessions.
+- The auto run step must execute against canonical `.hal/prd.json` (`template.PRDFile`) and block step advancement when loop completion is false.
+- Persist `state.Run` telemetry (`iterations`, `complete`, `maxIterations`) on both success and blocked-incomplete paths before returning so resume/report layers can rely on saved run state.

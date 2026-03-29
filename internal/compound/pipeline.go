@@ -25,6 +25,15 @@ var convertWithEngine = prd.ConvertWithEngine
 // validateWithEngine points to prd.ValidateWithEngine and is overridden in tests.
 var validateWithEngine = prd.ValidateWithEngine
 
+// runLoopWithConfig points to loop.New(...).Run and is overridden in tests.
+var runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result, error) {
+	runner, err := loop.New(cfg)
+	if err != nil {
+		return loop.Result{}, err
+	}
+	return runner.Run(ctx), nil
+}
+
 const maxValidationAttempts = 3
 
 // Pipeline orchestrates the compound engineering automation process.
@@ -670,7 +679,7 @@ func verifyConvertedBranchInvariant(dir, stateBranchName string) error {
 	return nil
 }
 
-// runLoopStep executes the Hal loop to complete all tasks in the PRD.
+// runLoopStep executes the Hal loop as a completion gate against .hal/prd.json.
 func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: run\n")
 
@@ -697,37 +706,22 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return fmt.Errorf("failed to stat %s: %w", template.ProgressFile, err)
 	}
 
-	// Create loop runner with config from auto settings
 	loopConfig := loop.Config{
 		Dir:           filepath.Join(p.dir, template.HalDir),
-		PRDFile:       template.AutoPRDFile,
+		PRDFile:       template.PRDFile,
 		ProgressFile:  template.ProgressFile,
 		BaseBranch:    state.BaseBranch,
 		MaxIterations: p.config.MaxIterations,
 		Engine:        p.engine.Name(),
 		EngineConfig:  p.engineConfig,
 		Logger:        p.display.Writer(),
-		MaxRetries:    3, // Use default retry count
+		MaxRetries:    3,
 	}
 
-	runner, err := loop.New(loopConfig)
+	p.display.ShowInfo("   Running task loop...\n")
+	result, err := runLoopWithConfig(ctx, loopConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create loop runner: %w", err)
-	}
-
-	// Run the loop
-	p.display.ShowInfo("   Running task loop...\n")
-	result := runner.Run(ctx)
-
-	if result.Error != nil {
-		return fmt.Errorf("loop execution failed: %w", result.Error)
-	}
-
-	// Report result
-	if result.Complete {
-		p.display.ShowInfo("   All tasks completed in %d iterations\n", result.Iterations)
-	} else {
-		p.display.ShowInfo("   Loop stopped after %d iterations (tasks remaining)\n", result.Iterations)
 	}
 
 	state.Run = &RunState{
@@ -736,7 +730,25 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		MaxIterations: p.config.MaxIterations,
 	}
 
-	// Save state and advance to next step
+	if result.Error != nil {
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("loop execution failed: %w (also failed to save run telemetry: %v)", result.Error, saveErr)
+		}
+		return fmt.Errorf("loop execution failed: %w", result.Error)
+	}
+
+	if !result.Complete {
+		p.display.ShowInfo("   Loop stopped after %d iterations (tasks remaining)\n", result.Iterations)
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("run gate blocked: PRD completion incomplete (also failed to save run telemetry: %v)", saveErr)
+		}
+		if result.TotalStories > 0 {
+			return fmt.Errorf("run gate blocked: PRD completion incomplete (%d/%d complete); rerun `hal auto --resume` to continue remaining tasks", result.CompletedStories, result.TotalStories)
+		}
+		return fmt.Errorf("run gate blocked: PRD completion incomplete; rerun `hal auto --resume` to continue remaining tasks")
+	}
+
+	p.display.ShowInfo("   All tasks completed in %d iterations\n", result.Iterations)
 	state.Step = StepPR
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
