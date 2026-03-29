@@ -246,3 +246,9 @@
 - Keep CI wait defaults centralized in `internal/ci/status.go` (`PollInterval=30s`, `Timeout=30m`, `NoChecksGrace=90s`) via a single defaults helper so command wiring and core behavior stay in sync.
 - Implement wait-loop orchestration behind injectable deps (`waitForChecksWithDeps` with `getStatus`/`newTicker`/`after`) to keep completed/timeout/no-checks paths deterministic in unit tests without real sleeps.
 - When no-checks grace expires, re-fetch status once before returning `WaitTerminalReasonNoChecksDetected` so checks that appear near the grace boundary are not misclassified.
+
+## Patterns from hal/ci-push-pr-core (2026-03-29)
+
+- Keep CI push/PR orchestration behind `pushAndCreatePRWithDeps` in `internal/ci/push.go` so tests can inject git/GitHub behavior without spawning real CLIs.
+- Reuse existing pull requests by querying `head=<owner>:<branch>` before creation; this prevents duplicate PRs for the same branch.
+- Model draft preference as pointer-based options (`PushOptions.Draft *bool`) so default behavior (`nil => draft=true`) stays distinct from an explicit non-draft request (`false`).
