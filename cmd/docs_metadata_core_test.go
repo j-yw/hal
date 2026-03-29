@@ -93,6 +93,11 @@ func TestCoreCommandsHaveCompleteMetadata(t *testing.T) {
 			exampleContains: "hal continue",
 		},
 		{
+			name:            "ci command",
+			path:            []string{"ci"},
+			exampleContains: "hal ci",
+		},
+		{
 			name:            "version command",
 			path:            []string{"version"},
 			exampleContains: "hal version",

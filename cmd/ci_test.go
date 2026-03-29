@@ -82,6 +82,118 @@ func preserveCIPushGlobals(t *testing.T) {
 	})
 }
 
+func TestCICommandHelpMetadata(t *testing.T) {
+	tests := []struct {
+		name                 string
+		cmd                  *cobra.Command
+		requiredLongPhrases  []string
+		requiredExampleLines []string
+	}{
+		{
+			name: "ci root command",
+			cmd:  ciCmd,
+			requiredLongPhrases: []string{
+				"Run CI-aware workflow commands",
+				"push branches",
+				"merge safely",
+			},
+			requiredExampleLines: []string{
+				"hal ci push",
+				"hal ci status --wait",
+				"hal ci fix --max-attempts 2",
+				"hal ci merge --strategy squash",
+			},
+		},
+		{
+			name: "ci push command",
+			cmd:  ciPushCmd,
+			requiredLongPhrases: []string{
+				"create or reuse an open pull request",
+				"--dry-run",
+				"--json",
+			},
+			requiredExampleLines: []string{
+				"hal ci push",
+				"hal ci push --dry-run",
+				"hal ci push --json",
+			},
+		},
+		{
+			name: "ci status command",
+			cmd:  ciStatusCmd,
+			requiredLongPhrases: []string{
+				"Use --wait",
+				"no checks are detected",
+				"--json",
+			},
+			requiredExampleLines: []string{
+				"hal ci status",
+				"hal ci status --wait",
+				"hal ci status --wait --json",
+			},
+		},
+		{
+			name: "ci fix command",
+			cmd:  ciFixCmd,
+			requiredLongPhrases: []string{
+				"--max-attempts",
+				"single-attempt CI fix core operation",
+				"--json",
+			},
+			requiredExampleLines: []string{
+				"hal ci fix",
+				"hal ci fix --max-attempts 3",
+				"hal ci fix -e claude",
+				"hal ci fix --json",
+			},
+		},
+		{
+			name: "ci merge command",
+			cmd:  ciMergeCmd,
+			requiredLongPhrases: []string{
+				"--allow-no-checks",
+				"--dry-run",
+				"--json",
+			},
+			requiredExampleLines: []string{
+				"hal ci merge",
+				"hal ci merge --strategy rebase",
+				"hal ci merge --delete-branch",
+				"hal ci merge --dry-run --json",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.cmd == nil {
+				t.Fatal("command is nil")
+			}
+			if missing := missingCommandMetadataFields(tt.cmd); len(missing) > 0 {
+				t.Fatalf("command %q is missing metadata fields: %s", commandPathLabel(tt.cmd), strings.Join(missing, ", "))
+			}
+
+			commandPath := commandPathLabel(tt.cmd)
+			if !strings.Contains(tt.cmd.Example, commandPath) {
+				t.Fatalf("command %q example must include %q, got %q", commandPath, commandPath, tt.cmd.Example)
+			}
+
+			for _, phrase := range tt.requiredLongPhrases {
+				if !strings.Contains(tt.cmd.Long, phrase) {
+					t.Fatalf("command %q long help must include %q, got %q", commandPath, phrase, tt.cmd.Long)
+				}
+			}
+
+			for _, line := range tt.requiredExampleLines {
+				if !strings.Contains(tt.cmd.Example, line) {
+					t.Fatalf("command %q example must include %q, got %q", commandPath, line, tt.cmd.Example)
+				}
+			}
+		})
+	}
+}
+
 func TestCICommandMetadataAndFlags(t *testing.T) {
 	if ciCmd.Use != "ci" {
 		t.Fatalf("ciCmd.Use = %q, want %q", ciCmd.Use, "ci")
