@@ -56,6 +56,7 @@
 - `archive.FeatureFromBranch` is the canonical branch-name parser (trims `hal/` prefix). `convert.go` delegates to it.
 - Keep file-name constants in internal/template (e.g., `template.AutoStateFile`) and reference them from other packages; use a package-level var when a constant depends on template values.
 - The `featureStateFiles` slice in `internal/archive/archive.go` defines which files get archived. Update it when adding new state files.
+- Legacy auto PRD backups use a separate glob (`auto-prd.legacy-*.json`): keep both `CreateWithOptions` and `HasFeatureStateWithOptions` in sync so archive create works whether legacy artifacts are present or absent.
 - Archive directories are named YYYY-MM-DD-feature and list parsing expects the date in name[:10]; keep this naming consistent for reliable listing.
 - Archive CLI commands follow the Cobra parent-subcommand pattern and prompt for missing names using `bufio.NewReader(os.Stdin)` with a default derived from prd.json branchName.
 - Archive tests use `t.TempDir()` and helper functions (`writePRD`, `writeFile`) for clean setup — follow this pattern for new archive-related tests.
