@@ -277,3 +277,9 @@
 - Keep run-gate loop execution injectable via a package-level `runLoopWithConfig` wrapper around `loop.New(...).Run` so tests can assert loop wiring without invoking real engine sessions.
 - The auto run step must execute against canonical `.hal/prd.json` (`template.PRDFile`) and block step advancement when loop completion is false.
 - Persist `state.Run` telemetry (`iterations`, `complete`, `maxIterations`) on both success and blocked-incomplete paths before returning so resume/report layers can rely on saved run state.
+
+## Patterns from compound/review-report-gates (2026-03-29)
+
+- Auto pipeline flow now continues `run -> review -> report -> ci`; successful run-step completion should advance to `StepReview` rather than jumping directly to CI.
+- Keep review/report gates injectable for tests: `runReviewLoopWithDisplay` defaults to `RunReviewLoopWithDisplay`, and `runReportWithEngine` defaults to `Review`.
+- The report gate is responsible for persisting the generated artifact path into `state.ReportPath` before advancing, so downstream steps (for example archive/CI flows) can reuse the latest report.

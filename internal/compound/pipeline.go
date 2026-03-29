@@ -34,7 +34,16 @@ var runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result,
 	return runner.Run(ctx), nil
 }
 
-const maxValidationAttempts = 3
+// runReviewLoopWithDisplay points to RunReviewLoopWithDisplay and is overridden in tests.
+var runReviewLoopWithDisplay = RunReviewLoopWithDisplay
+
+// runReportWithEngine points to Review and is overridden in tests.
+var runReportWithEngine = Review
+
+const (
+	maxValidationAttempts   = 3
+	defaultReviewIterations = 10
+)
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
@@ -242,6 +251,10 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			err = p.runValidateStep(ctx, state, opts)
 		case StepRun:
 			err = p.runLoopStep(ctx, state, opts)
+		case StepReview:
+			err = p.runReviewStep(ctx, state, opts)
+		case StepReport:
+			err = p.runReportStep(ctx, state, opts)
 		case StepCI:
 			err = p.runPRStep(ctx, state, opts)
 		case StepDone:
@@ -685,7 +698,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would run task loop with max %d iterations\n", p.config.MaxIterations)
-		state.Step = StepPR
+		state.Step = StepReview
 		return nil
 	}
 
@@ -749,7 +762,86 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 	}
 
 	p.display.ShowInfo("   All tasks completed in %d iterations\n", result.Iterations)
-	state.Step = StepPR
+	state.Step = StepReview
+	if err := p.saveState(state); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
+// runReviewStep executes the review loop gate after task completion.
+func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
+	p.display.ShowInfo("   Step: review\n")
+
+	if state.Review == nil {
+		state.Review = &ReviewState{}
+	}
+
+	if opts.DryRun {
+		if strings.TrimSpace(state.BaseBranch) != "" {
+			p.display.ShowInfo("   [dry-run] Would run review loop against base branch %s\n", state.BaseBranch)
+		} else {
+			p.display.ShowInfo("   [dry-run] Would run review loop against configured base branch\n")
+		}
+		state.Review.Status = "passed"
+		state.Step = StepReport
+		return nil
+	}
+
+	baseBranch := strings.TrimSpace(state.BaseBranch)
+	if baseBranch == "" {
+		state.Review.Status = "failed"
+		return fmt.Errorf("review step requires baseBranch in state")
+	}
+
+	p.display.ShowInfo("   Running review loop against %s...\n", baseBranch)
+	result, err := runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, defaultReviewIterations)
+	if err != nil {
+		state.Review.Status = "failed"
+		return fmt.Errorf("failed to run review loop: %w", err)
+	}
+	if result == nil {
+		state.Review.Status = "failed"
+		return fmt.Errorf("failed to run review loop: no result returned")
+	}
+
+	state.Review.Status = "passed"
+	p.display.ShowInfo("   Review loop complete: %d issues found, %d fixes applied\n", result.Totals.IssuesFound, result.Totals.FixesApplied)
+
+	state.Step = StepReport
+	if err := p.saveState(state); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
+// runReportStep generates a report artifact after review completes.
+func (p *Pipeline) runReportStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
+	p.display.ShowInfo("   Step: report\n")
+
+	if opts.DryRun {
+		p.display.ShowInfo("   [dry-run] Would generate a report artifact\n")
+		state.Step = StepCI
+		return nil
+	}
+
+	result, err := runReportWithEngine(ctx, p.engine, p.display, p.dir, ReviewOptions{
+		DryRun:     false,
+		SkipAgents: false,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to generate report: %w", err)
+	}
+	if result == nil || strings.TrimSpace(result.ReportPath) == "" {
+		return fmt.Errorf("report gate failed: review did not produce a report path")
+	}
+
+	state.ReportPath = strings.TrimSpace(result.ReportPath)
+	p.display.ShowInfo("   Report: %s\n", filepath.Base(state.ReportPath))
+
+	state.Step = StepCI
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}

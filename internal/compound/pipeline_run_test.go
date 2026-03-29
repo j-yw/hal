@@ -38,7 +38,7 @@ func TestRunLoopStep_CompletionGateAndTelemetry(t *testing.T) {
 		wantStep   string
 	}{
 		{
-			name: "complete run advances to ci",
+			name: "complete run advances to review",
 			loopResult: loop.Result{
 				Success:          true,
 				Complete:         true,
@@ -46,7 +46,7 @@ func TestRunLoopStep_CompletionGateAndTelemetry(t *testing.T) {
 				CompletedStories: 5,
 				TotalStories:     5,
 			},
-			wantStep: StepPR,
+			wantStep: StepReview,
 		},
 		{
 			name: "incomplete run blocks progression",
