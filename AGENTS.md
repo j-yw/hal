@@ -258,3 +258,9 @@
 - Keep CI fix core behavior in `internal/ci/fix.go` as a **single attempt** (`FixWithEngine`), with command-layer retry loops built on top of it.
 - Enforce fix safety guards before running the engine: aggregated status must be `failing`, engine must be non-nil, and the working tree must be clean by default (including untracked files via `git status --porcelain --untracked-files=all`).
 - After engine execution, require real file changes before staging/commit/push; if no files changed, return `ErrFixNoChanges` and create no commit.
+
+## Patterns from hal/ci-merge-safety-guards (2026-03-29)
+
+- Keep merge orchestration behind `mergePRWithDeps` in `internal/ci/merge.go` so strategy/status/head-drift/delete-branch paths can be tested deterministically without real GitHub calls.
+- Validate merge safety in this order: strategy allowlist (`squash|merge|rebase`), aggregated status guard (passing required unless `AllowNoChecks` with zero contexts), then PR head drift check (`status.SHA` vs current PR head SHA) before issuing merge side effects.
+- Remote branch cleanup after merge must treat 404 as non-fatal (`ErrRemoteBranchNotFound`) and surface other deletion failures as `DeleteWarning` on `MergeResult` instead of failing an otherwise successful merge.
