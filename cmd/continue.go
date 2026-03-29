@@ -17,8 +17,8 @@ var continueJSONFlag bool
 
 // ContinueResult is the machine-readable output of hal continue --json.
 type ContinueResult struct {
-	ContractVersion int                `json:"contractVersion"`
-	Ready           bool               `json:"ready"`
+	ContractVersion int                 `json:"contractVersion"`
+	Ready           bool                `json:"ready"`
 	Status          status.StatusResult `json:"status"`
 	Doctor          doctor.DoctorResult `json:"doctor"`
 	NextCommand     string              `json:"nextCommand"`
@@ -134,7 +134,7 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 		}
 	} else {
 		healthLabel := fmt.Sprintf("%d/%d checks passed", doctorResult.PassedChecks, doctorResult.TotalChecks)
-		fmt.Fprintf(out, "%s %s (%s)\n", ui.StyleBold.Render("Workflow:"), statusResult.WorkflowTrack, statusResult.State)
+		fmt.Fprintf(out, "%s    %s\n", ui.StyleBold.Render("State:"), statusResult.State)
 		if engine != "" {
 			fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Engine:"), engine)
 		}

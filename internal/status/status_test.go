@@ -114,25 +114,69 @@ func TestGet_ManualComplete(t *testing.T) {
 	}
 }
 
-func TestGet_CompoundActive(t *testing.T) {
-	dir := t.TempDir()
-	halDir := filepath.Join(dir, template.HalDir)
-	os.MkdirAll(halDir, 0755)
-	os.WriteFile(filepath.Join(halDir, template.AutoStateFile), []byte(`{"step":"loop"}`), 0644)
+func TestGet_AutoStateClassification(t *testing.T) {
+	tests := []struct {
+		name       string
+		autoState  string
+		wantTrack  string
+		wantState  string
+		wantAction string
+		wantStep   string
+	}{
+		{
+			name:       "legacy loop step maps to active run",
+			autoState:  `{"step":"loop"}`,
+			wantTrack:  TrackAuto,
+			wantState:  StateAutoActive,
+			wantAction: ActionResumeAuto,
+			wantStep:   "run",
+		},
+		{
+			name:       "unified active step stays active",
+			autoState:  `{"step":"validate"}`,
+			wantTrack:  TrackAuto,
+			wantState:  StateAutoActive,
+			wantAction: ActionResumeAuto,
+			wantStep:   "validate",
+		},
+		{
+			name:       "done step is inactive",
+			autoState:  `{"step":"done"}`,
+			wantTrack:  TrackAuto,
+			wantState:  StateAutoInactive,
+			wantAction: ActionRunAuto,
+			wantStep:   "done",
+		},
+	}
 
-	result := Get(dir)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, template.HalDir)
+			os.MkdirAll(halDir, 0755)
+			os.WriteFile(filepath.Join(halDir, template.AutoStateFile), []byte(tt.autoState), 0644)
 
-	if result.WorkflowTrack != TrackCompound {
-		t.Fatalf("workflowTrack = %q, want %q", result.WorkflowTrack, TrackCompound)
-	}
-	if result.State != StateCompoundActive {
-		t.Fatalf("state = %q, want %q", result.State, StateCompoundActive)
-	}
-	if result.NextAction.ID != ActionResumeAuto {
-		t.Fatalf("nextAction.id = %q, want %q", result.NextAction.ID, ActionResumeAuto)
-	}
-	if !result.Artifacts.AutoState {
-		t.Fatal("artifacts.autoState = false, want true")
+			result := Get(dir)
+
+			if result.WorkflowTrack != tt.wantTrack {
+				t.Fatalf("workflowTrack = %q, want %q", result.WorkflowTrack, tt.wantTrack)
+			}
+			if result.State != tt.wantState {
+				t.Fatalf("state = %q, want %q", result.State, tt.wantState)
+			}
+			if result.NextAction.ID != tt.wantAction {
+				t.Fatalf("nextAction.id = %q, want %q", result.NextAction.ID, tt.wantAction)
+			}
+			if !result.Artifacts.AutoState {
+				t.Fatal("artifacts.autoState = false, want true")
+			}
+			if result.Compound == nil {
+				t.Fatal("compound detail should not be nil")
+			}
+			if result.Compound.Step != tt.wantStep {
+				t.Fatalf("compound.step = %q, want %q", result.Compound.Step, tt.wantStep)
+			}
+		})
 	}
 }
 
@@ -152,8 +196,8 @@ func TestGet_CompoundTakesPrecedenceOverManual(t *testing.T) {
 
 	result := Get(dir)
 
-	if result.WorkflowTrack != TrackCompound {
-		t.Fatalf("workflowTrack = %q, want %q (compound should take precedence)", result.WorkflowTrack, TrackCompound)
+	if result.WorkflowTrack != TrackAuto {
+		t.Fatalf("workflowTrack = %q, want %q (auto state should take precedence)", result.WorkflowTrack, TrackAuto)
 	}
 }
 
@@ -318,11 +362,14 @@ func TestGet_CompoundActive_DetailFields(t *testing.T) {
 
 	result := Get(dir)
 
+	if result.WorkflowTrack != TrackAuto {
+		t.Fatalf("workflowTrack = %q, want %q", result.WorkflowTrack, TrackAuto)
+	}
 	if result.Compound == nil {
 		t.Fatal("compound detail should not be nil")
 	}
-	if result.Compound.Step != "loop" {
-		t.Fatalf("step = %q, want %q", result.Compound.Step, "loop")
+	if result.Compound.Step != "run" {
+		t.Fatalf("step = %q, want %q", result.Compound.Step, "run")
 	}
 	if result.Compound.BranchName != "compound/my-feature" {
 		t.Fatalf("branchName = %q, want %q", result.Compound.BranchName, "compound/my-feature")
@@ -469,14 +516,14 @@ func TestGet_CompoundComplete(t *testing.T) {
 
 	result := Get(dir)
 
-	if result.WorkflowTrack != TrackCompound {
-		t.Fatalf("workflowTrack = %q, want %q", result.WorkflowTrack, TrackCompound)
+	if result.WorkflowTrack != TrackAuto {
+		t.Fatalf("workflowTrack = %q, want %q", result.WorkflowTrack, TrackAuto)
 	}
-	if result.State != StateCompoundComplete {
-		t.Fatalf("state = %q, want %q", result.State, StateCompoundComplete)
+	if result.State != StateAutoInactive {
+		t.Fatalf("state = %q, want %q", result.State, StateAutoInactive)
 	}
-	if result.NextAction.ID != ActionRunReport {
-		t.Fatalf("nextAction.id = %q, want %q", result.NextAction.ID, ActionRunReport)
+	if result.NextAction.ID != ActionRunAuto {
+		t.Fatalf("nextAction.id = %q, want %q", result.NextAction.ID, ActionRunAuto)
 	}
 	if result.Compound == nil || result.Compound.Step != "done" {
 		t.Fatal("compound.step should be 'done'")

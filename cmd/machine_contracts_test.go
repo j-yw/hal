@@ -11,6 +11,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -63,6 +64,52 @@ func TestMachineContractFields(t *testing.T) {
 					t.Errorf("status.manual missing field %q", f)
 				}
 			}
+		}
+	})
+
+	t.Run("status auto state values", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			step        string
+			wantState   string
+			wantCommand string
+		}{
+			{name: "active", step: "run", wantState: status.StateAutoActive, wantCommand: "hal auto --resume"},
+			{name: "inactive", step: "done", wantState: status.StateAutoInactive, wantCommand: "hal auto"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				dir := t.TempDir()
+				halDir := filepath.Join(dir, template.HalDir)
+				os.MkdirAll(halDir, 0755)
+				os.WriteFile(filepath.Join(halDir, template.AutoStateFile), []byte(fmt.Sprintf(`{"step":%q}`, tt.step)), 0644)
+
+				var buf bytes.Buffer
+				if err := runStatusFn(dir, true, &buf); err != nil {
+					t.Fatalf("runStatusFn error: %v", err)
+				}
+
+				var raw map[string]interface{}
+				if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+					t.Fatalf("JSON parse error: %v", err)
+				}
+
+				if got, _ := raw["workflowTrack"].(string); got != status.TrackAuto {
+					t.Fatalf("workflowTrack = %q, want %q", got, status.TrackAuto)
+				}
+				if got, _ := raw["state"].(string); got != tt.wantState {
+					t.Fatalf("state = %q, want %q", got, tt.wantState)
+				}
+
+				nextAction, ok := raw["nextAction"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("nextAction should be an object, got %T", raw["nextAction"])
+				}
+				if got, _ := nextAction["command"].(string); got != tt.wantCommand {
+					t.Fatalf("nextAction.command = %q, want %q", got, tt.wantCommand)
+				}
+			})
 		}
 	})
 

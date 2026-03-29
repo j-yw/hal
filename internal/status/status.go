@@ -2,7 +2,7 @@
 //
 // The Status function inspects .hal/ artifacts and returns a structured
 // StatusResult that tells agents and humans:
-//   - what workflow track is active (manual, compound, unknown)
+//   - what workflow track is active (manual, auto, review_loop, unknown)
 //   - what state the workflow is in
 //   - which artifacts exist
 //   - what the next recommended action is
@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -23,20 +24,25 @@ const ContractVersion = 1
 
 // Workflow track values.
 const (
-	TrackManual     = "manual"
-	TrackCompound   = "compound"
+	TrackManual = "manual"
+	TrackAuto   = "auto"
+	// TrackCompound is a legacy alias retained for compatibility.
+	TrackCompound   = TrackAuto
 	TrackReviewLoop = "review_loop"
 	TrackUnknown    = "unknown"
 )
 
 // State values.
 const (
-	StateNotInitialized     = "not_initialized"
-	StateInitializedNoPRD   = "hal_initialized_no_prd"
-	StateManualInProgress   = "manual_in_progress"
-	StateManualComplete     = "manual_complete"
-	StateCompoundActive     = "compound_active"
-	StateCompoundComplete   = "compound_complete"
+	StateNotInitialized   = "not_initialized"
+	StateInitializedNoPRD = "hal_initialized_no_prd"
+	StateManualInProgress = "manual_in_progress"
+	StateManualComplete   = "manual_complete"
+	StateAutoActive       = "auto_active"
+	StateAutoInactive     = "auto_inactive"
+	// Legacy aliases retained for compatibility.
+	StateCompoundActive     = StateAutoActive
+	StateCompoundComplete   = StateAutoInactive
 	StateReviewLoopComplete = "review_loop_complete"
 )
 
@@ -67,10 +73,10 @@ type StatusResult struct {
 
 // ManualDetail provides story-level detail for manual workflows.
 type ManualDetail struct {
-	BranchName      string     `json:"branchName,omitempty"`
-	TotalStories    int        `json:"totalStories"`
+	BranchName       string    `json:"branchName,omitempty"`
+	TotalStories     int       `json:"totalStories"`
 	CompletedStories int       `json:"completedStories"`
-	NextStory       *StoryRef  `json:"nextStory,omitempty"`
+	NextStory        *StoryRef `json:"nextStory,omitempty"`
 }
 
 // StoryRef identifies a single story.
@@ -79,7 +85,8 @@ type StoryRef struct {
 	Title string `json:"title,omitempty"`
 }
 
-// CompoundDetail provides pipeline-level detail for compound workflows.
+// CompoundDetail provides pipeline-level detail for auto workflows.
+// Field name remains "compound" for contract compatibility.
 type CompoundDetail struct {
 	Step       string `json:"step,omitempty"`
 	BranchName string `json:"branchName,omitempty"`
@@ -115,8 +122,8 @@ type NextAction struct {
 
 // prdJSON is the minimal structure to read pass/fail from prd.json.
 type prdJSON struct {
-	BranchName string      `json:"branchName"`
-	Stories    []prdStory  `json:"stories"`
+	BranchName string     `json:"branchName"`
+	Stories    []prdStory `json:"stories"`
 	// Also accept "userStories" key used by some PRD formats
 	UserStories []prdStory `json:"userStories"`
 }
@@ -155,9 +162,9 @@ func Get(dir string) StatusResult {
 		}
 	}
 
-	// Check compound/auto state first (higher precedence)
+	// Check auto state first (higher precedence).
 	if artifacts.AutoState {
-		return classifyCompound(halDir, artifacts)
+		return classifyAuto(halDir, artifacts)
 	}
 
 	// Check for review-loop reports when no PRD exists (review-only workflow)
@@ -345,7 +352,7 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 			nextAction = NextAction{
 				ID:          ActionRunAuto,
 				Command:     "hal auto",
-				Description: "Start the compound pipeline from the latest report.",
+				Description: "Start the auto pipeline from the latest report.",
 			}
 			summary = fmt.Sprintf("Manual workflow is complete (%d/%d stories); report available, ready for auto pipeline.", completed, total)
 		}
@@ -379,56 +386,72 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 	}
 }
 
-func classifyCompound(halDir string, artifacts Artifacts) StatusResult {
+func classifyAuto(halDir string, artifacts Artifacts) StatusResult {
 	autoStatePath := filepath.Join(halDir, template.AutoStateFile)
 
 	var compound *CompoundDetail
-	isDone := false
+	autoActive := true
 	if data, err := os.ReadFile(autoStatePath); err == nil {
 		var state struct {
 			Step       string `json:"step"`
 			BranchName string `json:"branchName"`
 		}
 		if json.Unmarshal(data, &state) == nil {
+			normalizedStep := normalizeAutoStep(state.Step)
 			compound = &CompoundDetail{
-				Step:       state.Step,
+				Step:       normalizedStep,
 				BranchName: state.BranchName,
 			}
-			isDone = state.Step == "done"
+			autoActive = normalizedStep != "done"
 		}
 	}
 
 	paths := &StatusPaths{AutoState: filepath.Join(template.HalDir, template.AutoStateFile)}
 
-	if isDone {
+	if !autoActive {
 		return StatusResult{
 			ContractVersion: ContractVersion,
-			WorkflowTrack:   TrackCompound,
-			State:           StateCompoundComplete,
+			WorkflowTrack:   TrackAuto,
+			State:           StateAutoInactive,
 			Artifacts:       artifacts,
 			NextAction: NextAction{
-				ID:          ActionRunReport,
-				Command:     "hal report",
-				Description: "Compound pipeline completed. Generate a report.",
+				ID:          ActionRunAuto,
+				Command:     "hal auto",
+				Description: "Start a new auto pipeline run.",
 			},
 			Compound: compound,
 			Paths:    paths,
-			Summary:  "Compound pipeline completed; generate a report.",
+			Summary:  "Auto pipeline is inactive; start a new run with hal auto.",
 		}
 	}
 
 	return StatusResult{
 		ContractVersion: ContractVersion,
-		WorkflowTrack:   TrackCompound,
-		State:           StateCompoundActive,
+		WorkflowTrack:   TrackAuto,
+		State:           StateAutoActive,
 		Artifacts:       artifacts,
 		NextAction: NextAction{
 			ID:          ActionResumeAuto,
 			Command:     "hal auto --resume",
-			Description: "Resume the saved compound pipeline state.",
+			Description: "Resume the saved auto pipeline state.",
 		},
 		Compound: compound,
 		Paths:    paths,
-		Summary:  "Compound pipeline is active; resume with hal auto --resume.",
+		Summary:  "Auto pipeline is active; resume with hal auto --resume.",
+	}
+}
+
+func normalizeAutoStep(step string) string {
+	switch strings.TrimSpace(step) {
+	case "prd":
+		return "spec"
+	case "explode":
+		return "convert"
+	case "loop":
+		return "run"
+	case "pr":
+		return "ci"
+	default:
+		return strings.TrimSpace(step)
 	}
 }

@@ -9,7 +9,7 @@
 | Field | Type | Description |
 |-------|------|-------------|
 | `contractVersion` | int | Always `1` for this contract |
-| `workflowTrack` | string | `manual`, `compound`, `review_loop`, or `unknown` |
+| `workflowTrack` | string | `manual`, `auto`, `review_loop`, or `unknown` |
 | `state` | string | One of the state values below |
 | `artifacts` | object | Which .hal/ files exist |
 | `nextAction` | object | Recommended next command |
@@ -21,7 +21,7 @@
 |-------|------|-------------|
 | `engine` | string | Configured default engine name |
 | `manual` | object | Story counts, next story, branch (when track is manual) |
-| `compound` | object | Pipeline step and branch (when track is compound) |
+| `compound` | object | Auto pipeline step and branch (field name retained for compatibility; present when track is `auto`) |
 | `reviewLoop` | object | Latest report path (when review-loop reports exist) |
 | `paths` | object | Canonical file paths |
 
@@ -33,8 +33,8 @@
 | `hal_initialized_no_prd` | manual | `.hal/` exists, no `prd.json` |
 | `manual_in_progress` | manual | PRD has pending stories |
 | `manual_complete` | manual | All stories passed |
-| `compound_active` | compound | Auto pipeline in progress |
-| `compound_complete` | compound | Auto pipeline step is `done` |
+| `auto_active` | auto | Auto pipeline has resumable state |
+| `auto_inactive` | auto | Auto state exists but is complete/inactive |
 | `review_loop_complete` | review_loop | Review-loop reports exist, no active PRD |
 
 ## Next Action IDs
@@ -46,8 +46,8 @@
 | `run_convert` | `hal convert` | Markdown PRD exists, no JSON |
 | `run_manual` | `hal run` | Stories pending |
 | `run_report` | `hal report` | All stories complete, no report |
-| `run_auto` | `hal auto` | Stories complete + report available |
-| `resume_auto` | `hal auto --resume` | Compound pipeline active |
+| `run_auto` | `hal auto` | Stories complete + report available, or auto state is inactive |
+| `resume_auto` | `hal auto --resume` | Auto pipeline active |
 
 ## Example: Manual In-Progress
 
