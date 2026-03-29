@@ -504,18 +504,20 @@ File saving is handled by the caller. Return ONLY the markdown PRD content (no J
 
 func convertPRDToJSON(ctx context.Context, eng engine.Engine, skill, prdContent, outPath string, display *engine.Display) (string, error) {
 	var (
-		beforeOutput     *outputSnapshot
-		err              error
-		branchResolution = resolveMarkdownBranch(prdContent)
-		targetBranchName = branchResolution.Name
+		beforeOutput *outputSnapshot
+		err          error
 	)
+
+	targetBranchName, err := resolveConvertBranchName("", prdContent, "")
+	if err != nil {
+		return "", err
+	}
 
 	if outPath != "" {
 		beforeOutput, err = readOutputSnapshot(outPath)
 		if err != nil {
 			return "", fmt.Errorf("failed to inspect output file before conversion: %w", err)
 		}
-		targetBranchName = selectConvertBranchName("", branchResolution)
 	}
 
 	prompt := buildConversionPrompt(skill, prdContent, targetBranchName, false)

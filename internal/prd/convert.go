@@ -65,8 +65,10 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		return fmt.Errorf("failed to inspect output file before conversion: %w", err)
 	}
 
-	branchResolution := resolveMarkdownBranch(string(mdContent))
-	targetBranchName := selectConvertBranchName(opts.BranchName, branchResolution)
+	targetBranchName, err := resolveConvertBranchName(opts.BranchName, string(mdContent), mdSource)
+	if err != nil {
+		return err
+	}
 
 	if opts.Archive {
 		archiveOpts := archive.CreateOptions{ExcludePaths: []string{mdSource}}
@@ -218,29 +220,31 @@ var (
 
 const markdownBranchMetadataLineLimit = 20
 
-type markdownBranchResolution struct {
-	Name     string
-	Explicit bool
-}
-
-func resolveMarkdownBranch(mdContent string) markdownBranchResolution {
+// ResolveMarkdownBranchName determines branchName from markdown content/path.
+// Precedence: explicit markdown metadata, title-derived slug, filename-derived slug.
+func ResolveMarkdownBranchName(mdContent string, mdPath string) string {
 	if branch := branchNameFromMarkdownField(mdContent); branch != "" {
-		return markdownBranchResolution{Name: branch, Explicit: true}
+		return branch
 	}
 
-	return markdownBranchResolution{Name: branchNameFromMarkdownHeading(mdContent)}
+	if branch := branchNameFromMarkdownHeading(mdContent); branch != "" {
+		return branch
+	}
+
+	return branchNameFromMarkdownFilename(mdPath)
 }
 
-func resolveMarkdownBranchName(mdContent string) string {
-	return resolveMarkdownBranch(mdContent).Name
-}
-
-func selectConvertBranchName(explicitBranch string, branch markdownBranchResolution) string {
+func resolveConvertBranchName(explicitBranch, mdContent, mdPath string) (string, error) {
 	if pinned := strings.TrimSpace(explicitBranch); pinned != "" {
-		return pinned
+		return pinned, nil
 	}
 
-	return branch.Name
+	resolved := ResolveMarkdownBranchName(mdContent, mdPath)
+	if resolved != "" {
+		return resolved, nil
+	}
+
+	return "", fmt.Errorf("unable to resolve branchName from markdown metadata, title, or filename; pass --branch")
 }
 
 func branchNameFromMarkdownField(mdContent string) string {
@@ -338,6 +342,31 @@ func branchNameFromMarkdownHeading(mdContent string) string {
 		return "hal/" + slug
 	}
 	return ""
+}
+
+func branchNameFromMarkdownFilename(mdPath string) string {
+	trimmed := strings.TrimSpace(mdPath)
+	if trimmed == "" {
+		return ""
+	}
+
+	base := filepath.Base(trimmed)
+	ext := filepath.Ext(base)
+	name := base
+	if ext != "" {
+		name = strings.TrimSuffix(base, ext)
+	}
+
+	if len(name) >= len("prd-") && strings.EqualFold(name[:len("prd-")], "prd-") {
+		name = name[len("prd-"):]
+	}
+
+	slug := slugifyBranchFragment(name)
+	if isGenericBranchSlug(slug) {
+		return ""
+	}
+
+	return "hal/" + slug
 }
 
 func markdownFrontmatterBounds(lines []string) (int, int, bool) {
@@ -792,14 +821,16 @@ func resolveMarkdownSource(mdPath, halDir string) (string, error) {
 		return mdPath, nil
 	}
 
-	return findLatestPRDMarkdown(halDir)
+	return FindNewestMarkdown(halDir)
 }
 
 func missingMarkdownSourceError(halDir string) error {
 	return fmt.Errorf("no prd-*.md files found in %s; run `hal plan` or pass an explicit markdown path", halDir)
 }
 
-func findLatestPRDMarkdown(halDir string) (string, error) {
+// FindNewestMarkdown returns the newest prd-*.md in halDir.
+// If mtimes tie, lexicographically ascending filename wins.
+func FindNewestMarkdown(halDir string) (string, error) {
 	prdMDs, err := filepath.Glob(filepath.Join(halDir, "prd-*.md"))
 	if err != nil {
 		return "", fmt.Errorf("failed to scan PRD markdown files: %w", err)

@@ -336,7 +336,7 @@ func TestRunConvertWithDeps_PrintsSelectedSourceMessage(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	mdPath := filepath.Join(tmpDir, "prd.md")
-	if err := os.WriteFile(mdPath, []byte("# PRD"), 0644); err != nil {
+	if err := os.WriteFile(mdPath, []byte("# PRD: Selected Source"), 0644); err != nil {
 		t.Fatalf("failed to write markdown fixture: %v", err)
 	}
 	outPath := filepath.Join(tmpDir, "out.json")
