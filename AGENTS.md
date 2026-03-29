@@ -289,3 +289,8 @@
 - Treat `--skip-ci` as the canonical auto flag; keep `--skip-pr` only as a deprecated alias that maps to skip-ci behavior and warns on stderr.
 - In `runPRStep`, persist CI telemetry via `state.CI` with explicit skipped reasons (`skip_ci_flag`, `ci_unavailable`) so skip outcomes remain machine-readable and testable.
 - Keep CI dependency detection injectable (`checkCIDependencies`) so pipeline tests can cover unavailable-tool skip behavior without mutating PATH.
+
+## Patterns from compound/archive-step-report-preservation (2026-03-29)
+
+- Auto archive-step execution should call `archive.CreateWithOptions` (via an injectable wrapper like `createArchiveWithOptions`) and pass `state.ReportPath` through `CreateOptions.ExcludePaths` so the newest generated report is preserved.
+- Resolve relative `state.ReportPath` values against the pipeline working dir (`p.dir`) before passing exclusions to archive helpers; `archive` normalizes excludes against process CWD, so unresolved relative paths can miss the intended file in tests/multi-dir callers.

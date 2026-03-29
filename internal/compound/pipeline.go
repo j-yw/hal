@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/archive"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/prd"
@@ -43,6 +44,9 @@ var runReportWithEngine = Review
 
 // checkCIDependencies verifies required CI tooling and is overridden in tests.
 var checkCIDependencies = defaultCheckCIDependencies
+
+// createArchiveWithOptions points to archive.CreateWithOptions and is overridden in tests.
+var createArchiveWithOptions = archive.CreateWithOptions
 
 const (
 	maxValidationAttempts   = 3
@@ -261,6 +265,8 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			err = p.runReportStep(ctx, state, opts)
 		case StepCI:
 			err = p.runPRStep(ctx, state, opts)
+		case StepArchive:
+			err = p.runArchiveStep(ctx, state, opts)
 		case StepDone:
 			// Pipeline completed successfully
 			return nil
@@ -883,7 +889,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		} else {
 			p.display.ShowInfo("   [dry-run] Would push branch %s and create draft PR\n", state.BranchName)
 		}
-		state.Step = StepDone
+		state.Step = StepArchive
 		return nil
 	}
 
@@ -929,7 +935,49 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	state.CI = &CIState{Status: "passed"}
 	p.display.ShowInfo("   PR created: %s\n", prURL)
 
-	// Clear state on successful completion
+	state.Step = StepArchive
+	if err := p.saveState(state); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
+// runArchiveStep archives feature state while preserving the latest generated report.
+func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
+	p.display.ShowInfo("   Step: archive\n")
+
+	if opts.DryRun {
+		if reportPath := strings.TrimSpace(state.ReportPath); reportPath != "" {
+			p.display.ShowInfo("   [dry-run] Would archive feature state while preserving %s\n", filepath.Base(reportPath))
+		} else {
+			p.display.ShowInfo("   [dry-run] Would archive feature state\n")
+		}
+		state.Step = StepDone
+		return nil
+	}
+
+	halDir := filepath.Join(p.dir, template.HalDir)
+	archiveName := archive.FeatureFromBranch(state.BranchName)
+	if strings.TrimSpace(archiveName) == "" {
+		archiveName = "archive"
+	}
+
+	createOpts := archive.CreateOptions{}
+	if reportPath := strings.TrimSpace(state.ReportPath); reportPath != "" {
+		reportExclude := reportPath
+		if !filepath.IsAbs(reportExclude) {
+			reportExclude = filepath.Join(p.dir, reportExclude)
+		}
+		createOpts.ExcludePaths = []string{reportExclude}
+	}
+
+	archiveDir, err := createArchiveWithOptions(halDir, archiveName, p.display.Writer(), createOpts)
+	if err != nil {
+		return fmt.Errorf("failed to archive feature state: %w", err)
+	}
+	p.display.ShowInfo("   Archived state to %s\n", filepath.Base(archiveDir))
+
 	if err := p.clearState(); err != nil {
 		return fmt.Errorf("failed to clear state: %w", err)
 	}
