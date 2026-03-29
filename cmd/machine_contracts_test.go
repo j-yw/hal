@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
@@ -154,6 +156,169 @@ func TestMachineContractFields(t *testing.T) {
 
 		if v, ok := raw["contractVersion"].(float64); !ok || int(v) != 1 {
 			t.Fatalf("contractVersion = %v, want 1", raw["contractVersion"])
+		}
+	})
+}
+
+func TestMachineContractFields_CICommandOutputs(t *testing.T) {
+	parseJSON := func(t *testing.T, data []byte) map[string]interface{} {
+		t.Helper()
+		var raw map[string]interface{}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("JSON parse error: %v\n%s", err, string(data))
+		}
+		return raw
+	}
+
+	requireFields := func(t *testing.T, name string, raw map[string]interface{}, required []string) {
+		t.Helper()
+		for _, f := range required {
+			if _, ok := raw[f]; !ok {
+				t.Errorf("%s JSON missing required field %q", name, f)
+			}
+		}
+	}
+
+	t.Run("ci push contract fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := runCIPushWithDeps(context.Background(), ciPushRunOptions{JSON: true}, &buf, ciPushDeps{
+			pushAndCreatePR: func(context.Context, ci.PushOptions) (ci.PushResult, error) {
+				return ci.PushResult{
+					ContractVersion: ci.PushContractVersion,
+					Branch:          "hal/ci-contract-push",
+					Pushed:          true,
+					DryRun:          false,
+					PullRequest: ci.PullRequest{
+						Number:   101,
+						URL:      "https://github.com/acme/repo/pull/101",
+						Title:    "hal ci: hal/ci-contract-push",
+						HeadRef:  "hal/ci-contract-push",
+						HeadSHA:  "abc123",
+						BaseRef:  "main",
+						Draft:    true,
+						Existing: false,
+					},
+					Summary: "pushed branch hal/ci-contract-push and created pull request",
+				}, nil
+			},
+			currentBranch: func(context.Context) (string, error) {
+				return "", nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runCIPushWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireFields(t, "ci push", raw, []string{"contractVersion", "branch", "pushed", "dryRun", "pullRequest", "summary"})
+		if raw["contractVersion"] != ci.PushContractVersion {
+			t.Fatalf("ci push contractVersion = %v, want %q", raw["contractVersion"], ci.PushContractVersion)
+		}
+
+		pr, ok := raw["pullRequest"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("ci push pullRequest should be object, got %T", raw["pullRequest"])
+		}
+		requireFields(t, "ci push pullRequest", pr, []string{"number", "url", "title", "headRef", "headSha", "baseRef", "draft", "existing"})
+	})
+
+	t.Run("ci status contract fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := runCIStatusWithDeps(context.Background(), ciStatusRunOptions{Wait: true, JSON: true}, &buf, ciStatusDeps{
+			getStatus: func(context.Context) (ci.StatusResult, error) {
+				t.Fatal("getStatus should not be called when wait=true")
+				return ci.StatusResult{}, nil
+			},
+			waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+				return ci.StatusResult{
+					ContractVersion:    ci.StatusContractVersion,
+					Branch:             "hal/ci-contract-status",
+					SHA:                "def456",
+					Status:             ci.StatusPending,
+					ChecksDiscovered:   true,
+					Wait:               true,
+					WaitTerminalReason: ci.WaitTerminalReasonTimeout,
+					Checks: []ci.StatusCheck{
+						{Key: "check:test", Source: ci.CheckSourceCheckRun, Name: "test", Status: ci.StatusPending, URL: "https://github.com/acme/repo/actions/runs/1"},
+					},
+					Totals:  ci.StatusTotals{Pending: 1, Failing: 0, Passing: 0},
+					Summary: "status=pending (passing=0, failing=0, pending=1)",
+				}, nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runCIStatusWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireFields(t, "ci status", raw, []string{"contractVersion", "branch", "sha", "status", "checksDiscovered", "wait", "waitTerminalReason", "checks", "totals", "summary"})
+		if raw["contractVersion"] != ci.StatusContractVersion {
+			t.Fatalf("ci status contractVersion = %v, want %q", raw["contractVersion"], ci.StatusContractVersion)
+		}
+
+		checks, ok := raw["checks"].([]interface{})
+		if !ok || len(checks) == 0 {
+			t.Fatalf("ci status checks should be non-empty array, got %T", raw["checks"])
+		}
+		check0, ok := checks[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("ci status checks[0] should be object, got %T", checks[0])
+		}
+		requireFields(t, "ci status checks[0]", check0, []string{"key", "source", "name", "status", "url"})
+
+		totals, ok := raw["totals"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("ci status totals should be object, got %T", raw["totals"])
+		}
+		requireFields(t, "ci status totals", totals, []string{"pending", "failing", "passing"})
+	})
+
+	t.Run("ci fix contract fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := runCIFixWithDeps(context.Background(), ciFixRunOptions{MaxAttempts: 2, Engine: "codex", JSON: true}, &buf, ciFixDeps{
+			getStatus: func(context.Context) (ci.StatusResult, error) {
+				return ci.StatusResult{Status: ci.StatusPassing, Branch: "hal/ci-contract-fix"}, nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runCIFixWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireFields(t, "ci fix", raw, []string{"contractVersion", "attempt", "maxAttempts", "applied", "branch", "pushed", "summary"})
+		if raw["contractVersion"] != ci.FixContractVersion {
+			t.Fatalf("ci fix contractVersion = %v, want %q", raw["contractVersion"], ci.FixContractVersion)
+		}
+	})
+
+	t.Run("ci merge contract fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := runCIMergeWithDeps(context.Background(), ciMergeRunOptions{Strategy: "rebase", DeleteBranch: true, JSON: true}, &buf, ciMergeDeps{
+			mergePR: func(context.Context, ci.MergeOptions) (ci.MergeResult, error) {
+				return ci.MergeResult{
+					ContractVersion: ci.MergeContractVersion,
+					PRNumber:        33,
+					Strategy:        "rebase",
+					DryRun:          false,
+					Merged:          true,
+					MergeCommitSHA:  "bead999",
+					BranchDeleted:   false,
+					DeleteWarning:   "delete remote branch \"hal/ci-contract-merge\": permission denied",
+					Summary:         "merged pull request #33 using rebase strategy; warning: delete failed",
+				}, nil
+			},
+			currentBranch: func(context.Context) (string, error) {
+				return "", nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runCIMergeWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireFields(t, "ci merge", raw, []string{"contractVersion", "prNumber", "strategy", "dryRun", "merged", "mergeCommitSha", "branchDeleted", "deleteWarning", "summary"})
+		if raw["contractVersion"] != ci.MergeContractVersion {
+			t.Fatalf("ci merge contractVersion = %v, want %q", raw["contractVersion"], ci.MergeContractVersion)
 		}
 	})
 }

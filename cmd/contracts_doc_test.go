@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
@@ -24,6 +25,10 @@ func TestContractDocsExist(t *testing.T) {
 		{"doctor-v1", "../docs/contracts/doctor-v1.md"},
 		{"continue-v1", "../docs/contracts/continue-v1.md"},
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
+		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
+		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
+		{"ci-fix-v1", "../docs/contracts/ci-fix-v1.md"},
+		{"ci-merge-v1", "../docs/contracts/ci-merge-v1.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -137,5 +142,86 @@ func TestContractDocsIncludeCheckIDs(t *testing.T) {
 		if !strings.Contains(content, check.ID) {
 			t.Errorf("doctor-v1.md missing check ID %q", check.ID)
 		}
+	}
+}
+
+func TestContractDocsIncludeCIFields(t *testing.T) {
+	docs := []struct {
+		name           string
+		path           string
+		contractValue  string
+		requiredFields []string
+		requiredValues []string
+	}{
+		{
+			name:          "ci-push-v1",
+			path:          "../docs/contracts/ci-push-v1.md",
+			contractValue: ci.PushContractVersion,
+			requiredFields: []string{
+				"contractVersion", "branch", "pushed", "dryRun", "pullRequest", "summary",
+				"number", "url", "title", "headRef", "headSha", "baseRef", "draft", "existing",
+			},
+		},
+		{
+			name:          "ci-status-v1",
+			path:          "../docs/contracts/ci-status-v1.md",
+			contractValue: ci.StatusContractVersion,
+			requiredFields: []string{
+				"contractVersion", "branch", "sha", "status", "checksDiscovered", "wait", "waitTerminalReason", "checks", "totals", "summary",
+				"key", "source", "name", "url", "pending", "failing", "passing",
+			},
+			requiredValues: []string{
+				ci.StatusPending,
+				ci.StatusFailing,
+				ci.StatusPassing,
+				ci.WaitTerminalReasonCompleted,
+				ci.WaitTerminalReasonTimeout,
+				ci.WaitTerminalReasonNoChecksDetected,
+				ci.CheckSourceCheckRun,
+				ci.CheckSourceStatus,
+			},
+		},
+		{
+			name:          "ci-fix-v1",
+			path:          "../docs/contracts/ci-fix-v1.md",
+			contractValue: ci.FixContractVersion,
+			requiredFields: []string{
+				"contractVersion", "attempt", "maxAttempts", "applied", "branch", "commitSha", "pushed", "filesChanged", "summary",
+			},
+		},
+		{
+			name:          "ci-merge-v1",
+			path:          "../docs/contracts/ci-merge-v1.md",
+			contractValue: ci.MergeContractVersion,
+			requiredFields: []string{
+				"contractVersion", "prNumber", "strategy", "dryRun", "merged", "mergeCommitSha", "branchDeleted", "deleteWarning", "summary",
+			},
+		},
+	}
+
+	for _, doc := range docs {
+		t.Run(doc.name, func(t *testing.T) {
+			data, err := os.ReadFile(doc.path)
+			if err != nil {
+				t.Fatalf("cannot read %s: %v", doc.path, err)
+			}
+			content := string(data)
+
+			if !strings.Contains(content, doc.contractValue) {
+				t.Errorf("%s missing contract value %q", doc.name, doc.contractValue)
+			}
+
+			for _, field := range doc.requiredFields {
+				if !strings.Contains(content, "`"+field+"`") {
+					t.Errorf("%s missing field %q", doc.name, field)
+				}
+			}
+
+			for _, value := range doc.requiredValues {
+				if !strings.Contains(content, value) {
+					t.Errorf("%s missing value %q", doc.name, value)
+				}
+			}
+		})
 	}
 }
