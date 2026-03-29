@@ -169,6 +169,57 @@ func TestRunAuto_JSONResumeWithDoneStateReturnsJSONOnly(t *testing.T) {
 	}
 }
 
+func TestRunAuto_MigratesLegacyAutoPRDAtStartup(t *testing.T) {
+	chdirTemp(t)
+
+	halDir := template.HalDir
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+
+	prdPath := filepath.Join(halDir, template.PRDFile)
+	if err := os.WriteFile(prdPath, []byte(`{"project":"new","branchName":"hal/new","userStories":[]}`), 0644); err != nil {
+		t.Fatalf("write prd.json: %v", err)
+	}
+
+	autoPath := filepath.Join(halDir, template.AutoPRDFile)
+	if err := os.WriteFile(autoPath, []byte(`{"project":"old","branchName":"hal/old","userStories":[]}`), 0644); err != nil {
+		t.Fatalf("write auto-prd.json: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	var errOut bytes.Buffer
+	cmd.SetErr(&errOut)
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	if !json.Valid(out.Bytes()) {
+		t.Fatalf("stdout is not valid JSON: %q", out.String())
+	}
+
+	if _, err := os.Stat(autoPath); !os.IsNotExist(err) {
+		t.Fatalf("auto-prd.json should be migrated away, stat err=%v", err)
+	}
+
+	legacyMatches, err := filepath.Glob(filepath.Join(halDir, "auto-prd.legacy-*.json"))
+	if err != nil {
+		t.Fatalf("glob legacy auto-prd files: %v", err)
+	}
+	if len(legacyMatches) != 1 {
+		t.Fatalf("legacy backup count = %d, want 1", len(legacyMatches))
+	}
+
+	warn := errOut.String()
+	if !strings.Contains(warn, "warning: auto-prd.json differs from prd.json; preserved legacy file at .hal/auto-prd.legacy-") {
+		t.Fatalf("expected migration warning on stderr, got %q", warn)
+	}
+}
+
 func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -28,15 +28,15 @@ var (
 
 // AutoResult is the machine-readable output of hal auto --json.
 type AutoResult struct {
-	ContractVersion int              `json:"contractVersion"`
-	OK              bool             `json:"ok"`
-	Resumed         bool             `json:"resumed,omitempty"`
-	Duration        string           `json:"duration,omitempty"`
-	Branch          string           `json:"branch,omitempty"`
-	Tasks           *AutoTasksInfo   `json:"tasks,omitempty"`
-	NextAction      *AutoNextAction  `json:"nextAction,omitempty"`
-	Error           string           `json:"error,omitempty"`
-	Summary         string           `json:"summary"`
+	ContractVersion int             `json:"contractVersion"`
+	OK              bool            `json:"ok"`
+	Resumed         bool            `json:"resumed,omitempty"`
+	Duration        string          `json:"duration,omitempty"`
+	Branch          string          `json:"branch,omitempty"`
+	Tasks           *AutoTasksInfo  `json:"tasks,omitempty"`
+	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Summary         string          `json:"summary"`
 }
 
 // AutoTasksInfo provides task completion progress for the auto pipeline.
@@ -111,6 +111,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	autoStart := time.Now()
 	ctx := context.Background()
 	out := io.Writer(os.Stdout)
+	errOut := io.Writer(os.Stderr)
 	dir := "."
 
 	dryRun := autoDryRunFlag
@@ -126,6 +127,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			ctx = cmd.Context()
 		}
 		out = cmd.OutOrStdout()
+		errOut = cmd.ErrOrStderr()
 
 		if cmd.Flags().Lookup("dry-run") != nil {
 			value, err := cmd.Flags().GetBool("dry-run")
@@ -176,6 +178,13 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			}
 			jsonMode = value
 		}
+	}
+
+	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
+		if jsonMode {
+			return outputAutoJSON(out, false, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false)
+		}
+		return fmt.Errorf("failed to migrate legacy auto-prd.json: %w", err)
 	}
 
 	// Load config

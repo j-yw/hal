@@ -232,3 +232,10 @@
 - Keep `cmd/explode.go` as a thin compatibility shim: call conversion through `prd.ConvertWithEngine` with `prd.ConvertOptions{Granular: true, BranchName: explodeBranchFlag}` and always target canonical output `filepath.Join(template.HalDir, template.PRDFile)`.
 - The explode deprecation warning is part of the compatibility contract and must be emitted to stderr exactly as `warning: 'hal explode' is deprecated; use 'hal convert --granular'.`.
 - Preserve explode machine output compatibility with the existing `ExplodeResult` JSON shape even while routing execution through convert logic.
+
+## Patterns from compound/auto-prd-startup-migration (2026-03-29)
+
+- Legacy auto PRD migration is centralized in `internal/compound/migrate.go` (`MigrateLegacyAutoPRD`) and should be invoked at `hal auto` startup before pipeline execution.
+- Migration semantics are asymmetric: if `.hal/prd.json` is missing, rename `.hal/auto-prd.json`; if both are semantically equal JSON, delete legacy `.hal/auto-prd.json`; otherwise keep `.hal/prd.json` authoritative and preserve legacy data as `.hal/auto-prd.legacy-<ts>.json`.
+- Warnings for preserved legacy auto PRDs must go to stderr so stdout stays clean for machine-readable command output.
+- Migration tests should inject time (`migrateLegacyAutoPRDWithNow`) to make timestamped legacy backup assertions deterministic.

@@ -1,10 +1,12 @@
 package compound
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -13,6 +15,124 @@ import (
 type mockDisplay struct{}
 
 func (m *mockDisplay) ShowInfo(format string, args ...any) {}
+
+func TestMigrateLegacyAutoPRD(t *testing.T) {
+	fixedNow := time.Date(2026, time.March, 29, 13, 45, 20, 0, time.UTC)
+
+	tests := []struct {
+		name                 string
+		prdContent           string
+		autoContent          string
+		wantPRDContent       string
+		wantLegacyCount      int
+		wantWarningSubstring string
+		wantWarningPrefix    string
+	}{
+		{
+			name:            "renames auto-prd to prd when canonical file is missing",
+			autoContent:     `{"project":"legacy","branchName":"hal/legacy","userStories":[]}`,
+			wantPRDContent:  `{"project":"legacy","branchName":"hal/legacy","userStories":[]}`,
+			wantLegacyCount: 0,
+		},
+		{
+			name:                 "deletes auto-prd when both files are semantically equal",
+			prdContent:           "{\n  \"project\": \"equal\",\n  \"branchName\": \"hal/equal\",\n  \"userStories\": []\n}\n",
+			autoContent:          `{"branchName":"hal/equal","project":"equal","userStories":[]}`,
+			wantPRDContent:       "{\n  \"project\": \"equal\",\n  \"branchName\": \"hal/equal\",\n  \"userStories\": []\n}\n",
+			wantLegacyCount:      0,
+			wantWarningSubstring: "",
+		},
+		{
+			name:              "preserves differing auto-prd as timestamped legacy file",
+			prdContent:        `{"project":"new","branchName":"hal/new","userStories":[]}`,
+			autoContent:       `{"project":"old","branchName":"hal/old","userStories":[]}`,
+			wantPRDContent:    `{"project":"new","branchName":"hal/new","userStories":[]}`,
+			wantLegacyCount:   1,
+			wantWarningPrefix: "warning: auto-prd.json differs from prd.json; preserved legacy file at .hal/auto-prd.legacy-",
+		},
+		{
+			name:                 "preserves auto-prd when semantic comparison fails",
+			prdContent:           `{"project":"new","branchName":"hal/new","userStories":[]}`,
+			autoContent:          `{"project":"broken"`,
+			wantPRDContent:       `{"project":"new","branchName":"hal/new","userStories":[]}`,
+			wantLegacyCount:      1,
+			wantWarningPrefix:    "warning: could not compare auto-prd.json to prd.json",
+			wantWarningSubstring: ".hal/auto-prd.legacy-",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, template.HalDir)
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("mkdir .hal: %v", err)
+			}
+
+			prdPath := filepath.Join(halDir, template.PRDFile)
+			autoPath := filepath.Join(halDir, template.AutoPRDFile)
+			if tt.prdContent != "" {
+				if err := os.WriteFile(prdPath, []byte(tt.prdContent), 0644); err != nil {
+					t.Fatalf("write prd.json: %v", err)
+				}
+			}
+			if tt.autoContent != "" {
+				if err := os.WriteFile(autoPath, []byte(tt.autoContent), 0644); err != nil {
+					t.Fatalf("write auto-prd.json: %v", err)
+				}
+			}
+
+			var errOut bytes.Buffer
+			err := migrateLegacyAutoPRDWithNow(dir, &errOut, func() time.Time { return fixedNow })
+			if err != nil {
+				t.Fatalf("migrateLegacyAutoPRDWithNow returned error: %v", err)
+			}
+
+			prdData, err := os.ReadFile(prdPath)
+			if err != nil {
+				t.Fatalf("read prd.json: %v", err)
+			}
+			if string(prdData) != tt.wantPRDContent {
+				t.Fatalf("prd.json content mismatch:\n got: %q\nwant: %q", string(prdData), tt.wantPRDContent)
+			}
+
+			if _, err := os.Stat(autoPath); !os.IsNotExist(err) {
+				t.Fatalf("auto-prd.json should not exist after migration")
+			}
+
+			legacyMatches, err := filepath.Glob(filepath.Join(halDir, "auto-prd.legacy-*.json"))
+			if err != nil {
+				t.Fatalf("glob legacy auto-prd files: %v", err)
+			}
+			if len(legacyMatches) != tt.wantLegacyCount {
+				t.Fatalf("legacy file count = %d, want %d", len(legacyMatches), tt.wantLegacyCount)
+			}
+			if tt.wantLegacyCount > 0 {
+				legacyData, err := os.ReadFile(legacyMatches[0])
+				if err != nil {
+					t.Fatalf("read preserved legacy file: %v", err)
+				}
+				if string(legacyData) != tt.autoContent {
+					t.Fatalf("legacy file content mismatch:\n got: %q\nwant: %q", string(legacyData), tt.autoContent)
+				}
+			}
+
+			warning := errOut.String()
+			if tt.wantWarningPrefix == "" {
+				if warning != "" {
+					t.Fatalf("unexpected warning output: %q", warning)
+				}
+			} else {
+				if !strings.HasPrefix(warning, tt.wantWarningPrefix) {
+					t.Fatalf("warning prefix mismatch:\n got: %q\nwant prefix: %q", warning, tt.wantWarningPrefix)
+				}
+				if tt.wantWarningSubstring != "" && !strings.Contains(warning, tt.wantWarningSubstring) {
+					t.Fatalf("warning %q does not contain %q", warning, tt.wantWarningSubstring)
+				}
+			}
+		})
+	}
+}
 
 func TestMigrateAutoProgress_MergeBothHaveContent(t *testing.T) {
 	// Create temp directory
