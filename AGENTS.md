@@ -277,3 +277,9 @@
 - Keep CI command-layer orchestration behind `run<Cmd>WithDeps` helpers (for example `runCIPushWithDeps`) so tests can stub side-effecting core operations and git lookups deterministically.
 - In `--json` mode, emit pure JSON only (no human-readable lines); lock this with tests that assert valid object-only output.
 - Implement `--dry-run` at the command layer by bypassing core side effects (`PushAndCreatePR`) and returning preview data only.
+
+## Patterns from hal/ci-status-command-wiring (2026-03-29)
+
+- Keep `hal ci status` command-layer orchestration behind `runCIStatusWithDeps` with injectable `getStatus` / `waitForChecks` deps so tests can validate wait and non-wait paths without invoking real git/gh commands.
+- Wire `--wait`, `--timeout`, `--poll-interval`, and `--no-checks-grace` directly into `ci.WaitOptions`; pass zero-value durations through so `internal/ci/status.go` remains the single source of wait defaults.
+- In `--json` mode, emit only the marshaled `ci.StatusResult`; this preserves machine-readable wait terminal reasons (including `no_checks_detected`) without human-text drift.

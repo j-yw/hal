@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/spf13/cobra"
@@ -17,6 +18,12 @@ import (
 var (
 	ciPushDryRunFlag bool
 	ciPushJSONFlag   bool
+
+	ciStatusWaitFlag          bool
+	ciStatusTimeoutFlag       time.Duration
+	ciStatusPollIntervalFlag  time.Duration
+	ciStatusNoChecksGraceFlag time.Duration
+	ciStatusJSONFlag          bool
 )
 
 var ciCmd = &cobra.Command{
@@ -50,11 +57,33 @@ Use --json for machine-readable output.`,
 	RunE: runCIPush,
 }
 
+var ciStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show aggregated CI status for the current branch",
+	Args:  noArgsValidation(),
+	Long: `Show aggregated CI status for the current branch.
+
+By default, this command returns the latest aggregated status immediately.
+Use --wait to poll until checks complete, timeout, or no checks are detected.
+Use --json for machine-readable output.`,
+	Example: `  hal ci status
+  hal ci status --wait
+  hal ci status --wait --json`,
+	RunE: runCIStatus,
+}
+
 func init() {
 	ciPushCmd.Flags().BoolVar(&ciPushDryRunFlag, "dry-run", false, "Preview push/PR behavior without remote side effects")
 	ciPushCmd.Flags().BoolVar(&ciPushJSONFlag, "json", false, "Output machine-readable JSON result")
 
+	ciStatusCmd.Flags().BoolVar(&ciStatusWaitFlag, "wait", false, "Wait for checks to complete, timeout, or no-check detection")
+	ciStatusCmd.Flags().DurationVar(&ciStatusTimeoutFlag, "timeout", 0, "Wait timeout override (default: internal ci wait timeout)")
+	ciStatusCmd.Flags().DurationVar(&ciStatusPollIntervalFlag, "poll-interval", 0, "Polling interval override while waiting (default: internal ci poll interval)")
+	ciStatusCmd.Flags().DurationVar(&ciStatusNoChecksGraceFlag, "no-checks-grace", 0, "No-checks grace override before returning no_checks_detected")
+	ciStatusCmd.Flags().BoolVar(&ciStatusJSONFlag, "json", false, "Output machine-readable JSON result")
+
 	ciCmd.AddCommand(ciPushCmd)
+	ciCmd.AddCommand(ciStatusCmd)
 	rootCmd.AddCommand(ciCmd)
 }
 
@@ -71,6 +100,24 @@ var defaultCIPushDeps = ciPushDeps{
 type ciPushRunOptions struct {
 	DryRun bool
 	JSON   bool
+}
+
+type ciStatusDeps struct {
+	getStatus     func(context.Context) (ci.StatusResult, error)
+	waitForChecks func(context.Context, ci.WaitOptions) (ci.StatusResult, error)
+}
+
+var defaultCIStatusDeps = ciStatusDeps{
+	getStatus:     ci.GetStatus,
+	waitForChecks: ci.WaitForChecks,
+}
+
+type ciStatusRunOptions struct {
+	Wait          bool
+	Timeout       time.Duration
+	PollInterval  time.Duration
+	NoChecksGrace time.Duration
+	JSON          bool
 }
 
 func runCIPush(cmd *cobra.Command, args []string) error {
@@ -175,6 +222,118 @@ func runCIPushWithDeps(ctx context.Context, opts ciPushRunOptions, out io.Writer
 		label = "Pull request (existing)"
 	}
 	fmt.Fprintf(out, "%s: %s\n", label, result.PullRequest.URL)
+	return nil
+}
+
+func runCIStatus(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	if cmd != nil && cmd.Context() != nil {
+		ctx = cmd.Context()
+	}
+
+	out := io.Writer(os.Stdout)
+	opts := ciStatusRunOptions{
+		Wait:          ciStatusWaitFlag,
+		Timeout:       ciStatusTimeoutFlag,
+		PollInterval:  ciStatusPollIntervalFlag,
+		NoChecksGrace: ciStatusNoChecksGraceFlag,
+		JSON:          ciStatusJSONFlag,
+	}
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if flags := cmd.Flags(); flags != nil {
+			if flags.Lookup("wait") != nil {
+				v, err := flags.GetBool("wait")
+				if err != nil {
+					return err
+				}
+				opts.Wait = v
+			}
+			if flags.Lookup("timeout") != nil {
+				v, err := flags.GetDuration("timeout")
+				if err != nil {
+					return err
+				}
+				opts.Timeout = v
+			}
+			if flags.Lookup("poll-interval") != nil {
+				v, err := flags.GetDuration("poll-interval")
+				if err != nil {
+					return err
+				}
+				opts.PollInterval = v
+			}
+			if flags.Lookup("no-checks-grace") != nil {
+				v, err := flags.GetDuration("no-checks-grace")
+				if err != nil {
+					return err
+				}
+				opts.NoChecksGrace = v
+			}
+			if flags.Lookup("json") != nil {
+				v, err := flags.GetBool("json")
+				if err != nil {
+					return err
+				}
+				opts.JSON = v
+			}
+		}
+	}
+
+	return runCIStatusWithDeps(ctx, opts, out, defaultCIStatusDeps)
+}
+
+func runCIStatusWithDeps(ctx context.Context, opts ciStatusRunOptions, out io.Writer, deps ciStatusDeps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	if deps.getStatus == nil {
+		deps.getStatus = defaultCIStatusDeps.getStatus
+	}
+	if deps.waitForChecks == nil {
+		deps.waitForChecks = defaultCIStatusDeps.waitForChecks
+	}
+
+	var (
+		result ci.StatusResult
+		err    error
+	)
+
+	if opts.Wait {
+		result, err = deps.waitForChecks(ctx, ci.WaitOptions{
+			PollInterval:  opts.PollInterval,
+			Timeout:       opts.Timeout,
+			NoChecksGrace: opts.NoChecksGrace,
+		})
+	} else {
+		result, err = deps.getStatus(ctx)
+	}
+	if err != nil {
+		return err
+	}
+
+	if opts.JSON {
+		data, marshalErr := json.MarshalIndent(result, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal ci status result: %w", marshalErr)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	if opts.Wait && strings.TrimSpace(result.WaitTerminalReason) != "" {
+		fmt.Fprintf(out, "Wait terminal reason: %s\n", result.WaitTerminalReason)
+	}
+	if strings.TrimSpace(result.Summary) != "" {
+		fmt.Fprintln(out, result.Summary)
+		return nil
+	}
+
+	fmt.Fprintf(out, "status=%s\n", result.Status)
 	return nil
 }
 
