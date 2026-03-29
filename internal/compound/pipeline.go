@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
@@ -20,20 +21,22 @@ var stateFileName = template.AutoStateFile
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
-	config       *AutoConfig
-	engine       engine.Engine
-	engineConfig *engine.EngineConfig
-	display      *engine.Display
-	dir          string
+	config          *AutoConfig
+	engine          engine.Engine
+	engineConfig    *engine.EngineConfig
+	display         *engine.Display
+	dir             string
+	pushAndCreatePR func(context.Context, ci.PushOptions) (ci.PushResult, error)
 }
 
 // NewPipeline creates a new pipeline instance.
 func NewPipeline(config *AutoConfig, eng engine.Engine, display *engine.Display, dir string) *Pipeline {
 	return &Pipeline{
-		config:  config,
-		engine:  eng,
-		display: display,
-		dir:     dir,
+		config:          config,
+		engine:          eng,
+		display:         display,
+		dir:             dir,
+		pushAndCreatePR: ci.PushAndCreatePR,
 	}
 }
 
@@ -655,11 +658,13 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		return nil
 	}
 
-	// Push the branch
-	p.display.ShowInfo("   Pushing branch: %s\n", state.BranchName)
-	if err := PushBranch(state.BranchName); err != nil {
-		return fmt.Errorf("failed to push branch: %w", err)
+	pushAndCreatePR := p.pushAndCreatePR
+	if pushAndCreatePR == nil {
+		pushAndCreatePR = ci.PushAndCreatePR
 	}
+
+	// Push the branch and create/reuse PR through shared CI core.
+	p.display.ShowInfo("   Pushing branch: %s\n", state.BranchName)
 
 	taskStatus := ""
 	if prd, err := engine.LoadPRDFile(filepath.Join(p.dir, template.HalDir), template.AutoPRDFile); err == nil {
@@ -675,13 +680,22 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		prTitle = "Compound: " + state.BranchName
 	}
 
-	// Create draft PR
+	draft := true
 	p.display.ShowInfo("   Creating draft PR...\n")
-	prURL, err := CreatePR(prTitle, prBody, state.BaseBranch, state.BranchName)
+	pushResult, err := pushAndCreatePR(ctx, ci.PushOptions{
+		BaseRef: state.BaseBranch,
+		Title:   prTitle,
+		Body:    prBody,
+		Draft:   &draft,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create PR: %w", err)
 	}
 
+	prURL := strings.TrimSpace(pushResult.PullRequest.URL)
+	if prURL == "" {
+		return fmt.Errorf("failed to create PR: empty pull request URL")
+	}
 	p.display.ShowInfo("   PR created: %s\n", prURL)
 
 	// Clear state on successful completion

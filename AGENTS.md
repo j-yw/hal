@@ -265,3 +265,9 @@
 - Keep merge orchestration behind `mergePRWithDeps` in `internal/ci/merge.go` so strategy/status/head-drift/delete-branch paths can be tested deterministically without real GitHub calls.
 - Validate merge safety in this order: strategy allowlist (`squash|merge|rebase`), aggregated status guard (passing required unless `AllowNoChecks` with zero contexts), then PR head drift check (`status.SHA` vs current PR head SHA) before issuing merge side effects.
 - Remote branch cleanup after merge must treat 404 as non-fatal (`ErrRemoteBranchNotFound`) and surface other deletion failures as `DeleteWarning` on `MergeResult` instead of failing an otherwise successful merge.
+
+## Patterns from hal/compound-steppr-ci-delegation (2026-03-29)
+
+- Stage 6A `runPRStep` in `internal/compound/pipeline.go` delegates push + PR creation to `internal/ci.PushAndCreatePR`, but still generates title/body in compound so existing PR content stays stable.
+- Keep `--skip-pr` and `--dry-run` branches as early returns before CI delegation to preserve legacy StepPR behavior and avoid remote side effects.
+- `Pipeline` now uses an injectable `pushAndCreatePR` function field; use this seam in unit tests (`internal/compound/pipeline_pr_test.go`) to assert StepPR behavior without invoking real git/gh commands.
