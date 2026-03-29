@@ -251,3 +251,9 @@
 - `hal auto` now accepts at most one positional markdown path (`auto [prd-path]`), so command arg contracts should use `maxArgsValidation(1)` and include a dedicated args test for zero/one/two-arg cases.
 - Pipeline start-state selection belongs in `newInitialState(opts)`: with `SourceMarkdown`, set `step=branch`, keep `sourceMarkdown`, and derive `branchName` via `prd.ResolveMarkdownBranchName`; without it, start at `step=analyze`.
 - Auto report preflight (`FindLatestReport`) must be skipped when a positional markdown source is provided, and dry-run command tests should lock both entry flows (`analyze -> spec -> branch -> convert` vs `branch -> convert`).
+
+## Patterns from compound/branch-step-idempotency (2026-03-29)
+
+- Branch-step execution should use `EnsureBranchInDir(dir, branchName, baseBranch)` so retries are idempotent: no-op when already on target, checkout when target exists, and create from base only when missing.
+- Git operations in compound pipeline helpers must run with `cmd.Dir = pipeline dir` to avoid mutating the caller's current working repository during tests and multi-repo usage.
+- For branch-step behavior, use temp-repo unit tests that commit a base branch and assert all three paths (already-on-target, existing-branch checkout, missing-branch creation) plus repeated retry success.

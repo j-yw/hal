@@ -378,7 +378,7 @@ func (p *Pipeline) runAnalyzeStep(ctx context.Context, state *PipelineState, opt
 	return nil
 }
 
-// runBranchStep creates and checks out a new branch for the work.
+// runBranchStep ensures and checks out the target branch for the work.
 func (p *Pipeline) runBranchStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: branch\n")
 
@@ -401,14 +401,13 @@ func (p *Pipeline) runBranchStep(ctx context.Context, state *PipelineState, opts
 		return nil
 	}
 
-	// Create and checkout the branch
 	if state.BaseBranch != "" {
-		p.display.ShowInfo("   Creating branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
+		p.display.ShowInfo("   Ensuring branch: %s (from %s)\n", state.BranchName, state.BaseBranch)
 	} else {
-		p.display.ShowInfo("   Creating branch: %s (from current HEAD)\n", state.BranchName)
+		p.display.ShowInfo("   Ensuring branch: %s (from current HEAD)\n", state.BranchName)
 	}
-	if err := CreateBranch(state.BranchName, state.BaseBranch); err != nil {
-		return fmt.Errorf("failed to create branch: %w", err)
+	if err := EnsureBranchInDir(p.dir, state.BranchName, state.BaseBranch); err != nil {
+		return fmt.Errorf("failed to prepare branch: %w", err)
 	}
 
 	// Save state and advance to next step
