@@ -12,6 +12,7 @@ import (
 	"time"
 
 	ci "github.com/jywlabs/hal/internal/ci"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +25,10 @@ var (
 	ciStatusPollIntervalFlag  time.Duration
 	ciStatusNoChecksGraceFlag time.Duration
 	ciStatusJSONFlag          bool
+
+	ciFixMaxAttemptsFlag int
+	ciFixEngineFlag      string
+	ciFixJSONFlag        bool
 )
 
 var ciCmd = &cobra.Command{
@@ -72,6 +77,22 @@ Use --json for machine-readable output.`,
 	RunE: runCIStatus,
 }
 
+var ciFixCmd = &cobra.Command{
+	Use:   "fix",
+	Short: "Auto-fix failing CI checks using an engine",
+	Args:  noArgsValidation(),
+	Long: `Apply focused CI fixes for failing checks using the configured engine.
+
+The command retries up to --max-attempts. Each attempt uses the shared
+single-attempt CI fix core operation and waits for fresh CI status before
+continuing. Use --json for machine-readable output.`,
+	Example: `  hal ci fix
+  hal ci fix --max-attempts 3
+  hal ci fix -e claude
+  hal ci fix --json`,
+	RunE: runCIFix,
+}
+
 func init() {
 	ciPushCmd.Flags().BoolVar(&ciPushDryRunFlag, "dry-run", false, "Preview push/PR behavior without remote side effects")
 	ciPushCmd.Flags().BoolVar(&ciPushJSONFlag, "json", false, "Output machine-readable JSON result")
@@ -82,8 +103,13 @@ func init() {
 	ciStatusCmd.Flags().DurationVar(&ciStatusNoChecksGraceFlag, "no-checks-grace", 0, "No-checks grace override before returning no_checks_detected")
 	ciStatusCmd.Flags().BoolVar(&ciStatusJSONFlag, "json", false, "Output machine-readable JSON result")
 
+	ciFixCmd.Flags().IntVar(&ciFixMaxAttemptsFlag, "max-attempts", 3, "Max fix attempts before stopping")
+	ciFixCmd.Flags().StringVarP(&ciFixEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
+	ciFixCmd.Flags().BoolVar(&ciFixJSONFlag, "json", false, "Output machine-readable JSON result")
+
 	ciCmd.AddCommand(ciPushCmd)
 	ciCmd.AddCommand(ciStatusCmd)
+	ciCmd.AddCommand(ciFixCmd)
 	rootCmd.AddCommand(ciCmd)
 }
 
@@ -118,6 +144,26 @@ type ciStatusRunOptions struct {
 	PollInterval  time.Duration
 	NoChecksGrace time.Duration
 	JSON          bool
+}
+
+type ciFixDeps struct {
+	newEngine     func(string) (engine.Engine, error)
+	getStatus     func(context.Context) (ci.StatusResult, error)
+	waitForChecks func(context.Context, ci.WaitOptions) (ci.StatusResult, error)
+	fixWithEngine func(context.Context, ci.StatusResult, ci.FixOptions) (ci.FixResult, error)
+}
+
+var defaultCIFixDeps = ciFixDeps{
+	newEngine:     newEngine,
+	getStatus:     ci.GetStatus,
+	waitForChecks: ci.WaitForChecks,
+	fixWithEngine: ci.FixWithEngine,
+}
+
+type ciFixRunOptions struct {
+	MaxAttempts int
+	Engine      string
+	JSON        bool
 }
 
 func runCIPush(cmd *cobra.Command, args []string) error {
@@ -334,6 +380,174 @@ func runCIStatusWithDeps(ctx context.Context, opts ciStatusRunOptions, out io.Wr
 	}
 
 	fmt.Fprintf(out, "status=%s\n", result.Status)
+	return nil
+}
+
+func runCIFix(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	if cmd != nil && cmd.Context() != nil {
+		ctx = cmd.Context()
+	}
+
+	out := io.Writer(os.Stdout)
+	opts := ciFixRunOptions{
+		MaxAttempts: ciFixMaxAttemptsFlag,
+		Engine:      ciFixEngineFlag,
+		JSON:        ciFixJSONFlag,
+	}
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if flags := cmd.Flags(); flags != nil {
+			if flags.Lookup("max-attempts") != nil {
+				v, err := flags.GetInt("max-attempts")
+				if err != nil {
+					return err
+				}
+				opts.MaxAttempts = v
+			}
+			if flags.Lookup("engine") != nil {
+				v, err := flags.GetString("engine")
+				if err != nil {
+					return err
+				}
+				opts.Engine = v
+			}
+			if flags.Lookup("json") != nil {
+				v, err := flags.GetBool("json")
+				if err != nil {
+					return err
+				}
+				opts.JSON = v
+			}
+		}
+	}
+
+	if opts.MaxAttempts <= 0 {
+		err := fmt.Errorf("--max-attempts must be greater than 0")
+		if cmd != nil {
+			return exitWithCode(cmd, ExitCodeValidation, err)
+		}
+		return err
+	}
+
+	resolvedEngine, err := resolveEngine(cmd, "engine", opts.Engine, ".")
+	if err != nil {
+		if cmd != nil {
+			return exitWithCode(cmd, ExitCodeValidation, err)
+		}
+		return err
+	}
+	opts.Engine = resolvedEngine
+
+	return runCIFixWithDeps(ctx, opts, out, defaultCIFixDeps)
+}
+
+func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, deps ciFixDeps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	if opts.MaxAttempts <= 0 {
+		return fmt.Errorf("--max-attempts must be greater than 0")
+	}
+
+	if deps.newEngine == nil {
+		deps.newEngine = defaultCIFixDeps.newEngine
+	}
+	if deps.getStatus == nil {
+		deps.getStatus = defaultCIFixDeps.getStatus
+	}
+	if deps.waitForChecks == nil {
+		deps.waitForChecks = defaultCIFixDeps.waitForChecks
+	}
+	if deps.fixWithEngine == nil {
+		deps.fixWithEngine = defaultCIFixDeps.fixWithEngine
+	}
+
+	var (
+		eng      engine.Engine
+		attempts int
+	)
+
+	for attempts < opts.MaxAttempts {
+		status, err := deps.getStatus(ctx)
+		if err != nil {
+			return err
+		}
+
+		if status.Status != ci.StatusFailing {
+			result := ci.FixResult{
+				ContractVersion: ci.FixContractVersion,
+				Attempt:         attempts,
+				MaxAttempts:     opts.MaxAttempts,
+				Applied:         false,
+				Branch:          status.Branch,
+				Pushed:          false,
+				Summary:         fmt.Sprintf("ci status is %s; no fix attempt needed", status.Status),
+			}
+			return writeCIFixResult(out, opts.JSON, result)
+		}
+
+		if eng == nil {
+			created, err := deps.newEngine(opts.Engine)
+			if err != nil {
+				return fmt.Errorf("failed to create engine: %w", err)
+			}
+			eng = created
+		}
+
+		attempt := attempts + 1
+		fixResult, err := deps.fixWithEngine(ctx, status, ci.FixOptions{
+			Engine:      eng,
+			Attempt:     attempt,
+			MaxAttempts: opts.MaxAttempts,
+		})
+		if err != nil {
+			return err
+		}
+
+		verified, err := deps.waitForChecks(ctx, ci.WaitOptions{})
+		if err != nil {
+			return err
+		}
+		if verified.Status == ci.StatusPassing {
+			return writeCIFixResult(out, opts.JSON, fixResult)
+		}
+		if verified.Status != ci.StatusFailing {
+			return fmt.Errorf("ci status is %s after attempt %d; run 'hal ci status --wait' for details", verified.Status, attempt)
+		}
+		if attempt >= opts.MaxAttempts {
+			return fmt.Errorf("ci status is %s after %d attempt(s); run 'hal ci status --wait' for details", verified.Status, attempt)
+		}
+
+		attempts = attempt
+	}
+
+	return fmt.Errorf("ci fix did not run")
+}
+
+func writeCIFixResult(out io.Writer, jsonMode bool, result ci.FixResult) error {
+	if jsonMode {
+		data, marshalErr := json.MarshalIndent(result, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal ci fix result: %w", marshalErr)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	if strings.TrimSpace(result.Summary) != "" {
+		fmt.Fprintln(out, result.Summary)
+	}
+	if strings.TrimSpace(result.CommitSHA) != "" {
+		fmt.Fprintf(out, "Commit: %s\n", result.CommitSHA)
+	}
+	if len(result.FilesChanged) > 0 {
+		fmt.Fprintf(out, "Files changed: %s\n", strings.Join(result.FilesChanged, ", "))
+	}
 	return nil
 }
 

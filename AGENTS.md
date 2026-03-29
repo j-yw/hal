@@ -283,3 +283,9 @@
 - Keep `hal ci status` command-layer orchestration behind `runCIStatusWithDeps` with injectable `getStatus` / `waitForChecks` deps so tests can validate wait and non-wait paths without invoking real git/gh commands.
 - Wire `--wait`, `--timeout`, `--poll-interval`, and `--no-checks-grace` directly into `ci.WaitOptions`; pass zero-value durations through so `internal/ci/status.go` remains the single source of wait defaults.
 - In `--json` mode, emit only the marshaled `ci.StatusResult`; this preserves machine-readable wait terminal reasons (including `no_checks_detected`) without human-text drift.
+
+## Patterns from hal/ci-fix-command-wiring (2026-03-29)
+
+- Keep `hal ci fix` command-layer orchestration behind `runCIFixWithDeps` with injectable `newEngine`, `getStatus`, `waitForChecks`, and `fixWithEngine` deps so retry behavior is deterministic in tests without real engine/git/gh calls.
+- Keep retries in the command layer only: call single-attempt `ci.FixWithEngine` per attempt, wait for fresh CI status between attempts, and stop with actionable errors when status remains non-passing after `--max-attempts`.
+- In `--json` mode, emit only the marshaled `ci.FixResult`; validate `--max-attempts > 0` and resolve engine selection in `runCIFix` before invoking retry orchestration.
