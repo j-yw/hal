@@ -271,3 +271,9 @@
 - Stage 6A `runPRStep` in `internal/compound/pipeline.go` delegates push + PR creation to `internal/ci.PushAndCreatePR`, but still generates title/body in compound so existing PR content stays stable.
 - Keep `--skip-pr` and `--dry-run` branches as early returns before CI delegation to preserve legacy StepPR behavior and avoid remote side effects.
 - `Pipeline` now uses an injectable `pushAndCreatePR` function field; use this seam in unit tests (`internal/compound/pipeline_pr_test.go`) to assert StepPR behavior without invoking real git/gh commands.
+
+## Patterns from hal/ci-command-push-wiring (2026-03-29)
+
+- Keep CI command-layer orchestration behind `run<Cmd>WithDeps` helpers (for example `runCIPushWithDeps`) so tests can stub side-effecting core operations and git lookups deterministically.
+- In `--json` mode, emit pure JSON only (no human-readable lines); lock this with tests that assert valid object-only output.
+- Implement `--dry-run` at the command layer by bypassing core side effects (`PushAndCreatePR`) and returning preview data only.
