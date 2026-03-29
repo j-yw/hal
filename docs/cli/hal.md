@@ -62,13 +62,13 @@ Quick Start:
 
 * [hal analyze](hal_analyze.md)	 - Analyze a report to identify the highest priority item
 * [hal archive](hal_archive.md)	 - Archive current feature state
-* [hal auto](hal_auto.md)	 - Run the full compound engineering pipeline
+* [hal auto](hal_auto.md)	 - Run the single deterministic auto pipeline
 * [hal cleanup](hal_cleanup.md)	 - Remove orphaned and deprecated files
 * [hal config](hal_config.md)	 - Show current configuration
 * [hal continue](hal_continue.md)	 - Show what to do next
 * [hal convert](hal_convert.md)	 - Convert markdown PRD to JSON
 * [hal doctor](hal_doctor.md)	 - Check Hal readiness and environment health
-* [hal explode](hal_explode.md)	 - Break a PRD into granular tasks for autonomous execution
+* [hal explode](hal_explode.md)	 - Deprecated shim for 'hal convert --granular'
 * [hal init](hal_init.md)	 - Initialize .hal/ directory
 * [hal links](hal_links.md)	 - Manage engine skill links
 * [hal plan](hal_plan.md)	 - Generate a PRD interactively
