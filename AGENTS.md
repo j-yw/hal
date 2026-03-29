@@ -314,3 +314,9 @@
 
 - Command-level integration tests for `hal convert` can stay deterministic by registering a test-only engine via `engine.RegisterEngine`, invoking `cmd.Root()` with real args, and asserting the written `.hal/prd.json` artifact rather than mocking command internals.
 - Integration tests that execute through the shared Cobra tree should reset command flag `Changed` state plus package-level flag vars (for example convert flags) in `t.Cleanup` to avoid cross-test leakage.
+
+## Patterns from compound/explode-shim-integration (2026-03-29)
+
+- Command-level integration tests for `hal explode` should execute through `cmd.Root()` with a registered test engine and assert stderr includes the exact deprecation warning string.
+- Explode compatibility coverage should verify canonical output is written to `.hal/prd.json` and that legacy `.hal/auto-prd.json` output is not recreated.
+- Reset explode command flag `Changed` state and package-level explode flag vars in cleanup to prevent shared Cobra-state leakage across integration tests.
