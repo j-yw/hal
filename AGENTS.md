@@ -252,6 +252,7 @@
 - `hal auto` now accepts at most one positional markdown path (`auto [prd-path]`), so command arg contracts should use `maxArgsValidation(1)` and include a dedicated args test for zero/one/two-arg cases.
 - Pipeline start-state selection belongs in `newInitialState(opts)`: with `SourceMarkdown`, set `step=branch`, keep `sourceMarkdown`, and derive `branchName` via `prd.ResolveMarkdownBranchName`; without it, start at `step=analyze`.
 - Auto report preflight (`FindLatestReport`) must be skipped when a positional markdown source is provided, and dry-run command tests should lock both entry flows (`analyze -> spec -> branch -> convert` vs `branch -> convert`).
+- Command-level integration coverage for positional markdown entry should run through `cmd.Root()` with `hal auto --dry-run <prd-path>`, assert branch slug derivation from markdown title plus skipped analyze/spec steps, and reset root/flag state between tests to avoid shared Cobra state leakage.
 
 ## Patterns from compound/auto-json-v2-resume-guards (2026-03-29)
 
