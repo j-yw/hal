@@ -301,3 +301,9 @@
 
 - Auto archive-step execution should call `archive.CreateWithOptions` (via an injectable wrapper like `createArchiveWithOptions`) and pass `state.ReportPath` through `CreateOptions.ExcludePaths` so the newest generated report is preserved.
 - Resolve relative `state.ReportPath` values against the pipeline working dir (`p.dir`) before passing exclusions to archive helpers; `archive` normalizes excludes against process CWD, so unresolved relative paths can miss the intended file in tests/multi-dir callers.
+
+## Patterns from hal/embedded-skill-guidance-refresh (2026-03-29)
+
+- Embedded conversion skills should describe `.hal/prd.json` as the canonical runtime output for the single auto pipeline, including compatibility flows.
+- Keep the embedded `explode` skill explicitly marked deprecated and direct users to `hal convert --granular` so skill guidance stays aligned with CLI behavior.
+- Text-only updates under `internal/skills/*/SKILL.md` do not require `internal/skills/embed.go` changes as long as skill directory names remain unchanged; run `go test ./internal/skills` to verify embed references still resolve.

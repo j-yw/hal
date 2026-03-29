@@ -1,18 +1,23 @@
 ---
 name: hal
-description: Convert a markdown PRD to prd.json format for Hal's autonomous execution pipeline.
+description: Convert markdown PRDs into canonical .hal/prd.json for Hal's single auto pipeline runtime.
 disable-model-invocation: true
 ---
 
 # Hal PRD Converter
 
-Convert a markdown PRD from `.hal/prd-*.md` to `.hal/prd.json`.
+Convert a markdown PRD into canonical `.hal/prd.json`.
+
+`.hal/prd.json` is the runtime PRD source for `hal auto` and all downstream pipeline gates. Do **not** write `.hal/auto-prd.json`.
 
 ## Process
 
-1. Find the PRD: look in `.hal/` for `prd-*.md` files (use most recent if multiple)
-2. Convert each requirement into a user story in the JSON format below
-3. Validate stories against the rules below
+1. Resolve source markdown:
+   - If an explicit PRD markdown path is provided, use it.
+   - Otherwise, discover the newest `.hal/prd-*.md` file.
+2. Convert each requirement into a user story in the JSON format below.
+3. Validate stories against the rules below.
+4. Write the result to `.hal/prd.json`.
 
 ## Output Format
 
