@@ -226,3 +226,9 @@
 - Legacy auto-state mappings are explicit and literal: `prd -> spec`, `explode -> convert`, `loop -> run`, `pr -> ci`, and `prdPath -> sourceMarkdown` when canonical `sourceMarkdown` is absent.
 - Keep save/load contracts asymmetric during migration: `saveState` writes only unified fields (`sourceMarkdown`, `validation`, `run`, `review`, `ci`), while `loadState` accepts both unified and legacy keys.
 - Lock migration behavior with focused state tests that assert both legacy mapping paths and round-trip JSON key presence/absence (new keys present, legacy keys omitted).
+
+## Patterns from hal/explode-convert-shim (2026-03-29)
+
+- Keep `cmd/explode.go` as a thin compatibility shim: call conversion through `prd.ConvertWithEngine` with `prd.ConvertOptions{Granular: true, BranchName: explodeBranchFlag}` and always target canonical output `filepath.Join(template.HalDir, template.PRDFile)`.
+- The explode deprecation warning is part of the compatibility contract and must be emitted to stderr exactly as `warning: 'hal explode' is deprecated; use 'hal convert --granular'.`.
+- Preserve explode machine output compatibility with the existing `ExplodeResult` JSON shape even while routing execution through convert logic.
