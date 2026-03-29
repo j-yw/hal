@@ -253,6 +253,7 @@
 - Pipeline start-state selection belongs in `newInitialState(opts)`: with `SourceMarkdown`, set `step=branch`, keep `sourceMarkdown`, and derive `branchName` via `prd.ResolveMarkdownBranchName`; without it, start at `step=analyze`.
 - Auto report preflight (`FindLatestReport`) must be skipped when a positional markdown source is provided, and dry-run command tests should lock both entry flows (`analyze -> spec -> branch -> convert` vs `branch -> convert`).
 - Command-level integration coverage for positional markdown entry should run through `cmd.Root()` with `hal auto --dry-run <prd-path>`, assert branch slug derivation from markdown title plus skipped analyze/spec steps, and reset root/flag state between tests to avoid shared Cobra state leakage.
+- Command-level integration coverage for report-driven entry should run through `cmd.Root()` with `hal auto --dry-run --report <report>`, assert step order `analyze -> spec -> branch -> convert`, and keep fixture reports local to the temp test directory for deterministic behavior.
 
 ## Patterns from compound/auto-json-v2-resume-guards (2026-03-29)
 

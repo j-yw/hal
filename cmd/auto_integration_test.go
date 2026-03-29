@@ -115,3 +115,59 @@ func TestAutoDryRunWithPositionalMarkdownInput(t *testing.T) {
 		t.Fatalf("positional markdown input should skip spec, output=%q", output)
 	}
 }
+
+func TestAutoDryRunWithoutPositionalMarkdownInput(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Integration Report\n"), 0644); err != nil {
+		t.Fatalf("write report fixture: %v", err)
+	}
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+	})
+
+	root := Root()
+	origOut := root.OutOrStdout()
+	origErr := root.ErrOrStderr()
+	origIn := root.InOrStdin()
+	t.Cleanup(func() {
+		root.SetOut(origOut)
+		root.SetErr(origErr)
+		root.SetIn(origIn)
+		root.SetArgs(nil)
+	})
+
+	resetAutoFlagsForIntegrationTest()
+	t.Cleanup(resetAutoFlagsForIntegrationTest)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"auto", "--dry-run", "--report", filepath.Base(reportPath)})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("hal auto --dry-run failed: %v\nstderr: %s\nstdout: %s", err, stderr.String(), stdout.String())
+	}
+
+	output := stdout.String()
+	analyzeIdx := strings.Index(output, "Step: analyze")
+	specIdx := strings.Index(output, "Step: spec")
+	branchIdx := strings.Index(output, "Step: branch")
+	convertIdx := strings.Index(output, "Step: convert")
+
+	if analyzeIdx == -1 || specIdx == -1 || branchIdx == -1 || convertIdx == -1 {
+		t.Fatalf("missing expected step sequence in output: %q", output)
+	}
+	if !(analyzeIdx < specIdx && specIdx < branchIdx && branchIdx < convertIdx) {
+		t.Fatalf("unexpected step order, got output: %q", output)
+	}
+}
