@@ -297,3 +297,8 @@
 - Keep `hal ci merge` command-layer orchestration behind `runCIMergeWithDeps` with injectable `mergePR` and `currentBranch` deps so tests can verify flag wiring and dry-run behavior without real git/gh side effects.
 - Implement merge `--dry-run` at the command layer by bypassing `ci.MergePR` and returning a preview `ci.MergeResult`; this guarantees no merge/delete side effects in preview mode.
 - In `--json` mode, emit only the marshaled `ci.MergeResult`; lock this with tests to prevent human-readable output from leaking into machine contracts.
+
+## Patterns from hal/ci-doc-discoverability (2026-03-29)
+
+- When adding or changing `hal ci` command surfaces, update the README command tables and machine-contract links together so human docs stay aligned with generated and machine-readable docs.
+- Regenerate CLI docs with `make docs-cli` and verify with `make docs-check`; commit both new command pages (`docs/cli/hal_ci*.md`) and any updated parent pages (for example `docs/cli/hal.md`).
