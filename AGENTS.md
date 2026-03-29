@@ -252,3 +252,9 @@
 - Keep CI push/PR orchestration behind `pushAndCreatePRWithDeps` in `internal/ci/push.go` so tests can inject git/GitHub behavior without spawning real CLIs.
 - Reuse existing pull requests by querying `head=<owner>:<branch>` before creation; this prevents duplicate PRs for the same branch.
 - Model draft preference as pointer-based options (`PushOptions.Draft *bool`) so default behavior (`nil => draft=true`) stays distinct from an explicit non-draft request (`false`).
+
+## Patterns from hal/ci-fix-single-attempt-safety (2026-03-29)
+
+- Keep CI fix core behavior in `internal/ci/fix.go` as a **single attempt** (`FixWithEngine`), with command-layer retry loops built on top of it.
+- Enforce fix safety guards before running the engine: aggregated status must be `failing`, engine must be non-nil, and the working tree must be clean by default (including untracked files via `git status --porcelain --untracked-files=all`).
+- After engine execution, require real file changes before staging/commit/push; if no files changed, return `ErrFixNoChanges` and create no commit.
