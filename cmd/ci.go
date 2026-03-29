@@ -29,6 +29,12 @@ var (
 	ciFixMaxAttemptsFlag int
 	ciFixEngineFlag      string
 	ciFixJSONFlag        bool
+
+	ciMergeStrategyFlag      string
+	ciMergeDeleteBranchFlag  bool
+	ciMergeAllowNoChecksFlag bool
+	ciMergeDryRunFlag        bool
+	ciMergeJSONFlag          bool
 )
 
 var ciCmd = &cobra.Command{
@@ -40,11 +46,13 @@ Use subcommands to push branches, inspect CI status, apply fixes, and merge safe
 
 Examples:
   hal ci push
-  hal ci push --dry-run
-  hal ci push --json`,
+  hal ci status --wait
+  hal ci fix --max-attempts 2
+  hal ci merge --strategy squash`,
 	Example: `  hal ci push
-  hal ci push --dry-run
-  hal ci push --json`,
+  hal ci status --wait
+  hal ci fix --max-attempts 2
+  hal ci merge --strategy squash`,
 }
 
 var ciPushCmd = &cobra.Command{
@@ -93,6 +101,23 @@ continuing. Use --json for machine-readable output.`,
 	RunE: runCIFix,
 }
 
+var ciMergeCmd = &cobra.Command{
+	Use:   "merge",
+	Short: "Merge the open pull request for the current branch",
+	Args:  noArgsValidation(),
+	Long: `Merge the open pull request for the current branch with CI safety guards.
+
+By default this command uses the squash strategy and requires passing CI
+status. Use --allow-no-checks only when you intentionally want to override
+no-check safety guards. Use --dry-run to preview behavior without merge or
+remote branch deletion side effects. Use --json for machine-readable output.`,
+	Example: `  hal ci merge
+  hal ci merge --strategy rebase
+  hal ci merge --delete-branch
+  hal ci merge --dry-run --json`,
+	RunE: runCIMerge,
+}
+
 func init() {
 	ciPushCmd.Flags().BoolVar(&ciPushDryRunFlag, "dry-run", false, "Preview push/PR behavior without remote side effects")
 	ciPushCmd.Flags().BoolVar(&ciPushJSONFlag, "json", false, "Output machine-readable JSON result")
@@ -107,9 +132,16 @@ func init() {
 	ciFixCmd.Flags().StringVarP(&ciFixEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	ciFixCmd.Flags().BoolVar(&ciFixJSONFlag, "json", false, "Output machine-readable JSON result")
 
+	ciMergeCmd.Flags().StringVar(&ciMergeStrategyFlag, "strategy", "squash", "Merge strategy (squash, merge, rebase)")
+	ciMergeCmd.Flags().BoolVar(&ciMergeDeleteBranchFlag, "delete-branch", false, "Delete remote branch after successful merge")
+	ciMergeCmd.Flags().BoolVar(&ciMergeAllowNoChecksFlag, "allow-no-checks", false, "Allow merge when no CI checks are discovered")
+	ciMergeCmd.Flags().BoolVar(&ciMergeDryRunFlag, "dry-run", false, "Preview merge behavior without merge or remote branch deletion side effects")
+	ciMergeCmd.Flags().BoolVar(&ciMergeJSONFlag, "json", false, "Output machine-readable JSON result")
+
 	ciCmd.AddCommand(ciPushCmd)
 	ciCmd.AddCommand(ciStatusCmd)
 	ciCmd.AddCommand(ciFixCmd)
+	ciCmd.AddCommand(ciMergeCmd)
 	rootCmd.AddCommand(ciCmd)
 }
 
@@ -164,6 +196,24 @@ type ciFixRunOptions struct {
 	MaxAttempts int
 	Engine      string
 	JSON        bool
+}
+
+type ciMergeDeps struct {
+	mergePR       func(context.Context, ci.MergeOptions) (ci.MergeResult, error)
+	currentBranch func(context.Context) (string, error)
+}
+
+var defaultCIMergeDeps = ciMergeDeps{
+	mergePR:       ci.MergePR,
+	currentBranch: ciCurrentBranch,
+}
+
+type ciMergeRunOptions struct {
+	Strategy      string
+	DeleteBranch  bool
+	AllowNoChecks bool
+	DryRun        bool
+	JSON          bool
 }
 
 func runCIPush(cmd *cobra.Command, args []string) error {
@@ -527,6 +577,144 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 	}
 
 	return fmt.Errorf("ci fix did not run")
+}
+
+func runCIMerge(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	if cmd != nil && cmd.Context() != nil {
+		ctx = cmd.Context()
+	}
+
+	out := io.Writer(os.Stdout)
+	opts := ciMergeRunOptions{
+		Strategy:      ciMergeStrategyFlag,
+		DeleteBranch:  ciMergeDeleteBranchFlag,
+		AllowNoChecks: ciMergeAllowNoChecksFlag,
+		DryRun:        ciMergeDryRunFlag,
+		JSON:          ciMergeJSONFlag,
+	}
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if flags := cmd.Flags(); flags != nil {
+			if flags.Lookup("strategy") != nil {
+				v, err := flags.GetString("strategy")
+				if err != nil {
+					return err
+				}
+				opts.Strategy = v
+			}
+			if flags.Lookup("delete-branch") != nil {
+				v, err := flags.GetBool("delete-branch")
+				if err != nil {
+					return err
+				}
+				opts.DeleteBranch = v
+			}
+			if flags.Lookup("allow-no-checks") != nil {
+				v, err := flags.GetBool("allow-no-checks")
+				if err != nil {
+					return err
+				}
+				opts.AllowNoChecks = v
+			}
+			if flags.Lookup("dry-run") != nil {
+				v, err := flags.GetBool("dry-run")
+				if err != nil {
+					return err
+				}
+				opts.DryRun = v
+			}
+			if flags.Lookup("json") != nil {
+				v, err := flags.GetBool("json")
+				if err != nil {
+					return err
+				}
+				opts.JSON = v
+			}
+		}
+	}
+
+	return runCIMergeWithDeps(ctx, opts, out, defaultCIMergeDeps)
+}
+
+func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writer, deps ciMergeDeps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	if deps.mergePR == nil {
+		deps.mergePR = defaultCIMergeDeps.mergePR
+	}
+	if deps.currentBranch == nil {
+		deps.currentBranch = defaultCIMergeDeps.currentBranch
+	}
+
+	strategy := strings.ToLower(strings.TrimSpace(opts.Strategy))
+	if strategy == "" {
+		strategy = "squash"
+	}
+
+	var (
+		result ci.MergeResult
+		err    error
+	)
+
+	if opts.DryRun {
+		branch, branchErr := deps.currentBranch(ctx)
+		if branchErr != nil {
+			return branchErr
+		}
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			return fmt.Errorf("get current branch: empty branch name")
+		}
+
+		summary := fmt.Sprintf("dry-run: would merge pull request for branch %s using %s strategy", branch, strategy)
+		if opts.DeleteBranch {
+			summary += " and delete the remote branch"
+		}
+
+		result = ci.MergeResult{
+			ContractVersion: ci.MergeContractVersion,
+			Strategy:        strategy,
+			DryRun:          true,
+			Merged:          false,
+			BranchDeleted:   false,
+			Summary:         summary,
+		}
+	} else {
+		result, err = deps.mergePR(ctx, ci.MergeOptions{
+			Strategy:      strategy,
+			DeleteBranch:  opts.DeleteBranch,
+			AllowNoChecks: opts.AllowNoChecks,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	if opts.JSON {
+		data, marshalErr := json.MarshalIndent(result, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal ci merge result: %w", marshalErr)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	if strings.TrimSpace(result.Summary) != "" {
+		fmt.Fprintln(out, result.Summary)
+	}
+	if !result.DryRun && strings.TrimSpace(result.MergeCommitSHA) != "" {
+		fmt.Fprintf(out, "Merge commit: %s\n", result.MergeCommitSHA)
+	}
+	if !result.DryRun && strings.TrimSpace(result.DeleteWarning) != "" {
+		fmt.Fprintf(out, "Warning: %s\n", result.DeleteWarning)
+	}
+	return nil
 }
 
 func writeCIFixResult(out io.Writer, jsonMode bool, result ci.FixResult) error {

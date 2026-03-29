@@ -289,3 +289,9 @@
 - Keep `hal ci fix` command-layer orchestration behind `runCIFixWithDeps` with injectable `newEngine`, `getStatus`, `waitForChecks`, and `fixWithEngine` deps so retry behavior is deterministic in tests without real engine/git/gh calls.
 - Keep retries in the command layer only: call single-attempt `ci.FixWithEngine` per attempt, wait for fresh CI status between attempts, and stop with actionable errors when status remains non-passing after `--max-attempts`.
 - In `--json` mode, emit only the marshaled `ci.FixResult`; validate `--max-attempts > 0` and resolve engine selection in `runCIFix` before invoking retry orchestration.
+
+## Patterns from hal/ci-merge-command-wiring (2026-03-29)
+
+- Keep `hal ci merge` command-layer orchestration behind `runCIMergeWithDeps` with injectable `mergePR` and `currentBranch` deps so tests can verify flag wiring and dry-run behavior without real git/gh side effects.
+- Implement merge `--dry-run` at the command layer by bypassing `ci.MergePR` and returning a preview `ci.MergeResult`; this guarantees no merge/delete side effects in preview mode.
+- In `--json` mode, emit only the marshaled `ci.MergeResult`; lock this with tests to prevent human-readable output from leaking into machine contracts.

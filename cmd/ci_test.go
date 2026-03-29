@@ -49,6 +49,13 @@ func preserveCIPushGlobals(t *testing.T) {
 	origFixJSON := ciFixJSONFlag
 	origFixDeps := defaultCIFixDeps
 
+	origMergeStrategy := ciMergeStrategyFlag
+	origMergeDeleteBranch := ciMergeDeleteBranchFlag
+	origMergeAllowNoChecks := ciMergeAllowNoChecksFlag
+	origMergeDryRun := ciMergeDryRunFlag
+	origMergeJSON := ciMergeJSONFlag
+	origMergeDeps := defaultCIMergeDeps
+
 	t.Cleanup(func() {
 		ciPushDryRunFlag = origDryRun
 		ciPushJSONFlag = origJSON
@@ -65,6 +72,13 @@ func preserveCIPushGlobals(t *testing.T) {
 		ciFixEngineFlag = origFixEngine
 		ciFixJSONFlag = origFixJSON
 		defaultCIFixDeps = origFixDeps
+
+		ciMergeStrategyFlag = origMergeStrategy
+		ciMergeDeleteBranchFlag = origMergeDeleteBranch
+		ciMergeAllowNoChecksFlag = origMergeAllowNoChecks
+		ciMergeDryRunFlag = origMergeDryRun
+		ciMergeJSONFlag = origMergeJSON
+		defaultCIMergeDeps = origMergeDeps
 	})
 }
 
@@ -196,6 +210,60 @@ func TestCICommandMetadataAndFlags(t *testing.T) {
 	}
 	if err := ciFixCmd.Args(ciFixCmd, []string{"unexpected"}); err == nil {
 		t.Fatal("ci fix command should fail on positional arguments")
+	}
+
+	if ciMergeCmd.Use != "merge" {
+		t.Fatalf("ciMergeCmd.Use = %q, want %q", ciMergeCmd.Use, "merge")
+	}
+	if !strings.Contains(ciMergeCmd.Example, "hal ci merge") {
+		t.Fatalf("ciMergeCmd.Example should include command path, got %q", ciMergeCmd.Example)
+	}
+
+	strategyFlag := ciMergeCmd.Flags().Lookup("strategy")
+	if strategyFlag == nil {
+		t.Fatal("ci merge command missing --strategy flag")
+	}
+	if strategyFlag.DefValue != "squash" {
+		t.Fatalf("ci merge --strategy default = %q, want %q", strategyFlag.DefValue, "squash")
+	}
+
+	deleteBranchFlag := ciMergeCmd.Flags().Lookup("delete-branch")
+	if deleteBranchFlag == nil {
+		t.Fatal("ci merge command missing --delete-branch flag")
+	}
+	if deleteBranchFlag.DefValue != "false" {
+		t.Fatalf("ci merge --delete-branch default = %q, want %q", deleteBranchFlag.DefValue, "false")
+	}
+
+	allowNoChecksFlag := ciMergeCmd.Flags().Lookup("allow-no-checks")
+	if allowNoChecksFlag == nil {
+		t.Fatal("ci merge command missing --allow-no-checks flag")
+	}
+	if allowNoChecksFlag.DefValue != "false" {
+		t.Fatalf("ci merge --allow-no-checks default = %q, want %q", allowNoChecksFlag.DefValue, "false")
+	}
+
+	mergeDryRunFlag := ciMergeCmd.Flags().Lookup("dry-run")
+	if mergeDryRunFlag == nil {
+		t.Fatal("ci merge command missing --dry-run flag")
+	}
+	if mergeDryRunFlag.DefValue != "false" {
+		t.Fatalf("ci merge --dry-run default = %q, want %q", mergeDryRunFlag.DefValue, "false")
+	}
+
+	mergeJSONFlag := ciMergeCmd.Flags().Lookup("json")
+	if mergeJSONFlag == nil {
+		t.Fatal("ci merge command missing --json flag")
+	}
+	if mergeJSONFlag.DefValue != "false" {
+		t.Fatalf("ci merge --json default = %q, want %q", mergeJSONFlag.DefValue, "false")
+	}
+
+	if ciMergeCmd.Args == nil {
+		t.Fatal("ci merge command should reject positional arguments")
+	}
+	if err := ciMergeCmd.Args(ciMergeCmd, []string{"unexpected"}); err == nil {
+		t.Fatal("ci merge command should fail on positional arguments")
 	}
 }
 
@@ -738,5 +806,178 @@ func TestRunCIFix_UsesCommandFlagValues(t *testing.T) {
 	}
 	if got.Branch != "hal/from-flags" {
 		t.Fatalf("branch = %q, want %q", got.Branch, "hal/from-flags")
+	}
+}
+
+func TestRunCIMergeWithDeps_JSONOnlyOutput(t *testing.T) {
+	want := ci.MergeResult{
+		ContractVersion: ci.MergeContractVersion,
+		PRNumber:        77,
+		Strategy:        "rebase",
+		DryRun:          false,
+		Merged:          true,
+		MergeCommitSHA:  "deadbeef",
+		BranchDeleted:   true,
+		Summary:         "merged pull request #77 using rebase strategy and deleted the remote branch",
+	}
+
+	var buf bytes.Buffer
+	err := runCIMergeWithDeps(context.Background(), ciMergeRunOptions{Strategy: "rebase", DeleteBranch: true, JSON: true}, &buf, ciMergeDeps{
+		mergePR: func(_ context.Context, opts ci.MergeOptions) (ci.MergeResult, error) {
+			if opts.Strategy != "rebase" {
+				t.Fatalf("opts.Strategy = %q, want %q", opts.Strategy, "rebase")
+			}
+			if !opts.DeleteBranch {
+				t.Fatal("opts.DeleteBranch = false, want true")
+			}
+			return want, nil
+		},
+		currentBranch: func(context.Context) (string, error) {
+			t.Fatal("currentBranch should not be called when dry-run=false")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIMergeWithDeps() error = %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if !strings.HasPrefix(output, "{") || !strings.HasSuffix(output, "}") {
+		t.Fatalf("expected JSON-only output, got %q", output)
+	}
+	if strings.Contains(output, "Merge commit:") {
+		t.Fatalf("JSON output should not include human text, got %q", output)
+	}
+
+	var got ci.MergeResult
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("failed to unmarshal JSON output: %v", err)
+	}
+	if got.ContractVersion != ci.MergeContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", got.ContractVersion, ci.MergeContractVersion)
+	}
+	if got.PRNumber != want.PRNumber {
+		t.Fatalf("prNumber = %d, want %d", got.PRNumber, want.PRNumber)
+	}
+	if got.Strategy != want.Strategy {
+		t.Fatalf("strategy = %q, want %q", got.Strategy, want.Strategy)
+	}
+	if got.MergeCommitSHA != want.MergeCommitSHA {
+		t.Fatalf("mergeCommitSha = %q, want %q", got.MergeCommitSHA, want.MergeCommitSHA)
+	}
+}
+
+func TestRunCIMergeWithDeps_DryRunSkipsSideEffects(t *testing.T) {
+	mergeCalls := 0
+
+	var buf bytes.Buffer
+	err := runCIMergeWithDeps(context.Background(), ciMergeRunOptions{Strategy: "merge", DeleteBranch: true, DryRun: true}, &buf, ciMergeDeps{
+		mergePR: func(context.Context, ci.MergeOptions) (ci.MergeResult, error) {
+			mergeCalls++
+			return ci.MergeResult{}, nil
+		},
+		currentBranch: func(context.Context) (string, error) {
+			return "hal/ci-merge", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIMergeWithDeps() error = %v", err)
+	}
+	if mergeCalls != 0 {
+		t.Fatalf("mergePR called %d times, want 0 in dry-run", mergeCalls)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "dry-run: would merge pull request for branch hal/ci-merge using merge strategy and delete the remote branch") {
+		t.Fatalf("dry-run output %q missing expected preview text", output)
+	}
+	if strings.Contains(strings.TrimSpace(output), "{") {
+		t.Fatalf("dry-run human output should not be JSON, got %q", output)
+	}
+}
+
+func TestRunCIMerge_UsesCommandFlagValues(t *testing.T) {
+	preserveCIPushGlobals(t)
+
+	ciMergeStrategyFlag = "squash"
+	ciMergeDeleteBranchFlag = false
+	ciMergeAllowNoChecksFlag = false
+	ciMergeDryRunFlag = false
+	ciMergeJSONFlag = false
+
+	mergeCalled := false
+	captured := ci.MergeOptions{}
+	defaultCIMergeDeps = ciMergeDeps{
+		mergePR: func(_ context.Context, opts ci.MergeOptions) (ci.MergeResult, error) {
+			mergeCalled = true
+			captured = opts
+			return ci.MergeResult{
+				ContractVersion: ci.MergeContractVersion,
+				PRNumber:        88,
+				Strategy:        opts.Strategy,
+				DryRun:          false,
+				Merged:          true,
+				MergeCommitSHA:  "cafebabe",
+				BranchDeleted:   opts.DeleteBranch,
+				Summary:         "merged pull request #88",
+			}, nil
+		},
+		currentBranch: func(context.Context) (string, error) {
+			return "hal/unused", nil
+		},
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{Use: "merge"}
+	cmd.SetOut(&out)
+	cmd.Flags().String("strategy", "squash", "")
+	cmd.Flags().Bool("delete-branch", false, "")
+	cmd.Flags().Bool("allow-no-checks", false, "")
+	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("strategy", "rebase"); err != nil {
+		t.Fatalf("set --strategy: %v", err)
+	}
+	if err := cmd.Flags().Set("delete-branch", "true"); err != nil {
+		t.Fatalf("set --delete-branch: %v", err)
+	}
+	if err := cmd.Flags().Set("allow-no-checks", "true"); err != nil {
+		t.Fatalf("set --allow-no-checks: %v", err)
+	}
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set --json: %v", err)
+	}
+
+	if err := runCIMerge(cmd, nil); err != nil {
+		t.Fatalf("runCIMerge() error = %v", err)
+	}
+	if !mergeCalled {
+		t.Fatal("runCIMerge should call mergePR when dry-run=false")
+	}
+	if captured.Strategy != "rebase" {
+		t.Fatalf("merge options strategy = %q, want %q", captured.Strategy, "rebase")
+	}
+	if !captured.DeleteBranch {
+		t.Fatal("merge options deleteBranch = false, want true")
+	}
+	if !captured.AllowNoChecks {
+		t.Fatal("merge options allowNoChecks = false, want true")
+	}
+
+	var got ci.MergeResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("runCIMerge JSON output parse failed: %v\noutput: %s", err, out.String())
+	}
+	if got.ContractVersion != ci.MergeContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", got.ContractVersion, ci.MergeContractVersion)
+	}
+	if got.Strategy != "rebase" {
+		t.Fatalf("strategy = %q, want %q", got.Strategy, "rebase")
+	}
+	if got.PRNumber != 88 {
+		t.Fatalf("prNumber = %d, want 88", got.PRNumber)
+	}
+	if got.DryRun {
+		t.Fatal("dryRun = true, want false")
 	}
 }
