@@ -22,6 +22,11 @@ var stateFileName = template.AutoStateFile
 // convertWithEngine points to prd.ConvertWithEngine and is overridden in tests.
 var convertWithEngine = prd.ConvertWithEngine
 
+// validateWithEngine points to prd.ValidateWithEngine and is overridden in tests.
+var validateWithEngine = prd.ValidateWithEngine
+
+const maxValidationAttempts = 3
+
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
 	config       *AutoConfig
@@ -224,6 +229,8 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			err = p.runBranchStep(ctx, state, opts)
 		case StepConvert:
 			err = p.runExplodeStep(ctx, state, opts)
+		case StepValidate:
+			err = p.runValidateStep(ctx, state, opts)
 		case StepRun:
 			err = p.runLoopStep(ctx, state, opts)
 		case StepCI:
@@ -538,7 +545,7 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would convert PRD to: %s\n", outPath)
-		state.Step = StepLoop
+		state.Step = StepValidate
 		return nil
 	}
 
@@ -557,7 +564,75 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 	}
 
 	// Save state and advance to next step
-	state.Step = StepLoop
+	state.Step = StepValidate
+	if err := p.saveState(state); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
+// runValidateStep validates the converted PRD and triggers bounded repair retries.
+func (p *Pipeline) runValidateStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
+	p.display.ShowInfo("   Step: validate\n")
+
+	if state.Validation == nil {
+		state.Validation = &ValidationState{}
+	}
+
+	if opts.DryRun {
+		p.display.ShowInfo("   [dry-run] Would validate granular PRD at %s\n", filepath.Join(template.HalDir, template.PRDFile))
+		state.Validation.Attempts++
+		state.Validation.Status = "passed"
+		state.Step = StepRun
+		return nil
+	}
+
+	prdPath := filepath.Join(p.dir, template.HalDir, template.PRDFile)
+
+	state.Validation.Attempts++
+	attempt := state.Validation.Attempts
+
+	p.display.ShowInfo("   Validating granular PRD (attempt %d/%d)...\n", attempt, maxValidationAttempts)
+	result, err := validateWithEngine(ctx, p.engine, prdPath, p.display)
+	if err != nil {
+		state.Validation.Status = "failed"
+		if attempt >= maxValidationAttempts {
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("PRD validation failed after %d attempts: %w (also failed to save state: %v)", maxValidationAttempts, err, saveErr)
+			}
+			return fmt.Errorf("PRD validation failed after %d attempts: %w", maxValidationAttempts, err)
+		}
+
+		state.Validation.Status = "repairing"
+		state.Step = StepConvert
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to save validation retry state: %w", saveErr)
+		}
+		p.display.ShowInfo("   Validation failed (attempt %d/%d); re-running convert for repair.\n", attempt, maxValidationAttempts)
+		return nil
+	}
+
+	if !result.Valid {
+		state.Validation.Status = "failed"
+		if attempt >= maxValidationAttempts {
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("PRD validation failed after %d attempts (also failed to save state: %v)", maxValidationAttempts, saveErr)
+			}
+			return fmt.Errorf("PRD validation failed after %d attempts", maxValidationAttempts)
+		}
+
+		state.Validation.Status = "repairing"
+		state.Step = StepConvert
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to save validation retry state: %w", saveErr)
+		}
+		p.display.ShowInfo("   Validation failed (attempt %d/%d); re-running convert for repair.\n", attempt, maxValidationAttempts)
+		return nil
+	}
+
+	state.Validation.Status = "passed"
+	state.Step = StepRun
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}

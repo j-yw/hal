@@ -264,3 +264,10 @@
 - Convert step calls must pin deterministic options: `prd.ConvertOptions{Granular: true, BranchName: state.BranchName}` and canonical output path `.hal/prd.json`.
 - After convert, fail fast if `state.branchName` and `.hal/prd.json` `branchName` diverge (or the file is missing `branchName`), and return an actionable remediation message (for example rerun `hal convert --granular --branch <branch>` before resume).
 - Cover post-convert invariant behavior with focused tests for matching branch success, mismatched branch failure, and missing-branch failure.
+
+## Patterns from compound/validate-gate-bounded-repairs (2026-03-29)
+
+- Auto pipeline execution should include an explicit `validate` step between `convert` and `run`; convert advances to `StepValidate`, and validation retries route back to `StepConvert`.
+- Keep validation testable via an injectable `validateWithEngine` variable (defaulting to `prd.ValidateWithEngine`) so pipeline tests can simulate pass/fail/error outcomes without invoking real engines.
+- Persist validation telemetry in `state.Validation` on every attempt (`attempts` counter + status values like `repairing`, `passed`, `failed`) so resumes and JSON reporting can reflect gate progress.
+- Bound validation retries with a single shared limit (currently 3 attempts); on non-terminal failures, save state and retry convert, and on terminal failure, save failed telemetry before returning an actionable blocking error.

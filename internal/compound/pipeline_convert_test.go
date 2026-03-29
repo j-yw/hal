@@ -76,16 +76,16 @@ func TestRunConvertStep_UsesGranularPinnedBranchAndPersistsState(t *testing.T) {
 		t.Fatalf("convert BranchName = %q, want %q", gotOpts.BranchName, state.BranchName)
 	}
 
-	if state.Step != StepLoop {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepLoop)
+	if state.Step != StepValidate {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepValidate)
 	}
 
 	saved := pipeline.loadState()
 	if saved == nil {
 		t.Fatal("expected pipeline state to be saved")
 	}
-	if saved.Step != StepLoop {
-		t.Fatalf("saved.Step = %q, want %q", saved.Step, StepLoop)
+	if saved.Step != StepValidate {
+		t.Fatalf("saved.Step = %q, want %q", saved.Step, StepValidate)
 	}
 	if saved.BranchName != state.BranchName {
 		t.Fatalf("saved.BranchName = %q, want %q", saved.BranchName, state.BranchName)
