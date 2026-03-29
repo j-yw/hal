@@ -216,3 +216,9 @@
 
 - Keep sandbox lifecycle status values centralized in `internal/sandbox/types.go` constants (`StatusRunning`, `StatusStopped`, `StatusUnknown`) instead of duplicating string literals across commands/providers.
 - `SandboxState` JSON tags are camelCase with selective `omitempty`; preserve this contract with focused marshal/unmarshal key assertions in `internal/sandbox/types_test.go` when adding or renaming fields.
+
+## Patterns from hal/ci-shared-types-contracts (2026-03-29)
+
+- Keep CI machine-output structs centralized in `internal/ci/types.go` (push/status/fix/merge) so command handlers and pipeline integrations share one schema source of truth.
+- Lock CI contract stability with both explicit `json` tags on every exported field and tests that assert required JSON keys plus marshal/unmarshal round-trip behavior (see `internal/ci/types_test.go`).
+- Keep contract/version and wait-terminal-reason string values as package constants to avoid drift across commands, docs, and tests.
