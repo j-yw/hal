@@ -320,3 +320,9 @@
 - Command-level integration tests for `hal explode` should execute through `cmd.Root()` with a registered test engine and assert stderr includes the exact deprecation warning string.
 - Explode compatibility coverage should verify canonical output is written to `.hal/prd.json` and that legacy `.hal/auto-prd.json` output is not recreated.
 - Reset explode command flag `Changed` state and package-level explode flag vars in cleanup to prevent shared Cobra-state leakage across integration tests.
+
+## Patterns from compound/legacy-auto-resume-integration (2026-03-29)
+
+- Legacy resume integration coverage should seed `.hal/auto-state.json` fixtures with legacy `step` values (`prd`, `explode`, `loop`, `pr`) and run `hal auto --resume --dry-run` through `cmd.Root()`.
+- Assert normalization through command output (`Resuming from step: <normalized>`) so command-level resume behavior is locked to the single-pipeline step names (`spec`, `convert`, `run`, `ci`).
+- Keep legacy resume fixtures runnable by including required downstream state fields (for example `analysis` for `prd -> spec` and `sourceMarkdown` for `explode -> convert`) to avoid false negatives from unrelated step preconditions.
