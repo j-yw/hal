@@ -172,6 +172,7 @@
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
 - Workflow state classification lives in `internal/status` — a pure filesystem package with no engine or config dependencies. The `cmd/status.go` wrapper adds engine from config.
 - Health/readiness checks live in `internal/doctor` — each check has `scope` (repo/engine_local/engine_global/migration) and `applicability` (required/optional/not_applicable) fields. The check order is locked by `TestRun_CheckCount`.
+- For doctor checks that depend on GitHub context (`github_auth`), treat non-git directories, missing `origin`, and non-GitHub remotes as `status=skip` + `applicability=not_applicable`; only emit a warning with remediation `gh auth login` (`Safe=false`) when a valid GitHub remote lacks authentication.
 - The Codex linker uses `codexHome()` which prefers `$HOME` over `os.UserHomeDir()` so tests can isolate global link operations via `t.Setenv("HOME", tmpDir)`. All init tests must use `t.Setenv("HOME", dir)`.
 - Tests that walk the shared global `Root()` Cobra command tree must NOT use `t.Parallel()` (race condition on Cobra command state).
 - The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor and shows doctor issues as blockers before workflow actions.

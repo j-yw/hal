@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/status"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // TestContractDocsExist verifies that contract documentation exists for
@@ -119,9 +121,17 @@ func TestContractDocsIncludeCheckIDs(t *testing.T) {
 	}
 	content := string(data)
 
-	// Run doctor to get check IDs
+	// Run doctor in a repo with .hal present so all checks are emitted.
 	dir := t.TempDir()
-	result := doctor.Run(doctor.Options{Dir: dir, Engine: "codex"})
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := doctor.Run(doctor.Options{Dir: dir, Engine: "pi"})
 
 	for _, check := range result.Checks {
 		if !strings.Contains(content, check.ID) {
