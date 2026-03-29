@@ -175,7 +175,7 @@
 - For doctor checks that depend on GitHub context (`github_auth`), treat non-git directories, missing `origin`, and non-GitHub remotes as `status=skip` + `applicability=not_applicable`; only emit a warning with remediation `gh auth login` (`Safe=false`) when a valid GitHub remote lacks authentication.
 - The Codex linker uses `codexHome()` which prefers `$HOME` over `os.UserHomeDir()` so tests can isolate global link operations via `t.Setenv("HOME", tmpDir)`. All init tests must use `t.Setenv("HOME", dir)`.
 - Tests that walk the shared global `Root()` Cobra command tree must NOT use `t.Parallel()` (race condition on Cobra command state).
-- The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor and shows doctor issues as blockers before workflow actions.
+- The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor, blocks readiness only on doctor failures, and keeps warning-only doctor output advisory.
 - The `hal repair` command auto-applies safe remediations from doctor results. To add a new remediation, add `Remediation: &Remediation{Command: "...", Safe: true}` to the check and register the command in `executeRepairCommand`.
 - The `hal links` command group (status/refresh/clean) manages engine skill links separately from `hal init`. Use `hal links refresh codex` for targeted Codex link updates.
 - Doctor checks for link health should suggest `hal links refresh` or `hal links clean` instead of `hal init` — more targeted remediation.

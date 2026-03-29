@@ -13,7 +13,7 @@
 | Field | Type | Description |
 |-------|------|-------------|
 | `contractVersion` | int | Always `1` |
-| `ready` | bool | `true` when doctor passes (no blockers) |
+| `ready` | bool | `true` when doctor has no failing checks (`overallStatus` is `pass` or `warn`) |
 | `status` | object | Full `hal status --json` result |
 | `doctor` | object | Full `hal doctor --json` result |
 | `nextCommand` | string | The one command to run next |
@@ -24,6 +24,7 @@
 
 - When `ready` is `true`: `nextCommand` is the workflow action (e.g., `hal run`)
 - When `ready` is `false`: `nextCommand` is the doctor remediation (e.g., `hal init`)
+- Doctor warnings are advisory only and do not block readiness; only failing doctor checks set `ready=false`
 
 ## Example: Healthy, Manual In-Progress
 
