@@ -194,6 +194,62 @@ func TestAutoDryRunWithoutPositionalMarkdownInput(t *testing.T) {
 	}
 }
 
+func TestAutoDryRunSkipPRAliasCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Integration Report\n"), 0644); err != nil {
+		t.Fatalf("write report fixture: %v", err)
+	}
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+	})
+
+	root := Root()
+	origOut := root.OutOrStdout()
+	origErr := root.ErrOrStderr()
+	origIn := root.InOrStdin()
+	t.Cleanup(func() {
+		root.SetOut(origOut)
+		root.SetErr(origErr)
+		root.SetIn(origIn)
+		root.SetArgs(nil)
+	})
+
+	resetAutoFlagsForIntegrationTest()
+	t.Cleanup(resetAutoFlagsForIntegrationTest)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"auto", "--dry-run", "--report", filepath.Base(reportPath), "--skip-pr"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("hal auto --dry-run --skip-pr failed: %v\nstderr: %s\nstdout: %s", err, stderr.String(), stdout.String())
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "Skipping CI step (--skip-ci)") {
+		t.Fatalf("expected CI skip message in output, got %q", output)
+	}
+	if strings.Contains(output, "Would push branch") {
+		t.Fatalf("skip-pr alias should map to skip-ci behavior, got %q", output)
+	}
+
+	warnings := stderr.String()
+	if !strings.Contains(warnings, "--skip-pr is deprecated; use --skip-ci") {
+		t.Fatalf("expected skip-pr deprecation warning, got %q", warnings)
+	}
+}
+
 func TestAutoResumeDryRunMapsLegacyStateSteps(t *testing.T) {
 	tests := []struct {
 		name         string

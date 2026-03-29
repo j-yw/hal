@@ -298,6 +298,7 @@
 - Treat `--skip-ci` as the canonical auto flag; keep `--skip-pr` only as a deprecated alias that maps to skip-ci behavior and warns on stderr.
 - In `runPRStep`, persist CI telemetry via `state.CI` with explicit skipped reasons (`skip_ci_flag`, `ci_unavailable`) so skip outcomes remain machine-readable and testable.
 - Keep CI dependency detection injectable (`checkCIDependencies`) so pipeline tests can cover unavailable-tool skip behavior without mutating PATH.
+- Command-level alias compatibility coverage should run `hal auto --dry-run --report <fixture> --skip-pr` through `cmd.Root()` and assert both stderr deprecation warning text and stdout CI-skip/no-push behavior.
 
 ## Patterns from compound/archive-step-report-preservation (2026-03-29)
 
