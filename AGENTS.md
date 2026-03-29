@@ -257,3 +257,10 @@
 - Branch-step execution should use `EnsureBranchInDir(dir, branchName, baseBranch)` so retries are idempotent: no-op when already on target, checkout when target exists, and create from base only when missing.
 - Git operations in compound pipeline helpers must run with `cmd.Dir = pipeline dir` to avoid mutating the caller's current working repository during tests and multi-repo usage.
 - For branch-step behavior, use temp-repo unit tests that commit a base branch and assert all three paths (already-on-target, existing-branch checkout, missing-branch creation) plus repeated retry success.
+
+## Patterns from compound/post-convert-branch-invariant (2026-03-29)
+
+- The auto convert step should delegate through an injectable `convertWithEngine` variable (defaulting to `prd.ConvertWithEngine`) so tests can assert convert options without invoking real engines.
+- Convert step calls must pin deterministic options: `prd.ConvertOptions{Granular: true, BranchName: state.BranchName}` and canonical output path `.hal/prd.json`.
+- After convert, fail fast if `state.branchName` and `.hal/prd.json` `branchName` diverge (or the file is missing `branchName`), and return an actionable remediation message (for example rerun `hal convert --granular --branch <branch>` before resume).
+- Cover post-convert invariant behavior with focused tests for matching branch success, mismatched branch failure, and missing-branch failure.

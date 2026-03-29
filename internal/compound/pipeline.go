@@ -19,6 +19,9 @@ import (
 // stateFileName references the shared constant for the auto-state file.
 var stateFileName = template.AutoStateFile
 
+// convertWithEngine points to prd.ConvertWithEngine and is overridden in tests.
+var convertWithEngine = prd.ConvertWithEngine
+
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
 	config       *AutoConfig
@@ -523,7 +526,7 @@ Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisCont
 	return nil
 }
 
-// runExplodeStep breaks down the PRD into granular tasks.
+// runExplodeStep converts the source markdown PRD to canonical .hal/prd.json.
 func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: convert\n")
 
@@ -531,126 +534,62 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 		return fmt.Errorf("no source markdown path in state")
 	}
 
-	outPath := filepath.Join(p.dir, template.HalDir, template.AutoPRDFile)
+	outPath := filepath.Join(p.dir, template.HalDir, template.PRDFile)
 
 	if opts.DryRun {
-		p.display.ShowInfo("   [dry-run] Would explode PRD to: %s\n", outPath)
+		p.display.ShowInfo("   [dry-run] Would convert PRD to: %s\n", outPath)
 		state.Step = StepLoop
 		return nil
 	}
 
-	// Read PRD content
-	prdContent, err := os.ReadFile(state.SourceMarkdown)
-	if err != nil {
-		return fmt.Errorf("failed to read PRD: %w", err)
+	convertOpts := prd.ConvertOptions{
+		Granular:   true,
+		BranchName: state.BranchName,
 	}
 
-	// Load explode skill
-	explodeSkill, err := skills.LoadSkill("explode")
-	if err != nil {
-		return fmt.Errorf("failed to load explode skill: %w", err)
+	p.display.ShowInfo("   Converting PRD into granular tasks...\n")
+	if err := convertWithEngine(ctx, p.engine, state.SourceMarkdown, outPath, convertOpts, p.display); err != nil {
+		return fmt.Errorf("failed to convert PRD: %w", err)
 	}
 
-	// Build prompt
-	prompt := fmt.Sprintf(`You are a PRD task breakdown agent. Follow the explode skill instructions below.
-
-<skill>
-%s
-</skill>
-
-<prd>
-%s
-</prd>
-
-Branch name to use: %s
-
-Break down this PRD into 8-15 granular tasks following the skill rules:
-1. Each task completable in ONE agent iteration
-2. Tasks ordered by dependency (types → logic → integration → verification)
-3. Every task has boolean acceptance criteria
-4. Every task ends with "Typecheck passes"
-5. Use T-XXX IDs (T-001, T-002, etc.)
-6. All tasks have passes: false and empty notes
-
-Write the JSON directly to %s using the Write tool.`, explodeSkill, string(prdContent), state.BranchName, outPath)
-
-	// Record output file modification time before (if exists)
-	var preModTime time.Time
-	if stat, err := os.Stat(outPath); err == nil {
-		preModTime = stat.ModTime()
-	}
-
-	// Execute prompt with streaming display
-	p.display.ShowInfo("   Exploding PRD into tasks...\n")
-	response, err := p.engine.StreamPrompt(ctx, prompt, p.display)
-	// Check if engine wrote the output file directly using tools
-	fileWritten := false
-	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
-		fileWritten = true
-	}
-	if err != nil {
-		if !fileWritten || !engine.RequiresOutputFallback(err) {
-			return fmt.Errorf("engine prompt failed: %w", err)
-		}
-	}
-
-	if fileWritten {
-		// Engine wrote the file - validate and format it
-		content, err := os.ReadFile(outPath)
-		if err != nil {
-			return fmt.Errorf("failed to read engine-written %s: %w", template.AutoPRDFile, err)
-		}
-
-		// Validate JSON structure
-		var prd engine.PRD
-		if err := json.Unmarshal(content, &prd); err != nil {
-			return fmt.Errorf("engine wrote invalid JSON: %w", err)
-		}
-
-		// Re-marshal with proper formatting
-		formatted, err := json.MarshalIndent(prd, "", "  ")
-		if err != nil {
-			return err
-		}
-
-		// Write formatted version back
-		if err := os.WriteFile(outPath, formatted, 0644); err != nil {
-			return fmt.Errorf("failed to write formatted %s: %w", template.AutoPRDFile, err)
-		}
-
-		taskCount := countExplodeTasks(&prd)
-		p.display.ShowInfo("   Tasks generated: %d • Path: %s\n", taskCount, outPath)
-	} else {
-		// Fallback: Parse JSON from text response
-		prdJSON, err := extractJSONFromResponse(response)
-		if err != nil {
-			return fmt.Errorf("failed to extract JSON from response: %w", err)
-		}
-
-		// Ensure output directory exists
-		outDir := filepath.Dir(outPath)
-		if err := os.MkdirAll(outDir, 0755); err != nil {
-			return fmt.Errorf("failed to create output directory: %w", err)
-		}
-
-		// Write auto-prd.json
-		if err := os.WriteFile(outPath, []byte(prdJSON), 0644); err != nil {
-			return fmt.Errorf("failed to write %s: %w", template.AutoPRDFile, err)
-		}
-
-		// Parse to get task count
-		taskCount := 0
-		var prd engine.PRD
-		if err := json.Unmarshal([]byte(prdJSON), &prd); err == nil {
-			taskCount = countExplodeTasks(&prd)
-		}
-		p.display.ShowInfo("   Tasks generated: %d • Path: %s\n", taskCount, outPath)
+	if err := verifyConvertedBranchInvariant(p.dir, state.BranchName); err != nil {
+		return err
 	}
 
 	// Save state and advance to next step
 	state.Step = StepLoop
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
+func verifyConvertedBranchInvariant(dir, stateBranchName string) error {
+	halDir := filepath.Join(dir, template.HalDir)
+	relativePRDPath := filepath.Join(template.HalDir, template.PRDFile)
+
+	converted, err := engine.LoadPRDFile(halDir, template.PRDFile)
+	if err != nil {
+		return fmt.Errorf("post-convert branch invariant failed: unable to read %s: %w", relativePRDPath, err)
+	}
+
+	expectedBranch := strings.TrimSpace(stateBranchName)
+	actualBranch := strings.TrimSpace(converted.BranchName)
+
+	if actualBranch == "" {
+		if expectedBranch == "" {
+			return fmt.Errorf("post-convert branch invariant failed: %s is missing branchName; set branchName explicitly and rerun `hal auto --resume`", relativePRDPath)
+		}
+		return fmt.Errorf("post-convert branch invariant failed: %s is missing branchName; rerun `hal convert --granular --branch %s` or fix %s before resuming", relativePRDPath, expectedBranch, relativePRDPath)
+	}
+
+	if expectedBranch == "" {
+		return fmt.Errorf("post-convert branch invariant failed: pipeline state branchName is empty while %s has %q; set the pipeline branch and rerun `hal auto --resume`", relativePRDPath, actualBranch)
+	}
+
+	if actualBranch != expectedBranch {
+		return fmt.Errorf("post-convert branch invariant failed: state.branchName=%q but %s branchName=%q; rerun `hal convert --granular --branch %s` or update %s before resuming", expectedBranch, relativePRDPath, actualBranch, expectedBranch, relativePRDPath)
 	}
 
 	return nil
@@ -940,63 +879,4 @@ func extractMarkdownContent(response string) string {
 
 	// Return empty to signal using the full response
 	return ""
-}
-
-// extractJSONFromResponse extracts JSON object from a response that may contain
-// markdown code blocks or other text.
-func extractJSONFromResponse(response string) (string, error) {
-	response = strings.TrimSpace(response)
-
-	// Handle markdown code blocks
-	if strings.Contains(response, "```") {
-		response = extractFromCodeBlock(response)
-	}
-
-	// Find JSON object
-	start := strings.Index(response, "{")
-	end := strings.LastIndex(response, "}")
-	if start == -1 || end == -1 || end < start {
-		return "", fmt.Errorf("no JSON found in response")
-	}
-	response = response[start : end+1]
-
-	// Validate JSON by parsing it
-	var prd engine.PRD
-	if err := json.Unmarshal([]byte(response), &prd); err != nil {
-		return "", fmt.Errorf("invalid JSON: %w", err)
-	}
-
-	// Re-marshal with proper formatting
-	formatted, err := json.MarshalIndent(prd, "", "  ")
-	if err != nil {
-		return "", err
-	}
-
-	return string(formatted), nil
-}
-
-// extractFromCodeBlock extracts content from markdown code blocks.
-func extractFromCodeBlock(response string) string {
-	var result strings.Builder
-	inBlock := false
-	lines := strings.Split(response, "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "```") {
-			inBlock = !inBlock
-			continue
-		}
-		if inBlock {
-			result.WriteString(line)
-			result.WriteString("\n")
-		}
-	}
-	return result.String()
-}
-
-// countExplodeTasks returns the number of tasks in a PRD.
-func countExplodeTasks(prd *engine.PRD) int {
-	if len(prd.UserStories) > 0 {
-		return len(prd.UserStories)
-	}
-	return len(prd.Tasks)
 }
