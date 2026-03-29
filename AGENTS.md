@@ -222,3 +222,9 @@
 - Keep CI machine-output structs centralized in `internal/ci/types.go` (push/status/fix/merge) so command handlers and pipeline integrations share one schema source of truth.
 - Lock CI contract stability with both explicit `json` tags on every exported field and tests that assert required JSON keys plus marshal/unmarshal round-trip behavior (see `internal/ci/types_test.go`).
 - Keep contract/version and wait-terminal-reason string values as package constants to avoid drift across commands, docs, and tests.
+
+## Patterns from hal/ci-auth-client-selection (2026-03-29)
+
+- Keep CI auth/client selection deterministic in `internal/ci/auth.go`: env token (`GITHUB_TOKEN` then `GH_TOKEN`) selects the API path, otherwise fall back only to authenticated `gh` CLI.
+- If an env token is present but fails validation, return `ErrInvalidEnvToken` and do **not** attempt `gh` fallback; this guard is locked with tests in `internal/ci/auth_test.go`.
+- Keep user-facing auth guidance as exact sentinel errors (`ErrInvalidEnvToken`, `ErrNoGitHubAuth`) so command output remains stable and testable across CI command implementations.
