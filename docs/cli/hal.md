@@ -63,6 +63,7 @@ Quick Start:
 * [hal analyze](hal_analyze.md)	 - Analyze a report to identify the highest priority item
 * [hal archive](hal_archive.md)	 - Archive current feature state
 * [hal auto](hal_auto.md)	 - Run the full compound engineering pipeline
+* [hal ci](hal_ci.md)	 - Run CI workflow commands
 * [hal cleanup](hal_cleanup.md)	 - Remove orphaned and deprecated files
 * [hal config](hal_config.md)	 - Show current configuration
 * [hal continue](hal_continue.md)	 - Show what to do next

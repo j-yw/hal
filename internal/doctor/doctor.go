@@ -5,12 +5,17 @@
 package doctor
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"gopkg.in/yaml.v3"
@@ -36,9 +41,10 @@ const (
 
 // Remediation IDs.
 const (
-	RemediationNone             = "none"
-	RemediationRunHalInit       = "run_hal_init"
+	RemediationNone              = "none"
+	RemediationRunHalInit        = "run_hal_init"
 	RemediationRefreshCodexLinks = "refresh_codex_links"
+	RemediationRunGHAuthLogin    = "run_gh_auth_login"
 )
 
 // DoctorResult is the v1 machine-readable doctor contract.
@@ -64,10 +70,10 @@ const (
 
 // Scope values for checks.
 const (
-	ScopeRepo        = "repo"
-	ScopeEngineLocal = "engine_local"
+	ScopeRepo         = "repo"
+	ScopeEngineLocal  = "engine_local"
 	ScopeEngineGlobal = "engine_global"
-	ScopeMigration   = "migration"
+	ScopeMigration    = "migration"
 )
 
 // Check is a single health check result.
@@ -153,70 +159,77 @@ func Run(opts Options) DoctorResult {
 	// 3. config.yaml
 	checks = append(checks, checkConfigYAML(halDir))
 
-	// 4. Default engine CLI
+	// 4. GitHub auth readiness (only applicable for GitHub remotes)
+	githubAuthCheck := checkGitHubAuth(dir)
+	checks = append(checks, githubAuthCheck)
+	if githubAuthCheck.Status == StatusWarn {
+		warnings = append(warnings, "github_auth")
+	}
+
+	// 5. Default engine CLI
 	checks = append(checks, checkEngineCLI(engine))
 
-	// 5. Prompt template
+	// 6. Prompt template
 	promptCheck := checkPromptMD(halDir)
 	checks = append(checks, promptCheck)
 	if promptCheck.Status == StatusWarn {
 		warnings = append(warnings, "prompt_md")
 	}
 
-	// 6. Progress file
+	// 7. Progress file
 	progressCheck := checkProgressFile(halDir)
 	checks = append(checks, progressCheck)
 
-	// 7. PRD validity (only when prd.json exists)
+	// 8. PRD validity (only when prd.json exists)
 	prdCheck := checkPRDJSON(halDir)
 	checks = append(checks, prdCheck)
 	if prdCheck.Status == StatusWarn {
 		warnings = append(warnings, "prd_json")
 	}
 
-	// 8. Hal skills
+	// 9. Hal skills
 	skillCheck := checkSkills(dir)
 	checks = append(checks, skillCheck)
 	if skillCheck.Status == StatusFail {
 		failures = append(failures, "hal_skills")
 	}
 
-	// 6. Hal commands
+	// 10. Hal commands
 	cmdCheck := checkCommands(dir)
 	checks = append(checks, cmdCheck)
 	if cmdCheck.Status == StatusFail {
 		failures = append(failures, "hal_commands")
 	}
 
-	// 7. Engine-local skill links (.claude/skills, .pi/skills)
+	// 11. Engine-local skill links (.claude/skills, .pi/skills)
 	localLinksCheck := checkLocalSkillLinks(dir)
 	checks = append(checks, localLinksCheck)
 	if localLinksCheck.Status == StatusWarn {
 		warnings = append(warnings, "local_skill_links")
 	}
 
-	// 8. Codex global links (only applicable for codex engine)
+	// 12. Codex global links (only applicable for codex engine)
 	codexCheck := checkCodexLinks(dir, engine)
 	checks = append(checks, codexCheck)
 	if codexCheck.Status == StatusWarn {
 		warnings = append(warnings, "codex_global_links")
 	}
 
-	// 8. Legacy migration debris
+	// 13. Legacy migration debris
 	legacyCheck := checkLegacyDebris(dir)
 	checks = append(checks, legacyCheck)
 	if legacyCheck.Status == StatusWarn {
 		warnings = append(warnings, "legacy_debris")
 	}
 
-	// 9. Legacy sandbox state (.hal/sandbox.json)
+	// 14. Legacy sandbox state (.hal/sandbox.json)
 	legacySandboxCheck := checkLegacySandboxState(halDir)
 	checks = append(checks, legacySandboxCheck)
 	if legacySandboxCheck.Status == StatusWarn {
 		warnings = append(warnings, "legacy_sandbox_state")
 	}
 
-	// 10. Broken symlinks in engine skill directories
+	// 15. Broken symlinks in engine skill directories
 	brokenCheck := checkBrokenSkillLinks(dir)
 	checks = append(checks, brokenCheck)
 	if brokenCheck.Status == StatusWarn {
@@ -238,6 +251,13 @@ func Run(opts Options) DoctorResult {
 		case "git_repo", "hal_dir", "config_yaml", "prompt_md", "progress_file", "hal_skills", "hal_commands":
 			c.Scope = ScopeRepo
 			c.Applicability = ApplicabilityRequired
+		case "github_auth":
+			c.Scope = ScopeRepo
+			if c.Status == StatusSkip {
+				c.Applicability = ApplicabilityNotApplicable
+			} else {
+				c.Applicability = ApplicabilityOptional
+			}
 		case "default_engine_cli":
 			c.Scope = ScopeRepo
 			c.Applicability = ApplicabilityRequired
@@ -283,6 +303,8 @@ func Run(opts Options) DoctorResult {
 			switch w {
 			case "codex_global_links":
 				warnParts = append(warnParts, "refresh Codex global links")
+			case "github_auth":
+				warnParts = append(warnParts, "run gh auth login")
 			case "legacy_debris":
 				warnParts = append(warnParts, "run hal cleanup")
 			case "legacy_sandbox_state":
@@ -431,6 +453,142 @@ func checkEngineCLI(engine string) Check {
 		RemediationID: RemediationNone,
 		Message:       "The configured default engine CLI (" + cliName + ") was not found in PATH.",
 	}
+}
+
+var errNotGitRepository = errors.New("not a git repository")
+
+type githubAuthDeps struct {
+	originRemoteURL    func(string) (string, error)
+	selectGitHubClient func(context.Context) (ci.ClientSelection, error)
+}
+
+func checkGitHubAuth(dir string) Check {
+	return checkGitHubAuthWithDeps(dir, githubAuthDeps{
+		originRemoteURL:    gitOriginRemoteURL,
+		selectGitHubClient: ci.SelectGitHubClient,
+	})
+}
+
+func checkGitHubAuthWithDeps(dir string, deps githubAuthDeps) Check {
+	if deps.originRemoteURL == nil {
+		deps.originRemoteURL = gitOriginRemoteURL
+	}
+	if deps.selectGitHubClient == nil {
+		deps.selectGitHubClient = ci.SelectGitHubClient
+	}
+
+	remoteURL, err := deps.originRemoteURL(dir)
+	if err != nil {
+		switch {
+		case errors.Is(err, errNotGitRepository):
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusSkip,
+				Severity:      SeverityInfo,
+				RemediationID: RemediationNone,
+				Message:       "GitHub auth check is not applicable outside a git repository.",
+			}
+		case errors.Is(err, ci.ErrMissingOriginRemote):
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusSkip,
+				Severity:      SeverityInfo,
+				RemediationID: RemediationNone,
+				Message:       "GitHub auth check is not applicable: origin remote is not configured.",
+			}
+		default:
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusWarn,
+				Severity:      SeverityWarn,
+				RemediationID: RemediationNone,
+				Message:       "Unable to determine GitHub auth applicability: " + err.Error(),
+			}
+		}
+	}
+
+	if _, err := ci.ParseGitHubRepository(remoteURL); err != nil {
+		switch {
+		case errors.Is(err, ci.ErrNonGitHubOriginRemote):
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusSkip,
+				Severity:      SeverityInfo,
+				RemediationID: RemediationNone,
+				Message:       "GitHub auth check is not applicable: origin remote is not hosted on GitHub.",
+			}
+		case errors.Is(err, ci.ErrInvalidGitHubOriginRemote), errors.Is(err, ci.ErrMissingOriginRemote):
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusSkip,
+				Severity:      SeverityInfo,
+				RemediationID: RemediationNone,
+				Message:       "GitHub auth check is not applicable: origin remote is not a valid GitHub repository.",
+			}
+		default:
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusWarn,
+				Severity:      SeverityWarn,
+				RemediationID: RemediationNone,
+				Message:       "Unable to parse origin remote for GitHub auth check: " + err.Error(),
+			}
+		}
+	}
+
+	if _, err := deps.selectGitHubClient(context.Background()); err != nil {
+		if errors.Is(err, ci.ErrNoGitHubAuth) || errors.Is(err, ci.ErrInvalidEnvToken) {
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusWarn,
+				Severity:      SeverityWarn,
+				RemediationID: RemediationRunGHAuthLogin,
+				Message:       "GitHub auth not configured for this GitHub remote.",
+				Remediation:   &Remediation{Command: "gh auth login", Safe: false},
+			}
+		}
+		return Check{
+			ID:            "github_auth",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationNone,
+			Message:       "Unable to verify GitHub auth state: " + err.Error(),
+		}
+	}
+
+	return Check{
+		ID:            "github_auth",
+		Status:        StatusPass,
+		Severity:      SeverityInfo,
+		RemediationID: RemediationNone,
+		Message:       "GitHub auth is available for GitHub remote operations.",
+	}
+}
+
+func gitOriginRemoteURL(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "remote", "get-url", "origin")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errText := strings.ToLower(strings.TrimSpace(stderr.String()))
+		switch {
+		case strings.Contains(errText, "not a git repository"):
+			return "", errNotGitRepository
+		case strings.Contains(errText, "no such remote") && strings.Contains(errText, "origin"):
+			return "", ci.ErrMissingOriginRemote
+		default:
+			return "", fmt.Errorf("failed to read git origin remote: %w", err)
+		}
+	}
+
+	remoteURL := strings.TrimSpace(stdout.String())
+	if remoteURL == "" {
+		return "", ci.ErrMissingOriginRemote
+	}
+	return remoteURL, nil
 }
 
 func checkSkills(dir string) Check {

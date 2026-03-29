@@ -143,6 +143,8 @@
 - Keep user-facing command examples in Cobra `Example` fields (not just prose in `Long`) and lock required metadata (`Use`, `Short`, `Long`, `Example`) with focused table-driven command tests.
 - Add a global recursive metadata contract test (`cmd/docs_metadata_test.go`) that walks all in-scope commands from `cmd.Root()` and reports command path + missing fields for fast triage.
 - For family-level metadata contracts, recurse through in-scope descendants under each top-level command family (for example `archive`) and assert each command's `Example` includes its command path.
+- When adding a new required top-level command family, update both core command metadata coverage (`TestCoreCommandsHaveCompleteMetadata`) and family-level metadata coverage so the family is enforced in both tables.
+- Keep focused family tests (for example `cmd/ci_test.go`) asserting required `Long` help phrases plus key `Example` lines so help text regressions are caught alongside metadata-field checks.
 - When a command family may not exist in every branch (for example `sandbox`), make that family optional in focused tests while keeping required families strict.
 - Keep a dedicated README `CLI Reference` section linking `docs/cli/` and `docs/cli/hal.md` so generated command docs are easy to discover.
 
@@ -172,9 +174,10 @@
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
 - Workflow state classification lives in `internal/status` — a pure filesystem package with no engine or config dependencies. The `cmd/status.go` wrapper adds engine from config.
 - Health/readiness checks live in `internal/doctor` — each check has `scope` (repo/engine_local/engine_global/migration) and `applicability` (required/optional/not_applicable) fields. The check order is locked by `TestRun_CheckCount`.
+- For doctor checks that depend on GitHub context (`github_auth`), treat non-git directories, missing `origin`, and non-GitHub remotes as `status=skip` + `applicability=not_applicable`; only emit a warning with remediation `gh auth login` (`Safe=false`) when a valid GitHub remote lacks authentication.
 - The Codex linker uses `codexHome()` which prefers `$HOME` over `os.UserHomeDir()` so tests can isolate global link operations via `t.Setenv("HOME", tmpDir)`. All init tests must use `t.Setenv("HOME", dir)`.
 - Tests that walk the shared global `Root()` Cobra command tree must NOT use `t.Parallel()` (race condition on Cobra command state).
-- The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor and shows doctor issues as blockers before workflow actions.
+- The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor, blocks readiness only on doctor failures, and keeps warning-only doctor output advisory.
 - The `hal repair` command auto-applies safe remediations from doctor results. To add a new remediation, add `Remediation: &Remediation{Command: "...", Safe: true}` to the check and register the command in `executeRepairCommand`.
 - The `hal links` command group (status/refresh/clean) manages engine skill links separately from `hal init`. Use `hal links refresh codex` for targeted Codex link updates.
 - Doctor checks for link health should suggest `hal links refresh` or `hal links clean` instead of `hal init` — more targeted remediation.
@@ -216,3 +219,86 @@
 
 - Keep sandbox lifecycle status values centralized in `internal/sandbox/types.go` constants (`StatusRunning`, `StatusStopped`, `StatusUnknown`) instead of duplicating string literals across commands/providers.
 - `SandboxState` JSON tags are camelCase with selective `omitempty`; preserve this contract with focused marshal/unmarshal key assertions in `internal/sandbox/types_test.go` when adding or renaming fields.
+
+## Patterns from hal/ci-shared-types-contracts (2026-03-29)
+
+- Keep CI machine-output structs centralized in `internal/ci/types.go` (push/status/fix/merge) so command handlers and pipeline integrations share one schema source of truth.
+- Lock CI contract stability with both explicit `json` tags on every exported field and tests that assert required JSON keys plus marshal/unmarshal round-trip behavior (see `internal/ci/types_test.go`).
+- Keep contract/version and wait-terminal-reason string values as package constants to avoid drift across commands, docs, and tests.
+
+## Patterns from hal/ci-auth-client-selection (2026-03-29)
+
+- Keep CI auth/client selection deterministic in `internal/ci/auth.go`: env token (`GITHUB_TOKEN` then `GH_TOKEN`) selects the API path, otherwise fall back only to authenticated `gh` CLI.
+- If an env token is present but fails validation, return `ErrInvalidEnvToken` and do **not** attempt `gh` fallback; this guard is locked with tests in `internal/ci/auth_test.go`.
+- Keep user-facing auth guidance as exact sentinel errors (`ErrInvalidEnvToken`, `ErrNoGitHubAuth`) so command output remains stable and testable across CI command implementations.
+
+## Patterns from hal/ci-origin-remote-validation (2026-03-29)
+
+- Centralize CI repo detection in `internal/ci/remote.go` via `ResolveGitHubRepository` (reads `git remote get-url origin`) and `ParseGitHubRepository` (URL parsing) so all CI flows share one remote-validation path.
+- Support the common GitHub remote formats (`git@github.com:<owner>/<repo>.git`, `ssh://git@github.com/<owner>/<repo>.git`, and HTTPS variants) and reject non-`github.com` remotes with actionable guidance.
+- Keep origin-remote failures machine-testable with sentinel errors (`ErrMissingOriginRemote`, `ErrNonGitHubOriginRemote`) while wrapping returned errors with user-facing remediation text.
+
+## Patterns from hal/ci-gap-free-status-aggregation (2026-03-29)
+
+- Keep CI aggregation in `internal/ci/status.go` gap-free by fetching **both** check-runs and commit statuses with explicit pagination loops (`per_page=100`, continue until page size drops below limit).
+- Lock dedupe keys to `check:<name>` for check-runs and `status:<context>` for commit statuses, and build aggregation through the shared `getStatusWithDeps` path so tests can inject paged fixtures deterministically.
+- Preserve safety precedence exactly as pending > failing > passing, and treat zero-context repositories as `StatusPending` with `ChecksDiscovered=false` (never passing by default).
+
+## Patterns from hal/ci-wait-no-checks-determinism (2026-03-29)
+
+- Keep CI wait defaults centralized in `internal/ci/status.go` (`PollInterval=30s`, `Timeout=30m`, `NoChecksGrace=90s`) via a single defaults helper so command wiring and core behavior stay in sync.
+- Implement wait-loop orchestration behind injectable deps (`waitForChecksWithDeps` with `getStatus`/`newTicker`/`after`) to keep completed/timeout/no-checks paths deterministic in unit tests without real sleeps.
+- When no-checks grace expires, re-fetch status once before returning `WaitTerminalReasonNoChecksDetected` so checks that appear near the grace boundary are not misclassified.
+
+## Patterns from hal/ci-push-pr-core (2026-03-29)
+
+- Keep CI push/PR orchestration behind `pushAndCreatePRWithDeps` in `internal/ci/push.go` so tests can inject git/GitHub behavior without spawning real CLIs.
+- Reuse existing pull requests by querying `head=<owner>:<branch>` before creation; this prevents duplicate PRs for the same branch.
+- Model draft preference as pointer-based options (`PushOptions.Draft *bool`) so default behavior (`nil => draft=true`) stays distinct from an explicit non-draft request (`false`).
+
+## Patterns from hal/ci-fix-single-attempt-safety (2026-03-29)
+
+- Keep CI fix core behavior in `internal/ci/fix.go` as a **single attempt** (`FixWithEngine`), with command-layer retry loops built on top of it.
+- Enforce fix safety guards before running the engine: aggregated status must be `failing`, engine must be non-nil, and the working tree must be clean by default (including untracked files via `git status --porcelain --untracked-files=all`).
+- After engine execution, require real file changes before staging/commit/push; if no files changed, return `ErrFixNoChanges` and create no commit.
+
+## Patterns from hal/ci-merge-safety-guards (2026-03-29)
+
+- Keep merge orchestration behind `mergePRWithDeps` in `internal/ci/merge.go` so strategy/status/head-drift/delete-branch paths can be tested deterministically without real GitHub calls.
+- Validate merge safety in this order: strategy allowlist (`squash|merge|rebase`), aggregated status guard (passing required unless `AllowNoChecks` with zero contexts), then PR head drift check (`status.SHA` vs current PR head SHA) before issuing merge side effects.
+- Remote branch cleanup after merge must treat 404 as non-fatal (`ErrRemoteBranchNotFound`) and surface other deletion failures as `DeleteWarning` on `MergeResult` instead of failing an otherwise successful merge.
+
+## Patterns from hal/compound-steppr-ci-delegation (2026-03-29)
+
+- Stage 6A `runPRStep` in `internal/compound/pipeline.go` delegates push + PR creation to `internal/ci.PushAndCreatePR`, but still generates title/body in compound so existing PR content stays stable.
+- Keep `--skip-pr` and `--dry-run` branches as early returns before CI delegation to preserve legacy StepPR behavior and avoid remote side effects.
+- `Pipeline` now uses an injectable `pushAndCreatePR` function field; use this seam in unit tests (`internal/compound/pipeline_pr_test.go`) to assert StepPR behavior without invoking real git/gh commands.
+
+## Patterns from hal/ci-command-push-wiring (2026-03-29)
+
+- Keep CI command-layer orchestration behind `run<Cmd>WithDeps` helpers (for example `runCIPushWithDeps`) so tests can stub side-effecting core operations and git lookups deterministically.
+- In `--json` mode, emit pure JSON only (no human-readable lines); lock this with tests that assert valid object-only output.
+- Implement `--dry-run` at the command layer by bypassing core side effects (`PushAndCreatePR`) and returning preview data only.
+
+## Patterns from hal/ci-status-command-wiring (2026-03-29)
+
+- Keep `hal ci status` command-layer orchestration behind `runCIStatusWithDeps` with injectable `getStatus` / `waitForChecks` deps so tests can validate wait and non-wait paths without invoking real git/gh commands.
+- Wire `--wait`, `--timeout`, `--poll-interval`, and `--no-checks-grace` directly into `ci.WaitOptions`; pass zero-value durations through so `internal/ci/status.go` remains the single source of wait defaults.
+- In `--json` mode, emit only the marshaled `ci.StatusResult`; this preserves machine-readable wait terminal reasons (including `no_checks_detected`) without human-text drift.
+
+## Patterns from hal/ci-fix-command-wiring (2026-03-29)
+
+- Keep `hal ci fix` command-layer orchestration behind `runCIFixWithDeps` with injectable `newEngine`, `getStatus`, `waitForChecks`, and `fixWithEngine` deps so retry behavior is deterministic in tests without real engine/git/gh calls.
+- Keep retries in the command layer only: call single-attempt `ci.FixWithEngine` per attempt, wait for fresh CI status between attempts, and stop with actionable errors when status remains non-passing after `--max-attempts`.
+- In `--json` mode, emit only the marshaled `ci.FixResult`; validate `--max-attempts > 0` and resolve engine selection in `runCIFix` before invoking retry orchestration.
+
+## Patterns from hal/ci-merge-command-wiring (2026-03-29)
+
+- Keep `hal ci merge` command-layer orchestration behind `runCIMergeWithDeps` with injectable `mergePR` and `currentBranch` deps so tests can verify flag wiring and dry-run behavior without real git/gh side effects.
+- Implement merge `--dry-run` at the command layer by bypassing `ci.MergePR` and returning a preview `ci.MergeResult`; this guarantees no merge/delete side effects in preview mode.
+- In `--json` mode, emit only the marshaled `ci.MergeResult`; lock this with tests to prevent human-readable output from leaking into machine contracts.
+
+## Patterns from hal/ci-doc-discoverability (2026-03-29)
+
+- When adding or changing `hal ci` command surfaces, update the README command tables and machine-contract links together so human docs stay aligned with generated and machine-readable docs.
+- Regenerate CLI docs with `make docs-cli` and verify with `make docs-check`; commit both new command pages (`docs/cli/hal_ci*.md`) and any updated parent pages (for example `docs/cli/hal.md`).

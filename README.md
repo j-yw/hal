@@ -122,6 +122,10 @@ Stable JSON contracts for agent integration:
 - [`docs/contracts/status-v1.md`](docs/contracts/status-v1.md) — Workflow state machine
 - [`docs/contracts/doctor-v1.md`](docs/contracts/doctor-v1.md) — Health/readiness checks
 - [`docs/contracts/continue-v1.md`](docs/contracts/continue-v1.md) — What to do next
+- [`docs/contracts/ci-push-v1.md`](docs/contracts/ci-push-v1.md) — `hal ci push` output contract
+- [`docs/contracts/ci-status-v1.md`](docs/contracts/ci-status-v1.md) — `hal ci status` output contract
+- [`docs/contracts/ci-fix-v1.md`](docs/contracts/ci-fix-v1.md) — `hal ci fix` output contract
+- [`docs/contracts/ci-merge-v1.md`](docs/contracts/ci-merge-v1.md) — `hal ci merge` output contract
 
 ## Commands
 
@@ -144,6 +148,15 @@ Stable JSON contracts for agent integration:
 | `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
 | `hal continue [--json]` | Show what to do next (combines status + doctor) |
 | `hal repair [--dry-run] [--json]` | Auto-fix safe issues detected by doctor |
+
+### CI Workflow
+
+| Command | Description |
+|---------|-------------|
+| `hal ci push [--dry-run] [--json]` | Push current branch and create or reuse an open pull request |
+| `hal ci status [--wait] [--json]` | Show aggregated CI status, with deterministic wait controls |
+| `hal ci fix [--max-attempts N] [-e engine] [--json]` | Attempt CI fixes with command-layer retries |
+| `hal ci merge [--strategy <squash\|merge\|rebase>] [--delete-branch] [--allow-no-checks] [--dry-run] [--json]` | Merge PR with explicit safety controls |
 
 ### Link Management
 
