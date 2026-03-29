@@ -18,7 +18,7 @@ func TestInitializeBaseBranch_UsesSavedBaseAndIgnoresOverride(t *testing.T) {
 	config := DefaultAutoConfig()
 	pipeline := NewPipeline(&config, nil, display, t.TempDir())
 
-	state := &PipelineState{Step: StepPRD, BaseBranch: "main"}
+	state := &PipelineState{Step: StepSpec, BaseBranch: "main"}
 	opts := RunOptions{Resume: true, BaseBranch: "develop"}
 
 	if err := pipeline.initializeBaseBranch(state, opts); err != nil {
@@ -123,8 +123,8 @@ func TestRunBranchStep_DryRun_AllowsEmptyBase(t *testing.T) {
 	if err := pipeline.runBranchStep(context.Background(), state, RunOptions{DryRun: true}); err != nil {
 		t.Fatalf("runBranchStep returned error: %v", err)
 	}
-	if state.Step != StepPRD {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepPRD)
+	if state.Step != StepSpec {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepSpec)
 	}
 	if !strings.Contains(out.String(), "from current HEAD") {
 		t.Fatalf("output = %q, want current HEAD message", out.String())

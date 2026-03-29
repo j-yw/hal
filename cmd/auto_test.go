@@ -11,6 +11,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func newAutoTestCommand(t *testing.T) (*cobra.Command, *bytes.Buffer) {
@@ -46,6 +47,46 @@ func chdirTemp(t *testing.T) {
 	t.Cleanup(func() {
 		_ = os.Chdir(wd)
 	})
+}
+
+func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
+	expectedFlags := map[string]struct{}{
+		"base":    {},
+		"dry-run": {},
+		"engine":  {},
+		"json":    {},
+		"report":  {},
+		"resume":  {},
+		"skip-ci": {},
+		"skip-pr": {},
+	}
+
+	gotFlags := map[string]struct{}{}
+	autoCmd.LocalFlags().VisitAll(func(flag *pflag.Flag) {
+		gotFlags[flag.Name] = struct{}{}
+	})
+
+	for name := range expectedFlags {
+		if _, ok := gotFlags[name]; !ok {
+			t.Fatalf("auto command missing expected runtime flag %q", name)
+		}
+	}
+
+	for name := range gotFlags {
+		if name == "help" {
+			continue
+		}
+		if _, ok := expectedFlags[name]; !ok {
+			t.Fatalf("auto command exposes unexpected runtime flag %q; single-pipeline flag set should stay fixed", name)
+		}
+	}
+
+	legacyDualModeFlags := []string{"mode", "manual", "prd", "explode", "loop", "pr", "auto-prd", "from-step", "start-step"}
+	for _, legacyFlag := range legacyDualModeFlags {
+		if autoCmd.LocalFlags().Lookup(legacyFlag) != nil {
+			t.Fatalf("legacy dual-mode runtime flag %q should not be exposed", legacyFlag)
+		}
+	}
 }
 
 func assertAutoJSONContractV2(t *testing.T, data []byte) {

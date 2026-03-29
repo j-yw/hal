@@ -327,3 +327,9 @@
 - Legacy resume integration coverage should seed `.hal/auto-state.json` fixtures with legacy `step` values (`prd`, `explode`, `loop`, `pr`) and run `hal auto --resume --dry-run` through `cmd.Root()`.
 - Assert normalization through command output (`Resuming from step: <normalized>`) so command-level resume behavior is locked to the single-pipeline step names (`spec`, `convert`, `run`, `ci`).
 - Keep legacy resume fixtures runnable by including required downstream state fields (for example `analysis` for `prd -> spec` and `sourceMarkdown` for `explode -> convert`) to avoid false negatives from unrelated step preconditions.
+
+## Patterns from compound/dual-mode-regression-guards (2026-03-29)
+
+- Keep `hal auto` runtime flags constrained to the single-pipeline set (`dry-run`, `resume`, `skip-ci`, `skip-pr`, `report`, `engine`, `base`, `json`) and add a focused command test that fails on unexpected/legacy flag names.
+- Lock the pipeline step graph with dry-run tests that assert exact step sequences for both entry modes: report discovery (`analyze -> spec -> branch -> convert -> validate -> run -> review -> report -> ci -> archive`) and positional markdown (`branch -> convert -> validate -> run -> review -> report -> ci -> archive`).
+- Outside legacy migration mapping coverage, prefer canonical step constants (`StepSpec`, `StepConvert`, `StepRun`, `StepCI`) instead of legacy aliases in tests to avoid reintroducing old runtime terminology.
