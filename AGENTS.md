@@ -228,3 +228,9 @@
 - Keep CI auth/client selection deterministic in `internal/ci/auth.go`: env token (`GITHUB_TOKEN` then `GH_TOKEN`) selects the API path, otherwise fall back only to authenticated `gh` CLI.
 - If an env token is present but fails validation, return `ErrInvalidEnvToken` and do **not** attempt `gh` fallback; this guard is locked with tests in `internal/ci/auth_test.go`.
 - Keep user-facing auth guidance as exact sentinel errors (`ErrInvalidEnvToken`, `ErrNoGitHubAuth`) so command output remains stable and testable across CI command implementations.
+
+## Patterns from hal/ci-origin-remote-validation (2026-03-29)
+
+- Centralize CI repo detection in `internal/ci/remote.go` via `ResolveGitHubRepository` (reads `git remote get-url origin`) and `ParseGitHubRepository` (URL parsing) so all CI flows share one remote-validation path.
+- Support the common GitHub remote formats (`git@github.com:<owner>/<repo>.git`, `ssh://git@github.com/<owner>/<repo>.git`, and HTTPS variants) and reject non-`github.com` remotes with actionable guidance.
+- Keep origin-remote failures machine-testable with sentinel errors (`ErrMissingOriginRemote`, `ErrNonGitHubOriginRemote`) while wrapping returned errors with user-facing remediation text.
