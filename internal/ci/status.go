@@ -9,9 +9,50 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
-const statusPageSize = 100
+const (
+	statusPageSize = 100
+
+	defaultWaitPollInterval = 30 * time.Second
+	defaultWaitTimeout      = 30 * time.Minute
+	defaultNoChecksGrace    = 90 * time.Second
+)
+
+// WaitOptions configures WaitForChecks polling behavior.
+type WaitOptions struct {
+	PollInterval  time.Duration
+	Timeout       time.Duration
+	NoChecksGrace time.Duration
+}
+
+type waitForChecksDeps struct {
+	getStatus func(context.Context) (StatusResult, error)
+	newTicker func(time.Duration) waitTicker
+	after     func(time.Duration) <-chan time.Time
+}
+
+type waitTicker interface {
+	Chan() <-chan time.Time
+	Stop()
+}
+
+type realWaitTicker struct {
+	ticker *time.Ticker
+}
+
+func newRealWaitTicker(d time.Duration) waitTicker {
+	return realWaitTicker{ticker: time.NewTicker(d)}
+}
+
+func (t realWaitTicker) Chan() <-chan time.Time {
+	return t.ticker.C
+}
+
+func (t realWaitTicker) Stop() {
+	t.ticker.Stop()
+}
 
 type statusDeps struct {
 	resolveRepo            func(context.Context) (GitHubRepository, error)
@@ -38,6 +79,89 @@ type commitStatusData struct {
 // GetStatus aggregates CI state from both GitHub check-runs and commit statuses.
 func GetStatus(ctx context.Context) (StatusResult, error) {
 	return getStatusWithDeps(ctx, statusDeps{})
+}
+
+// WaitForChecks polls status until checks complete, timeout, or no checks are detected.
+func WaitForChecks(ctx context.Context, opts WaitOptions) (StatusResult, error) {
+	return waitForChecksWithDeps(ctx, opts, waitForChecksDeps{})
+}
+
+func waitForChecksWithDeps(ctx context.Context, opts WaitOptions, deps waitForChecksDeps) (StatusResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	opts = waitOptionsWithDefaults(opts)
+
+	if deps.getStatus == nil {
+		deps.getStatus = GetStatus
+	}
+	if deps.newTicker == nil {
+		deps.newTicker = newRealWaitTicker
+	}
+	if deps.after == nil {
+		deps.after = time.After
+	}
+
+	ticker := deps.newTicker(opts.PollInterval)
+	defer ticker.Stop()
+
+	timeoutCh := deps.after(opts.Timeout)
+	noChecksCh := deps.after(opts.NoChecksGrace)
+
+	for {
+		result, err := deps.getStatus(ctx)
+		if err != nil {
+			return StatusResult{}, err
+		}
+		result.Wait = true
+
+		if result.Status != StatusPending {
+			result.WaitTerminalReason = WaitTerminalReasonCompleted
+			return result, nil
+		}
+
+		if result.ChecksDiscovered {
+			noChecksCh = nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return StatusResult{}, ctx.Err()
+		case <-timeoutCh:
+			result.WaitTerminalReason = WaitTerminalReasonTimeout
+			return result, nil
+		case <-noChecksCh:
+			confirm, err := deps.getStatus(ctx)
+			if err != nil {
+				return StatusResult{}, err
+			}
+			confirm.Wait = true
+			if confirm.Status != StatusPending {
+				confirm.WaitTerminalReason = WaitTerminalReasonCompleted
+				return confirm, nil
+			}
+			if confirm.ChecksDiscovered {
+				noChecksCh = nil
+				continue
+			}
+			confirm.WaitTerminalReason = WaitTerminalReasonNoChecksDetected
+			return confirm, nil
+		case <-ticker.Chan():
+		}
+	}
+}
+
+func waitOptionsWithDefaults(opts WaitOptions) WaitOptions {
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = defaultWaitPollInterval
+	}
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaultWaitTimeout
+	}
+	if opts.NoChecksGrace <= 0 {
+		opts.NoChecksGrace = defaultNoChecksGrace
+	}
+	return opts
 }
 
 func getStatusWithDeps(ctx context.Context, deps statusDeps) (StatusResult, error) {

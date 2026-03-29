@@ -240,3 +240,9 @@
 - Keep CI aggregation in `internal/ci/status.go` gap-free by fetching **both** check-runs and commit statuses with explicit pagination loops (`per_page=100`, continue until page size drops below limit).
 - Lock dedupe keys to `check:<name>` for check-runs and `status:<context>` for commit statuses, and build aggregation through the shared `getStatusWithDeps` path so tests can inject paged fixtures deterministically.
 - Preserve safety precedence exactly as pending > failing > passing, and treat zero-context repositories as `StatusPending` with `ChecksDiscovered=false` (never passing by default).
+
+## Patterns from hal/ci-wait-no-checks-determinism (2026-03-29)
+
+- Keep CI wait defaults centralized in `internal/ci/status.go` (`PollInterval=30s`, `Timeout=30m`, `NoChecksGrace=90s`) via a single defaults helper so command wiring and core behavior stay in sync.
+- Implement wait-loop orchestration behind injectable deps (`waitForChecksWithDeps` with `getStatus`/`newTicker`/`after`) to keep completed/timeout/no-checks paths deterministic in unit tests without real sleeps.
+- When no-checks grace expires, re-fetch status once before returning `WaitTerminalReasonNoChecksDetected` so checks that appear near the grace boundary are not misclassified.
