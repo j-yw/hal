@@ -234,3 +234,9 @@
 - Centralize CI repo detection in `internal/ci/remote.go` via `ResolveGitHubRepository` (reads `git remote get-url origin`) and `ParseGitHubRepository` (URL parsing) so all CI flows share one remote-validation path.
 - Support the common GitHub remote formats (`git@github.com:<owner>/<repo>.git`, `ssh://git@github.com/<owner>/<repo>.git`, and HTTPS variants) and reject non-`github.com` remotes with actionable guidance.
 - Keep origin-remote failures machine-testable with sentinel errors (`ErrMissingOriginRemote`, `ErrNonGitHubOriginRemote`) while wrapping returned errors with user-facing remediation text.
+
+## Patterns from hal/ci-gap-free-status-aggregation (2026-03-29)
+
+- Keep CI aggregation in `internal/ci/status.go` gap-free by fetching **both** check-runs and commit statuses with explicit pagination loops (`per_page=100`, continue until page size drops below limit).
+- Lock dedupe keys to `check:<name>` for check-runs and `status:<context>` for commit statuses, and build aggregation through the shared `getStatusWithDeps` path so tests can inject paged fixtures deterministically.
+- Preserve safety precedence exactly as pending > failing > passing, and treat zero-context repositories as `StatusPending` with `ChecksDiscovered=false` (never passing by default).
