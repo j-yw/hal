@@ -31,10 +31,10 @@ type VersionInfo struct {
 }
 
 var versionCmd = &cobra.Command{
-	Use:     "version",
-	Short:   "Show version info",
-	Args:    noArgsValidation(),
-	Long:    `Show Hal version, commit hash, and build information.`,
+	Use:   "version",
+	Short: "Show version info",
+	Args:  noArgsValidation(),
+	Long:  `Show Hal version, commit hash, and build information.`,
 	Example: `  hal version
   hal version --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {

@@ -351,10 +351,10 @@ func TestOutputRunJSON(t *testing.T) {
 			wantComp: false,
 		},
 		{
-			name:     "failure with error",
-			result:   loop.Result{Success: false, Iterations: 3, Error: errors.New("engine timeout")},
-			wantOK:   false,
-			wantErr:  true,
+			name:    "failure with error",
+			result:  loop.Result{Success: false, Iterations: 3, Error: errors.New("engine timeout")},
+			wantOK:  false,
+			wantErr: true,
 		},
 	}
 

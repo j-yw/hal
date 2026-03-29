@@ -36,8 +36,8 @@ const (
 
 // Remediation IDs.
 const (
-	RemediationNone             = "none"
-	RemediationRunHalInit       = "run_hal_init"
+	RemediationNone              = "none"
+	RemediationRunHalInit        = "run_hal_init"
 	RemediationRefreshCodexLinks = "refresh_codex_links"
 )
 
@@ -64,10 +64,10 @@ const (
 
 // Scope values for checks.
 const (
-	ScopeRepo        = "repo"
-	ScopeEngineLocal = "engine_local"
+	ScopeRepo         = "repo"
+	ScopeEngineLocal  = "engine_local"
 	ScopeEngineGlobal = "engine_global"
-	ScopeMigration   = "migration"
+	ScopeMigration    = "migration"
 )
 
 // Check is a single health check result.
