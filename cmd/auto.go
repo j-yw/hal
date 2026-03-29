@@ -19,6 +19,7 @@ import (
 var (
 	autoDryRunFlag bool
 	autoResumeFlag bool
+	autoSkipCIFlag bool
 	autoSkipPRFlag bool
 	autoReportFlag string
 	autoEngineFlag string
@@ -89,7 +90,8 @@ Examples:
   hal auto --report report.md        # Use specific report file
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
-  hal auto --skip-pr                 # Skip PR creation at the end
+  hal auto --skip-ci                 # Skip CI step at the end
+  hal auto --skip-pr                 # Deprecated alias for --skip-ci
   hal auto --base develop            # Use develop as the base branch
   hal auto --json                    # Machine-readable result output`,
 	Example: `  hal auto
@@ -104,7 +106,8 @@ Examples:
 func init() {
 	autoCmd.Flags().BoolVar(&autoDryRunFlag, "dry-run", false, "Show steps without executing")
 	autoCmd.Flags().BoolVar(&autoResumeFlag, "resume", false, "Continue from last saved state")
-	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "Skip PR creation at end")
+	autoCmd.Flags().BoolVar(&autoSkipCIFlag, "skip-ci", false, "Skip CI step at end")
+	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "[deprecated] Alias for --skip-ci")
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
@@ -121,7 +124,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	dryRun := autoDryRunFlag
 	resume := autoResumeFlag
-	skipPR := autoSkipPRFlag
+	skipCI := autoSkipCIFlag
+	skipPRAlias := autoSkipPRFlag
 	reportPath := autoReportFlag
 	engineName := autoEngineFlag
 	baseBranch := autoBaseFlag
@@ -148,12 +152,19 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			}
 			resume = value
 		}
+		if cmd.Flags().Lookup("skip-ci") != nil {
+			value, err := cmd.Flags().GetBool("skip-ci")
+			if err != nil {
+				return err
+			}
+			skipCI = value
+		}
 		if cmd.Flags().Lookup("skip-pr") != nil {
 			value, err := cmd.Flags().GetBool("skip-pr")
 			if err != nil {
 				return err
 			}
-			skipPR = value
+			skipPRAlias = value
 		}
 		if cmd.Flags().Lookup("report") != nil {
 			value, err := cmd.Flags().GetString("report")
@@ -188,6 +199,11 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	sourceMarkdown := ""
 	if len(args) > 0 {
 		sourceMarkdown = strings.TrimSpace(args[0])
+	}
+
+	if skipPRAlias {
+		skipCI = true
+		warnDeprecated(errOut, "--skip-pr is deprecated; use --skip-ci")
 	}
 
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
@@ -276,7 +292,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	opts := compound.RunOptions{
 		Resume:         resume,
 		DryRun:         dryRun,
-		SkipPR:         skipPR,
+		SkipCI:         skipCI,
 		ReportPath:     reportPath,
 		SourceMarkdown: sourceMarkdown,
 		BaseBranch:     baseBranch,

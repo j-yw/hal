@@ -18,6 +18,7 @@ func newAutoTestCommand(t *testing.T) (*cobra.Command, *bytes.Buffer) {
 	cmd := &cobra.Command{Use: "auto"}
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().Bool("resume", false, "")
+	cmd.Flags().Bool("skip-ci", false, "")
 	cmd.Flags().Bool("skip-pr", false, "")
 	cmd.Flags().String("report", "", "")
 	cmd.Flags().String("engine", "codex", "")
@@ -283,6 +284,84 @@ func TestRunAuto_DryRunWithoutPositionalMarkdownRunsAnalyzeSpecBranchBeforeConve
 	}
 	if !(analyzeIdx < specIdx && specIdx < branchIdx && branchIdx < convertIdx) {
 		t.Fatalf("unexpected step order, got output: %q", output)
+	}
+}
+
+func TestRunAuto_DryRunSkipCIFlagSkipsCIStepWithoutWarning(t *testing.T) {
+	chdirTemp(t)
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+	if err := cmd.Flags().Set("skip-ci", "true"); err != nil {
+		t.Fatalf("set skip-ci flag: %v", err)
+	}
+
+	var errOut bytes.Buffer
+	cmd.SetErr(&errOut)
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Skipping CI step (--skip-ci)") {
+		t.Fatalf("expected skip-ci message in output, got %q", output)
+	}
+	if strings.Contains(output, "Would push branch") {
+		t.Fatalf("skip-ci should skip push/create in dry-run output, got %q", output)
+	}
+	if errOut.Len() > 0 {
+		t.Fatalf("expected no stderr warning for --skip-ci, got %q", errOut.String())
+	}
+}
+
+func TestRunAuto_DryRunSkipPRAliasWarnsAndSkipsCI(t *testing.T) {
+	chdirTemp(t)
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+	if err := cmd.Flags().Set("skip-pr", "true"); err != nil {
+		t.Fatalf("set skip-pr flag: %v", err)
+	}
+
+	var errOut bytes.Buffer
+	cmd.SetErr(&errOut)
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Skipping CI step (--skip-ci)") {
+		t.Fatalf("expected skip-ci message in output, got %q", output)
+	}
+	if strings.Contains(output, "Would push branch") {
+		t.Fatalf("skip-pr alias should skip push/create in dry-run output, got %q", output)
+	}
+
+	warning := errOut.String()
+	if !strings.Contains(warning, "--skip-pr is deprecated; use --skip-ci") {
+		t.Fatalf("expected skip-pr deprecation warning, got %q", warning)
 	}
 }
 

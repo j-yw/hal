@@ -283,3 +283,9 @@
 - Auto pipeline flow now continues `run -> review -> report -> ci`; successful run-step completion should advance to `StepReview` rather than jumping directly to CI.
 - Keep review/report gates injectable for tests: `runReviewLoopWithDisplay` defaults to `RunReviewLoopWithDisplay`, and `runReportWithEngine` defaults to `Review`.
 - The report gate is responsible for persisting the generated artifact path into `state.ReportPath` before advancing, so downstream steps (for example archive/CI flows) can reuse the latest report.
+
+## Patterns from compound/ci-skip-semantics (2026-03-29)
+
+- Treat `--skip-ci` as the canonical auto flag; keep `--skip-pr` only as a deprecated alias that maps to skip-ci behavior and warns on stderr.
+- In `runPRStep`, persist CI telemetry via `state.CI` with explicit skipped reasons (`skip_ci_flag`, `ci_unavailable`) so skip outcomes remain machine-readable and testable.
+- Keep CI dependency detection injectable (`checkCIDependencies`) so pipeline tests can cover unavailable-tool skip behavior without mutating PATH.

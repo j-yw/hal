@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -39,6 +40,9 @@ var runReviewLoopWithDisplay = RunReviewLoopWithDisplay
 
 // runReportWithEngine points to Review and is overridden in tests.
 var runReportWithEngine = Review
+
+// checkCIDependencies verifies required CI tooling and is overridden in tests.
+var checkCIDependencies = defaultCheckCIDependencies
 
 const (
 	maxValidationAttempts   = 3
@@ -194,7 +198,7 @@ func (p *Pipeline) HasState() bool {
 type RunOptions struct {
 	Resume         bool   // Continue from last saved state
 	DryRun         bool   // Show what would happen without executing
-	SkipPR         bool   // Skip PR creation at the end
+	SkipCI         bool   // Skip CI step (push + draft PR) at the end
 	ReportPath     string // Specific report file to use (skips find latest)
 	SourceMarkdown string // Positional markdown path (skips analyze/spec)
 	BaseBranch     string // Base branch for creating work branch / PR target
@@ -859,8 +863,9 @@ func (p *Pipeline) migrateAutoProgress() error {
 func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: ci\n")
 
-	if opts.SkipPR {
-		p.display.ShowInfo("   Skipping PR creation (--skip-pr)\n")
+	if opts.SkipCI {
+		state.CI = &CIState{Status: "skipped", Reason: "skip_ci_flag"}
+		p.display.ShowInfo("   Skipping CI step (--skip-ci)\n")
 		if err := p.clearState(); err != nil {
 			return fmt.Errorf("failed to clear state: %w", err)
 		}
@@ -882,9 +887,20 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		return nil
 	}
 
+	if err := checkCIDependencies(); err != nil {
+		state.CI = &CIState{Status: "skipped", Reason: "ci_unavailable"}
+		p.display.ShowInfo("   Skipping CI step: dependencies unavailable (%v)\n", err)
+		if clearErr := p.clearState(); clearErr != nil {
+			return fmt.Errorf("failed to clear state: %w", clearErr)
+		}
+		state.Step = StepDone
+		return nil
+	}
+
 	// Push the branch
 	p.display.ShowInfo("   Pushing branch: %s\n", state.BranchName)
 	if err := PushBranch(state.BranchName); err != nil {
+		state.CI = &CIState{Status: "failed"}
 		return fmt.Errorf("failed to push branch: %w", err)
 	}
 
@@ -906,9 +922,11 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	p.display.ShowInfo("   Creating draft PR...\n")
 	prURL, err := CreatePR(prTitle, prBody, state.BaseBranch, state.BranchName)
 	if err != nil {
+		state.CI = &CIState{Status: "failed"}
 		return fmt.Errorf("failed to create PR: %w", err)
 	}
 
+	state.CI = &CIState{Status: "passed"}
 	p.display.ShowInfo("   PR created: %s\n", prURL)
 
 	// Clear state on successful completion
@@ -917,6 +935,16 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	state.Step = StepDone
+	return nil
+}
+
+func defaultCheckCIDependencies() error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("git CLI not found in PATH")
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("gh CLI not found in PATH")
+	}
 	return nil
 }
 
