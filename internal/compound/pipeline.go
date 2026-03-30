@@ -1,7 +1,6 @@
 package compound
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/archive"
+	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/prd"
@@ -56,12 +56,14 @@ const (
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
-	config       *AutoConfig
-	engine       engine.Engine
-	engineConfig *engine.EngineConfig
-	display      *engine.Display
-	dir          string
-	lastCIState  *CIState
+	config          *AutoConfig
+	engine          engine.Engine
+	engineConfig    *engine.EngineConfig
+	display         *engine.Display
+	dir             string
+	lastCIState     *CIState
+	pushAndCreatePR func(context.Context, ci.PushOptions) (ci.PushResult, error)
+	currentBranch   func(string) (string, error)
 }
 
 // NewPipeline creates a new pipeline instance.
@@ -71,6 +73,10 @@ func NewPipeline(config *AutoConfig, eng engine.Engine, display *engine.Display,
 		engine:  eng,
 		display: display,
 		dir:     dir,
+		pushAndCreatePR: func(ctx context.Context, opts ci.PushOptions) (ci.PushResult, error) {
+			return ci.PushAndCreatePRInDir(ctx, dir, opts)
+		},
+		currentBranch: CurrentBranchInDir,
 	}
 }
 
@@ -247,6 +253,11 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	// Short-circuit if pipeline already completed (e.g. resume with step=done).
+	if state.Step == StepDone {
+		return nil
 	}
 
 	if err := p.initializeBaseBranch(state, opts); err != nil {
@@ -964,13 +975,27 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		return nil
 	}
 
-	// Push the branch
-	p.display.ShowInfo("   Pushing branch: %s\n", state.BranchName)
-	if err := pushBranchInDir(p.dir, state.BranchName); err != nil {
-		state.CI = &CIState{Status: "failed"}
-		p.recordCIState(state.CI)
-		return fmt.Errorf("failed to push branch: %w", err)
+	currentBranch := p.currentBranch
+	if currentBranch == nil {
+		currentBranch = CurrentBranchInDir
 	}
+	activeBranch, err := currentBranch(p.dir)
+	if err != nil {
+		return fmt.Errorf("failed to determine current branch before PR step: %w", err)
+	}
+	if strings.TrimSpace(activeBranch) != state.BranchName {
+		return fmt.Errorf("current branch %q does not match pipeline state branch %q", strings.TrimSpace(activeBranch), state.BranchName)
+	}
+
+	pushAndCreatePR := p.pushAndCreatePR
+	if pushAndCreatePR == nil {
+		pushAndCreatePR = func(ctx context.Context, opts ci.PushOptions) (ci.PushResult, error) {
+			return ci.PushAndCreatePRInDir(ctx, p.dir, opts)
+		}
+	}
+
+	// Push the branch and create/reuse PR through shared CI core.
+	p.display.ShowInfo("   Pushing branch: %s\n", state.BranchName)
 
 	taskStatus := ""
 	if prd, err := engine.LoadPRDFile(filepath.Join(p.dir, template.HalDir), template.PRDFile); err == nil {
@@ -988,18 +1013,28 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		}
 	}
 
-	// Create draft PR
+	draft := true
 	p.display.ShowInfo("   Creating draft PR...\n")
-	prURL, err := createPRInDir(p.dir, prTitle, prBody, state.BaseBranch, state.BranchName)
+	pushResult, err := pushAndCreatePR(ctx, ci.PushOptions{
+		BaseRef: state.BaseBranch,
+		Title:   prTitle,
+		Body:    prBody,
+		Draft:   &draft,
+	})
 	if err != nil {
 		state.CI = &CIState{Status: "failed"}
 		p.recordCIState(state.CI)
 		return fmt.Errorf("failed to create PR: %w", err)
 	}
 
+	prURL := strings.TrimSpace(pushResult.PullRequest.URL)
+	if prURL == "" {
+		return fmt.Errorf("failed to create PR: empty pull request URL")
+	}
+
 	state.CI = &CIState{Status: "passed"}
 	p.recordCIState(state.CI)
-	p.display.ShowInfo("   PR created: %s\n", prURL)
+	p.display.ShowInfo("   PR created: %s\n", prURL)  
 
 	state.Step = StepArchive
 	if err := p.saveState(state); err != nil {
@@ -1007,55 +1042,6 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	return nil
-}
-
-func pushBranchInDir(dir, branchName string) error {
-	cmd := exec.Command("git", "push", "-u", "origin", branchName)
-	if strings.TrimSpace(dir) != "" {
-		cmd.Dir = dir
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		stderr := strings.TrimSpace(string(output))
-		if stderr != "" {
-			return fmt.Errorf("failed to push branch %q: %w (stderr: %s)", branchName, err, stderr)
-		}
-		return fmt.Errorf("failed to push branch %q: %w", branchName, err)
-	}
-
-	return nil
-}
-
-func createPRInDir(dir, title, body, base, head string) (string, error) {
-	args := []string{"pr", "create", "--draft", "--title", title, "--body", body}
-	if base != "" {
-		args = append(args, "--base", base)
-	}
-	if head != "" {
-		args = append(args, "--head", head)
-	}
-
-	cmd := exec.Command("gh", args...)
-	if strings.TrimSpace(dir) != "" {
-		cmd.Dir = dir
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		stderrText := strings.TrimSpace(stderr.String())
-		if stderrText != "" {
-			return "", fmt.Errorf("failed to create PR: %w (stderr: %s)", err, stderrText)
-		}
-		return "", fmt.Errorf("failed to create PR: %w", err)
-	}
-
-	return strings.TrimSpace(stdout.String()), nil
 }
 
 // runArchiveStep archives feature state while preserving the latest generated report.

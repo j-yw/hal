@@ -80,18 +80,19 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 		Engine: engine,
 	})
 
-	// Determine what to do: doctor issues take priority over workflow actions
-	ready := doctorResult.OverallStatus == doctor.StatusPass
+	// Determine what to do: only doctor failures should block workflow progress.
+	hasDoctorFailures := doctorResult.OverallStatus == doctor.StatusFail || len(doctorResult.Failures) > 0
+	ready := !hasDoctorFailures
 	nextCmd := statusResult.NextAction.Command
 	nextDesc := statusResult.NextAction.Description
 
-	if !ready && doctorResult.PrimaryRemediation != nil {
+	if hasDoctorFailures && doctorResult.PrimaryRemediation != nil {
 		nextCmd = doctorResult.PrimaryRemediation.Command
 		nextDesc = "Fix environment issues first: " + doctorResult.Summary
 	}
 
 	summary := statusResult.Summary
-	if !ready {
+	if hasDoctorFailures {
 		summary = doctorResult.Summary + " " + statusResult.Summary
 	}
 
