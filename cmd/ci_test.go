@@ -458,8 +458,17 @@ func TestRunCIPushWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "Dry run: would push branch hal/preview") {
+	if !strings.Contains(output, "CI Push (dry run)") {
+		t.Fatalf("dry-run output %q missing title", output)
+	}
+	if !strings.Contains(output, "Branch:") || !strings.Contains(output, "hal/preview") {
+		t.Fatalf("dry-run output %q missing branch details", output)
+	}
+	if !strings.Contains(output, "Would push branch and create or reuse a pull request.") {
 		t.Fatalf("dry-run output %q missing expected preview text", output)
+	}
+	if strings.Contains(output, "dry-run: would push branch") {
+		t.Fatalf("dry-run output %q should use fixed human copy, not summary text", output)
 	}
 	if strings.Contains(strings.TrimSpace(output), "{") {
 		t.Fatalf("dry-run human output should not be JSON, got %q", output)
@@ -656,6 +665,51 @@ func TestRunCIStatus_UsesCommandFlagValues(t *testing.T) {
 	}
 	if got.Branch != "hal/from-flags" {
 		t.Fatalf("got.Branch = %q, want %q", got.Branch, "hal/from-flags")
+	}
+}
+
+func TestRunCIStatusWithDeps_WaitRendersChecksWhenDiscovered(t *testing.T) {
+	want := ci.StatusResult{
+		ContractVersion:    ci.StatusContractVersion,
+		Branch:             "hal/ci-status",
+		SHA:                "deadbeefcafebabe",
+		Status:             ci.StatusPassing,
+		ChecksDiscovered:   true,
+		Wait:               true,
+		WaitTerminalReason: ci.WaitTerminalReasonCompleted,
+		Checks: []ci.StatusCheck{
+			{Key: "check:tests", Name: "tests", Status: ci.StatusPassing},
+			{Key: "status:lint", Name: "lint", Status: ci.StatusFailing},
+		},
+		Totals: ci.StatusTotals{Passing: 1, Failing: 1},
+	}
+
+	var buf bytes.Buffer
+	err := runCIStatusWithDeps(context.Background(), ciStatusRunOptions{Wait: true}, &buf, ciStatusDeps{
+		getStatus: func(context.Context) (ci.StatusResult, error) {
+			t.Fatal("getStatus should not be called when wait=true")
+			return ci.StatusResult{}, nil
+		},
+		waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+			return want, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIStatusWithDeps() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Wait:") || !strings.Contains(output, ci.WaitTerminalReasonCompleted) {
+		t.Fatalf("wait output %q missing terminal reason", output)
+	}
+	if !strings.Contains(output, "Checks:") {
+		t.Fatalf("wait output %q missing checks section", output)
+	}
+	if !strings.Contains(output, "tests") || !strings.Contains(output, "lint") {
+		t.Fatalf("wait output %q missing check names", output)
+	}
+	if !strings.Contains(output, "Totals:") || !strings.Contains(output, "1 passing") || !strings.Contains(output, "1 failing") {
+		t.Fatalf("wait output %q missing totals", output)
 	}
 }
 
@@ -1207,11 +1261,59 @@ func TestRunCIMergeWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "dry-run: would merge pull request for branch hal/ci-merge using merge strategy and delete the remote branch") {
+	if !strings.Contains(output, "CI Merge (dry run)") {
+		t.Fatalf("dry-run output %q missing title", output)
+	}
+	if !strings.Contains(output, "Strategy:") || !strings.Contains(output, "merge") {
+		t.Fatalf("dry-run output %q missing strategy", output)
+	}
+	if !strings.Contains(output, "Would merge pull request and delete the remote branch.") {
 		t.Fatalf("dry-run output %q missing expected preview text", output)
+	}
+	if strings.Contains(output, "dry-run: would merge pull request for branch") {
+		t.Fatalf("dry-run output %q should use fixed human copy, not summary text", output)
 	}
 	if strings.Contains(strings.TrimSpace(output), "{") {
 		t.Fatalf("dry-run human output should not be JSON, got %q", output)
+	}
+}
+
+func TestRunCIMergeWithDeps_HumanOutputShowsBranchAlreadyAbsent(t *testing.T) {
+	var buf bytes.Buffer
+	err := runCIMergeWithDeps(context.Background(), ciMergeRunOptions{Strategy: "squash", DeleteBranch: true}, &buf, ciMergeDeps{
+		mergePR: func(context.Context, ci.MergeOptions) (ci.MergeResult, error) {
+			return ci.MergeResult{
+				ContractVersion: ci.MergeContractVersion,
+				PRNumber:        42,
+				Strategy:        "squash",
+				Merged:          true,
+				MergeCommitSHA:  "deadbeef",
+				BranchDeleted:   false,
+				DeleteWarning:   "",
+				Summary:         "merged pull request #42 using squash strategy; remote branch already absent",
+			}, nil
+		},
+		currentBranch: func(context.Context) (string, error) {
+			t.Fatal("currentBranch should not be called when dry-run=false")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIMergeWithDeps() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "CI Merge") {
+		t.Fatalf("human output %q missing title", output)
+	}
+	if !strings.Contains(output, "PR:") || !strings.Contains(output, "#42") {
+		t.Fatalf("human output %q missing PR details", output)
+	}
+	if !strings.Contains(output, "Commit:") || !strings.Contains(output, "deadbee") {
+		t.Fatalf("human output %q missing shortened commit sha", output)
+	}
+	if !strings.Contains(output, "Branch:") || !strings.Contains(output, "Already absent") {
+		t.Fatalf("human output %q missing already-absent branch outcome", output)
 	}
 }
 

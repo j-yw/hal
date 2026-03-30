@@ -217,6 +217,65 @@ type ciMergeRunOptions struct {
 	JSON          bool
 }
 
+const ciFieldValueColumn = 10
+
+func ciWriteField(out io.Writer, label string, value string) {
+	padding := ciFieldValueColumn - len(label)
+	if padding < 1 {
+		padding = 1
+	}
+	fmt.Fprintf(out, "%s%s%s\n", engine.StyleBold.Render(label), strings.Repeat(" ", padding), value)
+}
+
+func ciShortSHA(sha string) string {
+	sha = strings.TrimSpace(sha)
+	if len(sha) > 7 {
+		sha = sha[:7]
+	}
+	return sha
+}
+
+func ciRenderStatusValue(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case ci.StatusPassing:
+		return engine.StyleSuccess.Render("✓ passing")
+	case ci.StatusFailing:
+		return engine.StyleError.Render("✗ failing")
+	case ci.StatusPending:
+		return engine.StyleWarning.Render("⚠ pending")
+	default:
+		return engine.StyleMuted.Render(strings.TrimSpace(status))
+	}
+}
+
+func ciRenderCheckIcon(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case ci.StatusPassing:
+		return engine.StyleSuccess.Render("✓")
+	case ci.StatusFailing:
+		return engine.StyleError.Render("✗")
+	default:
+		return engine.StyleWarning.Render("⚠")
+	}
+}
+
+func ciRenderTotals(totals ci.StatusTotals) string {
+	parts := make([]string, 0, 3)
+	if totals.Passing > 0 {
+		parts = append(parts, fmt.Sprintf("%d passing", totals.Passing))
+	}
+	if totals.Failing > 0 {
+		parts = append(parts, fmt.Sprintf("%d failing", totals.Failing))
+	}
+	if totals.Pending > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending", totals.Pending))
+	}
+	if len(parts) == 0 {
+		return "0 checks"
+	}
+	return strings.Join(parts, " · ")
+}
+
 func runCIPush(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	if cmd != nil && cmd.Context() != nil {
@@ -305,20 +364,38 @@ func runCIPushWithDeps(ctx context.Context, opts ciPushRunOptions, out io.Writer
 	}
 
 	if result.DryRun {
-		fmt.Fprintf(out, "Dry run: would push branch %s and create or reuse a pull request.\n", result.Branch)
+		fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Push (dry run)"))
+		ciWriteField(out, "Branch:", engine.StyleInfo.Render(result.Branch))
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Would push branch and create or reuse a pull request."))
 		return nil
 	}
 
-	fmt.Fprintln(out, result.Summary)
+	fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Push"))
+	ciWriteField(out, "Branch:", engine.StyleInfo.Render(result.Branch))
+	ciWriteField(out, "Status:", engine.StyleSuccess.Render("✓ Pushed"))
+
 	if result.PullRequest.URL == "" {
 		return nil
 	}
 
-	label := "Pull request"
-	if result.PullRequest.Existing {
-		label = "Pull request (existing)"
+	fmt.Fprintln(out)
+	prLabel := "PR:"
+	if result.PullRequest.Number > 0 {
+		prLabel = fmt.Sprintf("PR #%d:", result.PullRequest.Number)
 	}
-	fmt.Fprintf(out, "%s: %s\n", label, result.PullRequest.URL)
+	ciWriteField(out, prLabel, engine.StyleInfo.Render(result.PullRequest.URL))
+
+	prDetail := "Draft"
+	if !result.PullRequest.Draft {
+		prDetail = "Ready for review"
+	}
+	if result.PullRequest.Existing {
+		prDetail += " · Existing"
+	} else {
+		prDetail += " · New"
+	}
+	fmt.Fprintf(out, "%s%s\n", strings.Repeat(" ", ciFieldValueColumn), engine.StyleMuted.Render(prDetail))
 	return nil
 }
 
@@ -422,15 +499,36 @@ func runCIStatusWithDeps(ctx context.Context, opts ciStatusRunOptions, out io.Wr
 		return nil
 	}
 
+	fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Status"))
+	ciWriteField(out, "Branch:", engine.StyleInfo.Render(result.Branch))
+	ciWriteField(out, "SHA:", engine.StyleMuted.Render(ciShortSHA(result.SHA)))
+	ciWriteField(out, "Status:", ciRenderStatusValue(result.Status))
+
 	if opts.Wait && strings.TrimSpace(result.WaitTerminalReason) != "" {
-		fmt.Fprintf(out, "Wait terminal reason: %s\n", result.WaitTerminalReason)
+		ciWriteField(out, "Wait:", engine.StyleMuted.Render(result.WaitTerminalReason))
 	}
-	if strings.TrimSpace(result.Summary) != "" {
-		fmt.Fprintln(out, result.Summary)
+
+	if !result.ChecksDiscovered {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("No CI checks discovered."))
 		return nil
 	}
 
-	fmt.Fprintf(out, "status=%s\n", result.Status)
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "%s\n", engine.StyleBold.Render("Checks:"))
+	for _, check := range result.Checks {
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			name = strings.TrimSpace(check.Key)
+		}
+		if name == "" {
+			name = "(unnamed check)"
+		}
+		fmt.Fprintf(out, "  %s  %s\n", ciRenderCheckIcon(check.Status), name)
+	}
+
+	fmt.Fprintln(out)
+	ciWriteField(out, "Totals:", engine.StyleMuted.Render(ciRenderTotals(result.Totals)))
 	return nil
 }
 
@@ -723,14 +821,40 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 		return nil
 	}
 
-	if strings.TrimSpace(result.Summary) != "" {
-		fmt.Fprintln(out, result.Summary)
+	if result.DryRun {
+		fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Merge (dry run)"))
+		ciWriteField(out, "Strategy:", result.Strategy)
+		fmt.Fprintln(out)
+		if opts.DeleteBranch {
+			fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Would merge pull request and delete the remote branch."))
+		} else {
+			fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Would merge pull request."))
+		}
+		return nil
 	}
-	if !result.DryRun && strings.TrimSpace(result.MergeCommitSHA) != "" {
-		fmt.Fprintf(out, "Merge commit: %s\n", result.MergeCommitSHA)
+
+	fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Merge"))
+	if result.PRNumber > 0 {
+		ciWriteField(out, "PR:", engine.StyleInfo.Render(fmt.Sprintf("#%d", result.PRNumber)))
 	}
-	if !result.DryRun && strings.TrimSpace(result.DeleteWarning) != "" {
-		fmt.Fprintf(out, "Warning: %s\n", result.DeleteWarning)
+	ciWriteField(out, "Strategy:", result.Strategy)
+	statusValue := engine.StyleMuted.Render("Not merged")
+	if result.Merged {
+		statusValue = engine.StyleSuccess.Render("✓ Merged")
+	}
+	ciWriteField(out, "Status:", statusValue)
+
+	sha := ciShortSHA(result.MergeCommitSHA)
+	if sha != "" {
+		fmt.Fprintln(out)
+		ciWriteField(out, "Commit:", engine.StyleMuted.Render(sha))
+	}
+	if result.BranchDeleted {
+		ciWriteField(out, "Branch:", engine.StyleSuccess.Render("✓ Deleted"))
+	} else if strings.TrimSpace(result.DeleteWarning) != "" {
+		ciWriteField(out, "Branch:", engine.StyleWarning.Render("⚠ "+result.DeleteWarning))
+	} else if opts.DeleteBranch {
+		ciWriteField(out, "Branch:", engine.StyleMuted.Render("Already absent"))
 	}
 	return nil
 }
@@ -745,14 +869,46 @@ func writeCIFixResult(out io.Writer, jsonMode bool, result ci.FixResult) error {
 		return nil
 	}
 
-	if strings.TrimSpace(result.Summary) != "" {
-		fmt.Fprintln(out, result.Summary)
+	fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Fix"))
+
+	if !result.Applied {
+		summary := strings.TrimSpace(result.Summary)
+		if summary == "" {
+			summary = "no fix attempt needed"
+		}
+
+		lower := strings.ToLower(summary)
+		render := engine.StyleMuted.Render
+		if strings.Contains(lower, "status is passing") {
+			render = engine.StyleSuccess.Render
+			summary = "✓ " + summary
+		} else if strings.Contains(lower, "status is pending") {
+			render = engine.StyleWarning.Render
+			summary = "⚠ " + summary
+		}
+
+		ciWriteField(out, "Status:", render(summary))
+		return nil
 	}
-	if strings.TrimSpace(result.CommitSHA) != "" {
-		fmt.Fprintf(out, "Commit: %s\n", result.CommitSHA)
+
+	if strings.TrimSpace(result.Branch) != "" {
+		ciWriteField(out, "Branch:", engine.StyleInfo.Render(result.Branch))
+	}
+	if result.MaxAttempts > 0 {
+		ciWriteField(out, "Attempt:", fmt.Sprintf("%d/%d", result.Attempt, result.MaxAttempts))
+	}
+	ciWriteField(out, "Status:", engine.StyleSuccess.Render("✓ Fix applied"))
+
+	sha := ciShortSHA(result.CommitSHA)
+	if sha != "" {
+		fmt.Fprintln(out)
+		ciWriteField(out, "Commit:", engine.StyleMuted.Render(sha))
+	}
+	if result.Pushed {
+		ciWriteField(out, "Pushed:", engine.StyleSuccess.Render("✓"))
 	}
 	if len(result.FilesChanged) > 0 {
-		fmt.Fprintf(out, "Files changed: %s\n", strings.Join(result.FilesChanged, ", "))
+		ciWriteField(out, "Files:", engine.StyleMuted.Render(strings.Join(result.FilesChanged, ", ")))
 	}
 	return nil
 }
