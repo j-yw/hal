@@ -300,22 +300,7 @@ func Run(opts Options) DoctorResult {
 		// Build specific warning summary
 		warnParts := make([]string, 0, len(warnings))
 		for _, w := range warnings {
-			switch w {
-			case "codex_global_links":
-				warnParts = append(warnParts, "refresh Codex global links")
-			case "github_auth":
-				warnParts = append(warnParts, "run gh auth login")
-			case "legacy_debris":
-				warnParts = append(warnParts, "run hal cleanup")
-			case "legacy_sandbox_state":
-				warnParts = append(warnParts, "run hal sandbox migrate")
-			case "broken_skill_links":
-				warnParts = append(warnParts, "run hal links clean")
-			case "local_skill_links":
-				warnParts = append(warnParts, "run hal links refresh")
-			default:
-				warnParts = append(warnParts, w)
-			}
+			warnParts = append(warnParts, warningSummaryPart(w, checks))
 		}
 		if len(warnParts) > 0 {
 			summary = "Hal is usable with warnings: " + strings.Join(warnParts, "; ") + "."
@@ -347,6 +332,37 @@ func countPassed(checks []Check) int {
 		}
 	}
 	return n
+}
+
+func warningSummaryPart(warningID string, checks []Check) string {
+	switch warningID {
+	case "codex_global_links":
+		return "refresh Codex global links"
+	case "github_auth":
+		for _, c := range checks {
+			if c.ID != "github_auth" || c.Status != StatusWarn {
+				continue
+			}
+			if c.RemediationID == RemediationRunGHAuthLogin {
+				return "run gh auth login"
+			}
+			if strings.Contains(c.Message, "env token is invalid") {
+				return "set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it"
+			}
+			return "review GitHub auth configuration"
+		}
+		return "review GitHub auth configuration"
+	case "legacy_debris":
+		return "run hal cleanup"
+	case "legacy_sandbox_state":
+		return "run hal sandbox migrate"
+	case "broken_skill_links":
+		return "run hal links clean"
+	case "local_skill_links":
+		return "run hal links refresh"
+	default:
+		return warningID
+	}
 }
 
 func checkGitRepo(dir string) Check {
@@ -537,7 +553,16 @@ func checkGitHubAuthWithDeps(dir string, deps githubAuthDeps) Check {
 	}
 
 	if _, err := deps.selectGitHubClient(context.Background()); err != nil {
-		if errors.Is(err, ci.ErrNoGitHubAuth) || errors.Is(err, ci.ErrInvalidEnvToken) {
+		if errors.Is(err, ci.ErrInvalidEnvToken) {
+			return Check{
+				ID:            "github_auth",
+				Status:        StatusWarn,
+				Severity:      SeverityWarn,
+				RemediationID: RemediationNone,
+				Message:       "GitHub auth env token is invalid: set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it to use `gh auth login`.",
+			}
+		}
+		if errors.Is(err, ci.ErrNoGitHubAuth) {
 			return Check{
 				ID:            "github_auth",
 				Status:        StatusWarn,

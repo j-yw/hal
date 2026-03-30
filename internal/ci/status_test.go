@@ -348,6 +348,82 @@ func TestMapCommitStatusState_LockedMappings(t *testing.T) {
 	}
 }
 
+func TestGHAPIHTTPErrorFromStderr_ParsesHTTPStatus(t *testing.T) {
+	t.Parallel()
+
+	req := githubAPIRequest{
+		Method:   "DELETE",
+		Endpoint: "/repos/acme/repo/git/refs/heads/hal%2Ffeature",
+	}
+
+	apiErr := ghAPIHTTPErrorFromStderr(req, "gh: Not Found (HTTP 404)")
+	if apiErr == nil {
+		t.Fatal("ghAPIHTTPErrorFromStderr() = nil, want non-nil")
+	}
+	if apiErr.Method != req.Method {
+		t.Fatalf("Method = %q, want %q", apiErr.Method, req.Method)
+	}
+	if apiErr.Endpoint != req.Endpoint {
+		t.Fatalf("Endpoint = %q, want %q", apiErr.Endpoint, req.Endpoint)
+	}
+	if apiErr.StatusCode != 404 {
+		t.Fatalf("StatusCode = %d, want 404", apiErr.StatusCode)
+	}
+	if !isGitHubAPIHTTPStatus(apiErr, 404) {
+		t.Fatal("isGitHubAPIHTTPStatus(apiErr, 404) = false, want true")
+	}
+}
+
+func TestParseHTTPStatusCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want int
+		ok   bool
+	}{
+		{
+			name: "parenthesized http status",
+			text: "gh: Not Found (HTTP 404)",
+			want: 404,
+			ok:   true,
+		},
+		{
+			name: "http status code label",
+			text: "request failed; HTTP status code: 422",
+			want: 422,
+			ok:   true,
+		},
+		{
+			name: "missing status code",
+			text: "gh: authentication failed",
+			want: 0,
+			ok:   false,
+		},
+		{
+			name: "invalid status code",
+			text: "gh: weird response (HTTP 999)",
+			want: 0,
+			ok:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := parseHTTPStatusCode(tt.text)
+			if ok != tt.ok {
+				t.Fatalf("parseHTTPStatusCode(%q) ok = %v, want %v", tt.text, ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Fatalf("parseHTTPStatusCode(%q) code = %d, want %d", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
 func makeCheckRuns(count int, prefix string) []checkRunData {
 	runs := make([]checkRunData, 0, count)
 	for i := 0; i < count; i++ {

@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +24,12 @@ const (
 	defaultWaitTimeout      = 30 * time.Minute
 	defaultNoChecksGrace    = 90 * time.Second
 )
+
+var ghHTTPStatusCodePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\(http\s+(\d{3})\)`),
+	regexp.MustCompile(`(?i)\bhttp(?:\s+status)?(?:\s+code)?\s*[:=]?\s*(\d{3})\b`),
+	regexp.MustCompile(`(?i)\bstatus\s+code\s*[:=]?\s*(\d{3})\b`),
+}
 
 // WaitOptions configures WaitForChecks polling behavior.
 type WaitOptions struct {
@@ -78,12 +89,34 @@ type commitStatusData struct {
 
 // GetStatus aggregates CI state from both GitHub check-runs and commit statuses.
 func GetStatus(ctx context.Context) (StatusResult, error) {
-	return getStatusWithDeps(ctx, statusDeps{})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return StatusResult{}, err
+	}
+	return getStatusWithClient(ctx, client)
 }
 
 // WaitForChecks polls status until checks complete, timeout, or no checks are detected.
 func WaitForChecks(ctx context.Context, opts WaitOptions) (StatusResult, error) {
 	return waitForChecksWithDeps(ctx, opts, waitForChecksDeps{})
+}
+
+func getStatusWithClient(ctx context.Context, client ClientSelection) (StatusResult, error) {
+	return getStatusWithDeps(ctx, statusDeps{
+		findPRHeadSHA: func(callCtx context.Context, repo GitHubRepository, branch string) (string, error) {
+			return findPRHeadSHAWithClient(callCtx, client, repo, branch)
+		},
+		listCheckRunsPage: func(callCtx context.Context, repo GitHubRepository, sha string, page int, perPage int) ([]checkRunData, error) {
+			return listCheckRunsPageWithClient(callCtx, client, repo, sha, page, perPage)
+		},
+		listCommitStatusesPage: func(callCtx context.Context, repo GitHubRepository, sha string, page int, perPage int) ([]commitStatusData, error) {
+			return listCommitStatusesPageWithClient(callCtx, client, repo, sha, page, perPage)
+		},
+	})
 }
 
 func waitForChecksWithDeps(ctx context.Context, opts WaitOptions, deps waitForChecksDeps) (StatusResult, error) {
@@ -93,7 +126,13 @@ func waitForChecksWithDeps(ctx context.Context, opts WaitOptions, deps waitForCh
 	opts = waitOptionsWithDefaults(opts)
 
 	if deps.getStatus == nil {
-		deps.getStatus = GetStatus
+		client, err := SelectGitHubClient(ctx)
+		if err != nil {
+			return StatusResult{}, err
+		}
+		deps.getStatus = func(callCtx context.Context) (StatusResult, error) {
+			return getStatusWithClient(callCtx, client)
+		}
 	}
 	if deps.newTicker == nil {
 		deps.newTicker = newRealWaitTicker
@@ -423,10 +462,29 @@ func gitCurrentHEADSHA(ctx context.Context) (string, error) {
 }
 
 func runGit(ctx context.Context, args ...string) (string, error) {
+	return runGitInDir(ctx, "", args...)
+}
+
+func runGitInDir(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := runGitRawInDir(ctx, dir, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func runGitRaw(ctx context.Context, args ...string) (string, error) {
+	return runGitRawInDir(ctx, "", args...)
+}
+
+func runGitRawInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -439,7 +497,7 @@ func runGit(ctx context.Context, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s failed: %w", strings.Join(args, " "), err)
 	}
 
-	return strings.TrimSpace(stdout.String()), nil
+	return strings.TrimRight(stdout.String(), "\r\n"), nil
 }
 
 type ghPullRequest struct {
@@ -449,6 +507,14 @@ type ghPullRequest struct {
 }
 
 func findPRHeadSHA(ctx context.Context, repo GitHubRepository, branch string) (string, error) {
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	return findPRHeadSHAWithClient(ctx, client, repo, branch)
+}
+
+func findPRHeadSHAWithClient(ctx context.Context, client ClientSelection, repo GitHubRepository, branch string) (string, error) {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
 		return "", nil
@@ -462,7 +528,7 @@ func findPRHeadSHA(ctx context.Context, repo GitHubRepository, branch string) (s
 
 	endpoint := fmt.Sprintf("/repos/%s/%s/pulls?%s", repo.Owner, repo.Name, query.Encode())
 	var pulls []ghPullRequest
-	if err := ghAPI(ctx, endpoint, &pulls); err != nil {
+	if err := ghAPIWithClient(ctx, client, githubAPIRequest{Method: http.MethodGet, Endpoint: endpoint}, &pulls); err != nil {
 		return "", fmt.Errorf("find pull request for branch %q: %w", branch, err)
 	}
 	if len(pulls) == 0 {
@@ -483,9 +549,17 @@ type ghCheckRun struct {
 }
 
 func listCheckRunsPage(ctx context.Context, repo GitHubRepository, sha string, page int, perPage int) ([]checkRunData, error) {
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return listCheckRunsPageWithClient(ctx, client, repo, sha, page, perPage)
+}
+
+func listCheckRunsPageWithClient(ctx context.Context, client ClientSelection, repo GitHubRepository, sha string, page int, perPage int) ([]checkRunData, error) {
 	endpoint := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=%d&page=%d", repo.Owner, repo.Name, sha, perPage, page)
 	response := ghCheckRunsResponse{}
-	if err := ghAPI(ctx, endpoint, &response); err != nil {
+	if err := ghAPIWithClient(ctx, client, githubAPIRequest{Method: http.MethodGet, Endpoint: endpoint}, &response); err != nil {
 		return nil, err
 	}
 
@@ -512,9 +586,17 @@ type ghCommitStatus struct {
 }
 
 func listCommitStatusesPage(ctx context.Context, repo GitHubRepository, sha string, page int, perPage int) ([]commitStatusData, error) {
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return listCommitStatusesPageWithClient(ctx, client, repo, sha, page, perPage)
+}
+
+func listCommitStatusesPageWithClient(ctx context.Context, client ClientSelection, repo GitHubRepository, sha string, page int, perPage int) ([]commitStatusData, error) {
 	endpoint := fmt.Sprintf("/repos/%s/%s/commits/%s/statuses?per_page=%d&page=%d", repo.Owner, repo.Name, sha, perPage, page)
 	response := make([]ghCommitStatus, 0)
-	if err := ghAPI(ctx, endpoint, &response); err != nil {
+	if err := ghAPIWithClient(ctx, client, githubAPIRequest{Method: http.MethodGet, Endpoint: endpoint}, &response); err != nil {
 		return nil, err
 	}
 
@@ -530,25 +612,206 @@ func listCommitStatusesPage(ctx context.Context, repo GitHubRepository, sha stri
 }
 
 func ghAPI(ctx context.Context, endpoint string, out any) error {
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return err
+	}
+	return ghAPIWithClient(ctx, client, githubAPIRequest{Method: http.MethodGet, Endpoint: endpoint}, out)
+}
+
+type githubAPIRequest struct {
+	Method   string
+	Endpoint string
+	Body     any
+}
+
+type githubAPIHTTPError struct {
+	Method     string
+	Endpoint   string
+	StatusCode int
+	Body       string
+}
+
+func (e *githubAPIHTTPError) Error() string {
+	if e == nil {
+		return "github api request failed"
+	}
+	if e.Body != "" {
+		return fmt.Sprintf("github api %s %s failed: HTTP %d: %s", e.Method, e.Endpoint, e.StatusCode, e.Body)
+	}
+	return fmt.Sprintf("github api %s %s failed: HTTP %d", e.Method, e.Endpoint, e.StatusCode)
+}
+
+func isGitHubAPIHTTPStatus(err error, statusCode int) bool {
+	var apiErr *githubAPIHTTPError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == statusCode
+}
+
+func ghAPIWithClient(ctx context.Context, client ClientSelection, req githubAPIRequest, out any) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	cmd := exec.CommandContext(ctx, "gh", "api", "-H", "Accept: application/vnd.github+json", endpoint)
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	endpoint := strings.TrimSpace(req.Endpoint)
+	if endpoint == "" {
+		return fmt.Errorf("github api endpoint must not be empty")
+	}
+	if !strings.HasPrefix(endpoint, "/") {
+		endpoint = "/" + endpoint
+	}
+	req.Method = method
+	req.Endpoint = endpoint
+
+	switch client.Kind {
+	case ClientKindAPI:
+		token := strings.TrimSpace(client.Token)
+		if token == "" {
+			return ErrInvalidEnvToken
+		}
+		return ghAPIWithToken(ctx, req, token, out)
+	case ClientKindGH:
+		return ghAPIWithGH(ctx, req, out)
+	default:
+		return fmt.Errorf("unsupported GitHub client kind %q", client.Kind)
+	}
+}
+
+func ghAPIWithToken(ctx context.Context, req githubAPIRequest, token string, out any) error {
+	var reqBody io.Reader
+	if req.Body != nil {
+		payload, err := json.Marshal(req.Body)
+		if err != nil {
+			return fmt.Errorf("encode github api request body for %s %s: %w", req.Method, req.Endpoint, err)
+		}
+		reqBody = bytes.NewReader(payload)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, req.Method, "https://api.github.com"+req.Endpoint, reqBody)
+	if err != nil {
+		return fmt.Errorf("build github api request %s %s: %w", req.Method, req.Endpoint, err)
+	}
+	httpReq.Header.Set("Accept", "application/vnd.github+json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if req.Body != nil {
+		httpReq.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("github api %s %s failed: %w", req.Method, req.Endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read github api response for %s %s: %w", req.Method, req.Endpoint, err)
+	}
+	body = bytes.TrimSpace(body)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &githubAPIHTTPError{
+			Method:     req.Method,
+			Endpoint:   req.Endpoint,
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(body)),
+		}
+	}
+
+	if out == nil || len(body) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decode github api response for %s %s: %w", req.Method, req.Endpoint, err)
+	}
+	return nil
+}
+
+func ghAPIWithGH(ctx context.Context, req githubAPIRequest, out any) error {
+	args := []string{"api", "-H", "Accept: application/vnd.github+json"}
+	if req.Method != http.MethodGet {
+		args = append(args, "-X", req.Method)
+	}
+
+	var stdin *bytes.Reader
+	if req.Body != nil {
+		payload, err := json.Marshal(req.Body)
+		if err != nil {
+			return fmt.Errorf("encode gh api request body for %s %s: %w", req.Method, req.Endpoint, err)
+		}
+		stdin = bytes.NewReader(payload)
+		args = append(args, "-H", "Content-Type: application/json", "--input", "-")
+	}
+	args = append(args, req.Endpoint)
+
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		stderrText := strings.TrimSpace(stderr.String())
-		if stderrText != "" {
-			return fmt.Errorf("gh api %s failed: %s: %w", endpoint, stderrText, err)
+		if apiErr := ghAPIHTTPErrorFromStderr(req, stderrText); apiErr != nil {
+			return apiErr
 		}
-		return fmt.Errorf("gh api %s failed: %w", endpoint, err)
+		if stderrText != "" {
+			return fmt.Errorf("gh api %s %s failed: %s: %w", req.Method, req.Endpoint, stderrText, err)
+		}
+		return fmt.Errorf("gh api %s %s failed: %w", req.Method, req.Endpoint, err)
 	}
 
-	if err := json.Unmarshal(stdout.Bytes(), out); err != nil {
-		return fmt.Errorf("decode gh api response for %s: %w", endpoint, err)
+	if out == nil {
+		return nil
+	}
+	body := bytes.TrimSpace(stdout.Bytes())
+	if len(body) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decode gh api response for %s %s: %w", req.Method, req.Endpoint, err)
 	}
 	return nil
+}
+
+func ghAPIHTTPErrorFromStderr(req githubAPIRequest, stderrText string) *githubAPIHTTPError {
+	statusCode, ok := parseHTTPStatusCode(stderrText)
+	if !ok {
+		return nil
+	}
+	return &githubAPIHTTPError{
+		Method:     req.Method,
+		Endpoint:   req.Endpoint,
+		StatusCode: statusCode,
+		Body:       strings.TrimSpace(stderrText),
+	}
+}
+
+func parseHTTPStatusCode(text string) (int, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return 0, false
+	}
+
+	for _, pattern := range ghHTTPStatusCodePatterns {
+		matches := pattern.FindStringSubmatch(trimmed)
+		if len(matches) != 2 {
+			continue
+		}
+		code, err := strconv.Atoi(matches[1])
+		if err != nil {
+			continue
+		}
+		if code >= 100 && code <= 599 {
+			return code, true
+		}
+	}
+
+	return 0, false
 }

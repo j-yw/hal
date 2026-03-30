@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,6 +42,10 @@ type clientSelectorDeps struct {
 	getenv          func(string) string
 	validateToken   func(context.Context, string) error
 	ghAuthenticated func(context.Context) bool
+}
+
+type tokenValidatorDeps struct {
+	validateRequest func(*http.Request) (*http.Response, error)
 }
 
 // SelectGitHubClient resolves the deterministic auth/client path.
@@ -98,7 +103,16 @@ func envToken(getenv func(string) string) (string, bool) {
 	return "", false
 }
 
-func validateEnvToken(_ context.Context, token string) error {
+func validateEnvToken(ctx context.Context, token string) error {
+	return validateEnvTokenWithDeps(ctx, token, tokenValidatorDeps{
+		validateRequest: validateGitHubTokenRequest,
+	})
+}
+
+func validateEnvTokenWithDeps(ctx context.Context, token string, deps tokenValidatorDeps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return ErrInvalidEnvToken
@@ -109,12 +123,52 @@ func validateEnvToken(_ context.Context, token string) error {
 	if len(token) < 20 {
 		return ErrInvalidEnvToken
 	}
+
+	if deps.validateRequest == nil {
+		deps.validateRequest = validateGitHubTokenRequest
+	}
+
+	// /rate_limit is available to both user and non-user tokens while still
+	// returning 401 for invalid credentials.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/rate_limit", nil)
+	if err != nil {
+		return ErrInvalidEnvToken
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := deps.validateRequest(req)
+	if err != nil {
+		return ErrInvalidEnvToken
+	}
+	defer resp.Body.Close()
+	// Treat only 401 as definitively invalid. Other statuses (for example 403)
+	// can occur for valid tokens depending on org policy or temporary limits.
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrInvalidEnvToken
+	}
 	return nil
 }
 
+func validateGitHubTokenRequest(req *http.Request) (*http.Response, error) {
+	return http.DefaultClient.Do(req)
+}
+
 func isGHAuthenticated(ctx context.Context) bool {
-	cmd := exec.CommandContext(ctx, "gh", "auth", "status")
+	return isGHAuthenticatedWithRunner(ctx, runGHCommand)
+}
+
+func isGHAuthenticatedWithRunner(ctx context.Context, run func(context.Context, string, ...string) error) bool {
+	if run == nil {
+		run = runGHCommand
+	}
+	return run(ctx, "gh", "auth", "status", "--hostname", "github.com") == nil
+}
+
+func runGHCommand(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	return cmd.Run() == nil
+	return cmd.Run()
 }

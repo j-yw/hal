@@ -782,6 +782,59 @@ func TestCheckGitHubAuth_GitHubOriginWithoutAuthWarns(t *testing.T) {
 	}
 }
 
+func TestCheckGitHubAuth_GitHubOriginWithInvalidEnvTokenWarnsWithoutGHLoginRemediation(t *testing.T) {
+	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
+		originRemoteURL: func(string) (string, error) {
+			return "git@github.com:acme/repo.git", nil
+		},
+		selectGitHubClient: func(context.Context) (ci.ClientSelection, error) {
+			return ci.ClientSelection{}, ci.ErrInvalidEnvToken
+		},
+	})
+
+	if check.Status != StatusWarn {
+		t.Fatalf("status = %q, want %q", check.Status, StatusWarn)
+	}
+	if check.RemediationID != RemediationNone {
+		t.Fatalf("remediationId = %q, want %q", check.RemediationID, RemediationNone)
+	}
+	if check.Remediation != nil {
+		t.Fatalf("remediation = %+v, want nil", check.Remediation)
+	}
+	const want = "GitHub auth env token is invalid: set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it to use `gh auth login`."
+	if check.Message != want {
+		t.Fatalf("message = %q, want %q", check.Message, want)
+	}
+}
+
+func TestWarningSummaryPart_GitHubAuthNoAuth(t *testing.T) {
+	got := warningSummaryPart("github_auth", []Check{
+		{
+			ID:            "github_auth",
+			Status:        StatusWarn,
+			RemediationID: RemediationRunGHAuthLogin,
+			Message:       "GitHub auth not configured for this GitHub remote.",
+		},
+	})
+	if got != "run gh auth login" {
+		t.Fatalf("warningSummaryPart() = %q, want %q", got, "run gh auth login")
+	}
+}
+
+func TestWarningSummaryPart_GitHubAuthInvalidEnvToken(t *testing.T) {
+	got := warningSummaryPart("github_auth", []Check{
+		{
+			ID:            "github_auth",
+			Status:        StatusWarn,
+			RemediationID: RemediationNone,
+			Message:       "GitHub auth env token is invalid: set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it to use `gh auth login`.",
+		},
+	})
+	if got != "set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it" {
+		t.Fatalf("warningSummaryPart() = %q, want %q", got, "set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it")
+	}
+}
+
 func TestCheckGitHubAuth_GitHubOriginWithAuthPasses(t *testing.T) {
 	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
 		originRemoteURL: func(string) (string, error) {

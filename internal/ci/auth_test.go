@@ -3,6 +3,9 @@ package ci
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -140,26 +143,116 @@ func TestSelectGitHubClientWithDeps_UsesGHTokenWhenGitHubTokenUnset(t *testing.T
 
 func TestValidateEnvToken(t *testing.T) {
 	tests := []struct {
-		name    string
-		token   string
-		wantErr bool
+		name         string
+		token        string
+		responseCode int
+		requestErr   error
+		wantErr      bool
+		wantRequest  bool
 	}{
-		{name: "valid token", token: "ghp_12345678901234567890", wantErr: false},
-		{name: "empty token", token: "", wantErr: true},
-		{name: "too short", token: "short-token", wantErr: true},
-		{name: "contains whitespace", token: "ghp_1234 5678901234567890", wantErr: true},
+		{
+			name:         "valid token",
+			token:        "ghp_12345678901234567890",
+			responseCode: http.StatusOK,
+			wantErr:      false,
+			wantRequest:  true,
+		},
+		{
+			name:         "forbidden can still be valid token",
+			token:        "ghp_12345678901234567890",
+			responseCode: http.StatusForbidden,
+			wantErr:      false,
+			wantRequest:  true,
+		},
+		{name: "empty token", token: "", wantErr: true, wantRequest: false},
+		{name: "too short", token: "short-token", wantErr: true, wantRequest: false},
+		{name: "contains whitespace", token: "ghp_1234 5678901234567890", wantErr: true, wantRequest: false},
+		{
+			name:         "auth rejected",
+			token:        "ghp_12345678901234567890",
+			responseCode: http.StatusUnauthorized,
+			wantErr:      true,
+			wantRequest:  true,
+		},
+		{
+			name:        "request error",
+			token:       "ghp_12345678901234567890",
+			requestErr:  errors.New("network failure"),
+			wantErr:     true,
+			wantRequest: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateEnvToken(context.Background(), tt.token)
+			requestCalls := 0
+			err := validateEnvTokenWithDeps(context.Background(), tt.token, tokenValidatorDeps{
+				validateRequest: func(req *http.Request) (*http.Response, error) {
+					requestCalls++
+					if req.URL == nil || req.URL.Path != "/rate_limit" {
+						t.Fatalf("request path = %v, want /rate_limit", req.URL)
+					}
+					if tt.requestErr != nil {
+						return nil, tt.requestErr
+					}
+					code := tt.responseCode
+					if code == 0 {
+						code = http.StatusOK
+					}
+					return &http.Response{
+						StatusCode: code,
+						Body:       io.NopCloser(strings.NewReader("{}")),
+					}, nil
+				},
+			})
 			gotErr := err != nil
 			if gotErr != tt.wantErr {
 				t.Fatalf("validateEnvToken(%q) error = %v, wantErr %v", tt.token, err, tt.wantErr)
+			}
+			if tt.wantRequest && requestCalls != 1 {
+				t.Fatalf("validate request calls = %d, want 1", requestCalls)
+			}
+			if !tt.wantRequest && requestCalls != 0 {
+				t.Fatalf("validate request calls = %d, want 0", requestCalls)
 			}
 			if tt.wantErr && !errors.Is(err, ErrInvalidEnvToken) {
 				t.Fatalf("error = %v, want %v", err, ErrInvalidEnvToken)
 			}
 		})
+	}
+}
+
+func TestIsGHAuthenticatedWithRunner_ScopesAuthToGitHubDotCom(t *testing.T) {
+	var gotName string
+	var gotArgs []string
+
+	ok := isGHAuthenticatedWithRunner(context.Background(), func(_ context.Context, name string, args ...string) error {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return nil
+	})
+	if !ok {
+		t.Fatalf("isGHAuthenticatedWithRunner() = false, want true")
+	}
+	if gotName != "gh" {
+		t.Fatalf("command name = %q, want %q", gotName, "gh")
+	}
+	wantArgs := []string{"auth", "status", "--hostname", "github.com"}
+	if len(gotArgs) != len(wantArgs) {
+		t.Fatalf("args len = %d, want %d (%v)", len(gotArgs), len(wantArgs), gotArgs)
+	}
+	for i := range wantArgs {
+		if gotArgs[i] != wantArgs[i] {
+			t.Fatalf("arg[%d] = %q, want %q", i, gotArgs[i], wantArgs[i])
+		}
+	}
+}
+
+func TestIsGHAuthenticatedWithRunner_ReturnsFalseOnError(t *testing.T) {
+	ok := isGHAuthenticatedWithRunner(context.Background(), func(context.Context, string, ...string) error {
+		return errors.New("not authenticated")
+	})
+	if ok {
+		t.Fatalf("isGHAuthenticatedWithRunner() = true, want false")
 	}
 }
