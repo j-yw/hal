@@ -267,6 +267,88 @@ func TestRunAuto_JSONResumeWithDoneStateReturnsJSONOnly(t *testing.T) {
 	}
 }
 
+func TestRunAuto_JSONResumeEntryModeUsesSavedMarkdownPath(t *testing.T) {
+	chdirTemp(t)
+
+	halDir := template.HalDir
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	statePath := filepath.Join(halDir, template.AutoStateFile)
+	if err := os.WriteFile(statePath, []byte(`{"step":"done","sourceMarkdown":"./feature.md"}`), 0644); err != nil {
+		t.Fatalf("write auto-state.json: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	if err := cmd.Flags().Set("resume", "true"); err != nil {
+		t.Fatalf("set resume flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	assertAutoJSONContractV2(t, out.Bytes())
+
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if result.EntryMode != string(autoEntryModeMarkdownPath) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeMarkdownPath)
+	}
+	if result.Steps.Analyze.Status != autoStepStatusSkipped {
+		t.Fatalf("result.Steps.Analyze.Status = %q, want %q", result.Steps.Analyze.Status, autoStepStatusSkipped)
+	}
+	if result.Steps.Spec.Status != autoStepStatusSkipped {
+		t.Fatalf("result.Steps.Spec.Status = %q, want %q", result.Steps.Spec.Status, autoStepStatusSkipped)
+	}
+}
+
+func TestRunAuto_JSONResumeEntryModeKeepsReportDiscoveryWhenAnalysisPresent(t *testing.T) {
+	chdirTemp(t)
+
+	halDir := template.HalDir
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	statePath := filepath.Join(halDir, template.AutoStateFile)
+	if err := os.WriteFile(statePath, []byte(`{"step":"done","sourceMarkdown":".hal/prd-generated.md","analysis":{"priorityItem":"test"}}`), 0644); err != nil {
+		t.Fatalf("write auto-state.json: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	if err := cmd.Flags().Set("resume", "true"); err != nil {
+		t.Fatalf("set resume flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	assertAutoJSONContractV2(t, out.Bytes())
+
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if result.EntryMode != string(autoEntryModeReportDiscovery) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeReportDiscovery)
+	}
+	if result.Steps.Analyze.Status != autoStepStatusCompleted {
+		t.Fatalf("result.Steps.Analyze.Status = %q, want %q", result.Steps.Analyze.Status, autoStepStatusCompleted)
+	}
+	if result.Steps.Spec.Status != autoStepStatusCompleted {
+		t.Fatalf("result.Steps.Spec.Status = %q, want %q", result.Steps.Spec.Status, autoStepStatusCompleted)
+	}
+}
+
 func TestRunAuto_ResumeIgnoresPositionalAndReportInputs(t *testing.T) {
 	chdirTemp(t)
 

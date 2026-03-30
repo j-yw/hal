@@ -48,6 +48,44 @@ func TestRunPRStep_SkipCIFlagMarksSkipped(t *testing.T) {
 	}
 }
 
+func TestRunPRStep_SkipCIFlagDryRunPreservesSavedState(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+
+	var out bytes.Buffer
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(&out), dir)
+	state := &PipelineState{
+		Step:       StepCI,
+		BaseBranch: "develop",
+		BranchName: "hal/skip-ci",
+		StartedAt:  time.Now(),
+	}
+
+	if err := pipeline.saveState(state); err != nil {
+		t.Fatalf("saveState returned error: %v", err)
+	}
+
+	if err := pipeline.runPRStep(context.Background(), state, RunOptions{SkipCI: true, DryRun: true}); err != nil {
+		t.Fatalf("runPRStep returned error: %v", err)
+	}
+
+	if state.Step != StepDone {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+	}
+	if state.CI == nil {
+		t.Fatal("state.CI is nil")
+	}
+	if state.CI.Status != "skipped" {
+		t.Fatalf("state.CI.Status = %q, want %q", state.CI.Status, "skipped")
+	}
+	if state.CI.Reason != "skip_ci_flag" {
+		t.Fatalf("state.CI.Reason = %q, want %q", state.CI.Reason, "skip_ci_flag")
+	}
+	if !pipeline.HasState() {
+		t.Fatal("pipeline state should be preserved during dry-run skip-ci")
+	}
+}
+
 func TestRunPRStep_CIDependenciesUnavailableMarksSkipped(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
@@ -73,8 +111,8 @@ func TestRunPRStep_CIDependenciesUnavailableMarksSkipped(t *testing.T) {
 		t.Fatalf("runPRStep returned error: %v", err)
 	}
 
-	if state.Step != StepDone {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+	if state.Step != StepArchive {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepArchive)
 	}
 	if state.CI == nil {
 		t.Fatal("state.CI is nil")
@@ -88,7 +126,7 @@ func TestRunPRStep_CIDependenciesUnavailableMarksSkipped(t *testing.T) {
 	if !strings.Contains(out.String(), "dependencies unavailable") {
 		t.Fatalf("expected dependency-unavailable output message, got %q", out.String())
 	}
-	if pipeline.HasState() {
-		t.Fatal("pipeline state should be cleared after ci_unavailable skip")
+	if !pipeline.HasState() {
+		t.Fatal("pipeline state should be saved after ci_unavailable skip")
 	}
 }

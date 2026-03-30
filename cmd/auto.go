@@ -281,6 +281,11 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	}
 
 	entryMode := determineAutoEntryMode(sourceMarkdown)
+	if resume {
+		if resumeEntryMode, ok := determineAutoResumeEntryMode(dir); ok {
+			entryMode = resumeEntryMode
+		}
+	}
 
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
@@ -389,6 +394,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 				summary = fmt.Sprintf("Auto pipeline stopped at %s.", failedStep)
 			}
 			jr := autoFailureResult(entryMode, resume, summary, err.Error(), autoFailurePipeline, pipeline.HasState(), failedStep, time.Since(autoStart))
+			applyAutoFailureCIState(&jr.Steps, failedStep, pipeline.LastCIState())
 			return outputAutoJSON(out, jr)
 		}
 		return err
@@ -403,7 +409,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		if autoBranch != "" {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
-		jr := autoSuccessResult(entryMode, resume, skipCI, summary, elapsed)
+		jr := autoSuccessResult(entryMode, resume, skipCI, pipeline.LastCIState(), summary, elapsed)
 		return outputAutoJSON(out, jr)
 	}
 
@@ -413,7 +419,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		summaryParts = append(summaryParts, fmt.Sprintf("Branch: %s", autoBranch))
 	}
 	// Show PRD task progress if available
-	if prd, err := engine.LoadPRDFile(filepath.Join(dir, template.HalDir), template.AutoPRDFile); err == nil {
+	if prd, err := engine.LoadPRDFile(filepath.Join(dir, template.HalDir), template.PRDFile); err == nil {
 		completed, total := prd.Progress()
 		if total > 0 {
 			summaryParts = append(summaryParts, fmt.Sprintf("Tasks: %d/%d", completed, total))
@@ -433,13 +439,13 @@ func outputAutoJSON(out io.Writer, jr AutoResult) error {
 	return nil
 }
 
-func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, summary string, duration time.Duration) AutoResult {
+func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, ciState *compound.CIState, summary string, duration time.Duration) AutoResult {
 	jr := AutoResult{
 		ContractVersion: 2,
 		OK:              true,
 		EntryMode:       string(entryMode),
 		Resumed:         resumed,
-		Steps:           autoStepsForSuccess(entryMode, skipCI),
+		Steps:           autoStepsForSuccess(entryMode, skipCI, ciState),
 		Summary:         summary,
 		NextAction: &AutoNextAction{
 			ID:          "run_report",
@@ -475,6 +481,61 @@ func determineAutoEntryMode(sourceMarkdown string) autoEntryMode {
 		return autoEntryModeMarkdownPath
 	}
 	return autoEntryModeReportDiscovery
+}
+
+type autoResumeStateEntry struct {
+	Step           string          `json:"step"`
+	SourceMarkdown string          `json:"sourceMarkdown,omitempty"`
+	PRDPath        string          `json:"prdPath,omitempty"`
+	Analysis       json.RawMessage `json:"analysis,omitempty"`
+}
+
+func determineAutoResumeEntryMode(dir string) (autoEntryMode, bool) {
+	statePath := filepath.Join(dir, template.HalDir, template.AutoStateFile)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return autoEntryModeReportDiscovery, false
+	}
+
+	var state autoResumeStateEntry
+	if err := json.Unmarshal(data, &state); err != nil {
+		return autoEntryModeReportDiscovery, false
+	}
+
+	switch normalizeAutoResumeStep(state.Step) {
+	case compound.StepAnalyze, compound.StepSpec:
+		return autoEntryModeReportDiscovery, true
+	}
+
+	sourceMarkdown := strings.TrimSpace(state.SourceMarkdown)
+	if sourceMarkdown == "" {
+		sourceMarkdown = strings.TrimSpace(state.PRDPath)
+	}
+	if sourceMarkdown == "" {
+		return autoEntryModeReportDiscovery, true
+	}
+
+	analysis := strings.TrimSpace(string(state.Analysis))
+	if analysis != "" && analysis != "null" {
+		return autoEntryModeReportDiscovery, true
+	}
+
+	return autoEntryModeMarkdownPath, true
+}
+
+func normalizeAutoResumeStep(step string) string {
+	switch strings.TrimSpace(step) {
+	case "prd":
+		return compound.StepSpec
+	case "explode":
+		return compound.StepConvert
+	case "loop":
+		return compound.StepRun
+	case "pr":
+		return compound.StepCI
+	default:
+		return strings.TrimSpace(step)
+	}
 }
 
 func warnResumeInputIgnored(errOut io.Writer, input string) {
@@ -514,7 +575,7 @@ func newAutoSteps(entryMode autoEntryMode) AutoSteps {
 	return steps
 }
 
-func autoStepsForSuccess(entryMode autoEntryMode, skipCI bool) AutoSteps {
+func autoStepsForSuccess(entryMode autoEntryMode, skipCI bool, ciState *compound.CIState) AutoSteps {
 	steps := newAutoSteps(entryMode)
 
 	for _, stepName := range autoStepOrder {
@@ -528,18 +589,36 @@ func autoStepsForSuccess(entryMode autoEntryMode, skipCI bool) AutoSteps {
 		step.Status = autoStepStatusCompleted
 	}
 
-	if skipCI {
+	if ciSkipReason := autoCISkipReason(skipCI, ciState); ciSkipReason != "" {
 		if ci := steps.step(compound.StepCI); ci != nil {
 			ci.Status = autoStepStatusSkipped
-			ci.Reason = "skip_ci_flag"
+			ci.Reason = ciSkipReason
 		}
-		if archive := steps.step(compound.StepArchive); archive != nil {
-			archive.Status = autoStepStatusSkipped
-			archive.Reason = "skip_ci_flag"
+		if ciSkipReason == "skip_ci_flag" {
+			if archive := steps.step(compound.StepArchive); archive != nil {
+				archive.Status = autoStepStatusSkipped
+				archive.Reason = ciSkipReason
+			}
 		}
 	}
 
 	return steps
+}
+
+func autoCISkipReason(skipCI bool, ciState *compound.CIState) string {
+	if ciState != nil && ciState.Status == "skipped" {
+		reason := strings.TrimSpace(ciState.Reason)
+		if reason != "" {
+			return reason
+		}
+		return "skip_ci_flag"
+	}
+
+	if skipCI {
+		return "skip_ci_flag"
+	}
+
+	return ""
 }
 
 func autoStepsForFailure(entryMode autoEntryMode, failedStep string) AutoSteps {
@@ -568,6 +647,34 @@ func autoStepsForFailure(entryMode autoEntryMode, failedStep string) AutoSteps {
 	}
 
 	return steps
+}
+
+func applyAutoFailureCIState(steps *AutoSteps, failedStep string, ciState *compound.CIState) {
+	if steps == nil || ciState == nil {
+		return
+	}
+
+	failureIdx := autoStepIndex(failedStep)
+	ciIdx := autoStepIndex(compound.StepCI)
+	if failureIdx <= ciIdx {
+		return
+	}
+
+	if strings.TrimSpace(ciState.Status) != "skipped" {
+		return
+	}
+
+	ciStep := steps.step(compound.StepCI)
+	if ciStep == nil {
+		return
+	}
+
+	ciStep.Status = autoStepStatusSkipped
+	reason := strings.TrimSpace(ciState.Reason)
+	if reason == "" {
+		reason = "skip_ci_flag"
+	}
+	ciStep.Reason = reason
 }
 
 func autoStepIndex(step string) int {

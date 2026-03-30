@@ -1,6 +1,7 @@
 package compound
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -60,6 +61,7 @@ type Pipeline struct {
 	engineConfig *engine.EngineConfig
 	display      *engine.Display
 	dir          string
+	lastCIState  *CIState
 }
 
 // NewPipeline creates a new pipeline instance.
@@ -198,6 +200,24 @@ func (p *Pipeline) HasState() bool {
 	return p.loadState() != nil
 }
 
+// LastCIState returns CI telemetry from the most recent pipeline run.
+func (p *Pipeline) LastCIState() *CIState {
+	if p == nil || p.lastCIState == nil {
+		return nil
+	}
+	ci := *p.lastCIState
+	return &ci
+}
+
+func (p *Pipeline) recordCIState(ci *CIState) {
+	if ci == nil {
+		p.lastCIState = nil
+		return
+	}
+	ciCopy := *ci
+	p.lastCIState = &ciCopy
+}
+
 // RunOptions contains options for the pipeline Run method.
 type RunOptions struct {
 	Resume         bool   // Continue from last saved state
@@ -210,6 +230,8 @@ type RunOptions struct {
 
 // Run executes the compound pipeline from the current state or from the beginning.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
+	p.recordCIState(nil)
+
 	// Load or create initial state
 	var state *PipelineState
 	var err error
@@ -218,6 +240,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		if state == nil {
 			return fmt.Errorf("no saved state to resume from")
 		}
+		p.recordCIState(state.CI)
 		p.display.ShowInfo("   Resuming from step: %s\n", state.Step)
 	} else {
 		state, err = p.newInitialState(opts)
@@ -231,6 +254,8 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	}
 	if state.BaseBranch != "" {
 		p.display.ShowInfo("   Base branch: %s\n", state.BaseBranch)
+	} else if !opts.DryRun {
+		return fmt.Errorf("unable to determine base branch; rerun with --base <branch> (required when HEAD is detached or saved state lacks baseBranch)")
 	}
 
 	// Run steps in sequence, starting from current step
@@ -295,15 +320,39 @@ func (p *Pipeline) newInitialState(opts RunOptions) (*PipelineState, error) {
 		return state, nil
 	}
 
-	branchName, err := resolveSourceMarkdownBranchName(sourceMarkdown)
+	normalizedSourceMarkdown, err := p.normalizeSourceMarkdownPath(sourceMarkdown)
+	if err != nil {
+		return nil, err
+	}
+
+	branchName, err := resolveSourceMarkdownBranchName(normalizedSourceMarkdown)
 	if err != nil {
 		return nil, err
 	}
 
 	state.Step = StepBranch
-	state.SourceMarkdown = sourceMarkdown
+	state.SourceMarkdown = normalizedSourceMarkdown
 	state.BranchName = branchName
 	return state, nil
+}
+
+func (p *Pipeline) normalizeSourceMarkdownPath(mdPath string) (string, error) {
+	trimmed := strings.TrimSpace(mdPath)
+	if trimmed == "" {
+		return "", fmt.Errorf("markdown PRD path is empty")
+	}
+
+	candidate := trimmed
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(p.dir, candidate)
+	}
+
+	resolvedPath, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve markdown PRD path %s: %w", mdPath, err)
+	}
+
+	return filepath.Clean(resolvedPath), nil
 }
 
 func resolveSourceMarkdownBranchName(mdPath string) (string, error) {
@@ -317,7 +366,7 @@ func resolveSourceMarkdownBranchName(mdPath string) (string, error) {
 
 	branchName := prd.ResolveMarkdownBranchName(string(mdContent), mdPath)
 	if branchName == "" {
-		return "", fmt.Errorf("unable to resolve branchName from markdown metadata, title, or filename; pass --branch")
+		return "", fmt.Errorf("unable to resolve branchName from markdown metadata, title, or filename; add branchName metadata or use a descriptive title/filename")
 	}
 
 	return branchName, nil
@@ -573,6 +622,12 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 		return fmt.Errorf("no source markdown path in state")
 	}
 
+	normalizedSourceMarkdown, err := p.normalizeSourceMarkdownPath(state.SourceMarkdown)
+	if err != nil {
+		return err
+	}
+	state.SourceMarkdown = normalizedSourceMarkdown
+
 	outPath := filepath.Join(p.dir, template.HalDir, template.PRDFile)
 
 	if opts.DryRun {
@@ -587,7 +642,7 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 	}
 
 	p.display.ShowInfo("   Converting PRD into granular tasks...\n")
-	if err := convertWithEngine(ctx, p.engine, state.SourceMarkdown, outPath, convertOpts, p.display); err != nil {
+	if err := convertWithEngine(ctx, p.engine, normalizedSourceMarkdown, outPath, convertOpts, p.display); err != nil {
 		return fmt.Errorf("failed to convert PRD: %w", err)
 	}
 
@@ -871,7 +926,12 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	if opts.SkipCI {
 		state.CI = &CIState{Status: "skipped", Reason: "skip_ci_flag"}
+		p.recordCIState(state.CI)
 		p.display.ShowInfo("   Skipping CI step (--skip-ci)\n")
+		if opts.DryRun {
+			state.Step = StepDone
+			return nil
+		}
 		if err := p.clearState(); err != nil {
 			return fmt.Errorf("failed to clear state: %w", err)
 		}
@@ -895,44 +955,50 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	if err := checkCIDependencies(); err != nil {
 		state.CI = &CIState{Status: "skipped", Reason: "ci_unavailable"}
+		p.recordCIState(state.CI)
 		p.display.ShowInfo("   Skipping CI step: dependencies unavailable (%v)\n", err)
-		if clearErr := p.clearState(); clearErr != nil {
-			return fmt.Errorf("failed to clear state: %w", clearErr)
+		state.Step = StepArchive
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to save state: %w", saveErr)
 		}
-		state.Step = StepDone
 		return nil
 	}
 
 	// Push the branch
 	p.display.ShowInfo("   Pushing branch: %s\n", state.BranchName)
-	if err := PushBranch(state.BranchName); err != nil {
+	if err := pushBranchInDir(p.dir, state.BranchName); err != nil {
 		state.CI = &CIState{Status: "failed"}
+		p.recordCIState(state.CI)
 		return fmt.Errorf("failed to push branch: %w", err)
 	}
 
 	taskStatus := ""
-	if prd, err := engine.LoadPRDFile(filepath.Join(p.dir, template.HalDir), template.AutoPRDFile); err == nil {
+	if prd, err := engine.LoadPRDFile(filepath.Join(p.dir, template.HalDir), template.PRDFile); err == nil {
 		taskStatus = buildTaskStatusSection(prd, state, p.config.MaxIterations)
 	}
 
 	// Build PR body from analysis
 	prBody := buildPRBody(state, taskStatus)
 
-	// Create PR title from analysis
-	prTitle := state.Analysis.PriorityItem
-	if prTitle == "" {
-		prTitle = "Compound: " + state.BranchName
+	// Create PR title from analysis when available.
+	prTitle := "Compound: " + state.BranchName
+	if state.Analysis != nil {
+		if priority := strings.TrimSpace(state.Analysis.PriorityItem); priority != "" {
+			prTitle = priority
+		}
 	}
 
 	// Create draft PR
 	p.display.ShowInfo("   Creating draft PR...\n")
-	prURL, err := CreatePR(prTitle, prBody, state.BaseBranch, state.BranchName)
+	prURL, err := createPRInDir(p.dir, prTitle, prBody, state.BaseBranch, state.BranchName)
 	if err != nil {
 		state.CI = &CIState{Status: "failed"}
+		p.recordCIState(state.CI)
 		return fmt.Errorf("failed to create PR: %w", err)
 	}
 
 	state.CI = &CIState{Status: "passed"}
+	p.recordCIState(state.CI)
 	p.display.ShowInfo("   PR created: %s\n", prURL)
 
 	state.Step = StepArchive
@@ -941,6 +1007,55 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	return nil
+}
+
+func pushBranchInDir(dir, branchName string) error {
+	cmd := exec.Command("git", "push", "-u", "origin", branchName)
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		stderr := strings.TrimSpace(string(output))
+		if stderr != "" {
+			return fmt.Errorf("failed to push branch %q: %w (stderr: %s)", branchName, err, stderr)
+		}
+		return fmt.Errorf("failed to push branch %q: %w", branchName, err)
+	}
+
+	return nil
+}
+
+func createPRInDir(dir, title, body, base, head string) (string, error) {
+	args := []string{"pr", "create", "--draft", "--title", title, "--body", body}
+	if base != "" {
+		args = append(args, "--base", base)
+	}
+	if head != "" {
+		args = append(args, "--head", head)
+	}
+
+	cmd := exec.Command("gh", args...)
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		stderrText := strings.TrimSpace(stderr.String())
+		if stderrText != "" {
+			return "", fmt.Errorf("failed to create PR: %w (stderr: %s)", err, stderrText)
+		}
+		return "", fmt.Errorf("failed to create PR: %w", err)
+	}
+
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // runArchiveStep archives feature state while preserving the latest generated report.
