@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testing.T) {
+func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPRWithoutImplicitBaseFilter(t *testing.T) {
 	t.Parallel()
 
 	const branch = "hal/ci-push"
@@ -16,6 +16,7 @@ func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testi
 	pushedBranch := ""
 	createCalls := 0
 	findCalls := 0
+	resolveBaseRefCalled := false
 
 	result, err := pushAndCreatePRWithDeps(context.Background(), PushOptions{}, pushDeps{
 		currentBranch: func(context.Context) (string, error) {
@@ -29,6 +30,7 @@ func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testi
 			return GitHubRepository{Owner: "acme", Name: "repo"}, nil
 		},
 		resolveBaseRef: func(context.Context, GitHubRepository, string) (string, error) {
+			resolveBaseRefCalled = true
 			return "main", nil
 		},
 		findOpenPR: func(_ context.Context, repo GitHubRepository, gotBranch, gotBaseRef string) (*PullRequest, error) {
@@ -39,8 +41,8 @@ func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testi
 			if gotBranch != branch {
 				t.Fatalf("branch = %q, want %q", gotBranch, branch)
 			}
-			if gotBaseRef != "main" {
-				t.Fatalf("baseRef = %q, want %q", gotBaseRef, "main")
+			if gotBaseRef != "" {
+				t.Fatalf("baseRef = %q, want empty for implicit-base lookup", gotBaseRef)
 			}
 			return &PullRequest{
 				Number:   42,
@@ -48,7 +50,7 @@ func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testi
 				Title:    "existing pr",
 				HeadRef:  branch,
 				HeadSHA:  "abc123",
-				BaseRef:  "main",
+				BaseRef:  "release/1.2",
 				Draft:    true,
 				Existing: true,
 			}, nil
@@ -71,6 +73,9 @@ func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testi
 	if createCalls != 0 {
 		t.Fatalf("createPR calls = %d, want 0", createCalls)
 	}
+	if resolveBaseRefCalled {
+		t.Fatal("resolveBaseRef called = true, want false when existing PR is found without explicit base")
+	}
 	if !result.Pushed {
 		t.Fatal("result.Pushed = false, want true")
 	}
@@ -85,6 +90,9 @@ func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testi
 	}
 	if !result.PullRequest.Existing {
 		t.Fatal("result.PullRequest.Existing = false, want true")
+	}
+	if result.PullRequest.BaseRef != "release/1.2" {
+		t.Fatalf("result.PullRequest.BaseRef = %q, want %q", result.PullRequest.BaseRef, "release/1.2")
 	}
 }
 
@@ -119,13 +127,16 @@ func TestPushAndCreatePRWithDeps_DefaultsDraftTitleBodyDeterministically(t *test
 			if gotBranch != branch {
 				t.Fatalf("branch = %q, want %q", gotBranch, branch)
 			}
-			if gotBaseRef != "main" {
-				t.Fatalf("baseRef = %q, want %q", gotBaseRef, "main")
-			}
 			switch findCalls {
 			case 1:
+				if gotBaseRef != "" {
+					t.Fatalf("first lookup baseRef = %q, want empty", gotBaseRef)
+				}
 				return nil, nil
 			case 2:
+				if gotBaseRef != "main" {
+					t.Fatalf("second lookup baseRef = %q, want %q", gotBaseRef, "main")
+				}
 				return &PullRequest{
 					Number:   7,
 					URL:      createdURL,
@@ -214,6 +225,67 @@ func TestPushAndCreatePRWithDeps_ExplicitDraftFalseOverridesDefault(t *testing.T
 				return nil, nil
 			case 2:
 				return &PullRequest{Number: 11, URL: "https://github.com/acme/repo/pull/11", HeadRef: branch, BaseRef: "main", Draft: false}, nil
+			default:
+				return nil, fmt.Errorf("unexpected findOpenPR call %d", findCalls)
+			}
+		},
+		createPR: func(_ context.Context, createOpts createPullRequestOptions) (string, error) {
+			createCalls++
+			capturedCreate = createOpts
+			return "https://github.com/acme/repo/pull/11", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("pushAndCreatePRWithDeps() error = %v", err)
+	}
+
+	if createCalls != 1 {
+		t.Fatalf("createPR calls = %d, want 1", createCalls)
+	}
+	if capturedCreate.Draft {
+		t.Fatal("createPR draft = true, want false when explicitly requested")
+	}
+}
+
+func TestPushAndCreatePRWithDeps_ImplicitBaseLookupThenResolvedBaseLookupAfterCreate(t *testing.T) {
+	t.Parallel()
+
+	const branch = "hal/non-draft"
+	draft := false
+
+	createCalls := 0
+	findCalls := 0
+	capturedCreate := createPullRequestOptions{}
+
+	_, err := pushAndCreatePRWithDeps(context.Background(), PushOptions{Draft: &draft}, pushDeps{
+		currentBranch: func(context.Context) (string, error) {
+			return branch, nil
+		},
+		pushBranch: func(context.Context, string) error {
+			return nil
+		},
+		resolveRepo: func(context.Context) (GitHubRepository, error) {
+			return GitHubRepository{Owner: "acme", Name: "repo"}, nil
+		},
+		resolveBaseRef: func(context.Context, GitHubRepository, string) (string, error) {
+			return "main", nil
+		},
+		findOpenPR: func(_ context.Context, _ GitHubRepository, gotBranch, gotBaseRef string) (*PullRequest, error) {
+			findCalls++
+			if gotBranch != branch {
+				t.Fatalf("branch = %q, want %q", gotBranch, branch)
+			}
+			switch findCalls {
+			case 1:
+				if gotBaseRef != "" {
+					t.Fatalf("first lookup baseRef = %q, want empty", gotBaseRef)
+				}
+				return nil, nil
+			case 2:
+				if gotBaseRef != "main" {
+					t.Fatalf("second lookup baseRef = %q, want %q", gotBaseRef, "main")
+				}
+				return nil, nil
 			default:
 				return nil, fmt.Errorf("unexpected findOpenPR call %d", findCalls)
 			}
@@ -387,7 +459,7 @@ func TestSelectOpenPullRequest_AmbiguousWithoutBase(t *testing.T) {
 	}
 }
 
-func TestSelectOpenPullRequest_ReusesSingleHeadMatchWhenBaseDiffers(t *testing.T) {
+func TestSelectOpenPullRequest_ReturnsBaseMismatchForSingleHeadMatch(t *testing.T) {
 	t.Parallel()
 
 	prDevelop := ghOpenPullRequest{Number: 12, HTMLURL: "https://github.com/acme/repo/pull/12", Title: "develop target"}
@@ -396,17 +468,11 @@ func TestSelectOpenPullRequest_ReusesSingleHeadMatchWhenBaseDiffers(t *testing.T
 	prDevelop.Base.Ref = "develop"
 
 	pr, err := selectOpenPullRequest("hal/ci-push", "main", []ghOpenPullRequest{prDevelop})
-	if err != nil {
-		t.Fatalf("selectOpenPullRequest() error = %v", err)
+	if !errors.Is(err, ErrOpenPullRequestBaseMismatch) {
+		t.Fatalf("errors.Is(err, ErrOpenPullRequestBaseMismatch) = false, err=%v", err)
 	}
-	if pr == nil {
-		t.Fatal("selectOpenPullRequest() returned nil PR")
-	}
-	if pr.Number != 12 {
-		t.Fatalf("pr.Number = %d, want 12", pr.Number)
-	}
-	if pr.BaseRef != "develop" {
-		t.Fatalf("pr.BaseRef = %q, want %q", pr.BaseRef, "develop")
+	if pr != nil {
+		t.Fatalf("selectOpenPullRequest() = %+v, want nil", pr)
 	}
 }
 

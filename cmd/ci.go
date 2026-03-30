@@ -792,12 +792,13 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 	}
 
 	var (
-		result         ci.MergeResult
-		dryRunBranch   string
-		dryRunBase     string
-		dryRunPRNumber int
-		mergeBranch    string
-		mergeBase      string
+		result               ci.MergeResult
+		dryRunBranch         string
+		dryRunBase           string
+		dryRunPRNumber       int
+		mergeBranch          string
+		mergeBase            string
+		mergePRLookupWarning string
 	)
 
 	if opts.DryRun {
@@ -810,7 +811,11 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 			return fmt.Errorf("get current branch: empty branch name")
 		}
 		dryRunBranch = branch
-		if pr, prErr := deps.findOpenPR(ctx, branch); prErr == nil && pr != nil {
+		pr, prErr := deps.findOpenPR(ctx, branch)
+		if prErr != nil {
+			return fmt.Errorf("find open pull request for branch %s: %w", branch, prErr)
+		}
+		if pr != nil {
 			dryRunPRNumber = pr.Number
 			dryRunBase = strings.TrimSpace(pr.BaseRef)
 		}
@@ -835,7 +840,10 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 				branch = strings.TrimSpace(branch)
 				if branch != "" {
 					mergeBranch = branch
-					if pr, prErr := deps.findOpenPR(ctx, branch); prErr == nil && pr != nil {
+					pr, prErr := deps.findOpenPR(ctx, branch)
+					if prErr != nil {
+						mergePRLookupWarning = fmt.Sprintf("unable to resolve pull request metadata: %v", prErr)
+					} else if pr != nil {
 						mergeBase = strings.TrimSpace(pr.BaseRef)
 					}
 				}
@@ -896,6 +904,9 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 	}
 	if mergeBase != "" {
 		ciWriteField(out, "Base:", engine.StyleInfo.Render(mergeBase))
+	}
+	if strings.TrimSpace(mergePRLookupWarning) != "" {
+		ciWriteField(out, "Warning:", engine.StyleWarning.Render("⚠ "+mergePRLookupWarning))
 	}
 	ciWriteField(out, "Strategy:", result.Strategy)
 	statusValue := engine.StyleMuted.Render("Not merged")

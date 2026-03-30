@@ -15,6 +15,8 @@ const defaultPushTitlePrefix = "hal ci: "
 var (
 	// ErrAmbiguousOpenPullRequest is returned when a branch maps to multiple open pull requests.
 	ErrAmbiguousOpenPullRequest = errors.New("ci ambiguous open pull request selection")
+	// ErrOpenPullRequestBaseMismatch is returned when an explicit base does not match existing open pull requests for a branch.
+	ErrOpenPullRequestBaseMismatch = errors.New("ci open pull request base mismatch")
 )
 
 // FindOpenPullRequestForBranch resolves the open pull request for the given branch.
@@ -134,12 +136,9 @@ func pushAndCreatePRWithDeps(ctx context.Context, opts PushOptions, deps pushDep
 		return PushResult{}, err
 	}
 
-	baseRef, err := deps.resolveBaseRef(ctx, repo, opts.BaseRef)
-	if err != nil {
-		return PushResult{}, err
-	}
-
-	existingPR, err := deps.findOpenPR(ctx, repo, branch, baseRef)
+	requestedBaseRef := strings.TrimSpace(opts.BaseRef)
+	existingLookupBaseRef := requestedBaseRef
+	existingPR, err := deps.findOpenPR(ctx, repo, branch, existingLookupBaseRef)
 	if err != nil {
 		return PushResult{}, err
 	}
@@ -150,6 +149,14 @@ func pushAndCreatePRWithDeps(ctx context.Context, opts PushOptions, deps pushDep
 			existing.HeadRef = branch
 		}
 		return buildPushResult(branch, existing), nil
+	}
+
+	baseRef := requestedBaseRef
+	if baseRef == "" {
+		baseRef, err = deps.resolveBaseRef(ctx, repo, "")
+		if err != nil {
+			return PushResult{}, err
+		}
 	}
 
 	createOpts := defaultCreatePullRequestOptions(branch, opts)
@@ -343,14 +350,14 @@ func selectOpenPullRequest(branch, baseRef string, pulls []ghOpenPullRequest) (*
 				filtered = append(filtered, pull)
 			}
 		}
-		// GitHub limits open PRs per head branch to one in normal operation.
-		// If the requested base differs from that one existing PR, reuse it
-		// rather than attempting duplicate PR creation.
-		if len(filtered) == 0 && len(pulls) == 1 {
-			candidates = pulls
-		} else {
-			candidates = filtered
+		if len(filtered) == 0 && len(pulls) > 0 {
+			if len(pulls) == 1 {
+				existingBase := strings.TrimSpace(pulls[0].Base.Ref)
+				return nil, fmt.Errorf("%w: branch %q has open pull request with base %q; requested %q", ErrOpenPullRequestBaseMismatch, branch, existingBase, baseRef)
+			}
+			return nil, fmt.Errorf("%w: branch %q has %d open pull requests but none target base %q", ErrOpenPullRequestBaseMismatch, branch, len(pulls), baseRef)
 		}
+		candidates = filtered
 	}
 
 	if len(candidates) == 0 {
