@@ -23,12 +23,17 @@ const (
 	defaultWaitPollInterval = 30 * time.Second
 	defaultWaitTimeout      = 30 * time.Minute
 	defaultNoChecksGrace    = 90 * time.Second
+	defaultGitHubAPITimeout = 30 * time.Second
 )
 
 var ghHTTPStatusCodePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\(http\s+(\d{3})\)`),
 	regexp.MustCompile(`(?i)\bhttp(?:\s+status)?(?:\s+code)?\s*[:=]?\s*(\d{3})\b`),
 	regexp.MustCompile(`(?i)\bstatus\s+code\s*[:=]?\s*(\d{3})\b`),
+}
+
+var githubAPITokenHTTPClient = &http.Client{
+	Timeout: defaultGitHubAPITimeout,
 }
 
 // WaitOptions configures WaitForChecks polling behavior.
@@ -701,7 +706,7 @@ func ghAPIWithToken(ctx context.Context, req githubAPIRequest, token string, out
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := githubAPITokenHTTPClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("github api %s %s failed: %w", req.Method, req.Endpoint, err)
 	}

@@ -424,6 +424,17 @@ func TestParseHTTPStatusCode(t *testing.T) {
 	}
 }
 
+func TestGitHubAPITokenHTTPClient_UsesBoundedTimeout(t *testing.T) {
+	t.Parallel()
+
+	if githubAPITokenHTTPClient == nil {
+		t.Fatal("githubAPITokenHTTPClient = nil, want non-nil")
+	}
+	if githubAPITokenHTTPClient.Timeout != defaultGitHubAPITimeout {
+		t.Fatalf("githubAPITokenHTTPClient.Timeout = %s, want %s", githubAPITokenHTTPClient.Timeout, defaultGitHubAPITimeout)
+	}
+}
+
 func makeCheckRuns(count int, prefix string) []checkRunData {
 	runs := make([]checkRunData, 0, count)
 	for i := 0; i < count; i++ {

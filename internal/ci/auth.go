@@ -3,16 +3,19 @@ package ci
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const (
-	githubTokenEnv = "GITHUB_TOKEN"
-	ghTokenEnv     = "GH_TOKEN"
+	githubTokenEnv                = "GITHUB_TOKEN"
+	ghTokenEnv                    = "GH_TOKEN"
+	gitHubTokenValidationTimeout  = 10 * time.Second
 )
 
 // ClientKind identifies which GitHub client path should be used.
@@ -24,6 +27,8 @@ const (
 )
 
 var (
+	gitHubTokenValidationHTTPClient = &http.Client{Timeout: gitHubTokenValidationTimeout}
+
 	// ErrInvalidEnvToken is returned when an env token is present but invalid.
 	// This must remain exact so callers can provide deterministic corrective guidance.
 	ErrInvalidEnvToken = errors.New("invalid GitHub token in environment; set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it to use 'gh auth login'")
@@ -81,7 +86,10 @@ func selectGitHubClientWithDeps(ctx context.Context, deps clientSelectorDeps) (C
 
 	if token, ok := envToken(deps.getenv); ok {
 		if err := deps.validateToken(ctx, token); err != nil {
-			return ClientSelection{}, ErrInvalidEnvToken
+			if errors.Is(err, ErrInvalidEnvToken) {
+				return ClientSelection{}, ErrInvalidEnvToken
+			}
+			return ClientSelection{}, err
 		}
 		return ClientSelection{Kind: ClientKindAPI, Token: token}, nil
 	}
@@ -140,7 +148,7 @@ func validateEnvTokenWithDeps(ctx context.Context, token string, deps tokenValid
 
 	resp, err := deps.validateRequest(req)
 	if err != nil {
-		return ErrInvalidEnvToken
+		return fmt.Errorf("validate GitHub token request: %w", err)
 	}
 	defer resp.Body.Close()
 	// Treat only 401 as definitively invalid. Other statuses (for example 403)
@@ -152,7 +160,7 @@ func validateEnvTokenWithDeps(ctx context.Context, token string, deps tokenValid
 }
 
 func validateGitHubTokenRequest(req *http.Request) (*http.Response, error) {
-	return http.DefaultClient.Do(req)
+	return gitHubTokenValidationHTTPClient.Do(req)
 }
 
 func isGHAuthenticated(ctx context.Context) bool {
