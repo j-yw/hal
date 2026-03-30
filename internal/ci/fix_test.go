@@ -3,6 +3,9 @@ package ci
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -269,6 +272,8 @@ func TestParsePorcelainPath_HandlesUntrackedAndRename(t *testing.T) {
 		{line: "?? new_file.go", want: "new_file.go"},
 		{line: " M internal/ci/fix.go", want: "internal/ci/fix.go"},
 		{line: "R  old_name.go -> new_name.go", want: "new_name.go"},
+		{line: " C source.txt -> copy.txt", want: "copy.txt"},
+		{line: "?? docs/plan -> draft.md", want: "docs/plan -> draft.md"},
 		{line: "", want: ""},
 	}
 
@@ -280,6 +285,43 @@ func TestParsePorcelainPath_HandlesUntrackedAndRename(t *testing.T) {
 				t.Fatalf("parsePorcelainPath(%q) = %q, want %q", tt.line, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGitWorkingTreeChanges_PreservesLeadingPorcelainStatusColumns(t *testing.T) {
+	repo := t.TempDir()
+	runGitCommand(t, repo, "init")
+	runGitCommand(t, repo, "config", "user.name", "Hal Test")
+	runGitCommand(t, repo, "config", "user.email", "hal-test@example.com")
+
+	trackedFile := filepath.Join(repo, "tracked.txt")
+	if err := os.WriteFile(trackedFile, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGitCommand(t, repo, "add", "tracked.txt")
+	runGitCommand(t, repo, "commit", "-m", "initial")
+
+	if err := os.WriteFile(trackedFile, []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked file: %v", err)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir to repo: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	changed, err := gitWorkingTreeChanges(context.Background())
+	if err != nil {
+		t.Fatalf("gitWorkingTreeChanges() error = %v", err)
+	}
+	if got, want := changed, []string{"tracked.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("gitWorkingTreeChanges() = %v, want %v", got, want)
 	}
 }
 
@@ -301,5 +343,16 @@ func failingStatusResult() StatusResult {
 			},
 		},
 		Summary: "status=failing (passing=0, failing=2, pending=0)",
+	}
+}
+
+func runGitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 }

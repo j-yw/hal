@@ -180,6 +180,7 @@ type ciStatusRunOptions struct {
 
 type ciFixDeps struct {
 	newEngine     func(string) (engine.Engine, error)
+	resolveEngine func(string) (string, error)
 	getStatus     func(context.Context) (ci.StatusResult, error)
 	waitForChecks func(context.Context, ci.WaitOptions) (ci.StatusResult, error)
 	fixWithEngine func(context.Context, ci.StatusResult, ci.FixOptions) (ci.FixResult, error)
@@ -481,16 +482,19 @@ func runCIFix(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	resolvedEngine, err := resolveEngine(cmd, "engine", opts.Engine, ".")
-	if err != nil {
-		if cmd != nil {
-			return exitWithCode(cmd, ExitCodeValidation, err)
+	deps := defaultCIFixDeps
+	deps.resolveEngine = func(engineName string) (string, error) {
+		resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
+		if err != nil {
+			if cmd != nil {
+				return "", exitWithCode(cmd, ExitCodeValidation, err)
+			}
+			return "", err
 		}
-		return err
+		return resolvedEngine, nil
 	}
-	opts.Engine = resolvedEngine
 
-	return runCIFixWithDeps(ctx, opts, out, defaultCIFixDeps)
+	return runCIFixWithDeps(ctx, opts, out, deps)
 }
 
 func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, deps ciFixDeps) error {
@@ -518,8 +522,9 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 	}
 
 	var (
-		eng      engine.Engine
-		attempts int
+		eng           engine.Engine
+		attempts      int
+		lastFixResult ci.FixResult
 	)
 
 	for attempts < opts.MaxAttempts {
@@ -529,6 +534,12 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 
 		if status.Status != ci.StatusFailing {
+			if attempts > 0 {
+				if status.Status == ci.StatusPassing {
+					return writeCIFixResult(out, opts.JSON, lastFixResult)
+				}
+				return fmt.Errorf("ci status is %s after attempt %d; run 'hal ci status --wait' for details", status.Status, attempts)
+			}
 			result := ci.FixResult{
 				ContractVersion: ci.FixContractVersion,
 				Attempt:         attempts,
@@ -542,6 +553,15 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 
 		if eng == nil {
+			if deps.resolveEngine != nil {
+				resolvedEngine, err := deps.resolveEngine(opts.Engine)
+				if err != nil {
+					return err
+				}
+				opts.Engine = resolvedEngine
+				deps.resolveEngine = nil
+			}
+
 			created, err := deps.newEngine(opts.Engine)
 			if err != nil {
 				return fmt.Errorf("failed to create engine: %w", err)
@@ -558,6 +578,7 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		if err != nil {
 			return err
 		}
+		lastFixResult = fixResult
 
 		verified, err := deps.waitForChecks(ctx, ci.WaitOptions{})
 		if err != nil {
@@ -652,15 +673,12 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 		deps.currentBranch = defaultCIMergeDeps.currentBranch
 	}
 
-	strategy := strings.ToLower(strings.TrimSpace(opts.Strategy))
-	if strategy == "" {
-		strategy = "squash"
+	strategy, err := ci.NormalizeMergeStrategy(opts.Strategy)
+	if err != nil {
+		return err
 	}
 
-	var (
-		result ci.MergeResult
-		err    error
-	)
+	var result ci.MergeResult
 
 	if opts.DryRun {
 		branch, branchErr := deps.currentBranch(ctx)

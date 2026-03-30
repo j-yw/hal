@@ -217,7 +217,7 @@ func streamFixPrompt(ctx context.Context, eng engine.Engine, prompt string, disp
 }
 
 func gitWorkingTreeChanges(ctx context.Context) ([]string, error) {
-	out, err := runGit(ctx, "status", "--porcelain", "--untracked-files=all")
+	out, err := runGitRaw(ctx, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return nil, fmt.Errorf("read git working tree status: %w", err)
 	}
@@ -241,15 +241,23 @@ func parsePorcelainPath(line string) string {
 		return ""
 	}
 
+	status := line[:2]
 	path := strings.TrimSpace(line[3:])
 	if path == "" {
 		return ""
 	}
-	if strings.Contains(path, " -> ") {
+	if isPorcelainRenameOrCopy(status) && strings.Contains(path, " -> ") {
 		parts := strings.SplitN(path, " -> ", 2)
 		path = strings.TrimSpace(parts[1])
 	}
 	return strings.Trim(path, "\"")
+}
+
+func isPorcelainRenameOrCopy(status string) bool {
+	if len(status) < 2 {
+		return false
+	}
+	return status[0] == 'R' || status[0] == 'C' || status[1] == 'R' || status[1] == 'C'
 }
 
 func uniqueSortedPaths(paths []string) []string {

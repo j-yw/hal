@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -737,6 +739,131 @@ func TestRunCIFixWithDeps_JSONOnlyOutput(t *testing.T) {
 	}
 }
 
+func TestRunCIFixWithDeps_ReturnsLastFixResultWhenStatusClearsBeforeNextAttempt(t *testing.T) {
+	want := ci.FixResult{
+		ContractVersion: ci.FixContractVersion,
+		Attempt:         1,
+		MaxAttempts:     3,
+		Applied:         true,
+		Branch:          "hal/ci-fix",
+		CommitSHA:       "deadbeef",
+		Pushed:          true,
+		FilesChanged:    []string{"cmd/ci.go"},
+		Summary:         "applied ci fix attempt 1 on branch hal/ci-fix and pushed 1 file",
+	}
+
+	statusCalls := 0
+	newEngineCalls := 0
+	fixCalls := 0
+	waitCalls := 0
+
+	var buf bytes.Buffer
+	err := runCIFixWithDeps(context.Background(), ciFixRunOptions{MaxAttempts: 3, Engine: "codex", JSON: true}, &buf, ciFixDeps{
+		newEngine: func(string) (engine.Engine, error) {
+			newEngineCalls++
+			return ciFakeEngine{}, nil
+		},
+		getStatus: func(context.Context) (ci.StatusResult, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return ci.StatusResult{Status: ci.StatusFailing, Branch: "hal/ci-fix"}, nil
+			}
+			return ci.StatusResult{Status: ci.StatusPassing, Branch: "hal/ci-fix"}, nil
+		},
+		waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+			waitCalls++
+			return ci.StatusResult{Status: ci.StatusFailing, Branch: "hal/ci-fix"}, nil
+		},
+		fixWithEngine: func(context.Context, ci.StatusResult, ci.FixOptions) (ci.FixResult, error) {
+			fixCalls++
+			return want, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIFixWithDeps() error = %v", err)
+	}
+	if statusCalls != 2 {
+		t.Fatalf("getStatus calls = %d, want 2", statusCalls)
+	}
+	if newEngineCalls != 1 {
+		t.Fatalf("newEngine calls = %d, want 1", newEngineCalls)
+	}
+	if fixCalls != 1 {
+		t.Fatalf("fixWithEngine calls = %d, want 1", fixCalls)
+	}
+	if waitCalls != 1 {
+		t.Fatalf("waitForChecks calls = %d, want 1", waitCalls)
+	}
+
+	var got ci.FixResult
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("failed to unmarshal JSON output: %v", err)
+	}
+	if got.Attempt != want.Attempt {
+		t.Fatalf("attempt = %d, want %d", got.Attempt, want.Attempt)
+	}
+	if !got.Applied {
+		t.Fatal("applied = false, want true")
+	}
+	if got.CommitSHA != want.CommitSHA {
+		t.Fatalf("commitSha = %q, want %q", got.CommitSHA, want.CommitSHA)
+	}
+	if got.Summary != want.Summary {
+		t.Fatalf("summary = %q, want %q", got.Summary, want.Summary)
+	}
+}
+
+func TestRunCIFixWithDeps_ReturnsErrorWhenStatusPendingBeforeNextAttempt(t *testing.T) {
+	statusCalls := 0
+	fixCalls := 0
+	waitCalls := 0
+
+	err := runCIFixWithDeps(context.Background(), ciFixRunOptions{MaxAttempts: 3, Engine: "codex"}, io.Discard, ciFixDeps{
+		newEngine: func(string) (engine.Engine, error) {
+			return ciFakeEngine{}, nil
+		},
+		getStatus: func(context.Context) (ci.StatusResult, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return ci.StatusResult{Status: ci.StatusFailing, Branch: "hal/ci-fix"}, nil
+			}
+			return ci.StatusResult{Status: ci.StatusPending, Branch: "hal/ci-fix"}, nil
+		},
+		waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+			waitCalls++
+			return ci.StatusResult{Status: ci.StatusFailing, Branch: "hal/ci-fix"}, nil
+		},
+		fixWithEngine: func(context.Context, ci.StatusResult, ci.FixOptions) (ci.FixResult, error) {
+			fixCalls++
+			return ci.FixResult{
+				ContractVersion: ci.FixContractVersion,
+				Attempt:         1,
+				MaxAttempts:     3,
+				Applied:         true,
+				Branch:          "hal/ci-fix",
+				Pushed:          true,
+				Summary:         "attempt",
+			}, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runCIFixWithDeps() error = nil, want pending-status error")
+	}
+	wantErr := "ci status is pending after attempt 1; run 'hal ci status --wait' for details"
+	if err.Error() != wantErr {
+		t.Fatalf("error = %q, want %q", err.Error(), wantErr)
+	}
+	if statusCalls != 2 {
+		t.Fatalf("getStatus calls = %d, want 2", statusCalls)
+	}
+	if fixCalls != 1 {
+		t.Fatalf("fixWithEngine calls = %d, want 1", fixCalls)
+	}
+	if waitCalls != 1 {
+		t.Fatalf("waitForChecks calls = %d, want 1", waitCalls)
+	}
+}
+
 func TestRunCIFixWithDeps_StopsWithoutAttemptWhenStatusNotFailing(t *testing.T) {
 	newEngineCalled := false
 	fixCalled := false
@@ -918,6 +1045,86 @@ func TestRunCIFix_UsesCommandFlagValues(t *testing.T) {
 	}
 	if got.Branch != "hal/from-flags" {
 		t.Fatalf("branch = %q, want %q", got.Branch, "hal/from-flags")
+	}
+}
+
+func TestRunCIFix_DefersEngineResolutionWhenStatusNotFailing(t *testing.T) {
+	preserveCIPushGlobals(t)
+
+	ciFixMaxAttemptsFlag = 3
+	ciFixEngineFlag = "codex"
+	ciFixJSONFlag = true
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(cwd)
+	})
+
+	halDir := filepath.Join(tmpDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("engine: ["), 0o644); err != nil {
+		t.Fatalf("write malformed config: %v", err)
+	}
+
+	newEngineCalled := false
+	statusCalls := 0
+	defaultCIFixDeps = ciFixDeps{
+		newEngine: func(string) (engine.Engine, error) {
+			newEngineCalled = true
+			return ciFakeEngine{}, nil
+		},
+		getStatus: func(context.Context) (ci.StatusResult, error) {
+			statusCalls++
+			return ci.StatusResult{Status: ci.StatusPassing, Branch: "hal/noop"}, nil
+		},
+		waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+			t.Fatal("waitForChecks should not be called when status is not failing")
+			return ci.StatusResult{}, nil
+		},
+		fixWithEngine: func(context.Context, ci.StatusResult, ci.FixOptions) (ci.FixResult, error) {
+			t.Fatal("fixWithEngine should not be called when status is not failing")
+			return ci.FixResult{}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{Use: "fix"}
+	cmd.SetOut(&out)
+	cmd.Flags().Int("max-attempts", 3, "")
+	cmd.Flags().String("engine", "codex", "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set --json: %v", err)
+	}
+
+	if err := runCIFix(cmd, nil); err != nil {
+		t.Fatalf("runCIFix() error = %v", err)
+	}
+	if statusCalls != 1 {
+		t.Fatalf("getStatus calls = %d, want 1", statusCalls)
+	}
+	if newEngineCalled {
+		t.Fatal("newEngine should not be called when status is not failing")
+	}
+
+	var got ci.FixResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("runCIFix JSON output parse failed: %v\noutput: %s", err, out.String())
+	}
+	if got.Attempt != 0 {
+		t.Fatalf("attempt = %d, want 0", got.Attempt)
+	}
+	if !strings.Contains(got.Summary, "no fix attempt needed") {
+		t.Fatalf("summary = %q, want no-attempt text", got.Summary)
 	}
 }
 

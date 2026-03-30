@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -76,7 +77,7 @@ func TestMergePRWithDeps_BlocksNonPassingStatuses(t *testing.T) {
 					findCalled = true
 					return &PullRequest{Number: 7, HeadSHA: "head-sha"}, nil
 				},
-				mergePullRequest: func(context.Context, GitHubRepository, int, string) (string, error) {
+				mergePullRequest: func(context.Context, GitHubRepository, int, string, string) (string, error) {
 					mergeCalled = true
 					return "merge-sha", nil
 				},
@@ -87,8 +88,8 @@ func TestMergePRWithDeps_BlocksNonPassingStatuses(t *testing.T) {
 			if !errors.Is(err, ErrMergeRequiresPassingStatus) {
 				t.Fatalf("errors.Is(err, ErrMergeRequiresPassingStatus) = false, err=%v", err)
 			}
-			if findCalled {
-				t.Fatal("findOpenPR should not be called when status is not passing")
+			if !findCalled {
+				t.Fatal("findOpenPR should be called before status guards to confirm an open PR exists")
 			}
 			if mergeCalled {
 				t.Fatal("mergePullRequest should not be called when status is not passing")
@@ -128,8 +129,8 @@ func TestMergePRWithDeps_AllowNoChecksBehavior(t *testing.T) {
 		if !errors.Is(err, ErrMergeNoChecksDisallowed) {
 			t.Fatalf("errors.Is(err, ErrMergeNoChecksDisallowed) = false, err=%v", err)
 		}
-		if findCalled {
-			t.Fatal("findOpenPR should not be called when no-check override is disabled")
+		if !findCalled {
+			t.Fatal("findOpenPR should be called before no-check gating")
 		}
 	})
 
@@ -152,13 +153,16 @@ func TestMergePRWithDeps_AllowNoChecksBehavior(t *testing.T) {
 			findOpenPR: func(context.Context, GitHubRepository, string) (*PullRequest, error) {
 				return &PullRequest{Number: 9, HeadSHA: sha, HeadRef: branch}, nil
 			},
-			mergePullRequest: func(_ context.Context, _ GitHubRepository, prNumber int, strategy string) (string, error) {
+			mergePullRequest: func(_ context.Context, _ GitHubRepository, prNumber int, strategy string, expectedHeadSHA string) (string, error) {
 				mergeCalled = true
 				if prNumber != 9 {
 					t.Fatalf("prNumber = %d, want 9", prNumber)
 				}
 				if strategy != "squash" {
 					t.Fatalf("strategy = %q, want default \"squash\"", strategy)
+				}
+				if expectedHeadSHA != sha {
+					t.Fatalf("expectedHeadSHA = %q, want %q", expectedHeadSHA, sha)
 				}
 				return "merged-sha", nil
 			},
@@ -194,6 +198,36 @@ func TestMergePRWithDeps_AllowNoChecksBehavior(t *testing.T) {
 	})
 }
 
+func TestMergePRWithDeps_ReturnsPRNotFoundBeforeStatus(t *testing.T) {
+	t.Parallel()
+
+	statusCalled := false
+	_, err := mergePRWithDeps(context.Background(), MergeOptions{}, mergeDeps{
+		currentBranch: func(context.Context) (string, error) {
+			return "hal/ci-merge", nil
+		},
+		resolveRepo: func(context.Context) (GitHubRepository, error) {
+			return GitHubRepository{Owner: "acme", Name: "repo"}, nil
+		},
+		getStatus: func(context.Context) (StatusResult, error) {
+			statusCalled = true
+			return StatusResult{Status: StatusPassing, ChecksDiscovered: true, SHA: "head-sha"}, nil
+		},
+		findOpenPR: func(context.Context, GitHubRepository, string) (*PullRequest, error) {
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("mergePRWithDeps() error = nil, want non-nil")
+	}
+	if !errors.Is(err, ErrMergePRNotFound) {
+		t.Fatalf("errors.Is(err, ErrMergePRNotFound) = false, err=%v", err)
+	}
+	if statusCalled {
+		t.Fatal("getStatus should not be called when no open pull request exists")
+	}
+}
+
 func TestMergePRWithDeps_BlocksHeadDrift(t *testing.T) {
 	t.Parallel()
 
@@ -211,7 +245,7 @@ func TestMergePRWithDeps_BlocksHeadDrift(t *testing.T) {
 		findOpenPR: func(context.Context, GitHubRepository, string) (*PullRequest, error) {
 			return &PullRequest{Number: 22, HeadSHA: "new-sha"}, nil
 		},
-		mergePullRequest: func(context.Context, GitHubRepository, int, string) (string, error) {
+		mergePullRequest: func(context.Context, GitHubRepository, int, string, string) (string, error) {
 			mergeCalled = true
 			return "", nil
 		},
@@ -227,6 +261,61 @@ func TestMergePRWithDeps_BlocksHeadDrift(t *testing.T) {
 	}
 	if mergeCalled {
 		t.Fatal("mergePullRequest should not be called when head drift is detected")
+	}
+}
+
+func TestMergePRWithDeps_MapsMergeHeadMismatchStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{
+			name:       "conflict",
+			statusCode: http.StatusConflict,
+		},
+		{
+			name:       "unprocessable entity",
+			statusCode: http.StatusUnprocessableEntity,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := mergePRWithDeps(context.Background(), MergeOptions{}, mergeDeps{
+				currentBranch: func(context.Context) (string, error) {
+					return "hal/ci-merge", nil
+				},
+				resolveRepo: func(context.Context) (GitHubRepository, error) {
+					return GitHubRepository{Owner: "acme", Name: "repo"}, nil
+				},
+				getStatus: func(context.Context) (StatusResult, error) {
+					return StatusResult{Status: StatusPassing, ChecksDiscovered: true, SHA: "head-sha"}, nil
+				},
+				findOpenPR: func(context.Context, GitHubRepository, string) (*PullRequest, error) {
+					return &PullRequest{Number: 22, HeadSHA: "head-sha"}, nil
+				},
+				mergePullRequest: func(_ context.Context, _ GitHubRepository, _ int, _ string, expectedHeadSHA string) (string, error) {
+					if expectedHeadSHA != "head-sha" {
+						t.Fatalf("expectedHeadSHA = %q, want %q", expectedHeadSHA, "head-sha")
+					}
+					return "", &githubAPIHTTPError{StatusCode: tt.statusCode}
+				},
+			})
+			if err == nil {
+				t.Fatal("mergePRWithDeps() error = nil, want non-nil")
+			}
+			if !errors.Is(err, ErrMergeHeadDrift) {
+				t.Fatalf("errors.Is(err, ErrMergeHeadDrift) = false, err=%v", err)
+			}
+			if !strings.Contains(err.Error(), "head-sha") {
+				t.Fatalf("drift error should include expected sha, got %q", err)
+			}
+		})
 	}
 }
 
@@ -281,12 +370,15 @@ func TestMergePRWithDeps_DeleteBranchWarnings(t *testing.T) {
 				findOpenPR: func(context.Context, GitHubRepository, string) (*PullRequest, error) {
 					return &PullRequest{Number: 42, HeadSHA: "head-sha", HeadRef: branch}, nil
 				},
-				mergePullRequest: func(_ context.Context, _ GitHubRepository, prNumber int, strategy string) (string, error) {
+				mergePullRequest: func(_ context.Context, _ GitHubRepository, prNumber int, strategy string, expectedHeadSHA string) (string, error) {
 					if prNumber != 42 {
 						t.Fatalf("prNumber = %d, want 42", prNumber)
 					}
 					if strategy != "merge" {
 						t.Fatalf("strategy = %q, want %q", strategy, "merge")
+					}
+					if expectedHeadSHA != "head-sha" {
+						t.Fatalf("expectedHeadSHA = %q, want %q", expectedHeadSHA, "head-sha")
 					}
 					return "merge-commit-sha", nil
 				},

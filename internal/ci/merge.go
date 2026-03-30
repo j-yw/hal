@@ -1,13 +1,11 @@
 package ci
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 )
 
@@ -45,7 +43,7 @@ type mergeDeps struct {
 	resolveRepo        func(context.Context) (GitHubRepository, error)
 	getStatus          func(context.Context) (StatusResult, error)
 	findOpenPR         func(context.Context, GitHubRepository, string) (*PullRequest, error)
-	mergePullRequest   func(context.Context, GitHubRepository, int, string) (string, error)
+	mergePullRequest   func(context.Context, GitHubRepository, int, string, string) (string, error)
 	deleteRemoteBranch func(context.Context, GitHubRepository, string) error
 }
 
@@ -59,7 +57,7 @@ func mergePRWithDeps(ctx context.Context, opts MergeOptions, deps mergeDeps) (Me
 		ctx = context.Background()
 	}
 
-	strategy, err := normalizeMergeStrategy(opts.Strategy)
+	strategy, err := NormalizeMergeStrategy(opts.Strategy)
 	if err != nil {
 		return MergeResult{}, err
 	}
@@ -97,6 +95,14 @@ func mergePRWithDeps(ctx context.Context, opts MergeOptions, deps mergeDeps) (Me
 		return MergeResult{}, err
 	}
 
+	pr, err := deps.findOpenPR(ctx, repo, branch)
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("find open pull request for branch %q: %w", branch, err)
+	}
+	if pr == nil {
+		return MergeResult{}, fmt.Errorf("%w: branch %q", ErrMergePRNotFound, branch)
+	}
+
 	status, err := deps.getStatus(ctx)
 	if err != nil {
 		return MergeResult{}, err
@@ -109,22 +115,17 @@ func mergePRWithDeps(ctx context.Context, opts MergeOptions, deps mergeDeps) (Me
 		return MergeResult{}, fmt.Errorf("%w: got %q; run 'hal ci status' and 'hal ci fix' before retrying", ErrMergeRequiresPassingStatus, status.Status)
 	}
 
-	pr, err := deps.findOpenPR(ctx, repo, branch)
-	if err != nil {
-		return MergeResult{}, fmt.Errorf("find open pull request for branch %q: %w", branch, err)
-	}
-	if pr == nil {
-		return MergeResult{}, fmt.Errorf("%w: branch %q", ErrMergePRNotFound, branch)
-	}
-
 	expectedHeadSHA := strings.TrimSpace(status.SHA)
 	currentHeadSHA := strings.TrimSpace(pr.HeadSHA)
 	if expectedHeadSHA != "" && currentHeadSHA != "" && expectedHeadSHA != currentHeadSHA {
 		return MergeResult{}, fmt.Errorf("%w: expected %s but found %s; rerun 'hal ci status' and retry merge", ErrMergeHeadDrift, expectedHeadSHA, currentHeadSHA)
 	}
 
-	mergeCommitSHA, err := deps.mergePullRequest(ctx, repo, pr.Number, strategy)
+	mergeCommitSHA, err := deps.mergePullRequest(ctx, repo, pr.Number, strategy, expectedHeadSHA)
 	if err != nil {
+		if expectedHeadSHA != "" && (isGitHubAPIHTTPStatus(err, http.StatusConflict) || isGitHubAPIHTTPStatus(err, http.StatusUnprocessableEntity)) {
+			return MergeResult{}, fmt.Errorf("%w: expected %s; rerun 'hal ci status' and retry merge", ErrMergeHeadDrift, expectedHeadSHA)
+		}
 		return MergeResult{}, err
 	}
 
@@ -157,7 +158,8 @@ func mergePRWithDeps(ctx context.Context, opts MergeOptions, deps mergeDeps) (Me
 	return result, nil
 }
 
-func normalizeMergeStrategy(strategy string) (string, error) {
+// NormalizeMergeStrategy returns a canonical merge strategy or an error when unsupported.
+func NormalizeMergeStrategy(strategy string) (string, error) {
 	strategy = strings.ToLower(strings.TrimSpace(strategy))
 	if strategy == "" {
 		strategy = defaultMergeStrategy
@@ -190,29 +192,32 @@ type ghMergeResponse struct {
 	SHA string `json:"sha"`
 }
 
-func mergePullRequest(ctx context.Context, repo GitHubRepository, prNumber int, strategy string) (string, error) {
+func mergePullRequest(ctx context.Context, repo GitHubRepository, prNumber int, strategy string, expectedHeadSHA string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return "", err
+	}
+
 	endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", repo.Owner, repo.Name, prNumber)
-	cmd := exec.CommandContext(ctx, "gh", "api", "-X", "PUT", "-H", "Accept: application/vnd.github+json", endpoint, "-f", "merge_method="+strategy)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		stderrText := strings.TrimSpace(stderr.String())
-		if stderrText != "" {
-			return "", fmt.Errorf("merge pull request #%d failed: %s: %w", prNumber, stderrText, err)
-		}
-		return "", fmt.Errorf("merge pull request #%d failed: %w", prNumber, err)
+	mergeRequest := map[string]string{
+		"merge_method": strategy,
+	}
+	expectedHeadSHA = strings.TrimSpace(expectedHeadSHA)
+	if expectedHeadSHA != "" {
+		mergeRequest["sha"] = expectedHeadSHA
 	}
 
 	var response ghMergeResponse
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		return "", fmt.Errorf("decode merge response for pull request #%d: %w", prNumber, err)
+	if err := ghAPIWithClient(ctx, client, githubAPIRequest{
+		Method:   http.MethodPut,
+		Endpoint: endpoint,
+		Body:     mergeRequest,
+	}, &response); err != nil {
+		return "", fmt.Errorf("merge pull request #%d failed: %w", prNumber, err)
 	}
 
 	sha := strings.TrimSpace(response.SHA)
@@ -232,27 +237,21 @@ func deleteRemoteBranch(ctx context.Context, repo GitHubRepository, branch strin
 		return fmt.Errorf("delete remote branch: empty branch name")
 	}
 
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return err
+	}
+
 	endpoint := fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", repo.Owner, repo.Name, url.PathEscape(branch))
-	cmd := exec.CommandContext(ctx, "gh", "api", "-X", "DELETE", "-H", "Accept: application/vnd.github+json", endpoint)
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		stderrText := strings.TrimSpace(stderr.String())
-		if isHTTP404Error(stderrText) {
+	if err := ghAPIWithClient(ctx, client, githubAPIRequest{
+		Method:   http.MethodDelete,
+		Endpoint: endpoint,
+	}, nil); err != nil {
+		if isGitHubAPIHTTPStatus(err, http.StatusNotFound) {
 			return fmt.Errorf("%w: %s", ErrRemoteBranchNotFound, branch)
-		}
-		if stderrText != "" {
-			return fmt.Errorf("delete remote branch %q failed: %s: %w", branch, stderrText, err)
 		}
 		return fmt.Errorf("delete remote branch %q failed: %w", branch, err)
 	}
 
 	return nil
-}
-
-func isHTTP404Error(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	return strings.Contains(lower, "http 404") || strings.Contains(lower, "404 not found")
 }
