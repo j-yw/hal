@@ -123,6 +123,9 @@ func TestStatusCmdHelp(t *testing.T) {
 	if cmd.Long == "" {
 		t.Fatal("Long is empty")
 	}
+	if !strings.Contains(cmd.Long, "newest .hal/prd-*.md") {
+		t.Fatalf("Long should describe PRD-first auto source priority: %q", cmd.Long)
+	}
 	if cmd.Example == "" {
 		t.Fatal("Example is empty")
 	}

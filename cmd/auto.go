@@ -12,6 +12,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -142,14 +143,22 @@ The pipeline steps are:
 If a positional markdown path is provided, auto skips analyze/spec,
 uses that file as sourceMarkdown, and starts from the branch step.
 
+Source selection order (when not resuming):
+  1. positional markdown path (hal auto <prd-path>)
+  2. explicit report path (hal auto --report <path>)
+  3. newest .hal/prd-*.md (auto-discovered)
+  4. latest report in auto.reportsDir
+
+Report preflight checks run only when auto does not have a markdown source.
+
 The pipeline saves state after each step, allowing you to resume
 from interruptions using the --resume flag.
 When --resume is set, positional prd-path and --report are ignored.
 
 Examples:
-  hal auto                           # Run full pipeline with latest report
+  hal auto                           # Prefer newest .hal/prd-*.md, else latest report
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
-  hal auto --report report.md        # Use specific report file
+  hal auto --report report.md        # Force report-driven flow (skip markdown auto-discovery)
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
   hal auto --skip-ci                 # Skip CI + archive steps
@@ -171,7 +180,7 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoResumeFlag, "resume", false, "Continue from last saved state")
 	autoCmd.Flags().BoolVar(&autoSkipCIFlag, "skip-ci", false, "Skip CI step at end")
 	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "[deprecated] Alias for --skip-ci")
-	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (skips find latest)")
+	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (overrides markdown auto-discovery, skips find latest)")
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
 	autoCmd.Flags().BoolVar(&autoJSONFlag, "json", false, "Output machine-readable JSON result")
@@ -280,6 +289,17 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	autoDiscoveredSource := false
+	sourceMarkdown, autoDiscoveredSource, err := discoverAutoSourceMarkdown(dir, sourceMarkdown, reportPath, resume)
+	if err != nil {
+		if jsonMode {
+			failureEntryMode := determineAutoEntryMode(sourceMarkdown)
+			jr := autoFailureResult(failureEntryMode, resume, err.Error(), err.Error(), autoFailurePipeline, false, "")
+			return outputAutoJSON(out, jr)
+		}
+		return err
+	}
+
 	entryMode := determineAutoEntryMode(sourceMarkdown)
 	if resume {
 		if resumeEntryMode, ok := determineAutoResumeEntryMode(dir); ok {
@@ -335,6 +355,9 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Show command header in human-readable mode only.
 	if !jsonMode {
 		display.ShowCommandHeader("Auto", "compound pipeline", buildHeaderCtx(resolvedEngine))
+		if autoDiscoveredSource {
+			display.ShowInfo("   Source markdown: %s (newest discovered)\n", sourceMarkdown)
+		}
 	}
 
 	// Create pipeline (pass same config for inner loop engine creation)
@@ -481,6 +504,31 @@ func determineAutoEntryMode(sourceMarkdown string) autoEntryMode {
 		return autoEntryModeMarkdownPath
 	}
 	return autoEntryModeReportDiscovery
+}
+
+func discoverAutoSourceMarkdown(dir, sourceMarkdown, reportPath string, resume bool) (string, bool, error) {
+	trimmedSource := strings.TrimSpace(sourceMarkdown)
+	if resume || trimmedSource != "" || strings.TrimSpace(reportPath) != "" {
+		return trimmedSource, false, nil
+	}
+
+	halDir := filepath.Join(dir, template.HalDir)
+	newestMarkdown, err := prd.FindNewestMarkdown(halDir)
+	if err != nil {
+		if isNoMarkdownSourceError(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to discover markdown PRD source: %w", err)
+	}
+
+	return newestMarkdown, true, nil
+}
+
+func isNoMarkdownSourceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "no prd-*.md files found")
 }
 
 type autoResumeStateEntry struct {

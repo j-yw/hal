@@ -85,7 +85,8 @@ The auto pipeline creates a continuous development cycle:
 
 1. **`hal report`** — Runs **legacy session reporting** (the behavior that previously lived under `hal review`). It analyzes completed work and generates a report with recommendations for next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
 
-2. **`hal auto`** — Reads the latest report, identifies the priority item, and runs one deterministic pipeline:
+2. **`hal auto`** — Runs one deterministic pipeline with source priority:
+   - source priority: newest `.hal/prd-*.md` (when present) → report discovery
    - **Analyze** → **Spec** → **Branch** → **Convert** → **Validate** → **Run** → **Review** → **Report** → **CI** → **Archive**
    - `convert` writes canonical runtime PRD state to `.hal/prd.json`
    - downstream gates consume the same `.hal/prd.json` runtime source
@@ -175,7 +176,7 @@ Stable JSON contracts for agent integration:
 |---------|-------------|
 | `hal report` | Generate summary report → `.hal/reports/`, update AGENTS.md |
 | `hal review --base <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e`; do not combine positional iterations with `-i/--iterations`) |
-| `hal auto [prd-path]` | Run single auto pipeline (`analyze → ... → archive`) with runtime PRD `.hal/prd.json` |
+| `hal auto [prd-path]` | Run single auto pipeline (`analyze → ... → archive`) with runtime PRD `.hal/prd.json`; when `prd-path` is omitted, prefers newest `.hal/prd-*.md` before report discovery |
 | `hal analyze [report] --format text\|json` | Analyze a report to find priority item (`--output` is deprecated) |
 | `hal explode <prd.md> --branch <name>` | Deprecated shim for `hal convert --granular` (keeps explode compatibility output) |
 

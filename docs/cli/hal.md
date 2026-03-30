@@ -10,38 +10,41 @@ using AI coding agents like Codex (default), Claude Code, and pi.
 "I am putting myself to the fullest possible use, which is all I think
 that any conscious entity can ever hope to do."
 
-Workflow:
-  hal init                             Initialize project with skills
-  hal plan "feature desc"              Generate PRD interactively
-  hal convert                          Convert markdown PRD to JSON
-  hal prd audit [--json]               Audit PRD health and drift
-  hal run --base develop [iterations]  Execute stories autonomously
-  hal archive create                   Archive feature state when done
+Core flow:
+  hal init
+  hal plan "feature desc"
+  hal convert
+  hal run --base develop [iterations]
+  hal archive create
 
-Review / Reporting:
-  hal report                           Generate summary report for completed work
-  hal review --base <branch> [iters]  Iterative review/fix loop
-  hal review against <branch> [iters] Deprecated alias
+Auto flow:
+  hal auto [prd-path]
+  source priority: path > --report > newest .hal/prd-*.md > latest report
 
-Status / Health:
-  hal status [--json]                  Show workflow state
-  hal doctor [--json]                  Check environment health
-  hal continue [--json]                Show what to do next
-  hal repair [--dry-run] [--json]      Auto-fix safe issues
+Review / reporting:
+  hal report
+  hal review --base <branch> [iters]
+
+Status / health:
+  hal status [--json]
+  hal doctor [--json]
+  hal continue [--json]
+  hal repair [--dry-run] [--json]
 
 Links:
-  hal links status [--json]            Inspect engine skill links
-  hal links refresh [engine]           Recreate skill links
-  hal links clean                      Remove deprecated/broken links
+  hal links status [--json]
+  hal links refresh [engine]
+  hal links clean
 
 Analyze:
   hal analyze --format text|json
-  hal analyze --output json           Deprecated alias for --format
+  hal analyze --output json  # deprecated alias
 
-Quick Start:
+Quick start:
   1. hal init
   2. hal plan "add user authentication" --format json
   3. hal run
+  4. hal auto
 
 ### Examples
 
@@ -50,6 +53,7 @@ Quick Start:
   hal plan "add user authentication" --format json
   hal validate
   hal run
+  hal auto
 ```
 
 ### Options

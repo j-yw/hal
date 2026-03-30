@@ -352,9 +352,9 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 			nextAction = NextAction{
 				ID:          ActionRunAuto,
 				Command:     "hal auto",
-				Description: "Start the auto pipeline from the latest report.",
+				Description: "Start the auto pipeline (prefers newest .hal/prd-*.md, then latest report).",
 			}
-			summary = fmt.Sprintf("Manual workflow is complete (%d/%d stories); report available, ready for auto pipeline.", completed, total)
+			summary = fmt.Sprintf("Manual workflow is complete (%d/%d stories); auto pipeline ready (prefers newest .hal/prd-*.md, then reports).", completed, total)
 		}
 		return StatusResult{
 			ContractVersion: ContractVersion,
@@ -417,11 +417,11 @@ func classifyAuto(halDir string, artifacts Artifacts) StatusResult {
 			NextAction: NextAction{
 				ID:          ActionRunAuto,
 				Command:     "hal auto",
-				Description: "Start a new auto pipeline run.",
+				Description: "Start a new auto pipeline run (prefers newest .hal/prd-*.md, then latest report).",
 			},
 			Compound: compound,
 			Paths:    paths,
-			Summary:  "Auto pipeline is inactive; start a new run with hal auto.",
+			Summary:  "Auto pipeline is inactive; start a new run with hal auto (prefers newest .hal/prd-*.md, then reports).",
 		}
 	}
 

@@ -29,6 +29,11 @@ Inspects .hal/ artifacts to determine:
 With --json, outputs a stable machine-readable contract (v1) suitable
 for agent orchestration and tooling integration.
 
+When nextAction suggests hal auto, source selection priority is:
+  1. explicit markdown path (when provided to hal auto)
+  2. newest .hal/prd-*.md
+  3. latest report
+
 Workflow states:
   not_initialized         No .hal/ directory found
   hal_initialized_no_prd  .hal/ exists but no prd.json

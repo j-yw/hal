@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/template"
@@ -528,6 +529,12 @@ func TestGet_CompoundComplete(t *testing.T) {
 	if result.Compound == nil || result.Compound.Step != "done" {
 		t.Fatal("compound.step should be 'done'")
 	}
+	if !strings.Contains(result.NextAction.Description, "prefers newest .hal/prd-*.md") {
+		t.Fatalf("nextAction.description = %q, want PRD-first guidance", result.NextAction.Description)
+	}
+	if !strings.Contains(result.Summary, "prefers newest .hal/prd-*.md") {
+		t.Fatalf("summary = %q, want PRD-first guidance", result.Summary)
+	}
 }
 
 func TestGet_Deterministic(t *testing.T) {
@@ -625,6 +632,12 @@ func TestGet_ManualComplete_WithReports_SuggestsAuto(t *testing.T) {
 	}
 	if result.NextAction.ID != ActionRunAuto {
 		t.Fatalf("nextAction.id = %q, want %q (should suggest auto when report exists)", result.NextAction.ID, ActionRunAuto)
+	}
+	if !strings.Contains(result.NextAction.Description, "prefers newest .hal/prd-*.md") {
+		t.Fatalf("nextAction.description = %q, want PRD-first guidance", result.NextAction.Description)
+	}
+	if !strings.Contains(result.Summary, "prefers newest .hal/prd-*.md") {
+		t.Fatalf("summary = %q, want PRD-first guidance", result.Summary)
 	}
 }
 

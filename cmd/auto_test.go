@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/template"
@@ -47,6 +48,21 @@ func chdirTemp(t *testing.T) {
 	t.Cleanup(func() {
 		_ = os.Chdir(wd)
 	})
+}
+
+func TestAutoCommand_HelpDescribesSourcePriority(t *testing.T) {
+	if !strings.Contains(autoCmd.Long, "Source selection order") {
+		t.Fatalf("auto help should describe source selection order: %q", autoCmd.Long)
+	}
+	if !strings.Contains(autoCmd.Long, "newest .hal/prd-*.md") {
+		t.Fatalf("auto help should mention markdown auto-discovery: %q", autoCmd.Long)
+	}
+	if !strings.Contains(autoCmd.Long, "Report preflight checks run only when auto does not have a markdown source") {
+		t.Fatalf("auto help should explain report preflight behavior: %q", autoCmd.Long)
+	}
+	if !strings.Contains(autoCmd.Long, "--report report.md") {
+		t.Fatalf("auto examples should include --report usage: %q", autoCmd.Long)
+	}
 }
 
 func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
@@ -484,6 +500,104 @@ func TestRunAuto_DryRunWithPositionalMarkdownStartsFromBranch(t *testing.T) {
 	}
 	if strings.Contains(output, "Step: spec") {
 		t.Fatalf("positional markdown should skip spec, output=%q", output)
+	}
+}
+
+func TestRunAuto_DryRunWithoutInputsPrefersNewestMarkdownPRD(t *testing.T) {
+	chdirTemp(t)
+
+	if err := os.MkdirAll(filepath.Join(template.HalDir, "reports"), 0755); err != nil {
+		t.Fatalf("mkdir reports dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(template.HalDir, "reports", "report.md"), []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	olderPRD := filepath.Join(template.HalDir, "prd-older.md")
+	if err := os.WriteFile(olderPRD, []byte("# PRD: Older Source\n"), 0644); err != nil {
+		t.Fatalf("write older prd: %v", err)
+	}
+
+	newerPRD := filepath.Join(template.HalDir, "prd-newer.md")
+	if err := os.WriteFile(newerPRD, []byte("# PRD: Newer Preferred Source\n"), 0644); err != nil {
+		t.Fatalf("write newer prd: %v", err)
+	}
+
+	olderTime := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	newerTime := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(olderPRD, olderTime, olderTime); err != nil {
+		t.Fatalf("chtimes older prd: %v", err)
+	}
+	if err := os.Chtimes(newerPRD, newerTime, newerTime); err != nil {
+		t.Fatalf("chtimes newer prd: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Source markdown: "+newerPRD) {
+		t.Fatalf("expected newest discovered markdown source %q in output, got %q", newerPRD, output)
+	}
+	if strings.Contains(output, "Step: analyze") {
+		t.Fatalf("newest markdown discovery should skip analyze, output=%q", output)
+	}
+	if strings.Contains(output, "Step: spec") {
+		t.Fatalf("newest markdown discovery should skip spec, output=%q", output)
+	}
+	if !strings.Contains(output, "Step: branch") {
+		t.Fatalf("expected branch step in output, got %q", output)
+	}
+	if !strings.Contains(output, "Would create branch: hal/newer-preferred-source") {
+		t.Fatalf("expected branch derived from newest markdown title, got %q", output)
+	}
+}
+
+func TestRunAuto_JSONDryRunWithoutInputsPrefersNewestMarkdownPRD(t *testing.T) {
+	chdirTemp(t)
+
+	if err := os.MkdirAll(template.HalDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(template.HalDir, "prd-auto.md"), []byte("# PRD: JSON Entry Source\n"), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	assertAutoJSONContractV2(t, out.Bytes())
+
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result.OK = false, want true; output: %q", out.String())
+	}
+	if result.EntryMode != string(autoEntryModeMarkdownPath) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeMarkdownPath)
+	}
+	if result.Steps.Analyze.Status != autoStepStatusSkipped {
+		t.Fatalf("result.Steps.Analyze.Status = %q, want %q", result.Steps.Analyze.Status, autoStepStatusSkipped)
+	}
+	if result.Steps.Spec.Status != autoStepStatusSkipped {
+		t.Fatalf("result.Steps.Spec.Status = %q, want %q", result.Steps.Spec.Status, autoStepStatusSkipped)
 	}
 }
 

@@ -25,14 +25,22 @@ The pipeline steps are:
 If a positional markdown path is provided, auto skips analyze/spec,
 uses that file as sourceMarkdown, and starts from the branch step.
 
+Source selection order (when not resuming):
+  1. positional markdown path (hal auto <prd-path>)
+  2. explicit report path (hal auto --report <path>)
+  3. newest .hal/prd-*.md (auto-discovered)
+  4. latest report in auto.reportsDir
+
+Report preflight checks run only when auto does not have a markdown source.
+
 The pipeline saves state after each step, allowing you to resume
 from interruptions using the --resume flag.
 When --resume is set, positional prd-path and --report are ignored.
 
 Examples:
-  hal auto                           # Run full pipeline with latest report
+  hal auto                           # Prefer newest .hal/prd-*.md, else latest report
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
-  hal auto --report report.md        # Use specific report file
+  hal auto --report report.md        # Force report-driven flow (skip markdown auto-discovery)
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
   hal auto --skip-ci                 # Skip CI + archive steps
@@ -64,7 +72,7 @@ hal auto [prd-path] [flags]
   -e, --engine string   Engine to use (claude, codex, pi) (default "codex")
   -h, --help            help for auto
       --json            Output machine-readable JSON result
-      --report string   Specific report file (skips find latest)
+      --report string   Specific report file (overrides markdown auto-discovery, skips find latest)
       --resume          Continue from last saved state
       --skip-ci         Skip CI step at end
       --skip-pr         [deprecated] Alias for --skip-ci
