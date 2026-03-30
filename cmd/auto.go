@@ -124,24 +124,16 @@ var autoCmd = &cobra.Command{
 	Args:  maxArgsValidation(1),
 	Long: `Execute the single deterministic auto pipeline.
 
-Runtime PRD source:
-- convert writes canonical .hal/prd.json.
-- validate, run, review, report, and ci/archive gates consume that runtime PRD/state.
+Canonical runtime PRD:
+- convert writes .hal/prd.json
+- validate, run, review, report, ci, and archive consume that runtime state
 
-The pipeline steps are:
-  1. analyze  - Find and analyze the latest report to identify priority item
-  2. spec     - Generate a markdown PRD using the autospec skill
-  3. branch   - Create or checkout the target branch
-  4. convert  - Convert markdown PRD to canonical .hal/prd.json (granular tasks)
-  5. validate - Validate .hal/prd.json with bounded repair attempts
-  6. run      - Execute the Hal task loop until all tasks pass
-  7. review   - Run iterative review/fix verification
-  8. report   - Generate and persist a report artifact
-  9. ci       - Push branch and create a draft pull request (unless --skip-ci)
- 10. archive  - Archive feature state while preserving the latest report
+Pipeline order:
+  analyze -> spec -> branch -> convert -> validate -> run -> review -> report -> ci -> archive
 
-If a positional markdown path is provided, auto skips analyze/spec,
-uses that file as sourceMarkdown, and starts from the branch step.
+Entry behavior:
+- hal auto <prd-path>: skips analyze/spec and starts at branch
+- --resume ignores positional prd-path and --report
 
 Source selection order (when not resuming):
   1. positional markdown path (hal auto <prd-path>)
@@ -151,18 +143,13 @@ Source selection order (when not resuming):
 
 Report preflight checks run only when auto does not have a markdown source.
 
-The pipeline saves state after each step, allowing you to resume
-from interruptions using the --resume flag.
-When --resume is set, positional prd-path and --report are ignored.
-
 Examples:
   hal auto                           # Prefer newest .hal/prd-*.md, else latest report
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
   hal auto --report report.md        # Force report-driven flow (skip markdown auto-discovery)
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
-  hal auto --skip-ci                 # Skip CI + archive steps
-  hal auto --skip-pr                 # Deprecated alias for --skip-ci
+  hal auto --skip-ci                 # Skip CI step at end
   hal auto --base develop            # Use develop as the base branch
   hal auto --json                    # Machine-readable result output`,
 	Example: `  hal auto
