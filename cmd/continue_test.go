@@ -181,8 +181,8 @@ func TestRunContinueFn_JSONContainsBothStatusAndDoctor(t *testing.T) {
 
 func TestRunContinueFn_ReadyField(t *testing.T) {
 	tests := []struct {
-		name     string
-		setup    func(string)
+		name      string
+		setup     func(string)
 		wantReady bool
 	}{
 		{
@@ -233,6 +233,49 @@ func TestRunContinueFn_ReadyField(t *testing.T) {
 				t.Fatalf("ready = %v, want %v", result.Ready, tt.wantReady)
 			}
 		})
+	}
+}
+
+func TestRunContinueFn_WarningsDoNotBlockReadiness(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	// Intentionally omit .hal/config.yaml to trigger a warning-only doctor result.
+	os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# Agent\n"), 0644)
+	os.WriteFile(filepath.Join(halDir, template.ProgressFile), []byte("## Patterns\n"), 0644)
+
+	for _, name := range skills.ManagedSkillNames {
+		os.MkdirAll(filepath.Join(halDir, "skills", name), 0755)
+		os.WriteFile(filepath.Join(halDir, "skills", name, "SKILL.md"), []byte("# "+name), 0644)
+	}
+	commandsDir := filepath.Join(halDir, template.CommandsDir)
+	os.MkdirAll(commandsDir, 0755)
+	for _, name := range skills.CommandNames {
+		os.WriteFile(filepath.Join(commandsDir, name+".md"), []byte("# "+name), 0644)
+	}
+
+	var buf bytes.Buffer
+	if err := runContinueFn(dir, true, &buf); err != nil {
+		t.Fatalf("runContinueFn() error = %v", err)
+	}
+
+	var result ContinueResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("JSON unmarshal error: %v\noutput: %s", err, buf.String())
+	}
+
+	if result.Doctor.OverallStatus != "warn" {
+		t.Fatalf("doctor.overallStatus = %q, want %q", result.Doctor.OverallStatus, "warn")
+	}
+	if !result.Ready {
+		t.Fatal("ready = false, want true when doctor only has warnings")
+	}
+	if result.NextCommand != result.Status.NextAction.Command {
+		t.Fatalf("nextCommand = %q, want workflow next action %q", result.NextCommand, result.Status.NextAction.Command)
 	}
 }
 

@@ -44,6 +44,7 @@
 | `git_repo` | repo | Git repository detected |
 | `hal_dir` | repo | `.hal/` directory exists |
 | `config_yaml` | repo | Config file readable and valid YAML |
+| `github_auth` | repo | GitHub authentication available for GitHub origin remotes |
 | `default_engine_cli` | repo | Engine CLI in PATH |
 | `prompt_md` | repo | Agent prompt template exists and non-empty |
 | `progress_file` | repo | Progress file exists |
@@ -53,6 +54,7 @@
 | `local_skill_links` | engine_local | `.claude/skills/`, `.pi/skills/` links correct |
 | `codex_global_links` | engine_global | `~/.codex/skills/` links correct (codex only) |
 | `legacy_debris` | migration | No `.goralph/`, `ralph` links, or `rules/` |
+| `legacy_sandbox_state` | migration | No legacy `.hal/sandbox.json` state file |
 | `broken_skill_links` | migration | No broken symlinks in engine dirs |
 
 ## Example: Healthy Pi Repo
@@ -66,6 +68,7 @@
     {"id": "git_repo", "status": "pass", "severity": "info", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "Git repository detected."},
     {"id": "hal_dir", "status": "pass", "severity": "info", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "Found .hal/ directory."},
     {"id": "config_yaml", "status": "pass", "severity": "info", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "Loaded .hal/config.yaml."},
+    {"id": "github_auth", "status": "skip", "severity": "info", "scope": "repo", "applicability": "not_applicable", "remediationId": "none", "message": "GitHub auth check is not applicable: origin remote is not configured."},
     {"id": "default_engine_cli", "status": "pass", "severity": "info", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "The configured default engine CLI is available in PATH."},
     {"id": "prompt_md", "status": "pass", "severity": "info", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "Loaded .hal/prompt.md."},
     {"id": "progress_file", "status": "pass", "severity": "info", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "Found .hal/progress.txt."},
@@ -75,10 +78,11 @@
     {"id": "local_skill_links", "status": "pass", "severity": "info", "scope": "engine_local", "applicability": "optional", "remediationId": "none", "message": "Engine-local skill links are correct."},
     {"id": "codex_global_links", "status": "skip", "severity": "info", "scope": "engine_global", "applicability": "not_applicable", "remediationId": "none", "message": "Codex global links are not required because the configured engine is pi."},
     {"id": "legacy_debris", "status": "pass", "severity": "info", "scope": "migration", "applicability": "optional", "remediationId": "none", "message": "No legacy migration debris found."},
+    {"id": "legacy_sandbox_state", "status": "pass", "severity": "info", "scope": "migration", "applicability": "optional", "remediationId": "none", "message": "No legacy sandbox state found."},
     {"id": "broken_skill_links", "status": "pass", "severity": "info", "scope": "migration", "applicability": "optional", "remediationId": "none", "message": "No broken skill symlinks found."}
   ],
-  "totalChecks": 13,
-  "passedChecks": 11,
+  "totalChecks": 15,
+  "passedChecks": 12,
   "failures": [],
   "warnings": [],
   "summary": "Hal is ready to use."

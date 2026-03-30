@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestArchiveAndSandboxCommandFamiliesHaveCompleteMetadata(t *testing.T) {
+func TestCommandFamiliesHaveCompleteMetadata(t *testing.T) {
 	// Not parallel: walks shared global Root() command tree
 
 	root := Root()
@@ -23,6 +23,11 @@ func TestArchiveAndSandboxCommandFamiliesHaveCompleteMetadata(t *testing.T) {
 		{
 			name:     "archive command family",
 			family:   "archive",
+			required: true,
+		},
+		{
+			name:     "ci command family",
+			family:   "ci",
 			required: true,
 		},
 		{
