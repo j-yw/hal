@@ -1,15 +1,21 @@
 package ci
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
-	"os/exec"
+	"strconv"
 	"strings"
 )
 
 const defaultPushTitlePrefix = "hal ci: "
+
+var (
+	// ErrAmbiguousOpenPullRequest is returned when a branch maps to multiple open pull requests.
+	ErrAmbiguousOpenPullRequest = errors.New("ci ambiguous open pull request selection")
+)
 
 // PushOptions configures push and pull-request creation behavior.
 type PushOptions struct {
@@ -20,6 +26,7 @@ type PushOptions struct {
 }
 
 type createPullRequestOptions struct {
+	Repo    GitHubRepository
 	BaseRef string
 	HeadRef string
 	Title   string
@@ -31,13 +38,35 @@ type pushDeps struct {
 	currentBranch func(context.Context) (string, error)
 	pushBranch    func(context.Context, string) error
 	resolveRepo   func(context.Context) (GitHubRepository, error)
-	findOpenPR    func(context.Context, GitHubRepository, string) (*PullRequest, error)
+	resolveBaseRef func(context.Context, GitHubRepository, string) (string, error)
+	findOpenPR    func(context.Context, GitHubRepository, string, string) (*PullRequest, error)
 	createPR      func(context.Context, createPullRequestOptions) (string, error)
 }
 
 // PushAndCreatePR pushes the current branch and creates or reuses an open pull request.
 func PushAndCreatePR(ctx context.Context, opts PushOptions) (PushResult, error) {
 	return pushAndCreatePRWithDeps(ctx, opts, pushDeps{})
+}
+
+// PushAndCreatePRInDir pushes the current branch and creates or reuses an open pull request
+// within the provided repository directory.
+func PushAndCreatePRInDir(ctx context.Context, dir string, opts PushOptions) (PushResult, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return PushAndCreatePR(ctx, opts)
+	}
+
+	return pushAndCreatePRWithDeps(ctx, opts, pushDeps{
+		currentBranch: func(ctx context.Context) (string, error) {
+			return gitCurrentBranchInDir(ctx, dir)
+		},
+		pushBranch: func(ctx context.Context, branch string) error {
+			return gitPushBranchInDir(ctx, dir, branch)
+		},
+		resolveRepo: func(ctx context.Context) (GitHubRepository, error) {
+			return ResolveGitHubRepositoryInDir(ctx, dir)
+		},
+	})
 }
 
 func pushAndCreatePRWithDeps(ctx context.Context, opts PushOptions, deps pushDeps) (PushResult, error) {
@@ -53,8 +82,11 @@ func pushAndCreatePRWithDeps(ctx context.Context, opts PushOptions, deps pushDep
 	if deps.resolveRepo == nil {
 		deps.resolveRepo = ResolveGitHubRepository
 	}
+	if deps.resolveBaseRef == nil {
+		deps.resolveBaseRef = resolvePullRequestBaseRef
+	}
 	if deps.findOpenPR == nil {
-		deps.findOpenPR = findOpenPullRequest
+		deps.findOpenPR = findOpenPullRequestForBase
 	}
 	if deps.createPR == nil {
 		deps.createPR = createPullRequest
@@ -69,16 +101,21 @@ func pushAndCreatePRWithDeps(ctx context.Context, opts PushOptions, deps pushDep
 		return PushResult{}, fmt.Errorf("get current branch: empty branch name")
 	}
 
-	if err := deps.pushBranch(ctx, branch); err != nil {
-		return PushResult{}, err
-	}
-
 	repo, err := deps.resolveRepo(ctx)
 	if err != nil {
 		return PushResult{}, err
 	}
 
-	existingPR, err := deps.findOpenPR(ctx, repo, branch)
+	if err := deps.pushBranch(ctx, branch); err != nil {
+		return PushResult{}, err
+	}
+
+	baseRef, err := deps.resolveBaseRef(ctx, repo, opts.BaseRef)
+	if err != nil {
+		return PushResult{}, err
+	}
+
+	existingPR, err := deps.findOpenPR(ctx, repo, branch, baseRef)
 	if err != nil {
 		return PushResult{}, err
 	}
@@ -92,16 +129,15 @@ func pushAndCreatePRWithDeps(ctx context.Context, opts PushOptions, deps pushDep
 	}
 
 	createOpts := defaultCreatePullRequestOptions(branch, opts)
+	createOpts.Repo = repo
+	createOpts.BaseRef = baseRef
 	prURL, err := deps.createPR(ctx, createOpts)
 	if err != nil {
 		return PushResult{}, err
 	}
 
-	createdPR, err := deps.findOpenPR(ctx, repo, branch)
-	if err != nil {
-		return PushResult{}, err
-	}
-	if createdPR == nil {
+	createdPR, err := deps.findOpenPR(ctx, repo, branch, baseRef)
+	if err != nil || createdPR == nil {
 		createdPR = &PullRequest{
 			URL:     strings.TrimSpace(prURL),
 			Title:   createOpts.Title,
@@ -174,13 +210,42 @@ func defaultPushPRBody(branch string) string {
 	return fmt.Sprintf("Automated pull request created by `hal ci push` for branch `%s`.", branch)
 }
 
+func resolvePullRequestBaseRef(ctx context.Context, repo GitHubRepository, baseRef string) (string, error) {
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef != "" {
+		return baseRef, nil
+	}
+
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return defaultBranch(ctx, client, repo)
+}
+
 func gitPushBranch(ctx context.Context, branch string) error {
+	return gitPushBranchInDir(ctx, "", branch)
+}
+
+func gitCurrentBranchInDir(ctx context.Context, dir string) (string, error) {
+	branch, err := runGitInDir(ctx, dir, "branch", "--show-current")
+	if err != nil {
+		return "", fmt.Errorf("get current branch: %w", err)
+	}
+	if branch == "" {
+		return "", fmt.Errorf("get current branch: empty branch name")
+	}
+	return branch, nil
+}
+
+func gitPushBranchInDir(ctx context.Context, dir string, branch string) error {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
 		return fmt.Errorf("push branch: empty branch name")
 	}
 
-	if _, err := runGit(ctx, "push", "-u", "origin", branch); err != nil {
+	if _, err := runGitInDir(ctx, dir, "push", "-u", "origin", branch); err != nil {
 		return fmt.Errorf("push branch %q: %w", branch, err)
 	}
 	return nil
@@ -201,6 +266,18 @@ type ghOpenPullRequest struct {
 }
 
 func findOpenPullRequest(ctx context.Context, repo GitHubRepository, branch string) (*PullRequest, error) {
+	return findOpenPullRequestForBase(ctx, repo, branch, "")
+}
+
+func findOpenPullRequestForBase(ctx context.Context, repo GitHubRepository, branch, baseRef string) (*PullRequest, error) {
+	pulls, err := listOpenPullRequestsForBranch(ctx, repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	return selectOpenPullRequest(branch, baseRef, pulls)
+}
+
+func listOpenPullRequestsForBranch(ctx context.Context, repo GitHubRepository, branch string) ([]ghOpenPullRequest, error) {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
 		return nil, nil
@@ -209,26 +286,68 @@ func findOpenPullRequest(ctx context.Context, repo GitHubRepository, branch stri
 	query := url.Values{}
 	query.Set("state", "open")
 	query.Set("head", repo.Owner+":"+branch)
-	query.Set("per_page", "1")
-	query.Set("page", "1")
+	query.Set("per_page", "100")
 
-	endpoint := fmt.Sprintf("/repos/%s/%s/pulls?%s", repo.Owner, repo.Name, query.Encode())
 	var pulls []ghOpenPullRequest
-	if err := ghAPI(ctx, endpoint, &pulls); err != nil {
-		return nil, fmt.Errorf("find open pull request for branch %q: %w", branch, err)
+	for page := 1; ; page++ {
+		query.Set("page", strconv.Itoa(page))
+		endpoint := fmt.Sprintf("/repos/%s/%s/pulls?%s", repo.Owner, repo.Name, query.Encode())
+		var pagePulls []ghOpenPullRequest
+		if err := ghAPI(ctx, endpoint, &pagePulls); err != nil {
+			return nil, fmt.Errorf("find open pull request for branch %q: %w", branch, err)
+		}
+		pulls = append(pulls, pagePulls...)
+		if len(pagePulls) < 100 {
+			break
+		}
 	}
-	if len(pulls) == 0 {
+	return pulls, nil
+}
+
+func selectOpenPullRequest(branch, baseRef string, pulls []ghOpenPullRequest) (*PullRequest, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" || len(pulls) == 0 {
 		return nil, nil
 	}
 
+	baseRef = strings.TrimSpace(baseRef)
+	candidates := pulls
+	if baseRef != "" {
+		filtered := make([]ghOpenPullRequest, 0, len(pulls))
+		for _, pull := range pulls {
+			if strings.TrimSpace(pull.Base.Ref) == baseRef {
+				filtered = append(filtered, pull)
+			}
+		}
+		// GitHub limits open PRs per head branch to one in normal operation.
+		// If the requested base differs from that one existing PR, reuse it
+		// rather than attempting duplicate PR creation.
+		if len(filtered) == 0 && len(pulls) == 1 {
+			candidates = pulls
+		} else {
+			candidates = filtered
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	if len(candidates) > 1 {
+		if baseRef == "" {
+			return nil, fmt.Errorf("%w: branch %q has %d open pull requests", ErrAmbiguousOpenPullRequest, branch, len(candidates))
+		}
+		return nil, fmt.Errorf("%w: branch %q with base %q has %d open pull requests", ErrAmbiguousOpenPullRequest, branch, baseRef, len(candidates))
+	}
+
+	pull := candidates[0]
 	pr := PullRequest{
-		Number:   pulls[0].Number,
-		URL:      strings.TrimSpace(pulls[0].HTMLURL),
-		Title:    strings.TrimSpace(pulls[0].Title),
-		HeadRef:  strings.TrimSpace(pulls[0].Head.Ref),
-		HeadSHA:  strings.TrimSpace(pulls[0].Head.SHA),
-		BaseRef:  strings.TrimSpace(pulls[0].Base.Ref),
-		Draft:    pulls[0].Draft,
+		Number:   pull.Number,
+		URL:      strings.TrimSpace(pull.HTMLURL),
+		Title:    strings.TrimSpace(pull.Title),
+		HeadRef:  strings.TrimSpace(pull.Head.Ref),
+		HeadSHA:  strings.TrimSpace(pull.Head.SHA),
+		BaseRef:  strings.TrimSpace(pull.Base.Ref),
+		Draft:    pull.Draft,
 		Existing: true,
 	}
 	return &pr, nil
@@ -239,30 +358,61 @@ func createPullRequest(ctx context.Context, opts createPullRequestOptions) (stri
 		ctx = context.Background()
 	}
 
-	args := []string{"pr", "create", "--head", opts.HeadRef, "--title", opts.Title, "--body", opts.Body}
-	if opts.BaseRef != "" {
-		args = append(args, "--base", opts.BaseRef)
-	}
-	if opts.Draft {
-		args = append(args, "--draft")
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return "", err
 	}
 
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		stderrText := strings.TrimSpace(stderr.String())
-		if stderrText != "" {
-			return "", fmt.Errorf("create pull request failed: %s: %w", stderrText, err)
+	baseRef := strings.TrimSpace(opts.BaseRef)
+	if baseRef == "" {
+		baseRef, err = defaultBranch(ctx, client, opts.Repo)
+		if err != nil {
+			return "", err
 		}
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/%s/pulls", opts.Repo.Owner, opts.Repo.Name)
+	request := map[string]any{
+		"title": opts.Title,
+		"head":  opts.HeadRef,
+		"base":  baseRef,
+		"body":  opts.Body,
+		"draft": opts.Draft,
+	}
+
+	var response struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := ghAPIWithClient(ctx, client, githubAPIRequest{
+		Method:   http.MethodPost,
+		Endpoint: endpoint,
+		Body:     request,
+	}, &response); err != nil {
 		return "", fmt.Errorf("create pull request failed: %w", err)
 	}
 
-	prURL := strings.TrimSpace(stdout.String())
+	prURL := strings.TrimSpace(response.HTMLURL)
 	if prURL == "" {
 		return "", fmt.Errorf("create pull request failed: empty pull request URL")
 	}
 	return prURL, nil
+}
+
+func defaultBranch(ctx context.Context, client ClientSelection, repo GitHubRepository) (string, error) {
+	endpoint := fmt.Sprintf("/repos/%s/%s", repo.Owner, repo.Name)
+	var response struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := ghAPIWithClient(ctx, client, githubAPIRequest{
+		Method:   http.MethodGet,
+		Endpoint: endpoint,
+	}, &response); err != nil {
+		return "", fmt.Errorf("resolve default branch for pull request: %w", err)
+	}
+
+	baseRef := strings.TrimSpace(response.DefaultBranch)
+	if baseRef == "" {
+		return "", fmt.Errorf("resolve default branch for pull request: empty default branch")
+	}
+	return baseRef, nil
 }

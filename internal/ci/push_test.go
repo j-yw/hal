@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -27,13 +28,19 @@ func TestPushAndCreatePRWithDeps_PushesCurrentBranchAndReusesExistingPR(t *testi
 		resolveRepo: func(context.Context) (GitHubRepository, error) {
 			return GitHubRepository{Owner: "acme", Name: "repo"}, nil
 		},
-		findOpenPR: func(_ context.Context, repo GitHubRepository, gotBranch string) (*PullRequest, error) {
+		resolveBaseRef: func(context.Context, GitHubRepository, string) (string, error) {
+			return "main", nil
+		},
+		findOpenPR: func(_ context.Context, repo GitHubRepository, gotBranch, gotBaseRef string) (*PullRequest, error) {
 			findCalls++
 			if repo.FullName() != "acme/repo" {
 				t.Fatalf("repo = %q, want %q", repo.FullName(), "acme/repo")
 			}
 			if gotBranch != branch {
 				t.Fatalf("branch = %q, want %q", gotBranch, branch)
+			}
+			if gotBaseRef != "main" {
+				t.Fatalf("baseRef = %q, want %q", gotBaseRef, "main")
 			}
 			return &PullRequest{
 				Number:   42,
@@ -104,8 +111,17 @@ func TestPushAndCreatePRWithDeps_DefaultsDraftTitleBodyDeterministically(t *test
 		resolveRepo: func(context.Context) (GitHubRepository, error) {
 			return GitHubRepository{Owner: "acme", Name: "repo"}, nil
 		},
-		findOpenPR: func(context.Context, GitHubRepository, string) (*PullRequest, error) {
+		resolveBaseRef: func(context.Context, GitHubRepository, string) (string, error) {
+			return "main", nil
+		},
+		findOpenPR: func(_ context.Context, _ GitHubRepository, gotBranch, gotBaseRef string) (*PullRequest, error) {
 			findCalls++
+			if gotBranch != branch {
+				t.Fatalf("branch = %q, want %q", gotBranch, branch)
+			}
+			if gotBaseRef != "main" {
+				t.Fatalf("baseRef = %q, want %q", gotBaseRef, "main")
+			}
 			switch findCalls {
 			case 1:
 				return nil, nil
@@ -153,6 +169,9 @@ func TestPushAndCreatePRWithDeps_DefaultsDraftTitleBodyDeterministically(t *test
 	if capturedCreate.HeadRef != branch {
 		t.Fatalf("createPR headRef = %q, want %q", capturedCreate.HeadRef, branch)
 	}
+	if capturedCreate.BaseRef != "main" {
+		t.Fatalf("createPR baseRef = %q, want %q", capturedCreate.BaseRef, "main")
+	}
 
 	if result.PullRequest.Number != 7 {
 		t.Fatalf("result.PullRequest.Number = %d, want 7", result.PullRequest.Number)
@@ -185,13 +204,16 @@ func TestPushAndCreatePRWithDeps_ExplicitDraftFalseOverridesDefault(t *testing.T
 		resolveRepo: func(context.Context) (GitHubRepository, error) {
 			return GitHubRepository{Owner: "acme", Name: "repo"}, nil
 		},
-		findOpenPR: func(context.Context, GitHubRepository, string) (*PullRequest, error) {
+		resolveBaseRef: func(context.Context, GitHubRepository, string) (string, error) {
+			return "main", nil
+		},
+		findOpenPR: func(context.Context, GitHubRepository, string, string) (*PullRequest, error) {
 			findCalls++
 			switch findCalls {
 			case 1:
 				return nil, nil
 			case 2:
-				return &PullRequest{Number: 11, URL: "https://github.com/acme/repo/pull/11", HeadRef: branch, Draft: false}, nil
+				return &PullRequest{Number: 11, URL: "https://github.com/acme/repo/pull/11", HeadRef: branch, BaseRef: "main", Draft: false}, nil
 			default:
 				return nil, fmt.Errorf("unexpected findOpenPR call %d", findCalls)
 			}
@@ -211,6 +233,180 @@ func TestPushAndCreatePRWithDeps_ExplicitDraftFalseOverridesDefault(t *testing.T
 	}
 	if capturedCreate.Draft {
 		t.Fatal("createPR draft = true, want false when explicitly requested")
+	}
+}
+
+func TestPushAndCreatePRWithDeps_CreateSuccessLookupFailureFallsBackToCreateResult(t *testing.T) {
+	t.Parallel()
+
+	const branch = "hal/fallback-on-read-error"
+	const createdURL = "https://github.com/acme/repo/pull/99"
+
+	createCalls := 0
+	findCalls := 0
+	capturedCreate := createPullRequestOptions{}
+
+	result, err := pushAndCreatePRWithDeps(context.Background(), PushOptions{}, pushDeps{
+		currentBranch: func(context.Context) (string, error) {
+			return branch, nil
+		},
+		pushBranch: func(context.Context, string) error {
+			return nil
+		},
+		resolveRepo: func(context.Context) (GitHubRepository, error) {
+			return GitHubRepository{Owner: "acme", Name: "repo"}, nil
+		},
+		resolveBaseRef: func(context.Context, GitHubRepository, string) (string, error) {
+			return "develop", nil
+		},
+		findOpenPR: func(context.Context, GitHubRepository, string, string) (*PullRequest, error) {
+			findCalls++
+			switch findCalls {
+			case 1:
+				return nil, nil
+			case 2:
+				return nil, errors.New("transient list failure")
+			default:
+				return nil, fmt.Errorf("unexpected findOpenPR call %d", findCalls)
+			}
+		},
+		createPR: func(_ context.Context, createOpts createPullRequestOptions) (string, error) {
+			createCalls++
+			capturedCreate = createOpts
+			return createdURL, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("pushAndCreatePRWithDeps() error = %v", err)
+	}
+
+	if createCalls != 1 {
+		t.Fatalf("createPR calls = %d, want 1", createCalls)
+	}
+	if findCalls != 2 {
+		t.Fatalf("findOpenPR calls = %d, want 2", findCalls)
+	}
+
+	if result.PullRequest.Existing {
+		t.Fatal("result.PullRequest.Existing = true, want false")
+	}
+	if result.PullRequest.URL != createdURL {
+		t.Fatalf("result.PullRequest.URL = %q, want %q", result.PullRequest.URL, createdURL)
+	}
+	if result.PullRequest.Title != capturedCreate.Title {
+		t.Fatalf("result.PullRequest.Title = %q, want %q", result.PullRequest.Title, capturedCreate.Title)
+	}
+	if result.PullRequest.HeadRef != branch {
+		t.Fatalf("result.PullRequest.HeadRef = %q, want %q", result.PullRequest.HeadRef, branch)
+	}
+	if result.PullRequest.BaseRef != "develop" {
+		t.Fatalf("result.PullRequest.BaseRef = %q, want %q", result.PullRequest.BaseRef, "develop")
+	}
+	if result.PullRequest.Draft != capturedCreate.Draft {
+		t.Fatalf("result.PullRequest.Draft = %t, want %t", result.PullRequest.Draft, capturedCreate.Draft)
+	}
+}
+
+func TestPushAndCreatePRWithDeps_ResolveRepoFailureDoesNotPush(t *testing.T) {
+	t.Parallel()
+
+	expectedErr := errors.New("resolve repo failed")
+	pushCalled := false
+
+	_, err := pushAndCreatePRWithDeps(context.Background(), PushOptions{}, pushDeps{
+		currentBranch: func(context.Context) (string, error) {
+			return "hal/ci-push", nil
+		},
+		pushBranch: func(context.Context, string) error {
+			pushCalled = true
+			return nil
+		},
+		resolveRepo: func(context.Context) (GitHubRepository, error) {
+			return GitHubRepository{}, expectedErr
+		},
+		resolveBaseRef: func(context.Context, GitHubRepository, string) (string, error) {
+			t.Fatal("resolveBaseRef should not be called when resolveRepo fails")
+			return "", nil
+		},
+		findOpenPR: func(context.Context, GitHubRepository, string, string) (*PullRequest, error) {
+			t.Fatal("findOpenPR should not be called when resolveRepo fails")
+			return nil, nil
+		},
+		createPR: func(context.Context, createPullRequestOptions) (string, error) {
+			t.Fatal("createPR should not be called when resolveRepo fails")
+			return "", nil
+		},
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("pushAndCreatePRWithDeps() error = %v, want %v", err, expectedErr)
+	}
+	if pushCalled {
+		t.Fatal("pushBranch should not be called when resolveRepo fails")
+	}
+}
+
+func TestSelectOpenPullRequest_FiltersByBase(t *testing.T) {
+	t.Parallel()
+
+	prMain := ghOpenPullRequest{Number: 11, HTMLURL: "https://github.com/acme/repo/pull/11", Title: "main target"}
+	prMain.Head.Ref = "hal/ci-push"
+	prMain.Head.SHA = "aaa111"
+	prMain.Base.Ref = "main"
+
+	prDevelop := ghOpenPullRequest{Number: 12, HTMLURL: "https://github.com/acme/repo/pull/12", Title: "develop target"}
+	prDevelop.Head.Ref = "hal/ci-push"
+	prDevelop.Head.SHA = "bbb222"
+	prDevelop.Base.Ref = "develop"
+
+	pr, err := selectOpenPullRequest("hal/ci-push", "develop", []ghOpenPullRequest{prMain, prDevelop})
+	if err != nil {
+		t.Fatalf("selectOpenPullRequest() error = %v", err)
+	}
+	if pr == nil {
+		t.Fatal("selectOpenPullRequest() returned nil PR")
+	}
+	if pr.Number != 12 {
+		t.Fatalf("pr.Number = %d, want 12", pr.Number)
+	}
+	if pr.BaseRef != "develop" {
+		t.Fatalf("pr.BaseRef = %q, want %q", pr.BaseRef, "develop")
+	}
+}
+
+func TestSelectOpenPullRequest_AmbiguousWithoutBase(t *testing.T) {
+	t.Parallel()
+
+	prMain := ghOpenPullRequest{Number: 11}
+	prMain.Base.Ref = "main"
+	prDevelop := ghOpenPullRequest{Number: 12}
+	prDevelop.Base.Ref = "develop"
+
+	_, err := selectOpenPullRequest("hal/ci-push", "", []ghOpenPullRequest{prMain, prDevelop})
+	if !errors.Is(err, ErrAmbiguousOpenPullRequest) {
+		t.Fatalf("errors.Is(err, ErrAmbiguousOpenPullRequest) = false, err=%v", err)
+	}
+}
+
+func TestSelectOpenPullRequest_ReusesSingleHeadMatchWhenBaseDiffers(t *testing.T) {
+	t.Parallel()
+
+	prDevelop := ghOpenPullRequest{Number: 12, HTMLURL: "https://github.com/acme/repo/pull/12", Title: "develop target"}
+	prDevelop.Head.Ref = "hal/ci-push"
+	prDevelop.Head.SHA = "bbb222"
+	prDevelop.Base.Ref = "develop"
+
+	pr, err := selectOpenPullRequest("hal/ci-push", "main", []ghOpenPullRequest{prDevelop})
+	if err != nil {
+		t.Fatalf("selectOpenPullRequest() error = %v", err)
+	}
+	if pr == nil {
+		t.Fatal("selectOpenPullRequest() returned nil PR")
+	}
+	if pr.Number != 12 {
+		t.Fatalf("pr.Number = %d, want 12", pr.Number)
+	}
+	if pr.BaseRef != "develop" {
+		t.Fatalf("pr.BaseRef = %q, want %q", pr.BaseRef, "develop")
 	}
 }
 

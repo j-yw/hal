@@ -48,6 +48,16 @@ func ResolveGitHubRepository(ctx context.Context) (GitHubRepository, error) {
 	})
 }
 
+// ResolveGitHubRepositoryInDir reads the git origin remote in the given directory
+// and requires it to be a GitHub repository.
+func ResolveGitHubRepositoryInDir(ctx context.Context, dir string) (GitHubRepository, error) {
+	return resolveGitHubRepositoryWithDeps(ctx, githubRepoResolverDeps{
+		originRemoteURL: func(ctx context.Context) (string, error) {
+			return gitOriginRemoteURLInDir(ctx, dir)
+		},
+	})
+}
+
 func resolveGitHubRepositoryWithDeps(ctx context.Context, deps githubRepoResolverDeps) (GitHubRepository, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -119,11 +129,18 @@ func parseGitHubRepoPath(path string, remoteURL string) (GitHubRepository, error
 }
 
 func gitOriginRemoteURL(ctx context.Context) (string, error) {
+	return gitOriginRemoteURLInDir(ctx, "")
+}
+
+func gitOriginRemoteURLInDir(ctx context.Context, dir string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

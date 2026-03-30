@@ -27,6 +27,7 @@ type Pipeline struct {
 	display         *engine.Display
 	dir             string
 	pushAndCreatePR func(context.Context, ci.PushOptions) (ci.PushResult, error)
+	currentBranch   func(string) (string, error)
 }
 
 // NewPipeline creates a new pipeline instance.
@@ -36,7 +37,10 @@ func NewPipeline(config *AutoConfig, eng engine.Engine, display *engine.Display,
 		engine:          eng,
 		display:         display,
 		dir:             dir,
-		pushAndCreatePR: ci.PushAndCreatePR,
+		pushAndCreatePR: func(ctx context.Context, opts ci.PushOptions) (ci.PushResult, error) {
+			return ci.PushAndCreatePRInDir(ctx, dir, opts)
+		},
+		currentBranch:   CurrentBranchInDir,
 	}
 }
 
@@ -658,9 +662,23 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		return nil
 	}
 
+	currentBranch := p.currentBranch
+	if currentBranch == nil {
+		currentBranch = CurrentBranchInDir
+	}
+	activeBranch, err := currentBranch(p.dir)
+	if err != nil {
+		return fmt.Errorf("failed to determine current branch before PR step: %w", err)
+	}
+	if strings.TrimSpace(activeBranch) != state.BranchName {
+		return fmt.Errorf("current branch %q does not match pipeline state branch %q", strings.TrimSpace(activeBranch), state.BranchName)
+	}
+
 	pushAndCreatePR := p.pushAndCreatePR
 	if pushAndCreatePR == nil {
-		pushAndCreatePR = ci.PushAndCreatePR
+		pushAndCreatePR = func(ctx context.Context, opts ci.PushOptions) (ci.PushResult, error) {
+			return ci.PushAndCreatePRInDir(ctx, p.dir, opts)
+		}
 	}
 
 	// Push the branch and create/reuse PR through shared CI core.

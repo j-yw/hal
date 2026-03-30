@@ -147,6 +147,9 @@ func TestRunPRStep_DelegatesToCIAndPreservesPRContent(t *testing.T) {
 					},
 				}, nil
 			}
+			pipeline.currentBranch = func(string) (string, error) {
+				return "compound/ci-flow", nil
+			}
 
 			err := pipeline.runPRStep(context.Background(), state, RunOptions{})
 			if err != nil {
@@ -186,5 +189,35 @@ func TestRunPRStep_DelegatesToCIAndPreservesPRContent(t *testing.T) {
 				t.Fatalf("unexpected CI loop output in StepPR: %q", output)
 			}
 		})
+	}
+}
+
+func TestRunPRStep_FailsWhenCurrentBranchDoesNotMatchState(t *testing.T) {
+	pipeline, _ := newPRStepTestPipeline(t)
+
+	called := false
+	pipeline.pushAndCreatePR = func(ctx context.Context, opts ci.PushOptions) (ci.PushResult, error) {
+		called = true
+		return ci.PushResult{}, nil
+	}
+	pipeline.currentBranch = func(string) (string, error) {
+		return "compound/other-branch", nil
+	}
+
+	state := &PipelineState{
+		Step:       StepPR,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected branch mismatch error")
+	}
+	if !strings.Contains(err.Error(), `current branch "compound/other-branch" does not match pipeline state branch "compound/ci-flow"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatal("pushAndCreatePR should not be called on branch mismatch")
 	}
 }
