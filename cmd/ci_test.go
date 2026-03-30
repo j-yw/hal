@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -1379,6 +1380,30 @@ func TestRunCIMergeWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 	if strings.Contains(strings.TrimSpace(output), "{") {
 		t.Fatalf("dry-run human output should not be JSON, got %q", output)
+	}
+}
+
+func TestRunCIMergeWithDeps_DryRunRequiresOpenPR(t *testing.T) {
+	mergeCalls := 0
+
+	var buf bytes.Buffer
+	err := runCIMergeWithDeps(context.Background(), ciMergeRunOptions{Strategy: "merge", DryRun: true}, &buf, ciMergeDeps{
+		mergePR: func(context.Context, ci.MergeOptions) (ci.MergeResult, error) {
+			mergeCalls++
+			return ci.MergeResult{}, nil
+		},
+		currentBranch: func(context.Context) (string, error) {
+			return "hal/ci-merge", nil
+		},
+		findOpenPR: func(context.Context, string) (*ci.PullRequest, error) {
+			return nil, nil
+		},
+	})
+	if !errors.Is(err, ci.ErrMergePRNotFound) {
+		t.Fatalf("errors.Is(err, ci.ErrMergePRNotFound) = false, err=%v", err)
+	}
+	if mergeCalls != 0 {
+		t.Fatalf("mergePR called %d times, want 0 when open pull request is missing", mergeCalls)
 	}
 }
 

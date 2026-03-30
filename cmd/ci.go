@@ -815,10 +815,11 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 		if prErr != nil {
 			return fmt.Errorf("find open pull request for branch %s: %w", branch, prErr)
 		}
-		if pr != nil {
-			dryRunPRNumber = pr.Number
-			dryRunBase = strings.TrimSpace(pr.BaseRef)
+		if pr == nil {
+			return fmt.Errorf("%w: branch %q", ci.ErrMergePRNotFound, branch)
 		}
+		dryRunPRNumber = pr.Number
+		dryRunBase = strings.TrimSpace(pr.BaseRef)
 
 		summary := fmt.Sprintf("dry-run: would merge pull request for branch %s using %s strategy", branch, strategy)
 		if opts.DeleteBranch {
