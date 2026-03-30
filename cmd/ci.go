@@ -202,11 +202,13 @@ type ciFixRunOptions struct {
 type ciMergeDeps struct {
 	mergePR       func(context.Context, ci.MergeOptions) (ci.MergeResult, error)
 	currentBranch func(context.Context) (string, error)
+	findOpenPR    func(context.Context, string) (*ci.PullRequest, error)
 }
 
 var defaultCIMergeDeps = ciMergeDeps{
 	mergePR:       ci.MergePR,
 	currentBranch: ciCurrentBranch,
+	findOpenPR:    ci.FindOpenPullRequestForBranch,
 }
 
 type ciMergeRunOptions struct {
@@ -366,6 +368,11 @@ func runCIPushWithDeps(ctx context.Context, opts ciPushRunOptions, out io.Writer
 	if result.DryRun {
 		fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Push (dry run)"))
 		ciWriteField(out, "Branch:", engine.StyleInfo.Render(result.Branch))
+		prMode := "Create or reuse draft pull request"
+		if !result.PullRequest.Draft {
+			prMode = "Create or reuse ready-for-review pull request"
+		}
+		ciWriteField(out, "PR:", engine.StyleMuted.Render(prMode))
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Would push branch and create or reuse a pull request."))
 		return nil
@@ -374,6 +381,9 @@ func runCIPushWithDeps(ctx context.Context, opts ciPushRunOptions, out io.Writer
 	fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Push"))
 	ciWriteField(out, "Branch:", engine.StyleInfo.Render(result.Branch))
 	ciWriteField(out, "Status:", engine.StyleSuccess.Render("✓ Pushed"))
+	if base := strings.TrimSpace(result.PullRequest.BaseRef); base != "" {
+		ciWriteField(out, "Base:", engine.StyleInfo.Render(base))
+	}
 
 	if result.PullRequest.URL == "" {
 		return nil
@@ -770,13 +780,25 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 	if deps.currentBranch == nil {
 		deps.currentBranch = defaultCIMergeDeps.currentBranch
 	}
+	if deps.findOpenPR == nil {
+		deps.findOpenPR = func(context.Context, string) (*ci.PullRequest, error) {
+			return nil, nil
+		}
+	}
 
 	strategy, err := ci.NormalizeMergeStrategy(opts.Strategy)
 	if err != nil {
 		return err
 	}
 
-	var result ci.MergeResult
+	var (
+		result         ci.MergeResult
+		dryRunBranch   string
+		dryRunBase     string
+		dryRunPRNumber int
+		mergeBranch    string
+		mergeBase      string
+	)
 
 	if opts.DryRun {
 		branch, branchErr := deps.currentBranch(ctx)
@@ -787,6 +809,11 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 		if branch == "" {
 			return fmt.Errorf("get current branch: empty branch name")
 		}
+		dryRunBranch = branch
+		if pr, prErr := deps.findOpenPR(ctx, branch); prErr == nil && pr != nil {
+			dryRunPRNumber = pr.Number
+			dryRunBase = strings.TrimSpace(pr.BaseRef)
+		}
 
 		summary := fmt.Sprintf("dry-run: would merge pull request for branch %s using %s strategy", branch, strategy)
 		if opts.DeleteBranch {
@@ -795,6 +822,7 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 
 		result = ci.MergeResult{
 			ContractVersion: ci.MergeContractVersion,
+			PRNumber:        dryRunPRNumber,
 			Strategy:        strategy,
 			DryRun:          true,
 			Merged:          false,
@@ -802,6 +830,18 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 			Summary:         summary,
 		}
 	} else {
+		if !opts.JSON {
+			if branch, branchErr := deps.currentBranch(ctx); branchErr == nil {
+				branch = strings.TrimSpace(branch)
+				if branch != "" {
+					mergeBranch = branch
+					if pr, prErr := deps.findOpenPR(ctx, branch); prErr == nil && pr != nil {
+						mergeBase = strings.TrimSpace(pr.BaseRef)
+					}
+				}
+			}
+		}
+
 		result, err = deps.mergePR(ctx, ci.MergeOptions{
 			Strategy:      strategy,
 			DeleteBranch:  opts.DeleteBranch,
@@ -823,7 +863,21 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 
 	if result.DryRun {
 		fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Merge (dry run)"))
+		ciWriteField(out, "Branch:", engine.StyleInfo.Render(dryRunBranch))
+		if dryRunPRNumber > 0 {
+			ciWriteField(out, "PR:", engine.StyleInfo.Render(fmt.Sprintf("#%d", dryRunPRNumber)))
+		}
+		baseValue := engine.StyleMuted.Render("Not resolved")
+		if dryRunBase != "" {
+			baseValue = engine.StyleInfo.Render(dryRunBase)
+		}
+		ciWriteField(out, "Base:", baseValue)
 		ciWriteField(out, "Strategy:", result.Strategy)
+		deleteValue := engine.StyleMuted.Render("No")
+		if opts.DeleteBranch {
+			deleteValue = engine.StyleSuccess.Render("Yes")
+		}
+		ciWriteField(out, "Delete:", deleteValue)
 		fmt.Fprintln(out)
 		if opts.DeleteBranch {
 			fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Would merge pull request and delete the remote branch."))
@@ -834,8 +888,14 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 	}
 
 	fmt.Fprintf(out, "%s\n", engine.StyleTitle.Render("CI Merge"))
+	if mergeBranch != "" {
+		ciWriteField(out, "Branch:", engine.StyleInfo.Render(mergeBranch))
+	}
 	if result.PRNumber > 0 {
 		ciWriteField(out, "PR:", engine.StyleInfo.Render(fmt.Sprintf("#%d", result.PRNumber)))
+	}
+	if mergeBase != "" {
+		ciWriteField(out, "Base:", engine.StyleInfo.Render(mergeBase))
 	}
 	ciWriteField(out, "Strategy:", result.Strategy)
 	statusValue := engine.StyleMuted.Render("Not merged")
@@ -887,6 +947,9 @@ func writeCIFixResult(out io.Writer, jsonMode bool, result ci.FixResult) error {
 			summary = "⚠ " + summary
 		}
 
+		if strings.TrimSpace(result.Branch) != "" {
+			ciWriteField(out, "Branch:", engine.StyleInfo.Render(result.Branch))
+		}
 		ciWriteField(out, "Status:", render(summary))
 		return nil
 	}

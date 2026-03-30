@@ -17,6 +17,30 @@ var (
 	ErrAmbiguousOpenPullRequest = errors.New("ci ambiguous open pull request selection")
 )
 
+// FindOpenPullRequestForBranch resolves the open pull request for the given branch.
+// Returns (nil, nil) when no open pull request exists.
+func FindOpenPullRequestForBranch(ctx context.Context, branch string) (*PullRequest, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return nil, fmt.Errorf("find open pull request: empty branch name")
+	}
+
+	repo, err := ResolveGitHubRepository(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	pr, err := findOpenPullRequest(ctx, repo, branch)
+	if err != nil {
+		return nil, fmt.Errorf("find open pull request for branch %q: %w", branch, err)
+	}
+	return pr, nil
+}
+
 // PushOptions configures push and pull-request creation behavior.
 type PushOptions struct {
 	BaseRef string

@@ -464,6 +464,9 @@ func TestRunCIPushWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	if !strings.Contains(output, "Branch:") || !strings.Contains(output, "hal/preview") {
 		t.Fatalf("dry-run output %q missing branch details", output)
 	}
+	if !strings.Contains(output, "PR:") || !strings.Contains(output, "draft pull request") {
+		t.Fatalf("dry-run output %q missing pull request mode", output)
+	}
 	if !strings.Contains(output, "Would push branch and create or reuse a pull request.") {
 		t.Fatalf("dry-run output %q missing expected preview text", output)
 	}
@@ -472,6 +475,49 @@ func TestRunCIPushWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 	if strings.Contains(strings.TrimSpace(output), "{") {
 		t.Fatalf("dry-run human output should not be JSON, got %q", output)
+	}
+}
+
+func TestRunCIPushWithDeps_HumanOutputIncludesBaseBranch(t *testing.T) {
+	var buf bytes.Buffer
+	err := runCIPushWithDeps(context.Background(), ciPushRunOptions{}, &buf, ciPushDeps{
+		pushAndCreatePR: func(context.Context, ci.PushOptions) (ci.PushResult, error) {
+			return ci.PushResult{
+				ContractVersion: ci.PushContractVersion,
+				Branch:          "hal/ci-push",
+				Pushed:          true,
+				DryRun:          false,
+				PullRequest: ci.PullRequest{
+					Number:   7,
+					URL:      "https://github.com/acme/repo/pull/7",
+					BaseRef:  "main",
+					Draft:    false,
+					Existing: true,
+				},
+				Summary: "pushed branch hal/ci-push and reused existing pull request",
+			}, nil
+		},
+		currentBranch: func(context.Context) (string, error) {
+			t.Fatal("currentBranch should not be called when dry-run=false")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIPushWithDeps() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "CI Push") {
+		t.Fatalf("human output %q missing title", output)
+	}
+	if !strings.Contains(output, "Branch:") || !strings.Contains(output, "hal/ci-push") {
+		t.Fatalf("human output %q missing branch", output)
+	}
+	if !strings.Contains(output, "Base:") || !strings.Contains(output, "main") {
+		t.Fatalf("human output %q missing base branch", output)
+	}
+	if !strings.Contains(output, "PR #7:") || !strings.Contains(output, "https://github.com/acme/repo/pull/7") {
+		t.Fatalf("human output %q missing PR URL", output)
 	}
 }
 
@@ -969,6 +1015,49 @@ func TestRunCIFixWithDeps_StopsWithoutAttemptWhenStatusNotFailing(t *testing.T) 
 	}
 }
 
+func TestRunCIFixWithDeps_HumanOutputIncludesBranchWhenNoAttemptNeeded(t *testing.T) {
+	newEngineCalled := false
+
+	var buf bytes.Buffer
+	err := runCIFixWithDeps(context.Background(), ciFixRunOptions{MaxAttempts: 3, Engine: "codex"}, &buf, ciFixDeps{
+		newEngine: func(string) (engine.Engine, error) {
+			newEngineCalled = true
+			return ciFakeEngine{}, nil
+		},
+		getStatus: func(context.Context) (ci.StatusResult, error) {
+			return ci.StatusResult{Status: ci.StatusPassing, Branch: "hal/ci-fix"}, nil
+		},
+		waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+			t.Fatal("waitForChecks should not be called when no attempt is made")
+			return ci.StatusResult{}, nil
+		},
+		fixWithEngine: func(context.Context, ci.StatusResult, ci.FixOptions) (ci.FixResult, error) {
+			t.Fatal("fixWithEngine should not be called when no attempt is made")
+			return ci.FixResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIFixWithDeps() error = %v", err)
+	}
+	if newEngineCalled {
+		t.Fatal("newEngine should not be called when status is not failing")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "CI Fix") {
+		t.Fatalf("human output %q missing title", output)
+	}
+	if !strings.Contains(output, "Branch:") || !strings.Contains(output, "hal/ci-fix") {
+		t.Fatalf("human output %q missing branch", output)
+	}
+	if !strings.Contains(output, "Status:") || !strings.Contains(output, "no fix attempt needed") {
+		t.Fatalf("human output %q missing no-attempt status", output)
+	}
+	if strings.Contains(strings.TrimSpace(output), "{") {
+		t.Fatalf("human output should not be JSON, got %q", output)
+	}
+}
+
 func TestRunCIFixWithDeps_StopsAtMaxAttempts(t *testing.T) {
 	fixAttempts := make([]int, 0, 2)
 	waitCalls := 0
@@ -1252,6 +1341,9 @@ func TestRunCIMergeWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 		currentBranch: func(context.Context) (string, error) {
 			return "hal/ci-merge", nil
 		},
+		findOpenPR: func(context.Context, string) (*ci.PullRequest, error) {
+			return &ci.PullRequest{Number: 21, BaseRef: "main"}, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("runCIMergeWithDeps() error = %v", err)
@@ -1264,8 +1356,20 @@ func TestRunCIMergeWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	if !strings.Contains(output, "CI Merge (dry run)") {
 		t.Fatalf("dry-run output %q missing title", output)
 	}
+	if !strings.Contains(output, "Branch:") || !strings.Contains(output, "hal/ci-merge") {
+		t.Fatalf("dry-run output %q missing branch", output)
+	}
+	if !strings.Contains(output, "PR:") || !strings.Contains(output, "#21") {
+		t.Fatalf("dry-run output %q missing PR details", output)
+	}
+	if !strings.Contains(output, "Base:") || !strings.Contains(output, "main") {
+		t.Fatalf("dry-run output %q missing base branch", output)
+	}
 	if !strings.Contains(output, "Strategy:") || !strings.Contains(output, "merge") {
 		t.Fatalf("dry-run output %q missing strategy", output)
+	}
+	if !strings.Contains(output, "Delete:") || !strings.Contains(output, "Yes") {
+		t.Fatalf("dry-run output %q missing delete intent", output)
 	}
 	if !strings.Contains(output, "Would merge pull request and delete the remote branch.") {
 		t.Fatalf("dry-run output %q missing expected preview text", output)
@@ -1294,8 +1398,10 @@ func TestRunCIMergeWithDeps_HumanOutputShowsBranchAlreadyAbsent(t *testing.T) {
 			}, nil
 		},
 		currentBranch: func(context.Context) (string, error) {
-			t.Fatal("currentBranch should not be called when dry-run=false")
-			return "", nil
+			return "hal/ci-merge", nil
+		},
+		findOpenPR: func(context.Context, string) (*ci.PullRequest, error) {
+			return &ci.PullRequest{Number: 42, BaseRef: "main"}, nil
 		},
 	})
 	if err != nil {
@@ -1306,8 +1412,14 @@ func TestRunCIMergeWithDeps_HumanOutputShowsBranchAlreadyAbsent(t *testing.T) {
 	if !strings.Contains(output, "CI Merge") {
 		t.Fatalf("human output %q missing title", output)
 	}
+	if !strings.Contains(output, "Branch:") || !strings.Contains(output, "hal/ci-merge") {
+		t.Fatalf("human output %q missing source branch", output)
+	}
 	if !strings.Contains(output, "PR:") || !strings.Contains(output, "#42") {
 		t.Fatalf("human output %q missing PR details", output)
+	}
+	if !strings.Contains(output, "Base:") || !strings.Contains(output, "main") {
+		t.Fatalf("human output %q missing base branch", output)
 	}
 	if !strings.Contains(output, "Commit:") || !strings.Contains(output, "deadbee") {
 		t.Fatalf("human output %q missing shortened commit sha", output)
