@@ -46,12 +46,19 @@ var runReportWithEngine = Review
 // checkCIDependencies verifies required CI tooling and is overridden in tests.
 var checkCIDependencies = defaultCheckCIDependencies
 
+// waitForChecks points to ci.WaitForChecks and is overridden in tests.
+var waitForChecks = ci.WaitForChecks
+
+// fixWithEngine points to ci.FixWithEngine and is overridden in tests.
+var fixWithEngine = ci.FixWithEngine
+
 // createArchiveWithOptions points to archive.CreateWithOptions and is overridden in tests.
 var createArchiveWithOptions = archive.CreateWithOptions
 
 const (
 	maxValidationAttempts   = 3
 	defaultReviewIterations = 10
+	maxCIFixAttempts        = 3
 )
 
 // Pipeline orchestrates the compound engineering automation process.
@@ -931,7 +938,8 @@ func (p *Pipeline) migrateAutoProgress() error {
 	return MigrateAutoProgress(p.dir, p.display)
 }
 
-// runPRStep pushes the branch and creates a draft pull request.
+// runPRStep pushes the branch, creates a draft pull request, waits for CI
+// checks, and attempts engine-driven fixes when checks fail.
 func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: ci\n")
 
@@ -956,9 +964,9 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	if opts.DryRun {
 		if state.BaseBranch != "" {
-			p.display.ShowInfo("   [dry-run] Would push branch %s and create draft PR against %s\n", state.BranchName, state.BaseBranch)
+			p.display.ShowInfo("   [dry-run] Would push branch %s, create draft PR against %s, wait for CI, and auto-fix if failing\n", state.BranchName, state.BaseBranch)
 		} else {
-			p.display.ShowInfo("   [dry-run] Would push branch %s and create draft PR\n", state.BranchName)
+			p.display.ShowInfo("   [dry-run] Would push branch %s, create draft PR, wait for CI, and auto-fix if failing\n", state.BranchName)
 		}
 		state.Step = StepArchive
 		return nil
@@ -994,7 +1002,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		}
 	}
 
-	// Push the branch and create/reuse PR through shared CI core.
+	// 1. Push the branch and create/reuse PR through shared CI core.
 	p.display.ShowInfo("   Pushing branch: %s\n", state.BranchName)
 
 	taskStatus := ""
@@ -1002,10 +1010,8 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		taskStatus = buildTaskStatusSection(prd, state, p.config.MaxIterations)
 	}
 
-	// Build PR body from analysis
 	prBody := buildPRBody(state, taskStatus)
 
-	// Create PR title from analysis when available.
 	prTitle := "Compound: " + state.BranchName
 	if state.Analysis != nil {
 		if priority := strings.TrimSpace(state.Analysis.PriorityItem); priority != "" {
@@ -1031,11 +1037,117 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	if prURL == "" {
 		return fmt.Errorf("failed to create PR: empty pull request URL")
 	}
+	p.display.ShowInfo("   PR created: %s\n", prURL)
 
-	state.CI = &CIState{Status: "passed"}
+	// Initialize CI telemetry.
+	if state.CI == nil {
+		state.CI = &CIState{}
+	}
+
+	// 2. Wait for CI checks.
+	p.display.ShowInfo("   Waiting for CI checks...\n")
+	status, err := waitForChecks(ctx, ci.WaitOptions{})
+	if err != nil {
+		state.CI.Status = "failed"
+		state.CI.Reason = "wait_error"
+		p.recordCIState(state.CI)
+		return fmt.Errorf("failed to wait for CI checks: %w", err)
+	}
+
+	if !status.ChecksDiscovered {
+		p.display.ShowInfo("   No CI checks discovered; advancing to archive\n")
+		state.CI.Status = "passed"
+		state.CI.Reason = "no_checks"
+		p.recordCIState(state.CI)
+		state.Step = StepArchive
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to save state: %w", saveErr)
+		}
+		return nil
+	}
+
+	// 3. If passing, we're done.
+	if status.Status == ci.StatusPassing {
+		p.display.ShowInfo("   CI checks passing\n")
+		state.CI.Status = "passed"
+		p.recordCIState(state.CI)
+		state.Step = StepArchive
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to save state: %w", saveErr)
+		}
+		return nil
+	}
+
+	// 4. If failing, attempt engine-driven fixes.
+	if status.Status == ci.StatusFailing {
+		p.display.ShowInfo("   CI checks failing; attempting auto-fix (up to %d attempts)\n", maxCIFixAttempts)
+
+		for attempt := 1; attempt <= maxCIFixAttempts; attempt++ {
+			p.display.ShowInfo("   Fix attempt %d/%d...\n", attempt, maxCIFixAttempts)
+
+			fixResult, fixErr := fixWithEngine(ctx, status, ci.FixOptions{
+				Engine:      p.engine,
+				Display:     p.display,
+				Attempt:     attempt,
+				MaxAttempts: maxCIFixAttempts,
+			})
+			state.CI.FixAttempts = attempt
+
+			if fixErr != nil {
+				p.display.ShowInfo("   Fix attempt %d failed: %v\n", attempt, fixErr)
+				// Save progress and continue to next attempt if retries remain.
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("ci fix attempt %d failed: %w (also failed to save state: %v)", attempt, fixErr, saveErr)
+				}
+				continue
+			}
+
+			if fixResult.Applied {
+				state.CI.FixesApplied++
+				p.display.ShowInfo("   Fix applied, pushed %d file(s)\n", len(fixResult.FilesChanged))
+			}
+
+			// Wait for fresh CI status after the fix.
+			p.display.ShowInfo("   Waiting for CI checks after fix...\n")
+			verified, waitErr := waitForChecks(ctx, ci.WaitOptions{})
+			if waitErr != nil {
+				p.display.ShowInfo("   Post-fix CI wait failed: %v\n", waitErr)
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("post-fix CI wait failed: %w (also failed to save state: %v)", waitErr, saveErr)
+				}
+				continue
+			}
+
+			if verified.Status == ci.StatusPassing {
+				p.display.ShowInfo("   CI checks passing after fix attempt %d\n", attempt)
+				state.CI.Status = "passed"
+				p.recordCIState(state.CI)
+				state.Step = StepArchive
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("failed to save state: %w", saveErr)
+				}
+				return nil
+			}
+
+			// Still failing — update status for next iteration.
+			status = verified
+		}
+
+		// Exhausted all fix attempts.
+		p.display.ShowInfo("   CI still failing after %d fix attempt(s); advancing to archive\n", maxCIFixAttempts)
+		state.CI.Status = "fix_exhausted"
+		p.recordCIState(state.CI)
+		state.Step = StepArchive
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to save state: %w", saveErr)
+		}
+		return nil
+	}
+
+	// Pending/timeout/unknown — don't block the pipeline.
+	p.display.ShowInfo("   CI status is %s; advancing to archive\n", status.Status)
+	state.CI.Status = status.Status
 	p.recordCIState(state.CI)
-	p.display.ShowInfo("   PR created: %s\n", prURL)  
-
 	state.Step = StepArchive
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)

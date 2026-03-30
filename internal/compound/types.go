@@ -48,8 +48,10 @@ type ReviewState struct {
 
 // CIState stores ci-step telemetry in pipeline state.
 type CIState struct {
-	Status string `json:"status,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	FixAttempts  int    `json:"fixAttempts,omitempty"`
+	FixesApplied int    `json:"fixesApplied,omitempty"`
 }
 
 // Valid step values for PipelineState.Step.
