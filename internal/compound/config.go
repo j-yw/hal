@@ -12,20 +12,82 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	AutoModeFast     = "fast"
+	AutoModeBalanced = "balanced"
+	AutoModeStrict   = "strict"
+)
+
+// AutoModeSettings captures mode-driven default policy values.
+type AutoModeSettings struct {
+	Mode                string
+	CIEnabled           bool
+	ReviewEnabled       bool
+	ReviewCleanStreak   int
+	ReviewMaxIterations int
+}
+
+// ResolveAutoModeSettings returns normalized settings for a supported auto mode.
+func ResolveAutoModeSettings(mode string) (AutoModeSettings, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		normalized = AutoModeBalanced
+	}
+
+	switch normalized {
+	case AutoModeFast:
+		return AutoModeSettings{
+			Mode:                AutoModeFast,
+			CIEnabled:           false,
+			ReviewEnabled:       false,
+			ReviewCleanStreak:   1,
+			ReviewMaxIterations: 5,
+		}, nil
+	case AutoModeBalanced:
+		return AutoModeSettings{
+			Mode:                AutoModeBalanced,
+			CIEnabled:           true,
+			ReviewEnabled:       true,
+			ReviewCleanStreak:   1,
+			ReviewMaxIterations: 10,
+		}, nil
+	case AutoModeStrict:
+		return AutoModeSettings{
+			Mode:                AutoModeStrict,
+			CIEnabled:           true,
+			ReviewEnabled:       true,
+			ReviewCleanStreak:   3,
+			ReviewMaxIterations: 15,
+		}, nil
+	default:
+		return AutoModeSettings{}, fmt.Errorf("auto.mode must be one of fast, balanced, strict")
+	}
+}
+
 // AutoConfig contains configuration for the compound auto pipeline.
 type AutoConfig struct {
-	ReportsDir    string   `yaml:"reportsDir"`
-	BranchPrefix  string   `yaml:"branchPrefix"`
-	QualityChecks []string `yaml:"qualityChecks"`
-	MaxIterations int      `yaml:"maxIterations"`
+	ReportsDir          string   `yaml:"reportsDir"`
+	BranchPrefix        string   `yaml:"branchPrefix"`
+	QualityChecks       []string `yaml:"qualityChecks"`
+	MaxIterations       int      `yaml:"maxIterations"`
+	Mode                string   `yaml:"mode"`
+	CIEnabled           bool     `yaml:"ciEnabled"`
+	ReviewEnabled       bool     `yaml:"reviewEnabled"`
+	ReviewCleanStreak   int      `yaml:"reviewCleanStreak"`
+	ReviewMaxIterations int      `yaml:"reviewMaxIterations"`
 }
 
 // rawAutoConfig is used for YAML unmarshaling to distinguish missing keys from explicit empty values.
 type rawAutoConfig struct {
-	ReportsDir    *string  `yaml:"reportsDir"`
-	BranchPrefix  *string  `yaml:"branchPrefix"`
-	QualityChecks []string `yaml:"qualityChecks"`
-	MaxIterations *int     `yaml:"maxIterations"`
+	ReportsDir          *string  `yaml:"reportsDir"`
+	BranchPrefix        *string  `yaml:"branchPrefix"`
+	QualityChecks       []string `yaml:"qualityChecks"`
+	MaxIterations       *int     `yaml:"maxIterations"`
+	Mode                *string  `yaml:"mode"`
+	CIEnabled           *bool    `yaml:"ciEnabled"`
+	ReviewEnabled       *bool    `yaml:"reviewEnabled"`
+	ReviewCleanStreak   *int     `yaml:"reviewCleanStreak"`
+	ReviewMaxIterations *int     `yaml:"reviewMaxIterations"`
 }
 
 // DaytonaConfig contains configuration for Daytona sandbox integration.
@@ -92,11 +154,21 @@ type Config struct {
 
 // DefaultAutoConfig returns sensible defaults for auto configuration.
 func DefaultAutoConfig() AutoConfig {
+	settings, err := ResolveAutoModeSettings(AutoModeBalanced)
+	if err != nil {
+		panic(err)
+	}
+
 	return AutoConfig{
-		ReportsDir:    ".hal/reports",
-		BranchPrefix:  "compound/",
-		QualityChecks: []string{},
-		MaxIterations: 25,
+		ReportsDir:          ".hal/reports",
+		BranchPrefix:        "compound/",
+		QualityChecks:       []string{},
+		MaxIterations:       25,
+		Mode:                settings.Mode,
+		CIEnabled:           settings.CIEnabled,
+		ReviewEnabled:       settings.ReviewEnabled,
+		ReviewCleanStreak:   settings.ReviewCleanStreak,
+		ReviewMaxIterations: settings.ReviewMaxIterations,
 	}
 }
 
@@ -111,6 +183,23 @@ func (c *AutoConfig) Validate() error {
 	if c.MaxIterations <= 0 {
 		return fmt.Errorf("auto.maxIterations must be greater than 0")
 	}
+
+	settings, err := ResolveAutoModeSettings(c.Mode)
+	if err != nil {
+		return err
+	}
+	c.Mode = settings.Mode
+
+	if c.ReviewCleanStreak <= 0 {
+		return fmt.Errorf("auto.reviewCleanStreak must be greater than 0")
+	}
+	if c.ReviewMaxIterations <= 0 {
+		return fmt.Errorf("auto.reviewMaxIterations must be greater than 0")
+	}
+	if c.ReviewCleanStreak > c.ReviewMaxIterations {
+		return fmt.Errorf("auto.reviewCleanStreak must be less than or equal to auto.reviewMaxIterations")
+	}
+
 	return nil
 }
 
@@ -150,6 +239,33 @@ func LoadConfig(dir string) (*AutoConfig, error) {
 	}
 	if config.Auto.MaxIterations != nil {
 		autoConfig.MaxIterations = *config.Auto.MaxIterations
+	}
+
+	mode := autoConfig.Mode
+	if config.Auto.Mode != nil {
+		mode = *config.Auto.Mode
+	}
+	modeSettings, err := ResolveAutoModeSettings(mode)
+	if err != nil {
+		return nil, err
+	}
+	autoConfig.Mode = modeSettings.Mode
+	autoConfig.CIEnabled = modeSettings.CIEnabled
+	autoConfig.ReviewEnabled = modeSettings.ReviewEnabled
+	autoConfig.ReviewCleanStreak = modeSettings.ReviewCleanStreak
+	autoConfig.ReviewMaxIterations = modeSettings.ReviewMaxIterations
+
+	if config.Auto.CIEnabled != nil {
+		autoConfig.CIEnabled = *config.Auto.CIEnabled
+	}
+	if config.Auto.ReviewEnabled != nil {
+		autoConfig.ReviewEnabled = *config.Auto.ReviewEnabled
+	}
+	if config.Auto.ReviewCleanStreak != nil {
+		autoConfig.ReviewCleanStreak = *config.Auto.ReviewCleanStreak
+	}
+	if config.Auto.ReviewMaxIterations != nil {
+		autoConfig.ReviewMaxIterations = *config.Auto.ReviewMaxIterations
 	}
 
 	if err := autoConfig.Validate(); err != nil {

@@ -43,7 +43,7 @@
 |----|-------|-------------|
 | `git_repo` | repo | Git repository detected |
 | `hal_dir` | repo | `.hal/` directory exists |
-| `config_yaml` | repo | Config file readable and valid YAML |
+| `config_yaml` | repo | Config file readable/valid YAML, with auto policy keys backfilled (`hal init`) when legacy auto sections are missing them |
 | `github_auth` | repo | GitHub authentication available for GitHub origin remotes |
 | `default_engine_cli` | repo | Engine CLI in PATH |
 | `prompt_md` | repo | Agent prompt template exists and non-empty |

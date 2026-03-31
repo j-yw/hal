@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
+	"gopkg.in/yaml.v3"
 )
 
 func setupHealthyDir(t *testing.T) string {
@@ -183,6 +185,62 @@ func TestRunRepairFn_ReRunsDoctor(t *testing.T) {
 	// The re-check should show improvement
 	if result.Summary == "" {
 		t.Fatal("summary should not be empty")
+	}
+}
+
+func TestRunRepairFn_BackfillsLegacyAutoPolicyConfig(t *testing.T) {
+	dir := setupHealthyDir(t)
+
+	legacyConfig := `engine: pi
+auto:
+  reportsDir: .hal/reports
+  branchPrefix: compound/
+  maxIterations: 25
+`
+	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
+	if err := os.WriteFile(configPath, []byte(legacyConfig), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	diag := doctor.Run(doctor.Options{Dir: dir, Engine: "pi"})
+	configWarn := false
+	for _, c := range diag.Checks {
+		if c.ID == "config_yaml" && c.Status == doctor.StatusWarn {
+			configWarn = true
+			break
+		}
+	}
+	if !configWarn {
+		t.Fatalf("expected config_yaml warning before repair, got overall=%s", diag.OverallStatus)
+	}
+
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	var buf bytes.Buffer
+	if err := runRepairFn(dir, false, false, &buf); err != nil {
+		t.Fatalf("runRepairFn() error = %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	auto, ok := raw["auto"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("auto section missing after repair: %#v", raw["auto"])
+	}
+	for _, key := range []string{"mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"} {
+		if _, exists := auto[key]; !exists {
+			t.Fatalf("expected auto.%s to be present after repair", key)
+		}
 	}
 }
 

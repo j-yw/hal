@@ -20,7 +20,7 @@ func TestRunPRStep_SkipCIFlagMarksSkipped(t *testing.T) {
 	state := &PipelineState{
 		Step:       StepCI,
 		BaseBranch: "develop",
-		BranchName: "hal/skip-ci",
+		BranchName: "hal/no-ci",
 		StartedAt:  time.Now(),
 	}
 
@@ -28,8 +28,8 @@ func TestRunPRStep_SkipCIFlagMarksSkipped(t *testing.T) {
 		t.Fatalf("runPRStep returned error: %v", err)
 	}
 
-	if state.Step != StepDone {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+	if state.Step != StepReport {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
 	}
 	if state.CI == nil {
 		t.Fatal("state.CI is nil")
@@ -40,11 +40,11 @@ func TestRunPRStep_SkipCIFlagMarksSkipped(t *testing.T) {
 	if state.CI.Reason != "skip_ci_flag" {
 		t.Fatalf("state.CI.Reason = %q, want %q", state.CI.Reason, "skip_ci_flag")
 	}
-	if !strings.Contains(out.String(), "Skipping CI step (--skip-ci)") {
-		t.Fatalf("expected skip-ci output message, got %q", out.String())
+	if !strings.Contains(out.String(), "Skipping CI step (--no-ci)") {
+		t.Fatalf("expected no-ci output message, got %q", out.String())
 	}
-	if pipeline.HasState() {
-		t.Fatal("pipeline state should be cleared after skip-ci completion")
+	if !pipeline.HasState() {
+		t.Fatal("pipeline state should be saved after no-ci to allow report step")
 	}
 }
 
@@ -57,7 +57,7 @@ func TestRunPRStep_SkipCIFlagDryRunPreservesSavedState(t *testing.T) {
 	state := &PipelineState{
 		Step:       StepCI,
 		BaseBranch: "develop",
-		BranchName: "hal/skip-ci",
+		BranchName: "hal/no-ci",
 		StartedAt:  time.Now(),
 	}
 
@@ -69,8 +69,8 @@ func TestRunPRStep_SkipCIFlagDryRunPreservesSavedState(t *testing.T) {
 		t.Fatalf("runPRStep returned error: %v", err)
 	}
 
-	if state.Step != StepDone {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+	if state.Step != StepReport {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
 	}
 	if state.CI == nil {
 		t.Fatal("state.CI is nil")
@@ -82,7 +82,7 @@ func TestRunPRStep_SkipCIFlagDryRunPreservesSavedState(t *testing.T) {
 		t.Fatalf("state.CI.Reason = %q, want %q", state.CI.Reason, "skip_ci_flag")
 	}
 	if !pipeline.HasState() {
-		t.Fatal("pipeline state should be preserved during dry-run skip-ci")
+		t.Fatal("pipeline state should be preserved during dry-run no-ci")
 	}
 }
 
@@ -107,18 +107,22 @@ func TestRunPRStep_CIDependenciesUnavailableMarksSkipped(t *testing.T) {
 		checkCIDependencies = origCheckCIDependencies
 	})
 
-	if err := pipeline.runPRStep(context.Background(), state, RunOptions{}); err != nil {
-		t.Fatalf("runPRStep returned error: %v", err)
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected CI dependency gate error")
+	}
+	if !strings.Contains(err.Error(), "CI dependencies unavailable") {
+		t.Fatalf("err = %v, want dependency gate message", err)
 	}
 
-	if state.Step != StepArchive {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepArchive)
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
 	}
 	if state.CI == nil {
 		t.Fatal("state.CI is nil")
 	}
-	if state.CI.Status != "skipped" {
-		t.Fatalf("state.CI.Status = %q, want %q", state.CI.Status, "skipped")
+	if state.CI.Status != "failed" {
+		t.Fatalf("state.CI.Status = %q, want %q", state.CI.Status, "failed")
 	}
 	if state.CI.Reason != "ci_unavailable" {
 		t.Fatalf("state.CI.Reason = %q, want %q", state.CI.Reason, "ci_unavailable")
@@ -126,7 +130,10 @@ func TestRunPRStep_CIDependenciesUnavailableMarksSkipped(t *testing.T) {
 	if !strings.Contains(out.String(), "dependencies unavailable") {
 		t.Fatalf("expected dependency-unavailable output message, got %q", out.String())
 	}
+	if !strings.Contains(out.String(), "stopping at CI step") {
+		t.Fatalf("expected stop-at-ci output message, got %q", out.String())
+	}
 	if !pipeline.HasState() {
-		t.Fatal("pipeline state should be saved after ci_unavailable skip")
+		t.Fatal("pipeline state should be saved when CI gate blocks on missing dependencies")
 	}
 }

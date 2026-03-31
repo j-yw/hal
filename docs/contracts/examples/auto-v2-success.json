@@ -35,13 +35,13 @@
       "issuesFound": 4,
       "fixesApplied": 3
     },
-    "report": {
-      "status": "completed",
-      "path": ".hal/reports/review-2026-03-29-104500.md"
-    },
     "ci": {
       "status": "skipped",
       "reason": "skip_ci_flag"
+    },
+    "report": {
+      "status": "completed",
+      "path": ".hal/reports/review-2026-03-29-104500.md"
     },
     "archive": {
       "status": "completed",
@@ -51,7 +51,7 @@
   "summary": "Auto pipeline completed successfully.",
   "nextAction": {
     "id": "run_report",
-    "command": "hal report",
-    "description": "Review and share the generated report artifact."
+    "command": "hal continue",
+    "description": "Check workflow status and the next recommended command."
   }
 }

@@ -34,8 +34,8 @@
 - `validate`
 - `run`
 - `review`
-- `report`
 - `ci`
+- `report`
 - `archive`
 
 Each step object contains:

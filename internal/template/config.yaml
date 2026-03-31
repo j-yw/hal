@@ -67,6 +67,27 @@ auto:
   # Default: 25
   maxIterations: 25
 
+  # Policy preset for CI/review behavior.
+  # Options: fast, balanced, strict
+  # Default: balanced
+  mode: balanced
+
+  # Enable CI gate in auto runs.
+  # Default (balanced): true
+  ciEnabled: true
+
+  # Enable review gate in auto runs.
+  # Default (balanced): true
+  reviewEnabled: true
+
+  # Consecutive clean review cycles required to pass review gate.
+  # Default (balanced): 1
+  reviewCleanStreak: 1
+
+  # Maximum review cycles before review gate fails.
+  # Default (balanced): 10
+  reviewMaxIterations: 10
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Daytona Sandbox Settings (optional)
 # ─────────────────────────────────────────────────────────────────────────────

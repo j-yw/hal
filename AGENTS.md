@@ -292,16 +292,16 @@
 
 ## Patterns from compound/review-report-gates (2026-03-29)
 
-- Auto pipeline flow now continues `run -> review -> report -> ci`; successful run-step completion should advance to `StepReview` rather than jumping directly to CI.
+- Auto pipeline flow now continues `run -> review -> ci -> report`; successful run-step completion should advance to `StepReview` rather than jumping directly to CI.
 - Keep review/report gates injectable for tests: `runReviewLoopWithDisplay` defaults to `RunReviewLoopWithDisplay`, and `runReportWithEngine` defaults to `Review`.
 - The report gate is responsible for persisting the generated artifact path into `state.ReportPath` before advancing, so downstream steps (for example archive/CI flows) can reuse the latest report.
 
 ## Patterns from compound/ci-skip-semantics (2026-03-29)
 
-- Treat `--skip-ci` as the canonical auto flag; keep `--skip-pr` only as a deprecated alias that maps to skip-ci behavior and warns on stderr.
+- Treat `--no-ci` as the canonical auto flag for disabling CI in auto runs.
 - In `runPRStep`, persist CI telemetry via `state.CI` with explicit skipped reasons (`skip_ci_flag`, `ci_unavailable`) so skip outcomes remain machine-readable and testable.
 - Keep CI dependency detection injectable (`checkCIDependencies`) so pipeline tests can cover unavailable-tool skip behavior without mutating PATH.
-- Command-level alias compatibility coverage should run `hal auto --dry-run --report <fixture> --skip-pr` through `cmd.Root()` and assert both stderr deprecation warning text and stdout CI-skip/no-push behavior.
+- Command-level CI-disable coverage should run `hal auto --dry-run --report <fixture> --no-ci` through `cmd.Root()` and assert stdout CI-skip/no-push behavior.
 
 ## Patterns from compound/archive-step-report-preservation (2026-03-29)
 
@@ -333,8 +333,8 @@
 
 ## Patterns from compound/dual-mode-regression-guards (2026-03-29)
 
-- Keep `hal auto` runtime flags constrained to the single-pipeline set (`dry-run`, `resume`, `skip-ci`, `skip-pr`, `report`, `engine`, `base`, `json`) and add a focused command test that fails on unexpected/legacy flag names.
-- Lock the pipeline step graph with dry-run tests that assert exact step sequences for both entry modes: report discovery (`analyze -> spec -> branch -> convert -> validate -> run -> review -> report -> ci -> archive`) and positional markdown (`branch -> convert -> validate -> run -> review -> report -> ci -> archive`).
+- Keep `hal auto` runtime flags constrained to the single-pipeline set (`dry-run`, `resume`, `mode`, `no-ci`, `no-review`, `review-streak`, `review-max`, `report`, `engine`, `base`, `json`) and add a focused command test that fails on unexpected/legacy flag names.
+- Lock the pipeline step graph with dry-run tests that assert exact step sequences for both entry modes: report discovery (`analyze -> spec -> branch -> convert -> validate -> run -> review -> ci -> report -> archive`) and positional markdown (`branch -> convert -> validate -> run -> review -> ci -> report -> archive`).
 - Outside legacy migration mapping coverage, prefer canonical step constants (`StepSpec`, `StepConvert`, `StepRun`, `StepCI`) instead of legacy aliases in tests to avoid reintroducing old runtime terminology.
 ## Patterns from hal/ci-shared-types-contracts (2026-03-29)
 
@@ -387,7 +387,7 @@
 ## Patterns from hal/compound-steppr-ci-delegation (2026-03-29)
 
 - Stage 6A `runPRStep` in `internal/compound/pipeline.go` delegates push + PR creation to `internal/ci.PushAndCreatePR`, but still generates title/body in compound so existing PR content stays stable.
-- Keep `--skip-pr` and `--dry-run` branches as early returns before CI delegation to preserve legacy StepPR behavior and avoid remote side effects.
+- Keep `--no-ci` and `--dry-run` branches as early returns before CI delegation to preserve StepPR behavior and avoid remote side effects.
 - `Pipeline` now uses an injectable `pushAndCreatePR` function field; use this seam in unit tests (`internal/compound/pipeline_pr_test.go`) to assert StepPR behavior without invoking real git/gh commands.
 
 ## Patterns from hal/ci-command-push-wiring (2026-03-29)

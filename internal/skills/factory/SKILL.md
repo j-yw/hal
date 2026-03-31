@@ -33,12 +33,11 @@ hal review --help
 Set capability booleans:
 - `HAS_CI`: `hal ci` command exists
 - `HAS_AUTO_COMPOUND`: `hal auto --compound` exists
-- `HAS_SKIP_CI`: `hal auto --skip-ci` exists
-- `HAS_SKIP_PR`: `hal auto --skip-pr` exists
+- `HAS_NO_CI`: `hal auto --no-ci` exists
 - `HAS_GRANULAR`: `hal convert --granular` exists
 
 Derived compatibility values:
-- `AUTO_SKIP_FLAG = --skip-ci | --skip-pr | ""`
+- `AUTO_SKIP_FLAG = --no-ci | ""`
 - `COMPOUND_ENTRY_CMD`:
   - if `HAS_AUTO_COMPOUND`: `hal auto --compound` (optionally `--report <path>`)
   - else if legacy `--report` exists: `hal auto --report <path>`

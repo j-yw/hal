@@ -242,6 +242,12 @@ func TestRun_MissingConfigYAML(t *testing.T) {
 	installCommands(t, dir)
 
 	result := Run(Options{Dir: dir, Engine: "pi"})
+	if result.OverallStatus != StatusWarn {
+		t.Fatalf("overallStatus = %q, want %q", result.OverallStatus, StatusWarn)
+	}
+	if len(result.Warnings) == 0 || result.Warnings[0] != "config_yaml" {
+		t.Fatalf("warnings = %v, want config_yaml warning", result.Warnings)
+	}
 
 	found := false
 	for _, c := range result.Checks {
@@ -255,6 +261,56 @@ func TestRun_MissingConfigYAML(t *testing.T) {
 	if !found {
 		t.Fatal("config_yaml check not found")
 	}
+}
+
+func TestRun_ConfigYAMLMissingAutoPolicyKeys(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	legacyAutoConfig := `engine: pi
+auto:
+  reportsDir: .hal/reports
+  branchPrefix: compound/
+  maxIterations: 25
+`
+	if err := os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte(legacyAutoConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+	if result.OverallStatus != StatusWarn {
+		t.Fatalf("overallStatus = %q, want %q", result.OverallStatus, StatusWarn)
+	}
+	if len(result.Warnings) == 0 || result.Warnings[0] != "config_yaml" {
+		t.Fatalf("warnings = %v, want config_yaml warning", result.Warnings)
+	}
+
+	for _, c := range result.Checks {
+		if c.ID != "config_yaml" {
+			continue
+		}
+		if c.Status != StatusWarn {
+			t.Fatalf("config_yaml status = %q, want %q", c.Status, StatusWarn)
+		}
+		if c.Remediation == nil {
+			t.Fatal("config_yaml should include remediation")
+		}
+		if c.Remediation.Command != "hal init" {
+			t.Fatalf("config_yaml remediation.command = %q, want %q", c.Remediation.Command, "hal init")
+		}
+		if !c.Remediation.Safe {
+			t.Fatal("config_yaml remediation.safe should be true")
+		}
+		if !strings.Contains(c.Message, "reviewMaxIterations") {
+			t.Fatalf("config_yaml message should list missing policy keys, got %q", c.Message)
+		}
+		return
+	}
+
+	t.Fatal("config_yaml check not found")
 }
 
 func TestRun_LegacyDebrisDetected(t *testing.T) {

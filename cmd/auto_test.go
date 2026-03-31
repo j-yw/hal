@@ -21,8 +21,11 @@ func newAutoTestCommand(t *testing.T) (*cobra.Command, *bytes.Buffer) {
 	cmd := &cobra.Command{Use: "auto"}
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().Bool("resume", false, "")
-	cmd.Flags().Bool("skip-ci", false, "")
-	cmd.Flags().Bool("skip-pr", false, "")
+	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().Bool("no-review", false, "")
+	cmd.Flags().String("mode", "", "")
+	cmd.Flags().Int("review-streak", 0, "")
+	cmd.Flags().Int("review-max", 0, "")
 	cmd.Flags().String("report", "", "")
 	cmd.Flags().String("engine", "codex", "")
 	cmd.Flags().String("base", "", "")
@@ -67,14 +70,17 @@ func TestAutoCommand_HelpDescribesSourcePriority(t *testing.T) {
 
 func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 	expectedFlags := map[string]struct{}{
-		"base":    {},
-		"dry-run": {},
-		"engine":  {},
-		"json":    {},
-		"report":  {},
-		"resume":  {},
-		"skip-ci": {},
-		"skip-pr": {},
+		"base":          {},
+		"dry-run":       {},
+		"engine":        {},
+		"json":          {},
+		"mode":          {},
+		"no-ci":         {},
+		"no-review":     {},
+		"report":        {},
+		"resume":        {},
+		"review-max":    {},
+		"review-streak": {},
 	}
 
 	gotFlags := map[string]struct{}{}
@@ -97,7 +103,7 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 		}
 	}
 
-	legacyDualModeFlags := []string{"mode", "manual", "prd", "explode", "loop", "pr", "auto-prd", "from-step", "start-step"}
+	legacyDualModeFlags := []string{"manual", "prd", "explode", "loop", "pr", "auto-prd", "from-step", "start-step"}
 	for _, legacyFlag := range legacyDualModeFlags {
 		if autoCmd.LocalFlags().Lookup(legacyFlag) != nil {
 			t.Fatalf("legacy dual-mode runtime flag %q should not be exposed", legacyFlag)
@@ -635,7 +641,7 @@ func TestRunAuto_DryRunWithoutPositionalMarkdownRunsAnalyzeSpecBranchBeforeConve
 	}
 }
 
-func TestRunAuto_DryRunSkipCIFlagSkipsCIStepWithoutWarning(t *testing.T) {
+func TestRunAuto_DryRunNoCIFlagSkipsCIStep(t *testing.T) {
 	chdirTemp(t)
 
 	reportPath := filepath.Join(".", "report.md")
@@ -650,30 +656,24 @@ func TestRunAuto_DryRunSkipCIFlagSkipsCIStepWithoutWarning(t *testing.T) {
 	if err := cmd.Flags().Set("report", reportPath); err != nil {
 		t.Fatalf("set report flag: %v", err)
 	}
-	if err := cmd.Flags().Set("skip-ci", "true"); err != nil {
-		t.Fatalf("set skip-ci flag: %v", err)
+	if err := cmd.Flags().Set("no-ci", "true"); err != nil {
+		t.Fatalf("set no-ci flag: %v", err)
 	}
-
-	var errOut bytes.Buffer
-	cmd.SetErr(&errOut)
 
 	if err := runAuto(cmd, nil); err != nil {
 		t.Fatalf("runAuto returned error: %v", err)
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "Skipping CI step (--skip-ci)") {
-		t.Fatalf("expected skip-ci message in output, got %q", output)
+	if !strings.Contains(output, "Skipping CI step (--no-ci)") {
+		t.Fatalf("expected no-ci message in output, got %q", output)
 	}
 	if strings.Contains(output, "Would push branch") {
-		t.Fatalf("skip-ci should skip push/create in dry-run output, got %q", output)
-	}
-	if errOut.Len() > 0 {
-		t.Fatalf("expected no stderr warning for --skip-ci, got %q", errOut.String())
+		t.Fatalf("no-ci should skip push/create in dry-run output, got %q", output)
 	}
 }
 
-func TestRunAuto_DryRunSkipPRAliasWarnsAndSkipsCI(t *testing.T) {
+func TestRunAuto_DryRunNoReviewSkipsReviewGate(t *testing.T) {
 	chdirTemp(t)
 
 	reportPath := filepath.Join(".", "report.md")
@@ -688,28 +688,65 @@ func TestRunAuto_DryRunSkipPRAliasWarnsAndSkipsCI(t *testing.T) {
 	if err := cmd.Flags().Set("report", reportPath); err != nil {
 		t.Fatalf("set report flag: %v", err)
 	}
-	if err := cmd.Flags().Set("skip-pr", "true"); err != nil {
-		t.Fatalf("set skip-pr flag: %v", err)
+	if err := cmd.Flags().Set("no-review", "true"); err != nil {
+		t.Fatalf("set no-review flag: %v", err)
 	}
-
-	var errOut bytes.Buffer
-	cmd.SetErr(&errOut)
 
 	if err := runAuto(cmd, nil); err != nil {
 		t.Fatalf("runAuto returned error: %v", err)
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "Skipping CI step (--skip-ci)") {
-		t.Fatalf("expected skip-ci message in output, got %q", output)
+	if !strings.Contains(output, "Step: review") {
+		t.Fatalf("expected review step in output, got %q", output)
 	}
-	if strings.Contains(output, "Would push branch") {
-		t.Fatalf("skip-pr alias should skip push/create in dry-run output, got %q", output)
+	if !strings.Contains(output, "Skipping review step") {
+		t.Fatalf("expected review skip message in output, got %q", output)
+	}
+	if !strings.Contains(output, "Step: ci") {
+		t.Fatalf("expected CI step after skipped review, got %q", output)
+	}
+}
+
+func TestRunAuto_DryRunUsesConfigModeFast(t *testing.T) {
+	chdirTemp(t)
+
+	if err := os.MkdirAll(template.HalDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	cfg := `auto:
+  mode: fast
+`
+	if err := os.WriteFile(filepath.Join(template.HalDir, template.ConfigFile), []byte(cfg), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 
-	warning := errOut.String()
-	if !strings.Contains(warning, "--skip-pr is deprecated; use --skip-ci") {
-		t.Fatalf("expected skip-pr deprecation warning, got %q", warning)
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Mode: fast") {
+		t.Fatalf("expected fast mode in output, got %q", output)
+	}
+	if !strings.Contains(output, "Skipping review step") {
+		t.Fatalf("expected review skip in output, got %q", output)
+	}
+	if !strings.Contains(output, "Skipping CI step (--no-ci)") {
+		t.Fatalf("expected CI skip in output, got %q", output)
 	}
 }
 

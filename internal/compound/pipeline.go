@@ -233,12 +233,15 @@ func (p *Pipeline) recordCIState(ci *CIState) {
 
 // RunOptions contains options for the pipeline Run method.
 type RunOptions struct {
-	Resume         bool   // Continue from last saved state
-	DryRun         bool   // Show what would happen without executing
-	SkipCI         bool   // Skip CI step (push + draft PR) at the end
-	ReportPath     string // Specific report file to use (skips find latest)
-	SourceMarkdown string // Positional markdown path (skips analyze/spec)
-	BaseBranch     string // Base branch for creating work branch / PR target
+	Resume            bool   // Continue from last saved state
+	DryRun            bool   // Show what would happen without executing
+	SkipCI            bool   // Skip CI step (push + draft PR) at the end
+	SkipReview        bool   // Skip review gate before CI
+	ReviewCleanStreak int    // Consecutive clean review cycles required to pass
+	ReviewMaxCycles   int    // Maximum review cycles before failing the gate
+	ReportPath        string // Specific report file to use (skips find latest)
+	SourceMarkdown    string // Positional markdown path (skips analyze/spec)
+	BaseBranch        string // Base branch for creating work branch / PR target
 }
 
 // Run executes the compound pipeline from the current state or from the beginning.
@@ -304,10 +307,10 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			err = p.runLoopStep(ctx, state, opts)
 		case StepReview:
 			err = p.runReviewStep(ctx, state, opts)
-		case StepReport:
-			err = p.runReportStep(ctx, state, opts)
 		case StepCI:
 			err = p.runPRStep(ctx, state, opts)
+		case StepReport:
+			err = p.runReportStep(ctx, state, opts)
 		case StepArchive:
 			err = p.runArchiveStep(ctx, state, opts)
 		case StepDone:
@@ -853,7 +856,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 	return nil
 }
 
-// runReviewStep executes the review loop gate after task completion.
+// runReviewStep executes bounded review cycles before CI.
 func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: review\n")
 
@@ -861,14 +864,37 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 		state.Review = &ReviewState{}
 	}
 
+	maxCycles := opts.ReviewMaxCycles
+	if maxCycles <= 0 {
+		maxCycles = defaultReviewIterations
+	}
+
+	cleanStreakRequired := opts.ReviewCleanStreak
+	if cleanStreakRequired <= 0 {
+		cleanStreakRequired = 1
+	}
+
+	if opts.SkipReview {
+		state.Review.Status = "skipped"
+		p.display.ShowInfo("   Skipping review step (review gate disabled by policy)\n")
+		state.Step = StepCI
+		if opts.DryRun {
+			return nil
+		}
+		if err := p.saveState(state); err != nil {
+			return fmt.Errorf("failed to save state: %w", err)
+		}
+		return nil
+	}
+
 	if opts.DryRun {
 		if strings.TrimSpace(state.BaseBranch) != "" {
-			p.display.ShowInfo("   [dry-run] Would run review loop against base branch %s\n", state.BaseBranch)
+			p.display.ShowInfo("   [dry-run] Would run up to %d review cycles against base branch %s (clean streak required: %d)\n", maxCycles, state.BaseBranch, cleanStreakRequired)
 		} else {
-			p.display.ShowInfo("   [dry-run] Would run review loop against configured base branch\n")
+			p.display.ShowInfo("   [dry-run] Would run up to %d review cycles (clean streak required: %d)\n", maxCycles, cleanStreakRequired)
 		}
 		state.Review.Status = "passed"
-		state.Step = StepReport
+		state.Step = StepCI
 		return nil
 	}
 
@@ -878,35 +904,56 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 		return fmt.Errorf("review step requires baseBranch in state")
 	}
 
-	p.display.ShowInfo("   Running review loop against %s...\n", baseBranch)
-	result, err := runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, defaultReviewIterations)
-	if err != nil {
-		state.Review.Status = "failed"
-		return fmt.Errorf("failed to run review loop: %w", err)
-	}
-	if result == nil {
-		state.Review.Status = "failed"
-		return fmt.Errorf("failed to run review loop: no result returned")
+	cleanStreak := 0
+	lastValidIssues := 0
+	for cycle := 1; cycle <= maxCycles; cycle++ {
+		p.display.ShowInfo("   Running review cycle %d/%d against %s...\n", cycle, maxCycles, baseBranch)
+		result, err := runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, 1)
+		if err != nil {
+			state.Review.Status = "failed"
+			return fmt.Errorf("failed to run review cycle %d: %w", cycle, err)
+		}
+		if result == nil || len(result.Iterations) == 0 {
+			state.Review.Status = "failed"
+			return fmt.Errorf("failed to run review cycle %d: no iteration result returned", cycle)
+		}
+
+		iteration := result.Iterations[len(result.Iterations)-1]
+		lastValidIssues = iteration.ValidIssues
+
+		if iteration.ValidIssues == 0 {
+			cleanStreak++
+			p.display.ShowInfo("   Review cycle %d clean (%d/%d required)\n", cycle, cleanStreak, cleanStreakRequired)
+			if cleanStreak >= cleanStreakRequired {
+				state.Review.Status = "passed"
+				p.display.ShowInfo("   Review gate passed after %d cycle(s)\n", cycle)
+				state.Step = StepCI
+				if err := p.saveState(state); err != nil {
+					return fmt.Errorf("failed to save state: %w", err)
+				}
+				return nil
+			}
+			continue
+		}
+
+		cleanStreak = 0
+		p.display.ShowInfo("   Review cycle %d found %d valid issue(s); clean streak reset\n", cycle, iteration.ValidIssues)
 	}
 
-	state.Review.Status = "passed"
-	p.display.ShowInfo("   Review loop complete: %d issues found, %d fixes applied\n", result.Totals.IssuesFound, result.Totals.FixesApplied)
-
-	state.Step = StepReport
-	if err := p.saveState(state); err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
+	state.Review.Status = "failed"
+	if saveErr := p.saveState(state); saveErr != nil {
+		return fmt.Errorf("review gate blocked: clean streak %d/%d not reached within %d cycle(s); rerun `hal auto --resume` to continue review fixes (last valid issues: %d) (also failed to save state: %v)", cleanStreak, cleanStreakRequired, maxCycles, lastValidIssues, saveErr)
 	}
-
-	return nil
+	return fmt.Errorf("review gate blocked: clean streak %d/%d not reached within %d cycle(s); rerun `hal auto --resume` to continue review fixes (last valid issues: %d)", cleanStreak, cleanStreakRequired, maxCycles, lastValidIssues)
 }
 
-// runReportStep generates a report artifact after review completes.
+// runReportStep generates a report artifact after CI passes/skips.
 func (p *Pipeline) runReportStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: report\n")
 
 	if opts.DryRun {
 		p.display.ShowInfo("   [dry-run] Would generate a report artifact\n")
-		state.Step = StepCI
+		state.Step = StepArchive
 		return nil
 	}
 
@@ -918,13 +965,13 @@ func (p *Pipeline) runReportStep(ctx context.Context, state *PipelineState, opts
 		return fmt.Errorf("failed to generate report: %w", err)
 	}
 	if result == nil || strings.TrimSpace(result.ReportPath) == "" {
-		return fmt.Errorf("report gate failed: review did not produce a report path")
+		return fmt.Errorf("report gate failed: report generation did not produce a report path")
 	}
 
 	state.ReportPath = strings.TrimSpace(result.ReportPath)
 	p.display.ShowInfo("   Report: %s\n", filepath.Base(state.ReportPath))
 
-	state.Step = StepCI
+	state.Step = StepArchive
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
@@ -946,15 +993,14 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	if opts.SkipCI {
 		state.CI = &CIState{Status: "skipped", Reason: "skip_ci_flag"}
 		p.recordCIState(state.CI)
-		p.display.ShowInfo("   Skipping CI step (--skip-ci)\n")
+		p.display.ShowInfo("   Skipping CI step (--no-ci)\n")
+		state.Step = StepReport
 		if opts.DryRun {
-			state.Step = StepDone
 			return nil
 		}
-		if err := p.clearState(); err != nil {
-			return fmt.Errorf("failed to clear state: %w", err)
+		if err := p.saveState(state); err != nil {
+			return fmt.Errorf("failed to save state: %w", err)
 		}
-		state.Step = StepDone
 		return nil
 	}
 
@@ -968,19 +1014,19 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		} else {
 			p.display.ShowInfo("   [dry-run] Would push branch %s, create draft PR, wait for CI, and auto-fix if failing\n", state.BranchName)
 		}
-		state.Step = StepArchive
+		state.Step = StepReport
 		return nil
 	}
 
 	if err := checkCIDependencies(); err != nil {
-		state.CI = &CIState{Status: "skipped", Reason: "ci_unavailable"}
+		state.CI = &CIState{Status: "failed", Reason: "ci_unavailable"}
 		p.recordCIState(state.CI)
-		p.display.ShowInfo("   Skipping CI step: dependencies unavailable (%v)\n", err)
-		state.Step = StepArchive
+		p.display.ShowInfo("   CI dependencies unavailable (%v); stopping at CI step\n", err)
+		state.Step = StepCI
 		if saveErr := p.saveState(state); saveErr != nil {
-			return fmt.Errorf("failed to save state: %w", saveErr)
+			return fmt.Errorf("ci gate blocked: CI dependencies unavailable (%v); install required tooling and rerun with --resume, or rerun with --no-ci (also failed to save state: %v)", err, saveErr)
 		}
-		return nil
+		return fmt.Errorf("ci gate blocked: CI dependencies unavailable (%v); install required tooling and rerun with --resume, or rerun with --no-ci", err)
 	}
 
 	currentBranch := p.currentBranch
@@ -1030,6 +1076,9 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	if err != nil {
 		state.CI = &CIState{Status: "failed"}
 		p.recordCIState(state.CI)
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to create PR: %w (also failed to save state: %v)", err, saveErr)
+		}
 		return fmt.Errorf("failed to create PR: %w", err)
 	}
 
@@ -1051,27 +1100,30 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		state.CI.Status = "failed"
 		state.CI.Reason = "wait_error"
 		p.recordCIState(state.CI)
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to wait for CI checks: %w (also failed to save state: %v)", err, saveErr)
+		}
 		return fmt.Errorf("failed to wait for CI checks: %w", err)
 	}
 
 	if !status.ChecksDiscovered {
-		p.display.ShowInfo("   No CI checks discovered; advancing to archive\n")
-		state.CI.Status = "passed"
-		state.CI.Reason = "no_checks"
+		p.display.ShowInfo("   No CI checks discovered; stopping at CI step\n")
+		state.CI.Status = ci.StatusPending
+		state.CI.Reason = ci.WaitTerminalReasonNoChecksDetected
 		p.recordCIState(state.CI)
-		state.Step = StepArchive
+		state.Step = StepCI
 		if saveErr := p.saveState(state); saveErr != nil {
-			return fmt.Errorf("failed to save state: %w", saveErr)
+			return fmt.Errorf("ci gate blocked: no CI checks detected yet; wait for checks to start and rerun with --resume, or rerun with --no-ci (also failed to save state: %v)", saveErr)
 		}
-		return nil
+		return fmt.Errorf("ci gate blocked: no CI checks detected yet; wait for checks to start and rerun with --resume, or rerun with --no-ci")
 	}
 
-	// 3. If passing, we're done.
+	// 3. If passing, advance to report.
 	if status.Status == ci.StatusPassing {
 		p.display.ShowInfo("   CI checks passing\n")
 		state.CI.Status = "passed"
 		p.recordCIState(state.CI)
-		state.Step = StepArchive
+		state.Step = StepReport
 		if saveErr := p.saveState(state); saveErr != nil {
 			return fmt.Errorf("failed to save state: %w", saveErr)
 		}
@@ -1122,11 +1174,22 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 				p.display.ShowInfo("   CI checks passing after fix attempt %d\n", attempt)
 				state.CI.Status = "passed"
 				p.recordCIState(state.CI)
-				state.Step = StepArchive
+				state.Step = StepReport
 				if saveErr := p.saveState(state); saveErr != nil {
 					return fmt.Errorf("failed to save state: %w", saveErr)
 				}
 				return nil
+			}
+
+			if verified.Status != ci.StatusFailing {
+				p.display.ShowInfo("   CI status is %s after fix attempt %d; stopping at CI step\n", verified.Status, attempt)
+				state.CI.Status = verified.Status
+				p.recordCIState(state.CI)
+				state.Step = StepCI
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("ci gate blocked: CI status is %s; wait for checks to complete and rerun with --resume, or rerun with --no-ci (also failed to save state: %v)", verified.Status, saveErr)
+				}
+				return fmt.Errorf("ci gate blocked: CI status is %s; wait for checks to complete and rerun with --resume, or rerun with --no-ci", verified.Status)
 			}
 
 			// Still failing — update status for next iteration.
@@ -1134,26 +1197,26 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		}
 
 		// Exhausted all fix attempts.
-		p.display.ShowInfo("   CI still failing after %d fix attempt(s); advancing to archive\n", maxCIFixAttempts)
+		p.display.ShowInfo("   CI still failing after %d fix attempt(s); stopping at CI step\n", maxCIFixAttempts)
 		state.CI.Status = "fix_exhausted"
 		p.recordCIState(state.CI)
-		state.Step = StepArchive
+		state.Step = StepCI
 		if saveErr := p.saveState(state); saveErr != nil {
-			return fmt.Errorf("failed to save state: %w", saveErr)
+			return fmt.Errorf("ci gate blocked: CI still failing after %d fix attempt(s); resolve failures and rerun with --resume, or rerun with --no-ci (also failed to save state: %v)", maxCIFixAttempts, saveErr)
 		}
-		return nil
+		return fmt.Errorf("ci gate blocked: CI still failing after %d fix attempt(s); resolve failures and rerun with --resume, or rerun with --no-ci", maxCIFixAttempts)
 	}
 
-	// Pending/timeout/unknown — don't block the pipeline.
-	p.display.ShowInfo("   CI status is %s; advancing to archive\n", status.Status)
+	// Pending/timeout/unknown — keep pipeline at CI until checks reach a terminal passing state.
+	p.display.ShowInfo("   CI status is %s; stopping at CI step\n", status.Status)
 	state.CI.Status = status.Status
 	p.recordCIState(state.CI)
-	state.Step = StepArchive
+	state.Step = StepCI
 	if err := p.saveState(state); err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
+		return fmt.Errorf("ci gate blocked: CI status is %s; wait for checks to complete and rerun with --resume, or rerun with --no-ci (also failed to save state: %v)", status.Status, err)
 	}
 
-	return nil
+	return fmt.Errorf("ci gate blocked: CI status is %s; wait for checks to complete and rerun with --resume, or rerun with --no-ci", status.Status)
 }
 
 // runArchiveStep archives feature state while preserving the latest generated report.

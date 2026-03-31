@@ -87,9 +87,11 @@ The auto pipeline creates a continuous development cycle:
 
 2. **`hal auto`** — Runs one deterministic pipeline with source priority:
    - source priority: newest `.hal/prd-*.md` (when present) → report discovery
-   - **Analyze** → **Spec** → **Branch** → **Convert** → **Validate** → **Run** → **Review** → **Report** → **CI** → **Archive**
+   - **Analyze** → **Spec** → **Branch** → **Convert** → **Validate** → **Run** → **Review** → **CI** → **Report** → **Archive**
    - `convert` writes canonical runtime PRD state to `.hal/prd.json`
    - downstream gates consume the same `.hal/prd.json` runtime source
+   - policy presets: `--mode fast|balanced|strict` (default from `.hal/config.yaml`)
+   - per-run overrides: `--no-review`, `--no-ci`, `--review-streak`, `--review-max`
    - `hal auto <prd-path>` skips analyze/spec and starts from **Branch**
 
 3. **Repeat** — After the PR merges, run `hal report` again to generate the next report.
@@ -500,6 +502,11 @@ auto:
   reportsDir: .hal/reports
   branchPrefix: compound/
   maxIterations: 25
+  mode: balanced            # fast | balanced | strict
+  ciEnabled: true
+  reviewEnabled: true
+  reviewCleanStreak: 1
+  reviewMaxIterations: 10
 
 engines:
   codex:

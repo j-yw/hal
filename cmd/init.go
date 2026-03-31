@@ -11,10 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	ui "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // migrateResult indicates the outcome of a config directory migration.
@@ -233,6 +235,10 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 			return fmt.Errorf("failed to write %s: %w", filename, err)
 		}
 		created = append(created, filename)
+	}
+
+	if err := migrateConfigYAML(configDir); err != nil {
+		return fmt.Errorf("failed to migrate config.yaml: %w", err)
 	}
 
 	// Create .gitkeep in archive only if it doesn't exist
@@ -492,6 +498,77 @@ func migrateTemplates(configDir string) error {
 		return err
 	}
 	return migrateSkillFiles(filepath.Join(configDir, "skills"), migrateBrowserVerificationContent)
+}
+
+var autoPolicyConfigKeys = []string{"mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+
+// migrateConfigYAML backfills missing auto policy keys in existing .hal/config.yaml
+// without overwriting user-defined values.
+func migrateConfigYAML(configDir string) error {
+	configPath := filepath.Join(configDir, template.ConfigFile)
+
+	data, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		// Leave invalid YAML untouched so doctor can surface an actionable error.
+		return nil
+	}
+	if raw == nil {
+		return nil
+	}
+
+	autoRaw, ok := raw["auto"]
+	if !ok {
+		return nil
+	}
+	autoMap, ok := autoRaw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	defaults := compound.DefaultAutoConfig()
+	defaultValues := map[string]interface{}{
+		"mode":                defaults.Mode,
+		"ciEnabled":           defaults.CIEnabled,
+		"reviewEnabled":       defaults.ReviewEnabled,
+		"reviewCleanStreak":   defaults.ReviewCleanStreak,
+		"reviewMaxIterations": defaults.ReviewMaxIterations,
+	}
+
+	changed := false
+	for _, key := range autoPolicyConfigKeys {
+		if _, exists := autoMap[key]; exists {
+			continue
+		}
+		autoMap[key] = defaultValues[key]
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+
+	raw["auto"] = autoMap
+	updated, err := yaml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+
+	mode := os.FileMode(0644)
+	if info, statErr := os.Stat(configPath); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, updated, mode); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type refreshSummary struct {

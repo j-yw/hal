@@ -18,14 +18,17 @@ import (
 )
 
 var (
-	autoDryRunFlag bool
-	autoResumeFlag bool
-	autoSkipCIFlag bool
-	autoSkipPRFlag bool
-	autoReportFlag string
-	autoEngineFlag string
-	autoBaseFlag   string
-	autoJSONFlag   bool
+	autoDryRunFlag       bool
+	autoResumeFlag       bool
+	autoNoCIFlag         bool
+	autoNoReviewFlag     bool
+	autoModeFlag         string
+	autoReviewStreakFlag int
+	autoReviewMaxFlag    int
+	autoReportFlag       string
+	autoEngineFlag       string
+	autoBaseFlag         string
+	autoJSONFlag         bool
 )
 
 type autoEntryMode string
@@ -36,6 +39,14 @@ const (
 )
 
 type autoStepStatus string
+
+type autoPolicy struct {
+	mode              string
+	skipCI            bool
+	skipReview        bool
+	reviewCleanStreak int
+	reviewMaxCycles   int
+}
 
 const (
 	autoStepStatusCompleted autoStepStatus = "completed"
@@ -82,8 +93,8 @@ type AutoSteps struct {
 	Validate AutoStep `json:"validate"`
 	Run      AutoStep `json:"run"`
 	Review   AutoStep `json:"review"`
-	Report   AutoStep `json:"report"`
 	CI       AutoStep `json:"ci"`
+	Report   AutoStep `json:"report"`
 	Archive  AutoStep `json:"archive"`
 }
 
@@ -113,8 +124,8 @@ var autoStepOrder = []string{
 	compound.StepValidate,
 	compound.StepRun,
 	compound.StepReview,
-	compound.StepReport,
 	compound.StepCI,
+	compound.StepReport,
 	compound.StepArchive,
 }
 
@@ -126,10 +137,10 @@ var autoCmd = &cobra.Command{
 
 Canonical runtime PRD:
 - convert writes .hal/prd.json
-- validate, run, review, report, ci, and archive consume that runtime state
+- validate, run, review, ci, report, and archive consume that runtime state
 
 Pipeline order:
-  analyze -> spec -> branch -> convert -> validate -> run -> review -> report -> ci -> archive
+  analyze -> spec -> branch -> convert -> validate -> run -> review -> ci -> report -> archive
 
 Entry behavior:
 - hal auto <prd-path>: skips analyze/spec and starts at branch
@@ -147,17 +158,22 @@ Examples:
   hal auto                           # Prefer newest .hal/prd-*.md, else latest report
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
   hal auto --report report.md        # Force report-driven flow (skip markdown auto-discovery)
+  hal auto --mode strict             # Strict gate policy (review+ci, 3 clean review cycles)
+  hal auto --mode fast               # Fast policy (skip review and ci)
+  hal auto --no-review               # Disable review gate for this run
+  hal auto --no-ci                   # Disable CI gate for this run
+  hal auto --review-streak 3         # Require 3 consecutive clean review cycles
+  hal auto --review-max 15           # Cap review cycles for this run
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
-  hal auto --skip-ci                 # Skip CI step at end
-  hal auto --base develop            # Use develop as the base branch
   hal auto --json                    # Machine-readable result output`,
 	Example: `  hal auto
   hal auto .hal/prd-feature.md --dry-run
   hal auto --json
   hal auto --report .hal/reports/report.md
-  hal auto --resume
-  hal auto --skip-ci
+  hal auto --mode strict
+  hal auto --no-ci
+  hal auto --review-streak 3 --review-max 15
   hal auto --engine codex --base develop`,
 	RunE: runAuto,
 }
@@ -165,8 +181,11 @@ Examples:
 func init() {
 	autoCmd.Flags().BoolVar(&autoDryRunFlag, "dry-run", false, "Show steps without executing")
 	autoCmd.Flags().BoolVar(&autoResumeFlag, "resume", false, "Continue from last saved state")
-	autoCmd.Flags().BoolVar(&autoSkipCIFlag, "skip-ci", false, "Skip CI step at end")
-	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "[deprecated] Alias for --skip-ci")
+	autoCmd.Flags().BoolVar(&autoNoCIFlag, "no-ci", false, "Disable CI gate for this run")
+	autoCmd.Flags().BoolVar(&autoNoReviewFlag, "no-review", false, "Disable review gate for this run")
+	autoCmd.Flags().StringVarP(&autoModeFlag, "mode", "m", "", "Policy preset: fast, balanced, strict (default from config)")
+	autoCmd.Flags().IntVar(&autoReviewStreakFlag, "review-streak", 0, "Consecutive clean review cycles required (default from mode/config)")
+	autoCmd.Flags().IntVar(&autoReviewMaxFlag, "review-max", 0, "Maximum review cycles before failing (default from mode/config)")
 	autoCmd.Flags().StringVar(&autoReportFlag, "report", "", "Specific report file (overrides markdown auto-discovery, skips find latest)")
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
@@ -183,12 +202,19 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	dryRun := autoDryRunFlag
 	resume := autoResumeFlag
-	skipCI := autoSkipCIFlag
-	skipPRAlias := autoSkipPRFlag
+	noCI := autoNoCIFlag
+	noReview := autoNoReviewFlag
+	mode := autoModeFlag
+	reviewStreak := autoReviewStreakFlag
+	reviewMax := autoReviewMaxFlag
 	reportPath := autoReportFlag
 	engineName := autoEngineFlag
 	baseBranch := autoBaseFlag
 	jsonMode := autoJSONFlag
+
+	modeChanged := false
+	reviewStreakChanged := false
+	reviewMaxChanged := false
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -211,19 +237,43 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			}
 			resume = value
 		}
-		if cmd.Flags().Lookup("skip-ci") != nil {
-			value, err := cmd.Flags().GetBool("skip-ci")
+		if cmd.Flags().Lookup("no-ci") != nil {
+			value, err := cmd.Flags().GetBool("no-ci")
 			if err != nil {
 				return err
 			}
-			skipCI = value
+			noCI = value
 		}
-		if cmd.Flags().Lookup("skip-pr") != nil {
-			value, err := cmd.Flags().GetBool("skip-pr")
+		if cmd.Flags().Lookup("no-review") != nil {
+			value, err := cmd.Flags().GetBool("no-review")
 			if err != nil {
 				return err
 			}
-			skipPRAlias = value
+			noReview = value
+		}
+		if cmd.Flags().Lookup("mode") != nil {
+			value, err := cmd.Flags().GetString("mode")
+			if err != nil {
+				return err
+			}
+			mode = value
+			modeChanged = cmd.Flags().Changed("mode")
+		}
+		if cmd.Flags().Lookup("review-streak") != nil {
+			value, err := cmd.Flags().GetInt("review-streak")
+			if err != nil {
+				return err
+			}
+			reviewStreak = value
+			reviewStreakChanged = cmd.Flags().Changed("review-streak")
+		}
+		if cmd.Flags().Lookup("review-max") != nil {
+			value, err := cmd.Flags().GetInt("review-max")
+			if err != nil {
+				return err
+			}
+			reviewMax = value
+			reviewMaxChanged = cmd.Flags().Changed("review-max")
 		}
 		if cmd.Flags().Lookup("report") != nil {
 			value, err := cmd.Flags().GetString("report")
@@ -258,11 +308,6 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	sourceMarkdown := ""
 	if len(args) > 0 {
 		sourceMarkdown = strings.TrimSpace(args[0])
-	}
-
-	if skipPRAlias {
-		skipCI = true
-		warnDeprecated(errOut, "--skip-pr is deprecated; use --skip-ci")
 	}
 
 	if resume {
@@ -312,6 +357,24 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	policy, err := resolveAutoPolicy(config, autoPolicyInputs{
+		mode:                mode,
+		modeChanged:         modeChanged,
+		noCI:                noCI,
+		noReview:            noReview,
+		reviewStreak:        reviewStreak,
+		reviewStreakChanged: reviewStreakChanged,
+		reviewMax:           reviewMax,
+		reviewMaxChanged:    reviewMaxChanged,
+	})
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, dir)
 	if err != nil {
 		if jsonMode {
@@ -342,6 +405,15 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	// Show command header in human-readable mode only.
 	if !jsonMode {
 		display.ShowCommandHeader("Auto", "compound pipeline", buildHeaderCtx(resolvedEngine))
+		display.ShowInfo("   Mode: %s\n", policy.mode)
+		if policy.skipReview {
+			display.ShowInfo("   Review gate: disabled\n")
+		} else {
+			display.ShowInfo("   Review gate: clean streak %d, max cycles %d\n", policy.reviewCleanStreak, policy.reviewMaxCycles)
+		}
+		if policy.skipCI {
+			display.ShowInfo("   CI gate: disabled\n")
+		}
 		if autoDiscoveredSource {
 			display.ShowInfo("   Source markdown: %s (newest discovered)\n", sourceMarkdown)
 		}
@@ -387,12 +459,15 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	// Run options
 	opts := compound.RunOptions{
-		Resume:         resume,
-		DryRun:         dryRun,
-		SkipCI:         skipCI,
-		ReportPath:     reportPath,
-		SourceMarkdown: sourceMarkdown,
-		BaseBranch:     baseBranch,
+		Resume:            resume,
+		DryRun:            dryRun,
+		SkipCI:            policy.skipCI,
+		SkipReview:        policy.skipReview,
+		ReviewCleanStreak: policy.reviewCleanStreak,
+		ReviewMaxCycles:   policy.reviewMaxCycles,
+		ReportPath:        reportPath,
+		SourceMarkdown:    sourceMarkdown,
+		BaseBranch:        baseBranch,
 	}
 
 	// Run the pipeline
@@ -419,7 +494,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		if autoBranch != "" {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
-		jr := autoSuccessResult(entryMode, resume, skipCI, pipeline.LastCIState(), summary, elapsed)
+		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), summary, elapsed)
 		return outputAutoJSON(out, jr)
 	}
 
@@ -449,18 +524,19 @@ func outputAutoJSON(out io.Writer, jr AutoResult) error {
 	return nil
 }
 
-func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, ciState *compound.CIState, summary string, duration time.Duration) AutoResult {
+func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, summary string, duration time.Duration) AutoResult {
+	steps := autoStepsForSuccess(entryMode, skipCI, skipReview, ciState)
 	jr := AutoResult{
 		ContractVersion: 2,
-		OK:              true,
+		OK:              autoStepsSucceeded(steps),
 		EntryMode:       string(entryMode),
 		Resumed:         resumed,
-		Steps:           autoStepsForSuccess(entryMode, skipCI, ciState),
+		Steps:           steps,
 		Summary:         summary,
 		NextAction: &AutoNextAction{
 			ID:          "run_report",
-			Command:     "hal report",
-			Description: "Generate a report for the completed auto pipeline work.",
+			Command:     "hal continue",
+			Description: "Check workflow status and the next recommended command.",
 		},
 	}
 	if duration > 0 {
@@ -584,6 +660,86 @@ func warnResumeInputIgnored(errOut io.Writer, input string) {
 	fmt.Fprintf(errOut, "warning: --resume ignores %s; using saved state\n", input)
 }
 
+type autoPolicyInputs struct {
+	mode                string
+	modeChanged         bool
+	noCI                bool
+	noReview            bool
+	reviewStreak        int
+	reviewStreakChanged bool
+	reviewMax           int
+	reviewMaxChanged    bool
+}
+
+func resolveAutoPolicy(config *compound.AutoConfig, in autoPolicyInputs) (autoPolicy, error) {
+	if config == nil {
+		return autoPolicy{}, fmt.Errorf("auto config is required")
+	}
+
+	policy := autoPolicy{
+		mode:              config.Mode,
+		skipCI:            !config.CIEnabled,
+		skipReview:        !config.ReviewEnabled,
+		reviewCleanStreak: config.ReviewCleanStreak,
+		reviewMaxCycles:   config.ReviewMaxIterations,
+	}
+
+	if in.modeChanged {
+		settings, err := compound.ResolveAutoModeSettings(in.mode)
+		if err != nil {
+			return autoPolicy{}, err
+		}
+		policy.mode = settings.Mode
+		policy.skipCI = !settings.CIEnabled
+		policy.skipReview = !settings.ReviewEnabled
+		policy.reviewCleanStreak = settings.ReviewCleanStreak
+		policy.reviewMaxCycles = settings.ReviewMaxIterations
+	}
+
+	if in.noReview && (in.reviewStreakChanged || in.reviewMaxChanged) {
+		return autoPolicy{}, fmt.Errorf("--no-review cannot be combined with --review-streak or --review-max")
+	}
+
+	if in.reviewStreakChanged {
+		if in.reviewStreak <= 0 {
+			return autoPolicy{}, fmt.Errorf("--review-streak must be greater than 0")
+		}
+		policy.reviewCleanStreak = in.reviewStreak
+		policy.skipReview = false
+	}
+	if in.reviewMaxChanged {
+		if in.reviewMax <= 0 {
+			return autoPolicy{}, fmt.Errorf("--review-max must be greater than 0")
+		}
+		policy.reviewMaxCycles = in.reviewMax
+		policy.skipReview = false
+	}
+
+	if in.noReview {
+		policy.skipReview = true
+	}
+
+	if in.noCI {
+		policy.skipCI = true
+	}
+
+	if policy.reviewCleanStreak <= 0 {
+		return autoPolicy{}, fmt.Errorf("auto.reviewCleanStreak must be greater than 0")
+	}
+	if policy.reviewMaxCycles <= 0 {
+		return autoPolicy{}, fmt.Errorf("auto.reviewMaxIterations must be greater than 0")
+	}
+	if !policy.skipReview && policy.reviewCleanStreak > policy.reviewMaxCycles {
+		return autoPolicy{}, fmt.Errorf("review clean streak (%d) cannot exceed review max cycles (%d)", policy.reviewCleanStreak, policy.reviewMaxCycles)
+	}
+
+	if policy.mode == "" {
+		policy.mode = compound.AutoModeBalanced
+	}
+
+	return policy, nil
+}
+
 func newPendingAutoSteps() AutoSteps {
 	return AutoSteps{
 		Analyze:  AutoStep{Status: autoStepStatusPending},
@@ -593,8 +749,8 @@ func newPendingAutoSteps() AutoSteps {
 		Validate: AutoStep{Status: autoStepStatusPending},
 		Run:      AutoStep{Status: autoStepStatusPending},
 		Review:   AutoStep{Status: autoStepStatusPending},
-		Report:   AutoStep{Status: autoStepStatusPending},
 		CI:       AutoStep{Status: autoStepStatusPending},
+		Report:   AutoStep{Status: autoStepStatusPending},
 		Archive:  AutoStep{Status: autoStepStatusPending},
 	}
 }
@@ -610,7 +766,7 @@ func newAutoSteps(entryMode autoEntryMode) AutoSteps {
 	return steps
 }
 
-func autoStepsForSuccess(entryMode autoEntryMode, skipCI bool, ciState *compound.CIState) AutoSteps {
+func autoStepsForSuccess(entryMode autoEntryMode, skipCI bool, skipReview bool, ciState *compound.CIState) AutoSteps {
 	steps := newAutoSteps(entryMode)
 
 	for _, stepName := range autoStepOrder {
@@ -624,20 +780,52 @@ func autoStepsForSuccess(entryMode autoEntryMode, skipCI bool, ciState *compound
 		step.Status = autoStepStatusCompleted
 	}
 
-	if ciSkipReason := autoCISkipReason(skipCI, ciState); ciSkipReason != "" {
-		if ci := steps.step(compound.StepCI); ci != nil {
+	if review := steps.step(compound.StepReview); review != nil && skipReview {
+		review.Status = autoStepStatusSkipped
+		review.Reason = "skip_review_flag"
+	}
+
+	if ci := steps.step(compound.StepCI); ci != nil {
+		if ciSkipReason := autoCISkipReason(skipCI, ciState); ciSkipReason != "" {
 			ci.Status = autoStepStatusSkipped
 			ci.Reason = ciSkipReason
-		}
-		if ciSkipReason == "skip_ci_flag" {
-			if archive := steps.step(compound.StepArchive); archive != nil {
-				archive.Status = autoStepStatusSkipped
-				archive.Reason = ciSkipReason
-			}
+		} else {
+			applyAutoSuccessCIState(ci, ciState)
 		}
 	}
 
 	return steps
+}
+
+func autoStepsSucceeded(steps AutoSteps) bool {
+	for _, stepName := range autoStepOrder {
+		step := steps.step(stepName)
+		if step == nil {
+			continue
+		}
+		if step.Status != autoStepStatusCompleted && step.Status != autoStepStatusSkipped {
+			return false
+		}
+	}
+	return true
+}
+
+func applyAutoSuccessCIState(ci *AutoStep, ciState *compound.CIState) {
+	if ci == nil || ciState == nil {
+		return
+	}
+
+	status := strings.TrimSpace(ciState.Status)
+	if status == "" || status == "passed" {
+		return
+	}
+
+	ci.Status = autoStepStatusFailed
+	reason := strings.TrimSpace(ciState.Reason)
+	if reason == "" {
+		reason = status
+	}
+	ci.Reason = reason
 }
 
 func autoCISkipReason(skipCI bool, ciState *compound.CIState) string {
@@ -760,10 +948,10 @@ func (steps *AutoSteps) step(step string) *AutoStep {
 		return &steps.Run
 	case compound.StepReview:
 		return &steps.Review
-	case compound.StepReport:
-		return &steps.Report
 	case compound.StepCI:
 		return &steps.CI
+	case compound.StepReport:
+		return &steps.Report
 	case compound.StepArchive:
 		return &steps.Archive
 	default:

@@ -23,12 +23,24 @@ func resetAutoFlagsForIntegrationTest() {
 		_ = flag.Value.Set("false")
 		flag.Changed = false
 	}
-	if flag := autoCmd.Flags().Lookup("skip-ci"); flag != nil {
+	if flag := autoCmd.Flags().Lookup("no-ci"); flag != nil {
 		_ = flag.Value.Set("false")
 		flag.Changed = false
 	}
-	if flag := autoCmd.Flags().Lookup("skip-pr"); flag != nil {
+	if flag := autoCmd.Flags().Lookup("no-review"); flag != nil {
 		_ = flag.Value.Set("false")
+		flag.Changed = false
+	}
+	if flag := autoCmd.Flags().Lookup("mode"); flag != nil {
+		_ = flag.Value.Set("")
+		flag.Changed = false
+	}
+	if flag := autoCmd.Flags().Lookup("review-streak"); flag != nil {
+		_ = flag.Value.Set("0")
+		flag.Changed = false
+	}
+	if flag := autoCmd.Flags().Lookup("review-max"); flag != nil {
+		_ = flag.Value.Set("0")
 		flag.Changed = false
 	}
 	if flag := autoCmd.Flags().Lookup("report"); flag != nil {
@@ -50,8 +62,11 @@ func resetAutoFlagsForIntegrationTest() {
 
 	autoDryRunFlag = false
 	autoResumeFlag = false
-	autoSkipCIFlag = false
-	autoSkipPRFlag = false
+	autoNoCIFlag = false
+	autoNoReviewFlag = false
+	autoModeFlag = ""
+	autoReviewStreakFlag = 0
+	autoReviewMaxFlag = 0
 	autoReportFlag = ""
 	autoEngineFlag = "codex"
 	autoBaseFlag = ""
@@ -194,7 +209,7 @@ func TestAutoDryRunWithoutPositionalMarkdownInput(t *testing.T) {
 	}
 }
 
-func TestAutoDryRunSkipPRAliasCompatibility(t *testing.T) {
+func TestAutoDryRunNoCICompatibility(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, "report.md")
 	if err := os.WriteFile(reportPath, []byte("# Integration Report\n"), 0644); err != nil {
@@ -230,23 +245,22 @@ func TestAutoDryRunSkipPRAliasCompatibility(t *testing.T) {
 	var stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"auto", "--dry-run", "--report", filepath.Base(reportPath), "--skip-pr"})
+	root.SetArgs([]string{"auto", "--dry-run", "--report", filepath.Base(reportPath), "--no-ci"})
 
 	if err := root.Execute(); err != nil {
-		t.Fatalf("hal auto --dry-run --skip-pr failed: %v\nstderr: %s\nstdout: %s", err, stderr.String(), stdout.String())
+		t.Fatalf("hal auto --dry-run --no-ci failed: %v\nstderr: %s\nstdout: %s", err, stderr.String(), stdout.String())
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "Skipping CI step (--skip-ci)") {
+	if !strings.Contains(output, "Skipping CI step (--no-ci)") {
 		t.Fatalf("expected CI skip message in output, got %q", output)
 	}
 	if strings.Contains(output, "Would push branch") {
-		t.Fatalf("skip-pr alias should map to skip-ci behavior, got %q", output)
+		t.Fatalf("no-ci should skip push/create behavior, got %q", output)
 	}
 
-	warnings := stderr.String()
-	if !strings.Contains(warnings, "--skip-pr is deprecated; use --skip-ci") {
-		t.Fatalf("expected skip-pr deprecation warning, got %q", warnings)
+	if strings.TrimSpace(stderr.String()) != "" {
+		t.Fatalf("expected no stderr output, got %q", stderr.String())
 	}
 }
 

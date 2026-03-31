@@ -30,7 +30,7 @@ func TestRun_DryRunFollowsSingleStepGraph_ReportDiscoveryEntry(t *testing.T) {
 	}
 
 	gotSteps := extractPipelineStepSequence(out.String())
-	wantSteps := []string{StepAnalyze, StepSpec, StepBranch, StepConvert, StepValidate, StepRun, StepReview, StepReport, StepCI, StepArchive}
+	wantSteps := []string{StepAnalyze, StepSpec, StepBranch, StepConvert, StepValidate, StepRun, StepReview, StepCI, StepReport, StepArchive}
 	if !reflect.DeepEqual(gotSteps, wantSteps) {
 		t.Fatalf("dry-run steps = %v, want %v\noutput:\n%s", gotSteps, wantSteps, out.String())
 	}
@@ -56,7 +56,7 @@ func TestRun_DryRunFollowsSingleStepGraph_MarkdownEntry(t *testing.T) {
 	}
 
 	gotSteps := extractPipelineStepSequence(out.String())
-	wantSteps := []string{StepBranch, StepConvert, StepValidate, StepRun, StepReview, StepReport, StepCI, StepArchive}
+	wantSteps := []string{StepBranch, StepConvert, StepValidate, StepRun, StepReview, StepCI, StepReport, StepArchive}
 	if !reflect.DeepEqual(gotSteps, wantSteps) {
 		t.Fatalf("dry-run steps = %v, want %v\noutput:\n%s", gotSteps, wantSteps, out.String())
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMigrateConfigDir(t *testing.T) {
@@ -333,6 +334,65 @@ func TestRunInit(t *testing.T) {
 		}
 		if strings.Contains(gotPrompt, legacyBranchLine) {
 			t.Fatalf("prompt.md should not keep legacy 'create from main' guidance\ngot: %s", gotPrompt)
+		}
+	})
+
+	t.Run("second run backfills legacy auto policy keys", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("first runInit() error: %v", err)
+		}
+
+		legacyConfig := `engine: codex
+auto:
+  reportsDir: custom/reports
+  branchPrefix: legacy/
+  maxIterations: 12
+`
+		configPath := filepath.Join(dir, ".hal", "config.yaml")
+		if err := os.WriteFile(configPath, []byte(legacyConfig), 0644); err != nil {
+			t.Fatalf("Failed to write legacy config: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("second runInit() error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read config.yaml: %v", err)
+		}
+
+		var raw map[string]interface{}
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("Failed to parse migrated config.yaml: %v", err)
+		}
+
+		autoSection, ok := raw["auto"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("auto section missing or wrong type: %#v", raw["auto"])
+		}
+
+		if got := autoSection["reportsDir"]; got != "custom/reports" {
+			t.Fatalf("auto.reportsDir = %v, want %q", got, "custom/reports")
+		}
+		if got := autoSection["branchPrefix"]; got != "legacy/" {
+			t.Fatalf("auto.branchPrefix = %v, want %q", got, "legacy/")
+		}
+		if got, ok := autoSection["maxIterations"].(int); !ok || got != 12 {
+			t.Fatalf("auto.maxIterations = %#v, want %d", autoSection["maxIterations"], 12)
+		}
+
+		requiredPolicyKeys := []string{"mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+		for _, key := range requiredPolicyKeys {
+			if _, exists := autoSection[key]; !exists {
+				t.Fatalf("expected auto.%s to be backfilled", key)
+			}
 		}
 	})
 
