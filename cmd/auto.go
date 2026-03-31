@@ -821,9 +821,7 @@ func isAutoReportCandidate(name string) bool {
 	if strings.HasPrefix(name, ".") {
 		return false
 	}
-	if !strings.HasSuffix(strings.ToLower(name), ".md") {
-		return false
-	}
+	// Keep review-loop artifacts out of auto-report discovery.
 	return !strings.HasPrefix(name, "review-loop-")
 }
 

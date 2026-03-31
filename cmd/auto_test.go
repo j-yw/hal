@@ -698,6 +698,40 @@ func TestRunAuto_DryRunWithoutInputsUsesReportFirstByDefault(t *testing.T) {
 	}
 }
 
+func TestRunAuto_DryRunWithoutInputsDiscoversNonMarkdownReport(t *testing.T) {
+	chdirTemp(t)
+
+	if err := os.MkdirAll(filepath.Join(template.HalDir, "reports"), 0755); err != nil {
+		t.Fatalf("mkdir reports dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(template.HalDir, "reports", "report.txt"), []byte("priority: fix auto discovery\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "Source markdown:") {
+		t.Fatalf("report-first discovery should not pick markdown when report exists, output=%q", output)
+	}
+	if !strings.Contains(output, "entry: report discovery") || !strings.Contains(output, "convert mode:") || !strings.Contains(output, "granular") {
+		t.Fatalf("expected report entry header with granular mode, got %q", output)
+	}
+	if !strings.Contains(output, "Step: analyze") {
+		t.Fatalf("report-first discovery should run analyze, output=%q", output)
+	}
+	if !strings.Contains(output, "Step: spec") {
+		t.Fatalf("report-first discovery should run spec, output=%q", output)
+	}
+}
+
 func TestRunAuto_DryRunWithoutInputsUsesMarkdownWhenPriorityConfigured(t *testing.T) {
 	chdirTemp(t)
 
