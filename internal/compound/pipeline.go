@@ -3,6 +3,7 @@ package compound
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +28,9 @@ var convertWithEngine = prd.ConvertWithEngine
 
 // validateWithEngine points to prd.ValidateWithEngine and is overridden in tests.
 var validateWithEngine = prd.ValidateWithEngine
+
+// repairValidationWithEngine points to prd.RepairValidationWithEngine and is overridden in tests.
+var repairValidationWithEngine = prd.RepairValidationWithEngine
 
 // runLoopWithConfig points to loop.New(...).Run and is overridden in tests.
 var runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result, error) {
@@ -56,10 +60,15 @@ var fixWithEngine = ci.FixWithEngine
 var createArchiveWithOptions = archive.CreateWithOptions
 
 const (
-	maxValidationAttempts   = 3
-	defaultReviewIterations = 10
-	maxCIFixAttempts        = 3
+	defaultReviewIterations      = 10
+	maxCIFixAttempts             = 3
+	defaultValidationMaxAttempts = 25
 )
+
+// validationRetryDelay spaces validate-loop retries so transient provider/engine
+// failures don't create a tight spin loop that burns tokens and floods logs.
+// It is a var (not const) so tests can set it to 0 and avoid real sleeps.
+var validationRetryDelay = 2 * time.Second
 
 // Pipeline orchestrates the compound engineering automation process.
 type Pipeline struct {
@@ -101,6 +110,7 @@ type rawPipelineState struct {
 	Step           string           `json:"step"`
 	BaseBranch     string           `json:"baseBranch,omitempty"`
 	BranchName     string           `json:"branchName"`
+	ConvertMode    string           `json:"convertMode,omitempty"`
 	SourceMarkdown string           `json:"sourceMarkdown,omitempty"`
 	ReportPath     string           `json:"reportPath,omitempty"`
 	StartedAt      time.Time        `json:"startedAt"`
@@ -134,6 +144,7 @@ func (p *Pipeline) loadState() *PipelineState {
 		Step:           normalizePipelineStep(raw.Step),
 		BaseBranch:     raw.BaseBranch,
 		BranchName:     raw.BranchName,
+		ConvertMode:    normalizeResolvedConvertMode(raw.ConvertMode),
 		SourceMarkdown: raw.SourceMarkdown,
 		ReportPath:     raw.ReportPath,
 		StartedAt:      raw.StartedAt,
@@ -174,10 +185,29 @@ func normalizePipelineStep(step string) string {
 	}
 }
 
+func normalizeResolvedConvertMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case AutoConvertModeStandard:
+		return AutoConvertModeStandard
+	case AutoConvertModeGranular:
+		return AutoConvertModeGranular
+	default:
+		return AutoConvertModeGranular
+	}
+}
+
 // saveState writes the pipeline state to .hal/auto-state.json atomically.
 // It writes to a temp file first, then renames to ensure atomic operation.
 func (p *Pipeline) saveState(state *PipelineState) error {
-	data, err := json.MarshalIndent(state, "", "  ")
+	if state == nil {
+		return fmt.Errorf("pipeline state is nil")
+	}
+
+	snapshot := *state
+	snapshot.ConvertMode = normalizeResolvedConvertMode(state.ConvertMode)
+	state.ConvertMode = snapshot.ConvertMode
+
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -241,6 +271,7 @@ type RunOptions struct {
 	ReviewMaxCycles   int    // Maximum review cycles before failing the gate
 	ReportPath        string // Specific report file to use (skips find latest)
 	SourceMarkdown    string // Positional markdown path (skips analyze/spec)
+	ConvertMode       string // Resolved convert mode for this run (standard|granular)
 	BaseBranch        string // Base branch for creating work branch / PR target
 }
 
@@ -264,6 +295,8 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			return err
 		}
 	}
+
+	state.ConvertMode = normalizeResolvedConvertMode(state.ConvertMode)
 
 	// Short-circuit if pipeline already completed (e.g. resume with step=done).
 	if state.Step == StepDone {
@@ -332,8 +365,9 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 
 func (p *Pipeline) newInitialState(opts RunOptions) (*PipelineState, error) {
 	state := &PipelineState{
-		Step:      StepAnalyze,
-		StartedAt: time.Now(),
+		Step:        StepAnalyze,
+		ConvertMode: normalizeResolvedConvertMode(opts.ConvertMode),
+		StartedAt:   time.Now(),
 	}
 
 	sourceMarkdown := strings.TrimSpace(opts.SourceMarkdown)
@@ -539,8 +573,8 @@ func (p *Pipeline) runPRDStep(ctx context.Context, state *PipelineState, opts Ru
 		return fmt.Errorf("no analysis result in state")
 	}
 
-	// Derive PRD path from branch name
-	prdName := state.Analysis.BranchName
+	// Derive PRD path from a filesystem-safe branch slug.
+	prdName := markdownPRDNameFromBranch(state.Analysis.BranchName)
 	if prdName == "" {
 		prdName = "feature"
 	}
@@ -562,6 +596,14 @@ func (p *Pipeline) runPRDStep(ctx context.Context, state *PipelineState, opts Ru
 	// Build analysis context for the prompt
 	analysisContext := buildAnalysisContext(state.Analysis)
 
+	resolvedMode := normalizeResolvedConvertMode(state.ConvertMode)
+	state.ConvertMode = resolvedMode
+
+	modeFormatGuidance := "2. Use T-XXX task IDs (T-001, T-002, etc.)\n3. Each task must be completable in ONE agent iteration\n4. Include boolean acceptance criteria\n5. Every task ends with \"Typecheck passes\""
+	if resolvedMode == AutoConvertModeStandard {
+		modeFormatGuidance = "2. Use US-XXX user story IDs (US-001, US-002, etc.)\n3. Each story must be completable in ONE agent iteration\n4. Include boolean acceptance criteria\n5. Every story ends with \"Typecheck passes\""
+	}
+
 	// Build prompt
 	prompt := fmt.Sprintf(`You are an autonomous PRD generation agent. Follow the autospec skill instructions below.
 
@@ -571,14 +613,18 @@ func (p *Pipeline) runPRDStep(ctx context.Context, state *PipelineState, opts Ru
 
 %s
 
+<mode_override>
+Resolved convert mode for this run: %s
+This mode override is authoritative for this run and overrides any conflicting generic autospec defaults.
+- standard mode requires US-XXX user stories.
+- granular mode requires T-XXX tasks.
+</mode_override>
+
 Generate a PRD following the skill rules:
 1. Do NOT ask any questions - self-clarify from the analysis context
-2. Use T-XXX task IDs (T-001, T-002, etc.)
-3. Each task must be completable in ONE agent iteration
-4. Include boolean acceptance criteria
-5. Every task ends with "Typecheck passes"
+%s
 
-Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisContext, prdPath)
+Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisContext, resolvedMode, modeFormatGuidance, prdPath)
 
 	// Record output file modification time before (if exists)
 	var preModTime time.Time
@@ -635,6 +681,11 @@ Write the PRD directly to %s using the Write tool.`, autospecSkill, analysisCont
 	return nil
 }
 
+func markdownPRDNameFromBranch(branchName string) string {
+	name := strings.Trim(archive.FeatureFromBranch(branchName), "-")
+	return strings.TrimSpace(name)
+}
+
 // runExplodeStep converts the source markdown PRD to canonical .hal/prd.json.
 func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: convert\n")
@@ -650,24 +701,30 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 	state.SourceMarkdown = normalizedSourceMarkdown
 
 	outPath := filepath.Join(p.dir, template.HalDir, template.PRDFile)
+	resolvedMode := normalizeResolvedConvertMode(state.ConvertMode)
+	state.ConvertMode = resolvedMode
 
 	if opts.DryRun {
-		p.display.ShowInfo("   [dry-run] Would convert PRD to: %s\n", outPath)
+		p.display.ShowInfo("   [dry-run] Would convert PRD to: %s (mode: %s)\n", outPath, resolvedMode)
 		state.Step = StepValidate
 		return nil
 	}
 
 	convertOpts := prd.ConvertOptions{
-		Granular:   true,
+		Granular:   resolvedMode == AutoConvertModeGranular,
 		BranchName: state.BranchName,
 	}
 
-	p.display.ShowInfo("   Converting PRD into granular tasks...\n")
+	if resolvedMode == AutoConvertModeStandard {
+		p.display.ShowInfo("   Converting PRD in standard mode (US-XXX stories)...\n")
+	} else {
+		p.display.ShowInfo("   Converting PRD in granular mode (T-XXX tasks)...\n")
+	}
 	if err := convertWithEngine(ctx, p.engine, normalizedSourceMarkdown, outPath, convertOpts, p.display); err != nil {
 		return fmt.Errorf("failed to convert PRD: %w", err)
 	}
 
-	if err := verifyConvertedBranchInvariant(p.dir, state.BranchName); err != nil {
+	if err := verifyConvertedBranchInvariant(p.dir, state.BranchName, resolvedMode); err != nil {
 		return err
 	}
 
@@ -680,7 +737,7 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 	return nil
 }
 
-// runValidateStep validates the converted PRD and triggers bounded repair retries.
+// runValidateStep validates the converted PRD and keeps applying targeted repairs until green.
 func (p *Pipeline) runValidateStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: validate\n")
 
@@ -688,8 +745,11 @@ func (p *Pipeline) runValidateStep(ctx context.Context, state *PipelineState, op
 		state.Validation = &ValidationState{}
 	}
 
+	resolvedMode := normalizeResolvedConvertMode(state.ConvertMode)
+	state.ConvertMode = resolvedMode
+
 	if opts.DryRun {
-		p.display.ShowInfo("   [dry-run] Would validate granular PRD at %s\n", filepath.Join(template.HalDir, template.PRDFile))
+		p.display.ShowInfo("   [dry-run] Would validate converted PRD at %s (mode: %s)\n", filepath.Join(template.HalDir, template.PRDFile), resolvedMode)
 		state.Validation.Attempts++
 		state.Validation.Status = "passed"
 		state.Step = StepRun
@@ -701,54 +761,142 @@ func (p *Pipeline) runValidateStep(ctx context.Context, state *PipelineState, op
 	state.Validation.Attempts++
 	attempt := state.Validation.Attempts
 
-	p.display.ShowInfo("   Validating granular PRD (attempt %d/%d)...\n", attempt, maxValidationAttempts)
+	p.display.ShowInfo("   Validating converted PRD (mode: %s, attempt %d)...\n", resolvedMode, attempt)
 	result, err := validateWithEngine(ctx, p.engine, prdPath, p.display)
 	if err != nil {
-		state.Validation.Status = "failed"
-		if attempt >= maxValidationAttempts {
+		if isValidationLoopTerminalError(err) {
+			state.Validation.Status = "repairing"
 			if saveErr := p.saveState(state); saveErr != nil {
-				return fmt.Errorf("PRD validation failed after %d attempts: %w (also failed to save state: %v)", maxValidationAttempts, err, saveErr)
+				return fmt.Errorf("failed to validate PRD on attempt %d: %w (also failed to save state: %v)", attempt, err, saveErr)
 			}
-			return fmt.Errorf("PRD validation failed after %d attempts: %w", maxValidationAttempts, err)
+			return fmt.Errorf("failed to validate PRD on attempt %d: %w", attempt, err)
 		}
 
-		state.Validation.Status = "repairing"
-		state.Step = StepConvert
-		if saveErr := p.saveState(state); saveErr != nil {
-			return fmt.Errorf("failed to save validation retry state: %w", saveErr)
+		if limitErr := p.failValidationAfterMaxAttempts(state, attempt); limitErr != nil {
+			return limitErr
 		}
-		p.display.ShowInfo("   Validation failed (attempt %d/%d); re-running convert for repair.\n", attempt, maxValidationAttempts)
+
+		p.display.ShowInfo("   Validation attempt %d hit an error: %v\n", attempt, err)
+		return p.scheduleValidationRetry(ctx, state)
+	}
+
+	if result.Valid {
+		state.Validation.Status = "passed"
+		state.Step = StepRun
+		if err := p.saveState(state); err != nil {
+			return fmt.Errorf("failed to save state: %w", err)
+		}
 		return nil
 	}
 
-	if !result.Valid {
-		state.Validation.Status = "failed"
-		if attempt >= maxValidationAttempts {
-			if saveErr := p.saveState(state); saveErr != nil {
-				return fmt.Errorf("PRD validation failed after %d attempts (also failed to save state: %v)", maxValidationAttempts, saveErr)
+	// Allow one post-repair verification pass after the nominal max attempt.
+	// If that final verification still fails, stop before scheduling another repair.
+	if attempt > p.validationMaxAttempts() {
+		return p.failValidationAfterMaxAttempts(state, attempt)
+	}
+
+	sourceMarkdown := strings.TrimSpace(state.SourceMarkdown)
+	if sourceMarkdown != "" {
+		normalizedSourceMarkdown, normErr := p.normalizeSourceMarkdownPath(sourceMarkdown)
+		if normErr != nil {
+			p.display.ShowInfo("   Note: could not resolve source markdown for repair (%s); repairing %s only.\n", sourceMarkdown, filepath.Join(template.HalDir, template.PRDFile))
+			sourceMarkdown = ""
+		} else if _, statErr := os.Stat(normalizedSourceMarkdown); statErr != nil {
+			if os.IsNotExist(statErr) {
+				p.display.ShowInfo("   Note: source markdown not found for repair (%s); repairing %s only.\n", normalizedSourceMarkdown, filepath.Join(template.HalDir, template.PRDFile))
+			} else {
+				p.display.ShowInfo("   Note: could not inspect source markdown for repair (%s): %v; repairing %s only.\n", normalizedSourceMarkdown, statErr, filepath.Join(template.HalDir, template.PRDFile))
 			}
-			return fmt.Errorf("PRD validation failed after %d attempts", maxValidationAttempts)
+			sourceMarkdown = ""
+		} else {
+			sourceMarkdown = normalizedSourceMarkdown
+			state.SourceMarkdown = normalizedSourceMarkdown
 		}
-
-		state.Validation.Status = "repairing"
-		state.Step = StepConvert
-		if saveErr := p.saveState(state); saveErr != nil {
-			return fmt.Errorf("failed to save validation retry state: %w", saveErr)
-		}
-		p.display.ShowInfo("   Validation failed (attempt %d/%d); re-running convert for repair.\n", attempt, maxValidationAttempts)
-		return nil
 	}
 
-	state.Validation.Status = "passed"
-	state.Step = StepRun
-	if err := p.saveState(state); err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
+	if repairErr := repairValidationWithEngine(ctx, p.engine, sourceMarkdown, prdPath, result, p.display); repairErr != nil {
+		if isValidationLoopTerminalError(repairErr) {
+			state.Validation.Status = "repairing"
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to repair PRD from validation feedback on attempt %d: %w (also failed to save state: %v)", attempt, repairErr, saveErr)
+			}
+			return fmt.Errorf("failed to repair PRD from validation feedback on attempt %d: %w", attempt, repairErr)
+		}
+
+		if limitErr := p.failValidationAfterMaxAttempts(state, attempt); limitErr != nil {
+			return limitErr
+		}
+
+		p.display.ShowInfo("   Validation repair attempt %d hit an error: %v\n", attempt, repairErr)
+		return p.scheduleValidationRetry(ctx, state)
 	}
 
+	state.Validation.Status = "repairing"
+	state.Step = StepValidate
+	if saveErr := p.saveState(state); saveErr != nil {
+		return fmt.Errorf("failed to save validation repair state: %w", saveErr)
+	}
+	p.display.ShowInfo("   Validation failed (attempt %d); applied validation-guided PRD edits and retrying.\n", attempt)
 	return nil
 }
 
-func verifyConvertedBranchInvariant(dir, stateBranchName string) error {
+// validationMaxAttempts bounds the autonomous validation/repair loop.
+// The limit is intentionally generous, but prevents unbounded retries when
+// model output oscillates and cannot converge without manual intervention.
+func (p *Pipeline) validationMaxAttempts() int {
+	return defaultValidationMaxAttempts
+}
+
+func (p *Pipeline) failValidationAfterMaxAttempts(state *PipelineState, attempt int) error {
+	maxAttempts := p.validationMaxAttempts()
+	if attempt < maxAttempts {
+		return nil
+	}
+
+	state.Validation.Status = "failed"
+	state.Step = StepValidate
+
+	if saveErr := p.saveState(state); saveErr != nil {
+		return fmt.Errorf("validation exceeded max attempts (%d); manual PRD intervention required (also failed to save state: %v)", maxAttempts, saveErr)
+	}
+
+	return fmt.Errorf("validation exceeded max attempts (%d); fix %s and rerun `hal auto --resume`", maxAttempts, filepath.Join(template.HalDir, template.PRDFile))
+}
+
+// scheduleValidationRetry persists validate-loop state and waits briefly before
+// the next attempt to reduce pressure during transient engine/provider failures.
+func (p *Pipeline) scheduleValidationRetry(ctx context.Context, state *PipelineState) error {
+	state.Validation.Status = "repairing"
+	state.Step = StepValidate
+	if saveErr := p.saveState(state); saveErr != nil {
+		return fmt.Errorf("failed to save validation retry state: %w", saveErr)
+	}
+
+	p.display.ShowInfo("   Retrying validation...\n")
+
+	if validationRetryDelay <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(validationRetryDelay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isValidationLoopTerminalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func verifyConvertedBranchInvariant(dir, stateBranchName, convertMode string) error {
 	halDir := filepath.Join(dir, template.HalDir)
 	relativePRDPath := filepath.Join(template.HalDir, template.PRDFile)
 
@@ -759,12 +907,13 @@ func verifyConvertedBranchInvariant(dir, stateBranchName string) error {
 
 	expectedBranch := strings.TrimSpace(stateBranchName)
 	actualBranch := strings.TrimSpace(converted.BranchName)
+	fixCommand := convertBranchFixCommand(convertMode, expectedBranch)
 
 	if actualBranch == "" {
 		if expectedBranch == "" {
 			return fmt.Errorf("post-convert branch invariant failed: %s is missing branchName; set branchName explicitly and rerun `hal auto --resume`", relativePRDPath)
 		}
-		return fmt.Errorf("post-convert branch invariant failed: %s is missing branchName; rerun `hal convert --granular --branch %s` or fix %s before resuming", relativePRDPath, expectedBranch, relativePRDPath)
+		return fmt.Errorf("post-convert branch invariant failed: %s is missing branchName; rerun `%s` or fix %s before resuming", relativePRDPath, fixCommand, relativePRDPath)
 	}
 
 	if expectedBranch == "" {
@@ -772,10 +921,18 @@ func verifyConvertedBranchInvariant(dir, stateBranchName string) error {
 	}
 
 	if actualBranch != expectedBranch {
-		return fmt.Errorf("post-convert branch invariant failed: state.branchName=%q but %s branchName=%q; rerun `hal convert --granular --branch %s` or update %s before resuming", expectedBranch, relativePRDPath, actualBranch, expectedBranch, relativePRDPath)
+		return fmt.Errorf("post-convert branch invariant failed: state.branchName=%q but %s branchName=%q; rerun `%s` or update %s before resuming", expectedBranch, relativePRDPath, actualBranch, fixCommand, relativePRDPath)
 	}
 
 	return nil
+}
+
+func convertBranchFixCommand(convertMode, branchName string) string {
+	branchName = strings.TrimSpace(branchName)
+	if normalizeResolvedConvertMode(convertMode) == AutoConvertModeStandard {
+		return fmt.Sprintf("hal convert --branch %s", branchName)
+	}
+	return fmt.Sprintf("hal convert --granular --branch %s", branchName)
 }
 
 // runLoopStep executes the Hal loop as a completion gate against .hal/prd.json.
@@ -1084,6 +1241,12 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	prURL := strings.TrimSpace(pushResult.PullRequest.URL)
 	if prURL == "" {
+		state.CI = &CIState{Status: "failed", Reason: "empty_pr_url"}
+		p.recordCIState(state.CI)
+		state.Step = StepCI
+		if saveErr := p.saveState(state); saveErr != nil {
+			return fmt.Errorf("failed to create PR: empty pull request URL (also failed to save state: %v)", saveErr)
+		}
 		return fmt.Errorf("failed to create PR: empty pull request URL")
 	}
 	p.display.ShowInfo("   PR created: %s\n", prURL)
@@ -1095,7 +1258,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	// 2. Wait for CI checks.
 	p.display.ShowInfo("   Waiting for CI checks...\n")
-	status, err := waitForChecks(ctx, ci.WaitOptions{})
+	status, err := p.waitForChecksInDir(ctx, ci.WaitOptions{})
 	if err != nil {
 		state.CI.Status = "failed"
 		state.CI.Reason = "wait_error"
@@ -1122,6 +1285,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	if status.Status == ci.StatusPassing {
 		p.display.ShowInfo("   CI checks passing\n")
 		state.CI.Status = "passed"
+		state.CI.Reason = ""
 		p.recordCIState(state.CI)
 		state.Step = StepReport
 		if saveErr := p.saveState(state); saveErr != nil {
@@ -1137,7 +1301,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		for attempt := 1; attempt <= maxCIFixAttempts; attempt++ {
 			p.display.ShowInfo("   Fix attempt %d/%d...\n", attempt, maxCIFixAttempts)
 
-			fixResult, fixErr := fixWithEngine(ctx, status, ci.FixOptions{
+			fixResult, fixErr := p.fixWithEngineInDir(ctx, status, ci.FixOptions{
 				Engine:      p.engine,
 				Display:     p.display,
 				Attempt:     attempt,
@@ -1161,7 +1325,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 			// Wait for fresh CI status after the fix.
 			p.display.ShowInfo("   Waiting for CI checks after fix...\n")
-			verified, waitErr := waitForChecks(ctx, ci.WaitOptions{})
+			verified, waitErr := p.waitForChecksInDir(ctx, ci.WaitOptions{})
 			if waitErr != nil {
 				p.display.ShowInfo("   Post-fix CI wait failed: %v\n", waitErr)
 				if saveErr := p.saveState(state); saveErr != nil {
@@ -1173,6 +1337,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 			if verified.Status == ci.StatusPassing {
 				p.display.ShowInfo("   CI checks passing after fix attempt %d\n", attempt)
 				state.CI.Status = "passed"
+				state.CI.Reason = ""
 				p.recordCIState(state.CI)
 				state.Step = StepReport
 				if saveErr := p.saveState(state); saveErr != nil {
@@ -1217,6 +1382,40 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	return fmt.Errorf("ci gate blocked: CI status is %s; wait for checks to complete and rerun with --resume, or rerun with --no-ci", status.Status)
+}
+
+func (p *Pipeline) waitForChecksInDir(ctx context.Context, opts ci.WaitOptions) (ci.StatusResult, error) {
+	return runInDir(p.dir, func() (ci.StatusResult, error) {
+		return waitForChecks(ctx, opts)
+	})
+}
+
+func (p *Pipeline) fixWithEngineInDir(ctx context.Context, status ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+	return runInDir(p.dir, func() (ci.FixResult, error) {
+		return fixWithEngine(ctx, status, opts)
+	})
+}
+
+func runInDir[T any](dir string, fn func() (T, error)) (T, error) {
+	var zero T
+
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fn()
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return zero, fmt.Errorf("resolve working directory: %w", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		return zero, fmt.Errorf("change directory to %s: %w", dir, err)
+	}
+	defer func() {
+		_ = os.Chdir(cwd)
+	}()
+
+	return fn()
 }
 
 // runArchiveStep archives feature state while preserving the latest generated report.
@@ -1266,8 +1465,8 @@ func defaultCheckCIDependencies() error {
 	if _, err := exec.LookPath("git"); err != nil {
 		return fmt.Errorf("git CLI not found in PATH")
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		return fmt.Errorf("gh CLI not found in PATH")
+	if _, err := ci.SelectGitHubClient(context.Background()); err != nil {
+		return fmt.Errorf("GitHub auth unavailable: %w", err)
 	}
 	return nil
 }

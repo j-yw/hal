@@ -18,6 +18,7 @@ type PipelineState struct {
 	Step           string           `json:"step"`
 	BaseBranch     string           `json:"baseBranch,omitempty"` // Empty means current HEAD (git default)
 	BranchName     string           `json:"branchName"`
+	ConvertMode    string           `json:"convertMode,omitempty"`
 	SourceMarkdown string           `json:"sourceMarkdown,omitempty"`
 	ReportPath     string           `json:"reportPath,omitempty"`
 	StartedAt      time.Time        `json:"startedAt"`

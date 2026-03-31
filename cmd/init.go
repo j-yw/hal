@@ -500,7 +500,7 @@ func migrateTemplates(configDir string) error {
 	return migrateSkillFiles(filepath.Join(configDir, "skills"), migrateBrowserVerificationContent)
 }
 
-var autoPolicyConfigKeys = []string{"mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+var autoPolicyConfigKeys = []string{"sourcePriority", "convertMode", "mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
 
 // migrateConfigYAML backfills missing auto policy keys in existing .hal/config.yaml
 // without overwriting user-defined values.
@@ -535,6 +535,8 @@ func migrateConfigYAML(configDir string) error {
 
 	defaults := compound.DefaultAutoConfig()
 	defaultValues := map[string]interface{}{
+		"sourcePriority":      defaults.SourcePriority,
+		"convertMode":         defaults.ConvertMode,
 		"mode":                defaults.Mode,
 		"ciEnabled":           defaults.CIEnabled,
 		"reviewEnabled":       defaults.ReviewEnabled,

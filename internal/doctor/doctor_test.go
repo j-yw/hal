@@ -304,8 +304,10 @@ auto:
 		if !c.Remediation.Safe {
 			t.Fatal("config_yaml remediation.safe should be true")
 		}
-		if !strings.Contains(c.Message, "reviewMaxIterations") {
-			t.Fatalf("config_yaml message should list missing policy keys, got %q", c.Message)
+		for _, key := range []string{"sourcePriority", "convertMode", "reviewMaxIterations"} {
+			if !strings.Contains(c.Message, key) {
+				t.Fatalf("config_yaml message should list missing policy key %q, got %q", key, c.Message)
+			}
 		}
 		return
 	}

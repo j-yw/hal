@@ -388,7 +388,7 @@ auto:
 			t.Fatalf("auto.maxIterations = %#v, want %d", autoSection["maxIterations"], 12)
 		}
 
-		requiredPolicyKeys := []string{"mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+		requiredPolicyKeys := []string{"sourcePriority", "convertMode", "mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
 		for _, key := range requiredPolicyKeys {
 			if _, exists := autoSection[key]; !exists {
 				t.Fatalf("expected auto.%s to be backfilled", key)

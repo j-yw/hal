@@ -56,6 +56,19 @@ auto:
   # Default: compound/
   branchPrefix: compound/
 
+  # Entry-source discovery order when hal auto has no explicit inputs.
+  # report_first: latest report in auto.reportsDir, then newest .hal/prd-*.md
+  # markdown_first: newest .hal/prd-*.md, then latest report in auto.reportsDir
+  # Default: report_first
+  sourcePriority: report_first
+
+  # Convert mode policy for hal auto runs.
+  # auto: markdown entry -> standard (US stories), report entry -> granular (T tasks)
+  # standard: always standard (US stories)
+  # granular: always granular (T tasks)
+  # Default: auto
+  convertMode: auto
+
   # Quality check commands to run after each iteration.
   # These should exit with code 0 on success.
   # Example: ["make test", "make lint", "make vet"]

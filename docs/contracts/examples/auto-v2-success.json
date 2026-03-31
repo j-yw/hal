@@ -19,6 +19,7 @@
     },
     "convert": {
       "status": "completed",
+      "reason": "standard",
       "path": ".hal/prd.json",
       "tasks": 29
     },

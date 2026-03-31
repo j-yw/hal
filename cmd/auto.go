@@ -12,7 +12,6 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
-	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -111,7 +110,7 @@ const (
 	autoFailureNone          autoFailureKind = ""
 	autoFailureConfig        autoFailureKind = "config"
 	autoFailureEngine        autoFailureKind = "engine"
-	autoFailureNoReports     autoFailureKind = "no_reports"
+	autoFailureNoSource      autoFailureKind = "no_source"
 	autoFailureNoResumeState autoFailureKind = "no_resume_state"
 	autoFailurePipeline      autoFailureKind = "pipeline"
 )
@@ -146,16 +145,20 @@ Entry behavior:
 - hal auto <prd-path>: skips analyze/spec and starts at branch
 - --resume ignores positional prd-path and --report
 
-Source selection order (when not resuming):
+Source selection (when not resuming):
   1. positional markdown path (hal auto <prd-path>)
   2. explicit report path (hal auto --report <path>)
-  3. newest .hal/prd-*.md (auto-discovered)
-  4. latest report in auto.reportsDir
+  3. discovery order uses auto.sourcePriority
+     - report_first (default): latest report in auto.reportsDir -> newest .hal/prd-*.md
+     - markdown_first: newest .hal/prd-*.md -> latest report in auto.reportsDir
 
-Report preflight checks run only when auto does not have a markdown source.
+Convert mode policy:
+  - auto.convertMode=auto (default): markdown entry -> standard, report entry -> granular
+  - auto.convertMode=standard|granular overrides entry defaults for new runs
+  - --resume always uses saved state convert mode
 
 Examples:
-  hal auto                           # Prefer newest .hal/prd-*.md, else latest report
+  hal auto                           # Uses auto.sourcePriority discovery + auto.convertMode policy
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
   hal auto --report report.md        # Force report-driven flow (skip markdown auto-discovery)
   hal auto --mode strict             # Strict gate policy (review+ci, 3 clean review cycles)
@@ -321,27 +324,14 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	entryMode := autoEntryModeReportDiscovery
 	autoDiscoveredSource := false
-	sourceMarkdown, autoDiscoveredSource, err := discoverAutoSourceMarkdown(dir, sourceMarkdown, reportPath, resume)
-	if err != nil {
-		if jsonMode {
-			failureEntryMode := determineAutoEntryMode(sourceMarkdown)
-			jr := autoFailureResult(failureEntryMode, resume, err.Error(), err.Error(), autoFailurePipeline, false, "")
-			return outputAutoJSON(out, jr)
-		}
-		return err
-	}
-
-	entryMode := determineAutoEntryMode(sourceMarkdown)
-	if resume {
-		if resumeEntryMode, ok := determineAutoResumeEntryMode(dir); ok {
-			entryMode = resumeEntryMode
-		}
-	}
+	resolvedConvertMode := ""
+	convertModeTelemetry := ""
 
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
-			jr := autoFailureResult(entryMode, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false, "")
+			jr := autoFailureResult(entryMode, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false, "", "")
 			return outputAutoJSON(out, jr)
 		}
 		return fmt.Errorf("failed to migrate legacy auto-prd.json: %w", err)
@@ -351,10 +341,49 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	config, err := compound.LoadConfig(dir)
 	if err != nil {
 		if jsonMode {
-			jr := autoFailureResult(entryMode, resume, "failed to load config: "+err.Error(), "failed to load config: "+err.Error(), autoFailureConfig, false, "")
+			jr := autoFailureResult(entryMode, resume, "failed to load config: "+err.Error(), "failed to load config: "+err.Error(), autoFailureConfig, false, "", "")
 			return outputAutoJSON(out, jr)
 		}
 		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if resume {
+		if resumeEntryMode, ok := determineAutoResumeEntryMode(dir); ok {
+			entryMode = resumeEntryMode
+		}
+		resolvedConvertMode, _ = determineAutoResumeConvertMode(dir)
+		if resolvedConvertMode == "" {
+			resolvedConvertMode = compound.AutoConvertModeGranular
+		}
+		if normalizedMode, ok := normalizeAutoConvertModeTelemetry(resolvedConvertMode); ok {
+			convertModeTelemetry = normalizedMode
+		}
+	} else {
+		selection, resolveErr := resolveAutoEntrySource(dir, config, sourceMarkdown, reportPath)
+		if resolveErr != nil {
+			resolvedConvertMode, _ = resolveAutoConvertModeForMissingSource(config.ConvertMode)
+			if normalizedMode, ok := normalizeAutoConvertModeTelemetry(resolvedConvertMode); ok {
+				convertModeTelemetry = normalizedMode
+			}
+			if jsonMode {
+				jr := autoFailureResult(autoEntryModeReportDiscovery, false, resolveErr.Error(), resolveErr.Error(), autoFailureNoSource, false, "", convertModeTelemetry)
+				return outputAutoJSON(out, jr)
+			}
+			return resolveErr
+		}
+		sourceMarkdown = selection.SourceMarkdown
+		reportPath = selection.ReportPath
+		entryMode = selection.EntryMode
+		autoDiscoveredSource = selection.AutoDiscoveredMarkdown
+
+		resolvedConvertMode, _ = resolveAutoConvertMode(config.ConvertMode, entryMode)
+		if normalizedMode, ok := normalizeAutoConvertModeTelemetry(resolvedConvertMode); ok {
+			convertModeTelemetry = normalizedMode
+		}
+	}
+
+	if resolvedConvertMode == "" {
+		resolvedConvertMode = compound.AutoConvertModeGranular
 	}
 
 	policy, err := resolveAutoPolicy(config, autoPolicyInputs{
@@ -369,7 +398,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		if jsonMode {
-			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "")
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", convertModeTelemetry)
 			return outputAutoJSON(out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
@@ -378,7 +407,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, dir)
 	if err != nil {
 		if jsonMode {
-			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureEngine, false, "")
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureEngine, false, "", convertModeTelemetry)
 			return outputAutoJSON(out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
@@ -389,7 +418,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	eng, err := engine.NewWithConfig(resolvedEngine, engineCfg)
 	if err != nil {
 		if jsonMode {
-			jr := autoFailureResult(entryMode, resume, "failed to create engine: "+err.Error(), "failed to create engine: "+err.Error(), autoFailureEngine, false, "")
+			jr := autoFailureResult(entryMode, resume, "failed to create engine: "+err.Error(), "failed to create engine: "+err.Error(), autoFailureEngine, false, "", convertModeTelemetry)
 			return outputAutoJSON(out, jr)
 		}
 		return fmt.Errorf("failed to create engine: %w", err)
@@ -404,7 +433,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 
 	// Show command header in human-readable mode only.
 	if !jsonMode {
-		display.ShowCommandHeader("Auto", "compound pipeline", buildHeaderCtx(resolvedEngine))
+		headerContext := buildAutoHeaderContext(resume, entryMode, autoDiscoveredSource, resolvedConvertMode)
+		display.ShowCommandHeader("Auto", headerContext, buildHeaderCtx(resolvedEngine))
 		display.ShowInfo("   Mode: %s\n", policy.mode)
 		if policy.skipReview {
 			display.ShowInfo("   Review gate: disabled\n")
@@ -415,7 +445,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			display.ShowInfo("   CI gate: disabled\n")
 		}
 		if autoDiscoveredSource {
-			display.ShowInfo("   Source markdown: %s (newest discovered)\n", sourceMarkdown)
+			display.ShowInfo("   Source markdown: %s (auto-discovered)\n", sourceMarkdown)
 		}
 	}
 
@@ -423,27 +453,11 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	pipeline := compound.NewPipeline(config, eng, display, dir)
 	pipeline.SetEngineConfig(engineCfg)
 
-	// Check for reports before starting unless resume/source markdown/report path is provided.
-	if !resume && reportPath == "" && sourceMarkdown == "" {
-		_, err := compound.FindLatestReport(config.ReportsDir)
-		if err != nil {
-			if jsonMode {
-				jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureNoReports, false, compound.StepAnalyze)
-				return outputAutoJSON(out, jr)
-			}
-			fmt.Fprintf(out, "%s No reports found.\n", engine.StyleWarning.Render("[!]"))
-			fmt.Fprintln(out)
-			fmt.Fprintf(out, "Place your reports in %s and run this command again.\n", engine.StyleInfo.Render(config.ReportsDir+"/"))
-			fmt.Fprintf(out, "%s\n", engine.StyleMuted.Render("Reports can be markdown files, text files, or any format the AI can analyze."))
-			return nil
-		}
-	}
-
 	// Check if resuming
 	if resume {
 		if !pipeline.HasState() {
 			if jsonMode {
-				jr := autoFailureResult(entryMode, resume, "no saved state to resume from", "no saved state to resume from", autoFailureNoResumeState, false, "")
+				jr := autoFailureResult(entryMode, resume, "no saved state to resume from", "no saved state to resume from", autoFailureNoResumeState, false, "", convertModeTelemetry)
 				return outputAutoJSON(out, jr)
 			}
 			return fmt.Errorf("no saved state to resume from")
@@ -467,6 +481,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		ReviewMaxCycles:   policy.reviewMaxCycles,
 		ReportPath:        reportPath,
 		SourceMarkdown:    sourceMarkdown,
+		ConvertMode:       resolvedConvertMode,
 		BaseBranch:        baseBranch,
 	}
 
@@ -478,7 +493,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			if failedStep != "" {
 				summary = fmt.Sprintf("Auto pipeline stopped at %s.", failedStep)
 			}
-			jr := autoFailureResult(entryMode, resume, summary, err.Error(), autoFailurePipeline, pipeline.HasState(), failedStep, time.Since(autoStart))
+			jr := autoFailureResult(entryMode, resume, summary, err.Error(), autoFailurePipeline, pipeline.HasState(), failedStep, convertModeTelemetry, time.Since(autoStart))
+			applyAutoFailurePolicySkips(&jr.Steps, failedStep, policy.skipCI, policy.skipReview)
 			applyAutoFailureCIState(&jr.Steps, failedStep, pipeline.LastCIState())
 			return outputAutoJSON(out, jr)
 		}
@@ -494,7 +510,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		if autoBranch != "" {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
-		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), summary, elapsed)
+		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), summary, convertModeTelemetry, elapsed)
 		return outputAutoJSON(out, jr)
 	}
 
@@ -524,8 +540,10 @@ func outputAutoJSON(out io.Writer, jr AutoResult) error {
 	return nil
 }
 
-func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, summary string, duration time.Duration) AutoResult {
+func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, summary string, convertMode string, duration time.Duration) AutoResult {
 	steps := autoStepsForSuccess(entryMode, skipCI, skipReview, ciState)
+	applyConvertModeTelemetry(&steps, convertMode)
+
 	jr := AutoResult{
 		ContractVersion: 2,
 		OK:              autoStepsSucceeded(steps),
@@ -545,13 +563,19 @@ func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipR
 	return jr
 }
 
-func autoFailureResult(entryMode autoEntryMode, resumed bool, summary string, errorMsg string, failure autoFailureKind, resumable bool, failedStep string, opts ...time.Duration) AutoResult {
+func autoFailureResult(entryMode autoEntryMode, resumed bool, summary string, errorMsg string, failure autoFailureKind, resumable bool, failedStep string, convertMode string, opts ...time.Duration) AutoResult {
+	steps := autoStepsForFailure(entryMode, failedStep)
+	applyConvertModeTelemetry(&steps, convertMode)
+	if failed := steps.step(failedStep); failed != nil && strings.TrimSpace(errorMsg) != "" {
+		failed.Error = errorMsg
+	}
+
 	jr := AutoResult{
 		ContractVersion: 2,
 		OK:              false,
 		EntryMode:       string(entryMode),
 		Resumed:         resumed,
-		Steps:           autoStepsForFailure(entryMode, failedStep),
+		Steps:           steps,
 		Error:           errorMsg,
 		Summary:         summary,
 		NextAction:      autoFailureNextAction(failure, resumable),
@@ -569,47 +593,326 @@ func determineAutoEntryMode(sourceMarkdown string) autoEntryMode {
 	return autoEntryModeReportDiscovery
 }
 
-func discoverAutoSourceMarkdown(dir, sourceMarkdown, reportPath string, resume bool) (string, bool, error) {
-	trimmedSource := strings.TrimSpace(sourceMarkdown)
-	if resume || trimmedSource != "" || strings.TrimSpace(reportPath) != "" {
-		return trimmedSource, false, nil
+func buildAutoHeaderContext(resume bool, entryMode autoEntryMode, autoDiscoveredSource bool, convertMode string) string {
+	headerMode := convertMode
+	if normalized, ok := normalizeAutoConvertModeTelemetry(convertMode); ok {
+		headerMode = normalized
+	}
+	if strings.TrimSpace(headerMode) == "" {
+		headerMode = compound.AutoConvertModeGranular
 	}
 
-	halDir := filepath.Join(dir, template.HalDir)
-	newestMarkdown, err := prd.FindNewestMarkdown(halDir)
-	if err != nil {
-		if isNoMarkdownSourceError(err) {
-			return "", false, nil
+	if resume {
+		return fmt.Sprintf("auto pipeline · resume from saved state · convert mode: %s", headerMode)
+	}
+
+	switch entryMode {
+	case autoEntryModeMarkdownPath:
+		if autoDiscoveredSource {
+			return fmt.Sprintf("auto pipeline · entry: markdown PRD (auto-discovered) · convert mode: %s", headerMode)
 		}
-		return "", false, fmt.Errorf("failed to discover markdown PRD source: %w", err)
+		return fmt.Sprintf("auto pipeline · entry: markdown PRD · convert mode: %s", headerMode)
+	default:
+		return fmt.Sprintf("auto pipeline · entry: report discovery · convert mode: %s", headerMode)
 	}
-
-	return newestMarkdown, true, nil
 }
 
-func isNoMarkdownSourceError(err error) bool {
-	if err == nil {
+type autoEntrySelection struct {
+	SourceMarkdown         string
+	ReportPath             string
+	EntryMode              autoEntryMode
+	AutoDiscoveredMarkdown bool
+}
+
+func resolveAutoEntrySource(dir string, config *compound.AutoConfig, sourceMarkdown, reportPath string) (autoEntrySelection, error) {
+	selection := autoEntrySelection{EntryMode: autoEntryModeReportDiscovery}
+
+	if strings.TrimSpace(sourceMarkdown) != "" {
+		candidate := sourceMarkdown
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(dir, candidate)
+		}
+		if stat, err := os.Stat(candidate); err != nil {
+			if os.IsNotExist(err) {
+				return selection, fmt.Errorf("markdown PRD not found: %s", sourceMarkdown)
+			}
+			return selection, fmt.Errorf("failed to inspect markdown PRD %s: %w", sourceMarkdown, err)
+		} else if stat.IsDir() {
+			return selection, fmt.Errorf("markdown PRD path is a directory: %s", sourceMarkdown)
+		}
+		selection.SourceMarkdown = candidate
+		selection.EntryMode = autoEntryModeMarkdownPath
+		return selection, nil
+	}
+
+	if strings.TrimSpace(reportPath) != "" {
+		candidate := reportPath
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(dir, candidate)
+		}
+		if stat, err := os.Stat(candidate); err != nil {
+			if os.IsNotExist(err) {
+				return selection, fmt.Errorf("report not found: %s", reportPath)
+			}
+			return selection, fmt.Errorf("failed to inspect report %s: %w", reportPath, err)
+		} else if stat.IsDir() {
+			return selection, fmt.Errorf("report path is a directory: %s", reportPath)
+		}
+		selection.ReportPath = candidate
+		selection.EntryMode = autoEntryModeReportDiscovery
+		return selection, nil
+	}
+
+	priority := compound.AutoSourcePriorityReportFirst
+	reportsDir := filepath.Join(template.HalDir, "reports")
+	if config != nil {
+		priority = strings.TrimSpace(config.SourcePriority)
+		if strings.TrimSpace(config.ReportsDir) != "" {
+			reportsDir = config.ReportsDir
+		}
+	}
+
+	discoverReportThenMarkdown := func() (autoEntrySelection, error) {
+		reportCandidate, foundReport, reportErr := discoverLatestReportCandidate(dir, reportsDir)
+		if reportErr != nil {
+			return selection, reportErr
+		}
+		if foundReport {
+			selection.ReportPath = reportCandidate
+			selection.EntryMode = autoEntryModeReportDiscovery
+			return selection, nil
+		}
+
+		markdownCandidate, foundMarkdown, markdownErr := discoverNewestMarkdownCandidate(dir)
+		if markdownErr != nil {
+			return selection, markdownErr
+		}
+		if foundMarkdown {
+			selection.SourceMarkdown = markdownCandidate
+			selection.EntryMode = autoEntryModeMarkdownPath
+			selection.AutoDiscoveredMarkdown = true
+			return selection, nil
+		}
+
+		return selection, noAutoSourceError(compound.AutoSourcePriorityReportFirst)
+	}
+
+	discoverMarkdownThenReport := func() (autoEntrySelection, error) {
+		markdownCandidate, foundMarkdown, markdownErr := discoverNewestMarkdownCandidate(dir)
+		if markdownErr != nil {
+			return selection, markdownErr
+		}
+		if foundMarkdown {
+			selection.SourceMarkdown = markdownCandidate
+			selection.EntryMode = autoEntryModeMarkdownPath
+			selection.AutoDiscoveredMarkdown = true
+			return selection, nil
+		}
+
+		reportCandidate, foundReport, reportErr := discoverLatestReportCandidate(dir, reportsDir)
+		if reportErr != nil {
+			return selection, reportErr
+		}
+		if foundReport {
+			selection.ReportPath = reportCandidate
+			selection.EntryMode = autoEntryModeReportDiscovery
+			return selection, nil
+		}
+
+		return selection, noAutoSourceError(compound.AutoSourcePriorityMarkdownFirst)
+	}
+
+	if priority == compound.AutoSourcePriorityMarkdownFirst {
+		return discoverMarkdownThenReport()
+	}
+	return discoverReportThenMarkdown()
+}
+
+func discoverNewestMarkdownCandidate(dir string) (string, bool, error) {
+	halDir := filepath.Join(dir, template.HalDir)
+	entries, err := os.ReadDir(halDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to read %s: %w", filepath.Join(template.HalDir), err)
+	}
+
+	latestPath := ""
+	latestName := ""
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "prd-") || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return "", false, fmt.Errorf("failed to inspect markdown PRD candidate %s: %w", filepath.Join(template.HalDir, name), infoErr)
+		}
+
+		candidatePath := filepath.Join(halDir, name)
+		if latestPath == "" || info.ModTime().After(latestTime) || (info.ModTime().Equal(latestTime) && name < latestName) {
+			latestPath = candidatePath
+			latestName = name
+			latestTime = info.ModTime()
+		}
+	}
+
+	if latestPath == "" {
+		return "", false, nil
+	}
+	return latestPath, true, nil
+}
+
+func discoverLatestReportCandidate(dir, reportsDir string) (string, bool, error) {
+	reportsPath := reportsDir
+	if strings.TrimSpace(reportsPath) == "" {
+		reportsPath = filepath.Join(template.HalDir, "reports")
+	}
+	if !filepath.IsAbs(reportsPath) {
+		reportsPath = filepath.Join(dir, reportsPath)
+	}
+
+	entries, err := os.ReadDir(reportsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to read reports directory %s: %w", reportsPath, err)
+	}
+
+	latestPath := ""
+	latestName := ""
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !isAutoReportCandidate(name) {
+			continue
+		}
+
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return "", false, fmt.Errorf("failed to inspect report candidate %s: %w", filepath.Join(reportsPath, name), infoErr)
+		}
+
+		candidatePath := filepath.Join(reportsPath, name)
+		if latestPath == "" || info.ModTime().After(latestTime) || (info.ModTime().Equal(latestTime) && name < latestName) {
+			latestPath = candidatePath
+			latestName = name
+			latestTime = info.ModTime()
+		}
+	}
+
+	if latestPath == "" {
+		return "", false, nil
+	}
+	return latestPath, true, nil
+}
+
+func isAutoReportCandidate(name string) bool {
+	if strings.HasPrefix(name, ".") {
 		return false
 	}
-	return strings.Contains(err.Error(), "no prd-*.md files found")
+	if !strings.HasSuffix(strings.ToLower(name), ".md") {
+		return false
+	}
+	return !strings.HasPrefix(name, "review-loop-")
+}
+
+func noAutoSourceError(sourcePriority string) error {
+	if strings.TrimSpace(sourcePriority) == compound.AutoSourcePriorityMarkdownFirst {
+		return fmt.Errorf("no auto source found (sourcePriority=markdown_first): looked for newest .hal/prd-*.md, then latest report in auto.reportsDir; provide 'hal auto <prd-path>' or '--report <path>'")
+	}
+	return fmt.Errorf("no auto source found (sourcePriority=report_first): looked for latest report in auto.reportsDir, then newest .hal/prd-*.md; provide 'hal auto <prd-path>' or '--report <path>'")
+}
+
+func resolveAutoConvertMode(configMode string, entryMode autoEntryMode) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(configMode)) {
+	case compound.AutoConvertModeStandard:
+		return compound.AutoConvertModeStandard, true
+	case compound.AutoConvertModeGranular:
+		return compound.AutoConvertModeGranular, true
+	case compound.AutoConvertModeAuto:
+		switch entryMode {
+		case autoEntryModeMarkdownPath:
+			return compound.AutoConvertModeStandard, true
+		case autoEntryModeReportDiscovery:
+			return compound.AutoConvertModeGranular, true
+		default:
+			return "", false
+		}
+	default:
+		return "", false
+	}
+}
+
+func resolveAutoConvertModeForMissingSource(configMode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(configMode)) {
+	case compound.AutoConvertModeStandard:
+		return compound.AutoConvertModeStandard, true
+	case compound.AutoConvertModeGranular:
+		return compound.AutoConvertModeGranular, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeAutoConvertModeTelemetry(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case compound.AutoConvertModeStandard:
+		return compound.AutoConvertModeStandard, true
+	case compound.AutoConvertModeGranular:
+		return compound.AutoConvertModeGranular, true
+	default:
+		return "", false
+	}
+}
+
+func applyConvertModeTelemetry(steps *AutoSteps, convertMode string) {
+	if steps == nil {
+		return
+	}
+	mode, ok := normalizeAutoConvertModeTelemetry(convertMode)
+	if !ok {
+		return
+	}
+	steps.Convert.Reason = mode
 }
 
 type autoResumeStateEntry struct {
 	Step           string          `json:"step"`
 	SourceMarkdown string          `json:"sourceMarkdown,omitempty"`
 	PRDPath        string          `json:"prdPath,omitempty"`
+	ConvertMode    string          `json:"convertMode,omitempty"`
 	Analysis       json.RawMessage `json:"analysis,omitempty"`
 }
 
-func determineAutoResumeEntryMode(dir string) (autoEntryMode, bool) {
+func loadAutoResumeState(dir string) (autoResumeStateEntry, bool) {
 	statePath := filepath.Join(dir, template.HalDir, template.AutoStateFile)
 	data, err := os.ReadFile(statePath)
 	if err != nil {
-		return autoEntryModeReportDiscovery, false
+		return autoResumeStateEntry{}, false
 	}
 
 	var state autoResumeStateEntry
 	if err := json.Unmarshal(data, &state); err != nil {
+		return autoResumeStateEntry{}, false
+	}
+
+	return state, true
+}
+
+func determineAutoResumeEntryMode(dir string) (autoEntryMode, bool) {
+	state, ok := loadAutoResumeState(dir)
+	if !ok {
 		return autoEntryModeReportDiscovery, false
 	}
 
@@ -632,6 +935,17 @@ func determineAutoResumeEntryMode(dir string) (autoEntryMode, bool) {
 	}
 
 	return autoEntryModeMarkdownPath, true
+}
+
+func determineAutoResumeConvertMode(dir string) (string, bool) {
+	state, ok := loadAutoResumeState(dir)
+	if !ok {
+		return compound.AutoConvertModeGranular, false
+	}
+	if mode, valid := normalizeAutoConvertModeTelemetry(state.ConvertMode); valid {
+		return mode, true
+	}
+	return compound.AutoConvertModeGranular, true
 }
 
 func normalizeAutoResumeStep(step string) string {
@@ -872,6 +1186,37 @@ func autoStepsForFailure(entryMode autoEntryMode, failedStep string) AutoSteps {
 	return steps
 }
 
+func applyAutoFailurePolicySkips(steps *AutoSteps, failedStep string, skipCI bool, skipReview bool) {
+	if steps == nil {
+		return
+	}
+
+	failureIdx := autoStepIndex(failedStep)
+	if failureIdx < 0 {
+		return
+	}
+
+	reviewIdx := autoStepIndex(compound.StepReview)
+	if skipReview && failureIdx > reviewIdx {
+		review := steps.step(compound.StepReview)
+		if review != nil {
+			review.Status = autoStepStatusSkipped
+			review.Reason = "skip_review_flag"
+		}
+	}
+
+	ciIdx := autoStepIndex(compound.StepCI)
+	if failureIdx > ciIdx {
+		ci := steps.step(compound.StepCI)
+		if ci != nil {
+			if reason := autoCISkipReason(skipCI, nil); reason != "" {
+				ci.Status = autoStepStatusSkipped
+				ci.Reason = reason
+			}
+		}
+	}
+}
+
 func applyAutoFailureCIState(steps *AutoSteps, failedStep string, ciState *compound.CIState) {
 	if steps == nil || ciState == nil {
 		return
@@ -967,11 +1312,11 @@ func autoFailureNextAction(failure autoFailureKind, resumable bool) *AutoNextAct
 			Command:     "hal init",
 			Description: "Initialize or repair configuration, then retry the auto pipeline.",
 		}
-	case autoFailureNoReports:
+	case autoFailureNoSource:
 		return &AutoNextAction{
 			ID:          "run_auto",
-			Command:     "hal auto --report <path>",
-			Description: "Provide a report path and rerun the auto pipeline.",
+			Command:     "hal auto <prd-path> | hal auto --report <path>",
+			Description: "Provide a markdown PRD path or report path and rerun the auto pipeline.",
 		}
 	case autoFailureNoResumeState:
 		return &AutoNextAction{

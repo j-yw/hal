@@ -46,7 +46,7 @@ Each step object contains:
 
 Additional telemetry fields are optional per step, including:
 
-- `reason` (skip/failure reason key)
+- `reason` (step-specific reason key)
 - `error` (human-readable error)
 - `duration`
 - `branch`
@@ -57,6 +57,14 @@ Additional telemetry fields are optional per step, including:
 - `issuesFound`
 - `fixesApplied`
 - `prUrl`
+
+`steps.convert.reason` is reserved for convert-mode telemetry and uses:
+
+- `standard`
+- `granular`
+
+When convert fails, human-readable failure detail should be emitted via
+`steps.convert.error` (do not overload `steps.convert.reason` with error text).
 
 ## Next Action Object
 

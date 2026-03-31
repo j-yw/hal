@@ -16,6 +16,13 @@ const (
 	AutoModeFast     = "fast"
 	AutoModeBalanced = "balanced"
 	AutoModeStrict   = "strict"
+
+	AutoSourcePriorityReportFirst   = "report_first"
+	AutoSourcePriorityMarkdownFirst = "markdown_first"
+
+	AutoConvertModeAuto     = "auto"
+	AutoConvertModeStandard = "standard"
+	AutoConvertModeGranular = "granular"
 )
 
 // AutoModeSettings captures mode-driven default policy values.
@@ -68,6 +75,8 @@ func ResolveAutoModeSettings(mode string) (AutoModeSettings, error) {
 type AutoConfig struct {
 	ReportsDir          string   `yaml:"reportsDir"`
 	BranchPrefix        string   `yaml:"branchPrefix"`
+	SourcePriority      string   `yaml:"sourcePriority"`
+	ConvertMode         string   `yaml:"convertMode"`
 	QualityChecks       []string `yaml:"qualityChecks"`
 	MaxIterations       int      `yaml:"maxIterations"`
 	Mode                string   `yaml:"mode"`
@@ -81,6 +90,8 @@ type AutoConfig struct {
 type rawAutoConfig struct {
 	ReportsDir          *string  `yaml:"reportsDir"`
 	BranchPrefix        *string  `yaml:"branchPrefix"`
+	SourcePriority      *string  `yaml:"sourcePriority"`
+	ConvertMode         *string  `yaml:"convertMode"`
 	QualityChecks       []string `yaml:"qualityChecks"`
 	MaxIterations       *int     `yaml:"maxIterations"`
 	Mode                *string  `yaml:"mode"`
@@ -162,6 +173,8 @@ func DefaultAutoConfig() AutoConfig {
 	return AutoConfig{
 		ReportsDir:          ".hal/reports",
 		BranchPrefix:        "compound/",
+		SourcePriority:      AutoSourcePriorityReportFirst,
+		ConvertMode:         AutoConvertModeAuto,
 		QualityChecks:       []string{},
 		MaxIterations:       25,
 		Mode:                settings.Mode,
@@ -182,6 +195,22 @@ func (c *AutoConfig) Validate() error {
 	}
 	if c.MaxIterations <= 0 {
 		return fmt.Errorf("auto.maxIterations must be greater than 0")
+	}
+
+	sourcePriority := strings.ToLower(strings.TrimSpace(c.SourcePriority))
+	switch sourcePriority {
+	case AutoSourcePriorityReportFirst, AutoSourcePriorityMarkdownFirst:
+		c.SourcePriority = sourcePriority
+	default:
+		return fmt.Errorf("auto.sourcePriority must be one of report_first, markdown_first")
+	}
+
+	convertMode := strings.ToLower(strings.TrimSpace(c.ConvertMode))
+	switch convertMode {
+	case AutoConvertModeAuto, AutoConvertModeStandard, AutoConvertModeGranular:
+		c.ConvertMode = convertMode
+	default:
+		return fmt.Errorf("auto.convertMode must be one of auto, standard, granular")
 	}
 
 	settings, err := ResolveAutoModeSettings(c.Mode)
@@ -233,6 +262,12 @@ func LoadConfig(dir string) (*AutoConfig, error) {
 	}
 	if config.Auto.BranchPrefix != nil {
 		autoConfig.BranchPrefix = *config.Auto.BranchPrefix
+	}
+	if config.Auto.SourcePriority != nil {
+		autoConfig.SourcePriority = *config.Auto.SourcePriority
+	}
+	if config.Auto.ConvertMode != nil {
+		autoConfig.ConvertMode = *config.Auto.ConvertMode
 	}
 	if len(config.Auto.QualityChecks) > 0 {
 		autoConfig.QualityChecks = config.Auto.QualityChecks

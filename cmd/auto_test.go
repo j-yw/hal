@@ -54,14 +54,14 @@ func chdirTemp(t *testing.T) {
 }
 
 func TestAutoCommand_HelpDescribesSourcePriority(t *testing.T) {
-	if !strings.Contains(autoCmd.Long, "Source selection order") {
-		t.Fatalf("auto help should describe source selection order: %q", autoCmd.Long)
+	if !strings.Contains(autoCmd.Long, "Source selection (when not resuming)") {
+		t.Fatalf("auto help should describe source selection behavior: %q", autoCmd.Long)
 	}
-	if !strings.Contains(autoCmd.Long, "newest .hal/prd-*.md") {
-		t.Fatalf("auto help should mention markdown auto-discovery: %q", autoCmd.Long)
+	if !strings.Contains(autoCmd.Long, "auto.sourcePriority") {
+		t.Fatalf("auto help should mention auto.sourcePriority config: %q", autoCmd.Long)
 	}
-	if !strings.Contains(autoCmd.Long, "Report preflight checks run only when auto does not have a markdown source") {
-		t.Fatalf("auto help should explain report preflight behavior: %q", autoCmd.Long)
+	if !strings.Contains(autoCmd.Long, "Convert mode policy") {
+		t.Fatalf("auto help should describe convert mode policy: %q", autoCmd.Long)
 	}
 	if !strings.Contains(autoCmd.Long, "--report report.md") {
 		t.Fatalf("auto examples should include --report usage: %q", autoCmd.Long)
@@ -108,6 +108,53 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 		if autoCmd.LocalFlags().Lookup(legacyFlag) != nil {
 			t.Fatalf("legacy dual-mode runtime flag %q should not be exposed", legacyFlag)
 		}
+	}
+}
+
+func TestBuildAutoHeaderContext(t *testing.T) {
+	tests := []struct {
+		name                 string
+		resume               bool
+		entryMode            autoEntryMode
+		autoDiscoveredSource bool
+		convertMode          string
+		want                 string
+	}{
+		{
+			name:        "resume flow",
+			resume:      true,
+			entryMode:   autoEntryModeMarkdownPath,
+			convertMode: compound.AutoConvertModeGranular,
+			want:        "auto pipeline · resume from saved state · convert mode: granular",
+		},
+		{
+			name:                 "auto discovered markdown source",
+			entryMode:            autoEntryModeMarkdownPath,
+			autoDiscoveredSource: true,
+			convertMode:          compound.AutoConvertModeStandard,
+			want:                 "auto pipeline · entry: markdown PRD (auto-discovered) · convert mode: standard",
+		},
+		{
+			name:        "explicit markdown source",
+			entryMode:   autoEntryModeMarkdownPath,
+			convertMode: compound.AutoConvertModeStandard,
+			want:        "auto pipeline · entry: markdown PRD · convert mode: standard",
+		},
+		{
+			name:        "report discovery source",
+			entryMode:   autoEntryModeReportDiscovery,
+			convertMode: compound.AutoConvertModeGranular,
+			want:        "auto pipeline · entry: report discovery · convert mode: granular",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildAutoHeaderContext(tt.resume, tt.entryMode, tt.autoDiscoveredSource, tt.convertMode)
+			if got != tt.want {
+				t.Fatalf("buildAutoHeaderContext() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -160,6 +207,38 @@ func assertAutoJSONContractV2(t *testing.T, data []byte) {
 	}
 }
 
+func TestRunAuto_DryRunHeaderUsesAutoPipelineLabel(t *testing.T) {
+	chdirTemp(t)
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "compound pipeline") {
+		t.Fatalf("header should not mention compound pipeline: %q", output)
+	}
+	if !strings.Contains(output, "auto pipeline") {
+		t.Fatalf("header should mention auto pipeline: %q", output)
+	}
+	if !strings.Contains(output, "entry: report discovery") || !strings.Contains(output, "convert mode:") || !strings.Contains(output, "granular") {
+		t.Fatalf("header should describe report entry + granular convert mode: %q", output)
+	}
+}
+
 func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 	chdirTemp(t)
 
@@ -184,8 +263,9 @@ func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 	if result.EntryMode != string(autoEntryModeReportDiscovery) {
 		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeReportDiscovery)
 	}
-	if !strings.Contains(result.Error, "reports directory does not exist") {
-		t.Fatalf("result.Error = %q, want reports directory guidance", result.Error)
+	wantErr := "no auto source found (sourcePriority=report_first): looked for latest report in auto.reportsDir, then newest .hal/prd-*.md; provide 'hal auto <prd-path>' or '--report <path>'"
+	if result.Error != wantErr {
+		t.Fatalf("result.Error = %q, want %q", result.Error, wantErr)
 	}
 	if result.NextAction == nil {
 		t.Fatal("result.NextAction should not be nil")
@@ -193,11 +273,58 @@ func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 	if result.NextAction.ID != "run_auto" {
 		t.Fatalf("result.NextAction.ID = %q, want run_auto", result.NextAction.ID)
 	}
+	if !strings.Contains(result.NextAction.Command, "<prd-path>") || !strings.Contains(result.NextAction.Command, "--report <path>") {
+		t.Fatalf("result.NextAction.Command = %q, want markdown/report guidance", result.NextAction.Command)
+	}
 	if strings.Contains(out.String(), "No reports found.") {
-		t.Fatalf("stdout should not include text-mode message: %q", out.String())
+		t.Fatalf("stdout should not include legacy text-mode message: %q", out.String())
 	}
 	if strings.Contains(out.String(), "compound pipeline") {
 		t.Fatalf("stdout should not include command header: %q", out.String())
+	}
+}
+
+func TestRunAuto_NoSourceErrorsAreDeterministicForBothPriorities(t *testing.T) {
+	tests := []struct {
+		name        string
+		configYAML  string
+		wantErrText string
+	}{
+		{
+			name:        "report_first default",
+			configYAML:  "",
+			wantErrText: "no auto source found (sourcePriority=report_first): looked for latest report in auto.reportsDir, then newest .hal/prd-*.md; provide 'hal auto <prd-path>' or '--report <path>'",
+		},
+		{
+			name: "markdown_first configured",
+			configYAML: `auto:
+  sourcePriority: markdown_first
+`,
+			wantErrText: "no auto source found (sourcePriority=markdown_first): looked for newest .hal/prd-*.md, then latest report in auto.reportsDir; provide 'hal auto <prd-path>' or '--report <path>'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chdirTemp(t)
+			if strings.TrimSpace(tt.configYAML) != "" {
+				if err := os.MkdirAll(template.HalDir, 0755); err != nil {
+					t.Fatalf("mkdir .hal: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(template.HalDir, template.ConfigFile), []byte(tt.configYAML), 0644); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			}
+
+			cmd, _ := newAutoTestCommand(t)
+			err := runAuto(cmd, nil)
+			if err == nil {
+				t.Fatal("expected no-source error, got nil")
+			}
+			if err.Error() != tt.wantErrText {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.wantErrText)
+			}
+		})
 	}
 }
 
@@ -327,6 +454,9 @@ func TestRunAuto_JSONResumeEntryModeUsesSavedMarkdownPath(t *testing.T) {
 	}
 	if result.Steps.Spec.Status != autoStepStatusSkipped {
 		t.Fatalf("result.Steps.Spec.Status = %q, want %q", result.Steps.Spec.Status, autoStepStatusSkipped)
+	}
+	if result.Steps.Convert.Reason != compound.AutoConvertModeGranular {
+		t.Fatalf("result.Steps.Convert.Reason = %q, want %q", result.Steps.Convert.Reason, compound.AutoConvertModeGranular)
 	}
 }
 
@@ -495,6 +625,9 @@ func TestRunAuto_DryRunWithPositionalMarkdownStartsFromBranch(t *testing.T) {
 	}
 
 	output := out.String()
+	if !strings.Contains(output, "entry: markdown PRD") || !strings.Contains(output, "convert mode:") || !strings.Contains(output, "standard") {
+		t.Fatalf("expected markdown entry header with standard mode, got %q", output)
+	}
 	if !strings.Contains(output, "Step: branch") {
 		t.Fatalf("expected branch step in output, got %q", output)
 	}
@@ -509,7 +642,7 @@ func TestRunAuto_DryRunWithPositionalMarkdownStartsFromBranch(t *testing.T) {
 	}
 }
 
-func TestRunAuto_DryRunWithoutInputsPrefersNewestMarkdownPRD(t *testing.T) {
+func TestRunAuto_DryRunWithoutInputsUsesReportFirstByDefault(t *testing.T) {
 	chdirTemp(t)
 
 	if err := os.MkdirAll(filepath.Join(template.HalDir, "reports"), 0755); err != nil {
@@ -548,20 +681,62 @@ func TestRunAuto_DryRunWithoutInputsPrefersNewestMarkdownPRD(t *testing.T) {
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "Source markdown: "+newerPRD) {
-		t.Fatalf("expected newest discovered markdown source %q in output, got %q", newerPRD, output)
+	if strings.Contains(output, "Source markdown:") {
+		t.Fatalf("default report_first discovery should not pick markdown when report exists, output=%q", output)
 	}
-	if strings.Contains(output, "Step: analyze") {
-		t.Fatalf("newest markdown discovery should skip analyze, output=%q", output)
+	if !strings.Contains(output, "entry: report discovery") || !strings.Contains(output, "convert mode:") || !strings.Contains(output, "granular") {
+		t.Fatalf("expected report entry header with granular mode, got %q", output)
 	}
-	if strings.Contains(output, "Step: spec") {
-		t.Fatalf("newest markdown discovery should skip spec, output=%q", output)
+	if !strings.Contains(output, "Step: analyze") {
+		t.Fatalf("report-first discovery should run analyze, output=%q", output)
+	}
+	if !strings.Contains(output, "Step: spec") {
+		t.Fatalf("report-first discovery should run spec, output=%q", output)
 	}
 	if !strings.Contains(output, "Step: branch") {
 		t.Fatalf("expected branch step in output, got %q", output)
 	}
-	if !strings.Contains(output, "Would create branch: hal/newer-preferred-source") {
-		t.Fatalf("expected branch derived from newest markdown title, got %q", output)
+}
+
+func TestRunAuto_DryRunWithoutInputsUsesMarkdownWhenPriorityConfigured(t *testing.T) {
+	chdirTemp(t)
+
+	if err := os.MkdirAll(filepath.Join(template.HalDir, "reports"), 0755); err != nil {
+		t.Fatalf("mkdir reports dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(template.HalDir, "reports", "report.md"), []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(template.HalDir, template.ConfigFile), []byte("auto:\n  sourcePriority: markdown_first\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	newerPRD := filepath.Join(template.HalDir, "prd-newer.md")
+	if err := os.WriteFile(newerPRD, []byte("# PRD: Markdown Priority Source\n"), 0644); err != nil {
+		t.Fatalf("write newer prd: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "entry: markdown PRD (auto-discovered)") || !strings.Contains(output, "convert mode:") || !strings.Contains(output, "standard") {
+		t.Fatalf("expected markdown-first entry header with standard mode, got %q", output)
+	}
+	if !strings.Contains(output, "Source markdown: "+newerPRD) {
+		t.Fatalf("expected discovered markdown source %q in output, got %q", newerPRD, output)
+	}
+	if strings.Contains(output, "Step: analyze") {
+		t.Fatalf("markdown-first discovery should skip analyze, output=%q", output)
+	}
+	if strings.Contains(output, "Step: spec") {
+		t.Fatalf("markdown-first discovery should skip spec, output=%q", output)
 	}
 }
 
@@ -605,6 +780,46 @@ func TestRunAuto_JSONDryRunWithoutInputsPrefersNewestMarkdownPRD(t *testing.T) {
 	if result.Steps.Spec.Status != autoStepStatusSkipped {
 		t.Fatalf("result.Steps.Spec.Status = %q, want %q", result.Steps.Spec.Status, autoStepStatusSkipped)
 	}
+	if result.Steps.Convert.Reason != compound.AutoConvertModeStandard {
+		t.Fatalf("result.Steps.Convert.Reason = %q, want %q", result.Steps.Convert.Reason, compound.AutoConvertModeStandard)
+	}
+}
+
+func TestRunAuto_JSONDryRunReportEntryEmitsGranularConvertReason(t *testing.T) {
+	chdirTemp(t)
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	assertAutoJSONContractV2(t, out.Bytes())
+
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if result.EntryMode != string(autoEntryModeReportDiscovery) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeReportDiscovery)
+	}
+	if result.Steps.Convert.Reason != compound.AutoConvertModeGranular {
+		t.Fatalf("result.Steps.Convert.Reason = %q, want %q", result.Steps.Convert.Reason, compound.AutoConvertModeGranular)
+	}
 }
 
 func TestRunAuto_DryRunWithoutPositionalMarkdownRunsAnalyzeSpecBranchBeforeConvert(t *testing.T) {
@@ -628,6 +843,9 @@ func TestRunAuto_DryRunWithoutPositionalMarkdownRunsAnalyzeSpecBranchBeforeConve
 	}
 
 	output := out.String()
+	if !strings.Contains(output, "entry: report discovery") || !strings.Contains(output, "convert mode:") || !strings.Contains(output, "granular") {
+		t.Fatalf("expected report entry header with granular mode, got %q", output)
+	}
 	analyzeIdx := strings.Index(output, "Step: analyze")
 	specIdx := strings.Index(output, "Step: spec")
 	branchIdx := strings.Index(output, "Step: branch")
@@ -766,11 +984,11 @@ func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 			wantCommand: "hal init",
 		},
 		{
-			name:        "no reports suggests auto with report",
-			failure:     autoFailureNoReports,
+			name:        "no source suggests markdown or report",
+			failure:     autoFailureNoSource,
 			resumable:   false,
 			wantID:      "run_auto",
-			wantCommand: "hal auto --report <path>",
+			wantCommand: "hal auto <prd-path> | hal auto --report <path>",
 		},
 		{
 			name:        "pipeline failure with resumable state suggests resume",
@@ -791,7 +1009,7 @@ func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			jr := autoFailureResult(autoEntryModeReportDiscovery, false, "failed", "failed", tt.failure, tt.resumable, compound.StepValidate)
+			jr := autoFailureResult(autoEntryModeReportDiscovery, false, "failed", "failed", tt.failure, tt.resumable, compound.StepValidate, compound.AutoConvertModeGranular)
 			err := outputAutoJSON(&out, jr)
 			if err != nil {
 				t.Fatalf("outputAutoJSON returned error: %v", err)
@@ -814,5 +1032,25 @@ func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 				t.Fatalf("result.NextAction.Command = %q, want %q", result.NextAction.Command, tt.wantCommand)
 			}
 		})
+	}
+}
+
+func TestAutoFailurePolicySkipsAfterGate(t *testing.T) {
+	jr := autoFailureResult(autoEntryModeReportDiscovery, false, "failed", "failed", autoFailurePipeline, false, compound.StepReport, compound.AutoConvertModeGranular)
+
+	applyAutoFailurePolicySkips(&jr.Steps, compound.StepReport, true, true)
+	applyAutoFailureCIState(&jr.Steps, compound.StepReport, &compound.CIState{Status: "skipped", Reason: "ci_disabled_by_policy"})
+
+	if jr.Steps.Review.Status != autoStepStatusSkipped {
+		t.Fatalf("review status = %q, want %q", jr.Steps.Review.Status, autoStepStatusSkipped)
+	}
+	if jr.Steps.Review.Reason != "skip_review_flag" {
+		t.Fatalf("review reason = %q, want %q", jr.Steps.Review.Reason, "skip_review_flag")
+	}
+	if jr.Steps.CI.Status != autoStepStatusSkipped {
+		t.Fatalf("ci status = %q, want %q", jr.Steps.CI.Status, autoStepStatusSkipped)
+	}
+	if jr.Steps.CI.Reason != "ci_disabled_by_policy" {
+		t.Fatalf("ci reason = %q, want %q", jr.Steps.CI.Reason, "ci_disabled_by_policy")
 	}
 }

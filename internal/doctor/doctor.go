@@ -478,7 +478,7 @@ func missingAutoPolicyConfigKeys(raw map[string]interface{}) []string {
 		return nil
 	}
 
-	required := []string{"mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+	required := []string{"sourcePriority", "convertMode", "mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
 	missing := make([]string, 0, len(required))
 	for _, key := range required {
 		if _, exists := autoMap[key]; !exists {

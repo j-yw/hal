@@ -233,6 +233,10 @@ func TestRunPRStep_PushAndWaitPassing(t *testing.T) {
 		Step:       StepCI,
 		BranchName: "compound/ci-flow",
 		BaseBranch: "main",
+		CI: &CIState{
+			Status: ci.StatusPending,
+			Reason: ci.WaitTerminalReasonNoChecksDetected,
+		},
 		Analysis: &AnalysisResult{
 			PriorityItem:       "Implement deterministic CI flow",
 			Description:        "Ship CI command foundation",
@@ -252,6 +256,9 @@ func TestRunPRStep_PushAndWaitPassing(t *testing.T) {
 	}
 	if state.CI == nil || state.CI.Status != "passed" {
 		t.Fatalf("state.CI.Status = %v, want passed", state.CI)
+	}
+	if state.CI.Reason != "" {
+		t.Fatalf("state.CI.Reason = %q, want empty", state.CI.Reason)
 	}
 
 	if gotOpts.BaseRef != "main" {
@@ -315,6 +322,10 @@ func TestRunPRStep_WaitNoChecks_StopsAtCI(t *testing.T) {
 		Step:       StepCI,
 		BranchName: "compound/ci-flow",
 		BaseBranch: "main",
+		CI: &CIState{
+			Status: ci.StatusPending,
+			Reason: "wait_error",
+		},
 	}
 
 	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
@@ -361,6 +372,9 @@ func TestRunPRStep_FailingThenFixedToPassing(t *testing.T) {
 	}
 	if state.CI.Status != "passed" {
 		t.Fatalf("state.CI.Status = %q, want passed", state.CI.Status)
+	}
+	if state.CI.Reason != "" {
+		t.Fatalf("state.CI.Reason = %q, want empty", state.CI.Reason)
 	}
 	if state.CI.FixAttempts != 1 {
 		t.Fatalf("state.CI.FixAttempts = %d, want 1", state.CI.FixAttempts)

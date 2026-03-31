@@ -30,7 +30,7 @@ Core flow:
 
 Auto flow:
   hal auto [prd-path]
-  source priority: path > --report > newest .hal/prd-*.md > latest report
+  source selection uses auto.sourcePriority (default report_first: latest report -> newest .hal/prd-*.md)
 
 Review / reporting:
   hal report

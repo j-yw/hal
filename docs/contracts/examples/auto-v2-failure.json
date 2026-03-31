@@ -18,6 +18,7 @@
     },
     "convert": {
       "status": "completed",
+      "reason": "granular",
       "path": ".hal/prd.json",
       "tasks": 29
     },

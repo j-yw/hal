@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestInitializeBaseBranch_UsesSavedBaseAndIgnoresOverride(t *testing.T) {
@@ -77,7 +78,7 @@ func TestNewInitialState_WithSourceMarkdownStartsAtBranch(t *testing.T) {
 	}
 
 	pipeline := NewPipeline(&AutoConfig{}, nil, engine.NewDisplay(&bytes.Buffer{}), dir)
-	state, err := pipeline.newInitialState(RunOptions{SourceMarkdown: mdPath})
+	state, err := pipeline.newInitialState(RunOptions{SourceMarkdown: mdPath, ConvertMode: AutoConvertModeStandard})
 	if err != nil {
 		t.Fatalf("newInitialState returned error: %v", err)
 	}
@@ -91,11 +92,14 @@ func TestNewInitialState_WithSourceMarkdownStartsAtBranch(t *testing.T) {
 	if state.BranchName != "hal/entry-resolution" {
 		t.Fatalf("state.BranchName = %q, want %q", state.BranchName, "hal/entry-resolution")
 	}
+	if state.ConvertMode != AutoConvertModeStandard {
+		t.Fatalf("state.ConvertMode = %q, want %q", state.ConvertMode, AutoConvertModeStandard)
+	}
 }
 
 func TestNewInitialState_WithoutSourceMarkdownStartsAnalyze(t *testing.T) {
 	pipeline := NewPipeline(&AutoConfig{}, nil, engine.NewDisplay(&bytes.Buffer{}), t.TempDir())
-	state, err := pipeline.newInitialState(RunOptions{})
+	state, err := pipeline.newInitialState(RunOptions{ConvertMode: AutoConvertModeGranular})
 	if err != nil {
 		t.Fatalf("newInitialState returned error: %v", err)
 	}
@@ -105,6 +109,9 @@ func TestNewInitialState_WithoutSourceMarkdownStartsAnalyze(t *testing.T) {
 	}
 	if state.SourceMarkdown != "" {
 		t.Fatalf("state.SourceMarkdown = %q, want empty", state.SourceMarkdown)
+	}
+	if state.ConvertMode != AutoConvertModeGranular {
+		t.Fatalf("state.ConvertMode = %q, want %q", state.ConvertMode, AutoConvertModeGranular)
 	}
 }
 
@@ -148,6 +155,41 @@ func TestRunBranchStep_DryRun_SkipsSpecWhenSourceMarkdownIsPreset(t *testing.T) 
 	}
 	if state.Step != StepConvert {
 		t.Fatalf("state.Step = %q, want %q", state.Step, StepConvert)
+	}
+}
+
+func TestRunPRDStep_DryRun_SanitizesBranchNameForMarkdownPath(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir hal dir: %v", err)
+	}
+
+	var out bytes.Buffer
+	display := engine.NewDisplay(&out)
+
+	config := DefaultAutoConfig()
+	pipeline := NewPipeline(&config, nil, display, dir)
+
+	state := &PipelineState{
+		Step: StepSpec,
+		Analysis: &AnalysisResult{
+			BranchName: "compound/feature/auth-refresh",
+		},
+	}
+
+	if err := pipeline.runPRDStep(context.Background(), state, RunOptions{DryRun: true}); err != nil {
+		t.Fatalf("runPRDStep returned error: %v", err)
+	}
+
+	if state.Step != StepBranch {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepBranch)
+	}
+	if filepath.Dir(state.SourceMarkdown) != halDir {
+		t.Fatalf("state.SourceMarkdown dir = %q, want %q", filepath.Dir(state.SourceMarkdown), halDir)
+	}
+	if gotBase := filepath.Base(state.SourceMarkdown); gotBase != "prd-compound-feature-auth-refresh.md" {
+		t.Fatalf("state.SourceMarkdown base = %q, want %q", gotBase, "prd-compound-feature-auth-refresh.md")
 	}
 }
 

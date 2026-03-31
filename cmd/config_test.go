@@ -29,6 +29,12 @@ func TestRunConfigShowFn_MissingConfigUsesDefaults(t *testing.T) {
 	if !strings.Contains(out, "Default settings:") {
 		t.Fatalf("output should include defaults heading, got %q", out)
 	}
+	if !strings.Contains(out, "sourcePriority: report_first") {
+		t.Fatalf("defaults should include auto source priority, got %q", out)
+	}
+	if !strings.Contains(out, "convertMode: auto") {
+		t.Fatalf("defaults should include auto convert mode policy, got %q", out)
+	}
 	if !strings.Contains(out, "mode: balanced") {
 		t.Fatalf("defaults should include auto policy mode, got %q", out)
 	}

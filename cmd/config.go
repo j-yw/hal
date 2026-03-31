@@ -244,6 +244,8 @@ func printDefaults(out io.Writer) {
 	fmt.Fprintln(out, "  auto:")
 	fmt.Fprintln(out, "    reportsDir: .hal/reports")
 	fmt.Fprintln(out, "    branchPrefix: compound/")
+	fmt.Fprintln(out, "    sourcePriority: report_first   # report_first | markdown_first")
+	fmt.Fprintln(out, "    convertMode: auto              # auto | standard | granular")
 	fmt.Fprintln(out, "    maxIterations: 25")
 	fmt.Fprintln(out, "    mode: balanced        # fast | balanced | strict")
 	fmt.Fprintln(out, "    ciEnabled: true")

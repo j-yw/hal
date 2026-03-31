@@ -97,6 +97,9 @@ func TestLoadState_LegacyMappings(t *testing.T) {
 			if state.SourceMarkdown != tt.wantSource {
 				t.Fatalf("state.SourceMarkdown = %q, want %q", state.SourceMarkdown, tt.wantSource)
 			}
+			if state.ConvertMode != AutoConvertModeGranular {
+				t.Fatalf("state.ConvertMode = %q, want %q", state.ConvertMode, AutoConvertModeGranular)
+			}
 			if tt.wantRun == nil {
 				if state.Run != nil {
 					t.Fatalf("state.Run = %+v, want nil", state.Run)
@@ -127,6 +130,7 @@ func TestStateRoundTrip_UsesUnifiedSchema(t *testing.T) {
 		Step:           StepRun,
 		BaseBranch:     "develop",
 		BranchName:     "hal/feature",
+		ConvertMode:    AutoConvertModeStandard,
 		SourceMarkdown: ".hal/prd-feature.md",
 		ReportPath:     ".hal/reports/report.md",
 		StartedAt:      now,
@@ -165,7 +169,7 @@ func TestStateRoundTrip_UsesUnifiedSchema(t *testing.T) {
 		t.Fatalf("unmarshal saved state: %v", err)
 	}
 
-	requiredKeys := []string{"step", "baseBranch", "branchName", "sourceMarkdown", "reportPath", "startedAt", "validation", "run", "review", "ci", "analysis"}
+	requiredKeys := []string{"step", "baseBranch", "branchName", "convertMode", "sourceMarkdown", "reportPath", "startedAt", "validation", "run", "review", "ci", "analysis"}
 	for _, key := range requiredKeys {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("saved state missing key %q", key)
@@ -190,6 +194,9 @@ func TestStateRoundTrip_UsesUnifiedSchema(t *testing.T) {
 	if loaded.SourceMarkdown != original.SourceMarkdown {
 		t.Fatalf("loaded.SourceMarkdown = %q, want %q", loaded.SourceMarkdown, original.SourceMarkdown)
 	}
+	if loaded.ConvertMode != original.ConvertMode {
+		t.Fatalf("loaded.ConvertMode = %q, want %q", loaded.ConvertMode, original.ConvertMode)
+	}
 	if loaded.Run == nil || loaded.Run.Iterations != original.Run.Iterations {
 		t.Fatalf("loaded.Run = %+v, want iterations %d", loaded.Run, original.Run.Iterations)
 	}
@@ -198,6 +205,61 @@ func TestStateRoundTrip_UsesUnifiedSchema(t *testing.T) {
 	}
 	if loaded.CI == nil || loaded.CI.Reason != original.CI.Reason {
 		t.Fatalf("loaded.CI = %+v, want reason %q", loaded.CI, original.CI.Reason)
+	}
+}
+
+func TestLoadState_NormalizesConvertMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  string
+		wantMode string
+	}{
+		{
+			name: "missing convertMode defaults to granular",
+			payload: `{
+  "step": "convert",
+  "branchName": "hal/feature",
+  "startedAt": "2026-03-29T00:00:00Z"
+}`,
+			wantMode: AutoConvertModeGranular,
+		},
+		{
+			name: "invalid convertMode defaults to granular",
+			payload: `{
+  "step": "convert",
+  "branchName": "hal/feature",
+  "convertMode": "auto",
+  "startedAt": "2026-03-29T00:00:00Z"
+}`,
+			wantMode: AutoConvertModeGranular,
+		},
+		{
+			name: "standard convertMode is preserved",
+			payload: `{
+  "step": "convert",
+  "branchName": "hal/feature",
+  "convertMode": "standard",
+  "startedAt": "2026-03-29T00:00:00Z"
+}`,
+			wantMode: AutoConvertModeStandard,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pipeline := newStateTestPipeline(t)
+			if err := os.WriteFile(pipeline.statePath(), []byte(tt.payload), 0644); err != nil {
+				t.Fatalf("write state: %v", err)
+			}
+
+			state := pipeline.loadState()
+			if state == nil {
+				t.Fatal("loadState returned nil")
+			}
+			if state.ConvertMode != tt.wantMode {
+				t.Fatalf("state.ConvertMode = %q, want %q", state.ConvertMode, tt.wantMode)
+			}
+		})
 	}
 }
 

@@ -110,8 +110,8 @@ func TestRunContinueFn_JSONAutoInactiveUsesSinglePipelineNextAction(t *testing.T
 	if !strings.Contains(result.NextDescription, "auto pipeline") {
 		t.Fatalf("nextDescription should mention auto pipeline: %q", result.NextDescription)
 	}
-	if !strings.Contains(result.NextDescription, "prefers newest .hal/prd-*.md") {
-		t.Fatalf("nextDescription should mention PRD-first priority: %q", result.NextDescription)
+	if !strings.Contains(result.NextDescription, "auto.sourcePriority") {
+		t.Fatalf("nextDescription should mention config-driven auto source priority: %q", result.NextDescription)
 	}
 	if strings.Contains(strings.ToLower(result.NextDescription), "compound") {
 		t.Fatalf("nextDescription should not mention legacy compound wording: %q", result.NextDescription)
@@ -172,8 +172,8 @@ func TestContinueCmdHelp(t *testing.T) {
 	if cmd.Long == "" {
 		t.Fatal("Long is empty")
 	}
-	if !strings.Contains(cmd.Long, "newest .hal/prd-*.md") {
-		t.Fatalf("Long should describe PRD-first auto source priority: %q", cmd.Long)
+	if !strings.Contains(cmd.Long, "auto.sourcePriority") {
+		t.Fatalf("Long should describe config-driven auto source priority: %q", cmd.Long)
 	}
 	if !strings.Contains(cmd.Example, "hal continue") {
 		t.Fatalf("Example missing 'hal continue': %s", cmd.Example)

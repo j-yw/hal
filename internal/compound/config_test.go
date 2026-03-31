@@ -18,6 +18,12 @@ func TestDefaultAutoConfig(t *testing.T) {
 	if cfg.BranchPrefix != "compound/" {
 		t.Errorf("BranchPrefix = %q, want %q", cfg.BranchPrefix, "compound/")
 	}
+	if cfg.SourcePriority != AutoSourcePriorityReportFirst {
+		t.Errorf("SourcePriority = %q, want %q", cfg.SourcePriority, AutoSourcePriorityReportFirst)
+	}
+	if cfg.ConvertMode != AutoConvertModeAuto {
+		t.Errorf("ConvertMode = %q, want %q", cfg.ConvertMode, AutoConvertModeAuto)
+	}
 	if cfg.MaxIterations != 25 {
 		t.Errorf("MaxIterations = %d, want %d", cfg.MaxIterations, 25)
 	}
@@ -121,6 +127,12 @@ func assertConfigMatchesDefaults(t *testing.T, got, want *AutoConfig) {
 	if got.MaxIterations != want.MaxIterations {
 		t.Errorf("MaxIterations = %d, want %d", got.MaxIterations, want.MaxIterations)
 	}
+	if got.SourcePriority != want.SourcePriority {
+		t.Errorf("SourcePriority = %q, want %q", got.SourcePriority, want.SourcePriority)
+	}
+	if got.ConvertMode != want.ConvertMode {
+		t.Errorf("ConvertMode = %q, want %q", got.ConvertMode, want.ConvertMode)
+	}
 	if len(got.QualityChecks) != len(want.QualityChecks) {
 		t.Errorf("QualityChecks length = %d, want %d", len(got.QualityChecks), len(want.QualityChecks))
 	}
@@ -145,23 +157,27 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 	defaults := DefaultAutoConfig()
 
 	tests := []struct {
-		name             string
-		yaml             string
-		wantDir          string
-		wantPrefix       string
-		wantMaxIter      int
-		wantQCCount      int
-		wantMode         string
-		wantCIEnabled    bool
-		wantReview       bool
-		wantReviewStreak int
-		wantReviewMax    int
+		name               string
+		yaml               string
+		wantDir            string
+		wantPrefix         string
+		wantSourcePriority string
+		wantConvertMode    string
+		wantMaxIter        int
+		wantQCCount        int
+		wantMode           string
+		wantCIEnabled      bool
+		wantReview         bool
+		wantReviewStreak   int
+		wantReviewMax      int
 	}{
 		{
 			name: "full config overrides all defaults",
 			yaml: `auto:
   reportsDir: "custom/reports"
   branchPrefix: "feature/"
+  sourcePriority: markdown_first
+  convertMode: standard
   maxIterations: 10
   qualityChecks:
     - "make test"
@@ -172,73 +188,83 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
   reviewCleanStreak: 4
   reviewMaxIterations: 12
 `,
-			wantDir:          "custom/reports",
-			wantPrefix:       "feature/",
-			wantMaxIter:      10,
-			wantQCCount:      2,
-			wantMode:         AutoModeStrict,
-			wantCIEnabled:    false,
-			wantReview:       true,
-			wantReviewStreak: 4,
-			wantReviewMax:    12,
+			wantDir:            "custom/reports",
+			wantPrefix:         "feature/",
+			wantSourcePriority: AutoSourcePriorityMarkdownFirst,
+			wantConvertMode:    AutoConvertModeStandard,
+			wantMaxIter:        10,
+			wantQCCount:        2,
+			wantMode:           AutoModeStrict,
+			wantCIEnabled:      false,
+			wantReview:         true,
+			wantReviewStreak:   4,
+			wantReviewMax:      12,
 		},
 		{
 			name: "partial config merges with defaults",
 			yaml: `auto:
   reportsDir: "my/reports"
 `,
-			wantDir:          "my/reports",
-			wantPrefix:       defaults.BranchPrefix,
-			wantMaxIter:      defaults.MaxIterations,
-			wantQCCount:      0,
-			wantMode:         defaults.Mode,
-			wantCIEnabled:    defaults.CIEnabled,
-			wantReview:       defaults.ReviewEnabled,
-			wantReviewStreak: defaults.ReviewCleanStreak,
-			wantReviewMax:    defaults.ReviewMaxIterations,
+			wantDir:            "my/reports",
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           defaults.Mode,
+			wantCIEnabled:      defaults.CIEnabled,
+			wantReview:         defaults.ReviewEnabled,
+			wantReviewStreak:   defaults.ReviewCleanStreak,
+			wantReviewMax:      defaults.ReviewMaxIterations,
 		},
 		{
-			name:             "empty auto section uses all defaults",
-			yaml:             "auto:\n",
-			wantDir:          defaults.ReportsDir,
-			wantPrefix:       defaults.BranchPrefix,
-			wantMaxIter:      defaults.MaxIterations,
-			wantQCCount:      0,
-			wantMode:         defaults.Mode,
-			wantCIEnabled:    defaults.CIEnabled,
-			wantReview:       defaults.ReviewEnabled,
-			wantReviewStreak: defaults.ReviewCleanStreak,
-			wantReviewMax:    defaults.ReviewMaxIterations,
+			name:               "empty auto section uses all defaults",
+			yaml:               "auto:\n",
+			wantDir:            defaults.ReportsDir,
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           defaults.Mode,
+			wantCIEnabled:      defaults.CIEnabled,
+			wantReview:         defaults.ReviewEnabled,
+			wantReviewStreak:   defaults.ReviewCleanStreak,
+			wantReviewMax:      defaults.ReviewMaxIterations,
 		},
 		{
 			name: "mode strict applies stricter defaults",
 			yaml: `auto:
   mode: strict
 `,
-			wantDir:          defaults.ReportsDir,
-			wantPrefix:       defaults.BranchPrefix,
-			wantMaxIter:      defaults.MaxIterations,
-			wantQCCount:      0,
-			wantMode:         AutoModeStrict,
-			wantCIEnabled:    true,
-			wantReview:       true,
-			wantReviewStreak: 3,
-			wantReviewMax:    15,
+			wantDir:            defaults.ReportsDir,
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           AutoModeStrict,
+			wantCIEnabled:      true,
+			wantReview:         true,
+			wantReviewStreak:   3,
+			wantReviewMax:      15,
 		},
 		{
 			name: "mode fast disables review and ci by default",
 			yaml: `auto:
   mode: fast
 `,
-			wantDir:          defaults.ReportsDir,
-			wantPrefix:       defaults.BranchPrefix,
-			wantMaxIter:      defaults.MaxIterations,
-			wantQCCount:      0,
-			wantMode:         AutoModeFast,
-			wantCIEnabled:    false,
-			wantReview:       false,
-			wantReviewStreak: 1,
-			wantReviewMax:    5,
+			wantDir:            defaults.ReportsDir,
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           AutoModeFast,
+			wantCIEnabled:      false,
+			wantReview:         false,
+			wantReviewStreak:   1,
+			wantReviewMax:      5,
 		},
 	}
 
@@ -266,6 +292,12 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 			}
 			if cfg.MaxIterations != tt.wantMaxIter {
 				t.Errorf("MaxIterations = %d, want %d", cfg.MaxIterations, tt.wantMaxIter)
+			}
+			if cfg.SourcePriority != tt.wantSourcePriority {
+				t.Errorf("SourcePriority = %q, want %q", cfg.SourcePriority, tt.wantSourcePriority)
+			}
+			if cfg.ConvertMode != tt.wantConvertMode {
+				t.Errorf("ConvertMode = %q, want %q", cfg.ConvertMode, tt.wantConvertMode)
 			}
 			if len(cfg.QualityChecks) != tt.wantQCCount {
 				t.Errorf("QualityChecks length = %d, want %d", len(cfg.QualityChecks), tt.wantQCCount)
@@ -456,6 +488,20 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
   mode: turbo
 `,
 			wantErrSub: "auto.mode",
+		},
+		{
+			name: "invalid sourcePriority triggers validation",
+			yaml: `auto:
+  sourcePriority: reports_first
+`,
+			wantErrSub: "auto.sourcePriority must be one of report_first, markdown_first",
+		},
+		{
+			name: "invalid convertMode triggers validation",
+			yaml: `auto:
+  convertMode: task
+`,
+			wantErrSub: "auto.convertMode must be one of auto, standard, granular",
 		},
 		{
 			name: "review clean streak must be positive",

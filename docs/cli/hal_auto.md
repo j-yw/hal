@@ -17,16 +17,20 @@ Entry behavior:
 - hal auto <prd-path>: skips analyze/spec and starts at branch
 - --resume ignores positional prd-path and --report
 
-Source selection order (when not resuming):
+Source selection (when not resuming):
   1. positional markdown path (hal auto <prd-path>)
   2. explicit report path (hal auto --report <path>)
-  3. newest .hal/prd-*.md (auto-discovered)
-  4. latest report in auto.reportsDir
+  3. discovery order uses auto.sourcePriority
+     - report_first (default): latest report in auto.reportsDir -> newest .hal/prd-*.md
+     - markdown_first: newest .hal/prd-*.md -> latest report in auto.reportsDir
 
-Report preflight checks run only when auto does not have a markdown source.
+Convert mode policy:
+  - auto.convertMode=auto (default): markdown entry -> standard, report entry -> granular
+  - auto.convertMode=standard|granular overrides entry defaults for new runs
+  - --resume always uses saved state convert mode
 
 Examples:
-  hal auto                           # Prefer newest .hal/prd-*.md, else latest report
+  hal auto                           # Uses auto.sourcePriority discovery + auto.convertMode policy
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
   hal auto --report report.md        # Force report-driven flow (skip markdown auto-discovery)
   hal auto --mode strict             # Strict gate policy (review+ci, 3 clean review cycles)

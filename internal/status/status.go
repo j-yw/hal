@@ -22,6 +22,8 @@ import (
 // ContractVersion is the current version of the status contract.
 const ContractVersion = 1
 
+const autoSourcePriorityGuidance = "uses auto.sourcePriority (default report_first: latest report -> newest .hal/prd-*.md)"
+
 // Workflow track values.
 const (
 	TrackManual = "manual"
@@ -352,9 +354,9 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 			nextAction = NextAction{
 				ID:          ActionRunAuto,
 				Command:     "hal auto",
-				Description: "Start the auto pipeline (prefers newest .hal/prd-*.md, then latest report).",
+				Description: "Start the auto pipeline (" + autoSourcePriorityGuidance + ").",
 			}
-			summary = fmt.Sprintf("Manual workflow is complete (%d/%d stories); auto pipeline ready (prefers newest .hal/prd-*.md, then reports).", completed, total)
+			summary = fmt.Sprintf("Manual workflow is complete (%d/%d stories); auto pipeline ready (%s).", completed, total, autoSourcePriorityGuidance)
 		}
 		return StatusResult{
 			ContractVersion: ContractVersion,
@@ -417,11 +419,11 @@ func classifyAuto(halDir string, artifacts Artifacts) StatusResult {
 			NextAction: NextAction{
 				ID:          ActionRunAuto,
 				Command:     "hal auto",
-				Description: "Start a new auto pipeline run (prefers newest .hal/prd-*.md, then latest report).",
+				Description: "Start a new auto pipeline run (" + autoSourcePriorityGuidance + ").",
 			},
 			Compound: compound,
 			Paths:    paths,
-			Summary:  "Auto pipeline is inactive; start a new run with hal auto (prefers newest .hal/prd-*.md, then reports).",
+			Summary:  "Auto pipeline is inactive; start a new run with hal auto (" + autoSourcePriorityGuidance + ").",
 		}
 	}
 

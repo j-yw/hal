@@ -237,7 +237,7 @@ auto:
 	if !ok {
 		t.Fatalf("auto section missing after repair: %#v", raw["auto"])
 	}
-	for _, key := range []string{"mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"} {
+	for _, key := range []string{"sourcePriority", "convertMode", "mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"} {
 		if _, exists := auto[key]; !exists {
 			t.Fatalf("expected auto.%s to be present after repair", key)
 		}
