@@ -2,12 +2,16 @@ package loop
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -272,4 +276,218 @@ func TestLoadPrompt_OldTemplateWithoutPlaceholder(t *testing.T) {
 	if !strings.Contains(prompt, "# Agent") {
 		t.Error("prompt content is missing")
 	}
+}
+
+// fakeEngine is a mock engine for testing the loop.
+type fakeEngine struct {
+	calls   int
+	results []engine.Result
+	prompts []string // capture prompts passed to Execute
+}
+
+func (f *fakeEngine) Name() string { return "fake" }
+func (f *fakeEngine) Execute(_ context.Context, prompt string, _ *engine.Display) engine.Result {
+	f.prompts = append(f.prompts, prompt)
+	idx := f.calls
+	f.calls++
+	if idx < len(f.results) {
+		return f.results[idx]
+	}
+	return engine.Result{Success: true}
+}
+func (f *fakeEngine) Prompt(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+func (f *fakeEngine) StreamPrompt(_ context.Context, _ string, _ *engine.Display) (string, error) {
+	return "", nil
+}
+
+// setupTestHalDir creates a minimal .hal directory with prompt.md and prd.json.
+func setupTestHalDir(t *testing.T, stories []engine.UserStory) string {
+	t.Helper()
+	halDir := t.TempDir()
+
+	// Write prompt.md
+	promptContent := "# Agent\n\n## Task\n\n1. Read `.hal/{{PRD_FILE}}`\n2. Read `.hal/{{PROGRESS_FILE}}`\n"
+	if err := os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte(promptContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write prd.json
+	prd := map[string]interface{}{
+		"project":     "test",
+		"branchName":  "main",
+		"userStories": stories,
+	}
+	data, _ := json.Marshal(prd)
+	if err := os.WriteFile(filepath.Join(halDir, "prd.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	return halDir
+}
+
+func TestFalseCompleteInjectsFeedback(t *testing.T) {
+	// Create a PRD with one pending story
+	stories := []engine.UserStory{
+		{
+			ID:                 "FIX-001",
+			Title:              "Fix auth",
+			Description:        "Fix authentication",
+			AcceptanceCriteria: []string{"auth works"},
+			Priority:           1,
+			Passes:             false,
+		},
+	}
+	halDir := setupTestHalDir(t, stories)
+
+	// Engine returns COMPLETE on every call (simulating the bug)
+	fe := &fakeEngine{
+		results: []engine.Result{
+			{Success: true, Complete: true},
+			{Success: true, Complete: true},
+			{Success: true, Complete: true},
+		},
+	}
+
+	var logBuf bytes.Buffer
+	runner := &Runner{
+		config: Config{
+			Dir:           halDir,
+			PRDFile:       "prd.json",
+			ProgressFile:  "progress.txt",
+			MaxIterations: 3,
+			Logger:        &logBuf,
+			RetryDelay:    time.Millisecond,
+			MaxRetries:    0,
+		},
+		engine:  fe,
+		display: engine.NewDisplay(&logBuf),
+	}
+
+	result := runner.Run(context.Background())
+
+	// Should NOT report complete (story is still pending)
+	if result.Complete {
+		t.Error("loop should not report complete when story is still pending")
+	}
+
+	// Engine should have been called 3 times (max iterations)
+	if fe.calls != 3 {
+		t.Errorf("expected 3 engine calls, got %d", fe.calls)
+	}
+
+	// Second prompt should contain feedback about the false COMPLETE
+	if len(fe.prompts) < 2 {
+		t.Fatal("expected at least 2 prompts captured")
+	}
+	if !strings.Contains(fe.prompts[1], "FIX-001") {
+		t.Error("second prompt should mention the pending story ID")
+	}
+	if !strings.Contains(fe.prompts[1], "Iteration 1 Feedback") {
+		t.Error("second prompt should contain iteration feedback header")
+	}
+	if !strings.Contains(fe.prompts[1], "passes: false") {
+		t.Error("second prompt should mention passes: false")
+	}
+
+	// Third prompt should have TWO feedback sections (cumulative)
+	if !strings.Contains(fe.prompts[2], "Iteration 1 Feedback") {
+		t.Error("third prompt should still contain first feedback")
+	}
+	if !strings.Contains(fe.prompts[2], "Iteration 2 Feedback") {
+		t.Error("third prompt should contain second feedback")
+	}
+
+	// Log output should show the warnings
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "FIX-001 is still pending") {
+		t.Error("log should contain pending story warning")
+	}
+}
+
+func TestFalseCompleteAcceptsWhenPRDUpdated(t *testing.T) {
+	stories := []engine.UserStory{
+		{
+			ID:       "FIX-001",
+			Title:    "Fix auth",
+			Priority: 1,
+			Passes:   false,
+		},
+	}
+	halDir := setupTestHalDir(t, stories)
+	prdPath := filepath.Join(halDir, "prd.json")
+
+	callCount := 0
+	// First call: agent says COMPLETE but hasn't updated PRD
+	// Second call: agent updates PRD (we simulate this) and says COMPLETE
+	fe := &fakeEngine{
+		results: []engine.Result{
+			{Success: true, Complete: true},
+			{Success: true, Complete: true},
+		},
+	}
+
+	// Override Execute to update PRD on second call
+	origExecute := fe.Execute
+	fe2 := &fakeEngineWithHook{
+		fakeEngine: fe,
+		hook: func(prompt string) {
+			callCount++
+			if callCount == 2 {
+				// Simulate agent updating prd.json to mark story as passing
+				prd := map[string]interface{}{
+					"project":    "test",
+					"branchName": "main",
+					"userStories": []map[string]interface{}{
+						{"id": "FIX-001", "title": "Fix auth", "priority": 1, "passes": true},
+					},
+				}
+				data, _ := json.Marshal(prd)
+				os.WriteFile(prdPath, data, 0644)
+			}
+		},
+	}
+	_ = origExecute
+
+	var logBuf bytes.Buffer
+	runner := &Runner{
+		config: Config{
+			Dir:           halDir,
+			PRDFile:       "prd.json",
+			ProgressFile:  "progress.txt",
+			MaxIterations: 5,
+			Logger:        &logBuf,
+			RetryDelay:    time.Millisecond,
+			MaxRetries:    0,
+		},
+		engine:  fe2,
+		display: engine.NewDisplay(&logBuf),
+	}
+
+	result := runner.Run(context.Background())
+
+	// Should complete on iteration 2
+	if !result.Complete {
+		t.Error("loop should report complete after PRD is updated")
+	}
+	if result.Iterations != 2 {
+		t.Errorf("expected 2 iterations, got %d", result.Iterations)
+	}
+}
+
+// fakeEngineWithHook wraps fakeEngine and calls a hook before each Execute.
+type fakeEngineWithHook struct {
+	*fakeEngine
+	hook func(prompt string)
+}
+
+func (f *fakeEngineWithHook) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {
+	if f.hook != nil {
+		f.hook(prompt)
+	}
+	return f.fakeEngine.Execute(ctx, prompt, display)
+}
+func (f *fakeEngineWithHook) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
+	return f.fakeEngine.StreamPrompt(ctx, prompt, display)
 }
