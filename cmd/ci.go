@@ -633,9 +633,21 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		eng           engine.Engine
 		attempts      int
 		lastFixResult ci.FixResult
+		display       *engine.Display
 	)
+	if !opts.JSON {
+		display = engine.NewDisplay(out)
+	}
 
 	for attempts < opts.MaxAttempts {
+		if display != nil {
+			if attempts == 0 {
+				display.ShowInfo("Checking current CI status...\n")
+			} else {
+				display.ShowInfo("Rechecking CI status before attempt %d/%d...\n", attempts+1, opts.MaxAttempts)
+			}
+		}
+
 		status, err := deps.getStatus(ctx)
 		if err != nil {
 			return err
@@ -678,8 +690,13 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 
 		attempt := attempts + 1
+		if display != nil {
+			display.ShowInfo("Running fix attempt %d/%d...\n", attempt, opts.MaxAttempts)
+		}
+
 		fixResult, err := deps.fixWithEngine(ctx, status, ci.FixOptions{
 			Engine:      eng,
+			Display:     display,
 			Attempt:     attempt,
 			MaxAttempts: opts.MaxAttempts,
 		})
@@ -688,7 +705,14 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 		lastFixResult = fixResult
 
+		if display != nil {
+			display.ShowInfo("Waiting for CI checks after attempt %d/%d...\n", attempt, opts.MaxAttempts)
+			display.StartSpinner("Waiting for CI checks...")
+		}
 		verified, err := deps.waitForChecks(ctx, ci.WaitOptions{})
+		if display != nil {
+			display.StopSpinner()
+		}
 		if err != nil {
 			return err
 		}
@@ -700,6 +724,10 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 		if attempt >= opts.MaxAttempts {
 			return fmt.Errorf("ci status is %s after %d attempt(s); run 'hal ci status --wait' for details", verified.Status, attempt)
+		}
+
+		if display != nil {
+			display.ShowInfo("CI still failing after attempt %d/%d.\n", attempt, opts.MaxAttempts)
 		}
 
 		attempts = attempt

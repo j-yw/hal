@@ -801,6 +801,9 @@ func TestRunCIFixWithDeps_JSONOnlyOutput(t *testing.T) {
 			if opts.MaxAttempts != 3 {
 				t.Fatalf("opts.MaxAttempts = %d, want %d", opts.MaxAttempts, 3)
 			}
+			if opts.Display != nil {
+				t.Fatal("opts.Display should be nil in --json mode")
+			}
 			return want, nil
 		},
 	})
@@ -837,6 +840,64 @@ func TestRunCIFixWithDeps_JSONOnlyOutput(t *testing.T) {
 	}
 	if got.CommitSHA != want.CommitSHA {
 		t.Fatalf("commitSha = %q, want %q", got.CommitSHA, want.CommitSHA)
+	}
+}
+
+func TestRunCIFixWithDeps_HumanOutputShowsProgressAndPassesDisplay(t *testing.T) {
+	want := ci.FixResult{
+		ContractVersion: ci.FixContractVersion,
+		Attempt:         1,
+		MaxAttempts:     3,
+		Applied:         true,
+		Branch:          "hal/ci-fix",
+		CommitSHA:       "deadbeef",
+		Pushed:          true,
+		FilesChanged:    []string{"cmd/ci.go"},
+		Summary:         "applied ci fix attempt 1 on branch hal/ci-fix and pushed 1 file",
+	}
+
+	displayPassed := false
+
+	var buf bytes.Buffer
+	err := runCIFixWithDeps(context.Background(), ciFixRunOptions{MaxAttempts: 3, Engine: "codex"}, &buf, ciFixDeps{
+		newEngine: func(string) (engine.Engine, error) {
+			return ciFakeEngine{}, nil
+		},
+		getStatus: func(context.Context) (ci.StatusResult, error) {
+			return ci.StatusResult{Status: ci.StatusFailing, Branch: "hal/ci-fix"}, nil
+		},
+		waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+			return ci.StatusResult{Status: ci.StatusPassing, Branch: "hal/ci-fix"}, nil
+		},
+		fixWithEngine: func(_ context.Context, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+			if opts.Display == nil {
+				t.Fatal("opts.Display should be non-nil in human mode")
+			}
+			displayPassed = true
+			return want, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIFixWithDeps() error = %v", err)
+	}
+
+	output := buf.String()
+	for _, needle := range []string{
+		"Checking current CI status...",
+		"Running fix attempt 1/3...",
+		"Waiting for CI checks after attempt 1/3...",
+		"CI Fix",
+		"Status:",
+	} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("human output %q missing %q", output, needle)
+		}
+	}
+	if strings.Contains(strings.TrimSpace(output), "{\"") {
+		t.Fatalf("human output should not be JSON, got %q", output)
+	}
+	if !displayPassed {
+		t.Fatal("expected fixWithEngine to receive non-nil display")
 	}
 }
 
