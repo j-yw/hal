@@ -1127,7 +1127,7 @@ func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 			failure:     autoFailureNoSource,
 			resumable:   false,
 			wantID:      "run_auto",
-			wantCommand: "hal auto <prd-path>",
+			wantCommand: "hal auto <prd-path> or hal auto --report <path>",
 		},
 		{
 			name:        "pipeline failure with resumable state suggests resume",

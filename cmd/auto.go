@@ -1333,7 +1333,7 @@ func autoFailureNextAction(failure autoFailureKind, resumable bool) *AutoNextAct
 	case autoFailureNoSource:
 		return &AutoNextAction{
 			ID:          "run_auto",
-			Command:     "hal auto <prd-path>",
+			Command:     "hal auto <prd-path> or hal auto --report <path>",
 			Description: "Provide a markdown PRD path and rerun, or use hal auto --report <path>.",
 		}
 	case autoFailureNoResumeState:
