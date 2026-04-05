@@ -20,6 +20,7 @@ var (
 	autoDryRunFlag       bool
 	autoResumeFlag       bool
 	autoNoCIFlag         bool
+	autoSkipPRFlag       bool
 	autoNoReviewFlag     bool
 	autoModeFlag         string
 	autoReviewStreakFlag int
@@ -185,6 +186,9 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoDryRunFlag, "dry-run", false, "Show steps without executing")
 	autoCmd.Flags().BoolVar(&autoResumeFlag, "resume", false, "Continue from last saved state")
 	autoCmd.Flags().BoolVar(&autoNoCIFlag, "no-ci", false, "Disable CI gate for this run")
+	autoCmd.Flags().BoolVar(&autoSkipPRFlag, "skip-pr", false, "Deprecated alias for --no-ci")
+	_ = autoCmd.Flags().MarkHidden("skip-pr")
+	_ = autoCmd.Flags().MarkDeprecated("skip-pr", "use --no-ci instead")
 	autoCmd.Flags().BoolVar(&autoNoReviewFlag, "no-review", false, "Disable review gate for this run")
 	autoCmd.Flags().StringVarP(&autoModeFlag, "mode", "m", "", "Policy preset: fast, balanced, strict (default from config)")
 	autoCmd.Flags().IntVar(&autoReviewStreakFlag, "review-streak", 0, "Consecutive clean review cycles required (default from mode/config)")
@@ -206,6 +210,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	dryRun := autoDryRunFlag
 	resume := autoResumeFlag
 	noCI := autoNoCIFlag
+	skipPR := autoSkipPRFlag
 	noReview := autoNoReviewFlag
 	mode := autoModeFlag
 	reviewStreak := autoReviewStreakFlag
@@ -215,6 +220,8 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	baseBranch := autoBaseFlag
 	jsonMode := autoJSONFlag
 
+	noCIChanged := false
+	skipPRChanged := false
 	modeChanged := false
 	reviewStreakChanged := false
 	reviewMaxChanged := false
@@ -246,6 +253,15 @@ func runAuto(cmd *cobra.Command, args []string) error {
 				return err
 			}
 			noCI = value
+			noCIChanged = cmd.Flags().Changed("no-ci")
+		}
+		if cmd.Flags().Lookup("skip-pr") != nil {
+			value, err := cmd.Flags().GetBool("skip-pr")
+			if err != nil {
+				return err
+			}
+			skipPR = value
+			skipPRChanged = cmd.Flags().Changed("skip-pr")
 		}
 		if cmd.Flags().Lookup("no-review") != nil {
 			value, err := cmd.Flags().GetBool("no-review")
@@ -307,6 +323,9 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			jsonMode = value
 		}
 	}
+	if skipPRChanged && !noCIChanged {
+		noCI = skipPR
+	}
 
 	sourceMarkdown := ""
 	if len(args) > 0 {
@@ -359,6 +378,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 			convertModeTelemetry = normalizedMode
 		}
 	} else {
+		attemptedEntryMode := determineAutoEntryMode(sourceMarkdown)
 		selection, resolveErr := resolveAutoEntrySource(dir, config, sourceMarkdown, reportPath)
 		if resolveErr != nil {
 			resolvedConvertMode, _ = resolveAutoConvertModeForMissingSource(config.ConvertMode)
@@ -366,7 +386,7 @@ func runAuto(cmd *cobra.Command, args []string) error {
 				convertModeTelemetry = normalizedMode
 			}
 			if jsonMode {
-				jr := autoFailureResult(autoEntryModeReportDiscovery, false, resolveErr.Error(), resolveErr.Error(), autoFailureNoSource, false, "", convertModeTelemetry)
+				jr := autoFailureResult(attemptedEntryMode, false, resolveErr.Error(), resolveErr.Error(), autoFailureNoSource, false, "", convertModeTelemetry)
 				return outputAutoJSON(out, jr)
 			}
 			return resolveErr
@@ -552,7 +572,7 @@ func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipR
 		Steps:           steps,
 		Summary:         summary,
 		NextAction: &AutoNextAction{
-			ID:          "run_report",
+			ID:          "run_continue",
 			Command:     "hal continue",
 			Description: "Check workflow status and the next recommended command.",
 		},
@@ -1313,8 +1333,8 @@ func autoFailureNextAction(failure autoFailureKind, resumable bool) *AutoNextAct
 	case autoFailureNoSource:
 		return &AutoNextAction{
 			ID:          "run_auto",
-			Command:     "hal auto <prd-path> | hal auto --report <path>",
-			Description: "Provide a markdown PRD path or report path and rerun the auto pipeline.",
+			Command:     "hal auto <prd-path>",
+			Description: "Provide a markdown PRD path and rerun, or use hal auto --report <path>.",
 		}
 	case autoFailureNoResumeState:
 		return &AutoNextAction{

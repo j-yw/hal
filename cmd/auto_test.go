@@ -22,6 +22,7 @@ func newAutoTestCommand(t *testing.T) (*cobra.Command, *bytes.Buffer) {
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().Bool("resume", false, "")
 	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().Bool("skip-pr", false, "")
 	cmd.Flags().Bool("no-review", false, "")
 	cmd.Flags().String("mode", "", "")
 	cmd.Flags().Int("review-streak", 0, "")
@@ -81,6 +82,7 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 		"resume":        {},
 		"review-max":    {},
 		"review-streak": {},
+		"skip-pr":       {},
 	}
 
 	gotFlags := map[string]struct{}{}
@@ -101,6 +103,17 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 		if _, ok := expectedFlags[name]; !ok {
 			t.Fatalf("auto command exposes unexpected runtime flag %q; single-pipeline flag set should stay fixed", name)
 		}
+	}
+
+	skipPRFlag := autoCmd.LocalFlags().Lookup("skip-pr")
+	if skipPRFlag == nil {
+		t.Fatal("auto command missing legacy alias flag skip-pr")
+	}
+	if !skipPRFlag.Hidden {
+		t.Fatal("skip-pr alias should be hidden")
+	}
+	if skipPRFlag.Deprecated == "" {
+		t.Fatal("skip-pr alias should be marked deprecated")
 	}
 
 	legacyDualModeFlags := []string{"manual", "prd", "explode", "loop", "pr", "auto-prd", "from-step", "start-step"}
@@ -281,6 +294,37 @@ func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "compound pipeline") {
 		t.Fatalf("stdout should not include command header: %q", out.String())
+	}
+}
+
+func TestRunAuto_JSONMissingMarkdownPathPreservesMarkdownEntryMode(t *testing.T) {
+	chdirTemp(t)
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+
+	missingPath := filepath.Join(".", "missing.md")
+	if err := runAuto(cmd, []string{missingPath}); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	assertAutoJSONContractV2(t, out.Bytes())
+
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("result.OK = true, want false")
+	}
+	if result.EntryMode != string(autoEntryModeMarkdownPath) {
+		t.Fatalf("result.EntryMode = %q, want %q", result.EntryMode, autoEntryModeMarkdownPath)
+	}
+	wantErr := "markdown PRD not found: " + missingPath
+	if result.Error != wantErr {
+		t.Fatalf("result.Error = %q, want %q", result.Error, wantErr)
 	}
 }
 
@@ -925,6 +969,67 @@ func TestRunAuto_DryRunNoCIFlagSkipsCIStep(t *testing.T) {
 	}
 }
 
+func TestRunAuto_DryRunSkipPRAliasSkipsCIStep(t *testing.T) {
+	chdirTemp(t)
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+	if err := cmd.Flags().Set("skip-pr", "true"); err != nil {
+		t.Fatalf("set skip-pr flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Skipping CI step (--no-ci)") {
+		t.Fatalf("expected skip-pr alias to skip CI, got %q", output)
+	}
+}
+
+func TestRunAuto_DryRunNoCIWinsOverSkipPRAlias(t *testing.T) {
+	chdirTemp(t)
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+	if err := cmd.Flags().Set("skip-pr", "true"); err != nil {
+		t.Fatalf("set skip-pr flag: %v", err)
+	}
+	if err := cmd.Flags().Set("no-ci", "false"); err != nil {
+		t.Fatalf("set no-ci flag: %v", err)
+	}
+
+	if err := runAuto(cmd, nil); err != nil {
+		t.Fatalf("runAuto returned error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "Skipping CI step (--no-ci)") {
+		t.Fatalf("explicit --no-ci should take precedence over skip-pr alias, got %q", output)
+	}
+}
+
 func TestRunAuto_DryRunNoReviewSkipsReviewGate(t *testing.T) {
 	chdirTemp(t)
 
@@ -1022,7 +1127,7 @@ func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 			failure:     autoFailureNoSource,
 			resumable:   false,
 			wantID:      "run_auto",
-			wantCommand: "hal auto <prd-path> | hal auto --report <path>",
+			wantCommand: "hal auto <prd-path>",
 		},
 		{
 			name:        "pipeline failure with resumable state suggests resume",

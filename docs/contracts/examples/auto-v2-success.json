@@ -51,7 +51,7 @@
   },
   "summary": "Auto pipeline completed successfully.",
   "nextAction": {
-    "id": "run_report",
+    "id": "run_continue",
     "command": "hal continue",
     "description": "Check workflow status and the next recommended command."
   }
