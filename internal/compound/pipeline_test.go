@@ -433,11 +433,11 @@ func TestStateAtomicWrite(t *testing.T) {
 	pipeline := NewPipeline(&config, mockEng, display, dir)
 
 	state := &PipelineState{
-		Step:       StepPRD,
-		BranchName: "compound/atomic-test",
-		ReportPath: "/tmp/report.md",
-		PRDPath:    ".hal/prd-test.md",
-		StartedAt:  time.Now(),
+		Step:           StepSpec,
+		BranchName:     "compound/atomic-test",
+		ReportPath:     "/tmp/report.md",
+		SourceMarkdown: ".hal/prd-test.md",
+		StartedAt:      time.Now(),
 		Analysis: &AnalysisResult{
 			PriorityItem:       "Atomic Test",
 			Description:        "Testing atomic writes",

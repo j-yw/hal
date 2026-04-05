@@ -221,6 +221,15 @@ type ciMergeRunOptions struct {
 
 const ciFieldValueColumn = 10
 
+func buildCIHeaderCtx() engine.HeaderContext {
+	repo, branch := engine.GetGitInfo()
+	return engine.HeaderContext{
+		Engine: "github",
+		Repo:   repo,
+		Branch: branch,
+	}
+}
+
 func ciWriteField(out io.Writer, label string, value string) {
 	padding := ciFieldValueColumn - len(label)
 	if padding < 1 {
@@ -325,6 +334,14 @@ func runCIPushWithDeps(ctx context.Context, opts ciPushRunOptions, out io.Writer
 	}
 	if deps.currentBranch == nil {
 		deps.currentBranch = defaultCIPushDeps.currentBranch
+	}
+
+	if !opts.JSON {
+		headerContext := "push current branch and create or reuse a pull request"
+		if opts.DryRun {
+			headerContext = "dry-run: preview push and pull request actions"
+		}
+		engine.NewDisplay(out).ShowCommandHeader("CI Push", headerContext, buildCIHeaderCtx())
 	}
 
 	var (
@@ -482,6 +499,14 @@ func runCIStatusWithDeps(ctx context.Context, opts ciStatusRunOptions, out io.Wr
 		deps.waitForChecks = defaultCIStatusDeps.waitForChecks
 	}
 
+	if !opts.JSON {
+		headerContext := "show aggregated CI status for current branch"
+		if opts.Wait {
+			headerContext = "wait for CI checks to complete"
+		}
+		engine.NewDisplay(out).ShowCommandHeader("CI Status", headerContext, buildCIHeaderCtx())
+	}
+
 	var (
 		result ci.StatusResult
 		err    error
@@ -633,9 +658,30 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		eng           engine.Engine
 		attempts      int
 		lastFixResult ci.FixResult
+		display       *engine.Display
 	)
+	if !opts.JSON {
+		display = engine.NewDisplay(out)
+		headerEngine := strings.TrimSpace(opts.Engine)
+		if headerEngine == "" {
+			headerEngine = "codex"
+		}
+		display.ShowCommandHeader(
+			"CI Fix",
+			fmt.Sprintf("fix failing checks (max attempts: %d)", opts.MaxAttempts),
+			buildHeaderCtx(headerEngine),
+		)
+	}
 
 	for attempts < opts.MaxAttempts {
+		if display != nil {
+			if attempts == 0 {
+				display.ShowInfo("Checking current CI status...\n")
+			} else {
+				display.ShowInfo("Rechecking CI status before attempt %d/%d...\n", attempts+1, opts.MaxAttempts)
+			}
+		}
+
 		status, err := deps.getStatus(ctx)
 		if err != nil {
 			return err
@@ -678,8 +724,13 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 
 		attempt := attempts + 1
+		if display != nil {
+			display.ShowInfo("Running fix attempt %d/%d...\n", attempt, opts.MaxAttempts)
+		}
+
 		fixResult, err := deps.fixWithEngine(ctx, status, ci.FixOptions{
 			Engine:      eng,
+			Display:     display,
 			Attempt:     attempt,
 			MaxAttempts: opts.MaxAttempts,
 		})
@@ -688,7 +739,14 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 		lastFixResult = fixResult
 
+		if display != nil {
+			display.ShowInfo("Waiting for CI checks after attempt %d/%d...\n", attempt, opts.MaxAttempts)
+			display.StartSpinner("Waiting for CI checks...")
+		}
 		verified, err := deps.waitForChecks(ctx, ci.WaitOptions{})
+		if display != nil {
+			display.StopSpinner()
+		}
 		if err != nil {
 			return err
 		}
@@ -700,6 +758,10 @@ func runCIFixWithDeps(ctx context.Context, opts ciFixRunOptions, out io.Writer, 
 		}
 		if attempt >= opts.MaxAttempts {
 			return fmt.Errorf("ci status is %s after %d attempt(s); run 'hal ci status --wait' for details", verified.Status, attempt)
+		}
+
+		if display != nil {
+			display.ShowInfo("CI still failing after attempt %d/%d.\n", attempt, opts.MaxAttempts)
 		}
 
 		attempts = attempt
@@ -789,6 +851,14 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 	strategy, err := ci.NormalizeMergeStrategy(opts.Strategy)
 	if err != nil {
 		return err
+	}
+
+	if !opts.JSON {
+		headerContext := fmt.Sprintf("merge pull request (strategy: %s)", strategy)
+		if opts.DryRun {
+			headerContext = fmt.Sprintf("dry-run: preview merge (strategy: %s)", strategy)
+		}
+		engine.NewDisplay(out).ShowCommandHeader("CI Merge", headerContext, buildCIHeaderCtx())
 	}
 
 	var (

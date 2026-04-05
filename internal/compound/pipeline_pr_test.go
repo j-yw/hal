@@ -3,6 +3,7 @@ package compound
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -13,6 +14,10 @@ import (
 func newPRStepTestPipeline(t *testing.T) (*Pipeline, *bytes.Buffer) {
 	t.Helper()
 
+	origCheckCIDependencies := checkCIDependencies
+	checkCIDependencies = func() error { return nil }
+	t.Cleanup(func() { checkCIDependencies = origCheckCIDependencies })
+
 	var out bytes.Buffer
 	display := engine.NewDisplay(&out)
 	cfg := DefaultAutoConfig()
@@ -21,38 +26,150 @@ func newPRStepTestPipeline(t *testing.T) (*Pipeline, *bytes.Buffer) {
 	return pipeline, &out
 }
 
-func TestRunPRStep_SkipPR_PreservesBehavior(t *testing.T) {
-	pipeline, out := newPRStepTestPipeline(t)
-	if err := pipeline.saveState(&PipelineState{Step: StepPR}); err != nil {
-		t.Fatalf("saveState: %v", err)
+// stubCIWaitPassing replaces the package-level waitForChecksInDirFn with a stub
+// that returns passing status. Returns a cleanup function.
+func stubCIWaitPassing(t *testing.T) {
+	t.Helper()
+	orig := waitForChecksInDirFn
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
+		return ci.StatusResult{
+			Status:           ci.StatusPassing,
+			ChecksDiscovered: true,
+		}, nil
 	}
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
+}
 
-	called := false
-	pipeline.pushAndCreatePR = func(ctx context.Context, opts ci.PushOptions) (ci.PushResult, error) {
-		called = true
-		return ci.PushResult{}, nil
+// stubCIWaitFailing replaces waitForChecksInDirFn with a stub that returns failing
+// status on the first call, then passing on subsequent calls.
+func stubCIWaitFailThenPass(t *testing.T) {
+	t.Helper()
+	orig := waitForChecksInDirFn
+	calls := 0
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
+		calls++
+		if calls == 1 {
+			return ci.StatusResult{
+				Status:           ci.StatusFailing,
+				ChecksDiscovered: true,
+				Summary:          "status=failing (passing=0, failing=1, pending=0)",
+				Checks: []ci.StatusCheck{
+					{Key: "check:build", Name: "build", Status: ci.StatusFailing},
+				},
+			}, nil
+		}
+		return ci.StatusResult{
+			Status:           ci.StatusPassing,
+			ChecksDiscovered: true,
+		}, nil
 	}
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
+}
 
-	state := &PipelineState{Step: StepPR}
-	err := pipeline.runPRStep(context.Background(), state, RunOptions{SkipPR: true})
-	if err != nil {
-		t.Fatalf("runPRStep: %v", err)
+func stubCIFixSuccess(t *testing.T) {
+	t.Helper()
+	orig := fixWithEngineInDirFn
+	fixWithEngineInDirFn = func(_ context.Context, _ string, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+		return ci.FixResult{
+			Applied:      true,
+			Attempt:      opts.Attempt,
+			FilesChanged: []string{"main.go"},
+			Pushed:       true,
+		}, nil
 	}
-	if called {
-		t.Fatalf("pushAndCreatePR was called with --skip-pr")
+	t.Cleanup(func() { fixWithEngineInDirFn = orig })
+}
+
+func stubCIWaitNoChecks(t *testing.T) {
+	t.Helper()
+	orig := waitForChecksInDirFn
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
+		return ci.StatusResult{
+			Status:           ci.StatusPending,
+			ChecksDiscovered: false,
+		}, nil
 	}
-	if state.Step != StepDone {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
+}
+
+func stubCIWaitAlwaysFailing(t *testing.T) {
+	t.Helper()
+	orig := waitForChecksInDirFn
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
+		return ci.StatusResult{
+			Status:           ci.StatusFailing,
+			ChecksDiscovered: true,
+			Summary:          "status=failing (passing=0, failing=1, pending=0)",
+			Checks: []ci.StatusCheck{
+				{Key: "check:build", Name: "build", Status: ci.StatusFailing},
+			},
+		}, nil
 	}
-	if pipeline.HasState() {
-		t.Fatalf("expected state to be cleared")
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
+}
+
+func stubCIWaitFailThenPending(t *testing.T) {
+	t.Helper()
+	orig := waitForChecksInDirFn
+	calls := 0
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
+		calls++
+		if calls == 1 {
+			return ci.StatusResult{
+				Status:           ci.StatusFailing,
+				ChecksDiscovered: true,
+				Summary:          "status=failing (passing=0, failing=1, pending=0)",
+				Checks: []ci.StatusCheck{
+					{Key: "check:build", Name: "build", Status: ci.StatusFailing},
+				},
+			}, nil
+		}
+		return ci.StatusResult{
+			Status:           ci.StatusPending,
+			ChecksDiscovered: true,
+		}, nil
 	}
-	if !strings.Contains(out.String(), "Skipping PR creation (--skip-pr)") {
-		t.Fatalf("output = %q, want skip-pr message", out.String())
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
+}
+
+func pushStub(prURL string) func(context.Context, ci.PushOptions) (ci.PushResult, error) {
+	return func(_ context.Context, _ ci.PushOptions) (ci.PushResult, error) {
+		return ci.PushResult{
+			Branch:      "compound/ci-flow",
+			PullRequest: ci.PullRequest{URL: prURL},
+		}, nil
 	}
 }
 
-func TestRunPRStep_DryRun_PreservesBehavior(t *testing.T) {
+func branchStub(name string) func(string) (string, error) {
+	return func(string) (string, error) { return name, nil }
+}
+
+func TestRunPRStep_SkipCI_PersistsStateAndAdvancesToReport(t *testing.T) {
+	pipeline, out := newPRStepTestPipeline(t)
+	if err := pipeline.saveState(&PipelineState{Step: StepCI}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+
+	state := &PipelineState{Step: StepCI}
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{SkipCI: true})
+	if err != nil {
+		t.Fatalf("runPRStep: %v", err)
+	}
+	if state.Step != StepReport {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
+	}
+	if !pipeline.HasState() {
+		t.Fatalf("expected state to be persisted")
+	}
+	if !strings.Contains(out.String(), "Skipping CI step (--no-ci)") {
+		t.Fatalf("output = %q, want no-ci message", out.String())
+	}
+}
+
+func TestRunPRStep_DryRun_ShowsFullCIFlow(t *testing.T) {
 	tests := []struct {
 		name      string
 		base      string
@@ -61,12 +178,12 @@ func TestRunPRStep_DryRun_PreservesBehavior(t *testing.T) {
 		{
 			name:      "with base branch",
 			base:      "main",
-			wantInLog: "[dry-run] Would push branch compound/test-feature and create draft PR against main",
+			wantInLog: "Would push branch compound/test-feature, create draft PR against main, wait for CI, and auto-fix if failing",
 		},
 		{
 			name:      "without base branch",
 			base:      "",
-			wantInLog: "[dry-run] Would push branch compound/test-feature and create draft PR",
+			wantInLog: "Would push branch compound/test-feature, create draft PR, wait for CI, and auto-fix if failing",
 		},
 	}
 
@@ -80,7 +197,7 @@ func TestRunPRStep_DryRun_PreservesBehavior(t *testing.T) {
 				return ci.PushResult{}, nil
 			}
 
-			state := &PipelineState{Step: StepPR, BranchName: "compound/test-feature", BaseBranch: tt.base}
+			state := &PipelineState{Step: StepCI, BranchName: "compound/test-feature", BaseBranch: tt.base}
 			err := pipeline.runPRStep(context.Background(), state, RunOptions{DryRun: true})
 			if err != nil {
 				t.Fatalf("runPRStep: %v", err)
@@ -88,8 +205,8 @@ func TestRunPRStep_DryRun_PreservesBehavior(t *testing.T) {
 			if called {
 				t.Fatalf("pushAndCreatePR was called in dry-run mode")
 			}
-			if state.Step != StepDone {
-				t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+			if state.Step != StepReport {
+				t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
 			}
 			if !strings.Contains(out.String(), tt.wantInLog) {
 				t.Fatalf("output = %q, want %q", out.String(), tt.wantInLog)
@@ -98,97 +215,264 @@ func TestRunPRStep_DryRun_PreservesBehavior(t *testing.T) {
 	}
 }
 
-func TestRunPRStep_DelegatesToCIAndPreservesPRContent(t *testing.T) {
-	tests := []struct {
-		name         string
-		priorityItem string
-		wantTitle    string
-	}{
-		{
-			name:         "analysis title",
-			priorityItem: "Implement deterministic CI flow",
-			wantTitle:    "Implement deterministic CI flow",
+func TestRunPRStep_PushAndWaitPassing(t *testing.T) {
+	stubCIWaitPassing(t)
+
+	pipeline, out := newPRStepTestPipeline(t)
+	if err := pipeline.saveState(&PipelineState{Step: StepCI}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	var gotOpts ci.PushOptions
+	pipeline.pushAndCreatePR = func(_ context.Context, opts ci.PushOptions) (ci.PushResult, error) {
+		gotOpts = opts
+		return ci.PushResult{
+			Branch:      "compound/ci-flow",
+			PullRequest: ci.PullRequest{URL: "https://github.com/acme/repo/pull/42"},
+		}, nil
+	}
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+		CI: &CIState{
+			Status: ci.StatusPending,
+			Reason: ci.WaitTerminalReasonNoChecksDetected,
 		},
-		{
-			name:         "fallback title",
-			priorityItem: "",
-			wantTitle:    "Compound: compound/ci-flow",
+		Analysis: &AnalysisResult{
+			PriorityItem:       "Implement deterministic CI flow",
+			Description:        "Ship CI command foundation",
+			Rationale:          "Safer PR automation",
+			AcceptanceCriteria: []string{"Push branch", "Open draft PR"},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pipeline, out := newPRStepTestPipeline(t)
-			if err := pipeline.saveState(&PipelineState{Step: StepPR}); err != nil {
-				t.Fatalf("saveState: %v", err)
-			}
+	expectedBody := buildPRBody(state, "")
 
-			state := &PipelineState{
-				Step:       StepPR,
-				BranchName: "compound/ci-flow",
-				BaseBranch: "main",
-				Analysis: &AnalysisResult{
-					PriorityItem:       tt.priorityItem,
-					Description:        "Ship CI command foundation",
-					Rationale:          "Safer PR automation",
-					AcceptanceCriteria: []string{"Push branch", "Open draft PR"},
-				},
-			}
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err != nil {
+		t.Fatalf("runPRStep: %v", err)
+	}
+	if state.Step != StepReport {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
+	}
+	if state.CI == nil || state.CI.Status != "passed" {
+		t.Fatalf("state.CI.Status = %v, want passed", state.CI)
+	}
+	if state.CI.Reason != "" {
+		t.Fatalf("state.CI.Reason = %q, want empty", state.CI.Reason)
+	}
 
-			expectedBody := buildPRBody(state, "")
+	if gotOpts.BaseRef != "main" {
+		t.Fatalf("push options base = %q, want %q", gotOpts.BaseRef, "main")
+	}
+	if gotOpts.Title != "Implement deterministic CI flow" {
+		t.Fatalf("push options title = %q, want %q", gotOpts.Title, "Implement deterministic CI flow")
+	}
+	if gotOpts.Body != expectedBody {
+		t.Fatalf("push options body mismatch\n--- got ---\n%s\n--- want ---\n%s", gotOpts.Body, expectedBody)
+	}
+	if gotOpts.Draft == nil || !*gotOpts.Draft {
+		t.Fatalf("push options draft = %v, want true", gotOpts.Draft)
+	}
 
-			var gotOpts ci.PushOptions
-			pipeline.pushAndCreatePR = func(ctx context.Context, opts ci.PushOptions) (ci.PushResult, error) {
-				gotOpts = opts
-				return ci.PushResult{
-					Branch: "compound/ci-flow",
-					PullRequest: ci.PullRequest{
-						URL: "https://github.com/acme/repo/pull/42",
-					},
-				}, nil
-			}
-			pipeline.currentBranch = func(string) (string, error) {
-				return "compound/ci-flow", nil
-			}
+	output := out.String()
+	if !strings.Contains(output, "PR created: https://github.com/acme/repo/pull/42") {
+		t.Fatalf("output = %q, want PR URL", output)
+	}
+	if !strings.Contains(output, "CI checks passing") {
+		t.Fatalf("output = %q, want passing message", output)
+	}
+}
 
-			err := pipeline.runPRStep(context.Background(), state, RunOptions{})
-			if err != nil {
-				t.Fatalf("runPRStep: %v", err)
-			}
-			if state.Step != StepDone {
-				t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
-			}
-			if pipeline.HasState() {
-				t.Fatalf("expected state to be cleared")
-			}
+func TestRunPRStep_FallbackTitle(t *testing.T) {
+	stubCIWaitPassing(t)
 
-			if gotOpts.BaseRef != "main" {
-				t.Fatalf("push options base = %q, want %q", gotOpts.BaseRef, "main")
-			}
-			if gotOpts.Title != tt.wantTitle {
-				t.Fatalf("push options title = %q, want %q", gotOpts.Title, tt.wantTitle)
-			}
-			if gotOpts.Body != expectedBody {
-				t.Fatalf("push options body mismatch\n--- got ---\n%s\n--- want ---\n%s", gotOpts.Body, expectedBody)
-			}
-			if gotOpts.Draft == nil || !*gotOpts.Draft {
-				t.Fatalf("push options draft = %v, want true", gotOpts.Draft)
-			}
+	pipeline, _ := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = func(_ context.Context, opts ci.PushOptions) (ci.PushResult, error) {
+		if opts.Title != "Compound: compound/ci-flow" {
+			return ci.PushResult{}, fmt.Errorf("unexpected title: %q", opts.Title)
+		}
+		return ci.PushResult{
+			Branch:      "compound/ci-flow",
+			PullRequest: ci.PullRequest{URL: "https://example.com/pr/1"},
+		}, nil
+	}
+	pipeline.currentBranch = branchStub("compound/ci-flow")
 
-			output := out.String()
-			if !strings.Contains(output, "Pushing branch: compound/ci-flow") {
-				t.Fatalf("output = %q, want push message", output)
-			}
-			if !strings.Contains(output, "Creating draft PR...") {
-				t.Fatalf("output = %q, want create message", output)
-			}
-			if !strings.Contains(output, "PR created: https://github.com/acme/repo/pull/42") {
-				t.Fatalf("output = %q, want PR URL", output)
-			}
-			if strings.Contains(output, "Waiting for CI") || strings.Contains(output, "CI green") {
-				t.Fatalf("unexpected CI loop output in StepPR: %q", output)
-			}
-		})
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+		Analysis:   &AnalysisResult{PriorityItem: ""}, // empty → fallback title
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err != nil {
+		t.Fatalf("runPRStep: %v", err)
+	}
+}
+
+func TestRunPRStep_WaitNoChecks_StopsAtCI(t *testing.T) {
+	stubCIWaitNoChecks(t)
+
+	pipeline, out := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+		CI: &CIState{
+			Status: ci.StatusPending,
+			Reason: "wait_error",
+		},
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected no-checks CI gate error")
+	}
+	if !strings.Contains(err.Error(), "no CI checks detected yet") {
+		t.Fatalf("err = %v, want no-checks gate message", err)
+	}
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.CI.Status != ci.StatusPending || state.CI.Reason != ci.WaitTerminalReasonNoChecksDetected {
+		t.Fatalf("state.CI = %+v, want pending/%s", state.CI, ci.WaitTerminalReasonNoChecksDetected)
+	}
+	if !strings.Contains(out.String(), "No CI checks discovered; stopping at CI step") {
+		t.Fatalf("output = %q, want no-checks stop message", out.String())
+	}
+	if !pipeline.HasState() {
+		t.Fatal("expected state to be persisted when no checks are detected")
+	}
+}
+
+func TestRunPRStep_FailingThenFixedToPassing(t *testing.T) {
+	stubCIWaitFailThenPass(t)
+	stubCIFixSuccess(t)
+
+	pipeline, out := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err != nil {
+		t.Fatalf("runPRStep: %v", err)
+	}
+	if state.Step != StepReport {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
+	}
+	if state.CI.Status != "passed" {
+		t.Fatalf("state.CI.Status = %q, want passed", state.CI.Status)
+	}
+	if state.CI.Reason != "" {
+		t.Fatalf("state.CI.Reason = %q, want empty", state.CI.Reason)
+	}
+	if state.CI.FixAttempts != 1 {
+		t.Fatalf("state.CI.FixAttempts = %d, want 1", state.CI.FixAttempts)
+	}
+	if state.CI.FixesApplied != 1 {
+		t.Fatalf("state.CI.FixesApplied = %d, want 1", state.CI.FixesApplied)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Fix attempt 1/3") {
+		t.Fatalf("output = %q, want fix attempt message", output)
+	}
+	if !strings.Contains(output, "CI checks passing after fix attempt 1") {
+		t.Fatalf("output = %q, want passing-after-fix message", output)
+	}
+}
+
+func TestRunPRStep_FailingThenPendingStopsAtCI(t *testing.T) {
+	stubCIWaitFailThenPending(t)
+	stubCIFixSuccess(t)
+
+	pipeline, out := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected pending CI gate error")
+	}
+	if !strings.Contains(err.Error(), "CI status is pending") {
+		t.Fatalf("err = %v, want pending status gate message", err)
+	}
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.CI.Status != ci.StatusPending {
+		t.Fatalf("state.CI.Status = %q, want %q", state.CI.Status, ci.StatusPending)
+	}
+	if state.CI.FixAttempts != 1 {
+		t.Fatalf("state.CI.FixAttempts = %d, want 1", state.CI.FixAttempts)
+	}
+	if state.CI.FixesApplied != 1 {
+		t.Fatalf("state.CI.FixesApplied = %d, want 1", state.CI.FixesApplied)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "CI status is pending after fix attempt 1") {
+		t.Fatalf("output = %q, want pending-after-fix message", output)
+	}
+}
+
+func TestRunPRStep_FailingExhaustsFixAttempts(t *testing.T) {
+	stubCIWaitAlwaysFailing(t)
+	stubCIFixSuccess(t)
+
+	pipeline, out := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected CI gate error after exhausting fix attempts")
+	}
+	if !strings.Contains(err.Error(), "CI still failing after") {
+		t.Fatalf("err = %q, want exhausted gate message", err.Error())
+	}
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.CI.Status != "fix_exhausted" {
+		t.Fatalf("state.CI.Status = %q, want fix_exhausted", state.CI.Status)
+	}
+	if state.CI.FixAttempts != maxCIFixAttempts {
+		t.Fatalf("state.CI.FixAttempts = %d, want %d", state.CI.FixAttempts, maxCIFixAttempts)
+	}
+	if state.CI.FixesApplied != maxCIFixAttempts {
+		t.Fatalf("state.CI.FixesApplied = %d, want %d", state.CI.FixesApplied, maxCIFixAttempts)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "CI still failing after") {
+		t.Fatalf("output = %q, want exhausted message", output)
 	}
 }
 
@@ -200,12 +484,10 @@ func TestRunPRStep_FailsWhenCurrentBranchDoesNotMatchState(t *testing.T) {
 		called = true
 		return ci.PushResult{}, nil
 	}
-	pipeline.currentBranch = func(string) (string, error) {
-		return "compound/other-branch", nil
-	}
+	pipeline.currentBranch = branchStub("compound/other-branch")
 
 	state := &PipelineState{
-		Step:       StepPR,
+		Step:       StepCI,
 		BranchName: "compound/ci-flow",
 		BaseBranch: "main",
 	}

@@ -21,13 +21,13 @@ var (
 
 // LinkStatus describes the state of links for one engine.
 type LinkStatus struct {
-	Engine     string       `json:"engine"`
-	Mode       string       `json:"mode"` // "project_local" or "global"
-	SkillsDir  string       `json:"skillsDir"`
-	CommandsDir string      `json:"commandsDir,omitempty"`
-	Status     string       `json:"status"` // "pass", "warn", "fail", "skip"
-	Links      []LinkDetail `json:"links,omitempty"`
-	Issues     []string     `json:"issues,omitempty"`
+	Engine      string       `json:"engine"`
+	Mode        string       `json:"mode"` // "project_local" or "global"
+	SkillsDir   string       `json:"skillsDir"`
+	CommandsDir string       `json:"commandsDir,omitempty"`
+	Status      string       `json:"status"` // "pass", "warn", "fail", "skip"
+	Links       []LinkDetail `json:"links,omitempty"`
+	Issues      []string     `json:"issues,omitempty"`
 }
 
 // LinkDetail describes a single link.

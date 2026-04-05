@@ -175,6 +175,7 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 	}, r.config.MaxIterations)
 
 	result = Result{}
+	falseCompletes := 0 // Track consecutive false COMPLETE signals
 
 	for i := 1; i <= r.config.MaxIterations; i++ {
 		// Load PRD to get current story info
@@ -218,8 +219,27 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 			// This guards against LLM reasoning errors where it says COMPLETE prematurely
 			if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
 				if story := prd.CurrentStory(); story != nil {
+					falseCompletes++
 					// There are still pending stories - LLM said COMPLETE incorrectly
-					r.display.ShowInfo("   ⚠ Agent signaled COMPLETE but %s is still pending\n", story.ID)
+					r.display.ShowInfo("   ⚠ Agent signaled COMPLETE but %s is still pending (attempt %d)\n", story.ID, falseCompletes)
+
+					// Inject feedback into the prompt so the next iteration
+					// has different input and can break out of the loop.
+					// See: https://github.com/j-yw/hal/issues/29
+					prompt += fmt.Sprintf(
+						"\n\n## IMPORTANT — Iteration %d Feedback\n"+
+							"You signaled COMPLETE but story **%s** still has `passes: false` in `%s`.\n"+
+							"Your COMPLETE signal was REJECTED because the gate check re-read the PRD and found pending stories.\n\n"+
+							"You MUST take all of these steps before signaling COMPLETE:\n"+
+							"1. Make actual code changes to satisfy the acceptance criteria\n"+
+							"2. Run quality checks (test, lint, etc.)\n"+
+							"3. Commit the changes\n"+
+							"4. Edit `%s` to set `passes: true` for story %s\n\n"+
+							"If you believe the code already satisfies the criteria, you STILL must update the PRD file.\n"+
+							"Do NOT output <promise>COMPLETE</promise> until you have done all four steps.\n",
+						i, story.ID, r.config.PRDFile, r.config.PRDFile, story.ID,
+					)
+
 					r.display.ShowIterationComplete(i)
 					// Continue to next iteration
 					select {
@@ -231,6 +251,7 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 					continue
 				}
 			}
+			falseCompletes = 0
 			r.display.ShowSuccess("All tasks complete!")
 			result.Complete = true
 			result.Success = true

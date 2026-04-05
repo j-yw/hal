@@ -13,6 +13,7 @@ import (
 	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -65,6 +66,52 @@ func TestMachineContractFields(t *testing.T) {
 					t.Errorf("status.manual missing field %q", f)
 				}
 			}
+		}
+	})
+
+	t.Run("status auto state values", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			step        string
+			wantState   string
+			wantCommand string
+		}{
+			{name: "active", step: "run", wantState: status.StateAutoActive, wantCommand: "hal auto --resume"},
+			{name: "inactive", step: "done", wantState: status.StateAutoInactive, wantCommand: "hal auto"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				dir := t.TempDir()
+				halDir := filepath.Join(dir, template.HalDir)
+				os.MkdirAll(halDir, 0755)
+				os.WriteFile(filepath.Join(halDir, template.AutoStateFile), []byte(fmt.Sprintf(`{"step":%q}`, tt.step)), 0644)
+
+				var buf bytes.Buffer
+				if err := runStatusFn(dir, true, &buf); err != nil {
+					t.Fatalf("runStatusFn error: %v", err)
+				}
+
+				var raw map[string]interface{}
+				if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+					t.Fatalf("JSON parse error: %v", err)
+				}
+
+				if got, _ := raw["workflowTrack"].(string); got != status.TrackAuto {
+					t.Fatalf("workflowTrack = %q, want %q", got, status.TrackAuto)
+				}
+				if got, _ := raw["state"].(string); got != tt.wantState {
+					t.Fatalf("state = %q, want %q", got, tt.wantState)
+				}
+
+				nextAction, ok := raw["nextAction"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("nextAction should be an object, got %T", raw["nextAction"])
+				}
+				if got, _ := nextAction["command"].(string); got != tt.wantCommand {
+					t.Fatalf("nextAction.command = %q, want %q", got, tt.wantCommand)
+				}
+			})
 		}
 	})
 
@@ -819,6 +866,96 @@ func TestNextActionFieldsConsistent(t *testing.T) {
 			}
 			if !validActionIDs[jr.NextAction.ID] {
 				t.Fatalf("nextAction.id %q is not a recognized action ID", jr.NextAction.ID)
+			}
+		})
+	}
+}
+
+func TestMachineContractFields_AutoV2Examples(t *testing.T) {
+	requiredTopLevelFields := []string{"contractVersion", "ok", "entryMode", "resumed", "steps", "summary"}
+	requiredStepKeys := []string{"analyze", "spec", "branch", "convert", "validate", "run", "review", "report", "ci", "archive"}
+	validStepStatuses := map[string]bool{"completed": true, "skipped": true, "failed": true, "pending": true}
+	validEntryModes := map[string]bool{"markdown_path": true, "report_discovery": true}
+
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{name: "success example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-success.json")},
+		{name: "failure example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-failure.json")},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.path, err)
+			}
+			if !json.Valid(data) {
+				t.Fatalf("example %s is not valid JSON", tc.path)
+			}
+
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("unmarshal %s: %v", tc.path, err)
+			}
+
+			for _, field := range requiredTopLevelFields {
+				if _, ok := raw[field]; !ok {
+					t.Fatalf("example %s missing required top-level field %q", tc.path, field)
+				}
+			}
+
+			if v, ok := raw["contractVersion"].(float64); !ok || int(v) != 2 {
+				t.Fatalf("contractVersion = %v, want 2", raw["contractVersion"])
+			}
+			if _, ok := raw["ok"].(bool); !ok {
+				t.Fatalf("ok should be a boolean, got %T", raw["ok"])
+			}
+			entryMode, ok := raw["entryMode"].(string)
+			if !ok {
+				t.Fatalf("entryMode should be a string, got %T", raw["entryMode"])
+			}
+			if !validEntryModes[entryMode] {
+				t.Fatalf("entryMode = %q, want one of markdown_path/report_discovery", entryMode)
+			}
+			if _, ok := raw["resumed"].(bool); !ok {
+				t.Fatalf("resumed should be a boolean, got %T", raw["resumed"])
+			}
+
+			steps, ok := raw["steps"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("steps should be an object, got %T", raw["steps"])
+			}
+
+			for _, stepKey := range requiredStepKeys {
+				stepRaw, ok := steps[stepKey]
+				if !ok {
+					t.Fatalf("steps missing required key %q", stepKey)
+				}
+				stepObj, ok := stepRaw.(map[string]interface{})
+				if !ok {
+					t.Fatalf("steps.%s should be an object, got %T", stepKey, stepRaw)
+				}
+				status, ok := stepObj["status"].(string)
+				if !ok {
+					t.Fatalf("steps.%s.status should be a string", stepKey)
+				}
+				if !validStepStatuses[status] {
+					t.Fatalf("steps.%s.status = %q, want one of completed/skipped/failed/pending", stepKey, status)
+				}
+			}
+
+			if nextActionRaw, ok := raw["nextAction"]; ok {
+				nextAction, ok := nextActionRaw.(map[string]interface{})
+				if !ok {
+					t.Fatalf("nextAction should be an object when present, got %T", nextActionRaw)
+				}
+				for _, field := range []string{"id", "command", "description"} {
+					if _, ok := nextAction[field].(string); !ok {
+						t.Fatalf("nextAction.%s should be a string", field)
+					}
+				}
 			}
 		})
 	}

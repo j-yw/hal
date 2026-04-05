@@ -7,7 +7,7 @@ Show current workflow state
 Show the current Hal workflow state.
 
 Inspects .hal/ artifacts to determine:
-  - Which workflow track is active (manual, compound, unknown)
+  - Which workflow track is active (manual, auto, review_loop, unknown)
   - What state the workflow is in
   - What artifacts exist
   - What the next recommended action is
@@ -15,13 +15,16 @@ Inspects .hal/ artifacts to determine:
 With --json, outputs a stable machine-readable contract (v1) suitable
 for agent orchestration and tooling integration.
 
+When nextAction suggests hal auto, source selection uses auto.sourcePriority
+(default report_first: latest report -> newest .hal/prd-*.md).
+
 Workflow states:
   not_initialized         No .hal/ directory found
   hal_initialized_no_prd  .hal/ exists but no prd.json
   manual_in_progress      PRD has pending stories
   manual_complete         All PRD stories passed
-  compound_active         Auto pipeline in progress
-  compound_complete       Auto pipeline step is 'done'
+  auto_active             Auto pipeline has resumable state
+  auto_inactive           Auto state is present but complete/inactive
   review_loop_complete    Review-loop reports exist (no active PRD)
 
 Examples:

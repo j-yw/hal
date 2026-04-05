@@ -38,13 +38,17 @@ health (hal doctor) to determine the safest next step.
 If the environment needs repair, the repair step is shown first.
 Otherwise, the workflow-appropriate next action is shown.
 
+When the suggested next command is hal auto, source selection uses
+auto.sourcePriority (default report_first: latest report -> newest .hal/prd-*.md).
+
 With --json, outputs combined status and doctor results.
 
 Examples:
   hal continue          # Human-readable next step
   hal continue --json   # Machine-readable combined status + doctor`,
 	Example: `  hal continue
-  hal continue --json`,
+  hal continue --json
+  hal auto              # uses auto.sourcePriority discovery defaults`,
 	RunE: runContinue,
 }
 
@@ -135,7 +139,7 @@ func runContinueFn(dir string, jsonMode bool, out io.Writer) error {
 		}
 	} else {
 		healthLabel := fmt.Sprintf("%d/%d checks passed", doctorResult.PassedChecks, doctorResult.TotalChecks)
-		fmt.Fprintf(out, "%s %s (%s)\n", ui.StyleBold.Render("Workflow:"), statusResult.WorkflowTrack, statusResult.State)
+		fmt.Fprintf(out, "%s    %s\n", ui.StyleBold.Render("State:"), statusResult.State)
 		if engine != "" {
 			fmt.Fprintf(out, "%s   %s\n", ui.StyleBold.Render("Engine:"), engine)
 		}

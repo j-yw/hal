@@ -218,7 +218,7 @@ func TestConvertPRDToJSON_UsesOutputFallbackWhenStreamRequiresFile(t *testing.T)
 
 	var buf bytes.Buffer
 	display := engine.NewDisplay(&buf)
-	got, err := convertPRDToJSON(context.Background(), eng, "skill", "# PRD", outPath, display)
+	got, err := convertPRDToJSON(context.Background(), eng, "skill", "# PRD: New Feature", outPath, display)
 	if err != nil {
 		t.Fatalf("convertPRDToJSON() error = %v, want nil", err)
 	}

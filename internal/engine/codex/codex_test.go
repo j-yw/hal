@@ -635,11 +635,11 @@ func TestFirstMeaningfulLine(t *testing.T) {
 		{"cd /repo\nrg -n foo", "rg -n foo"},
 		{"pushd /repo\nnpm test", "npm test"},
 		{"cd /repo && make test\nnext", "cd /repo && make test"},
-		{"cd /repo", "cd /repo"}, // Setup only — fall back to the last line
-		{"set -e", "set -e"},           // All preamble — return last
-		{"\n\nset -e\n\n", "set -e"},   // Blank lines + preamble only
-		{"", ""},                        // Empty
-		{"\n\n", "\n\n"},               // Only newlines — falls through
+		{"cd /repo", "cd /repo"},     // Setup only — fall back to the last line
+		{"set -e", "set -e"},         // All preamble — return last
+		{"\n\nset -e\n\n", "set -e"}, // Blank lines + preamble only
+		{"", ""},                     // Empty
+		{"\n\n", "\n\n"},             // Only newlines — falls through
 	}
 
 	for _, tc := range tests {

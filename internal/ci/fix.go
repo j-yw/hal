@@ -46,7 +46,36 @@ type fixDeps struct {
 
 // FixWithEngine applies a single engine-driven fix attempt and pushes the resulting commit.
 func FixWithEngine(ctx context.Context, status StatusResult, opts FixOptions) (FixResult, error) {
-	return fixWithEngineWithDeps(ctx, status, opts, fixDeps{})
+	return FixWithEngineInDir(ctx, "", status, opts)
+}
+
+// FixWithEngineInDir applies a single engine-driven fix attempt in dir and pushes the resulting commit.
+func FixWithEngineInDir(ctx context.Context, dir string, status StatusResult, opts FixOptions) (FixResult, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fixWithEngineWithDeps(ctx, status, opts, fixDeps{})
+	}
+
+	return fixWithEngineWithDeps(ctx, status, opts, fixDeps{
+		currentBranch: func(callCtx context.Context) (string, error) {
+			return gitCurrentBranchInDir(callCtx, dir)
+		},
+		workingTreeChanges: func(callCtx context.Context) ([]string, error) {
+			return gitWorkingTreeChangesInDir(callCtx, dir)
+		},
+		addAll: func(callCtx context.Context) error {
+			return gitAddAllInDir(callCtx, dir)
+		},
+		commit: func(callCtx context.Context, message string) error {
+			return gitCommitInDir(callCtx, dir, message)
+		},
+		currentHeadSHA: func(callCtx context.Context) (string, error) {
+			return gitCurrentHEADSHAInDir(callCtx, dir)
+		},
+		pushBranch: func(callCtx context.Context, branch string) error {
+			return gitPushBranchInDir(callCtx, dir, branch)
+		},
+	})
 }
 
 func fixWithEngineWithDeps(ctx context.Context, status StatusResult, opts FixOptions, deps fixDeps) (FixResult, error) {
@@ -217,7 +246,11 @@ func streamFixPrompt(ctx context.Context, eng engine.Engine, prompt string, disp
 }
 
 func gitWorkingTreeChanges(ctx context.Context) ([]string, error) {
-	out, err := runGitRaw(ctx, "status", "--porcelain", "--untracked-files=all")
+	return gitWorkingTreeChangesInDir(ctx, "")
+}
+
+func gitWorkingTreeChangesInDir(ctx context.Context, dir string) ([]string, error) {
+	out, err := runGitRawInDir(ctx, dir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return nil, fmt.Errorf("read git working tree status: %w", err)
 	}
@@ -279,18 +312,26 @@ func uniqueSortedPaths(paths []string) []string {
 }
 
 func gitAddAll(ctx context.Context) error {
-	if _, err := runGit(ctx, "add", "-A"); err != nil {
+	return gitAddAllInDir(ctx, "")
+}
+
+func gitAddAllInDir(ctx context.Context, dir string) error {
+	if _, err := runGitInDir(ctx, dir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage fix changes: %w", err)
 	}
 	return nil
 }
 
 func gitCommit(ctx context.Context, message string) error {
+	return gitCommitInDir(ctx, "", message)
+}
+
+func gitCommitInDir(ctx context.Context, dir, message string) error {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return fmt.Errorf("commit fix changes: empty commit message")
 	}
-	if _, err := runGit(ctx, "commit", "-m", message); err != nil {
+	if _, err := runGitInDir(ctx, dir, "commit", "-m", message); err != nil {
 		return fmt.Errorf("commit fix changes: %w", err)
 	}
 	return nil

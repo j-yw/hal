@@ -105,13 +105,73 @@ func GetStatus(ctx context.Context) (StatusResult, error) {
 	return getStatusWithClient(ctx, client)
 }
 
+// GetStatusInDir aggregates CI state from the repository rooted at dir.
+func GetStatusInDir(ctx context.Context, dir string) (StatusResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return StatusResult{}, err
+	}
+	return getStatusInDirWithClient(ctx, dir, client)
+}
+
 // WaitForChecks polls status until checks complete, timeout, or no checks are detected.
 func WaitForChecks(ctx context.Context, opts WaitOptions) (StatusResult, error) {
 	return waitForChecksWithDeps(ctx, opts, waitForChecksDeps{})
 }
 
+// WaitForChecksInDir polls status in the repository rooted at dir until checks complete,
+// timeout, or no checks are detected.
+func WaitForChecksInDir(ctx context.Context, dir string, opts WaitOptions) (StatusResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	client, err := SelectGitHubClient(ctx)
+	if err != nil {
+		return StatusResult{}, err
+	}
+
+	return waitForChecksWithDeps(ctx, opts, waitForChecksDeps{
+		getStatus: func(callCtx context.Context) (StatusResult, error) {
+			return getStatusInDirWithClient(callCtx, dir, client)
+		},
+	})
+}
+
 func getStatusWithClient(ctx context.Context, client ClientSelection) (StatusResult, error) {
 	return getStatusWithDeps(ctx, statusDeps{
+		findPRHeadSHA: func(callCtx context.Context, repo GitHubRepository, branch string) (string, error) {
+			return findPRHeadSHAWithClient(callCtx, client, repo, branch)
+		},
+		listCheckRunsPage: func(callCtx context.Context, repo GitHubRepository, sha string, page int, perPage int) ([]checkRunData, error) {
+			return listCheckRunsPageWithClient(callCtx, client, repo, sha, page, perPage)
+		},
+		listCommitStatusesPage: func(callCtx context.Context, repo GitHubRepository, sha string, page int, perPage int) ([]commitStatusData, error) {
+			return listCommitStatusesPageWithClient(callCtx, client, repo, sha, page, perPage)
+		},
+	})
+}
+
+func getStatusInDirWithClient(ctx context.Context, dir string, client ClientSelection) (StatusResult, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return getStatusWithClient(ctx, client)
+	}
+
+	return getStatusWithDeps(ctx, statusDeps{
+		resolveRepo: func(callCtx context.Context) (GitHubRepository, error) {
+			return ResolveGitHubRepositoryInDir(callCtx, dir)
+		},
+		currentBranch: func(callCtx context.Context) (string, error) {
+			return gitCurrentBranchInDir(callCtx, dir)
+		},
+		currentHeadSHA: func(callCtx context.Context) (string, error) {
+			return gitCurrentHEADSHAInDir(callCtx, dir)
+		},
 		findPRHeadSHA: func(callCtx context.Context, repo GitHubRepository, branch string) (string, error) {
 			return findPRHeadSHAWithClient(callCtx, client, repo, branch)
 		},
@@ -456,7 +516,11 @@ func gitCurrentBranch(ctx context.Context) (string, error) {
 }
 
 func gitCurrentHEADSHA(ctx context.Context) (string, error) {
-	sha, err := runGit(ctx, "rev-parse", "HEAD")
+	return gitCurrentHEADSHAInDir(ctx, "")
+}
+
+func gitCurrentHEADSHAInDir(ctx context.Context, dir string) (string, error) {
+	sha, err := runGitInDir(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("get HEAD sha: %w", err)
 	}

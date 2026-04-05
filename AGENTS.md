@@ -56,6 +56,7 @@
 - `archive.FeatureFromBranch` is the canonical branch-name parser (trims `hal/` prefix). `convert.go` delegates to it.
 - Keep file-name constants in internal/template (e.g., `template.AutoStateFile`) and reference them from other packages; use a package-level var when a constant depends on template values.
 - The `featureStateFiles` slice in `internal/archive/archive.go` defines which files get archived. Update it when adding new state files.
+- Legacy auto PRD backups use a separate glob (`auto-prd.legacy-*.json`): keep both `CreateWithOptions` and `HasFeatureStateWithOptions` in sync so archive create works whether legacy artifacts are present or absent.
 - Archive directories are named YYYY-MM-DD-feature and list parsing expects the date in name[:10]; keep this naming consistent for reliable listing.
 - Archive CLI commands follow the Cobra parent-subcommand pattern and prompt for missing names using `bufio.NewReader(os.Stdin)` with a default derived from prd.json branchName.
 - Archive tests use `t.TempDir()` and helper functions (`writePRD`, `writeFile`) for clean setup — follow this pattern for new archive-related tests.
@@ -85,7 +86,7 @@
 - progress.txt is the single source of truth for both manual (`hal run`) and auto (`hal auto`) workflows. The separate auto-progress.txt file was consolidated.
 - When removing a constant from internal/template/template.go, also update all usages in tests and other packages (archive, compound) to maintain compilation.
 - Migration logic for legacy files (like auto-progress.txt) uses append-with-separator strategy: if destination has content, append with "---" divider; if empty/default, replace entirely.
-- The `hal cleanup` command removes orphaned files via an `orphanedFiles` slice — add files here when deprecating state files, and always provide --dry-run flag for preview.
+- The `hal cleanup` command removes orphaned files via centralized `orphanedFilePatterns`/`orphanedDirs` lists — add exact names or globs (for timestamped artifacts) when deprecating state files, and always provide --dry-run flag for preview.
 - hal review gathers context from JSON PRDs (prd.json, auto-prd.json) in addition to markdown PRDs for accurate task completion reporting. The JSON files contain the `passes` field showing which stories are complete.
 - Use template constants (template.HalDir, template.ProgressFile, etc.) for all .hal/ paths instead of hardcoded strings to ensure consistency across the codebase.
 
@@ -93,7 +94,7 @@
 
 - Use template.HalDir and template.ProgressFile for any .hal path construction (avoid hardcoded ".hal" or filenames) to keep CLI and review tooling consistent.
 - When migrating legacy .hal state files, merge content into the new target with a separator if both have content, then delete the legacy file after a successful merge.
-- Treat orphaned legacy files via a dedicated cleanup command that supports --dry-run and uses a centralized orphanedFiles slice for extensibility.
+- Treat orphaned legacy files via a dedicated cleanup command that supports --dry-run and uses centralized file-pattern + directory lists so both exact files and globbed legacy backups are easy to extend.
 - Review context should load both markdown PRDs and JSON PRDs (prd.json, auto-prd.json) because JSON includes pass/fail completion status.
 
 ## Patterns from hal/refresh-templates (2026-02-10)
@@ -150,13 +151,16 @@
 
 ## Patterns from hal/convert-explicit-archive-force (2026-02-23)
 
-- `cmd/convert.go` uses a `runConvertWithDeps` helper + `convertDeps` struct so tests can assert flag wiring (`--archive`, `--force`) without invoking real engines.
+- `cmd/convert.go` uses a `runConvertWithDeps` helper + `convertDeps` struct so tests can assert flag wiring (`--archive`, `--force`, `--granular`, `--branch`) without invoking real engines.
 - Conversion safety controls are passed through `prd.ConvertOptions`; when `Archive` is true and output is not canonical `.hal/prd.json`, return the exact guard error: `--archive is only supported when output is .hal/prd.json`.
 - Markdown source resolution for convert should stay deterministic in `internal/prd/convert.go`: newest `prd-*.md` by mtime wins, and equal mtimes must use lexicographic filename ascending as tie-break.
 - Missing auto-discovered markdown should return an actionable error (`run \`hal plan\` or pass an explicit markdown path`), and `ConvertWithEngine` should emit `Using source: <path>` via the display writer before prompting.
 - Convert archiving is strictly opt-in: only run `archive.HasFeatureStateWithOptions` / `archive.CreateWithOptions` when `ConvertOptions.Archive` is true; default convert runs must not create archive entries.
 - When archiving during convert, pass `archive.CreateOptions{ExcludePaths: []string{mdSource}}` so the markdown source being converted is not moved into the archive.
 - Canonical convert branch protection belongs in `internal/prd/convert.go`: compare existing `.hal/prd.json` `branchName` with converted output and block mismatches only when both are non-empty and neither `--archive` nor `--force` is set; keep the guard message exact (`branch changed from <old> to <new>; run 'hal convert --archive' or 'hal archive' first, or use --force`).
+- Branch precedence for convert is explicit-option first: when `ConvertOptions.BranchName` is set, it overrides markdown-derived branch resolution and must be pinned in both the prompt guidance and final `prd.json`.
+- Use the exported helpers `prd.FindNewestMarkdown` (newest `prd-*.md` with mtime + lexicographic tie-break) and `prd.ResolveMarkdownBranchName` (metadata → title slug → filename slug) instead of re-implementing source/branch resolution logic in callers.
+- If branch resolution still yields empty after metadata/title/filename fallbacks, treat it as a blocking convert error (`...pass --branch`) rather than allowing a silent empty branchName.
 - `runConvertWithDeps` writes display output through `os.Stdout`; command tests that need to assert streamed lines like `Using source: ...` should capture stdout (e.g., via `os.Pipe`) around the helper invocation.
 - When convert behavior changes, keep `cmd/convert.go` long help and README convert docs aligned, and add/update command help tests for required safety/source phrases to prevent documentation drift.
 
@@ -178,6 +182,7 @@
 - The Codex linker uses `codexHome()` which prefers `$HOME` over `os.UserHomeDir()` so tests can isolate global link operations via `t.Setenv("HOME", tmpDir)`. All init tests must use `t.Setenv("HOME", dir)`.
 - Tests that walk the shared global `Root()` Cobra command tree must NOT use `t.Parallel()` (race condition on Cobra command state).
 - The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor, blocks readiness only on doctor failures, and keeps warning-only doctor output advisory.
+- Status auto-state semantics are single-pipeline: emit `state=auto_active` when `.hal/auto-state.json` exists with `step != done`, emit `state=auto_inactive` when `step == done`, and normalize legacy step names (`prd/explode/loop/pr`) to unified step names before rendering status detail.
 - The `hal repair` command auto-applies safe remediations from doctor results. To add a new remediation, add `Remediation: &Remediation{Command: "...", Safe: true}` to the check and register the command in `executeRepairCommand`.
 - The `hal links` command group (status/refresh/clean) manages engine skill links separately from `hal init`. Use `hal links refresh codex` for targeted Codex link updates.
 - Doctor checks for link health should suggest `hal links refresh` or `hal links clean` instead of `hal init` — more targeted remediation.
@@ -220,6 +225,117 @@
 - Keep sandbox lifecycle status values centralized in `internal/sandbox/types.go` constants (`StatusRunning`, `StatusStopped`, `StatusUnknown`) instead of duplicating string literals across commands/providers.
 - `SandboxState` JSON tags are camelCase with selective `omitempty`; preserve this contract with focused marshal/unmarshal key assertions in `internal/sandbox/types_test.go` when adding or renaming fields.
 
+## Patterns from compound/single-auto-state-migration (2026-03-29)
+
+- Auto pipeline resume migrations in `internal/compound/pipeline.go` should unmarshal through a raw compatibility struct (`rawPipelineState`) and then normalize into `PipelineState`; this keeps legacy field handling isolated from runtime logic.
+- Legacy auto-state mappings are explicit and literal: `prd -> spec`, `explode -> convert`, `loop -> run`, `pr -> ci`, and `prdPath -> sourceMarkdown` when canonical `sourceMarkdown` is absent.
+- Keep save/load contracts asymmetric during migration: `saveState` writes only unified fields (`sourceMarkdown`, `validation`, `run`, `review`, `ci`), while `loadState` accepts both unified and legacy keys.
+- Lock migration behavior with focused state tests that assert both legacy mapping paths and round-trip JSON key presence/absence (new keys present, legacy keys omitted).
+
+## Patterns from hal/explode-convert-shim (2026-03-29)
+
+- Keep `cmd/explode.go` as a thin compatibility shim: call conversion through `prd.ConvertWithEngine` with `prd.ConvertOptions{Granular: true, BranchName: explodeBranchFlag}` and always target canonical output `filepath.Join(template.HalDir, template.PRDFile)`.
+- The explode deprecation warning is part of the compatibility contract and must be emitted to stderr exactly as `warning: 'hal explode' is deprecated; use 'hal convert --granular'.`.
+- Preserve explode machine output compatibility with the existing `ExplodeResult` JSON shape even while routing execution through convert logic.
+
+## Patterns from compound/auto-prd-startup-migration (2026-03-29)
+
+- Legacy auto PRD migration is centralized in `internal/compound/migrate.go` (`MigrateLegacyAutoPRD`) and should be invoked at `hal auto` startup before pipeline execution.
+- Migration semantics are asymmetric: if `.hal/prd.json` is missing, rename `.hal/auto-prd.json`; if both are semantically equal JSON, delete legacy `.hal/auto-prd.json`; otherwise keep `.hal/prd.json` authoritative and preserve legacy data as `.hal/auto-prd.legacy-<ts>.json`.
+- Warnings for preserved legacy auto PRDs must go to stderr so stdout stays clean for machine-readable command output.
+- Migration tests should inject time (`migrateLegacyAutoPRDWithNow`) to make timestamped legacy backup assertions deterministic.
+
+## Patterns from hal/prd-audit-legacy-auto-prd (2026-03-29)
+
+- `hal prd audit` should treat `.hal/auto-prd.json` and `.hal/auto-prd.legacy-*.json` as migration artifacts, reported as migration issues instead of active manual/auto PRD conflicts.
+- Keep legacy artifact issue text actionable by including the exact `.hal/...` artifact paths and cleanup guidance (`hal auto` migration, `hal cleanup` removal).
+
+## Patterns from compound/auto-entry-resolution (2026-03-29)
+
+- `hal auto` now accepts at most one positional markdown path (`auto [prd-path]`), so command arg contracts should use `maxArgsValidation(1)` and include a dedicated args test for zero/one/two-arg cases.
+- Pipeline start-state selection belongs in `newInitialState(opts)`: with `SourceMarkdown`, set `step=branch`, keep `sourceMarkdown`, and derive `branchName` via `prd.ResolveMarkdownBranchName`; without it, start at `step=analyze`.
+- Auto report preflight (`FindLatestReport`) must be skipped when a positional markdown source is provided, and dry-run command tests should lock both entry flows (`analyze -> spec -> branch -> convert` vs `branch -> convert`).
+- Command-level integration coverage for positional markdown entry should run through `cmd.Root()` with `hal auto --dry-run <prd-path>`, assert branch slug derivation from markdown title plus skipped analyze/spec steps, and reset root/flag state between tests to avoid shared Cobra state leakage.
+- Command-level integration coverage for report-driven entry should run through `cmd.Root()` with `hal auto --dry-run --report <report>`, assert step order `analyze -> spec -> branch -> convert`, and keep fixture reports local to the temp test directory for deterministic behavior.
+
+## Patterns from compound/auto-json-v2-resume-guards (2026-03-29)
+
+- `hal auto --json` should always emit contract version 2 with a fixed `steps` object that includes every required step key (`analyze` through `archive`) and valid status enums, even on failure paths.
+- Build auto JSON via shared helpers so early returns (config/engine/report preflight/resume errors) and pipeline outcomes stay on the same contract shape.
+- When `--resume` is set, ignore positional markdown paths and `--report` overrides before preflight checks, and emit explicit stderr warnings (`warning: --resume ignores ...; using saved state`) for deterministic script behavior.
+
+## Patterns from compound/branch-step-idempotency (2026-03-29)
+
+- Branch-step execution should use `EnsureBranchInDir(dir, branchName, baseBranch)` so retries are idempotent: no-op when already on target, checkout when target exists, and create from base only when missing.
+- Git operations in compound pipeline helpers must run with `cmd.Dir = pipeline dir` to avoid mutating the caller's current working repository during tests and multi-repo usage.
+- For branch-step behavior, use temp-repo unit tests that commit a base branch and assert all three paths (already-on-target, existing-branch checkout, missing-branch creation) plus repeated retry success.
+
+## Patterns from compound/post-convert-branch-invariant (2026-03-29)
+
+- The auto convert step should delegate through an injectable `convertWithEngine` variable (defaulting to `prd.ConvertWithEngine`) so tests can assert convert options without invoking real engines.
+- Convert step calls must pin deterministic options: `prd.ConvertOptions{Granular: true, BranchName: state.BranchName}` and canonical output path `.hal/prd.json`.
+- After convert, fail fast if `state.branchName` and `.hal/prd.json` `branchName` diverge (or the file is missing `branchName`), and return an actionable remediation message (for example rerun `hal convert --granular --branch <branch>` before resume).
+- Cover post-convert invariant behavior with focused tests for matching branch success, mismatched branch failure, and missing-branch failure.
+
+## Patterns from compound/validate-gate-bounded-repairs (2026-03-29)
+
+- Auto pipeline execution should include an explicit `validate` step between `convert` and `run`; convert advances to `StepValidate`, and validation retries route back to `StepConvert`.
+- Keep validation testable via an injectable `validateWithEngine` variable (defaulting to `prd.ValidateWithEngine`) so pipeline tests can simulate pass/fail/error outcomes without invoking real engines.
+- Persist validation telemetry in `state.Validation` on every attempt (`attempts` counter + status values like `repairing`, `passed`, `failed`) so resumes and JSON reporting can reflect gate progress.
+- Bound validation retries with a single shared limit (currently 3 attempts); on non-terminal failures, save state and retry convert, and on terminal failure, save failed telemetry before returning an actionable blocking error.
+
+## Patterns from compound/run-gate-completion-enforcement (2026-03-29)
+
+- Keep run-gate loop execution injectable via a package-level `runLoopWithConfig` wrapper around `loop.New(...).Run` so tests can assert loop wiring without invoking real engine sessions.
+- The auto run step must execute against canonical `.hal/prd.json` (`template.PRDFile`) and block step advancement when loop completion is false.
+- Persist `state.Run` telemetry (`iterations`, `complete`, `maxIterations`) on both success and blocked-incomplete paths before returning so resume/report layers can rely on saved run state.
+
+## Patterns from compound/review-report-gates (2026-03-29)
+
+- Auto pipeline flow now continues `run -> review -> ci -> report`; successful run-step completion should advance to `StepReview` rather than jumping directly to CI.
+- Keep review/report gates injectable for tests: `runReviewLoopWithDisplay` defaults to `RunReviewLoopWithDisplay`, and `runReportWithEngine` defaults to `Review`.
+- The report gate is responsible for persisting the generated artifact path into `state.ReportPath` before advancing, so downstream steps (for example archive/CI flows) can reuse the latest report.
+
+## Patterns from compound/ci-skip-semantics (2026-03-29)
+
+- Treat `--no-ci` as the canonical auto flag for disabling CI in auto runs.
+- In `runPRStep`, persist CI telemetry via `state.CI` with explicit skipped reasons (`skip_ci_flag`, `ci_unavailable`) so skip outcomes remain machine-readable and testable.
+- Keep CI dependency detection injectable (`checkCIDependencies`) so pipeline tests can cover unavailable-tool skip behavior without mutating PATH.
+- Command-level CI-disable coverage should run `hal auto --dry-run --report <fixture> --no-ci` through `cmd.Root()` and assert stdout CI-skip/no-push behavior.
+
+## Patterns from compound/archive-step-report-preservation (2026-03-29)
+
+- Auto archive-step execution should call `archive.CreateWithOptions` (via an injectable wrapper like `createArchiveWithOptions`) and pass `state.ReportPath` through `CreateOptions.ExcludePaths` so the newest generated report is preserved.
+- Resolve relative `state.ReportPath` values against the pipeline working dir (`p.dir`) before passing exclusions to archive helpers; `archive` normalizes excludes against process CWD, so unresolved relative paths can miss the intended file in tests/multi-dir callers.
+
+## Patterns from hal/embedded-skill-guidance-refresh (2026-03-29)
+
+- Embedded conversion skills should describe `.hal/prd.json` as the canonical runtime output for the single auto pipeline, including compatibility flows.
+- Keep the embedded `explode` skill explicitly marked deprecated and direct users to `hal convert --granular` so skill guidance stays aligned with CLI behavior.
+- Text-only updates under `internal/skills/*/SKILL.md` do not require `internal/skills/embed.go` changes as long as skill directory names remain unchanged; run `go test ./internal/skills` to verify embed references still resolve.
+
+## Patterns from compound/convert-granular-integration (2026-03-29)
+
+- Command-level integration tests for `hal convert` can stay deterministic by registering a test-only engine via `engine.RegisterEngine`, invoking `cmd.Root()` with real args, and asserting the written `.hal/prd.json` artifact rather than mocking command internals.
+- Integration tests that execute through the shared Cobra tree should reset command flag `Changed` state plus package-level flag vars (for example convert flags) in `t.Cleanup` to avoid cross-test leakage.
+
+## Patterns from compound/explode-shim-integration (2026-03-29)
+
+- Command-level integration tests for `hal explode` should execute through `cmd.Root()` with a registered test engine and assert stderr includes the exact deprecation warning string.
+- Explode compatibility coverage should verify canonical output is written to `.hal/prd.json` and that legacy `.hal/auto-prd.json` output is not recreated.
+- Reset explode command flag `Changed` state and package-level explode flag vars in cleanup to prevent shared Cobra-state leakage across integration tests.
+
+## Patterns from compound/legacy-auto-resume-integration (2026-03-29)
+
+- Legacy resume integration coverage should seed `.hal/auto-state.json` fixtures with legacy `step` values (`prd`, `explode`, `loop`, `pr`) and run `hal auto --resume --dry-run` through `cmd.Root()`.
+- Assert normalization through command output (`Resuming from step: <normalized>`) so command-level resume behavior is locked to the single-pipeline step names (`spec`, `convert`, `run`, `ci`).
+- Keep legacy resume fixtures runnable by including required downstream state fields (for example `analysis` for `prd -> spec` and `sourceMarkdown` for `explode -> convert`) to avoid false negatives from unrelated step preconditions.
+
+## Patterns from compound/dual-mode-regression-guards (2026-03-29)
+
+- Keep `hal auto` runtime flags constrained to the single-pipeline set (`dry-run`, `resume`, `mode`, `no-ci`, `no-review`, `review-streak`, `review-max`, `report`, `engine`, `base`, `json`) and add a focused command test that fails on unexpected/legacy flag names.
+- Lock the pipeline step graph with dry-run tests that assert exact step sequences for both entry modes: report discovery (`analyze -> spec -> branch -> convert -> validate -> run -> review -> ci -> report -> archive`) and positional markdown (`branch -> convert -> validate -> run -> review -> ci -> report -> archive`).
+- Outside legacy migration mapping coverage, prefer canonical step constants (`StepSpec`, `StepConvert`, `StepRun`, `StepCI`) instead of legacy aliases in tests to avoid reintroducing old runtime terminology.
 ## Patterns from hal/ci-shared-types-contracts (2026-03-29)
 
 - Keep CI machine-output structs centralized in `internal/ci/types.go` (push/status/fix/merge) so command handlers and pipeline integrations share one schema source of truth.
@@ -271,7 +387,7 @@
 ## Patterns from hal/compound-steppr-ci-delegation (2026-03-29)
 
 - Stage 6A `runPRStep` in `internal/compound/pipeline.go` delegates push + PR creation to `internal/ci.PushAndCreatePR`, but still generates title/body in compound so existing PR content stays stable.
-- Keep `--skip-pr` and `--dry-run` branches as early returns before CI delegation to preserve legacy StepPR behavior and avoid remote side effects.
+- Keep `--no-ci` and `--dry-run` branches as early returns before CI delegation to preserve StepPR behavior and avoid remote side effects.
 - `Pipeline` now uses an injectable `pushAndCreatePR` function field; use this seam in unit tests (`internal/compound/pipeline_pr_test.go`) to assert StepPR behavior without invoking real git/gh commands.
 
 ## Patterns from hal/ci-command-push-wiring (2026-03-29)

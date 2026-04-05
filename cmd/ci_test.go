@@ -459,6 +459,9 @@ func TestRunCIPushWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "dry-run: preview push and pull request actions") {
+		t.Fatalf("dry-run output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Push (dry run)") {
 		t.Fatalf("dry-run output %q missing title", output)
 	}
@@ -508,6 +511,9 @@ func TestRunCIPushWithDeps_HumanOutputIncludesBaseBranch(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "push current branch and create or reuse a pull request") {
+		t.Fatalf("human output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Push") {
 		t.Fatalf("human output %q missing title", output)
 	}
@@ -746,6 +752,9 @@ func TestRunCIStatusWithDeps_WaitRendersChecksWhenDiscovered(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "wait for CI checks to complete") {
+		t.Fatalf("wait output %q missing header context", output)
+	}
 	if !strings.Contains(output, "Wait:") || !strings.Contains(output, ci.WaitTerminalReasonCompleted) {
 		t.Fatalf("wait output %q missing terminal reason", output)
 	}
@@ -801,6 +810,9 @@ func TestRunCIFixWithDeps_JSONOnlyOutput(t *testing.T) {
 			if opts.MaxAttempts != 3 {
 				t.Fatalf("opts.MaxAttempts = %d, want %d", opts.MaxAttempts, 3)
 			}
+			if opts.Display != nil {
+				t.Fatal("opts.Display should be nil in --json mode")
+			}
 			return want, nil
 		},
 	})
@@ -837,6 +849,65 @@ func TestRunCIFixWithDeps_JSONOnlyOutput(t *testing.T) {
 	}
 	if got.CommitSHA != want.CommitSHA {
 		t.Fatalf("commitSha = %q, want %q", got.CommitSHA, want.CommitSHA)
+	}
+}
+
+func TestRunCIFixWithDeps_HumanOutputShowsProgressAndPassesDisplay(t *testing.T) {
+	want := ci.FixResult{
+		ContractVersion: ci.FixContractVersion,
+		Attempt:         1,
+		MaxAttempts:     3,
+		Applied:         true,
+		Branch:          "hal/ci-fix",
+		CommitSHA:       "deadbeef",
+		Pushed:          true,
+		FilesChanged:    []string{"cmd/ci.go"},
+		Summary:         "applied ci fix attempt 1 on branch hal/ci-fix and pushed 1 file",
+	}
+
+	displayPassed := false
+
+	var buf bytes.Buffer
+	err := runCIFixWithDeps(context.Background(), ciFixRunOptions{MaxAttempts: 3, Engine: "codex"}, &buf, ciFixDeps{
+		newEngine: func(string) (engine.Engine, error) {
+			return ciFakeEngine{}, nil
+		},
+		getStatus: func(context.Context) (ci.StatusResult, error) {
+			return ci.StatusResult{Status: ci.StatusFailing, Branch: "hal/ci-fix"}, nil
+		},
+		waitForChecks: func(context.Context, ci.WaitOptions) (ci.StatusResult, error) {
+			return ci.StatusResult{Status: ci.StatusPassing, Branch: "hal/ci-fix"}, nil
+		},
+		fixWithEngine: func(_ context.Context, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+			if opts.Display == nil {
+				t.Fatal("opts.Display should be non-nil in human mode")
+			}
+			displayPassed = true
+			return want, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCIFixWithDeps() error = %v", err)
+	}
+
+	output := buf.String()
+	for _, needle := range []string{
+		"fix failing checks (max attempts: 3)",
+		"Checking current CI status...",
+		"Running fix attempt 1/3...",
+		"Waiting for CI checks after attempt 1/3...",
+		"CI Fix",
+		"Status:",
+	} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("human output %q missing %q", output, needle)
+		}
+	}
+	if strings.Contains(strings.TrimSpace(output), "{\"") {
+		t.Fatalf("human output should not be JSON, got %q", output)
+	}
+	if !displayPassed {
+		t.Fatal("expected fixWithEngine to receive non-nil display")
 	}
 }
 
@@ -1354,6 +1425,9 @@ func TestRunCIMergeWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "dry-run: preview merge (strategy: merge)") {
+		t.Fatalf("dry-run output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Merge (dry run)") {
 		t.Fatalf("dry-run output %q missing title", output)
 	}
@@ -1434,6 +1508,9 @@ func TestRunCIMergeWithDeps_HumanOutputShowsBranchAlreadyAbsent(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "merge pull request (strategy: squash)") {
+		t.Fatalf("human output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Merge") {
 		t.Fatalf("human output %q missing title", output)
 	}

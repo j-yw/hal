@@ -43,7 +43,7 @@ organized by domain. If no index exists, lists the .md files found.
 With --json, outputs standards count and index as JSON.`,
 	Example: `  hal standards list
   hal standards list --json`,
-	RunE:    runStandardsList,
+	RunE: runStandardsList,
 }
 
 var standardsDiscoverCmd = &cobra.Command{

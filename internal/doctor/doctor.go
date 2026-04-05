@@ -157,7 +157,11 @@ func Run(opts Options) DoctorResult {
 	}
 
 	// 3. config.yaml
-	checks = append(checks, checkConfigYAML(halDir))
+	configCheck := checkConfigYAML(halDir)
+	checks = append(checks, configCheck)
+	if configCheck.Status == StatusWarn {
+		warnings = append(warnings, "config_yaml")
+	}
 
 	// 4. GitHub auth readiness (only applicable for GitHub remotes)
 	githubAuthCheck := checkGitHubAuth(dir)
@@ -352,6 +356,8 @@ func warningSummaryPart(warningID string, checks []Check) string {
 			return "review GitHub auth configuration"
 		}
 		return "review GitHub auth configuration"
+	case "config_yaml":
+		return "run hal init"
 	case "legacy_debris":
 		return "run hal cleanup"
 	case "legacy_sandbox_state":
@@ -442,6 +448,17 @@ func checkConfigYAML(halDir string) Check {
 		}
 	}
 
+	if missing := missingAutoPolicyConfigKeys(raw); len(missing) > 0 {
+		return Check{
+			ID:            "config_yaml",
+			Status:        StatusWarn,
+			Severity:      SeverityWarn,
+			RemediationID: RemediationRunHalInit,
+			Message:       "Config gap in .hal/config.yaml: auto section missing keys: " + strings.Join(missing, ", ") + ". Run hal init to backfill defaults.",
+			Remediation:   &Remediation{Command: "hal init", Safe: true},
+		}
+	}
+
 	return Check{
 		ID:            "config_yaml",
 		Status:        StatusPass,
@@ -449,6 +466,26 @@ func checkConfigYAML(halDir string) Check {
 		RemediationID: RemediationNone,
 		Message:       "Loaded .hal/config.yaml.",
 	}
+}
+
+func missingAutoPolicyConfigKeys(raw map[string]interface{}) []string {
+	autoRaw, ok := raw["auto"]
+	if !ok {
+		return nil
+	}
+	autoMap, ok := autoRaw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	required := []string{"sourcePriority", "convertMode", "mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+	missing := make([]string, 0, len(required))
+	for _, key := range required {
+		if _, exists := autoMap[key]; !exists {
+			missing = append(missing, key)
+		}
+	}
+	return missing
 }
 
 func checkEngineCLI(engine string) Check {
