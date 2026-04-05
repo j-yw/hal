@@ -50,11 +50,11 @@ var runReportWithEngine = Review
 // checkCIDependencies verifies required CI tooling and is overridden in tests.
 var checkCIDependencies = defaultCheckCIDependencies
 
-// waitForChecks points to ci.WaitForChecks and is overridden in tests.
-var waitForChecks = ci.WaitForChecks
+// waitForChecksInDirFn points to ci.WaitForChecksInDir and is overridden in tests.
+var waitForChecksInDirFn = ci.WaitForChecksInDir
 
-// fixWithEngine points to ci.FixWithEngine and is overridden in tests.
-var fixWithEngine = ci.FixWithEngine
+// fixWithEngineInDirFn points to ci.FixWithEngineInDir and is overridden in tests.
+var fixWithEngineInDirFn = ci.FixWithEngineInDir
 
 // createArchiveWithOptions points to archive.CreateWithOptions and is overridden in tests.
 var createArchiveWithOptions = archive.CreateWithOptions
@@ -1385,37 +1385,11 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 }
 
 func (p *Pipeline) waitForChecksInDir(ctx context.Context, opts ci.WaitOptions) (ci.StatusResult, error) {
-	return runInDir(p.dir, func() (ci.StatusResult, error) {
-		return waitForChecks(ctx, opts)
-	})
+	return waitForChecksInDirFn(ctx, p.dir, opts)
 }
 
 func (p *Pipeline) fixWithEngineInDir(ctx context.Context, status ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
-	return runInDir(p.dir, func() (ci.FixResult, error) {
-		return fixWithEngine(ctx, status, opts)
-	})
-}
-
-func runInDir[T any](dir string, fn func() (T, error)) (T, error) {
-	var zero T
-
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		return fn()
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return zero, fmt.Errorf("resolve working directory: %w", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		return zero, fmt.Errorf("change directory to %s: %w", dir, err)
-	}
-	defer func() {
-		_ = os.Chdir(cwd)
-	}()
-
-	return fn()
+	return fixWithEngineInDirFn(ctx, p.dir, status, opts)
 }
 
 // runArchiveStep archives feature state while preserving the latest generated report.

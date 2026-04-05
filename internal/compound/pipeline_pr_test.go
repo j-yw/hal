@@ -22,27 +22,27 @@ func newPRStepTestPipeline(t *testing.T) (*Pipeline, *bytes.Buffer) {
 	return pipeline, &out
 }
 
-// stubCIWaitPassing replaces the package-level waitForChecks with a stub
+// stubCIWaitPassing replaces the package-level waitForChecksInDirFn with a stub
 // that returns passing status. Returns a cleanup function.
 func stubCIWaitPassing(t *testing.T) {
 	t.Helper()
-	orig := waitForChecks
-	waitForChecks = func(_ context.Context, _ ci.WaitOptions) (ci.StatusResult, error) {
+	orig := waitForChecksInDirFn
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
 		return ci.StatusResult{
 			Status:           ci.StatusPassing,
 			ChecksDiscovered: true,
 		}, nil
 	}
-	t.Cleanup(func() { waitForChecks = orig })
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
 }
 
-// stubCIWaitFailing replaces waitForChecks with a stub that returns failing
+// stubCIWaitFailing replaces waitForChecksInDirFn with a stub that returns failing
 // status on the first call, then passing on subsequent calls.
 func stubCIWaitFailThenPass(t *testing.T) {
 	t.Helper()
-	orig := waitForChecks
+	orig := waitForChecksInDirFn
 	calls := 0
-	waitForChecks = func(_ context.Context, _ ci.WaitOptions) (ci.StatusResult, error) {
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
 		calls++
 		if calls == 1 {
 			return ci.StatusResult{
@@ -59,13 +59,13 @@ func stubCIWaitFailThenPass(t *testing.T) {
 			ChecksDiscovered: true,
 		}, nil
 	}
-	t.Cleanup(func() { waitForChecks = orig })
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
 }
 
 func stubCIFixSuccess(t *testing.T) {
 	t.Helper()
-	orig := fixWithEngine
-	fixWithEngine = func(_ context.Context, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+	orig := fixWithEngineInDirFn
+	fixWithEngineInDirFn = func(_ context.Context, _ string, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
 		return ci.FixResult{
 			Applied:      true,
 			Attempt:      opts.Attempt,
@@ -73,25 +73,25 @@ func stubCIFixSuccess(t *testing.T) {
 			Pushed:       true,
 		}, nil
 	}
-	t.Cleanup(func() { fixWithEngine = orig })
+	t.Cleanup(func() { fixWithEngineInDirFn = orig })
 }
 
 func stubCIWaitNoChecks(t *testing.T) {
 	t.Helper()
-	orig := waitForChecks
-	waitForChecks = func(_ context.Context, _ ci.WaitOptions) (ci.StatusResult, error) {
+	orig := waitForChecksInDirFn
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
 		return ci.StatusResult{
 			Status:           ci.StatusPending,
 			ChecksDiscovered: false,
 		}, nil
 	}
-	t.Cleanup(func() { waitForChecks = orig })
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
 }
 
 func stubCIWaitAlwaysFailing(t *testing.T) {
 	t.Helper()
-	orig := waitForChecks
-	waitForChecks = func(_ context.Context, _ ci.WaitOptions) (ci.StatusResult, error) {
+	orig := waitForChecksInDirFn
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
 		return ci.StatusResult{
 			Status:           ci.StatusFailing,
 			ChecksDiscovered: true,
@@ -101,14 +101,14 @@ func stubCIWaitAlwaysFailing(t *testing.T) {
 			},
 		}, nil
 	}
-	t.Cleanup(func() { waitForChecks = orig })
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
 }
 
 func stubCIWaitFailThenPending(t *testing.T) {
 	t.Helper()
-	orig := waitForChecks
+	orig := waitForChecksInDirFn
 	calls := 0
-	waitForChecks = func(_ context.Context, _ ci.WaitOptions) (ci.StatusResult, error) {
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
 		calls++
 		if calls == 1 {
 			return ci.StatusResult{
@@ -125,7 +125,7 @@ func stubCIWaitFailThenPending(t *testing.T) {
 			ChecksDiscovered: true,
 		}, nil
 	}
-	t.Cleanup(func() { waitForChecks = orig })
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
 }
 
 func pushStub(prURL string) func(context.Context, ci.PushOptions) (ci.PushResult, error) {
