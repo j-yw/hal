@@ -459,6 +459,9 @@ func TestRunCIPushWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "dry-run: preview push and pull request actions") {
+		t.Fatalf("dry-run output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Push (dry run)") {
 		t.Fatalf("dry-run output %q missing title", output)
 	}
@@ -508,6 +511,9 @@ func TestRunCIPushWithDeps_HumanOutputIncludesBaseBranch(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "push current branch and create or reuse a pull request") {
+		t.Fatalf("human output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Push") {
 		t.Fatalf("human output %q missing title", output)
 	}
@@ -746,6 +752,9 @@ func TestRunCIStatusWithDeps_WaitRendersChecksWhenDiscovered(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "wait for CI checks to complete") {
+		t.Fatalf("wait output %q missing header context", output)
+	}
 	if !strings.Contains(output, "Wait:") || !strings.Contains(output, ci.WaitTerminalReasonCompleted) {
 		t.Fatalf("wait output %q missing terminal reason", output)
 	}
@@ -883,6 +892,7 @@ func TestRunCIFixWithDeps_HumanOutputShowsProgressAndPassesDisplay(t *testing.T)
 
 	output := buf.String()
 	for _, needle := range []string{
+		"fix failing checks (max attempts: 3)",
 		"Checking current CI status...",
 		"Running fix attempt 1/3...",
 		"Waiting for CI checks after attempt 1/3...",
@@ -1415,6 +1425,9 @@ func TestRunCIMergeWithDeps_DryRunSkipsSideEffects(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "dry-run: preview merge (strategy: merge)") {
+		t.Fatalf("dry-run output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Merge (dry run)") {
 		t.Fatalf("dry-run output %q missing title", output)
 	}
@@ -1495,6 +1508,9 @@ func TestRunCIMergeWithDeps_HumanOutputShowsBranchAlreadyAbsent(t *testing.T) {
 	}
 
 	output := buf.String()
+	if !strings.Contains(output, "merge pull request (strategy: squash)") {
+		t.Fatalf("human output %q missing header context", output)
+	}
 	if !strings.Contains(output, "CI Merge") {
 		t.Fatalf("human output %q missing title", output)
 	}
