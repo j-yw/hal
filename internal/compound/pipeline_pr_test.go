@@ -14,6 +14,10 @@ import (
 func newPRStepTestPipeline(t *testing.T) (*Pipeline, *bytes.Buffer) {
 	t.Helper()
 
+	origCheckCIDependencies := checkCIDependencies
+	checkCIDependencies = func() error { return nil }
+	t.Cleanup(func() { checkCIDependencies = origCheckCIDependencies })
+
 	var out bytes.Buffer
 	display := engine.NewDisplay(&out)
 	cfg := DefaultAutoConfig()
