@@ -710,6 +710,10 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 		return nil
 	}
 
+	if err := p.archivePriorCanonicalStateForConvert(normalizedSourceMarkdown, state.BranchName); err != nil {
+		return err
+	}
+
 	convertOpts := prd.ConvertOptions{
 		Granular:   resolvedMode == AutoConvertModeGranular,
 		BranchName: state.BranchName,
@@ -732,6 +736,44 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 	state.Step = StepValidate
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Pipeline) archivePriorCanonicalStateForConvert(sourceMarkdown, nextBranch string) error {
+	halDir := filepath.Join(p.dir, template.HalDir)
+
+	existing, err := engine.LoadPRDFile(halDir, template.PRDFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to inspect existing canonical PRD: %w", err)
+	}
+
+	currentBranch := strings.TrimSpace(existing.BranchName)
+	nextBranch = strings.TrimSpace(nextBranch)
+	if currentBranch == "" || nextBranch == "" || currentBranch == nextBranch {
+		return nil
+	}
+
+	archiveName := archive.FeatureFromBranch(currentBranch)
+	if archiveName == "" {
+		archiveName = "auto-saved"
+	}
+
+	p.display.ShowInfo("   Branch changed from %s to %s; archiving prior feature state...\n", currentBranch, nextBranch)
+
+	excludePaths := []string{filepath.Join(halDir, template.AutoStateFile)}
+	if source := strings.TrimSpace(sourceMarkdown); source != "" {
+		excludePaths = append(excludePaths, source)
+	}
+
+	if _, err := createArchiveWithOptions(halDir, archiveName, p.display.Writer(), archive.CreateOptions{
+		ExcludePaths: excludePaths,
+	}); err != nil {
+		return fmt.Errorf("failed to archive prior feature state before convert: %w", err)
 	}
 
 	return nil
