@@ -327,21 +327,17 @@ func setupTestHalDir(t *testing.T, stories []engine.UserStory) string {
 	return halDir
 }
 
-func TestFalseCompleteInjectsFeedback(t *testing.T) {
-	// Create a PRD with one pending story
-	stories := []engine.UserStory{
-		{
-			ID:                 "FIX-001",
-			Title:              "Fix auth",
-			Description:        "Fix authentication",
-			AcceptanceCriteria: []string{"auth works"},
-			Priority:           1,
-			Passes:             false,
-		},
-	}
+func TestFalseComplete_StopsAfterMaxFalseCompletes(t *testing.T) {
+	stories := []engine.UserStory{{
+		ID:                 "FIX-001",
+		Title:              "Fix auth",
+		Description:        "Fix authentication",
+		AcceptanceCriteria: []string{"auth works"},
+		Priority:           1,
+		Passes:             false,
+	}}
 	halDir := setupTestHalDir(t, stories)
 
-	// Engine returns COMPLETE on every call (simulating the bug)
 	fe := &fakeEngine{
 		results: []engine.Result{
 			{Success: true, Complete: true},
@@ -356,7 +352,7 @@ func TestFalseCompleteInjectsFeedback(t *testing.T) {
 			Dir:           halDir,
 			PRDFile:       "prd.json",
 			ProgressFile:  "progress.txt",
-			MaxIterations: 3,
+			MaxIterations: 5,
 			Logger:        &logBuf,
 			RetryDelay:    time.Millisecond,
 			MaxRetries:    0,
@@ -367,42 +363,84 @@ func TestFalseCompleteInjectsFeedback(t *testing.T) {
 
 	result := runner.Run(context.Background())
 
-	// Should NOT report complete (story is still pending)
 	if result.Complete {
-		t.Error("loop should not report complete when story is still pending")
+		t.Fatal("loop should not report complete when story is still pending")
+	}
+	if result.Success {
+		t.Fatal("loop should fail after repeated false COMPLETE signals")
+	}
+	if result.Error == nil {
+		t.Fatal("loop should return an error after repeated false COMPLETE signals")
+	}
+	if !strings.Contains(result.Error.Error(), "rerun `hal auto --resume`") {
+		t.Fatalf("error = %q, want resume guidance", result.Error.Error())
+	}
+	if fe.calls != maxFalseCompletes {
+		t.Fatalf("engine calls = %d, want %d", fe.calls, maxFalseCompletes)
+	}
+	if len(fe.prompts) != maxFalseCompletes {
+		t.Fatalf("captured prompts = %d, want %d", len(fe.prompts), maxFalseCompletes)
+	}
+	if !strings.Contains(fe.prompts[1], "Iteration 1 Feedback") {
+		t.Fatal("second prompt should contain false COMPLETE feedback")
+	}
+	if !strings.Contains(fe.prompts[1], "FIX-001") {
+		t.Fatal("second prompt should mention the pending story ID")
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "FIX-001 is still pending") {
+		t.Fatal("log should contain pending story warning")
+	}
+}
+
+func TestFalseCompleteInjectsFeedback(t *testing.T) {
+	stories := []engine.UserStory{{
+		ID:                 "FIX-001",
+		Title:              "Fix auth",
+		Description:        "Fix authentication",
+		AcceptanceCriteria: []string{"auth works"},
+		Priority:           1,
+		Passes:             false,
+	}}
+	halDir := setupTestHalDir(t, stories)
+
+	fe := &fakeEngine{
+		results: []engine.Result{
+			{Success: true, Complete: true},
+			{Success: true, Complete: true},
+		},
 	}
 
-	// Engine should have been called 3 times (max iterations)
-	if fe.calls != 3 {
-		t.Errorf("expected 3 engine calls, got %d", fe.calls)
+	var logBuf bytes.Buffer
+	runner := &Runner{
+		config: Config{
+			Dir:           halDir,
+			PRDFile:       "prd.json",
+			ProgressFile:  "progress.txt",
+			MaxIterations: 5,
+			Logger:        &logBuf,
+			RetryDelay:    time.Millisecond,
+			MaxRetries:    0,
+		},
+		engine:  fe,
+		display: engine.NewDisplay(&logBuf),
 	}
 
-	// Second prompt should contain feedback about the false COMPLETE
+	result := runner.Run(context.Background())
+	if result.Complete {
+		t.Fatal("loop should not report complete when story is still pending")
+	}
 	if len(fe.prompts) < 2 {
 		t.Fatal("expected at least 2 prompts captured")
 	}
-	if !strings.Contains(fe.prompts[1], "FIX-001") {
-		t.Error("second prompt should mention the pending story ID")
-	}
 	if !strings.Contains(fe.prompts[1], "Iteration 1 Feedback") {
-		t.Error("second prompt should contain iteration feedback header")
+		t.Fatal("second prompt should contain false COMPLETE feedback")
+	}
+	if !strings.Contains(fe.prompts[1], "FIX-001") {
+		t.Fatal("second prompt should mention the pending story ID")
 	}
 	if !strings.Contains(fe.prompts[1], "passes: false") {
-		t.Error("second prompt should mention passes: false")
-	}
-
-	// Third prompt should have TWO feedback sections (cumulative)
-	if !strings.Contains(fe.prompts[2], "Iteration 1 Feedback") {
-		t.Error("third prompt should still contain first feedback")
-	}
-	if !strings.Contains(fe.prompts[2], "Iteration 2 Feedback") {
-		t.Error("third prompt should contain second feedback")
-	}
-
-	// Log output should show the warnings
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "FIX-001 is still pending") {
-		t.Error("log should contain pending story warning")
+		t.Fatal("second prompt should mention passes: false")
 	}
 }
 

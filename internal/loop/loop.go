@@ -14,6 +14,8 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
+const maxFalseCompletes = 2
+
 // Result represents the outcome of the loop execution.
 type Result struct {
 	Iterations       int           // Number of iterations run
@@ -222,6 +224,11 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 					falseCompletes++
 					// There are still pending stories - LLM said COMPLETE incorrectly
 					r.display.ShowInfo("   ⚠ Agent signaled COMPLETE but %s is still pending (attempt %d)\n", story.ID, falseCompletes)
+					if falseCompletes >= maxFalseCompletes {
+						result.Error = fmt.Errorf("agent repeatedly signaled COMPLETE while %s is still pending; rerun `hal auto --resume` to continue", story.ID)
+						result.Success = false
+						return result
+					}
 
 					// Inject feedback into the prompt so the next iteration
 					// has different input and can break out of the loop.
