@@ -534,6 +534,15 @@ func migrateConfigYAML(configDir string) error {
 	}
 
 	defaults := compound.DefaultAutoConfig()
+	if rawMode, ok := autoMap["mode"].(string); ok {
+		if modeDefaults, err := compound.ResolveAutoModeSettings(rawMode); err == nil {
+			defaults.Mode = modeDefaults.Mode
+			defaults.CIEnabled = modeDefaults.CIEnabled
+			defaults.ReviewEnabled = modeDefaults.ReviewEnabled
+			defaults.ReviewCleanStreak = modeDefaults.ReviewCleanStreak
+			defaults.ReviewMaxIterations = modeDefaults.ReviewMaxIterations
+		}
+	}
 	defaultValues := map[string]interface{}{
 		"sourcePriority":      defaults.SourcePriority,
 		"convertMode":         defaults.ConvertMode,
