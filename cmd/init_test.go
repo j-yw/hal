@@ -645,6 +645,26 @@ func TestMigrateTemplatesPreservesCanonicalBrowserVerificationCriterion(t *testi
 	assertCriterionCounts()
 }
 
+func TestMigratePromptTemplate_ReordersBookkeepingBeforeCommitAndHardensStopCondition(t *testing.T) {
+	legacyPrompt := "# Hal Agent Instructions\n\n## Your Task\n\n" +
+		legacyTaskOrderingBlock + "\n\n" +
+		legacyStopConditionBlock + "\n"
+
+	got := migratePromptTemplate(legacyPrompt)
+	if strings.Contains(got, legacyTaskOrderingBlock) {
+		t.Fatalf("migrated prompt should replace legacy task ordering, got: %s", got)
+	}
+	if !strings.Contains(got, canonicalTaskOrderingBlock) {
+		t.Fatalf("migrated prompt should contain canonical task ordering, got: %s", got)
+	}
+	if strings.Contains(got, legacyStopConditionBlock) {
+		t.Fatalf("migrated prompt should replace legacy stop condition, got: %s", got)
+	}
+	if !strings.Contains(got, canonicalStopConditionBlock) {
+		t.Fatalf("migrated prompt should contain canonical stop condition, got: %s", got)
+	}
+}
+
 func TestEnsureGitignore(t *testing.T) {
 	tests := []struct {
 		name            string

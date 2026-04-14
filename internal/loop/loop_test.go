@@ -442,6 +442,15 @@ func TestFalseCompleteInjectsFeedback(t *testing.T) {
 	if !strings.Contains(fe.prompts[1], "passes: false") {
 		t.Fatal("second prompt should mention passes: false")
 	}
+	if !strings.Contains(fe.prompts[1], "Append `progress.txt`") {
+		t.Fatal("second prompt should require progress append before COMPLETE")
+	}
+	if !strings.Contains(fe.prompts[1], "git status --short") {
+		t.Fatal("second prompt should require a clean git status before COMPLETE")
+	}
+	if !strings.Contains(fe.prompts[1], "end your response normally without <promise>COMPLETE</promise>") {
+		t.Fatal("second prompt should forbid COMPLETE while stories remain pending")
+	}
 }
 
 func TestFalseCompleteAcceptsWhenPRDUpdated(t *testing.T) {
@@ -528,4 +537,84 @@ func (f *fakeEngineWithHook) Execute(ctx context.Context, prompt string, display
 }
 func (f *fakeEngineWithHook) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
 	return f.fakeEngine.StreamPrompt(ctx, prompt, display)
+}
+
+func TestFalseCompleteCounterResetsWhenStoryAdvances(t *testing.T) {
+	stories := []engine.UserStory{
+		{ID: "FIX-001", Title: "Fix auth", Priority: 1, Passes: false},
+		{ID: "FIX-002", Title: "Fix billing", Priority: 2, Passes: false},
+		{ID: "FIX-003", Title: "Fix UI", Priority: 3, Passes: false},
+	}
+	halDir := setupTestHalDir(t, stories)
+	prdPath := filepath.Join(halDir, "prd.json")
+
+	callCount := 0
+	fe := &fakeEngine{
+		results: []engine.Result{
+			{Success: true, Complete: true},
+			{Success: true, Complete: true},
+			{Success: true, Complete: true},
+		},
+	}
+	fe2 := &fakeEngineWithHook{
+		fakeEngine: fe,
+		hook: func(prompt string) {
+			callCount++
+			if callCount == 1 {
+				prd := map[string]interface{}{
+					"project":    "test",
+					"branchName": "main",
+					"userStories": []map[string]interface{}{
+						{"id": "FIX-001", "title": "Fix auth", "priority": 1, "passes": true},
+						{"id": "FIX-002", "title": "Fix billing", "priority": 2, "passes": false},
+						{"id": "FIX-003", "title": "Fix UI", "priority": 3, "passes": false},
+					},
+				}
+				data, _ := json.Marshal(prd)
+				os.WriteFile(prdPath, data, 0644)
+			}
+			if callCount == 2 {
+				prd := map[string]interface{}{
+					"project":    "test",
+					"branchName": "main",
+					"userStories": []map[string]interface{}{
+						{"id": "FIX-001", "title": "Fix auth", "priority": 1, "passes": true},
+						{"id": "FIX-002", "title": "Fix billing", "priority": 2, "passes": true},
+						{"id": "FIX-003", "title": "Fix UI", "priority": 3, "passes": false},
+					},
+				}
+				data, _ := json.Marshal(prd)
+				os.WriteFile(prdPath, data, 0644)
+			}
+		},
+	}
+
+	var logBuf bytes.Buffer
+	runner := &Runner{
+		config: Config{
+			Dir:           halDir,
+			PRDFile:       "prd.json",
+			ProgressFile:  "progress.txt",
+			MaxIterations: 5,
+			Logger:        &logBuf,
+			RetryDelay:    time.Millisecond,
+			MaxRetries:    0,
+		},
+		engine:  fe2,
+		display: engine.NewDisplay(&logBuf),
+	}
+
+	result := runner.Run(context.Background())
+	if result.Success {
+		t.Fatal("loop should fail after repeated false COMPLETE on the same pending story")
+	}
+	if result.Error == nil {
+		t.Fatal("loop should return an error after repeated false COMPLETE signals")
+	}
+	if !strings.Contains(result.Error.Error(), "FIX-003") {
+		t.Fatalf("error = %q, want failure on the third pending story", result.Error.Error())
+	}
+	if fe.calls != 3 {
+		t.Fatalf("engine calls = %d, want 3 after progress resets the false COMPLETE counter", fe.calls)
+	}
 }
