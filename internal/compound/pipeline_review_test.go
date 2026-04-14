@@ -79,6 +79,7 @@ func TestRunReviewAndReportSteps_SuccessPersistsReportPath(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
 	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	stubCleanReviewFinalVerification(t, pipeline, "hal/review-success")
 
 	state := &PipelineState{
 		Step:       StepReview,
@@ -125,8 +126,11 @@ func TestRunReviewAndReportSteps_SuccessPersistsReportPath(t *testing.T) {
 		if opts.DryRun {
 			t.Fatal("report options should run with DryRun=false")
 		}
-		if opts.SkipAgents {
-			t.Fatal("report options should run with SkipAgents=false")
+		if !opts.SkipAgents {
+			t.Fatal("report options should run with SkipAgents=true")
+		}
+		if len(opts.Verification) == 0 {
+			t.Fatal("report options should include verification facts")
 		}
 		return &ReviewResult{ReportPath: reportPath}, nil
 	}
@@ -258,6 +262,7 @@ func TestRunReviewStep_PassesWhenReviewCycleHasNoValidIssues(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
 	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	stubCleanReviewFinalVerification(t, pipeline, "hal/review-no-valid-issues")
 
 	state := &PipelineState{
 		Step:       StepReview,
@@ -307,6 +312,7 @@ func TestRunReviewStep_RequiresConfiguredCleanStreak(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
 	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	stubCleanReviewFinalVerification(t, pipeline, "hal/review-clean-streak")
 
 	state := &PipelineState{
 		Step:       StepReview,
@@ -372,4 +378,223 @@ func TestRunReviewStep_SkipReviewPolicy(t *testing.T) {
 	if state.Review == nil || state.Review.Status != "skipped" {
 		t.Fatalf("state.Review = %+v, want skipped", state.Review)
 	}
+}
+
+func TestRunReviewStep_CommitsReviewFixesBeforePassing(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-finalize",
+		StartedAt:  time.Now(),
+	}
+	pipeline.currentBranch = func(string) (string, error) {
+		return state.BranchName, nil
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	calls := 0
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		calls++
+		switch calls {
+		case 1:
+			return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 1, FixesApplied: 1}}}, nil
+		case 2:
+			return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 2, ValidIssues: 0, FixesApplied: 0}}}, nil
+		default:
+			t.Fatalf("unexpected review cycle %d", calls)
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	changeCalls := 0
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		changeCalls++
+		switch changeCalls {
+		case 1:
+			return []string{"app/page.tsx"}, nil
+		case 2:
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	addCalled := false
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(ctx context.Context, gotDir string) error {
+		addCalled = true
+		if gotDir != dir {
+			t.Fatalf("git add dir = %q, want %q", gotDir, dir)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+
+	commitCalled := false
+	origCommit := gitCommitInDirFn
+	gitCommitInDirFn = func(ctx context.Context, gotDir, message string) error {
+		commitCalled = true
+		if gotDir != dir {
+			t.Fatalf("git commit dir = %q, want %q", gotDir, dir)
+		}
+		if message != reviewFixCommitMessage {
+			t.Fatalf("git commit message = %q, want %q", message, reviewFixCommitMessage)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		gitCommitInDirFn = origCommit
+	})
+
+	if err := pipeline.runReviewStep(context.Background(), state, RunOptions{}); err != nil {
+		t.Fatalf("runReviewStep returned error: %v", err)
+	}
+	if !addCalled {
+		t.Fatal("expected review fixes to be staged before passing")
+	}
+	if !commitCalled {
+		t.Fatal("expected review fixes to be committed before passing")
+	}
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.Review == nil || state.Review.Status != "passed" {
+		t.Fatalf("state.Review = %+v, want passed", state.Review)
+	}
+}
+
+func TestRunReviewStep_FinalizeReviewFixesFailure_BlocksGate(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-finalize-fail",
+		StartedAt:  time.Now(),
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 1}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{"app/page.tsx"}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(ctx context.Context, dir string) error {
+		return errors.New("git add failed")
+	}
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+
+	commitCalled := false
+	origCommit := gitCommitInDirFn
+	gitCommitInDirFn = func(ctx context.Context, dir, message string) error {
+		commitCalled = true
+		return nil
+	}
+	t.Cleanup(func() {
+		gitCommitInDirFn = origCommit
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected runReviewStep to fail when finalizeReviewFixes fails")
+	}
+	if !strings.Contains(err.Error(), "finalize review fixes failed") {
+		t.Fatalf("error = %q, want finalize review fixes failed", err.Error())
+	}
+	if commitCalled {
+		t.Fatal("commit should not run when staging review fixes fails")
+	}
+	if state.Step != StepReview {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReview)
+	}
+	if state.Review == nil || state.Review.Status != "failed" {
+		t.Fatalf("state.Review = %+v, want failed", state.Review)
+	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Review == nil || saved.Review.Status != "failed" {
+		t.Fatalf("saved state = %+v, want failed review status", saved)
+	}
+}
+
+func TestRunReviewStep_FinalVerificationFailure_BlocksGate(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-verify-fail",
+		StartedAt:  time.Now(),
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{"app/page.tsx"}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected runReviewStep to fail when final verification fails")
+	}
+	if !strings.Contains(err.Error(), "final verification failed") {
+		t.Fatalf("error = %q, want final verification failed", err.Error())
+	}
+	if state.Step != StepReview {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReview)
+	}
+	if state.Review == nil || state.Review.Status != "failed" {
+		t.Fatalf("state.Review = %+v, want failed", state.Review)
+	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Review == nil || saved.Review.Status != "failed" {
+		t.Fatalf("saved state = %+v, want failed review status", saved)
+	}
+}
+
+func stubCleanReviewFinalVerification(t *testing.T, pipeline *Pipeline, branch string) {
+	t.Helper()
+	origChanges := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) { return nil, nil }
+	t.Cleanup(func() { workingTreeChangesInDirFn = origChanges })
+	pipeline.currentBranch = func(string) (string, error) { return branch, nil }
 }

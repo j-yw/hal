@@ -52,7 +52,7 @@ func Review(ctx context.Context, eng engine.Engine, display *engine.Display, dir
 	}
 
 	// 3. Build and execute prompt
-	prompt := buildReviewPrompt(rc)
+	prompt := buildReviewPrompt(rc, opts.Verification)
 	if opts.DryRun {
 		display.ShowInfo("   Would analyze branch: %s\n", rc.BranchName)
 		display.ShowInfo("   Context available:\n")
@@ -109,7 +109,7 @@ func Review(ctx context.Context, eng engine.Engine, display *engine.Display, dir
 	}
 
 	// 6. Generate report
-	reportPath, err := generateReviewReport(dir, rc, parsed)
+	reportPath, err := generateReviewReport(dir, rc, parsed, opts.Verification)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +196,7 @@ func (rc *reviewContext) hasAnyContext() bool {
 }
 
 // buildReviewPrompt constructs the prompt for the review engine.
-func buildReviewPrompt(rc *reviewContext) string {
+func buildReviewPrompt(rc *reviewContext, verification []VerificationCheck) string {
 	var sb strings.Builder
 
 	// Load the review skill content
@@ -249,6 +249,23 @@ func buildReviewPrompt(rc *reviewContext) string {
 		sb.WriteString("### Notes\n")
 		for _, w := range rc.Warnings {
 			sb.WriteString(fmt.Sprintf("- %s\n", w))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(verification) > 0 {
+		sb.WriteString("### Deterministic Verification Facts\n")
+		sb.WriteString("Only the facts in this section are verified. Do not claim lint, tests, build, typecheck, or CI passed unless a verification fact below explicitly says so.\n\n")
+		for _, check := range verification {
+			status := "failed"
+			if check.OK {
+				status = "passed"
+			}
+			line := fmt.Sprintf("- `%s`: %s", check.Name, status)
+			if output := strings.TrimSpace(check.Output); output != "" {
+				line += fmt.Sprintf(" (%s)", output)
+			}
+			sb.WriteString(line + "\n")
 		}
 		sb.WriteString("\n")
 	}
@@ -319,7 +336,7 @@ func updateAgentsMD(dir, branch string, patterns []string) error {
 }
 
 // generateReviewReport creates a markdown report file.
-func generateReviewReport(dir string, rc *reviewContext, pr *parsedReview) (string, error) {
+func generateReviewReport(dir string, rc *reviewContext, pr *parsedReview, verification []VerificationCheck) (string, error) {
 	reportsDir := filepath.Join(dir, ".hal", "reports")
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create reports directory: %w", err)
@@ -336,6 +353,24 @@ func generateReviewReport(dir string, rc *reviewContext, pr *parsedReview) (stri
 	sb.WriteString("## Summary\n\n")
 	sb.WriteString(pr.Summary)
 	sb.WriteString("\n\n")
+
+	sb.WriteString("## Verification\n\n")
+	if len(verification) == 0 {
+		sb.WriteString("- No deterministic verification facts were provided.\n\n")
+	} else {
+		for _, check := range verification {
+			status := "failed"
+			if check.OK {
+				status = "passed"
+			}
+			sb.WriteString(fmt.Sprintf("- `%s`: %s", check.Name, status))
+			if output := strings.TrimSpace(check.Output); output != "" {
+				sb.WriteString(fmt.Sprintf("; %s", output))
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
 
 	if rc.CommitHistory != "" {
 		sb.WriteString("## What Was Built\n\n```\n")

@@ -86,10 +86,19 @@ type ReviewResult struct {
 	TechDebt        []string `json:"techDebt,omitempty"`
 }
 
+// VerificationCheck captures a deterministic quality fact gathered outside the
+// model-generated review summary.
+type VerificationCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Output string `json:"output,omitempty"`
+}
+
 // ReviewOptions controls review behavior.
 type ReviewOptions struct {
-	DryRun     bool
-	SkipAgents bool
+	DryRun       bool
+	SkipAgents   bool
+	Verification []VerificationCheck
 }
 
 // ReviewLoopResult contains the output of a hal review loop run.
