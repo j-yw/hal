@@ -42,6 +42,16 @@ type productPlanFlowDeps struct {
 	stat              func(name string) (os.FileInfo, error)
 	loadExistingFiles func(projectDir string) (product.ExistingFiles, error)
 	selectMode        func(in io.Reader, out io.Writer) (productPlanMode, error)
+	selectTargets     func(in io.Reader, out io.Writer) (product.SelectedTargets, error)
+	collectAnswers    func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error)
+	generatePayload   func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error)
+}
+
+type productPlanGenerateInput struct {
+	Engine   string
+	Targets  product.SelectedTargets
+	Answers  product.CollectedAnswers
+	Existing product.ExistingFiles
 }
 
 var defaultProductPlanDeps = productPlanDeps{
@@ -52,6 +62,18 @@ var defaultProductPlanFlowDeps = productPlanFlowDeps{
 	stat:              os.Stat,
 	loadExistingFiles: product.LoadExistingFiles,
 	selectMode:        promptProductPlanMode,
+	selectTargets:     promptProductPlanTargets,
+	collectAnswers: func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error) {
+		_ = in
+		_ = out
+		_ = targets
+		return product.CollectedAnswers{}, nil
+	},
+	generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+		_ = ctx
+		_ = input
+		return product.GeneratedPayload{}, nil
+	},
 }
 
 var productCmd = &cobra.Command{
@@ -153,6 +175,20 @@ func runProductPlanFlowWithDeps(ctx context.Context, opts productPlanRunOptions,
 	if deps.selectMode == nil {
 		deps.selectMode = promptProductPlanMode
 	}
+	if deps.selectTargets == nil {
+		deps.selectTargets = promptProductPlanTargets
+	}
+	if deps.collectAnswers == nil {
+		deps.collectAnswers = defaultProductPlanFlowDeps.collectAnswers
+	}
+	if deps.generatePayload == nil {
+		deps.generatePayload = defaultProductPlanFlowDeps.generatePayload
+	}
+
+	promptIn := opts.In
+	if _, ok := promptIn.(*bufio.Reader); !ok {
+		promptIn = bufio.NewReader(promptIn)
+	}
 
 	halDir := filepath.Join(opts.Dir, template.HalDir)
 	if _, err := deps.stat(halDir); err != nil {
@@ -168,8 +204,9 @@ func runProductPlanFlowWithDeps(ctx context.Context, opts productPlanRunOptions,
 	}
 
 	mode := productPlanModeReplaceAll
+	selectedTargets := allProductTargets()
 	if hasExistingProductFiles(existing) {
-		mode, err = deps.selectMode(opts.In, opts.Out)
+		mode, err = deps.selectMode(promptIn, opts.Out)
 		if err != nil {
 			return err
 		}
@@ -177,10 +214,39 @@ func runProductPlanFlowWithDeps(ctx context.Context, opts productPlanRunOptions,
 			fmt.Fprintln(opts.Out, "Cancelled product planning. No files were changed.")
 			return nil
 		}
+		if mode == productPlanModeUpdateSelected {
+			selectedTargets, err = deps.selectTargets(promptIn, opts.Out)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	answers, err := deps.collectAnswers(promptIn, opts.Out, selectedTargets)
+	if err != nil {
+		return fmt.Errorf("collect product interview answers: %w", err)
+	}
+
+	_, err = deps.generatePayload(ctx, productPlanGenerateInput{
+		Engine:   opts.Engine,
+		Targets:  selectedTargets,
+		Answers:  answers,
+		Existing: existing,
+	})
+	if err != nil {
+		return fmt.Errorf("generate product payload: %w", err)
 	}
 
 	fmt.Fprintf(opts.Out, "Product planning preflight complete (%s). Next stories add interactive generation and selective updates.\n", mode)
 	return nil
+}
+
+func allProductTargets() product.SelectedTargets {
+	return product.SelectedTargets{
+		Mission:   true,
+		Roadmap:   true,
+		TechStack: true,
+	}
 }
 
 func hasExistingProductFiles(existing product.ExistingFiles) bool {
@@ -220,4 +286,79 @@ func promptProductPlanMode(in io.Reader, out io.Writer) (productPlanMode, error)
 
 		fmt.Fprintln(out, "Invalid selection. Enter 1, 2, or 3.")
 	}
+}
+
+func promptProductPlanTargets(in io.Reader, out io.Writer) (product.SelectedTargets, error) {
+	reader := bufio.NewReader(in)
+
+	fmt.Fprintln(out, "Select files to update: mission (m), roadmap (r), tech-stack (t).")
+	fmt.Fprintln(out, "Examples: m,rt  |  m,r  |  mission roadmap")
+	fmt.Fprint(out, "Targets: ")
+
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return product.SelectedTargets{}, fmt.Errorf("read product target selection: %w", err)
+	}
+
+	return parseProductPlanTargets(line)
+}
+
+func parseProductPlanTargets(input string) (product.SelectedTargets, error) {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if normalized == "" {
+		return product.SelectedTargets{}, fmt.Errorf("product target selection is required")
+	}
+
+	replacer := strings.NewReplacer(",", " ", "+", " ", "/", " ", "|", " ")
+	tokens := strings.Fields(replacer.Replace(normalized))
+	if len(tokens) == 0 {
+		return product.SelectedTargets{}, fmt.Errorf("product target selection is required")
+	}
+
+	var targets product.SelectedTargets
+	for _, token := range tokens {
+		if len(token) > 1 && isConciseTargetToken(token) {
+			for _, ch := range token {
+				if err := applyTargetToken(string(ch), &targets); err != nil {
+					return product.SelectedTargets{}, err
+				}
+			}
+			continue
+		}
+
+		if err := applyTargetToken(token, &targets); err != nil {
+			return product.SelectedTargets{}, err
+		}
+	}
+
+	if !targets.Mission && !targets.Roadmap && !targets.TechStack {
+		return product.SelectedTargets{}, fmt.Errorf("product target selection is required")
+	}
+
+	return targets, nil
+}
+
+func isConciseTargetToken(token string) bool {
+	for _, ch := range token {
+		switch ch {
+		case 'm', 'r', 't':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func applyTargetToken(token string, targets *product.SelectedTargets) error {
+	switch token {
+	case "1", "m", "mission":
+		targets.Mission = true
+	case "2", "r", "roadmap":
+		targets.Roadmap = true
+	case "3", "t", "tech", "stack", "techstack", "tech-stack":
+		targets.TechStack = true
+	default:
+		return fmt.Errorf("invalid product target selection %q (use mission/roadmap/tech-stack or m/r/t)", token)
+	}
+	return nil
 }

@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/product"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -230,5 +233,227 @@ func TestRunProductPlanFlowWithDeps_NoExistingFilesSkipsModePrompt(t *testing.T)
 	}
 	if !strings.Contains(output, "Product planning preflight complete (replace_all).") {
 		t.Fatalf("output %q missing completion line", output)
+	}
+}
+
+func TestParseProductPlanTargets_ConciseInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  product.SelectedTargets
+	}{
+		{
+			name:  "single shorthand",
+			input: "m",
+			want:  product.SelectedTargets{Mission: true},
+		},
+		{
+			name:  "combined shorthand",
+			input: "rt",
+			want:  product.SelectedTargets{Roadmap: true, TechStack: true},
+		},
+		{
+			name:  "comma separated shorthand",
+			input: "m,r,t",
+			want:  product.SelectedTargets{Mission: true, Roadmap: true, TechStack: true},
+		},
+		{
+			name:  "word tokens",
+			input: "mission roadmap",
+			want:  product.SelectedTargets{Mission: true, Roadmap: true},
+		},
+		{
+			name:  "numeric tokens",
+			input: "2 3",
+			want:  product.SelectedTargets{Roadmap: true, TechStack: true},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseProductPlanTargets(tc.input)
+			if err != nil {
+				t.Fatalf("parseProductPlanTargets(%q) error = %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseProductPlanTargets(%q) = %+v, want %+v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseProductPlanTargets_InvalidInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{
+			name:    "empty",
+			input:   "",
+			wantErr: "product target selection is required",
+		},
+		{
+			name:    "invalid token",
+			input:   "x",
+			wantErr: "invalid product target selection \"x\" (use mission/roadmap/tech-stack or m/r/t)",
+		},
+		{
+			name:    "partially invalid",
+			input:   "m,x",
+			wantErr: "invalid product target selection \"x\" (use mission/roadmap/tech-stack or m/r/t)",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := parseProductPlanTargets(tc.input)
+			if err == nil {
+				t.Fatalf("parseProductPlanTargets(%q) error = nil, want %q", tc.input, tc.wantErr)
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("parseProductPlanTargets(%q) error = %q, want %q", tc.input, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestRunProductPlanFlowWithDeps_UpdateSelectedPassesTargetsToStages(t *testing.T) {
+	dir := t.TempDir()
+	productDir := filepath.Join(dir, template.HalDir, template.ProductDir)
+	if err := os.MkdirAll(productDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", productDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(productDir, template.ProductMissionFile), []byte("existing\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(mission) error = %v", err)
+	}
+
+	selected := product.SelectedTargets{Mission: true, TechStack: true}
+	wantAnswers := product.CollectedAnswers{
+		Mission: []product.InterviewAnswer{
+			{Question: "q", Answer: "a"},
+		},
+	}
+
+	collectCalled := false
+	generateCalled := false
+	var out bytes.Buffer
+	err := runProductPlanFlowWithDeps(
+		context.Background(),
+		productPlanRunOptions{
+			Dir:    dir,
+			Engine: "codex",
+			In:     strings.NewReader(""),
+			Out:    &out,
+		},
+		productPlanFlowDeps{
+			selectMode: func(in io.Reader, out io.Writer) (productPlanMode, error) {
+				_ = in
+				_ = out
+				return productPlanModeUpdateSelected, nil
+			},
+			selectTargets: func(in io.Reader, out io.Writer) (product.SelectedTargets, error) {
+				_ = in
+				_ = out
+				return selected, nil
+			},
+			collectAnswers: func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error) {
+				_ = in
+				_ = out
+				collectCalled = true
+				if targets != selected {
+					t.Fatalf("collect targets = %+v, want %+v", targets, selected)
+				}
+				return wantAnswers, nil
+			},
+			generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+				_ = ctx
+				generateCalled = true
+				if input.Engine != "codex" {
+					t.Fatalf("generate engine = %q, want %q", input.Engine, "codex")
+				}
+				if input.Targets != selected {
+					t.Fatalf("generate targets = %+v, want %+v", input.Targets, selected)
+				}
+				if !reflect.DeepEqual(input.Answers, wantAnswers) {
+					t.Fatalf("generate answers = %+v, want %+v", input.Answers, wantAnswers)
+				}
+				return product.GeneratedPayload{}, nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("runProductPlanFlowWithDeps returned error: %v", err)
+	}
+	if !collectCalled {
+		t.Fatal("collectAnswers should be called")
+	}
+	if !generateCalled {
+		t.Fatal("generatePayload should be called")
+	}
+	if !strings.Contains(out.String(), "Product planning preflight complete (update_selected).") {
+		t.Fatalf("output %q missing update_selected completion line", out.String())
+	}
+}
+
+func TestRunProductPlanFlowWithDeps_UpdateSelectedInvalidSelectionStopsBeforeStages(t *testing.T) {
+	dir := t.TempDir()
+	productDir := filepath.Join(dir, template.HalDir, template.ProductDir)
+	if err := os.MkdirAll(productDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", productDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(productDir, template.ProductRoadmapFile), []byte("existing\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(roadmap) error = %v", err)
+	}
+
+	collectCalled := false
+	generateCalled := false
+	var out bytes.Buffer
+	err := runProductPlanFlowWithDeps(
+		context.Background(),
+		productPlanRunOptions{
+			Dir: dir,
+			In:  strings.NewReader("2\nx\n"),
+			Out: &out,
+		},
+		productPlanFlowDeps{
+			collectAnswers: func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error) {
+				_ = in
+				_ = out
+				_ = targets
+				collectCalled = true
+				return product.CollectedAnswers{}, nil
+			},
+			generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+				_ = ctx
+				_ = input
+				generateCalled = true
+				return product.GeneratedPayload{}, nil
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected invalid target selection error, got nil")
+	}
+
+	wantErr := "invalid product target selection \"x\" (use mission/roadmap/tech-stack or m/r/t)"
+	if err.Error() != wantErr {
+		t.Fatalf("error = %q, want %q", err.Error(), wantErr)
+	}
+	if collectCalled {
+		t.Fatal("collectAnswers should not be called for invalid selections")
+	}
+	if generateCalled {
+		t.Fatal("generatePayload should not be called for invalid selections")
 	}
 }

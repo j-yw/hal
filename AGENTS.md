@@ -451,3 +451,9 @@
 - Keep product-plan preflight in `cmd/product.go` (`runProductPlanFlowWithDeps`) with injectable dependencies (`stat`, `loadExistingFiles`, `selectMode`) so interactive command logic is unit-testable without full Cobra execution.
 - Product planning must fail fast with actionable guidance when `.hal/` is missing (`.hal/ not found - run 'hal init' first`) before attempting any product file reads.
 - Only prompt for replace/update/cancel when at least one product doc already exists, and treat cancel as a clean no-op (no file creation, no file modification).
+
+## Patterns from hal/product-update-target-parsing (2026-04-16)
+
+- Keep update-target parsing centralized in `cmd/product.go` (`parseProductPlanTargets`) and accept concise aliases (`m/r/t`, combined tokens like `rt`, comma/space-delimited tokens, and `1/2/3` numeric aliases) so update-mode input stays fast and deterministic.
+- Return deterministic validation errors for invalid or empty target selections (for example `product target selection is required` and `invalid product target selection "<token>" ...`) so tests and CLI behavior stay stable.
+- In multi-step interactive product flows, wrap `opts.In` once in a shared `*bufio.Reader` before calling sequential prompt deps (`selectMode`, `selectTargets`, `collectAnswers`) to avoid read-ahead buffering dropping scripted input lines.
