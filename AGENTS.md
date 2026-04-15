@@ -429,3 +429,8 @@
 - Keep shared product-plan contract types in `internal/product/types.go` so command flow, prompts, and IO helpers reuse one schema source.
 - Model generated JSON output as filename-keyed pointer fields in `GeneratedPayload` (`mission.md`, `roadmap.md`, `tech-stack.md`) so omitted keys for unselected files are distinguishable from explicit empty strings.
 - Keep generated-output parsing behind `ParseGeneratedPayload` and lock malformed JSON/type-mismatch behavior with focused unit tests in `internal/product/types_test.go`.
+
+## Patterns from hal/product-skill-embedding (2026-04-16)
+
+- Adding a Hal-managed skill requires three synchronized updates: add `internal/skills/<name>/SKILL.md`, include `<name>` in `internal/skills/embed.go` `//go:embed` paths, and add `<name>` to `ManagedSkillNames` so install/link/doctor flows stay aligned.
+- Keep an explicit `LoadSkill("<name>")` non-empty unit test in `internal/skills/skills_test.go` to lock the embedded lookup key and catch missing embed registration early.

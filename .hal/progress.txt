@@ -5,6 +5,7 @@
 - Use `template.ProductDir`, `template.ProductMissionFile`, `template.ProductRoadmapFile`, and `template.ProductTechStackFile` for product-doc paths instead of hardcoded `.hal/product/*` strings.
 - Use `template.ProductFiles()` when iterating product docs so mission/roadmap/tech-stack order stays deterministic.
 - In `internal/product.GeneratedPayload`, keep file content fields as `*string` keyed by filename JSON tags (`mission.md`, `roadmap.md`, `tech-stack.md`) so omitted unselected files stay distinguishable from intentionally empty strings.
+- For Hal-managed skills, keep `internal/skills/embed.go` `//go:embed` entries and `ManagedSkillNames` in sync with on-disk `internal/skills/<name>/SKILL.md`, and lock with a `LoadSkill("<name>")` non-empty test.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -23,4 +24,12 @@
   - Model generated product JSON as filename-keyed pointer fields so partial payloads are valid and omitted keys remain detectable.
   - `ParseGeneratedPayload` should remain the single parse entrypoint and wrap JSON errors with stable context (`parse generated payload: ...`) for caller diagnostics.
   - In this environment, full `make test` should be run with `GIT_CONFIG_GLOBAL=/dev/null` to avoid host-level commit-signing config breaking temp-repo git commit tests.
+---
+## 2026-04-16 06:57 +08 - US-003
+- Added Hal-adapted embedded product skill content at `internal/skills/product/SKILL.md` with strict JSON-only, generation-only guidance keyed by `mission.md`, `roadmap.md`, and `tech-stack.md`.
+- Registered `product` in `internal/skills/embed.go` for both `//go:embed` and `ManagedSkillNames`, and added explicit load coverage in `internal/skills/skills_test.go`.
+- Files changed: `internal/skills/product/SKILL.md`, `internal/skills/embed.go`, `internal/skills/skills_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Treat `LoadSkill("<name>")` tests as embedding contract checks so renamed or unregistered skill directories fail fast.
+  - Adding a new Hal-managed skill should update both asset embedding and managed-link lists in one change to keep `hal links` and doctor checks aligned.
 ---

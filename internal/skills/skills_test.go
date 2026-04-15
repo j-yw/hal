@@ -28,6 +28,16 @@ func TestLoadSkillFactory(t *testing.T) {
 	}
 }
 
+func TestLoadSkillProduct(t *testing.T) {
+	content, err := LoadSkill("product")
+	if err != nil {
+		t.Fatalf("LoadSkill(product) error = %v", err)
+	}
+	if content == "" {
+		t.Fatal("product skill content should not be empty")
+	}
+}
+
 func TestInstallSkillsCreatesManagedSkills(t *testing.T) {
 	projectDir := t.TempDir()
 
