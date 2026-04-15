@@ -6,6 +6,7 @@
 - Use `template.ProductFiles()` when iterating product docs so mission/roadmap/tech-stack order stays deterministic.
 - In `internal/product.GeneratedPayload`, keep file content fields as `*string` keyed by filename JSON tags (`mission.md`, `roadmap.md`, `tech-stack.md`) so omitted unselected files stay distinguishable from intentionally empty strings.
 - Use `product.LoadExistingFiles(projectDir)` for preflight reads; missing product files should map to `Exists=false` + empty content without creating `.hal/product`.
+- Use `product.WriteSelectedFiles(projectDir, targets, payload)` for selective product updates; it only writes selected files with generated content and creates `.hal/product` lazily when writes are needed.
 - For Hal-managed skills, keep `internal/skills/embed.go` `//go:embed` entries and `ManagedSkillNames` in sync with on-disk `internal/skills/<name>/SKILL.md`, and lock with a `LoadSkill("<name>")` non-empty test.
 
 ---
@@ -41,4 +42,13 @@
 - **Learnings for future iterations:**
   - Product preflight reads should use `LoadExistingFiles` and treat `fs.ErrNotExist` as a non-error for each file to keep update-mode behavior deterministic.
   - Reader helpers in this area must stay side-effect free; tests should assert missing directories are not created during load.
+---
+## 2026-04-16 07:07 +08 - US-005
+- Implemented selective product context writes in `internal/product/write.go` via `WriteSelectedFiles(projectDir, targets, payload)` so only selected docs are written.
+- Added focused tests in `internal/product/write_test.go` for lazy `.hal/product` creation and byte-for-byte unchanged non-selected files during partial updates.
+- Files changed: `internal/product/write.go`, `internal/product/write_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Patterns discovered: keep product writes centralized in `WriteSelectedFiles` so target filtering and file path handling stay consistent.
+  - Gotchas encountered: `make lint` currently fails on pre-existing unrelated issues, so story validation should rely on `make test` + `make vet` until lint baseline is cleaned up.
+  - Useful context: `context_test.go` helpers (`writeProductFile`) are reusable across `internal/product` tests and keep setup concise.
 ---

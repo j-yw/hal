@@ -439,3 +439,9 @@
 
 - Keep product-doc preflight loading centralized in `internal/product/context.go` via `LoadExistingFiles(projectDir)` so command flows share one read contract.
 - `LoadExistingFiles` should treat per-file `fs.ErrNotExist` as non-fatal (`Exists=false`, empty content) to support empty/partial `.hal/product` states without side effects.
+
+## Patterns from hal/product-selective-writer (2026-04-16)
+
+- Keep selective product writes centralized in `internal/product/write.go` via `WriteSelectedFiles(projectDir, targets, payload)` so only explicitly selected docs are ever modified.
+- `WriteSelectedFiles` should create `.hal/product` lazily only when at least one selected payload entry is present, avoiding empty-directory side effects in no-op paths.
+- Lock non-selected-file safety with byte-level regression tests (read-before/read-after comparisons) so partial updates cannot accidentally rewrite untouched docs.
