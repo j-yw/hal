@@ -434,3 +434,8 @@
 
 - Adding a Hal-managed skill requires three synchronized updates: add `internal/skills/<name>/SKILL.md`, include `<name>` in `internal/skills/embed.go` `//go:embed` paths, and add `<name>` to `ManagedSkillNames` so install/link/doctor flows stay aligned.
 - Keep an explicit `LoadSkill("<name>")` non-empty unit test in `internal/skills/skills_test.go` to lock the embedded lookup key and catch missing embed registration early.
+
+## Patterns from hal/product-context-reader (2026-04-16)
+
+- Keep product-doc preflight loading centralized in `internal/product/context.go` via `LoadExistingFiles(projectDir)` so command flows share one read contract.
+- `LoadExistingFiles` should treat per-file `fs.ErrNotExist` as non-fatal (`Exists=false`, empty content) to support empty/partial `.hal/product` states without side effects.
