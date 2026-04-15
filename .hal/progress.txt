@@ -13,6 +13,7 @@
 - In multi-step interactive flows, wrap `opts.In` once in a shared `*bufio.Reader` before calling multiple prompt helpers so scripted input is consumed consistently across prompts.
 - Keep update-target parsing centralized in `parseProductPlanTargets`; accept concise tokens (`m/r/t`, combined letters, comma/space-delimited values) and return deterministic validation errors.
 - Keep product interview collection centralized in `collectProductPlanAnswers`; ask only selected target sections and fall back to deterministic per-target default answers when input is empty/EOF.
+- Keep generation prompt assembly centralized in `buildProductPlanGeneratePrompt`; include only selected targets' interview/existing context and enforce JSON-only filename-keyed output contracts.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -96,4 +97,14 @@
   - Patterns discovered: keep interview question/default strings as constants so prompt contracts stay testable and deterministic.
   - Gotchas encountered: interactive collectors should reuse the buffered reader already flowing through command deps to avoid stdin read-ahead inconsistencies.
   - Useful context: tech-stack interview answers now come only from explicit user input (or deterministic fallback text), with no standards auto-discovery path.
+---
+## 2026-04-16 07:44 +08 - US-010
+- Implemented strict generation prompt assembly in `cmd/product.go` via `buildProductPlanGeneratePrompt`, including selected targets, selected interview answers, and selected existing-file context.
+- Added explicit JSON-only output contract instructions keyed by selected product filenames and wired default generation deps to build this prompt shape deterministically.
+- Added focused tests that assert required prompt sections, strict filename-keyed JSON contract text, deterministic section ordering, and exclusion of unselected file context.
+- Files changed: `cmd/product.go`, `cmd/product_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Patterns discovered: prompt builders for scoped updates should derive both context sections and output-key contracts from the same selected-target helper to avoid drift.
+  - Gotchas encountered: excluding unselected context must cover both source context blocks and the allowed JSON key list, not just one side.
+  - Useful context: `buildProductPlanGeneratePrompt` now serves as the single prompt contract entrypoint for future engine invocation and parse/repair stages.
 ---

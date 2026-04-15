@@ -79,7 +79,7 @@ var defaultProductPlanFlowDeps = productPlanFlowDeps{
 	collectAnswers:    collectProductPlanAnswers,
 	generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
 		_ = ctx
-		_ = input
+		_ = buildProductPlanGeneratePrompt(input)
 		return product.GeneratedPayload{}, nil
 	},
 }
@@ -464,4 +464,110 @@ func ensureBufferedReader(in io.Reader) *bufio.Reader {
 		in = strings.NewReader("")
 	}
 	return bufio.NewReader(in)
+}
+
+func buildProductPlanGeneratePrompt(input productPlanGenerateInput) string {
+	selectedFiles := selectedProductFiles(input.Targets)
+
+	var sb strings.Builder
+	sb.WriteString("You are generating durable product context files for hal product plan.\n")
+	sb.WriteString("Use only the provided selected context and return strict JSON output.\n\n")
+
+	sb.WriteString("## Selected Targets\n")
+	for _, file := range selectedFiles {
+		fmt.Fprintf(&sb, "- %s\n", file)
+	}
+
+	sb.WriteString("\n## Interview Answers (selected targets only)\n")
+	appendProductInterviewAnswerSections(&sb, input.Targets, input.Answers)
+
+	sb.WriteString("\n## Existing File Content (selected targets only)\n")
+	appendProductExistingFileSections(&sb, input.Targets, input.Existing)
+
+	sb.WriteString("\n## Output Contract\n")
+	sb.WriteString("Return ONLY valid JSON (no markdown code fences, no prose).\n")
+	sb.WriteString("Include ONLY these selected filename keys:\n")
+	for _, file := range selectedFiles {
+		fmt.Fprintf(&sb, "- %q\n", file)
+	}
+	sb.WriteString("Each value must be a string containing the full markdown content for that file.\n")
+	sb.WriteString("Do not include unknown keys.\n\n")
+	sb.WriteString("Return JSON in this shape:\n")
+	sb.WriteString("{\n")
+	for i, file := range selectedFiles {
+		suffix := ","
+		if i == len(selectedFiles)-1 {
+			suffix = ""
+		}
+		fmt.Fprintf(&sb, "  %q: \"<full markdown content>\"%s\n", file, suffix)
+	}
+	sb.WriteString("}")
+
+	return sb.String()
+}
+
+func selectedProductFiles(targets product.SelectedTargets) []string {
+	files := make([]string, 0, len(template.ProductFiles()))
+	if targets.Mission {
+		files = append(files, template.ProductMissionFile)
+	}
+	if targets.Roadmap {
+		files = append(files, template.ProductRoadmapFile)
+	}
+	if targets.TechStack {
+		files = append(files, template.ProductTechStackFile)
+	}
+	return files
+}
+
+func appendProductInterviewAnswerSections(sb *strings.Builder, targets product.SelectedTargets, answers product.CollectedAnswers) {
+	if targets.Mission {
+		appendProductInterviewAnswerSection(sb, template.ProductMissionFile, answers.Mission)
+	}
+	if targets.Roadmap {
+		appendProductInterviewAnswerSection(sb, template.ProductRoadmapFile, answers.Roadmap)
+	}
+	if targets.TechStack {
+		appendProductInterviewAnswerSection(sb, template.ProductTechStackFile, answers.TechStack)
+	}
+}
+
+func appendProductInterviewAnswerSection(sb *strings.Builder, fileName string, answers []product.InterviewAnswer) {
+	fmt.Fprintf(sb, "### %s\n", fileName)
+	if len(answers) == 0 {
+		sb.WriteString("- (no answers provided)\n")
+		return
+	}
+	for _, answer := range answers {
+		fmt.Fprintf(sb, "- Q: %s\n", answer.Question)
+		fmt.Fprintf(sb, "  A: %s\n", answer.Answer)
+	}
+}
+
+func appendProductExistingFileSections(sb *strings.Builder, targets product.SelectedTargets, existing product.ExistingFiles) {
+	if targets.Mission {
+		appendProductExistingFileSection(sb, template.ProductMissionFile, existing.Mission)
+	}
+	if targets.Roadmap {
+		appendProductExistingFileSection(sb, template.ProductRoadmapFile, existing.Roadmap)
+	}
+	if targets.TechStack {
+		appendProductExistingFileSection(sb, template.ProductTechStackFile, existing.TechStack)
+	}
+}
+
+func appendProductExistingFileSection(sb *strings.Builder, fileName string, state product.FileState) {
+	if state.Exists {
+		fmt.Fprintf(sb, "### %s (existing)\n", fileName)
+		sb.WriteString("```markdown\n")
+		sb.WriteString(state.Content)
+		if !strings.HasSuffix(state.Content, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n")
+		return
+	}
+
+	fmt.Fprintf(sb, "### %s (missing)\n", fileName)
+	sb.WriteString("<missing>\n")
 }

@@ -463,3 +463,9 @@
 - Keep product interview collection centralized in `cmd/product.go` (`collectProductPlanAnswers`) and gate mission/roadmap/tech-stack question sections strictly by `product.SelectedTargets` so update-selected mode only asks in-scope questions.
 - Keep question text and fallback placeholders as constants (`product*QuestionPrompt`, `product*DefaultAnswer`) and lock them with unit tests to preserve deterministic interview output across CLI runs.
 - Tech-stack interview capture should remain explicit-input only (no standards inference path); use user-provided text when present and deterministic fallback text when empty.
+
+## Patterns from hal/product-generation-prompt-contract (2026-04-16)
+
+- Keep product generation prompt construction centralized in `cmd/product.go` (`buildProductPlanGeneratePrompt`) so selected-target filtering, interview context, and existing-file context stay synchronized.
+- Prompt output contracts should enumerate only selected filename keys (`mission.md`, `roadmap.md`, `tech-stack.md`) and require JSON-only responses (no markdown fences or prose) to keep parsing deterministic.
+- Prompt tests should assert both required selected context and explicit exclusion of unselected file context/keys to prevent scoped-update regressions.

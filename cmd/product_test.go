@@ -550,3 +550,113 @@ func TestCollectProductPlanAnswers_TechStackUsesExplicitUserInput(t *testing.T) 
 		t.Fatalf("non-selected answers should remain empty, got mission=%d roadmap=%d", len(answers.Mission), len(answers.Roadmap))
 	}
 }
+
+func TestBuildProductPlanGeneratePrompt_IncludesSelectedContextAndStrictJSONContract(t *testing.T) {
+	t.Parallel()
+
+	input := productPlanGenerateInput{
+		Targets: product.SelectedTargets{
+			Mission:   true,
+			TechStack: true,
+		},
+		Answers: product.CollectedAnswers{
+			Mission: []product.InterviewAnswer{
+				{Question: "What problem are we solving?", Answer: "Reduce manual release toil."},
+			},
+			TechStack: []product.InterviewAnswer{
+				{Question: "Which technologies are required?", Answer: "Go, Postgres, and OpenTelemetry."},
+			},
+		},
+		Existing: product.ExistingFiles{
+			Mission: product.FileState{
+				Exists:  true,
+				Content: "## Mission\nCurrent mission text.",
+			},
+			TechStack: product.FileState{
+				Exists: false,
+			},
+		},
+	}
+
+	prompt := buildProductPlanGeneratePrompt(input)
+
+	requiredSubstrings := []string{
+		"## Selected Targets",
+		"- mission.md",
+		"- tech-stack.md",
+		"## Interview Answers (selected targets only)",
+		"### mission.md",
+		"- Q: What problem are we solving?",
+		"  A: Reduce manual release toil.",
+		"### tech-stack.md",
+		"- Q: Which technologies are required?",
+		"  A: Go, Postgres, and OpenTelemetry.",
+		"## Existing File Content (selected targets only)",
+		"### mission.md (existing)",
+		"## Mission\nCurrent mission text.",
+		"### tech-stack.md (missing)",
+		"## Output Contract",
+		"Return ONLY valid JSON (no markdown code fences, no prose).",
+		"- \"mission.md\"",
+		"- \"tech-stack.md\"",
+		"\"mission.md\": \"<full markdown content>\"",
+		"\"tech-stack.md\": \"<full markdown content>\"",
+	}
+
+	for _, want := range requiredSubstrings {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q\nprompt:\n%s", want, prompt)
+		}
+	}
+
+	if missionIdx, techIdx := strings.Index(prompt, "### mission.md"), strings.Index(prompt, "### tech-stack.md"); missionIdx == -1 || techIdx == -1 || missionIdx > techIdx {
+		t.Fatalf("selected target sections should be deterministic mission->tech-stack order, got prompt:\n%s", prompt)
+	}
+}
+
+func TestBuildProductPlanGeneratePrompt_ExcludesUnselectedFileContext(t *testing.T) {
+	t.Parallel()
+
+	input := productPlanGenerateInput{
+		Targets: product.SelectedTargets{
+			Mission: true,
+		},
+		Answers: product.CollectedAnswers{
+			Mission: []product.InterviewAnswer{
+				{Question: "Mission question", Answer: "Mission answer"},
+			},
+			Roadmap: []product.InterviewAnswer{
+				{Question: "Roadmap question", Answer: "Roadmap answer that must be excluded"},
+			},
+		},
+		Existing: product.ExistingFiles{
+			Mission: product.FileState{
+				Exists:  true,
+				Content: "Mission context only.",
+			},
+			Roadmap: product.FileState{
+				Exists:  true,
+				Content: "Roadmap context that must be excluded",
+			},
+		},
+	}
+
+	prompt := buildProductPlanGeneratePrompt(input)
+
+	forbiddenSubstrings := []string{
+		"### roadmap.md",
+		"Roadmap answer that must be excluded",
+		"Roadmap context that must be excluded",
+		"\"roadmap.md\": \"<full markdown content>\"",
+		"- \"roadmap.md\"",
+	}
+	for _, forbidden := range forbiddenSubstrings {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt should exclude unselected roadmap context %q\nprompt:\n%s", forbidden, prompt)
+		}
+	}
+
+	if !strings.Contains(prompt, "\"mission.md\": \"<full markdown content>\"") {
+		t.Fatalf("prompt missing selected mission output key\nprompt:\n%s", prompt)
+	}
+}
