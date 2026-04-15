@@ -67,8 +67,16 @@ type productPlanGenerateInput struct {
 	Existing product.ExistingFiles
 }
 
+type productPlanGenerateDeps struct {
+	prompt func(ctx context.Context, engineName, prompt string) (string, error)
+}
+
 var defaultProductPlanDeps = productPlanDeps{
 	run: runProductPlanFlow,
+}
+
+var defaultProductPlanGenerateDeps = productPlanGenerateDeps{
+	prompt: promptProductPlanWithEngine,
 }
 
 var defaultProductPlanFlowDeps = productPlanFlowDeps{
@@ -77,11 +85,7 @@ var defaultProductPlanFlowDeps = productPlanFlowDeps{
 	selectMode:        promptProductPlanMode,
 	selectTargets:     promptProductPlanTargets,
 	collectAnswers:    collectProductPlanAnswers,
-	generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
-		_ = ctx
-		_ = buildProductPlanGeneratePrompt(input)
-		return product.GeneratedPayload{}, nil
-	},
+	generatePayload:   generateProductPlanPayload,
 }
 
 var productCmd = &cobra.Command{
@@ -466,6 +470,54 @@ func ensureBufferedReader(in io.Reader) *bufio.Reader {
 	return bufio.NewReader(in)
 }
 
+func generateProductPlanPayload(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+	return generateProductPlanPayloadWithDeps(ctx, input, defaultProductPlanGenerateDeps)
+}
+
+func promptProductPlanWithEngine(ctx context.Context, engineName, prompt string) (string, error) {
+	eng, err := newEngine(engineName)
+	if err != nil {
+		return "", fmt.Errorf("create %s engine: %w", engineName, err)
+	}
+
+	response, err := eng.Prompt(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("%s engine prompt failed: %w", engineName, err)
+	}
+
+	return response, nil
+}
+
+func generateProductPlanPayloadWithDeps(ctx context.Context, input productPlanGenerateInput, deps productPlanGenerateDeps) (product.GeneratedPayload, error) {
+	if deps.prompt == nil {
+		deps.prompt = defaultProductPlanGenerateDeps.prompt
+	}
+
+	prompt := buildProductPlanGeneratePrompt(input)
+	response, err := deps.prompt(ctx, input.Engine, prompt)
+	if err != nil {
+		return product.GeneratedPayload{}, fmt.Errorf("run product generation prompt: %w", err)
+	}
+
+	payload, parseErr := product.ParseGeneratedPayload([]byte(response))
+	if parseErr == nil {
+		return payload, nil
+	}
+
+	repairPrompt := buildProductPlanRepairPrompt(input, prompt, response)
+	repaired, repairErr := deps.prompt(ctx, input.Engine, repairPrompt)
+	if repairErr != nil {
+		return product.GeneratedPayload{}, fmt.Errorf("product payload JSON parse failed (%v); repair attempt failed: %w; rerun 'hal product plan' or try a different --engine", parseErr, repairErr)
+	}
+
+	repairedPayload, repairParseErr := product.ParseGeneratedPayload([]byte(repaired))
+	if repairParseErr != nil {
+		return product.GeneratedPayload{}, fmt.Errorf("product payload JSON parse failed (%v); repaired response is still invalid: %w; rerun 'hal product plan' or try a different --engine", parseErr, repairParseErr)
+	}
+
+	return repairedPayload, nil
+}
+
 func buildProductPlanGeneratePrompt(input productPlanGenerateInput) string {
 	selectedFiles := selectedProductFiles(input.Targets)
 
@@ -502,6 +554,29 @@ func buildProductPlanGeneratePrompt(input productPlanGenerateInput) string {
 		fmt.Fprintf(&sb, "  %q: \"<full markdown content>\"%s\n", file, suffix)
 	}
 	sb.WriteString("}")
+
+	return sb.String()
+}
+
+func buildProductPlanRepairPrompt(input productPlanGenerateInput, originalPrompt, previousResponse string) string {
+	selectedFiles := selectedProductFiles(input.Targets)
+
+	var sb strings.Builder
+	sb.WriteString("The previous response did not match the required JSON output contract for hal product plan.\n")
+	sb.WriteString("Repair the response and return ONLY valid JSON (no markdown fences, no prose).\n")
+	sb.WriteString("Include ONLY these selected filename keys:\n")
+	for _, file := range selectedFiles {
+		fmt.Fprintf(&sb, "- %q\n", file)
+	}
+	sb.WriteString("Each selected key value must be a string containing full markdown content.\n\n")
+
+	sb.WriteString("Original generation instructions:\n")
+	sb.WriteString(originalPrompt)
+	sb.WriteString("\n\n")
+
+	sb.WriteString("Previous response:\n")
+	sb.WriteString(previousResponse)
+	sb.WriteString("\n")
 
 	return sb.String()
 }

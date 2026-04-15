@@ -221,7 +221,13 @@ func TestRunProductPlanFlowWithDeps_NoExistingFilesSkipsModePrompt(t *testing.T)
 			In:  strings.NewReader(""),
 			Out: &out,
 		},
-		productPlanFlowDeps{},
+		productPlanFlowDeps{
+			generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+				_ = ctx
+				_ = input
+				return product.GeneratedPayload{}, nil
+			},
+		},
 	)
 	if err != nil {
 		t.Fatalf("runProductPlanFlowWithDeps returned error: %v", err)
@@ -455,6 +461,129 @@ func TestRunProductPlanFlowWithDeps_UpdateSelectedInvalidSelectionStopsBeforeSta
 	}
 	if generateCalled {
 		t.Fatal("generatePayload should not be called for invalid selections")
+	}
+}
+
+func TestGenerateProductPlanPayloadWithDeps_RepairsOnceAfterParseFailure(t *testing.T) {
+	input := productPlanGenerateInput{
+		Engine: "codex",
+		Targets: product.SelectedTargets{
+			Mission: true,
+		},
+	}
+
+	callCount := 0
+	var prompts []string
+	got, err := generateProductPlanPayloadWithDeps(context.Background(), input, productPlanGenerateDeps{
+		prompt: func(ctx context.Context, engineName, prompt string) (string, error) {
+			_ = ctx
+			if engineName != "codex" {
+				t.Fatalf("engineName = %q, want %q", engineName, "codex")
+			}
+
+			callCount++
+			prompts = append(prompts, prompt)
+			switch callCount {
+			case 1:
+				return "not-json", nil
+			case 2:
+				return `{"mission.md":"Generated mission content"}`, nil
+			default:
+				t.Fatalf("prompt called %d times, want 2", callCount)
+				return "", nil
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("generateProductPlanPayloadWithDeps returned error: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("prompt call count = %d, want 2", callCount)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("len(prompts) = %d, want 2", len(prompts))
+	}
+	if !strings.Contains(prompts[1], "Previous response:") || !strings.Contains(prompts[1], "not-json") {
+		t.Fatalf("repair prompt should include previous invalid response, got:\n%s", prompts[1])
+	}
+	if got.Mission == nil || *got.Mission != "Generated mission content" {
+		t.Fatalf("Mission = %v, want %q", got.Mission, "Generated mission content")
+	}
+}
+
+func TestGenerateProductPlanPayloadWithDeps_RepairAttemptRunsOnceThenErrors(t *testing.T) {
+	input := productPlanGenerateInput{
+		Engine: "codex",
+		Targets: product.SelectedTargets{
+			Mission: true,
+		},
+	}
+
+	callCount := 0
+	_, err := generateProductPlanPayloadWithDeps(context.Background(), input, productPlanGenerateDeps{
+		prompt: func(ctx context.Context, engineName, prompt string) (string, error) {
+			_ = ctx
+			_ = engineName
+			_ = prompt
+			callCount++
+			if callCount == 1 {
+				return "not-json", nil
+			}
+			return "still-not-json", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error after failed repair parse, got nil")
+	}
+	if callCount != 2 {
+		t.Fatalf("prompt call count = %d, want 2 (single repair attempt)", callCount)
+	}
+	if !strings.Contains(err.Error(), "repaired response is still invalid") {
+		t.Fatalf("error = %q, want repaired-parse failure detail", err.Error())
+	}
+	if !strings.Contains(err.Error(), "rerun 'hal product plan' or try a different --engine") {
+		t.Fatalf("error = %q, want actionable retry guidance", err.Error())
+	}
+}
+
+func TestRunProductPlanFlowWithDeps_GenerationFailureDoesNotCreateProductFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, template.HalDir), 0755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error = %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runProductPlanFlowWithDeps(
+		context.Background(),
+		productPlanRunOptions{
+			Dir: dir,
+			In:  strings.NewReader(""),
+			Out: &out,
+		},
+		productPlanFlowDeps{
+			collectAnswers: func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error) {
+				_ = in
+				_ = out
+				_ = targets
+				return product.CollectedAnswers{}, nil
+			},
+			generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+				_ = ctx
+				_ = input
+				return product.GeneratedPayload{}, errors.New("product payload JSON parse failed (initial parse); repair attempt failed: parse")
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected generation failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "generate product payload:") {
+		t.Fatalf("error = %q, want generation error prefix", err.Error())
+	}
+
+	productDir := filepath.Join(dir, template.HalDir, template.ProductDir)
+	if _, statErr := os.Stat(productDir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("expected %s to remain absent after generation failure, stat error: %v", productDir, statErr)
 	}
 }
 

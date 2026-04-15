@@ -58,3 +58,40 @@ func TestParseGeneratedPayload_MalformedJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestParseGeneratedPayload_RejectsNonObjectPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "array",
+			input: `["mission.md"]`,
+		},
+		{
+			name:  "null",
+			input: `null`,
+		},
+		{
+			name:  "string",
+			input: `"mission.md"`,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := ParseGeneratedPayload([]byte(tc.input))
+			if err == nil {
+				t.Fatalf("ParseGeneratedPayload(%q) error = nil, want non-nil", tc.input)
+			}
+			if err.Error() != "parse generated payload: expected JSON object" {
+				t.Fatalf("ParseGeneratedPayload(%q) error = %q, want %q", tc.input, err.Error(), "parse generated payload: expected JSON object")
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package product
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -48,8 +49,13 @@ type GeneratedPayload struct {
 
 // ParseGeneratedPayload parses strict JSON output for product generation.
 func ParseGeneratedPayload(data []byte) (GeneratedPayload, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return GeneratedPayload{}, fmt.Errorf("parse generated payload: expected JSON object")
+	}
+
 	var payload GeneratedPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
 		return GeneratedPayload{}, fmt.Errorf("parse generated payload: %w", err)
 	}
 	return payload, nil

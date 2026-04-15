@@ -469,3 +469,9 @@
 - Keep product generation prompt construction centralized in `cmd/product.go` (`buildProductPlanGeneratePrompt`) so selected-target filtering, interview context, and existing-file context stay synchronized.
 - Prompt output contracts should enumerate only selected filename keys (`mission.md`, `roadmap.md`, `tech-stack.md`) and require JSON-only responses (no markdown fences or prose) to keep parsing deterministic.
 - Prompt tests should assert both required selected context and explicit exclusion of unselected file context/keys to prevent scoped-update regressions.
+
+## Patterns from hal/product-json-parse-repair (2026-04-16)
+
+- Keep product JSON parse/repair flow centralized in `cmd/product.go` (`generateProductPlanPayloadWithDeps`) so generation callers share one contract for parse success, one-time repair, and terminal error handling.
+- `ParseGeneratedPayload` should reject non-object top-level JSON before struct unmarshal (`parse generated payload: expected JSON object`) so null/array/scalar outputs fail deterministically.
+- On initial parse failure, perform exactly one repair prompt attempt, then return actionable errors (`rerun 'hal product plan' or try a different --engine`) rather than retrying indefinitely.

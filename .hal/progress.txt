@@ -14,6 +14,7 @@
 - Keep update-target parsing centralized in `parseProductPlanTargets`; accept concise tokens (`m/r/t`, combined letters, comma/space-delimited values) and return deterministic validation errors.
 - Keep product interview collection centralized in `collectProductPlanAnswers`; ask only selected target sections and fall back to deterministic per-target default answers when input is empty/EOF.
 - Keep generation prompt assembly centralized in `buildProductPlanGeneratePrompt`; include only selected targets' interview/existing context and enforce JSON-only filename-keyed output contracts.
+- Keep product payload generation centralized in `generateProductPlanPayloadWithDeps`: parse strict JSON with `ParseGeneratedPayload`, run exactly one repair prompt on parse failure, and return actionable errors instead of writing partial output.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -107,4 +108,14 @@
   - Patterns discovered: prompt builders for scoped updates should derive both context sections and output-key contracts from the same selected-target helper to avoid drift.
   - Gotchas encountered: excluding unselected context must cover both source context blocks and the allowed JSON key list, not just one side.
   - Useful context: `buildProductPlanGeneratePrompt` now serves as the single prompt contract entrypoint for future engine invocation and parse/repair stages.
+---
+## 2026-04-16 07:52 +08 - US-011
+- Implemented strict product payload generation parsing and repair flow in `cmd/product.go`: generation now parses engine JSON output, attempts exactly one repair prompt on parse failure, and returns actionable errors when repair cannot recover.
+- Hardened `internal/product.ParseGeneratedPayload` to reject non-object payloads (for example `null`, arrays, and scalars) before unmarshaling filename-keyed fields.
+- Added focused tests for single-repair behavior, attempt-count guarantees, actionable repair-failure errors, and no-file-creation behavior when generation fails.
+- Files changed: `cmd/product.go`, `cmd/product_test.go`, `internal/product/types.go`, `internal/product/types_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Patterns discovered: keep parse/repair orchestration in a dedicated helper (`generateProductPlanPayloadWithDeps`) with injectable prompt deps so repair-attempt count is testable without real engines.
+  - Gotchas encountered: strict JSON-object enforcement should happen before struct unmarshal to reject top-level `null`/array payloads deterministically.
+  - Useful context: actionable parse-repair errors should include rerun/engine-switch guidance because the flow intentionally stops after one repair attempt.
 ---
