@@ -14,6 +14,8 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
+const maxFalseCompletes = 2
+
 // Result represents the outcome of the loop execution.
 type Result struct {
 	Iterations       int           // Number of iterations run
@@ -48,6 +50,11 @@ type Runner struct {
 	config  Config
 	engine  engine.Engine
 	display *engine.Display
+}
+
+type progressState struct {
+	pendingStoryID   string
+	completedStories int
 }
 
 // New creates a new loop Runner.
@@ -175,6 +182,11 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 	}, r.config.MaxIterations)
 
 	result = Result{}
+	baseline := progressState{}
+	baseline.completedStories, _ = prd.Progress()
+	if story := prd.CurrentStory(); story != nil {
+		baseline.pendingStoryID = story.ID
+	}
 	falseCompletes := 0 // Track consecutive false COMPLETE signals
 
 	for i := 1; i <= r.config.MaxIterations; i++ {
@@ -218,10 +230,21 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 			// Verify that all stories actually have passes: true before accepting COMPLETE
 			// This guards against LLM reasoning errors where it says COMPLETE prematurely
 			if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
+				completedStories, _ := prd.Progress()
 				if story := prd.CurrentStory(); story != nil {
+					if completedStories > baseline.completedStories || (baseline.pendingStoryID != "" && story.ID != baseline.pendingStoryID) {
+						falseCompletes = 0
+					}
+					baseline.completedStories = completedStories
+					baseline.pendingStoryID = story.ID
 					falseCompletes++
 					// There are still pending stories - LLM said COMPLETE incorrectly
 					r.display.ShowInfo("   ⚠ Agent signaled COMPLETE but %s is still pending (attempt %d)\n", story.ID, falseCompletes)
+					if falseCompletes >= maxFalseCompletes {
+						result.Error = fmt.Errorf("agent repeatedly signaled COMPLETE while %s is still pending; rerun `hal auto --resume` to continue", story.ID)
+						result.Success = false
+						return result
+					}
 
 					// Inject feedback into the prompt so the next iteration
 					// has different input and can break out of the loop.
@@ -233,11 +256,15 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 							"You MUST take all of these steps before signaling COMPLETE:\n"+
 							"1. Make actual code changes to satisfy the acceptance criteria\n"+
 							"2. Run quality checks (test, lint, etc.)\n"+
-							"3. Commit the changes\n"+
-							"4. Edit `%s` to set `passes: true` for story %s\n\n"+
-							"If you believe the code already satisfies the criteria, you STILL must update the PRD file.\n"+
-							"Do NOT output <promise>COMPLETE</promise> until you have done all four steps.\n",
+							"3. Edit `%s` to set `passes: true` for story %s\n"+
+							"4. Append `%s` with the completed work\n"+
+							"5. Commit ALL changes, including `%s` and `%s`\n"+
+							"6. Run `git status --short` and confirm it is empty\n\n"+
+							"If you believe the code already satisfies the criteria, you STILL must update the PRD file, append progress, and commit those changes.\n"+
+							"If any story still has `passes: false`, end your response normally without <promise>COMPLETE</promise>.\n"+
+							"Do NOT output <promise>COMPLETE</promise> until there are zero pending stories and all six steps are done.\n",
 						i, story.ID, r.config.PRDFile, r.config.PRDFile, story.ID,
+						r.config.ProgressFile, r.config.PRDFile, r.config.ProgressFile,
 					)
 
 					r.display.ShowIterationComplete(i)
@@ -259,6 +286,14 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 		}
 
 		r.display.ShowIterationComplete(i)
+		if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
+			baseline.completedStories, _ = prd.Progress()
+			if story := prd.CurrentStory(); story != nil {
+				baseline.pendingStoryID = story.ID
+			} else {
+				baseline.pendingStoryID = ""
+			}
+		}
 
 		// Small delay between iterations
 		select {

@@ -3,11 +3,14 @@ package compound
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/archive"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -29,6 +32,14 @@ func TestRunArchiveStep_ExcludesLatestReportFromArchive(t *testing.T) {
 	cfg := DefaultAutoConfig()
 	var out bytes.Buffer
 	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(&out), dir)
+
+	origStatus := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origStatus
+	})
 
 	state := &PipelineState{
 		Step:       StepArchive,
@@ -81,6 +92,49 @@ func TestRunArchiveStep_ExcludesLatestReportFromArchive(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(archiveDir, "reports", "review-latest.md")); !os.IsNotExist(err) {
 		t.Fatalf("excluded report should not be archived, stat err=%v", err)
+	}
+}
+
+func TestRunArchiveStep_BlocksWhenWorkingTreeDirty(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	var out bytes.Buffer
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(&out), dir)
+	state := &PipelineState{
+		Step:       StepArchive,
+		BranchName: "hal/archive-dirty",
+		StartedAt:  time.Now(),
+	}
+
+	origStatus := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{"dirty.txt"}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origStatus
+	})
+
+	origArchive := createArchiveWithOptions
+	createArchiveWithOptions = func(halDir, name string, out io.Writer, opts archive.CreateOptions) (string, error) {
+		t.Fatal("createArchiveWithOptions should not be called when working tree is dirty")
+		return "", nil
+	}
+	t.Cleanup(func() {
+		createArchiveWithOptions = origArchive
+	})
+
+	err := pipeline.runArchiveStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected dirty worktree to block archive step")
+	}
+	if !strings.Contains(err.Error(), "archive gate blocked") {
+		t.Fatalf("error = %q, want archive gate blocked", err)
+	}
+	if !strings.Contains(err.Error(), "dirty.txt") {
+		t.Fatalf("error = %q, want dirty path details", err)
+	}
+	if state.Step != StepArchive {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepArchive)
 	}
 }
 

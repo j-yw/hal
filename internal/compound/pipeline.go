@@ -59,10 +59,20 @@ var fixWithEngineInDirFn = ci.FixWithEngineInDir
 // createArchiveWithOptions points to archive.CreateWithOptions and is overridden in tests.
 var createArchiveWithOptions = archive.CreateWithOptions
 
+// workingTreeChangesInDirFn points to WorkingTreeChangesInDir and is overridden in tests.
+var workingTreeChangesInDirFn = WorkingTreeChangesInDir
+
+// gitAddAllInDirFn points to defaultGitAddAllInDir and is overridden in tests.
+var gitAddAllInDirFn = defaultGitAddAllInDir
+
+// gitCommitInDirFn points to defaultGitCommitInDir and is overridden in tests.
+var gitCommitInDirFn = defaultGitCommitInDir
+
 const (
 	defaultReviewIterations      = 10
 	maxCIFixAttempts             = 3
 	defaultValidationMaxAttempts = 25
+	reviewFixCommitMessage       = "fix: address review feedback"
 )
 
 // validationRetryDelay spaces validate-loop retries so transient provider/engine
@@ -710,6 +720,10 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 		return nil
 	}
 
+	if err := p.archivePriorCanonicalStateForConvert(normalizedSourceMarkdown, state.BranchName); err != nil {
+		return err
+	}
+
 	convertOpts := prd.ConvertOptions{
 		Granular:   resolvedMode == AutoConvertModeGranular,
 		BranchName: state.BranchName,
@@ -732,6 +746,44 @@ func (p *Pipeline) runExplodeStep(ctx context.Context, state *PipelineState, opt
 	state.Step = StepValidate
 	if err := p.saveState(state); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Pipeline) archivePriorCanonicalStateForConvert(sourceMarkdown, nextBranch string) error {
+	halDir := filepath.Join(p.dir, template.HalDir)
+
+	existing, err := engine.LoadPRDFile(halDir, template.PRDFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to inspect existing canonical PRD: %w", err)
+	}
+
+	currentBranch := strings.TrimSpace(existing.BranchName)
+	nextBranch = strings.TrimSpace(nextBranch)
+	if currentBranch == "" || nextBranch == "" || currentBranch == nextBranch {
+		return nil
+	}
+
+	archiveName := archive.FeatureFromBranch(currentBranch)
+	if archiveName == "" {
+		archiveName = "auto-saved"
+	}
+
+	p.display.ShowInfo("   Branch changed from %s to %s; archiving prior feature state...\n", currentBranch, nextBranch)
+
+	excludePaths := []string{filepath.Join(halDir, template.AutoStateFile)}
+	if source := strings.TrimSpace(sourceMarkdown); source != "" {
+		excludePaths = append(excludePaths, source)
+	}
+
+	if _, err := createArchiveWithOptions(halDir, archiveName, p.display.Writer(), archive.CreateOptions{
+		ExcludePaths: excludePaths,
+	}); err != nil {
+		return fmt.Errorf("failed to archive prior feature state before convert: %w", err)
 	}
 
 	return nil
@@ -1063,6 +1115,7 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 
 	cleanStreak := 0
 	lastValidIssues := 0
+	fixesAppliedDuringReview := false
 	for cycle := 1; cycle <= maxCycles; cycle++ {
 		p.display.ShowInfo("   Running review cycle %d/%d against %s...\n", cycle, maxCycles, baseBranch)
 		result, err := runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, 1)
@@ -1077,11 +1130,30 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 
 		iteration := result.Iterations[len(result.Iterations)-1]
 		lastValidIssues = iteration.ValidIssues
+		if iteration.FixesApplied > 0 {
+			fixesAppliedDuringReview = true
+		}
 
 		if iteration.ValidIssues == 0 {
 			cleanStreak++
 			p.display.ShowInfo("   Review cycle %d clean (%d/%d required)\n", cycle, cleanStreak, cleanStreakRequired)
 			if cleanStreak >= cleanStreakRequired {
+				if fixesAppliedDuringReview {
+					if err := p.finalizeReviewFixes(ctx); err != nil {
+						state.Review.Status = "failed"
+						if saveErr := p.saveState(state); saveErr != nil {
+							return fmt.Errorf("review gate blocked: finalize review fixes failed: %w (also failed to save state: %v)", err, saveErr)
+						}
+						return fmt.Errorf("review gate blocked: finalize review fixes failed: %w", err)
+					}
+				}
+				if err := p.runFinalVerification(ctx, state); err != nil {
+					state.Review.Status = "failed"
+					if saveErr := p.saveState(state); saveErr != nil {
+						return fmt.Errorf("review gate blocked: final verification failed: %w (also failed to save state: %v)", err, saveErr)
+					}
+					return fmt.Errorf("review gate blocked: final verification failed: %w", err)
+				}
 				state.Review.Status = "passed"
 				p.display.ShowInfo("   Review gate passed after %d cycle(s)\n", cycle)
 				state.Step = StepCI
@@ -1115,8 +1187,9 @@ func (p *Pipeline) runReportStep(ctx context.Context, state *PipelineState, opts
 	}
 
 	result, err := runReportWithEngine(ctx, p.engine, p.display, p.dir, ReviewOptions{
-		DryRun:     false,
-		SkipAgents: false,
+		DryRun:       false,
+		SkipAgents:   true,
+		Verification: p.reviewVerificationChecks(state),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to generate report: %w", err)
@@ -1134,6 +1207,91 @@ func (p *Pipeline) runReportStep(ctx context.Context, state *PipelineState, opts
 	}
 
 	return nil
+}
+
+func (p *Pipeline) ensureCleanWorkingTree() error {
+	paths, err := workingTreeChangesInDirFn(p.dir)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	return fmt.Errorf("working tree is dirty: %s", strings.Join(paths, ", "))
+}
+
+func (p *Pipeline) finalizeReviewFixes(ctx context.Context) error {
+	paths, err := workingTreeChangesInDirFn(p.dir)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	if err := gitAddAllInDirFn(ctx, p.dir); err != nil {
+		return err
+	}
+	if err := gitCommitInDirFn(ctx, p.dir, reviewFixCommitMessage); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Pipeline) runFinalVerification(ctx context.Context, state *PipelineState) error {
+	if err := p.ensureCleanWorkingTree(); err != nil {
+		return err
+	}
+	if state == nil || strings.TrimSpace(state.BranchName) == "" {
+		return nil
+	}
+	currentBranch := p.currentBranch
+	if currentBranch == nil {
+		currentBranch = CurrentBranchInDir
+	}
+	activeBranch, err := currentBranch(p.dir)
+	if err != nil {
+		return fmt.Errorf("determine current branch: %w", err)
+	}
+	if strings.TrimSpace(activeBranch) != strings.TrimSpace(state.BranchName) {
+		return fmt.Errorf("current branch %q does not match pipeline state branch %q", strings.TrimSpace(activeBranch), strings.TrimSpace(state.BranchName))
+	}
+	return nil
+}
+
+func (p *Pipeline) reviewVerificationChecks(state *PipelineState) []VerificationCheck {
+	checks := make([]VerificationCheck, 0, 5)
+	if state != nil && state.Validation != nil {
+		status := strings.TrimSpace(state.Validation.Status)
+		output := fmt.Sprintf("status=%s attempts=%d", status, state.Validation.Attempts)
+		checks = append(checks, VerificationCheck{Name: "validate", OK: status == "passed", Output: output})
+	}
+	if state != nil && state.Run != nil {
+		output := fmt.Sprintf("complete=%t iterations=%d maxIterations=%d", state.Run.Complete, state.Run.Iterations, state.Run.MaxIterations)
+		checks = append(checks, VerificationCheck{Name: "run", OK: state.Run.Complete, Output: output})
+	}
+	if state != nil && state.Review != nil {
+		status := strings.TrimSpace(state.Review.Status)
+		checks = append(checks, VerificationCheck{Name: "review", OK: status == "passed" || status == "skipped", Output: fmt.Sprintf("status=%s", status)})
+	}
+	if state != nil && state.CI != nil {
+		status := strings.TrimSpace(state.CI.Status)
+		output := fmt.Sprintf("status=%s", status)
+		if reason := strings.TrimSpace(state.CI.Reason); reason != "" {
+			output += fmt.Sprintf(" reason=%s", reason)
+		}
+		checks = append(checks, VerificationCheck{Name: "ci", OK: status == "passed" || status == "skipped", Output: output})
+	}
+	paths, err := workingTreeChangesInDirFn(p.dir)
+	if err != nil {
+		checks = append(checks, VerificationCheck{Name: "working_tree", OK: false, Output: fmt.Sprintf("inspect failed: %v", err)})
+		return checks
+	}
+	if len(paths) == 0 {
+		checks = append(checks, VerificationCheck{Name: "working_tree", OK: true, Output: "clean"})
+		return checks
+	}
+	checks = append(checks, VerificationCheck{Name: "working_tree", OK: false, Output: fmt.Sprintf("dirty: %s", strings.Join(paths, ", "))})
+	return checks
 }
 
 // migrateAutoProgress migrates content from legacy auto-progress.txt to unified progress.txt.
@@ -1404,6 +1562,10 @@ func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opt
 		}
 		state.Step = StepDone
 		return nil
+	}
+
+	if err := p.ensureCleanWorkingTree(); err != nil {
+		return fmt.Errorf("archive gate blocked: %w", err)
 	}
 
 	halDir := filepath.Join(p.dir, template.HalDir)

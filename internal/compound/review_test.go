@@ -1,10 +1,14 @@
 package compound
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/engine"
 )
 
 func TestParseReviewResponse(t *testing.T) {
@@ -163,7 +167,7 @@ func TestGenerateReviewReport(t *testing.T) {
 		Recommendations: []string{"Add more tests", "Refactor later"},
 	}
 
-	reportPath, err := generateReviewReport(dir, rc, pr)
+	reportPath, err := generateReviewReport(dir, rc, pr, nil)
 	if err != nil {
 		t.Fatalf("generateReviewReport() error = %v", err)
 	}
@@ -296,7 +300,7 @@ func TestBuildReviewPrompt(t *testing.T) {
 		Warnings:        []string{"Warning 1"},
 	}
 
-	prompt := buildReviewPrompt(rc)
+	prompt := buildReviewPrompt(rc, nil)
 
 	// Verify all sections are included
 	checks := []string{
@@ -356,4 +360,104 @@ func TestFindPRDFile(t *testing.T) {
 			t.Errorf("findPRDFile() = %q, want empty string", found)
 		}
 	})
+}
+
+type reviewCaptureEngine struct {
+	response   string
+	promptSeen string
+}
+
+func (e *reviewCaptureEngine) Name() string { return "review-capture" }
+
+func (e *reviewCaptureEngine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {
+	return engine.Result{Success: true}
+}
+
+func (e *reviewCaptureEngine) Prompt(ctx context.Context, prompt string) (string, error) {
+	return e.response, nil
+}
+
+func (e *reviewCaptureEngine) StreamPrompt(ctx context.Context, prompt string, display *engine.Display) (string, error) {
+	e.promptSeen = prompt
+	return e.response, nil
+}
+
+func TestBuildReviewPrompt_IncludesVerificationFactsAndNoClaimRule(t *testing.T) {
+	rc := &reviewContext{BranchName: "feature/test"}
+	checks := []VerificationCheck{{Name: "lint", OK: true, Output: "npm run lint"}}
+
+	prompt := buildReviewPrompt(rc, checks)
+
+	want := []string{
+		"### Deterministic Verification Facts",
+		"Do not claim lint, tests, build, typecheck, or CI passed unless a verification fact below explicitly says so.",
+		"- `lint`: passed (npm run lint)",
+	}
+	for _, needle := range want {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("prompt missing %q", needle)
+		}
+	}
+}
+
+func TestGenerateReviewReport_IncludesVerificationSection(t *testing.T) {
+	dir := t.TempDir()
+	rc := &reviewContext{BranchName: "feature/report"}
+	pr := &parsedReview{Summary: "summary"}
+	checks := []VerificationCheck{{Name: "ci", OK: false, Output: "status=failing"}}
+
+	reportPath, err := generateReviewReport(dir, rc, pr, checks)
+	if err != nil {
+		t.Fatalf("generateReviewReport() error = %v", err)
+	}
+
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	got := string(content)
+	want := []string{
+		"## Verification",
+		"- `ci`: failed; status=failing",
+	}
+	for _, needle := range want {
+		if !strings.Contains(got, needle) {
+			t.Fatalf("report missing %q", needle)
+		}
+	}
+}
+
+func TestReview_UsesProvidedVerificationChecks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".hal"), 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".hal", "progress.txt"), []byte("progress"), 0644); err != nil {
+		t.Fatalf("write progress: %v", err)
+	}
+
+	eng := &reviewCaptureEngine{response: `{"summary":"Built thing","patterns":[],"issues":[],"techDebt":[],"recommendations":[]}`}
+	checks := []VerificationCheck{{Name: "test", OK: true, Output: "npm test"}}
+	var displayBuf bytes.Buffer
+
+	result, err := Review(context.Background(), eng, engine.NewDisplay(&displayBuf), dir, ReviewOptions{
+		SkipAgents:   true,
+		Verification: checks,
+	})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result == nil || strings.TrimSpace(result.ReportPath) == "" {
+		t.Fatal("Review() did not return report path")
+	}
+	if !strings.Contains(eng.promptSeen, "- `test`: passed (npm test)") {
+		t.Fatalf("prompt did not include verification facts: %q", eng.promptSeen)
+	}
+	content, err := os.ReadFile(result.ReportPath)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if !strings.Contains(string(content), "- `test`: passed; npm test") {
+		t.Fatalf("report missing verification facts: %s", string(content))
+	}
 }

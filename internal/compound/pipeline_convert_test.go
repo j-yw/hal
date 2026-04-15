@@ -3,11 +3,13 @@ package compound
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/archive"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/template"
@@ -220,4 +222,100 @@ func TestRunConvertStep_PostConvertBranchInvariantFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunConvertStep_ArchivesPriorCanonicalStateBeforeBranchChange(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	sourceMarkdown := filepath.Join(halDir, "prd-new.md")
+
+	writeCompoundFile(t, filepath.Join(halDir, template.PRDFile), `{"project":"test","branchName":"hal/old-feature","description":"old","userStories":[]}`)
+	writeCompoundFile(t, filepath.Join(halDir, template.ProgressFile), "existing progress")
+	writeCompoundFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"convert","branchName":"hal/new-feature"}`)
+	writeCompoundFile(t, sourceMarkdown, "# PRD: New Feature\n")
+
+	state := &PipelineState{
+		Step:           StepConvert,
+		SourceMarkdown: sourceMarkdown,
+		BranchName:     "hal/new-feature",
+		ConvertMode:    AutoConvertModeGranular,
+	}
+
+	var out bytes.Buffer
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(&out), dir)
+
+	origConvertWithEngine := convertWithEngine
+	origCreateArchiveWithOptions := createArchiveWithOptions
+	convertWithEngine = func(ctx context.Context, eng engine.Engine, mdPath, outPath string, opts prd.ConvertOptions, display *engine.Display) error {
+		payload := `{"project":"test","branchName":"hal/new-feature","description":"desc","userStories":[]}`
+		return os.WriteFile(outPath, []byte(payload), 0644)
+	}
+	createArchiveWithOptions = archive.CreateWithOptions
+	t.Cleanup(func() {
+		convertWithEngine = origConvertWithEngine
+		createArchiveWithOptions = origCreateArchiveWithOptions
+	})
+
+	if err := pipeline.runExplodeStep(context.Background(), state, RunOptions{}); err != nil {
+		t.Fatalf("runExplodeStep returned error: %v", err)
+	}
+
+	if state.Step != StepValidate {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepValidate)
+	}
+
+	if got := readPRDBranchNameForCompoundTest(t, filepath.Join(halDir, template.PRDFile)); got != "hal/new-feature" {
+		t.Fatalf("canonical prd branchName = %q, want %q", got, "hal/new-feature")
+	}
+	if _, err := os.Stat(sourceMarkdown); err != nil {
+		t.Fatalf("expected source markdown to remain in place: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(halDir, template.AutoStateFile)); err != nil {
+		t.Fatalf("expected auto state to remain in place: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(halDir, template.ProgressFile)); !os.IsNotExist(err) {
+		t.Fatalf("expected progress to be archived, stat err=%v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(halDir, "archive"))
+	if err != nil {
+		t.Fatalf("read archive dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("archive entry count = %d, want 1", len(entries))
+	}
+
+	archiveDir := filepath.Join(halDir, "archive", entries[0].Name())
+	if _, err := os.Stat(filepath.Join(archiveDir, template.PRDFile)); err != nil {
+		t.Fatalf("expected archived prd.json: %v", err)
+	}
+	if got := readPRDBranchNameForCompoundTest(t, filepath.Join(archiveDir, template.PRDFile)); got != "hal/old-feature" {
+		t.Fatalf("archived prd branchName = %q, want %q", got, "hal/old-feature")
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, template.ProgressFile)); err != nil {
+		t.Fatalf("expected archived progress.txt: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, filepath.Base(sourceMarkdown))); !os.IsNotExist(err) {
+		t.Fatalf("source markdown should be excluded from archive, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, template.AutoStateFile)); !os.IsNotExist(err) {
+		t.Fatalf("auto state should be excluded from archive, stat err=%v", err)
+	}
+}
+
+func readPRDBranchNameForCompoundTest(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	prdFile := engine.PRD{}
+	if err := json.Unmarshal(data, &prdFile); err != nil {
+		t.Fatalf("unmarshal %s: %v", path, err)
+	}
+
+	return prdFile.BranchName
 }
