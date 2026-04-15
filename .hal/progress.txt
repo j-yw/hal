@@ -8,6 +8,7 @@
 - Use `product.LoadExistingFiles(projectDir)` for preflight reads; missing product files should map to `Exists=false` + empty content without creating `.hal/product`.
 - Use `product.WriteSelectedFiles(projectDir, targets, payload)` for selective product updates; it only writes selected files with generated content and creates `.hal/product` lazily when writes are needed.
 - For Hal-managed skills, keep `internal/skills/embed.go` `//go:embed` entries and `ManagedSkillNames` in sync with on-disk `internal/skills/<name>/SKILL.md`, and lock with a `LoadSkill("<name>")` non-empty test.
+- For new command families, keep Cobra handlers thin and route logic through `run<Command>WithDeps` plus an options struct so flag wiring can be unit-tested without full command execution.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -51,4 +52,14 @@
   - Patterns discovered: keep product writes centralized in `WriteSelectedFiles` so target filtering and file path handling stay consistent.
   - Gotchas encountered: `make lint` currently fails on pre-existing unrelated issues, so story validation should rely on `make test` + `make vet` until lint baseline is cleaned up.
   - Useful context: `context_test.go` helpers (`writeProductFile`) are reusable across `internal/product` tests and keep setup concise.
+---
+## 2026-04-16 07:14 +08 - US-006
+- Added a new `product` command family with `hal product plan` wired into the root command tree.
+- Implemented `--engine/-e` handling for `hal product plan` and routed execution through `runProductPlanWithDeps` with injectable deps for testability.
+- Added focused tests for command wiring, engine forwarding (fallback + explicit flag), and validation behavior for empty engine values.
+- Files changed: `cmd/product.go`, `cmd/product_test.go`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Patterns discovered: new command flows should expose a `run<Command>WithDeps` helper plus an options struct so flag wiring is testable without invoking full Cobra execution.
+  - Gotchas encountered: `resolveEngine` behavior changes based on whether the flag is explicitly set; pass a real command with an `engine` flag in tests when validating explicit-flag semantics.
+  - Useful context: product planning entrypoint is now `hal product plan`; follow-up stories can extend `runProductPlanFlow` without reshaping command wiring.
 ---
