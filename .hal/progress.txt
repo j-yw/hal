@@ -12,6 +12,7 @@
 - In `runProductPlanFlowWithDeps`, perform `.hal` existence checks before reading product docs, and only prompt for replace/update/cancel when at least one product file already exists.
 - In multi-step interactive flows, wrap `opts.In` once in a shared `*bufio.Reader` before calling multiple prompt helpers so scripted input is consumed consistently across prompts.
 - Keep update-target parsing centralized in `parseProductPlanTargets`; accept concise tokens (`m/r/t`, combined letters, comma/space-delimited values) and return deterministic validation errors.
+- Keep product interview collection centralized in `collectProductPlanAnswers`; ask only selected target sections and fall back to deterministic per-target default answers when input is empty/EOF.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -85,4 +86,14 @@
   - Patterns discovered: when multiple prompts read from the same input stream, use one shared buffered reader to avoid losing pre-read scripted lines between prompt steps.
   - Gotchas encountered: constructing a new `bufio.Reader` per prompt can swallow subsequent test input lines due to read-ahead buffering.
   - Useful context: future product stories can plug real interview/generation logic into the new `collectAnswers` and `generatePayload` flow deps without changing command wiring.
+---
+## 2026-04-16 07:38 +08 - US-009
+- Implemented interactive product interview collection in `cmd/product.go` via `collectProductPlanAnswers`, with mission/roadmap/tech-stack question sections gated strictly by selected targets.
+- Added deterministic fallback placeholders for empty answers and EOF input so collected payloads stay stable in non-interactive or partial-input runs.
+- Added focused tests to verify target-specific question gating, explicit tech-stack user-input capture (no inferred standards path), and deterministic default-answer behavior.
+- Files changed: `cmd/product.go`, `cmd/product_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Patterns discovered: keep interview question/default strings as constants so prompt contracts stay testable and deterministic.
+  - Gotchas encountered: interactive collectors should reuse the buffered reader already flowing through command deps to avoid stdin read-ahead inconsistencies.
+  - Useful context: tech-stack interview answers now come only from explicit user input (or deterministic fallback text), with no standards auto-discovery path.
 ---

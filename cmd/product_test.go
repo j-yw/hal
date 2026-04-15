@@ -457,3 +457,96 @@ func TestRunProductPlanFlowWithDeps_UpdateSelectedInvalidSelectionStopsBeforeSta
 		t.Fatal("generatePayload should not be called for invalid selections")
 	}
 }
+
+func TestCollectProductPlanAnswers_AsksOnlySelectedTargets(t *testing.T) {
+	var out bytes.Buffer
+	answers, err := collectProductPlanAnswers(
+		strings.NewReader("Ship the fastest onboarding flow.\nGo 1.25 + Postgres + Terraform.\n"),
+		&out,
+		product.SelectedTargets{
+			Mission:   true,
+			TechStack: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("collectProductPlanAnswers returned error: %v", err)
+	}
+
+	if len(answers.Mission) != 1 {
+		t.Fatalf("len(answers.Mission) = %d, want 1", len(answers.Mission))
+	}
+	if answers.Mission[0].Answer != "Ship the fastest onboarding flow." {
+		t.Fatalf("mission answer = %q, want explicit input", answers.Mission[0].Answer)
+	}
+	if len(answers.Roadmap) != 0 {
+		t.Fatalf("len(answers.Roadmap) = %d, want 0 for unselected target", len(answers.Roadmap))
+	}
+	if len(answers.TechStack) != 1 {
+		t.Fatalf("len(answers.TechStack) = %d, want 1", len(answers.TechStack))
+	}
+	if answers.TechStack[0].Answer != "Go 1.25 + Postgres + Terraform." {
+		t.Fatalf("tech-stack answer = %q, want explicit input", answers.TechStack[0].Answer)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Mission Questions:") {
+		t.Fatalf("output %q missing mission section", output)
+	}
+	if strings.Contains(output, "Roadmap Questions:") {
+		t.Fatalf("output %q should not include roadmap section", output)
+	}
+	if !strings.Contains(output, "Tech Stack Questions:") {
+		t.Fatalf("output %q missing tech-stack section", output)
+	}
+}
+
+func TestCollectProductPlanAnswers_EmptyAnswersUseDefaults(t *testing.T) {
+	var out bytes.Buffer
+	answers, err := collectProductPlanAnswers(
+		strings.NewReader("\n\n\n"),
+		&out,
+		product.SelectedTargets{
+			Mission:   true,
+			Roadmap:   true,
+			TechStack: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("collectProductPlanAnswers returned error: %v", err)
+	}
+
+	if len(answers.Mission) != 1 || answers.Mission[0].Answer != productMissionDefaultAnswer {
+		t.Fatalf("mission answers = %+v, want deterministic default %q", answers.Mission, productMissionDefaultAnswer)
+	}
+	if len(answers.Roadmap) != 1 || answers.Roadmap[0].Answer != productRoadmapDefaultAnswer {
+		t.Fatalf("roadmap answers = %+v, want deterministic default %q", answers.Roadmap, productRoadmapDefaultAnswer)
+	}
+	if len(answers.TechStack) != 1 || answers.TechStack[0].Answer != productTechStackDefaultAnswer {
+		t.Fatalf("tech-stack answers = %+v, want deterministic default %q", answers.TechStack, productTechStackDefaultAnswer)
+	}
+}
+
+func TestCollectProductPlanAnswers_TechStackUsesExplicitUserInput(t *testing.T) {
+	var out bytes.Buffer
+	input := "Go 1.25, Postgres, OpenTelemetry, SLOs at p95<250ms.\n"
+	answers, err := collectProductPlanAnswers(
+		strings.NewReader(input),
+		&out,
+		product.SelectedTargets{TechStack: true},
+	)
+	if err != nil {
+		t.Fatalf("collectProductPlanAnswers returned error: %v", err)
+	}
+	if len(answers.TechStack) != 1 {
+		t.Fatalf("len(answers.TechStack) = %d, want 1", len(answers.TechStack))
+	}
+	if answers.TechStack[0].Answer != strings.TrimSpace(input) {
+		t.Fatalf("tech-stack answer = %q, want explicit user input %q", answers.TechStack[0].Answer, strings.TrimSpace(input))
+	}
+	if answers.TechStack[0].Answer == productTechStackDefaultAnswer {
+		t.Fatalf("tech-stack answer should not fall back to default when explicit input is provided")
+	}
+	if len(answers.Mission) != 0 || len(answers.Roadmap) != 0 {
+		t.Fatalf("non-selected answers should remain empty, got mission=%d roadmap=%d", len(answers.Mission), len(answers.Roadmap))
+	}
+}

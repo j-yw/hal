@@ -457,3 +457,9 @@
 - Keep update-target parsing centralized in `cmd/product.go` (`parseProductPlanTargets`) and accept concise aliases (`m/r/t`, combined tokens like `rt`, comma/space-delimited tokens, and `1/2/3` numeric aliases) so update-mode input stays fast and deterministic.
 - Return deterministic validation errors for invalid or empty target selections (for example `product target selection is required` and `invalid product target selection "<token>" ...`) so tests and CLI behavior stay stable.
 - In multi-step interactive product flows, wrap `opts.In` once in a shared `*bufio.Reader` before calling sequential prompt deps (`selectMode`, `selectTargets`, `collectAnswers`) to avoid read-ahead buffering dropping scripted input lines.
+
+## Patterns from hal/product-interview-targeted-inputs (2026-04-16)
+
+- Keep product interview collection centralized in `cmd/product.go` (`collectProductPlanAnswers`) and gate mission/roadmap/tech-stack question sections strictly by `product.SelectedTargets` so update-selected mode only asks in-scope questions.
+- Keep question text and fallback placeholders as constants (`product*QuestionPrompt`, `product*DefaultAnswer`) and lock them with unit tests to preserve deterministic interview output across CLI runs.
+- Tech-stack interview capture should remain explicit-input only (no standards inference path); use user-provided text when present and deterministic fallback text when empty.

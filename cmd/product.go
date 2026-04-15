@@ -36,7 +36,20 @@ const (
 	productPlanModeReplaceAll     productPlanMode = "replace_all"
 	productPlanModeUpdateSelected productPlanMode = "update_selected"
 	productPlanModeCancel         productPlanMode = "cancel"
+
+	productMissionQuestionPrompt   = "What is the core mission for this product?"
+	productRoadmapQuestionPrompt   = "What are the highest-priority milestones for the next two quarters?"
+	productTechStackQuestionPrompt = "Which technologies and constraints are required for this product?"
+
+	productMissionDefaultAnswer   = "TODO: define the core mission and user outcome for this product."
+	productRoadmapDefaultAnswer   = "TODO: define the top roadmap milestones for the next two quarters."
+	productTechStackDefaultAnswer = "TODO: define the required technologies and constraints explicitly."
 )
+
+type productInterviewQuestion struct {
+	prompt        string
+	defaultAnswer string
+}
 
 type productPlanFlowDeps struct {
 	stat              func(name string) (os.FileInfo, error)
@@ -63,12 +76,7 @@ var defaultProductPlanFlowDeps = productPlanFlowDeps{
 	loadExistingFiles: product.LoadExistingFiles,
 	selectMode:        promptProductPlanMode,
 	selectTargets:     promptProductPlanTargets,
-	collectAnswers: func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error) {
-		_ = in
-		_ = out
-		_ = targets
-		return product.CollectedAnswers{}, nil
-	},
+	collectAnswers:    collectProductPlanAnswers,
 	generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
 		_ = ctx
 		_ = input
@@ -361,4 +369,99 @@ func applyTargetToken(token string, targets *product.SelectedTargets) error {
 		return fmt.Errorf("invalid product target selection %q (use mission/roadmap/tech-stack or m/r/t)", token)
 	}
 	return nil
+}
+
+func collectProductPlanAnswers(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error) {
+	reader := ensureBufferedReader(in)
+	if out == nil {
+		out = io.Discard
+	}
+
+	var answers product.CollectedAnswers
+	if targets.Mission {
+		sectionAnswers, err := collectProductInterviewSection(reader, out, "Mission", []productInterviewQuestion{
+			{
+				prompt:        productMissionQuestionPrompt,
+				defaultAnswer: productMissionDefaultAnswer,
+			},
+		})
+		if err != nil {
+			return product.CollectedAnswers{}, fmt.Errorf("collect mission interview answers: %w", err)
+		}
+		answers.Mission = sectionAnswers
+	}
+
+	if targets.Roadmap {
+		sectionAnswers, err := collectProductInterviewSection(reader, out, "Roadmap", []productInterviewQuestion{
+			{
+				prompt:        productRoadmapQuestionPrompt,
+				defaultAnswer: productRoadmapDefaultAnswer,
+			},
+		})
+		if err != nil {
+			return product.CollectedAnswers{}, fmt.Errorf("collect roadmap interview answers: %w", err)
+		}
+		answers.Roadmap = sectionAnswers
+	}
+
+	if targets.TechStack {
+		sectionAnswers, err := collectProductInterviewSection(reader, out, "Tech Stack", []productInterviewQuestion{
+			{
+				prompt:        productTechStackQuestionPrompt,
+				defaultAnswer: productTechStackDefaultAnswer,
+			},
+		})
+		if err != nil {
+			return product.CollectedAnswers{}, fmt.Errorf("collect tech-stack interview answers: %w", err)
+		}
+		answers.TechStack = sectionAnswers
+	}
+
+	return answers, nil
+}
+
+func collectProductInterviewSection(reader *bufio.Reader, out io.Writer, title string, questions []productInterviewQuestion) ([]product.InterviewAnswer, error) {
+	fmt.Fprintf(out, "\n%s Questions:\n", title)
+
+	answers := make([]product.InterviewAnswer, 0, len(questions))
+	inputExhausted := false
+	for i, question := range questions {
+		fmt.Fprintf(out, "%d) %s\n", i+1, question.prompt)
+		fmt.Fprintf(out, "Answer [%s]: ", question.defaultAnswer)
+
+		var line string
+		if !inputExhausted {
+			readLine, err := reader.ReadString('\n')
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					inputExhausted = true
+				} else {
+					return nil, fmt.Errorf("read answer for %q: %w", title, err)
+				}
+			}
+			line = readLine
+		}
+
+		answer := strings.TrimSpace(line)
+		if answer == "" {
+			answer = question.defaultAnswer
+		}
+
+		answers = append(answers, product.InterviewAnswer{
+			Question: question.prompt,
+			Answer:   answer,
+		})
+	}
+
+	return answers, nil
+}
+
+func ensureBufferedReader(in io.Reader) *bufio.Reader {
+	if reader, ok := in.(*bufio.Reader); ok {
+		return reader
+	}
+	if in == nil {
+		in = strings.NewReader("")
+	}
+	return bufio.NewReader(in)
 }
