@@ -1,18 +1,20 @@
 ---
 name: explode
-description: Break down a PRD into 8-15 granular tasks for autonomous execution. Each task must be completable in one agent iteration with boolean acceptance criteria.
+description: Deprecated compatibility skill. Use `hal convert --granular` for PRD task breakdown.
 disable-model-invocation: true
 ---
 
-# Explode — PRD Task Breakdown
+# Explode — Deprecated Compatibility Shim
 
-Transform a PRD into 8-15 granular, autonomously-executable tasks.
+`hal explode` is deprecated. Prefer `hal convert --granular` for all new workflows.
+
+When this skill is invoked for compatibility, transform a PRD into 8-15 granular, autonomously-executable tasks that are written to canonical `.hal/prd.json`.
 
 ## Process
 
-1. Read the PRD from the specified path
-2. Break down into 8-15 tasks ordered by dependency
-3. Write `.hal/auto-prd.json`
+1. Read the PRD from the specified path.
+2. Break down into 8-15 tasks ordered by dependency.
+3. Write `.hal/prd.json`.
 
 **Output JSON directly. Do NOT ask questions.**
 
@@ -75,6 +77,6 @@ Every task must end with `"Typecheck passes"`.
 
 ## Output
 
-Write to `.hal/auto-prd.json` (separate from manual flow's `.hal/prd.json`).
+Write to `.hal/prd.json` to match single-pipeline runtime behavior.
 
 For a complete transformation example, see [examples/exploded-tasks.json](examples/exploded-tasks.json).

@@ -18,11 +18,80 @@ func TestDefaultAutoConfig(t *testing.T) {
 	if cfg.BranchPrefix != "compound/" {
 		t.Errorf("BranchPrefix = %q, want %q", cfg.BranchPrefix, "compound/")
 	}
+	if cfg.SourcePriority != AutoSourcePriorityReportFirst {
+		t.Errorf("SourcePriority = %q, want %q", cfg.SourcePriority, AutoSourcePriorityReportFirst)
+	}
+	if cfg.ConvertMode != AutoConvertModeAuto {
+		t.Errorf("ConvertMode = %q, want %q", cfg.ConvertMode, AutoConvertModeAuto)
+	}
 	if cfg.MaxIterations != 25 {
 		t.Errorf("MaxIterations = %d, want %d", cfg.MaxIterations, 25)
 	}
 	if len(cfg.QualityChecks) != 0 {
 		t.Errorf("QualityChecks length = %d, want 0", len(cfg.QualityChecks))
+	}
+	if cfg.Mode != AutoModeBalanced {
+		t.Errorf("Mode = %q, want %q", cfg.Mode, AutoModeBalanced)
+	}
+	if !cfg.CIEnabled {
+		t.Errorf("CIEnabled = %v, want true", cfg.CIEnabled)
+	}
+	if !cfg.ReviewEnabled {
+		t.Errorf("ReviewEnabled = %v, want true", cfg.ReviewEnabled)
+	}
+	if cfg.ReviewCleanStreak != 1 {
+		t.Errorf("ReviewCleanStreak = %d, want %d", cfg.ReviewCleanStreak, 1)
+	}
+	if cfg.ReviewMaxIterations != 10 {
+		t.Errorf("ReviewMaxIterations = %d, want %d", cfg.ReviewMaxIterations, 10)
+	}
+}
+
+func TestResolveAutoModeSettings(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		wantMode   string
+		wantCI     bool
+		wantReview bool
+		wantStreak int
+		wantMax    int
+		wantErr    bool
+	}{
+		{name: "empty defaults to balanced", mode: "", wantMode: AutoModeBalanced, wantCI: true, wantReview: true, wantStreak: 1, wantMax: 10},
+		{name: "fast", mode: "fast", wantMode: AutoModeFast, wantCI: false, wantReview: false, wantStreak: 1, wantMax: 5},
+		{name: "strict", mode: "strict", wantMode: AutoModeStrict, wantCI: true, wantReview: true, wantStreak: 3, wantMax: 15},
+		{name: "invalid", mode: "turbo", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveAutoModeSettings(tt.mode)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveAutoModeSettings() error: %v", err)
+			}
+			if got.Mode != tt.wantMode {
+				t.Errorf("Mode = %q, want %q", got.Mode, tt.wantMode)
+			}
+			if got.CIEnabled != tt.wantCI {
+				t.Errorf("CIEnabled = %v, want %v", got.CIEnabled, tt.wantCI)
+			}
+			if got.ReviewEnabled != tt.wantReview {
+				t.Errorf("ReviewEnabled = %v, want %v", got.ReviewEnabled, tt.wantReview)
+			}
+			if got.ReviewCleanStreak != tt.wantStreak {
+				t.Errorf("ReviewCleanStreak = %d, want %d", got.ReviewCleanStreak, tt.wantStreak)
+			}
+			if got.ReviewMaxIterations != tt.wantMax {
+				t.Errorf("ReviewMaxIterations = %d, want %d", got.ReviewMaxIterations, tt.wantMax)
+			}
+		})
 	}
 }
 
@@ -58,8 +127,29 @@ func assertConfigMatchesDefaults(t *testing.T, got, want *AutoConfig) {
 	if got.MaxIterations != want.MaxIterations {
 		t.Errorf("MaxIterations = %d, want %d", got.MaxIterations, want.MaxIterations)
 	}
+	if got.SourcePriority != want.SourcePriority {
+		t.Errorf("SourcePriority = %q, want %q", got.SourcePriority, want.SourcePriority)
+	}
+	if got.ConvertMode != want.ConvertMode {
+		t.Errorf("ConvertMode = %q, want %q", got.ConvertMode, want.ConvertMode)
+	}
 	if len(got.QualityChecks) != len(want.QualityChecks) {
 		t.Errorf("QualityChecks length = %d, want %d", len(got.QualityChecks), len(want.QualityChecks))
+	}
+	if got.Mode != want.Mode {
+		t.Errorf("Mode = %q, want %q", got.Mode, want.Mode)
+	}
+	if got.CIEnabled != want.CIEnabled {
+		t.Errorf("CIEnabled = %v, want %v", got.CIEnabled, want.CIEnabled)
+	}
+	if got.ReviewEnabled != want.ReviewEnabled {
+		t.Errorf("ReviewEnabled = %v, want %v", got.ReviewEnabled, want.ReviewEnabled)
+	}
+	if got.ReviewCleanStreak != want.ReviewCleanStreak {
+		t.Errorf("ReviewCleanStreak = %d, want %d", got.ReviewCleanStreak, want.ReviewCleanStreak)
+	}
+	if got.ReviewMaxIterations != want.ReviewMaxIterations {
+		t.Errorf("ReviewMaxIterations = %d, want %d", got.ReviewMaxIterations, want.ReviewMaxIterations)
 	}
 }
 
@@ -67,45 +157,114 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 	defaults := DefaultAutoConfig()
 
 	tests := []struct {
-		name        string
-		yaml        string
-		wantDir     string
-		wantPrefix  string
-		wantMaxIter int
-		wantQCCount int
+		name               string
+		yaml               string
+		wantDir            string
+		wantPrefix         string
+		wantSourcePriority string
+		wantConvertMode    string
+		wantMaxIter        int
+		wantQCCount        int
+		wantMode           string
+		wantCIEnabled      bool
+		wantReview         bool
+		wantReviewStreak   int
+		wantReviewMax      int
 	}{
 		{
 			name: "full config overrides all defaults",
 			yaml: `auto:
   reportsDir: "custom/reports"
   branchPrefix: "feature/"
+  sourcePriority: markdown_first
+  convertMode: standard
   maxIterations: 10
   qualityChecks:
     - "make test"
     - "make lint"
+  mode: strict
+  ciEnabled: false
+  reviewEnabled: true
+  reviewCleanStreak: 4
+  reviewMaxIterations: 12
 `,
-			wantDir:     "custom/reports",
-			wantPrefix:  "feature/",
-			wantMaxIter: 10,
-			wantQCCount: 2,
+			wantDir:            "custom/reports",
+			wantPrefix:         "feature/",
+			wantSourcePriority: AutoSourcePriorityMarkdownFirst,
+			wantConvertMode:    AutoConvertModeStandard,
+			wantMaxIter:        10,
+			wantQCCount:        2,
+			wantMode:           AutoModeStrict,
+			wantCIEnabled:      false,
+			wantReview:         true,
+			wantReviewStreak:   4,
+			wantReviewMax:      12,
 		},
 		{
 			name: "partial config merges with defaults",
 			yaml: `auto:
   reportsDir: "my/reports"
 `,
-			wantDir:     "my/reports",
-			wantPrefix:  defaults.BranchPrefix,
-			wantMaxIter: defaults.MaxIterations,
-			wantQCCount: 0,
+			wantDir:            "my/reports",
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           defaults.Mode,
+			wantCIEnabled:      defaults.CIEnabled,
+			wantReview:         defaults.ReviewEnabled,
+			wantReviewStreak:   defaults.ReviewCleanStreak,
+			wantReviewMax:      defaults.ReviewMaxIterations,
 		},
 		{
-			name:        "empty auto section uses all defaults",
-			yaml:        "auto:\n",
-			wantDir:     defaults.ReportsDir,
-			wantPrefix:  defaults.BranchPrefix,
-			wantMaxIter: defaults.MaxIterations,
-			wantQCCount: 0,
+			name:               "empty auto section uses all defaults",
+			yaml:               "auto:\n",
+			wantDir:            defaults.ReportsDir,
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           defaults.Mode,
+			wantCIEnabled:      defaults.CIEnabled,
+			wantReview:         defaults.ReviewEnabled,
+			wantReviewStreak:   defaults.ReviewCleanStreak,
+			wantReviewMax:      defaults.ReviewMaxIterations,
+		},
+		{
+			name: "mode strict applies stricter defaults",
+			yaml: `auto:
+  mode: strict
+`,
+			wantDir:            defaults.ReportsDir,
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           AutoModeStrict,
+			wantCIEnabled:      true,
+			wantReview:         true,
+			wantReviewStreak:   3,
+			wantReviewMax:      15,
+		},
+		{
+			name: "mode fast disables review and ci by default",
+			yaml: `auto:
+  mode: fast
+`,
+			wantDir:            defaults.ReportsDir,
+			wantPrefix:         defaults.BranchPrefix,
+			wantSourcePriority: defaults.SourcePriority,
+			wantConvertMode:    defaults.ConvertMode,
+			wantMaxIter:        defaults.MaxIterations,
+			wantQCCount:        0,
+			wantMode:           AutoModeFast,
+			wantCIEnabled:      false,
+			wantReview:         false,
+			wantReviewStreak:   1,
+			wantReviewMax:      5,
 		},
 	}
 
@@ -134,8 +293,29 @@ func TestLoadConfig_ValidYAML(t *testing.T) {
 			if cfg.MaxIterations != tt.wantMaxIter {
 				t.Errorf("MaxIterations = %d, want %d", cfg.MaxIterations, tt.wantMaxIter)
 			}
+			if cfg.SourcePriority != tt.wantSourcePriority {
+				t.Errorf("SourcePriority = %q, want %q", cfg.SourcePriority, tt.wantSourcePriority)
+			}
+			if cfg.ConvertMode != tt.wantConvertMode {
+				t.Errorf("ConvertMode = %q, want %q", cfg.ConvertMode, tt.wantConvertMode)
+			}
 			if len(cfg.QualityChecks) != tt.wantQCCount {
 				t.Errorf("QualityChecks length = %d, want %d", len(cfg.QualityChecks), tt.wantQCCount)
+			}
+			if cfg.Mode != tt.wantMode {
+				t.Errorf("Mode = %q, want %q", cfg.Mode, tt.wantMode)
+			}
+			if cfg.CIEnabled != tt.wantCIEnabled {
+				t.Errorf("CIEnabled = %v, want %v", cfg.CIEnabled, tt.wantCIEnabled)
+			}
+			if cfg.ReviewEnabled != tt.wantReview {
+				t.Errorf("ReviewEnabled = %v, want %v", cfg.ReviewEnabled, tt.wantReview)
+			}
+			if cfg.ReviewCleanStreak != tt.wantReviewStreak {
+				t.Errorf("ReviewCleanStreak = %d, want %d", cfg.ReviewCleanStreak, tt.wantReviewStreak)
+			}
+			if cfg.ReviewMaxIterations != tt.wantReviewMax {
+				t.Errorf("ReviewMaxIterations = %d, want %d", cfg.ReviewMaxIterations, tt.wantReviewMax)
 			}
 		})
 	}
@@ -301,6 +481,49 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
   branchPrefix: ""
 `,
 			wantErrSub: "branchPrefix",
+		},
+		{
+			name: "invalid mode triggers validation",
+			yaml: `auto:
+  mode: turbo
+`,
+			wantErrSub: "auto.mode",
+		},
+		{
+			name: "invalid sourcePriority triggers validation",
+			yaml: `auto:
+  sourcePriority: reports_first
+`,
+			wantErrSub: "auto.sourcePriority must be one of report_first, markdown_first",
+		},
+		{
+			name: "invalid convertMode triggers validation",
+			yaml: `auto:
+  convertMode: task
+`,
+			wantErrSub: "auto.convertMode must be one of auto, standard, granular",
+		},
+		{
+			name: "review clean streak must be positive",
+			yaml: `auto:
+  reviewCleanStreak: 0
+`,
+			wantErrSub: "reviewCleanStreak",
+		},
+		{
+			name: "review max iterations must be positive",
+			yaml: `auto:
+  reviewMaxIterations: 0
+`,
+			wantErrSub: "reviewMaxIterations",
+		},
+		{
+			name: "review clean streak must be <= review max iterations",
+			yaml: `auto:
+  reviewCleanStreak: 4
+  reviewMaxIterations: 3
+`,
+			wantErrSub: "reviewCleanStreak",
 		},
 	}
 

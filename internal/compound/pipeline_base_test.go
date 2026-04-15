@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestInitializeBaseBranch_UsesSavedBaseAndIgnoresOverride(t *testing.T) {
@@ -18,7 +19,7 @@ func TestInitializeBaseBranch_UsesSavedBaseAndIgnoresOverride(t *testing.T) {
 	config := DefaultAutoConfig()
 	pipeline := NewPipeline(&config, nil, display, t.TempDir())
 
-	state := &PipelineState{Step: StepPRD, BaseBranch: "main"}
+	state := &PipelineState{Step: StepSpec, BaseBranch: "main"}
 	opts := RunOptions{Resume: true, BaseBranch: "develop"}
 
 	if err := pipeline.initializeBaseBranch(state, opts); err != nil {
@@ -69,6 +70,51 @@ func TestInitializeBaseBranch_FallsBackWhenLookupFails(t *testing.T) {
 	}
 }
 
+func TestNewInitialState_WithSourceMarkdownStartsAtBranch(t *testing.T) {
+	dir := t.TempDir()
+	mdPath := filepath.Join(dir, "prd-entry.md")
+	if err := os.WriteFile(mdPath, []byte("# PRD: Entry Resolution\n"), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	pipeline := NewPipeline(&AutoConfig{}, nil, engine.NewDisplay(&bytes.Buffer{}), dir)
+	state, err := pipeline.newInitialState(RunOptions{SourceMarkdown: mdPath, ConvertMode: AutoConvertModeStandard})
+	if err != nil {
+		t.Fatalf("newInitialState returned error: %v", err)
+	}
+
+	if state.Step != StepBranch {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepBranch)
+	}
+	if state.SourceMarkdown != mdPath {
+		t.Fatalf("state.SourceMarkdown = %q, want %q", state.SourceMarkdown, mdPath)
+	}
+	if state.BranchName != "hal/entry-resolution" {
+		t.Fatalf("state.BranchName = %q, want %q", state.BranchName, "hal/entry-resolution")
+	}
+	if state.ConvertMode != AutoConvertModeStandard {
+		t.Fatalf("state.ConvertMode = %q, want %q", state.ConvertMode, AutoConvertModeStandard)
+	}
+}
+
+func TestNewInitialState_WithoutSourceMarkdownStartsAnalyze(t *testing.T) {
+	pipeline := NewPipeline(&AutoConfig{}, nil, engine.NewDisplay(&bytes.Buffer{}), t.TempDir())
+	state, err := pipeline.newInitialState(RunOptions{ConvertMode: AutoConvertModeGranular})
+	if err != nil {
+		t.Fatalf("newInitialState returned error: %v", err)
+	}
+
+	if state.Step != StepAnalyze {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepAnalyze)
+	}
+	if state.SourceMarkdown != "" {
+		t.Fatalf("state.SourceMarkdown = %q, want empty", state.SourceMarkdown)
+	}
+	if state.ConvertMode != AutoConvertModeGranular {
+		t.Fatalf("state.ConvertMode = %q, want %q", state.ConvertMode, AutoConvertModeGranular)
+	}
+}
+
 func TestRunBranchStep_DryRun_AllowsEmptyBase(t *testing.T) {
 	var out bytes.Buffer
 	display := engine.NewDisplay(&out)
@@ -84,11 +130,66 @@ func TestRunBranchStep_DryRun_AllowsEmptyBase(t *testing.T) {
 	if err := pipeline.runBranchStep(context.Background(), state, RunOptions{DryRun: true}); err != nil {
 		t.Fatalf("runBranchStep returned error: %v", err)
 	}
-	if state.Step != StepPRD {
-		t.Fatalf("state.Step = %q, want %q", state.Step, StepPRD)
+	if state.Step != StepSpec {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepSpec)
 	}
 	if !strings.Contains(out.String(), "from current HEAD") {
 		t.Fatalf("output = %q, want current HEAD message", out.String())
+	}
+}
+
+func TestRunBranchStep_DryRun_SkipsSpecWhenSourceMarkdownIsPreset(t *testing.T) {
+	var out bytes.Buffer
+	display := engine.NewDisplay(&out)
+
+	config := DefaultAutoConfig()
+	pipeline := NewPipeline(&config, nil, display, t.TempDir())
+
+	state := &PipelineState{
+		Step:           StepBranch,
+		BranchName:     "hal/test-feature",
+		SourceMarkdown: ".hal/prd-test-feature.md",
+	}
+	if err := pipeline.runBranchStep(context.Background(), state, RunOptions{DryRun: true}); err != nil {
+		t.Fatalf("runBranchStep returned error: %v", err)
+	}
+	if state.Step != StepConvert {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepConvert)
+	}
+}
+
+func TestRunPRDStep_DryRun_SanitizesBranchNameForMarkdownPath(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir hal dir: %v", err)
+	}
+
+	var out bytes.Buffer
+	display := engine.NewDisplay(&out)
+
+	config := DefaultAutoConfig()
+	pipeline := NewPipeline(&config, nil, display, dir)
+
+	state := &PipelineState{
+		Step: StepSpec,
+		Analysis: &AnalysisResult{
+			BranchName: "compound/feature/auth-refresh",
+		},
+	}
+
+	if err := pipeline.runPRDStep(context.Background(), state, RunOptions{DryRun: true}); err != nil {
+		t.Fatalf("runPRDStep returned error: %v", err)
+	}
+
+	if state.Step != StepBranch {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepBranch)
+	}
+	if filepath.Dir(state.SourceMarkdown) != halDir {
+		t.Fatalf("state.SourceMarkdown dir = %q, want %q", filepath.Dir(state.SourceMarkdown), halDir)
+	}
+	if gotBase := filepath.Base(state.SourceMarkdown); gotBase != "prd-compound-feature-auth-refresh.md" {
+		t.Fatalf("state.SourceMarkdown base = %q, want %q", gotBase, "prd-compound-feature-auth-refresh.md")
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestRunCleanupFn_DryRun(t *testing.T) {
@@ -215,5 +217,123 @@ func TestRunCleanupFn_DeprecatedSkillLinks(t *testing.T) {
 	// Verify link was removed
 	if _, err := os.Lstat(filepath.Join(claudeSkills, "ralph")); !os.IsNotExist(err) {
 		t.Fatal(".claude/skills/ralph should be removed after cleanup")
+	}
+}
+
+func TestRunCleanupFn_LegacyAutoPRDArtifacts(t *testing.T) {
+	tests := []struct {
+		name                   string
+		dryRun                 bool
+		createLegacyArtifacts  bool
+		wantOutputContains     []string
+		wantAutoPRDExists      bool
+		wantLegacyBackupExists bool
+	}{
+		{
+			name:                  "dry-run lists legacy auto-prd artifacts",
+			dryRun:                true,
+			createLegacyArtifacts: true,
+			wantOutputContains: []string{
+				"Would remove:",
+				"Would remove 2 item(s)",
+			},
+			wantAutoPRDExists:      true,
+			wantLegacyBackupExists: true,
+		},
+		{
+			name:                  "cleanup removes legacy auto-prd artifacts",
+			dryRun:                false,
+			createLegacyArtifacts: true,
+			wantOutputContains: []string{
+				"Removed:",
+				"Removed 2 item(s)",
+			},
+			wantAutoPRDExists:      false,
+			wantLegacyBackupExists: false,
+		},
+		{
+			name:                  "cleanup skips when legacy auto-prd artifacts are absent",
+			dryRun:                false,
+			createLegacyArtifacts: false,
+			wantOutputContains: []string{
+				"No orphaned files found.",
+			},
+			wantAutoPRDExists:      false,
+			wantLegacyBackupExists: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			halDir := filepath.Join(tmpDir, template.HalDir)
+			if err := os.MkdirAll(halDir, 0755); err != nil {
+				t.Fatalf("failed to create .hal directory: %v", err)
+			}
+
+			prdPath := filepath.Join(halDir, template.PRDFile)
+			prdContent := `{"branchName":"hal/current"}`
+			if err := os.WriteFile(prdPath, []byte(prdContent), 0644); err != nil {
+				t.Fatalf("failed to create prd.json: %v", err)
+			}
+
+			autoPRDPath := filepath.Join(halDir, template.AutoPRDFile)
+			legacyBackupPath := filepath.Join(halDir, "auto-prd.legacy-20260329-120000.json")
+			if tt.createLegacyArtifacts {
+				if err := os.WriteFile(autoPRDPath, []byte(`{"branchName":"hal/legacy"}`), 0644); err != nil {
+					t.Fatalf("failed to create auto-prd.json: %v", err)
+				}
+				if err := os.WriteFile(legacyBackupPath, []byte(`{"branchName":"hal/legacy-backup"}`), 0644); err != nil {
+					t.Fatalf("failed to create legacy auto-prd backup: %v", err)
+				}
+			}
+
+			var out bytes.Buffer
+			if err := runCleanupFn(halDir, tt.dryRun, &out); err != nil {
+				t.Fatalf("runCleanupFn() error = %v", err)
+			}
+
+			output := out.String()
+			for _, want := range tt.wantOutputContains {
+				if !strings.Contains(output, want) {
+					t.Fatalf("expected output to contain %q, got: %s", want, output)
+				}
+			}
+
+			if tt.createLegacyArtifacts {
+				if !strings.Contains(output, autoPRDPath) {
+					t.Fatalf("expected output to contain auto-prd path %q, got: %s", autoPRDPath, output)
+				}
+				if !strings.Contains(output, legacyBackupPath) {
+					t.Fatalf("expected output to contain legacy backup path %q, got: %s", legacyBackupPath, output)
+				}
+			}
+
+			_, autoPRDErr := os.Stat(autoPRDPath)
+			if tt.wantAutoPRDExists {
+				if os.IsNotExist(autoPRDErr) {
+					t.Fatalf("auto-prd.json should exist")
+				}
+			} else if !os.IsNotExist(autoPRDErr) {
+				t.Fatalf("auto-prd.json should not exist")
+			}
+
+			_, legacyBackupErr := os.Stat(legacyBackupPath)
+			if tt.wantLegacyBackupExists {
+				if os.IsNotExist(legacyBackupErr) {
+					t.Fatalf("legacy auto-prd backup should exist")
+				}
+			} else if !os.IsNotExist(legacyBackupErr) {
+				t.Fatalf("legacy auto-prd backup should not exist")
+			}
+
+			gotPRD, err := os.ReadFile(prdPath)
+			if err != nil {
+				t.Fatalf("failed to read prd.json: %v", err)
+			}
+			if string(gotPRD) != prdContent {
+				t.Fatalf("prd.json should remain unchanged, got: %s", string(gotPRD))
+			}
+		})
 	}
 }

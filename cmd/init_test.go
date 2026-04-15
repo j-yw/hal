@@ -11,6 +11,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMigrateConfigDir(t *testing.T) {
@@ -336,6 +337,177 @@ func TestRunInit(t *testing.T) {
 		}
 	})
 
+	t.Run("second run backfills legacy auto policy keys", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("first runInit() error: %v", err)
+		}
+
+		legacyConfig := `engine: codex
+auto:
+  reportsDir: custom/reports
+  branchPrefix: legacy/
+  maxIterations: 12
+`
+		configPath := filepath.Join(dir, ".hal", "config.yaml")
+		if err := os.WriteFile(configPath, []byte(legacyConfig), 0644); err != nil {
+			t.Fatalf("Failed to write legacy config: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("second runInit() error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read config.yaml: %v", err)
+		}
+
+		var raw map[string]interface{}
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("Failed to parse migrated config.yaml: %v", err)
+		}
+
+		autoSection, ok := raw["auto"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("auto section missing or wrong type: %#v", raw["auto"])
+		}
+
+		if got := autoSection["reportsDir"]; got != "custom/reports" {
+			t.Fatalf("auto.reportsDir = %v, want %q", got, "custom/reports")
+		}
+		if got := autoSection["branchPrefix"]; got != "legacy/" {
+			t.Fatalf("auto.branchPrefix = %v, want %q", got, "legacy/")
+		}
+		if got, ok := autoSection["maxIterations"].(int); !ok || got != 12 {
+			t.Fatalf("auto.maxIterations = %#v, want %d", autoSection["maxIterations"], 12)
+		}
+
+		requiredPolicyKeys := []string{"sourcePriority", "convertMode", "mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+		for _, key := range requiredPolicyKeys {
+			if _, exists := autoSection[key]; !exists {
+				t.Fatalf("expected auto.%s to be backfilled", key)
+			}
+		}
+	})
+
+	t.Run("second run backfills auto policy keys from strict mode defaults", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("first runInit() error: %v", err)
+		}
+
+		configPath := filepath.Join(dir, ".hal", "config.yaml")
+		legacyConfig := `engine: codex
+auto:
+  mode: strict
+`
+		if err := os.WriteFile(configPath, []byte(legacyConfig), 0644); err != nil {
+			t.Fatalf("Failed to write legacy config: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("second runInit() error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read config.yaml: %v", err)
+		}
+
+		var raw map[string]interface{}
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("Failed to parse migrated config.yaml: %v", err)
+		}
+
+		autoSection, ok := raw["auto"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("auto section missing or wrong type: %#v", raw["auto"])
+		}
+
+		if got := autoSection["mode"]; got != "strict" {
+			t.Fatalf("auto.mode = %v, want %q", got, "strict")
+		}
+		if got, ok := autoSection["ciEnabled"].(bool); !ok || !got {
+			t.Fatalf("auto.ciEnabled = %#v, want true", autoSection["ciEnabled"])
+		}
+		if got, ok := autoSection["reviewEnabled"].(bool); !ok || !got {
+			t.Fatalf("auto.reviewEnabled = %#v, want true", autoSection["reviewEnabled"])
+		}
+		if got, ok := autoSection["reviewCleanStreak"].(int); !ok || got != 3 {
+			t.Fatalf("auto.reviewCleanStreak = %#v, want %d", autoSection["reviewCleanStreak"], 3)
+		}
+		if got, ok := autoSection["reviewMaxIterations"].(int); !ok || got != 15 {
+			t.Fatalf("auto.reviewMaxIterations = %#v, want %d", autoSection["reviewMaxIterations"], 15)
+		}
+	})
+
+	t.Run("second run backfills auto policy keys from fast mode defaults", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("first runInit() error: %v", err)
+		}
+
+		configPath := filepath.Join(dir, ".hal", "config.yaml")
+		legacyConfig := `engine: codex
+auto:
+  mode: fast
+`
+		if err := os.WriteFile(configPath, []byte(legacyConfig), 0644); err != nil {
+			t.Fatalf("Failed to write legacy config: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("second runInit() error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read config.yaml: %v", err)
+		}
+
+		var raw map[string]interface{}
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("Failed to parse migrated config.yaml: %v", err)
+		}
+
+		autoSection, ok := raw["auto"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("auto section missing or wrong type: %#v", raw["auto"])
+		}
+
+		if got := autoSection["mode"]; got != "fast" {
+			t.Fatalf("auto.mode = %v, want %q", got, "fast")
+		}
+		if got, ok := autoSection["ciEnabled"].(bool); !ok || got {
+			t.Fatalf("auto.ciEnabled = %#v, want false", autoSection["ciEnabled"])
+		}
+		if got, ok := autoSection["reviewEnabled"].(bool); !ok || got {
+			t.Fatalf("auto.reviewEnabled = %#v, want false", autoSection["reviewEnabled"])
+		}
+		if got, ok := autoSection["reviewCleanStreak"].(int); !ok || got != 1 {
+			t.Fatalf("auto.reviewCleanStreak = %#v, want %d", autoSection["reviewCleanStreak"], 1)
+		}
+		if got, ok := autoSection["reviewMaxIterations"].(int); !ok || got != 5 {
+			t.Fatalf("auto.reviewMaxIterations = %#v, want %d", autoSection["reviewMaxIterations"], 5)
+		}
+	})
+
 	t.Run("installs managed skills", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("HOME", dir)
@@ -471,6 +643,26 @@ func TestMigrateTemplatesPreservesCanonicalBrowserVerificationCriterion(t *testi
 		t.Fatalf("second migrateTemplates() error: %v", err)
 	}
 	assertCriterionCounts()
+}
+
+func TestMigratePromptTemplate_ReordersBookkeepingBeforeCommitAndHardensStopCondition(t *testing.T) {
+	legacyPrompt := "# Hal Agent Instructions\n\n## Your Task\n\n" +
+		legacyTaskOrderingBlock + "\n\n" +
+		legacyStopConditionBlock + "\n"
+
+	got := migratePromptTemplate(legacyPrompt)
+	if strings.Contains(got, legacyTaskOrderingBlock) {
+		t.Fatalf("migrated prompt should replace legacy task ordering, got: %s", got)
+	}
+	if !strings.Contains(got, canonicalTaskOrderingBlock) {
+		t.Fatalf("migrated prompt should contain canonical task ordering, got: %s", got)
+	}
+	if strings.Contains(got, legacyStopConditionBlock) {
+		t.Fatalf("migrated prompt should replace legacy stop condition, got: %s", got)
+	}
+	if !strings.Contains(got, canonicalStopConditionBlock) {
+		t.Fatalf("migrated prompt should contain canonical stop condition, got: %s", got)
+	}
 }
 
 func TestEnsureGitignore(t *testing.T) {

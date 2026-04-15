@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/template"
@@ -13,7 +14,7 @@ import (
 )
 
 var (
-	cleanupDryRun  bool
+	cleanupDryRun   bool
 	cleanupJSONFlag bool
 )
 
@@ -34,6 +35,7 @@ var cleanupCmd = &cobra.Command{
 
 This command removes:
   - .hal/auto-progress.txt (replaced by unified progress.txt)
+  - .hal/auto-prd.json and .hal/auto-prd.legacy-*.json (legacy auto PRD artifacts)
   - .hal/rules/ directory (replaced by standards/)
   - .claude/skills/ralph (deprecated alias)
   - .pi/skills/ralph (deprecated alias)
@@ -53,14 +55,48 @@ func init() {
 	rootCmd.AddCommand(cleanupCmd)
 }
 
-// orphanedFiles lists files that are no longer used and can be safely removed.
-var orphanedFiles = []string{
-	"auto-progress.txt", // Replaced by unified progress.txt
+// orphanedFilePatterns lists file names and glob patterns that are no longer used and can be safely removed.
+var orphanedFilePatterns = []string{
+	"auto-progress.txt",      // Replaced by unified progress.txt
+	template.AutoPRDFile,     // Legacy pre-v2 auto PRD artifact
+	"auto-prd.legacy-*.json", // Legacy auto PRD backups from migration
 }
 
 // orphanedDirs lists directories that are no longer used and can be safely removed.
 var orphanedDirs = []string{
 	"rules", // Replaced by standards/
+}
+
+func findOrphanedFiles(halDir string) ([]string, error) {
+	seen := make(map[string]struct{})
+	var files []string
+
+	for _, pattern := range orphanedFilePatterns {
+		matches, err := filepath.Glob(filepath.Join(halDir, pattern))
+		if err != nil {
+			return nil, fmt.Errorf("failed to match orphaned file pattern %q: %w", pattern, err)
+		}
+
+		for _, match := range matches {
+			info, err := os.Stat(match)
+			if os.IsNotExist(err) || (err == nil && info.IsDir()) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to stat %s: %w", filepath.Base(match), err)
+			}
+
+			name := filepath.Base(match)
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			files = append(files, name)
+		}
+	}
+
+	sort.Strings(files)
+	return files, nil
 }
 
 func runCleanup(cmd *cobra.Command, args []string) error {
@@ -77,17 +113,17 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 func runCleanupJSON(halDir string, dryRun bool, out io.Writer) error {
 	var removed []string
 
+	orphanedFiles, err := findOrphanedFiles(halDir)
+	if err != nil {
+		return err
+	}
 	for _, file := range orphanedFiles {
 		path := filepath.Join(halDir, file)
-		info, err := os.Stat(path)
-		if os.IsNotExist(err) || (err == nil && info.IsDir()) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("failed to stat %s: %w", file, err)
-		}
 		if !dryRun {
 			if err := os.Remove(path); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
 				return fmt.Errorf("failed to remove %s: %w", file, err)
 			}
 		}
@@ -150,23 +186,19 @@ func runCleanupJSON(halDir string, dryRun bool, out io.Writer) error {
 func runCleanupFn(halDir string, dryRun bool, w io.Writer) error {
 	removed := 0
 
+	orphanedFiles, err := findOrphanedFiles(halDir)
+	if err != nil {
+		return err
+	}
 	for _, file := range orphanedFiles {
 		path := filepath.Join(halDir, file)
-		info, err := os.Stat(path)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("failed to stat %s: %w", file, err)
-		}
-		if info.IsDir() {
-			continue
-		}
-
 		if dryRun {
 			fmt.Fprintf(w, "  %s Would remove: %s\n", display.StyleWarning.Render("○"), path)
 		} else {
 			if err := os.Remove(path); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
 				return fmt.Errorf("failed to remove %s: %w", file, err)
 			}
 			fmt.Fprintf(w, "  %s Removed: %s\n", display.StyleSuccess.Render("✓"), path)

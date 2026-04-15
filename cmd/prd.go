@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/engine"
@@ -17,23 +18,23 @@ var prdAuditJSONFlag bool
 
 // PRDAuditResult is the machine-readable output of hal prd audit --json.
 type PRDAuditResult struct {
-	ContractVersion int        `json:"contractVersion"`
-	OK              bool       `json:"ok"`
-	JSONPath        string     `json:"jsonPath,omitempty"`
-	MarkdownPath    string     `json:"markdownPath,omitempty"`
-	JSONExists      bool       `json:"jsonExists"`
-	MarkdownExists  bool       `json:"markdownExists"`
-	Issues          []string   `json:"issues,omitempty"`
-	PRDSummary      *PRDInfo   `json:"prd,omitempty"`
-	Summary         string     `json:"summary"`
+	ContractVersion int      `json:"contractVersion"`
+	OK              bool     `json:"ok"`
+	JSONPath        string   `json:"jsonPath,omitempty"`
+	MarkdownPath    string   `json:"markdownPath,omitempty"`
+	JSONExists      bool     `json:"jsonExists"`
+	MarkdownExists  bool     `json:"markdownExists"`
+	Issues          []string `json:"issues,omitempty"`
+	PRDSummary      *PRDInfo `json:"prd,omitempty"`
+	Summary         string   `json:"summary"`
 }
 
 // PRDInfo provides basic PRD metadata.
 type PRDInfo struct {
-	Project     string `json:"project,omitempty"`
-	BranchName  string `json:"branchName,omitempty"`
-	TotalStories int   `json:"totalStories"`
-	CompletedStories int `json:"completedStories"`
+	Project          string `json:"project,omitempty"`
+	BranchName       string `json:"branchName,omitempty"`
+	TotalStories     int    `json:"totalStories"`
+	CompletedStories int    `json:"completedStories"`
 }
 
 var prdCmd = &cobra.Command{
@@ -133,22 +134,20 @@ func runPRDAuditFn(dir string, jsonMode bool, out io.Writer) error {
 		}
 	}
 
-	// Check auto-prd.json
-	autoPRDPath := filepath.Join(halDir, template.AutoPRDFile)
-	autoPRDExists := false
-	if _, err := os.Stat(autoPRDPath); err == nil {
-		autoPRDExists = true
+	legacyAutoPRDFiles, err := findLegacyAutoPRDFiles(halDir)
+	if err != nil {
+		return err
 	}
 
-	// Drift detection
+	// Drift and migration detection
 	if jsonExists && markdownExists {
 		issues = append(issues, "both prd.json and markdown PRD exist — potential drift. Consider archiving one.")
 	}
-	if !jsonExists && !markdownExists && !autoPRDExists {
+	if !jsonExists && !markdownExists && len(legacyAutoPRDFiles) == 0 {
 		issues = append(issues, "no PRD files found. Run hal plan or create a PRD manually.")
 	}
-	if jsonExists && autoPRDExists {
-		issues = append(issues, "both prd.json and auto-prd.json exist — manual and auto PRDs may conflict.")
+	if len(legacyAutoPRDFiles) > 0 {
+		issues = append(issues, fmt.Sprintf("migration issue: legacy auto PRD artifacts found: %s. Run 'hal auto' to migrate and 'hal cleanup' to remove leftovers.", strings.Join(legacyAutoPRDFiles, ", ")))
 	}
 
 	ok := len(issues) == 0
@@ -214,4 +213,37 @@ func runPRDAuditFn(dir string, jsonMode bool, out io.Writer) error {
 	}
 
 	return nil
+}
+
+func findLegacyAutoPRDFiles(halDir string) ([]string, error) {
+	patterns := []string{template.AutoPRDFile, "auto-prd.legacy-*.json"}
+	seen := make(map[string]struct{})
+	files := make([]string, 0)
+
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(halDir, pattern))
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve legacy auto PRD pattern %q: %w", pattern, err)
+		}
+
+		for _, match := range matches {
+			info, err := os.Stat(match)
+			if os.IsNotExist(err) || (err == nil && info.IsDir()) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to stat legacy auto PRD file %q: %w", match, err)
+			}
+
+			name := filepath.Base(match)
+			if _, exists := seen[name]; exists {
+				continue
+			}
+			seen[name] = struct{}{}
+			files = append(files, filepath.Join(template.HalDir, name))
+		}
+	}
+
+	sort.Strings(files)
+	return files, nil
 }

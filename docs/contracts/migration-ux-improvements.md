@@ -56,7 +56,7 @@ Every core command now supports `--json` for machine-readable output:
 | `hal init --json` | `{ok, created, skipped, summary}` |
 | `hal run --json` | `{ok, iterations, complete, prd, nextAction, summary}` |
 | `hal report --json` | `{ok, reportPath, patternsAdded, recommendations, nextAction}` |
-| `hal auto --json` | `{ok, resumed, nextAction, error, summary}` |
+| `hal auto --json` | `auto-v2` contract (`{contractVersion, ok, entryMode, resumed, steps, summary, ...}`) |
 | `hal validate --json` | `{valid, errors, warnings}` |
 | `hal convert --json` | `{ok, outputPath, valid, summary}` |
 | `hal cleanup --json` | `{ok, removed, dryRun, summary}` |

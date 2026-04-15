@@ -15,7 +15,7 @@ Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story 
 - **Pluggable engines** — Works with Claude Code, OpenAI Codex, or Pi
 - **Project standards** — Codify patterns into standards that are injected into every agent iteration
 - **Archive & restore** — Switch between features without losing state
-- **Compound pipeline** — Full automation from analysis to pull request
+- **Single auto pipeline** — Deterministic automation from analysis through archive using `.hal/prd.json` runtime state
 
 ## Installation
 
@@ -75,18 +75,27 @@ hal init → hal plan → hal convert → hal validate → hal run
 4. **validate** — Check stories against quality rules
 5. **run** — Loop through stories: pick next, implement, commit, repeat
 
-### Compound Pipeline (Fully Automated)
+### Auto Pipeline (Fully Automated)
 
 ```
 hal report → hal auto → hal report → hal auto → ...
 ```
 
-The compound pipeline creates a continuous development cycle:
+The auto pipeline creates a continuous development cycle:
 
 1. **`hal report`** — Runs **legacy session reporting** (the behavior that previously lived under `hal review`). It analyzes completed work and generates a report with recommendations for next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
 
-2. **`hal auto`** — Reads the latest report, identifies the priority item, and runs the full pipeline:
-   - **Analyze** → **Branch** → **PRD** → **Explode** → **Loop** → **PR**
+2. **`hal auto`** — Runs one deterministic pipeline with config-driven source + convert policy:
+   - source discovery uses `auto.sourcePriority` (default `report_first`: latest report → newest `.hal/prd-*.md`)
+   - `auto.sourcePriority: markdown_first` flips discovery to newest markdown → latest report
+   - convert mode uses `auto.convertMode` (default `auto`: markdown entry → standard US stories, report entry → granular T tasks)
+   - `auto.convertMode: standard|granular` forces mode for all new runs
+   - **Analyze** → **Spec** → **Branch** → **Convert** → **Validate** → **Run** → **Review** → **CI** → **Report** → **Archive**
+   - `convert` writes canonical runtime PRD state to `.hal/prd.json`
+   - downstream gates consume the same `.hal/prd.json` runtime source
+   - policy presets: `--mode fast|balanced|strict` (default from `.hal/config.yaml`)
+   - per-run overrides: `--no-review`, `--no-ci`, `--review-streak`, `--review-max`
+   - `hal auto <prd-path>` skips analyze/spec and starts from **Branch**
 
 3. **Repeat** — After the PR merges, run `hal report` again to generate the next report.
 
@@ -100,6 +109,7 @@ hal review --base <base-branch> --iterations <n> -e codex
 **Getting started:** Run the manual workflow first (`hal plan` → `hal run`), then `hal report` to generate your first report. Or place a report directly in `.hal/reports/`.
 
 State is saved after each step — use `hal auto --resume` to continue from interruptions.
+When `--resume` is set, positional `prd-path` and `--report` are ignored in favor of saved state.
 
 ### Migration Note
 
@@ -108,7 +118,7 @@ The old `hal review` reporting workflow moved to `hal report`.
 - Use `hal report` for legacy session reporting and report generation.
 - Use `hal review --base <base-branch> [iterations]` for the new iterative review/fix loop (select engine with `-e`).
 - `hal review against <base-branch> [iterations]` remains as a deprecated alias.
-- `hal explode --branch <name>` is long-only (`-b` removed) and sets output PRD `branchName`.
+- `hal explode` is a deprecated compatibility shim for `hal convert --granular`; it writes canonical `.hal/prd.json` and prints a deprecation warning.
 - Deprecation timeline: deprecated in `v0.2.0`, removed in `v1.0.0`.
 
 ## CLI Reference
@@ -122,6 +132,10 @@ Stable JSON contracts for agent integration:
 - [`docs/contracts/status-v1.md`](docs/contracts/status-v1.md) — Workflow state machine
 - [`docs/contracts/doctor-v1.md`](docs/contracts/doctor-v1.md) — Health/readiness checks
 - [`docs/contracts/continue-v1.md`](docs/contracts/continue-v1.md) — What to do next
+- [`docs/contracts/ci-push-v1.md`](docs/contracts/ci-push-v1.md) — `hal ci push` output contract
+- [`docs/contracts/ci-status-v1.md`](docs/contracts/ci-status-v1.md) — `hal ci status` output contract
+- [`docs/contracts/ci-fix-v1.md`](docs/contracts/ci-fix-v1.md) — `hal ci fix` output contract
+- [`docs/contracts/ci-merge-v1.md`](docs/contracts/ci-merge-v1.md) — `hal ci merge` output contract
 
 ## Commands
 
@@ -140,10 +154,19 @@ Stable JSON contracts for agent integration:
 
 | Command | Description |
 |---------|-------------|
-| `hal status [--json]` | Show workflow state (manual, compound, review-loop) |
+| `hal status [--json]` | Show workflow state (manual, auto pipeline, review-loop) |
 | `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
 | `hal continue [--json]` | Show what to do next (combines status + doctor) |
 | `hal repair [--dry-run] [--json]` | Auto-fix safe issues detected by doctor |
+
+### CI Workflow
+
+| Command | Description |
+|---------|-------------|
+| `hal ci push [--dry-run] [--json]` | Push current branch and create or reuse an open pull request |
+| `hal ci status [--wait] [--json]` | Show aggregated CI status, with deterministic wait controls |
+| `hal ci fix [--max-attempts N] [-e engine] [--json]` | Attempt CI fixes with command-layer retries |
+| `hal ci merge [--strategy <squash\|merge\|rebase>] [--delete-branch] [--allow-no-checks] [--dry-run] [--json]` | Merge PR with explicit safety controls |
 
 ### Link Management
 
@@ -158,9 +181,9 @@ Stable JSON contracts for agent integration:
 |---------|-------------|
 | `hal report` | Generate summary report → `.hal/reports/`, update AGENTS.md |
 | `hal review --base <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e`; do not combine positional iterations with `-i/--iterations`) |
-| `hal auto` | Run full pipeline using latest report |
+| `hal auto [prd-path]` | Run single auto pipeline (`analyze → ... → archive`) with runtime PRD `.hal/prd.json`; source discovery uses `auto.sourcePriority` and convert policy uses `auto.convertMode` |
 | `hal analyze [report] --format text\|json` | Analyze a report to find priority item (`--output` is deprecated) |
-| `hal explode <prd.md> --branch <name>` | Break PRD into 8-15 granular tasks and set output PRD `branchName` |
+| `hal explode <prd.md> --branch <name>` | Deprecated shim for `hal convert --granular` (keeps explode compatibility output) |
 
 ### Standards
 
@@ -482,6 +505,11 @@ auto:
   reportsDir: .hal/reports
   branchPrefix: compound/
   maxIterations: 25
+  mode: balanced            # fast | balanced | strict
+  ciEnabled: true
+  reviewEnabled: true
+  reviewCleanStreak: 1
+  reviewMaxIterations: 10
 
 engines:
   codex:

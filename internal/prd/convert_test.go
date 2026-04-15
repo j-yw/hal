@@ -137,7 +137,7 @@ func TestConvertWithEngine_UsesOutputFallbackWhenStreamRequiresFile(t *testing.T
 	}
 
 	mdPath := filepath.Join(halDir, "prd-new.md")
-	writeFile(t, mdPath, "# PRD")
+	writeFile(t, mdPath, "# PRD: New Feature")
 
 	outPath := filepath.Join(halDir, template.PRDFile)
 	eng := &mockEngine{
@@ -162,6 +162,7 @@ func TestResolveMarkdownBranchName(t *testing.T) {
 	tests := []struct {
 		name      string
 		mdContent string
+		mdPath    string
 		want      string
 	}{
 		{
@@ -171,7 +172,8 @@ branchName: hal/explicit-feature
 ---
 
 # PRD: Ignored Title`,
-			want: "hal/explicit-feature",
+			mdPath: filepath.Join(template.HalDir, "prd-fallback.md"),
+			want:   "hal/explicit-feature",
 		},
 		{
 			name: "ignores inline frontmatter comments after explicit branch name",
@@ -306,16 +308,39 @@ owner: product
 			want:      "hal/techops-playbook-routing-mvp-backport",
 		},
 		{
-			name:      "ignores generic headings",
+			name:      "falls back to filename slug when heading is generic",
 			mdContent: "# PRD",
+			mdPath:    filepath.Join(template.HalDir, "prd-filename-fallback.md"),
+			want:      "hal/filename-fallback",
+		},
+		{
+			name:      "title-derived slug takes precedence over filename fallback",
+			mdContent: "# PRD: Title Wins",
+			mdPath:    filepath.Join(template.HalDir, "prd-filename-loses.md"),
+			want:      "hal/title-wins",
+		},
+		{
+			name: "metadata takes precedence over title and filename fallback",
+			mdContent: `---
+branchName: hal/metadata-wins
+---
+
+# PRD: Title Loses`,
+			mdPath: filepath.Join(template.HalDir, "prd-filename-loses.md"),
+			want:   "hal/metadata-wins",
+		},
+		{
+			name:      "returns empty when metadata title and filename are generic",
+			mdContent: "# PRD",
+			mdPath:    filepath.Join(template.HalDir, "prd.md"),
 			want:      "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := resolveMarkdownBranchName(tt.mdContent); got != tt.want {
-				t.Fatalf("resolveMarkdownBranchName() = %q, want %q", got, tt.want)
+			if got := ResolveMarkdownBranchName(tt.mdContent, tt.mdPath); got != tt.want {
+				t.Fatalf("ResolveMarkdownBranchName() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -524,6 +549,70 @@ func TestConvertWithEngine_ResolvedBranchPinsOutputAndPrompt(t *testing.T) {
 	}
 }
 
+func TestConvertWithEngine_OptionBranchNamePinsOutputAndPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(halDir, template.PRDFile)
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, `---
+branchName: hal/from-markdown
+---
+
+# PRD: Ignored Title`)
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/wrong-feature"),
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{BranchName: "hal/from-flag"}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	if got := readPRDBranchName(t, outPath); got != "hal/from-flag" {
+		t.Fatalf("output branchName = %q, want %q", got, "hal/from-flag")
+	}
+	if !strings.Contains(eng.lastPrompt, "Use this exact branchName: hal/from-flag.") {
+		t.Fatalf("prompt did not pin explicit option branchName:\n%s", eng.lastPrompt)
+	}
+}
+
+func TestConvertWithEngine_GranularOptionAddsTaskGuidanceToPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+	outPath := filepath.Join(tmpDir, "out.json")
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Granular: true}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	checks := []string{
+		"Decompose into 8-15 atomic tasks, each completable in ONE agent iteration",
+		"IDs are sequential (T-001, T-002, etc.)",
+		"\"id\": \"T-001\"",
+	}
+	for _, want := range checks {
+		if !strings.Contains(eng.lastPrompt, want) {
+			t.Fatalf("granular prompt missing %q:\n%s", want, eng.lastPrompt)
+		}
+	}
+}
+
 func TestConvertWithEngine_ExplicitBranchAnnotationsPinOutputAndPrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 	chdirTo(t, tmpDir)
@@ -627,7 +716,7 @@ branchName: hal/new-feature
 	}
 }
 
-func TestConvertWithEngine_BranchlessMarkdownDoesNotPinExistingCanonicalBranch(t *testing.T) {
+func TestConvertWithEngine_BranchlessMarkdownFallsBackToFilename(t *testing.T) {
 	tmpDir := t.TempDir()
 	chdirTo(t, tmpDir)
 	halDir := filepath.Join(tmpDir, template.HalDir)
@@ -638,11 +727,11 @@ func TestConvertWithEngine_BranchlessMarkdownDoesNotPinExistingCanonicalBranch(t
 	outPath := filepath.Join(halDir, template.PRDFile)
 	writePRDJSON(t, halDir, template.PRDFile, "hal/old-feature")
 
-	mdPath := filepath.Join(halDir, "prd-new.md")
+	mdPath := filepath.Join(halDir, "prd-new-feature.md")
 	writeFile(t, mdPath, "# PRD")
 
 	eng := &mockEngine{
-		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
+		promptResponse: promptResponseWithBranch(t, "hal/something-else"),
 	}
 
 	err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil)
@@ -657,8 +746,37 @@ func TestConvertWithEngine_BranchlessMarkdownDoesNotPinExistingCanonicalBranch(t
 	if got := readPRDBranchName(t, outPath); got != "hal/old-feature" {
 		t.Fatalf("expected canonical PRD to remain unchanged, got branch %q", got)
 	}
-	if strings.Contains(eng.lastPrompt, "Use this exact branchName:") {
-		t.Fatalf("prompt unexpectedly pinned branchName:\n%s", eng.lastPrompt)
+	if !strings.Contains(eng.lastPrompt, "Use this exact branchName: hal/new-feature.") {
+		t.Fatalf("prompt did not pin filename-derived branchName:\n%s", eng.lastPrompt)
+	}
+}
+
+func TestConvertWithEngine_UnresolvedBranchNameReturnsBlockingError(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mdPath := filepath.Join(halDir, "prd.md")
+	writeFile(t, mdPath, "# PRD")
+
+	outPath := filepath.Join(tmpDir, "out.json")
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/engine-branch"),
+	}
+
+	err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil)
+	if err == nil {
+		t.Fatal("expected unresolved branchName error")
+	}
+	want := "unable to resolve branchName from markdown metadata, title, or filename; pass --branch"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if eng.lastPrompt != "" {
+		t.Fatalf("expected engine prompt not to run, got %q", eng.lastPrompt)
 	}
 }
 
@@ -912,7 +1030,7 @@ func TestConvertWithEngine_CanonicalBranchMismatchWithForceWritesWithoutArchive(
 	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 
 	mdPath := filepath.Join(halDir, "prd-new.md")
-	writeFile(t, mdPath, "# PRD")
+	writeFile(t, mdPath, "# PRD: New Feature")
 
 	eng := &mockEngine{
 		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
@@ -948,7 +1066,7 @@ func TestConvertWithEngine_CanonicalBranchMismatchWithArchiveArchivesThenWrites(
 	writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
 
 	mdPath := filepath.Join(halDir, "prd-new.md")
-	writeFile(t, mdPath, "# PRD")
+	writeFile(t, mdPath, "# PRD: New Feature")
 
 	eng := &mockEngine{
 		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
@@ -981,7 +1099,7 @@ func TestConvertWithEngine_BranchGuardSkipsNonBlockingCases(t *testing.T) {
 		name           string
 		outPathFn      func(tmpDir, halDir string) string
 		existingBranch *string
-		incomingBranch string
+		mdContent      string
 		wantBranch     string
 	}{
 		{
@@ -990,7 +1108,7 @@ func TestConvertWithEngine_BranchGuardSkipsNonBlockingCases(t *testing.T) {
 				return filepath.Join(tmpDir, "custom-prd.json")
 			},
 			existingBranch: strPtr("hal/old-feature"),
-			incomingBranch: "hal/new-feature",
+			mdContent:      "# PRD: New Feature",
 			wantBranch:     "hal/new-feature",
 		},
 		{
@@ -999,7 +1117,7 @@ func TestConvertWithEngine_BranchGuardSkipsNonBlockingCases(t *testing.T) {
 				return filepath.Join(halDir, template.PRDFile)
 			},
 			existingBranch: strPtr("hal/same-feature"),
-			incomingBranch: "hal/same-feature",
+			mdContent:      "# PRD: Same Feature",
 			wantBranch:     "hal/same-feature",
 		},
 		{
@@ -1008,7 +1126,7 @@ func TestConvertWithEngine_BranchGuardSkipsNonBlockingCases(t *testing.T) {
 				return filepath.Join(halDir, template.PRDFile)
 			},
 			existingBranch: nil,
-			incomingBranch: "hal/new-feature",
+			mdContent:      "# PRD: New Feature",
 			wantBranch:     "hal/new-feature",
 		},
 		{
@@ -1017,17 +1135,8 @@ func TestConvertWithEngine_BranchGuardSkipsNonBlockingCases(t *testing.T) {
 				return filepath.Join(halDir, template.PRDFile)
 			},
 			existingBranch: strPtr(""),
-			incomingBranch: "hal/new-feature",
+			mdContent:      "# PRD: New Feature",
 			wantBranch:     "hal/new-feature",
-		},
-		{
-			name: "empty incoming branch proceeds",
-			outPathFn: func(tmpDir, halDir string) string {
-				return filepath.Join(halDir, template.PRDFile)
-			},
-			existingBranch: strPtr("hal/old-feature"),
-			incomingBranch: "",
-			wantBranch:     "",
 		},
 	}
 
@@ -1045,11 +1154,11 @@ func TestConvertWithEngine_BranchGuardSkipsNonBlockingCases(t *testing.T) {
 			}
 
 			mdPath := filepath.Join(halDir, "prd-new.md")
-			writeFile(t, mdPath, "# PRD")
+			writeFile(t, mdPath, tt.mdContent)
 
 			outPath := tt.outPathFn(tmpDir, halDir)
 			eng := &mockEngine{
-				promptResponse: promptResponseWithBranch(t, tt.incomingBranch),
+				promptResponse: promptResponseWithBranch(t, "hal/ignored-by-branch-pinning"),
 			}
 
 			if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
@@ -1067,7 +1176,7 @@ func strPtr(s string) *string {
 	return &s
 }
 
-func TestFindLatestPRDMarkdown(t *testing.T) {
+func TestFindNewestMarkdown(t *testing.T) {
 	tests := []struct {
 		name     string
 		setup    func(t *testing.T, halDir string)
@@ -1132,7 +1241,7 @@ func TestFindLatestPRDMarkdown(t *testing.T) {
 				tt.setup(t, halDir)
 			}
 
-			got, err := findLatestPRDMarkdown(halDir)
+			got, err := FindNewestMarkdown(halDir)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.wantErr)

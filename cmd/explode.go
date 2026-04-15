@@ -7,13 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
-	"github.com/jywlabs/hal/internal/skills"
+	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
+
+const explodeDeprecationWarning = "warning: 'hal explode' is deprecated; use 'hal convert --granular'."
 
 var (
 	explodeBranchFlag string
@@ -33,60 +34,81 @@ type ExplodeResult struct {
 
 var explodeCmd = &cobra.Command{
 	Use:   "explode [prd-path]",
-	Short: "Break a PRD into granular tasks for autonomous execution",
-	Long: `Explode a Product Requirements Document into 8-15 granular tasks.
+	Short: "Deprecated shim for 'hal convert --granular'",
+	Long: `Deprecated: use 'hal convert --granular'.
 
-Each task is sized to be completable in a single agent iteration with
-boolean acceptance criteria suitable for autonomous verification.
+This command is a one-release compatibility shim.
+It delegates conversion to:
+  hal convert --granular --output .hal/prd.json
 
-The output is written to .hal/auto-prd.json in the userStories format,
-and is used by the auto pipeline (not the manual run command).
+Behavior:
+- Prints a deprecation warning to stderr.
+- Preserves the explode --json output contract.
+- Passes through --branch and --engine.
 
 Examples:
-  hal explode .hal/prd-feature.md                    # Explode a PRD
-  hal explode .hal/prd-feature.md --branch feature   # Set branch name
-  hal explode .hal/prd-feature.md --engine claude    # Use specific engine`,
+  hal explode .hal/prd-feature.md                    # Deprecated shim to convert --granular
+  hal explode .hal/prd-feature.md --branch feature   # Pin branchName in generated prd.json
+  hal explode .hal/prd-feature.md --engine claude    # Use specific engine
+  hal explode .hal/prd-feature.md --json             # Machine-readable explode contract`,
 	Example: `  hal explode .hal/prd-checkout.md
   hal explode .hal/prd-checkout.md --branch checkout
-  hal explode .hal/prd-checkout.md --engine codex`,
+  hal explode .hal/prd-checkout.md --engine codex
+  hal explode .hal/prd-checkout.md --json`,
 	Args: exactArgsValidation(1),
 	RunE: runExplode,
 }
 
 func init() {
-	explodeCmd.Flags().StringVar(&explodeBranchFlag, "branch", "", "Branch name that sets output PRD branchName")
+	explodeCmd.Flags().StringVar(&explodeBranchFlag, "branch", "", "Branch name to pin in generated prd.json")
 	explodeCmd.Flags().StringVarP(&explodeEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	explodeCmd.Flags().BoolVar(&explodeJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(explodeCmd)
 }
 
+type explodeDeps struct {
+	newEngine         func(string) (engine.Engine, error)
+	convertWithEngine func(context.Context, engine.Engine, string, string, prd.ConvertOptions, *engine.Display) error
+	readFile          func(string) ([]byte, error)
+}
+
+var defaultExplodeDeps = explodeDeps{
+	newEngine:         newEngine,
+	convertWithEngine: prd.ConvertWithEngine,
+	readFile:          os.ReadFile,
+}
+
 func runExplode(cmd *cobra.Command, args []string) error {
+	return runExplodeWithDeps(cmd, args, defaultExplodeDeps)
+}
+
+func runExplodeWithDeps(cmd *cobra.Command, args []string, deps explodeDeps) error {
 	ctx := context.Background()
 	out := io.Writer(os.Stdout)
+	errOut := io.Writer(os.Stderr)
 	if cmd != nil {
 		if cmd.Context() != nil {
 			ctx = cmd.Context()
 		}
 		out = cmd.OutOrStdout()
+		errOut = cmd.ErrOrStderr()
 	}
+
+	if deps.newEngine == nil {
+		deps.newEngine = newEngine
+	}
+	if deps.convertWithEngine == nil {
+		deps.convertWithEngine = prd.ConvertWithEngine
+	}
+	if deps.readFile == nil {
+		deps.readFile = os.ReadFile
+	}
+
+	fmt.Fprintln(errOut, explodeDeprecationWarning)
 
 	prdPath := args[0]
-
-	// Verify PRD file exists
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
 		return fmt.Errorf("PRD file not found: %s", prdPath)
-	}
-
-	// Read PRD content
-	prdContent, err := os.ReadFile(prdPath)
-	if err != nil {
-		return fmt.Errorf("failed to read PRD: %w", err)
-	}
-
-	// Load explode skill
-	explodeSkill, err := skills.LoadSkill("explode")
-	if err != nil {
-		return fmt.Errorf("failed to load explode skill: %w", err)
 	}
 
 	engineName, err := resolveEngine(cmd, "engine", explodeEngineFlag, ".")
@@ -94,109 +116,49 @@ func runExplode(cmd *cobra.Command, args []string) error {
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
-	// Create engine
-	eng, err := newEngine(engineName)
+	eng, err := deps.newEngine(engineName)
 	if err != nil {
-		return fmt.Errorf("failed to create engine: %w", err)
+		return err
 	}
 
-	// Create display
 	display := engine.NewDisplay(out)
-
-	// Show command header
 	display.ShowCommandHeader("Explode", filepath.Base(prdPath), buildHeaderCtx(engineName))
 
-	// Determine branch name
-	branchName := explodeBranchFlag
-	if branchName == "" {
-		// Extract from PRD filename: prd-feature-name.md -> feature-name
-		branchName = extractBranchFromPRDPath(prdPath)
+	outPath := filepath.Join(template.HalDir, template.PRDFile)
+	opts := prd.ConvertOptions{
+		Granular:   true,
+		BranchName: explodeBranchFlag,
 	}
 
-	// Build prompt
-	prompt := buildExplodePrompt(explodeSkill, string(prdContent), branchName)
-
-	// Record output file modification time before (if exists)
-	outPath := filepath.Join(template.HalDir, template.AutoPRDFile)
-	var preModTime time.Time
-	if stat, err := os.Stat(outPath); err == nil {
-		preModTime = stat.ModTime()
+	if err := deps.convertWithEngine(ctx, eng, prdPath, outPath, opts, display); err != nil {
+		return fmt.Errorf("conversion failed: %w", err)
 	}
 
-	// Execute prompt with streaming display
-	response, err := eng.StreamPrompt(ctx, prompt, display)
-	// Check if engine wrote the output file directly using tools
-	fileWritten := false
-	if stat, err := os.Stat(outPath); err == nil && stat.ModTime().After(preModTime) {
-		fileWritten = true
-	}
+	taskCount, err := loadExplodeTaskCount(deps.readFile, outPath)
 	if err != nil {
-		if !fileWritten || !engine.RequiresOutputFallback(err) {
-			return fmt.Errorf("engine prompt failed: %w", err)
-		}
-	}
-
-	if fileWritten {
-		// Engine wrote the file - validate it
-		content, err := os.ReadFile(outPath)
-		if err != nil {
-			return fmt.Errorf("failed to read engine-written prd.json: %w", err)
-		}
-
-		// Validate JSON structure
-		var prd engine.PRD
-		if err := json.Unmarshal(content, &prd); err != nil {
-			return fmt.Errorf("engine wrote invalid JSON: %w", err)
-		}
-
-		// Re-marshal with proper formatting
-		formatted, err := json.MarshalIndent(prd, "", "  ")
-		if err != nil {
-			return err
-		}
-
-		// Write formatted version back
-		if err := os.WriteFile(outPath, formatted, 0644); err != nil {
-			return fmt.Errorf("failed to write formatted prd.json: %w", err)
-		}
-
-		taskCount := countTasks(&prd)
-		if explodeJSONFlag {
-			return outputExplodeJSON(out, outPath, taskCount)
-		}
-		display.ShowCommandSuccess("Tasks generated", fmt.Sprintf("%d tasks • Path: %s", taskCount, outPath))
-		return nil
-	}
-
-	// Fallback: Parse JSON from text response
-	prdJSON, err := extractJSONFromExplodeResponse(response)
-	if err != nil {
-		return fmt.Errorf("failed to extract JSON from response: %w", err)
-	}
-
-	// Ensure output directory exists
-	outDir := filepath.Dir(outPath)
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
-	}
-
-	// Write prd.json
-	if err := os.WriteFile(outPath, []byte(prdJSON), 0644); err != nil {
-		return fmt.Errorf("failed to write prd.json: %w", err)
-	}
-
-	// Parse to get task count for success message
-	taskCount := 0
-	var prd engine.PRD
-	if err := json.Unmarshal([]byte(prdJSON), &prd); err == nil {
-		taskCount = countTasks(&prd)
+		return err
 	}
 
 	if explodeJSONFlag {
 		return outputExplodeJSON(out, outPath, taskCount)
 	}
+
 	display.ShowCommandSuccess("Tasks generated", fmt.Sprintf("%d tasks • Path: %s", taskCount, outPath))
 	return nil
+}
+
+func loadExplodeTaskCount(readFile func(string) ([]byte, error), path string) (int, error) {
+	data, err := readFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read generated prd.json: %w", err)
+	}
+
+	var p engine.PRD
+	if err := json.Unmarshal(data, &p); err != nil {
+		return 0, fmt.Errorf("generated prd.json is invalid: %w", err)
+	}
+
+	return countTasks(&p), nil
 }
 
 func outputExplodeJSON(out io.Writer, outPath string, taskCount int) error {
@@ -213,145 +175,6 @@ func outputExplodeJSON(out io.Writer, outPath string, taskCount int) error {
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
-}
-
-func buildExplodePrompt(skill, prdContent, branchName string) string {
-	return fmt.Sprintf(`You are a PRD task breakdown agent. Follow the explode skill instructions below.
-
-<skill>
-%s
-</skill>
-
-<prd>
-%s
-</prd>
-
-Branch name to use: %s
-
-Break down this PRD into 8-15 granular tasks following the skill rules:
-1. Each task completable in ONE agent iteration
-2. Tasks ordered by dependency (types → logic → integration → verification)
-3. Every task has boolean acceptance criteria
-4. Every task ends with "Typecheck passes"
-5. Use T-XXX IDs (T-001, T-002, etc.)
-6. All tasks have passes: false and empty notes
-
-Write the JSON directly to .hal/auto-prd.json using the Write tool.`, skill, prdContent, branchName)
-}
-
-func extractBranchFromPRDPath(prdPath string) string {
-	base := filepath.Base(prdPath)
-	// Remove extension
-	name := base[:len(base)-len(filepath.Ext(base))]
-	// Remove prd- prefix if present
-	if len(name) > 4 && name[:4] == "prd-" {
-		name = name[4:]
-	}
-	return name
-}
-
-func extractJSONFromExplodeResponse(response string) (string, error) {
-	// Same logic as convert.go but for explode
-	response = trimWhitespace(response)
-
-	// Handle markdown code blocks
-	if containsCodeBlock(response) {
-		response = extractFromCodeBlock(response)
-	}
-
-	// Find JSON object
-	start := findFirst(response, '{')
-	end := findLast(response, '}')
-	if start == -1 || end == -1 || end < start {
-		return "", fmt.Errorf("no JSON found in response")
-	}
-	response = response[start : end+1]
-
-	// Validate JSON by parsing it
-	var prd engine.PRD
-	if err := json.Unmarshal([]byte(response), &prd); err != nil {
-		return "", fmt.Errorf("invalid JSON: %w", err)
-	}
-
-	// Re-marshal with proper formatting
-	formatted, err := json.MarshalIndent(prd, "", "  ")
-	if err != nil {
-		return "", err
-	}
-
-	return string(formatted), nil
-}
-
-func trimWhitespace(s string) string {
-	// Manual trim to avoid importing strings just for this
-	start := 0
-	end := len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
-}
-
-func containsCodeBlock(s string) bool {
-	for i := 0; i < len(s)-2; i++ {
-		if s[i] == '`' && s[i+1] == '`' && s[i+2] == '`' {
-			return true
-		}
-	}
-	return false
-}
-
-func extractFromCodeBlock(response string) string {
-	var result []byte
-	inBlock := false
-	lines := splitLines(response)
-	for _, line := range lines {
-		if len(line) >= 3 && line[0] == '`' && line[1] == '`' && line[2] == '`' {
-			inBlock = !inBlock
-			continue
-		}
-		if inBlock {
-			result = append(result, line...)
-			result = append(result, '\n')
-		}
-	}
-	return string(result)
-}
-
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
-}
-
-func findFirst(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
-}
-
-func findLast(s string, c byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
 
 func countTasks(prd *engine.PRD) int {

@@ -72,6 +72,44 @@ func TestCreate(t *testing.T) {
 			},
 		},
 		{
+			name: "includes legacy auto-prd artifacts when present",
+			setup: func(t *testing.T, halDir string) {
+				writePRD(t, halDir, template.PRDFile, "hal/legacy", nil)
+				writeFile(t, filepath.Join(halDir, "auto-prd.legacy-20260329-120000.json"), `{"branchName":"hal/legacy-a"}`)
+				writeFile(t, filepath.Join(halDir, "auto-prd.legacy-20260329-120500.json"), `{"branchName":"hal/legacy-b"}`)
+			},
+			archName: "legacy",
+			check: func(t *testing.T, halDir, archDir string) {
+				for _, name := range []string{"auto-prd.legacy-20260329-120000.json", "auto-prd.legacy-20260329-120500.json"} {
+					if !fileExists(filepath.Join(archDir, name)) {
+						t.Errorf("expected %s in archive", name)
+					}
+					if fileExists(filepath.Join(halDir, name)) {
+						t.Errorf("expected %s removed from halDir", name)
+					}
+				}
+			},
+		},
+		{
+			name: "succeeds when legacy auto-prd artifacts are absent",
+			setup: func(t *testing.T, halDir string) {
+				writePRD(t, halDir, template.PRDFile, "hal/no-legacy", nil)
+			},
+			archName: "no-legacy",
+			check: func(t *testing.T, halDir, archDir string) {
+				if !fileExists(filepath.Join(archDir, template.PRDFile)) {
+					t.Errorf("expected %s in archive", template.PRDFile)
+				}
+				matches, err := filepath.Glob(filepath.Join(archDir, legacyAutoPRDPattern))
+				if err != nil {
+					t.Fatalf("glob legacy artifacts: %v", err)
+				}
+				if len(matches) != 0 {
+					t.Errorf("expected no legacy artifacts, found %d", len(matches))
+				}
+			},
+		},
+		{
 			name: "prd-*.md globs picked up",
 			setup: func(t *testing.T, halDir string) {
 				writePRD(t, halDir, template.PRDFile, "hal/feat", nil)
@@ -297,6 +335,25 @@ func TestHasFeatureStateWithOptions(t *testing.T) {
 	if !hasState {
 		t.Fatal("expected feature state when auto-state exists")
 	}
+
+	legacyPath := filepath.Join(halDir, "auto-prd.legacy-20260329-120000.json")
+	writeFile(t, legacyPath, `{"branchName":"hal/legacy"}`)
+
+	hasState, err = HasFeatureStateWithOptions(halDir, CreateOptions{ExcludePaths: []string{mdPath, filepath.Join(halDir, template.AutoStateFile)}})
+	if err != nil {
+		t.Fatalf("HasFeatureStateWithOptions error: %v", err)
+	}
+	if !hasState {
+		t.Fatal("expected legacy auto-prd artifact to count as feature state")
+	}
+
+	hasState, err = HasFeatureStateWithOptions(halDir, CreateOptions{ExcludePaths: []string{mdPath, filepath.Join(halDir, template.AutoStateFile), legacyPath}})
+	if err != nil {
+		t.Fatalf("HasFeatureStateWithOptions error: %v", err)
+	}
+	if hasState {
+		t.Fatal("expected no feature state when legacy auto-prd artifact is excluded")
+	}
 }
 
 func TestList(t *testing.T) {
@@ -473,6 +530,21 @@ func TestRestore(t *testing.T) {
 				}
 				if !found {
 					t.Error("expected auto-saved archive")
+				}
+			},
+		},
+		{
+			name: "restores legacy auto-prd artifacts when archive contains them",
+			setup: func(t *testing.T, halDir string) string {
+				archDir := filepath.Join(halDir, "archive", "2026-01-03-legacy")
+				os.MkdirAll(archDir, 0755)
+				writePRD(t, archDir, template.PRDFile, "hal/legacy", nil)
+				writeFile(t, filepath.Join(archDir, "auto-prd.legacy-20260329-120000.json"), `{"branchName":"hal/legacy"}`)
+				return "2026-01-03-legacy"
+			},
+			check: func(t *testing.T, halDir string) {
+				if !fileExists(filepath.Join(halDir, "auto-prd.legacy-20260329-120000.json")) {
+					t.Error("legacy auto-prd artifact should be restored")
 				}
 			},
 		},

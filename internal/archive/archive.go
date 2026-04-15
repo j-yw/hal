@@ -23,6 +23,8 @@ var featureStateFiles = []string{
 	template.AutoStateFile,
 }
 
+const legacyAutoPRDPattern = "auto-prd.legacy-*.json"
+
 // CreateOptions controls which files are archived.
 type CreateOptions struct {
 	ExcludePaths []string
@@ -81,6 +83,23 @@ func CreateWithOptions(halDir, name string, w io.Writer, opts CreateOptions) (st
 			return "", fmt.Errorf("failed to move %s: %w", f, err)
 		}
 		fmt.Fprintf(w, "  archived %s\n", f)
+		moved++
+	}
+
+	legacyFiles, err := legacyAutoPRDFiles(halDir)
+	if err != nil {
+		return "", err
+	}
+	for _, src := range legacyFiles {
+		if isExcluded(src, exclude) {
+			continue
+		}
+		base := filepath.Base(src)
+		dst := filepath.Join(archiveDir, base)
+		if err := moveFile(src, dst); err != nil {
+			return "", fmt.Errorf("failed to move %s: %w", base, err)
+		}
+		fmt.Fprintf(w, "  archived %s\n", base)
 		moved++
 	}
 
@@ -356,6 +375,19 @@ func HasFeatureStateWithOptions(halDir string, opts CreateOptions) (bool, error)
 		}
 	}
 
+	legacyFiles, err := legacyAutoPRDFiles(halDir)
+	if err != nil {
+		return false, err
+	}
+	for _, path := range legacyFiles {
+		if isExcluded(path, exclude) {
+			continue
+		}
+		if fileExists(path) {
+			return true, nil
+		}
+	}
+
 	prdMDs, err := filepath.Glob(filepath.Join(halDir, "prd-*.md"))
 	if err != nil {
 		return false, fmt.Errorf("failed to scan PRD markdown files: %w", err)
@@ -386,6 +418,14 @@ func HasFeatureStateWithOptions(halDir string, opts CreateOptions) (bool, error)
 	}
 
 	return false, nil
+}
+
+func legacyAutoPRDFiles(halDir string) ([]string, error) {
+	files, err := filepath.Glob(filepath.Join(halDir, legacyAutoPRDPattern))
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan legacy auto PRD artifacts: %w", err)
+	}
+	return files, nil
 }
 
 func normalizeExcludePaths(paths []string) map[string]struct{} {

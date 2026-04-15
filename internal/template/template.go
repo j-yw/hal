@@ -33,8 +33,6 @@ const (
 // Tool-agnostic: the agent discovers available browser tools at runtime.
 const BrowserVerificationCriterion = "Verify in browser (skip if no dev server running, no browser tools available, or 3 attempts fail)"
 
-
-
 // DefaultFiles returns the default files to create in .hal/
 func DefaultFiles() map[string]string {
 	return map[string]string{

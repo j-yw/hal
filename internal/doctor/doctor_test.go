@@ -1,12 +1,16 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -238,6 +242,12 @@ func TestRun_MissingConfigYAML(t *testing.T) {
 	installCommands(t, dir)
 
 	result := Run(Options{Dir: dir, Engine: "pi"})
+	if result.OverallStatus != StatusWarn {
+		t.Fatalf("overallStatus = %q, want %q", result.OverallStatus, StatusWarn)
+	}
+	if len(result.Warnings) == 0 || result.Warnings[0] != "config_yaml" {
+		t.Fatalf("warnings = %v, want config_yaml warning", result.Warnings)
+	}
 
 	found := false
 	for _, c := range result.Checks {
@@ -251,6 +261,58 @@ func TestRun_MissingConfigYAML(t *testing.T) {
 	if !found {
 		t.Fatal("config_yaml check not found")
 	}
+}
+
+func TestRun_ConfigYAMLMissingAutoPolicyKeys(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	legacyAutoConfig := `engine: pi
+auto:
+  reportsDir: .hal/reports
+  branchPrefix: compound/
+  maxIterations: 25
+`
+	if err := os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte(legacyAutoConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+	if result.OverallStatus != StatusWarn {
+		t.Fatalf("overallStatus = %q, want %q", result.OverallStatus, StatusWarn)
+	}
+	if len(result.Warnings) == 0 || result.Warnings[0] != "config_yaml" {
+		t.Fatalf("warnings = %v, want config_yaml warning", result.Warnings)
+	}
+
+	for _, c := range result.Checks {
+		if c.ID != "config_yaml" {
+			continue
+		}
+		if c.Status != StatusWarn {
+			t.Fatalf("config_yaml status = %q, want %q", c.Status, StatusWarn)
+		}
+		if c.Remediation == nil {
+			t.Fatal("config_yaml should include remediation")
+		}
+		if c.Remediation.Command != "hal init" {
+			t.Fatalf("config_yaml remediation.command = %q, want %q", c.Remediation.Command, "hal init")
+		}
+		if !c.Remediation.Safe {
+			t.Fatal("config_yaml remediation.safe should be true")
+		}
+		for _, key := range []string{"sourcePriority", "convertMode", "reviewMaxIterations"} {
+			if !strings.Contains(c.Message, key) {
+				t.Fatalf("config_yaml message should list missing policy key %q, got %q", key, c.Message)
+			}
+		}
+		return
+	}
+
+	t.Fatal("config_yaml check not found")
 }
 
 func TestRun_LegacyDebrisDetected(t *testing.T) {
@@ -551,6 +613,18 @@ func TestRun_ScopeAndApplicability(t *testing.T) {
 		}
 	}
 
+	// GitHub auth check should be not_applicable when there is no valid GitHub origin remote
+	for _, c := range result.Checks {
+		if c.ID == "github_auth" {
+			if c.Applicability != ApplicabilityNotApplicable {
+				t.Fatalf("github_auth applicability = %q, want %q", c.Applicability, ApplicabilityNotApplicable)
+			}
+			if c.Scope != ScopeRepo {
+				t.Fatalf("github_auth scope = %q, want %q", c.Scope, ScopeRepo)
+			}
+		}
+	}
+
 	// Codex check should be not_applicable for pi engine
 	for _, c := range result.Checks {
 		if c.ID == "codex_global_links" {
@@ -639,7 +713,7 @@ func TestRun_NoPRDJSON(t *testing.T) {
 }
 
 func TestRun_CheckCount(t *testing.T) {
-	// A fully healthy repo should have exactly 14 checks
+	// A fully healthy repo should have exactly 15 checks
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	halDir := setupHalDir(t, dir)
@@ -654,6 +728,7 @@ func TestRun_CheckCount(t *testing.T) {
 		"git_repo",
 		"hal_dir",
 		"config_yaml",
+		"github_auth",
 		"default_engine_cli",
 		"prompt_md",
 		"progress_file",
@@ -678,6 +753,193 @@ func TestRun_CheckCount(t *testing.T) {
 		if result.Checks[i].ID != expected {
 			t.Fatalf("check[%d].ID = %q, want %q", i, result.Checks[i].ID, expected)
 		}
+	}
+}
+
+func TestCheckGitHubAuth_NonGitDirectoryIsNotApplicable(t *testing.T) {
+	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
+		originRemoteURL: func(string) (string, error) {
+			return "", errNotGitRepository
+		},
+		selectGitHubClient: func(context.Context) (ci.ClientSelection, error) {
+			t.Fatal("selectGitHubClient should not be called when repository is not git")
+			return ci.ClientSelection{}, nil
+		},
+	})
+
+	if check.Status != StatusSkip {
+		t.Fatalf("status = %q, want %q", check.Status, StatusSkip)
+	}
+	if check.Severity != SeverityInfo {
+		t.Fatalf("severity = %q, want %q", check.Severity, SeverityInfo)
+	}
+}
+
+func TestCheckGitHubAuth_MissingOriginIsNotApplicable(t *testing.T) {
+	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
+		originRemoteURL: func(string) (string, error) {
+			return "", ci.ErrMissingOriginRemote
+		},
+		selectGitHubClient: func(context.Context) (ci.ClientSelection, error) {
+			t.Fatal("selectGitHubClient should not be called when origin remote is missing")
+			return ci.ClientSelection{}, nil
+		},
+	})
+
+	if check.Status != StatusSkip {
+		t.Fatalf("status = %q, want %q", check.Status, StatusSkip)
+	}
+	if check.Message != "GitHub auth check is not applicable: origin remote is not configured." {
+		t.Fatalf("message = %q", check.Message)
+	}
+}
+
+func TestCheckGitHubAuth_NonGitHubOriginIsNotApplicable(t *testing.T) {
+	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
+		originRemoteURL: func(string) (string, error) {
+			return "git@gitlab.com:acme/repo.git", nil
+		},
+		selectGitHubClient: func(context.Context) (ci.ClientSelection, error) {
+			t.Fatal("selectGitHubClient should not be called for non-GitHub origins")
+			return ci.ClientSelection{}, nil
+		},
+	})
+
+	if check.Status != StatusSkip {
+		t.Fatalf("status = %q, want %q", check.Status, StatusSkip)
+	}
+	if check.Message != "GitHub auth check is not applicable: origin remote is not hosted on GitHub." {
+		t.Fatalf("message = %q", check.Message)
+	}
+}
+
+func TestCheckGitHubAuth_GitHubOriginWithoutAuthWarns(t *testing.T) {
+	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
+		originRemoteURL: func(string) (string, error) {
+			return "git@github.com:acme/repo.git", nil
+		},
+		selectGitHubClient: func(context.Context) (ci.ClientSelection, error) {
+			return ci.ClientSelection{}, ci.ErrNoGitHubAuth
+		},
+	})
+
+	if check.Status != StatusWarn {
+		t.Fatalf("status = %q, want %q", check.Status, StatusWarn)
+	}
+	if check.RemediationID != RemediationRunGHAuthLogin {
+		t.Fatalf("remediationId = %q, want %q", check.RemediationID, RemediationRunGHAuthLogin)
+	}
+	if check.Remediation == nil {
+		t.Fatal("remediation should not be nil")
+	}
+	if check.Remediation.Command != "gh auth login" {
+		t.Fatalf("remediation.command = %q, want %q", check.Remediation.Command, "gh auth login")
+	}
+	if check.Remediation.Safe {
+		t.Fatal("remediation.safe = true, want false")
+	}
+}
+
+func TestCheckGitHubAuth_GitHubOriginWithInvalidEnvTokenWarnsWithoutGHLoginRemediation(t *testing.T) {
+	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
+		originRemoteURL: func(string) (string, error) {
+			return "git@github.com:acme/repo.git", nil
+		},
+		selectGitHubClient: func(context.Context) (ci.ClientSelection, error) {
+			return ci.ClientSelection{}, ci.ErrInvalidEnvToken
+		},
+	})
+
+	if check.Status != StatusWarn {
+		t.Fatalf("status = %q, want %q", check.Status, StatusWarn)
+	}
+	if check.RemediationID != RemediationNone {
+		t.Fatalf("remediationId = %q, want %q", check.RemediationID, RemediationNone)
+	}
+	if check.Remediation != nil {
+		t.Fatalf("remediation = %+v, want nil", check.Remediation)
+	}
+	const want = "GitHub auth env token is invalid: set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it to use `gh auth login`."
+	if check.Message != want {
+		t.Fatalf("message = %q, want %q", check.Message, want)
+	}
+}
+
+func TestWarningSummaryPart_GitHubAuthNoAuth(t *testing.T) {
+	got := warningSummaryPart("github_auth", []Check{
+		{
+			ID:            "github_auth",
+			Status:        StatusWarn,
+			RemediationID: RemediationRunGHAuthLogin,
+			Message:       "GitHub auth not configured for this GitHub remote.",
+		},
+	})
+	if got != "run gh auth login" {
+		t.Fatalf("warningSummaryPart() = %q, want %q", got, "run gh auth login")
+	}
+}
+
+func TestWarningSummaryPart_GitHubAuthInvalidEnvToken(t *testing.T) {
+	got := warningSummaryPart("github_auth", []Check{
+		{
+			ID:            "github_auth",
+			Status:        StatusWarn,
+			RemediationID: RemediationNone,
+			Message:       "GitHub auth env token is invalid: set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it to use `gh auth login`.",
+		},
+	})
+	if got != "set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it" {
+		t.Fatalf("warningSummaryPart() = %q, want %q", got, "set a valid $GITHUB_TOKEN/$GH_TOKEN or unset it")
+	}
+}
+
+func TestCheckGitHubAuth_GitHubOriginWithAuthPasses(t *testing.T) {
+	check := checkGitHubAuthWithDeps(t.TempDir(), githubAuthDeps{
+		originRemoteURL: func(string) (string, error) {
+			return "https://github.com/acme/repo.git", nil
+		},
+		selectGitHubClient: func(context.Context) (ci.ClientSelection, error) {
+			return ci.ClientSelection{Kind: ci.ClientKindGH}, nil
+		},
+	})
+
+	if check.Status != StatusPass {
+		t.Fatalf("status = %q, want %q", check.Status, StatusPass)
+	}
+	if check.Remediation != nil {
+		t.Fatalf("remediation = %+v, want nil", check.Remediation)
+	}
+}
+
+func TestGitOriginRemoteURL_NotGitRepository(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+
+	remote, err := gitOriginRemoteURL(dir)
+	if remote != "" {
+		t.Fatalf("remote = %q, want empty", remote)
+	}
+	if !errors.Is(err, errNotGitRepository) {
+		t.Fatalf("error = %v, want errNotGitRepository", err)
+	}
+}
+
+func TestGitOriginRemoteURL_GitRepoMissingOrigin(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := exec.Command("git", "-C", dir, "init")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	remote, err := gitOriginRemoteURL(dir)
+	if remote != "" {
+		t.Fatalf("remote = %q, want empty", remote)
+	}
+	if !errors.Is(err, ci.ErrMissingOriginRemote) {
+		t.Fatalf("error = %v, want ci.ErrMissingOriginRemote", err)
 	}
 }
 

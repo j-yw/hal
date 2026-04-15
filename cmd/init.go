@@ -11,10 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	ui "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // migrateResult indicates the outcome of a config directory migration.
@@ -235,6 +237,10 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		created = append(created, filename)
 	}
 
+	if err := migrateConfigYAML(configDir); err != nil {
+		return fmt.Errorf("failed to migrate config.yaml: %w", err)
+	}
+
 	// Create .gitkeep in archive only if it doesn't exist
 	gitkeepPath := filepath.Join(archiveDir, ".gitkeep")
 	if _, err := os.Stat(gitkeepPath); os.IsNotExist(err) {
@@ -410,6 +416,29 @@ const migratedBrowserTestingSection = "## Browser Testing (Required for Frontend
 	"A frontend story is complete when browser verification passes, or when it is explicitly skipped because no dev server was running, no browser tools were available, or 3 attempts failed."
 
 const canonicalBranchGuidance = "3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from `{{BASE_BRANCH}}` (never default to `main` unless `{{BASE_BRANCH}}` is `main`)."
+const legacyTaskOrderingBlock = "6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)\n" +
+	"7. Update AGENTS.md files if you discover reusable patterns (see below)\n" +
+	"8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`\n" +
+	"9. Update `.hal/{{PRD_FILE}}` to set `passes: true` for the completed story\n" +
+	"10. Append your progress to `.hal/{{PROGRESS_FILE}}`"
+const canonicalTaskOrderingBlock = "6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)\n" +
+	"7. Update AGENTS.md files if you discover reusable patterns (see below)\n" +
+	"8. Update `.hal/{{PRD_FILE}}` to set `passes: true` for the completed story\n" +
+	"9. Append your progress to `.hal/{{PROGRESS_FILE}}`\n" +
+	"10. If checks pass, commit ALL changes, including `.hal/{{PRD_FILE}}` and `.hal/{{PROGRESS_FILE}}`, with message: `feat: [Story ID] - [Story Title]`"
+const legacyStopConditionBlock = "## Stop Condition\n\n" +
+	"After completing a user story, check if ALL stories have `passes: true`.\n\n" +
+	"If ALL stories are complete and passing, reply with:\n" +
+	"<promise>COMPLETE</promise>\n\n" +
+	"If there are still stories with `passes: false`, end your response normally (another iteration will pick up the next story)."
+const canonicalStopConditionBlock = "## Stop Condition\n\n" +
+	"After completing a user story, verify all of the following before signaling COMPLETE:\n\n" +
+	"1. Every story in `.hal/{{PRD_FILE}}` has `passes: true`\n" +
+	"2. `git status --short` is empty\n" +
+	"3. Your latest commit includes `.hal/{{PRD_FILE}}` and `.hal/{{PROGRESS_FILE}}`\n\n" +
+	"If ALL stories are complete and passing, reply with:\n" +
+	"<promise>COMPLETE</promise>\n\n" +
+	"If there are still stories with `passes: false`, end your response normally even if you completed the current story (another iteration will pick up the next story)."
 
 var (
 	legacyBrowserVerificationPattern = regexp.MustCompile(`Verify in browser using [A-Za-z0-9_-]+(?: skill)?(?: \([^)\r\n]*\))?`)
@@ -457,6 +486,8 @@ func migratePromptTemplate(content string) string {
 	for _, old := range legacyBranchGuidance {
 		content = strings.ReplaceAll(content, old, canonicalBranchGuidance)
 	}
+	content = strings.ReplaceAll(content, legacyTaskOrderingBlock, canonicalTaskOrderingBlock)
+	content = strings.ReplaceAll(content, legacyStopConditionBlock, canonicalStopConditionBlock)
 
 	return content
 }
@@ -492,6 +523,88 @@ func migrateTemplates(configDir string) error {
 		return err
 	}
 	return migrateSkillFiles(filepath.Join(configDir, "skills"), migrateBrowserVerificationContent)
+}
+
+var autoPolicyConfigKeys = []string{"sourcePriority", "convertMode", "mode", "ciEnabled", "reviewEnabled", "reviewCleanStreak", "reviewMaxIterations"}
+
+// migrateConfigYAML backfills missing auto policy keys in existing .hal/config.yaml
+// without overwriting user-defined values.
+func migrateConfigYAML(configDir string) error {
+	configPath := filepath.Join(configDir, template.ConfigFile)
+
+	data, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		// Leave invalid YAML untouched so doctor can surface an actionable error.
+		return nil
+	}
+	if raw == nil {
+		return nil
+	}
+
+	autoRaw, ok := raw["auto"]
+	if !ok {
+		return nil
+	}
+	autoMap, ok := autoRaw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	defaults := compound.DefaultAutoConfig()
+	if rawMode, ok := autoMap["mode"].(string); ok {
+		if modeDefaults, err := compound.ResolveAutoModeSettings(rawMode); err == nil {
+			defaults.Mode = modeDefaults.Mode
+			defaults.CIEnabled = modeDefaults.CIEnabled
+			defaults.ReviewEnabled = modeDefaults.ReviewEnabled
+			defaults.ReviewCleanStreak = modeDefaults.ReviewCleanStreak
+			defaults.ReviewMaxIterations = modeDefaults.ReviewMaxIterations
+		}
+	}
+	defaultValues := map[string]interface{}{
+		"sourcePriority":      defaults.SourcePriority,
+		"convertMode":         defaults.ConvertMode,
+		"mode":                defaults.Mode,
+		"ciEnabled":           defaults.CIEnabled,
+		"reviewEnabled":       defaults.ReviewEnabled,
+		"reviewCleanStreak":   defaults.ReviewCleanStreak,
+		"reviewMaxIterations": defaults.ReviewMaxIterations,
+	}
+
+	changed := false
+	for _, key := range autoPolicyConfigKeys {
+		if _, exists := autoMap[key]; exists {
+			continue
+		}
+		autoMap[key] = defaultValues[key]
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+
+	raw["auto"] = autoMap
+	updated, err := yaml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+
+	mode := os.FileMode(0644)
+	if info, statErr := os.Stat(configPath); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, updated, mode); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type refreshSummary struct {

@@ -4,11 +4,11 @@ import (
 	"embed"
 )
 
-//go:embed hal prd autospec explode review review-loop
+//go:embed hal prd autospec factory explode review review-loop
 var skillsFS embed.FS
 
 // ManagedSkillNames lists the Hal-owned skill names safe to link into engine skill directories.
-var ManagedSkillNames = []string{"prd", "hal", "autospec", "explode", "review", "review-loop"}
+var ManagedSkillNames = []string{"prd", "hal", "autospec", "factory", "explode", "review", "review-loop"}
 
 //go:embed commands/discover-standards.md commands/index-standards.md commands/inject-standards.md
 var commandsFS embed.FS
