@@ -445,3 +445,9 @@
 - Keep selective product writes centralized in `internal/product/write.go` via `WriteSelectedFiles(projectDir, targets, payload)` so only explicitly selected docs are ever modified.
 - `WriteSelectedFiles` should create `.hal/product` lazily only when at least one selected payload entry is present, avoiding empty-directory side effects in no-op paths.
 - Lock non-selected-file safety with byte-level regression tests (read-before/read-after comparisons) so partial updates cannot accidentally rewrite untouched docs.
+
+## Patterns from hal/product-plan-preflight-modes (2026-04-16)
+
+- Keep product-plan preflight in `cmd/product.go` (`runProductPlanFlowWithDeps`) with injectable dependencies (`stat`, `loadExistingFiles`, `selectMode`) so interactive command logic is unit-testable without full Cobra execution.
+- Product planning must fail fast with actionable guidance when `.hal/` is missing (`.hal/ not found - run 'hal init' first`) before attempting any product file reads.
+- Only prompt for replace/update/cancel when at least one product doc already exists, and treat cancel as a clean no-op (no file creation, no file modification).

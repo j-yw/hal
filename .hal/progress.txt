@@ -9,6 +9,7 @@
 - Use `product.WriteSelectedFiles(projectDir, targets, payload)` for selective product updates; it only writes selected files with generated content and creates `.hal/product` lazily when writes are needed.
 - For Hal-managed skills, keep `internal/skills/embed.go` `//go:embed` entries and `ManagedSkillNames` in sync with on-disk `internal/skills/<name>/SKILL.md`, and lock with a `LoadSkill("<name>")` non-empty test.
 - For new command families, keep Cobra handlers thin and route logic through `run<Command>WithDeps` plus an options struct so flag wiring can be unit-tested without full command execution.
+- In `runProductPlanFlowWithDeps`, perform `.hal` existence checks before reading product docs, and only prompt for replace/update/cancel when at least one product file already exists.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -62,4 +63,14 @@
   - Patterns discovered: new command flows should expose a `run<Command>WithDeps` helper plus an options struct so flag wiring is testable without invoking full Cobra execution.
   - Gotchas encountered: `resolveEngine` behavior changes based on whether the flag is explicitly set; pass a real command with an `engine` flag in tests when validating explicit-flag semantics.
   - Useful context: product planning entrypoint is now `hal product plan`; follow-up stories can extend `runProductPlanFlow` without reshaping command wiring.
+---
+## 2026-04-16 07:21 +08 - US-007
+- Implemented `hal product plan` preflight flow in `runProductPlanFlowWithDeps`: it now verifies `.hal/` exists, reads current product-doc state, and branches into replace/update/cancel mode handling when existing docs are present.
+- Added interactive mode selection prompt (`replace all`, `update selected`, `cancel`) with deterministic selection parsing and explicit cancel exit messaging.
+- Added focused tests for missing `.hal` actionable error text, existing-file mode prompt + cancel no-write behavior, and no-existing-files path that skips prompting.
+- Files changed: `cmd/product.go`, `cmd/product_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Patterns discovered: keep command preflight logic in `run<Command>FlowWithDeps` with injectable dependencies so interactive branches can be tested without full Cobra execution.
+  - Gotchas encountered: when product docs already exist, the flow must treat cancellation as a no-op and return success without touching any files.
+  - Useful context: `product.LoadExistingFiles` is now the preflight source of truth for deciding whether mode selection is required.
 ---
