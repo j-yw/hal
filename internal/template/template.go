@@ -27,6 +27,11 @@ const (
 	SandboxFile   = "sandbox.json" // Sandbox state (not archived)
 	StandardsDir  = "standards"    // Project standards directory
 	CommandsDir   = "commands"     // Agent commands directory
+	ProductDir    = "product"      // Durable product context directory
+
+	ProductMissionFile   = "mission.md"
+	ProductRoadmapFile   = "roadmap.md"
+	ProductTechStackFile = "tech-stack.md"
 )
 
 // BrowserVerificationCriterion is the canonical acceptance criterion for UI stories.
@@ -39,5 +44,14 @@ func DefaultFiles() map[string]string {
 		PromptFile:   DefaultPrompt,
 		ProgressFile: DefaultProgress,
 		ConfigFile:   DefaultConfig,
+	}
+}
+
+// ProductFiles returns product context filenames in deterministic order.
+func ProductFiles() []string {
+	return []string{
+		ProductMissionFile,
+		ProductRoadmapFile,
+		ProductTechStackFile,
 	}
 }

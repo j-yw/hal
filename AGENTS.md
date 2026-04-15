@@ -418,3 +418,8 @@
 
 - When adding or changing `hal ci` command surfaces, update the README command tables and machine-contract links together so human docs stay aligned with generated and machine-readable docs.
 - Regenerate CLI docs with `make docs-cli` and verify with `make docs-check`; commit both new command pages (`docs/cli/hal_ci*.md`) and any updated parent pages (for example `docs/cli/hal.md`).
+
+## Patterns from hal/product-path-constants (2026-04-16)
+
+- Keep product-doc path constants in `internal/template/template.go` (`ProductDir`, `ProductMissionFile`, `ProductRoadmapFile`, `ProductTechStackFile`) and use them instead of hardcoded `.hal/product/*` strings.
+- Use `template.ProductFiles()` when iterating product docs so mission/roadmap/tech-stack processing order stays deterministic across commands and tests.

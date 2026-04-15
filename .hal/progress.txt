@@ -1,0 +1,16 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Use `template.ProductDir`, `template.ProductMissionFile`, `template.ProductRoadmapFile`, and `template.ProductTechStackFile` for product-doc paths instead of hardcoded `.hal/product/*` strings.
+- Use `template.ProductFiles()` when iterating product docs so mission/roadmap/tech-stack order stays deterministic.
+
+---
+## 2026-04-16 06:46 +08 - US-001
+- Implemented canonical product path constants and deterministic product filename helper in `internal/template/template.go`.
+- Added focused unit coverage for product constants and `ProductFiles()` ordering/immutability behavior.
+- Files changed: `internal/template/template.go`, `internal/template/template_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Product context paths should be assembled from template constants (`template.HalDir` + `template.ProductDir` + `template.Product*File`) to avoid drift.
+  - `template.ProductFiles()` should be the single source for deterministic product file iteration order.
+---

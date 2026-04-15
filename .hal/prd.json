@@ -1,0 +1,234 @@
+{
+  "project": "Hal Product Context Planning",
+  "branchName": "hal/hal-product-context-planning-hal-product-plan",
+  "description": "Add hal product plan so a solo developer can interactively create and update durable product context in .hal/product/mission.md, .hal/product/roadmap.md, and .hal/product/tech-stack.md, while keeping hal init lightweight and preserving product docs outside archive feature state.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Add Canonical Product Path Constants",
+      "description": "As a Hal maintainer, I want canonical constants for product doc paths so that product files are referenced consistently across commands and tests.",
+      "acceptanceCriteria": [
+        "internal/template/template.go defines ProductDir, ProductMissionFile, ProductRoadmapFile, and ProductTechStackFile.",
+        "A ProductFiles helper returns mission.md, roadmap.md, and tech-stack.md in deterministic order.",
+        "New product-related code paths use template constants instead of hardcoded .hal/product strings.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Define Product Planning Contracts",
+      "description": "As a developer, I want explicit product planning data types so that command flow and generation logic share stable contracts.",
+      "acceptanceCriteria": [
+        "internal/product/types.go defines typed structures for selected targets, collected answers, existing file state, and generated payload.",
+        "JSON parsing supports partial payloads that omit unselected files.",
+        "Malformed JSON payloads return parse errors in unit tests.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Embed Product Skill Content",
+      "description": "As a developer, I want a Hal-adapted product skill embedded so that prompt generation stays versioned and consistent in-repo.",
+      "acceptanceCriteria": [
+        "internal/skills/product/SKILL.md exists and requires generation-only strict JSON output.",
+        "internal/skills/embed.go registers and embeds the product skill asset.",
+        "A test retrieves the embedded product skill by its expected key/name and confirms non-empty content.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Implement Product Context Reader",
+      "description": "As a developer, I want helpers to load existing product docs so that update mode can safely reason about current file state.",
+      "acceptanceCriteria": [
+        "internal/product/context.go loads mission, roadmap, and tech-stack with per-file existence and content fields.",
+        "Missing files are represented as exists=false with empty content and no write side effects.",
+        "Tests cover empty state, partial state, and all-files-present state.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Implement Selective Product Context Writer",
+      "description": "As a developer, I want selective write helpers so that partial updates change only selected product files.",
+      "acceptanceCriteria": [
+        "Writing selected targets creates .hal/product lazily when it does not exist.",
+        "Non-selected product files remain byte-for-byte unchanged after writes.",
+        "Tests verify unchanged bytes for non-selected files across partial updates.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Add Product Plan Command Skeleton And Engine Wiring",
+      "description": "As a CLI user, I want hal product plan wired into the command tree so that I can run product planning with a selected engine.",
+      "acceptanceCriteria": [
+        "Root command includes a top-level product command with a plan subcommand.",
+        "hal product plan accepts --engine and forwards it through runProductPlanWithDeps.",
+        "Command behavior is extracted into a testable run helper rather than embedded entirely in Cobra RunE.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Implement Preflight And Mode Selection",
+      "description": "As a solo developer, I want replace/update/cancel preflight behavior so that I can safely edit existing product docs.",
+      "acceptanceCriteria": [
+        "If .hal is missing, the command returns actionable error text: run 'hal init' first.",
+        "If any product file exists, the command prompts for replace all, update selected, or cancel.",
+        "Selecting cancel exits without creating or modifying product files.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Implement Update-Selected Target Parsing",
+      "description": "As a solo developer, I want concise selection input for update mode so that I can choose mission, roadmap, and tech-stack quickly.",
+      "acceptanceCriteria": [
+        "Update-selected mode parses concise input into the exact target set for mission, roadmap, and tech-stack.",
+        "Invalid selections return deterministic validation errors and perform no writes.",
+        "Selected targets are passed unchanged to interview and generation stages.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Collect Interview Inputs For Selected Targets",
+      "description": "As a solo developer, I want targeted interview questions so that only selected product docs are discussed.",
+      "acceptanceCriteria": [
+        "Mission questions run only when mission is selected.",
+        "Roadmap questions run only when roadmap is selected.",
+        "Tech-stack questions run only when tech-stack is selected and use explicit user input (no inferred standards path).",
+        "Empty answers map to deterministic placeholder/default values verified by tests.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Build Generation Prompt For Strict JSON Output",
+      "description": "As a developer, I want generation prompts to include complete selected context so that model output is machine-parseable and scoped.",
+      "acceptanceCriteria": [
+        "Prompt content includes selected targets, collected answers, and existing selected-file content.",
+        "Prompt instructions require strict JSON-only output keyed by product filenames.",
+        "Tests assert required prompt sections and exclude non-selected file context.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Enforce Strict JSON Parse And Single Repair Attempt",
+      "description": "As a developer, I want robust parse and repair handling so that malformed model output never causes unsafe writes.",
+      "acceptanceCriteria": [
+        "Parser rejects malformed JSON and non-object payloads.",
+        "On parse failure, the flow performs exactly one repair attempt before returning an error.",
+        "If repair fails, command returns an actionable error and performs no partial writes.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Write Only Selected Files From Generated Payload",
+      "description": "As a developer, I want selective write enforcement so that extra model keys cannot modify unintended product docs.",
+      "acceptanceCriteria": [
+        "Only selected target files are written even when the payload includes extra keys.",
+        "Success output lists only files created or updated in the current run.",
+        "Tests verify unknown keys are ignored and non-selected files remain unchanged.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Update Init Gitignore And Migration For Product Docs",
+      "description": "As a developer, I want .hal/product to be committable without eager file creation so that init stays lightweight.",
+      "acceptanceCriteria": [
+        "Init ensures .gitignore includes !.hal/product/ with existing Hal exceptions.",
+        "Migration adds the missing product exception for existing repos without duplicating entries.",
+        "hal init does not create .hal/product or empty product docs by default.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Lock Archive Non-Interference For Product Docs",
+      "description": "As a developer, I want archive lifecycle protections so that durable product context is never treated as feature state.",
+      "acceptanceCriteria": [
+        "Archive create and restore flows do not move, overwrite, or restore .hal/product/*.",
+        "Tests verify mission, roadmap, and tech-stack files remain byte-identical across archive operations.",
+        "Feature-state file lists exclude product context files.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Add Product Command Metadata And Documentation Coverage",
+      "description": "As a CLI user, I want complete help and docs for hal product plan so that I understand when to use it versus hal plan.",
+      "acceptanceCriteria": [
+        "product command family and product plan subcommand define Use, Short, Long, and Example metadata.",
+        "README and generated CLI docs include hal product plan in workflow and command reference sections.",
+        "Metadata coverage tests include the new top-level product command family.",
+        "Verify in browser (skip if no dev server running, no browser tools available, or 3 attempts fail)",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
