@@ -435,6 +435,53 @@ func TestParser_ParseLine_EventMsgTaskCompleteWithTokenCount(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_EventMsgTaskComplete_SetsDurationMs(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	now := base
+	p := NewParser()
+	p.now = func() time.Time { return now }
+	p.taskStart = base
+
+	startLine := `{"type":"event_msg","payload":{"type":"task_started"}}`
+	if event := p.ParseLine([]byte(startLine)); event == nil || event.Type != engine.EventInit {
+		t.Fatalf("expected task_started init event, got %+v", event)
+	}
+
+	now = base.Add(4250 * time.Millisecond)
+	completeLine := `{"type":"event_msg","payload":{"type":"task_complete"}}`
+	event := p.ParseLine([]byte(completeLine))
+	if event == nil {
+		t.Fatal("expected terminal result event, got nil")
+	}
+	if event.Type != engine.EventResult {
+		t.Fatalf("expected Type=EventResult, got %v", event.Type)
+	}
+	if got, want := event.Data.DurationMs, 4250.0; got != want {
+		t.Fatalf("expected DurationMs=%.0f, got %.0f", want, got)
+	}
+}
+
+func TestParser_ParseLine_TurnCompleted_SetsDurationMs(t *testing.T) {
+	base := time.Unix(1700000100, 0)
+	now := base
+	p := NewParser()
+	p.now = func() time.Time { return now }
+	p.taskStart = base
+
+	now = base.Add(3 * time.Second)
+	line := `{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}`
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventResult {
+		t.Fatalf("expected Type=EventResult, got %v", event.Type)
+	}
+	if got, want := event.Data.DurationMs, 3000.0; got != want {
+		t.Fatalf("expected DurationMs=%.0f, got %.0f", want, got)
+	}
+}
+
 func TestParser_ParseLine_DuplicateTerminalResultIgnored(t *testing.T) {
 	p := NewParser()
 	failLine := `{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1}}`

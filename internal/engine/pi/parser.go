@@ -3,6 +3,7 @@ package pi
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
 )
@@ -31,11 +32,17 @@ type Parser struct {
 	hasFailure  bool
 	text        strings.Builder
 	isThinking  bool // tracks whether model is currently in a thinking block
+	now         func() time.Time
+	runStart    time.Time
 }
 
 // NewParser creates a new Pi output parser.
 func NewParser() *Parser {
-	return &Parser{}
+	now := time.Now
+	return &Parser{
+		now:      now,
+		runStart: now(),
+	}
 }
 
 // TotalTokens returns accumulated token usage.
@@ -90,6 +97,10 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 }
 
 func (p *Parser) parseSession(raw map[string]interface{}) *engine.Event {
+	if p.runStart.IsZero() {
+		p.markRunStart()
+	}
+
 	// Session event doesn't include model; we'll pick it up from message_start.
 	// Model left empty — the real model name arrives in the first assistant message_start.
 	return &engine.Event{
@@ -340,10 +351,36 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 	return &engine.Event{
 		Type: engine.EventResult,
 		Data: engine.EventData{
-			Success: success,
-			Tokens:  p.totalTokens,
+			Success:    success,
+			Tokens:     p.totalTokens,
+			DurationMs: p.elapsedRunDurationMs(),
 		},
 	}
+}
+
+// markRunStart records the start time used for terminal duration reporting.
+func (p *Parser) markRunStart() {
+	if p.now == nil {
+		p.now = time.Now
+	}
+	p.runStart = p.now()
+}
+
+// elapsedRunDurationMs returns elapsed milliseconds since runStart.
+func (p *Parser) elapsedRunDurationMs() float64 {
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.runStart.IsZero() {
+		p.runStart = p.now()
+	}
+
+	elapsed := p.now().Sub(p.runStart)
+	if elapsed < 0 {
+		return 0
+	}
+
+	return float64(elapsed.Milliseconds())
 }
 
 // accumulateUsage extracts and adds token usage from a message object.

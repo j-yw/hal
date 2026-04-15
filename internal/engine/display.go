@@ -292,7 +292,7 @@ func (d *Display) ShowEvent(e *Event) {
 
 	case EventResult:
 		d.emitThinkingCompleteLine()
-		duration := int(e.Data.DurationMs / 1000)
+		duration := d.resultDurationSeconds(e.Data.DurationMs)
 		var statusBadge string
 		if e.Data.Success {
 			statusBadge = StyleSuccess.Render("[OK]")
@@ -512,6 +512,27 @@ func (d *Display) ShowRetry(attempt, max int, delay time.Duration) {
 }
 
 // Helper functions
+
+func (d *Display) resultDurationSeconds(durationMs float64) int {
+	if durationMs > 0 {
+		seconds := int(durationMs / 1000)
+		if seconds < 0 {
+			return 0
+		}
+		return seconds
+	}
+
+	if d.startTime.IsZero() {
+		return 0
+	}
+
+	elapsed := int(time.Since(d.startTime).Seconds())
+	if elapsed < 0 {
+		return 0
+	}
+
+	return elapsed
+}
 
 func formatTokens(n int) string {
 	if n >= 1000000 {
