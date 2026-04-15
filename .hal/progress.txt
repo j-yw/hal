@@ -4,6 +4,7 @@
 
 - Use `template.ProductDir`, `template.ProductMissionFile`, `template.ProductRoadmapFile`, and `template.ProductTechStackFile` for product-doc paths instead of hardcoded `.hal/product/*` strings.
 - Use `template.ProductFiles()` when iterating product docs so mission/roadmap/tech-stack order stays deterministic.
+- In `internal/product.GeneratedPayload`, keep file content fields as `*string` keyed by filename JSON tags (`mission.md`, `roadmap.md`, `tech-stack.md`) so omitted unselected files stay distinguishable from intentionally empty strings.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -13,4 +14,13 @@
 - **Learnings for future iterations:**
   - Product context paths should be assembled from template constants (`template.HalDir` + `template.ProductDir` + `template.Product*File`) to avoid drift.
   - `template.ProductFiles()` should be the single source for deterministic product file iteration order.
+---
+## 2026-04-16 06:52 +08 - US-002
+- Added `internal/product/types.go` with shared product planning contracts for selected targets, interview answers, existing file state, and generation payload parsing.
+- Added unit tests for partial payload parsing (omitted unselected files) and malformed payload failures.
+- Files changed: `internal/product/types.go`, `internal/product/types_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Model generated product JSON as filename-keyed pointer fields so partial payloads are valid and omitted keys remain detectable.
+  - `ParseGeneratedPayload` should remain the single parse entrypoint and wrap JSON errors with stable context (`parse generated payload: ...`) for caller diagnostics.
+  - In this environment, full `make test` should be run with `GIT_CONFIG_GLOBAL=/dev/null` to avoid host-level commit-signing config breaking temp-repo git commit tests.
 ---

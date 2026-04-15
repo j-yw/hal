@@ -423,3 +423,9 @@
 
 - Keep product-doc path constants in `internal/template/template.go` (`ProductDir`, `ProductMissionFile`, `ProductRoadmapFile`, `ProductTechStackFile`) and use them instead of hardcoded `.hal/product/*` strings.
 - Use `template.ProductFiles()` when iterating product docs so mission/roadmap/tech-stack processing order stays deterministic across commands and tests.
+
+## Patterns from hal/product-planning-contracts (2026-04-16)
+
+- Keep shared product-plan contract types in `internal/product/types.go` so command flow, prompts, and IO helpers reuse one schema source.
+- Model generated JSON output as filename-keyed pointer fields in `GeneratedPayload` (`mission.md`, `roadmap.md`, `tech-stack.md`) so omitted keys for unselected files are distinguishable from explicit empty strings.
+- Keep generated-output parsing behind `ParseGeneratedPayload` and lock malformed JSON/type-mismatch behavior with focused unit tests in `internal/product/types_test.go`.
