@@ -107,6 +107,11 @@ func TestCoreCommandsHaveCompleteMetadata(t *testing.T) {
 			path:            []string{"repair"},
 			exampleContains: "hal repair",
 		},
+		{
+			name:            "product command",
+			path:            []string{"product"},
+			exampleContains: "hal product",
+		},
 	}
 
 	for _, tt := range tests {

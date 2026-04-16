@@ -150,3 +150,14 @@
   - Gotchas encountered: when restore intentionally skips protected archive entries, do not remove the archive directory unconditionally; keep it so protected data is not deleted.
   - Useful context: lock product non-interference with byte-level tests for `mission.md`, `roadmap.md`, and `tech-stack.md` across both `Create` and `Restore`.
 ---
+## 2026-04-16 08:14 +08 - US-015
+- Added product command metadata contract coverage by including the required `product` top-level command in core metadata tests and the `product` family in recursive family metadata tests.
+- Updated `hal product plan` long help text to reflect current behavior and clarify when to use it versus `hal plan`.
+- Updated README workflow and command reference sections to include `hal product plan`, then regenerated CLI docs to add `docs/cli/hal_product.md` and `docs/cli/hal_product_plan.md` and refresh root command references.
+- Browser verification skipped: story scope is CLI metadata/docs (no frontend UI path).
+- Files changed: `cmd/product.go`, `cmd/docs_metadata_core_test.go`, `cmd/docs_metadata_archive_sandbox_test.go`, `README.md`, `docs/cli/hal.md`, `docs/cli/hal_product.md`, `docs/cli/hal_product_plan.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Patterns discovered: when adding a new top-level command family, update both metadata coverage tables (`TestCoreCommandsHaveCompleteMetadata` and `TestCommandFamiliesHaveCompleteMetadata`) so field and example contracts are enforced at root and recursively.
+  - Gotchas encountered: generated CLI docs only reflect command/help updates after `make docs-cli`; commit the regenerated `docs/cli` artifacts (`hal.md` plus new command pages) in the same change.
+  - Useful context: `hal product plan` is for durable product context docs under `.hal/product/`, while `hal plan` is for feature PRD generation.
+---

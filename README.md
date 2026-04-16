@@ -48,6 +48,9 @@ make install    # Installs to ~/.local/bin
 # Initialize project
 hal init
 
+# (Optional) Generate/update durable product context docs
+hal product plan
+
 # Generate a PRD interactively
 hal plan "add user authentication"
 
@@ -66,14 +69,15 @@ hal run
 ### Manual Workflow
 
 ```
-hal init → hal plan → hal convert → hal validate → hal run
+hal init → hal product plan (optional) → hal plan → hal convert → hal validate → hal run
 ```
 
 1. **init** — Set up `.hal/` directory with config, templates, skills, and commands
-2. **plan** — Generate a PRD through clarifying questions
-3. **convert** — Transform markdown PRD to structured JSON (default no archive; use `--archive` / `--force` for guarded canonical overwrites)
-4. **validate** — Check stories against quality rules
-5. **run** — Loop through stories: pick next, implement, commit, repeat
+2. **product plan (optional)** — Generate or update durable product context in `.hal/product/` (`mission.md`, `roadmap.md`, `tech-stack.md`)
+3. **plan** — Generate a PRD through clarifying questions
+4. **convert** — Transform markdown PRD to structured JSON (default no archive; use `--archive` / `--force` for guarded canonical overwrites)
+5. **validate** — Check stories against quality rules
+6. **run** — Loop through stories: pick next, implement, commit, repeat
 
 ### Auto Pipeline (Fully Automated)
 
@@ -149,6 +153,12 @@ Stable JSON contracts for agent integration:
 | `hal validate [prd.json]` | Validate PRD against quality rules |
 | `hal prd audit [--json]` | Audit PRD health and detect markdown↔JSON drift |
 | `hal run [iterations]` | Execute stories autonomously (default: 10; do not combine positional iterations with `-i/--iterations`) |
+
+### Product Context
+
+| Command | Description |
+|---------|-------------|
+| `hal product plan` | Generate or update durable product docs in `.hal/product/`; use this for mission/roadmap/tech-stack context, and use `hal plan` for feature PRDs |
 
 ### Status & Health
 

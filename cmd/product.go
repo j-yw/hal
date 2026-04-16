@@ -111,7 +111,8 @@ var productPlanCmd = &cobra.Command{
   - .hal/product/roadmap.md
   - .hal/product/tech-stack.md
 
-This command currently provides preflight checks and mode selection; next stories add interactive generation.`,
+Use this command to maintain long-lived product context.
+Use 'hal plan' to create feature-specific PRDs.`,
 	Example: `  hal product plan
   hal product plan --engine claude`,
 	Args: noArgsValidation(),

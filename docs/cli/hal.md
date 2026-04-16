@@ -78,6 +78,7 @@ Quick start:
 * [hal links](hal_links.md)	 - Manage engine skill links
 * [hal plan](hal_plan.md)	 - Generate a PRD interactively
 * [hal prd](hal_prd.md)	 - Manage PRD files
+* [hal product](hal_product.md)	 - Plan and maintain durable product context
 * [hal repair](hal_repair.md)	 - Auto-fix environment issues detected by doctor
 * [hal report](hal_report.md)	 - Generate a summary report for completed work
 * [hal review](hal_review.md)	 - Run an iterative review loop against a base branch
