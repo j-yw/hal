@@ -481,3 +481,9 @@
 - Keep generated product writes in `runProductPlanFlowWithDeps` routed through `product.WriteSelectedFiles(projectDir, targets, payload)` so selected-target gating is applied consistently in both replace and update-selected modes.
 - When rendering success output for `hal product plan`, derive created/updated file rows from selected targets + non-nil payload fields (not from selected targets alone) so the CLI lists only files actually written in that run.
 - Keep selective-write safety covered at both layers: parser tests should confirm unknown JSON keys are ignored (`ParseGeneratedPayload`), and flow/write tests should assert non-selected files remain byte-identical even when payload includes extra known keys.
+
+## Patterns from hal/init-product-gitignore-exception (2026-04-16)
+
+- Keep `cmd/init.go` `ensureGitignore` as the single source of truth for Hal exceptions under `.hal/*`, and update all branches (already-correct detection, `.hal/*` missing-exception migration, and legacy `.hal`/`.hal/` migration) together when adding new exceptions.
+- The committed Hal exception set now includes `!.hal/standards/`, `!.hal/commands/`, and `!.hal/product/`; init tests should assert both presence and idempotence (no duplicated exception lines).
+- `hal init` should not create `.hal/product` or product docs by default; lock this with an explicit `runInit` test so product context remains lazily created by product-plan write paths.

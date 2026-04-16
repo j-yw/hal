@@ -82,7 +82,7 @@ type InitResult struct {
 }
 
 // ensureGitignore configures .gitignore to ignore .hal/ runtime state but allow
-// .hal/standards/ and .hal/commands/ to be committed (shared project knowledge).
+// .hal/standards/, .hal/commands/, and .hal/product/ to be committed.
 // Creates .gitignore if it doesn't exist.
 func ensureGitignore(projectDir string, w io.Writer) error {
 	gitignorePath := filepath.Join(projectDir, ".gitignore")
@@ -98,6 +98,7 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 	hasHalStar := false
 	hasStandardsException := false
 	hasCommandsException := false
+	hasProductException := false
 	oldHalIdx := -1
 
 	for i, line := range lines {
@@ -109,24 +110,29 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 			hasStandardsException = true
 		case "!.hal/commands/":
 			hasCommandsException = true
+		case "!.hal/product/":
+			hasProductException = true
 		case ".hal", ".hal/":
 			oldHalIdx = i
 		}
 	}
 
 	// Already correct
-	if hasHalStar && hasStandardsException && hasCommandsException {
+	if hasHalStar && hasStandardsException && hasCommandsException && hasProductException {
 		return nil
 	}
 
 	// Migrate: add missing exceptions to existing .hal/* pattern
-	if hasHalStar && (!hasStandardsException || !hasCommandsException) {
+	if hasHalStar && (!hasStandardsException || !hasCommandsException || !hasProductException) {
 		var additions []string
 		if !hasStandardsException {
 			additions = append(additions, "!.hal/standards/")
 		}
 		if !hasCommandsException {
 			additions = append(additions, "!.hal/commands/")
+		}
+		if !hasProductException {
+			additions = append(additions, "!.hal/product/")
 		}
 		// Insert after .hal/*
 		for i, line := range lines {
@@ -146,17 +152,17 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 
 	// Migrate old pattern (.hal/ → .hal/* with exceptions)
 	if oldHalIdx >= 0 {
-		lines[oldHalIdx] = ".hal/*\n!.hal/standards/\n!.hal/commands/"
+		lines[oldHalIdx] = ".hal/*\n!.hal/standards/\n!.hal/commands/\n!.hal/product/"
 		newContent := strings.Join(lines, "\n")
 		if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
 			return fmt.Errorf("failed to update .gitignore: %w", err)
 		}
-		fmt.Fprintf(w, "  %s Updated .gitignore: .hal/* (standards and commands are committed)\n", ui.StyleSuccess.Render("✓"))
+		fmt.Fprintf(w, "  %s Updated .gitignore: .hal/* (standards, commands, and product are committed)\n", ui.StyleSuccess.Render("✓"))
 		return nil
 	}
 
 	// Add new entries
-	halBlock := "# hal runtime config (standards and commands are committed)\n.hal/*\n!.hal/standards/\n!.hal/commands/\n"
+	halBlock := "# hal runtime config (standards, commands, and product are committed)\n.hal/*\n!.hal/standards/\n!.hal/commands/\n!.hal/product/\n"
 	var newContent string
 	if len(content) == 0 {
 		newContent = halBlock
@@ -172,7 +178,7 @@ func ensureGitignore(projectDir string, w io.Writer) error {
 		return fmt.Errorf("failed to update .gitignore: %w", err)
 	}
 
-	fmt.Fprintf(w, "  %s Added .hal/* to .gitignore %s\n", ui.StyleSuccess.Render("✓"), ui.StyleMuted.Render("(standards and commands are committed)"))
+	fmt.Fprintf(w, "  %s Added .hal/* to .gitignore %s\n", ui.StyleSuccess.Render("✓"), ui.StyleMuted.Render("(standards, commands, and product are committed)"))
 	return nil
 }
 

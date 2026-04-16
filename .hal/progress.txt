@@ -16,6 +16,7 @@
 - Keep generation prompt assembly centralized in `buildProductPlanGeneratePrompt`; include only selected targets' interview/existing context and enforce JSON-only filename-keyed output contracts.
 - Keep product payload generation centralized in `generateProductPlanPayloadWithDeps`: parse strict JSON with `ParseGeneratedPayload`, run exactly one repair prompt on parse failure, and return actionable errors instead of writing partial output.
 - In `runProductPlanFlowWithDeps`, derive changed-file summaries from selected targets plus non-nil payload fields before writing, then print only those created/updated files so CLI output matches actual writes.
+- Keep `ensureGitignore` as the single migration point for Hal committable exceptions and update `.hal/*` plus every exception (`!.hal/standards/`, `!.hal/commands/`, `!.hal/product/`) together to preserve idempotent `hal init` behavior.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -129,4 +130,13 @@
   - Patterns discovered: use selected targets plus non-nil payload fields as the source of truth for what should be reported as created/updated in CLI success output.
   - Gotchas encountered: generated payloads can legally include values for non-selected known keys; write enforcement must still gate by selected targets so existing files outside scope remain byte-identical.
   - Useful context: unknown JSON keys are ignored by `ParseGeneratedPayload`, so safety comes from combining strict target selection with `WriteSelectedFiles` filtering.
+---
+## 2026-04-16 08:04 +08 - US-013
+- Updated `ensureGitignore` in `cmd/init.go` so `.hal/*` always keeps `!.hal/product/` alongside existing standards/commands exceptions for create and migration paths.
+- Expanded init coverage to verify product exception migration for older `.gitignore` states and to assert `runInit` does not create `.hal/product` by default.
+- Files changed: `cmd/init.go`, `cmd/init_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Patterns discovered: when adding a new committed `.hal/*` exception, update all three `ensureGitignore` branches (already-correct detection, `.hal/*` missing-exception migration, and legacy `.hal`/`.hal/` migration) together.
+  - Gotchas encountered: idempotence checks should assert exception counts (for example, `!.hal/product/` appears exactly once) to prevent repeated `hal init` from duplicating lines.
+  - Useful context: `runInit` currently creates only core `.hal` runtime dirs/files and leaves `.hal/product` absent until a product-planning write path needs it.
 ---
