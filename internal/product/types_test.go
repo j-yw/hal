@@ -1,6 +1,9 @@
 package product
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseGeneratedPayload_AllowsPartialPayload(t *testing.T) {
 	t.Parallel()
@@ -59,25 +62,43 @@ func TestParseGeneratedPayload_MalformedJSON(t *testing.T) {
 	}
 }
 
-func TestParseGeneratedPayload_IgnoresUnknownKeys(t *testing.T) {
+func TestParseGeneratedPayload_RejectsUnknownKeys(t *testing.T) {
 	t.Parallel()
 
-	got, err := ParseGeneratedPayload([]byte(`{
+	_, err := ParseGeneratedPayload([]byte(`{
 		"mission.md": "Mission content",
 		"unknown.md": "Unexpected content"
 	}`))
-	if err != nil {
-		t.Fatalf("ParseGeneratedPayload() error = %v", err)
+	if err == nil {
+		t.Fatalf("ParseGeneratedPayload() error = nil, want non-nil")
 	}
+}
 
-	if got.Mission == nil || *got.Mission != "Mission content" {
-		t.Fatalf("Mission = %v, want %q", got.Mission, "Mission content")
+func TestParseGeneratedPayloadForTargets_RejectsMissingSelectedKeys(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseGeneratedPayloadForTargets([]byte(`{
+		"mission.md": "Mission content"
+	}`), SelectedTargets{Mission: true, Roadmap: true})
+	if err == nil {
+		t.Fatalf("ParseGeneratedPayloadForTargets() error = nil, want non-nil")
 	}
-	if got.Roadmap != nil {
-		t.Fatalf("Roadmap = %v, want nil", got.Roadmap)
+	if !strings.Contains(err.Error(), "missing required key(s): roadmap.md") {
+		t.Fatalf("ParseGeneratedPayloadForTargets() error = %q, want missing roadmap.md", err.Error())
 	}
-	if got.TechStack != nil {
-		t.Fatalf("TechStack = %v, want nil", got.TechStack)
+}
+
+func TestParseGeneratedPayloadForTargets_AllowsSelectedKeys(t *testing.T) {
+	t.Parallel()
+
+	got, err := ParseGeneratedPayloadForTargets([]byte(`{
+		"roadmap.md": "Roadmap content"
+	}`), SelectedTargets{Roadmap: true})
+	if err != nil {
+		t.Fatalf("ParseGeneratedPayloadForTargets() error = %v", err)
+	}
+	if got.Roadmap == nil || *got.Roadmap != "Roadmap content" {
+		t.Fatalf("Roadmap = %v, want %q", got.Roadmap, "Roadmap content")
 	}
 }
 

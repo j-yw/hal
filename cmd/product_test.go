@@ -471,17 +471,17 @@ func TestRunProductPlanFlowWithDeps_WritesOnlySelectedFilesAndReportsChangedFile
 				_ = targets
 				return product.CollectedAnswers{}, nil
 			},
-			generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
-				_ = ctx
-				_ = input
-				return product.ParseGeneratedPayload([]byte(`{
-					"mission.md": "new mission",
-					"roadmap.md": "attempted roadmap overwrite",
-					"extra.md": "ignored unknown key"
-				}`))
+				generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+					_ = ctx
+					_ = input
+					return product.ParseGeneratedPayload([]byte(`{
+						"mission.md": "new mission",
+						"roadmap.md": "attempted roadmap overwrite",
+						"tech-stack.md": "attempted tech-stack overwrite"
+					}`))
+				},
 			},
-		},
-	)
+		)
 	if err != nil {
 		t.Fatalf("runProductPlanFlowWithDeps returned error: %v", err)
 	}
@@ -519,8 +519,8 @@ func TestRunProductPlanFlowWithDeps_WritesOnlySelectedFilesAndReportsChangedFile
 	if strings.Contains(output, ".hal/product/roadmap.md") {
 		t.Fatalf("output %q should not list non-selected roadmap file", output)
 	}
-	if strings.Contains(output, "extra.md") {
-		t.Fatalf("output %q should not list unknown payload keys", output)
+	if strings.Contains(output, ".hal/product/tech-stack.md") {
+		t.Fatalf("output %q should not list non-selected tech-stack file", output)
 	}
 }
 

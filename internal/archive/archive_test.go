@@ -707,6 +707,48 @@ func TestRestore(t *testing.T) {
 	}
 }
 
+func TestRestoreProtectedOnlyArchiveDoesNotAutoArchiveCurrentState(t *testing.T) {
+	halDir := t.TempDir()
+
+	writePRD(t, halDir, template.PRDFile, "hal/current", nil)
+	writeFile(t, filepath.Join(halDir, template.ProgressFile), "current progress")
+
+	archiveName := "2026-01-05-protected-only"
+	archDir := filepath.Join(halDir, "archive", archiveName)
+	writeProductFiles(t, archDir, map[string]string{
+		template.ProductMissionFile: "mission-archived\n",
+	})
+
+	var buf bytes.Buffer
+	err := Restore(halDir, archiveName, &buf)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no restorable entries") {
+		t.Fatalf("expected no-restorable error, got %v", err)
+	}
+
+	if !fileExists(filepath.Join(halDir, template.PRDFile)) {
+		t.Error("current prd.json should remain in place")
+	}
+	if !fileExists(filepath.Join(halDir, template.ProgressFile)) {
+		t.Error("current progress.txt should remain in place")
+	}
+	if !dirExists(filepath.Join(halDir, "archive", archiveName)) {
+		t.Error("protected-only archive should be kept")
+	}
+
+	archives, err := List(halDir)
+	if err != nil {
+		t.Fatalf("list archives: %v", err)
+	}
+	for _, a := range archives {
+		if strings.Contains(a.Name, "auto-saved") {
+			t.Fatalf("unexpected auto-saved archive created: %s", a.Name)
+		}
+	}
+}
+
 func TestFeatureFromBranch(t *testing.T) {
 	tests := []struct {
 		input string

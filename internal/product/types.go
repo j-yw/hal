@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 )
 
 // SelectedTargets describes which product documents are in scope for a run.
@@ -55,8 +57,43 @@ func ParseGeneratedPayload(data []byte) (GeneratedPayload, error) {
 	}
 
 	var payload GeneratedPayload
-	if err := json.Unmarshal(trimmed, &payload); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
 		return GeneratedPayload{}, fmt.Errorf("parse generated payload: %w", err)
 	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return GeneratedPayload{}, fmt.Errorf("parse generated payload: expected single JSON object")
+	}
 	return payload, nil
+}
+
+// ParseGeneratedPayloadForTargets parses strict JSON and enforces required keys
+// for selected targets.
+func ParseGeneratedPayloadForTargets(data []byte, targets SelectedTargets) (GeneratedPayload, error) {
+	payload, err := ParseGeneratedPayload(data)
+	if err != nil {
+		return GeneratedPayload{}, err
+	}
+	if err := validateGeneratedPayloadTargets(payload, targets); err != nil {
+		return GeneratedPayload{}, err
+	}
+	return payload, nil
+}
+
+func validateGeneratedPayloadTargets(payload GeneratedPayload, targets SelectedTargets) error {
+	missing := make([]string, 0, 3)
+	if targets.Mission && payload.Mission == nil {
+		missing = append(missing, "mission.md")
+	}
+	if targets.Roadmap && payload.Roadmap == nil {
+		missing = append(missing, "roadmap.md")
+	}
+	if targets.TechStack && payload.TechStack == nil {
+		missing = append(missing, "tech-stack.md")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("parse generated payload: missing required key(s): %s", strings.Join(missing, ", "))
+	}
+	return nil
 }

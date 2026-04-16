@@ -284,7 +284,31 @@ func Restore(halDir, name string, w io.Writer) error {
 		return fmt.Errorf("archive %q does not exist", name)
 	}
 
-	// If current state exists, auto-archive it first
+	// Read and classify archive entries before auto-archiving current state.
+	entries, err := os.ReadDir(archiveDir)
+	if err != nil {
+		return fmt.Errorf("failed to read archive directory: %w", err)
+	}
+
+	restorableEntries := make([]os.DirEntry, 0, len(entries))
+	skippedProtectedDirs := make([]string, 0, len(protectedArchiveDirs))
+	for _, entry := range entries {
+		if isProtectedArchiveDir(entry.Name()) {
+			skippedProtectedDirs = append(skippedProtectedDirs, entry.Name())
+			continue
+		}
+		restorableEntries = append(restorableEntries, entry)
+	}
+
+	if len(restorableEntries) == 0 {
+		if len(skippedProtectedDirs) > 0 {
+			sort.Strings(skippedProtectedDirs)
+			return fmt.Errorf("archive %q has no restorable entries (protected only: %s)", name, strings.Join(skippedProtectedDirs, ", "))
+		}
+		return fmt.Errorf("archive %q has no restorable entries", name)
+	}
+
+	// If current state exists, auto-archive it first.
 	hasState, err := HasFeatureState(halDir)
 	if err != nil {
 		return fmt.Errorf("failed to check current state: %w", err)
@@ -297,20 +321,12 @@ func Restore(halDir, name string, w io.Writer) error {
 		}
 	}
 
-	// Move all files from archive back to halDir
-	entries, err := os.ReadDir(archiveDir)
-	if err != nil {
-		return fmt.Errorf("failed to read archive directory: %w", err)
+	for _, protectedDir := range skippedProtectedDirs {
+		fmt.Fprintf(w, "  skipped %s (protected)\n", protectedDir)
 	}
 
-	skippedProtectedDirs := make([]string, 0, len(protectedArchiveDirs))
-	for _, entry := range entries {
-		if isProtectedArchiveDir(entry.Name()) {
-			skippedProtectedDirs = append(skippedProtectedDirs, entry.Name())
-			fmt.Fprintf(w, "  skipped %s (protected)\n", entry.Name())
-			continue
-		}
-
+	// Move restorable files from archive back to halDir.
+	for _, entry := range restorableEntries {
 		src := filepath.Join(archiveDir, entry.Name())
 		dst := filepath.Join(halDir, entry.Name())
 

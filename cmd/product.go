@@ -325,7 +325,7 @@ func hasExistingProductFiles(existing product.ExistingFiles) bool {
 }
 
 func promptProductPlanMode(in io.Reader, out io.Writer) (productPlanMode, error) {
-	reader := bufio.NewReader(in)
+	reader := ensureBufferedReader(in)
 	for {
 		fmt.Fprintln(out, "Existing .hal/product files found. Choose how to continue:")
 		fmt.Fprintln(out, "  1) Replace all files")
@@ -360,7 +360,7 @@ func promptProductPlanMode(in io.Reader, out io.Writer) (productPlanMode, error)
 }
 
 func promptProductPlanTargets(in io.Reader, out io.Writer) (product.SelectedTargets, error) {
-	reader := bufio.NewReader(in)
+	reader := ensureBufferedReader(in)
 
 	fmt.Fprintln(out, "Select files to update: mission (m), roadmap (r), tech-stack (t).")
 	fmt.Fprintln(out, "Examples: m,rt  |  m,r  |  mission roadmap")
@@ -558,7 +558,7 @@ func generateProductPlanPayloadWithDeps(ctx context.Context, input productPlanGe
 		return product.GeneratedPayload{}, fmt.Errorf("run product generation prompt: %w", err)
 	}
 
-	payload, parseErr := product.ParseGeneratedPayload([]byte(response))
+	payload, parseErr := product.ParseGeneratedPayloadForTargets([]byte(response), input.Targets)
 	if parseErr == nil {
 		return payload, nil
 	}
@@ -569,7 +569,7 @@ func generateProductPlanPayloadWithDeps(ctx context.Context, input productPlanGe
 		return product.GeneratedPayload{}, fmt.Errorf("product payload JSON parse failed (%v); repair attempt failed: %w; rerun 'hal product plan' or try a different --engine", parseErr, repairErr)
 	}
 
-	repairedPayload, repairParseErr := product.ParseGeneratedPayload([]byte(repaired))
+	repairedPayload, repairParseErr := product.ParseGeneratedPayloadForTargets([]byte(repaired), input.Targets)
 	if repairParseErr != nil {
 		return product.GeneratedPayload{}, fmt.Errorf("product payload JSON parse failed (%v); repaired response is still invalid: %w; rerun 'hal product plan' or try a different --engine", parseErr, repairParseErr)
 	}
