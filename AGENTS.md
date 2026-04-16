@@ -475,3 +475,9 @@
 - Keep product JSON parse/repair flow centralized in `cmd/product.go` (`generateProductPlanPayloadWithDeps`) so generation callers share one contract for parse success, one-time repair, and terminal error handling.
 - `ParseGeneratedPayload` should reject non-object top-level JSON before struct unmarshal (`parse generated payload: expected JSON object`) so null/array/scalar outputs fail deterministically.
 - On initial parse failure, perform exactly one repair prompt attempt, then return actionable errors (`rerun 'hal product plan' or try a different --engine`) rather than retrying indefinitely.
+
+## Patterns from hal/product-selective-write-enforcement (2026-04-16)
+
+- Keep generated product writes in `runProductPlanFlowWithDeps` routed through `product.WriteSelectedFiles(projectDir, targets, payload)` so selected-target gating is applied consistently in both replace and update-selected modes.
+- When rendering success output for `hal product plan`, derive created/updated file rows from selected targets + non-nil payload fields (not from selected targets alone) so the CLI lists only files actually written in that run.
+- Keep selective-write safety covered at both layers: parser tests should confirm unknown JSON keys are ignored (`ParseGeneratedPayload`), and flow/write tests should assert non-selected files remain byte-identical even when payload includes extra known keys.

@@ -237,8 +237,11 @@ func TestRunProductPlanFlowWithDeps_NoExistingFilesSkipsModePrompt(t *testing.T)
 	if strings.Contains(output, "Select an option [1/2/3]") {
 		t.Fatalf("output should not prompt for mode when no product files exist, got %q", output)
 	}
-	if !strings.Contains(output, "Product planning preflight complete (replace_all).") {
+	if !strings.Contains(output, "Product planning complete (replace_all).") {
 		t.Fatalf("output %q missing completion line", output)
+	}
+	if !strings.Contains(output, "No product files were created or updated.") {
+		t.Fatalf("output %q missing no-op write summary", output)
 	}
 }
 
@@ -407,8 +410,117 @@ func TestRunProductPlanFlowWithDeps_UpdateSelectedPassesTargetsToStages(t *testi
 	if !generateCalled {
 		t.Fatal("generatePayload should be called")
 	}
-	if !strings.Contains(out.String(), "Product planning preflight complete (update_selected).") {
+	if !strings.Contains(out.String(), "Product planning complete (update_selected).") {
 		t.Fatalf("output %q missing update_selected completion line", out.String())
+	}
+}
+
+func TestRunProductPlanFlowWithDeps_WritesOnlySelectedFilesAndReportsChangedFiles(t *testing.T) {
+	dir := t.TempDir()
+	productDir := filepath.Join(dir, template.HalDir, template.ProductDir)
+	if err := os.MkdirAll(productDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", productDir, err)
+	}
+
+	missionPath := filepath.Join(productDir, template.ProductMissionFile)
+	roadmapPath := filepath.Join(productDir, template.ProductRoadmapFile)
+	techStackPath := filepath.Join(productDir, template.ProductTechStackFile)
+
+	if err := os.WriteFile(missionPath, []byte("old mission\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", missionPath, err)
+	}
+	if err := os.WriteFile(roadmapPath, []byte("roadmap must stay unchanged\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", roadmapPath, err)
+	}
+	if err := os.WriteFile(techStackPath, []byte("tech-stack must stay unchanged\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", techStackPath, err)
+	}
+
+	roadmapBefore, err := os.ReadFile(roadmapPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", roadmapPath, err)
+	}
+	techStackBefore, err := os.ReadFile(techStackPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", techStackPath, err)
+	}
+
+	var out bytes.Buffer
+	err = runProductPlanFlowWithDeps(
+		context.Background(),
+		productPlanRunOptions{
+			Dir:    dir,
+			Engine: "codex",
+			In:     strings.NewReader(""),
+			Out:    &out,
+		},
+		productPlanFlowDeps{
+			selectMode: func(in io.Reader, out io.Writer) (productPlanMode, error) {
+				_ = in
+				_ = out
+				return productPlanModeUpdateSelected, nil
+			},
+			selectTargets: func(in io.Reader, out io.Writer) (product.SelectedTargets, error) {
+				_ = in
+				_ = out
+				return product.SelectedTargets{Mission: true}, nil
+			},
+			collectAnswers: func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error) {
+				_ = in
+				_ = out
+				_ = targets
+				return product.CollectedAnswers{}, nil
+			},
+			generatePayload: func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error) {
+				_ = ctx
+				_ = input
+				return product.ParseGeneratedPayload([]byte(`{
+					"mission.md": "new mission",
+					"roadmap.md": "attempted roadmap overwrite",
+					"extra.md": "ignored unknown key"
+				}`))
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("runProductPlanFlowWithDeps returned error: %v", err)
+	}
+
+	missionAfter, err := os.ReadFile(missionPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", missionPath, err)
+	}
+	roadmapAfter, err := os.ReadFile(roadmapPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", roadmapPath, err)
+	}
+	techStackAfter, err := os.ReadFile(techStackPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", techStackPath, err)
+	}
+
+	if string(missionAfter) != "new mission" {
+		t.Fatalf("mission content = %q, want %q", string(missionAfter), "new mission")
+	}
+	if !bytes.Equal(roadmapAfter, roadmapBefore) {
+		t.Fatalf("roadmap changed unexpectedly: before=%q after=%q", string(roadmapBefore), string(roadmapAfter))
+	}
+	if !bytes.Equal(techStackAfter, techStackBefore) {
+		t.Fatalf("tech-stack changed unexpectedly: before=%q after=%q", string(techStackBefore), string(techStackAfter))
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Created/updated files:") {
+		t.Fatalf("output %q missing changed-file summary", output)
+	}
+	if !strings.Contains(output, "- .hal/product/mission.md (updated)") {
+		t.Fatalf("output %q missing selected mission update line", output)
+	}
+	if strings.Contains(output, ".hal/product/roadmap.md") {
+		t.Fatalf("output %q should not list non-selected roadmap file", output)
+	}
+	if strings.Contains(output, "extra.md") {
+		t.Fatalf("output %q should not list unknown payload keys", output)
 	}
 }
 

@@ -78,6 +78,42 @@ func TestWriteSelectedFiles_LeavesNonSelectedFilesUnchanged(t *testing.T) {
 	}
 }
 
+func TestWriteSelectedFiles_IgnoresPayloadFieldsForNonSelectedTargets(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	missionOriginal := "Mission should not be touched."
+	roadmapOriginal := "Roadmap original."
+	writeProductFile(t, dir, template.ProductMissionFile, missionOriginal)
+	writeProductFile(t, dir, template.ProductRoadmapFile, roadmapOriginal)
+
+	missionBefore := readProductFileBytes(t, dir, template.ProductMissionFile)
+
+	updatedMission := "Mission should be ignored."
+	updatedRoadmap := "Roadmap updated."
+	err := WriteSelectedFiles(
+		dir,
+		SelectedTargets{Roadmap: true},
+		GeneratedPayload{
+			Mission: &updatedMission,
+			Roadmap: &updatedRoadmap,
+		},
+	)
+	if err != nil {
+		t.Fatalf("WriteSelectedFiles() error = %v", err)
+	}
+
+	missionAfter := readProductFileBytes(t, dir, template.ProductMissionFile)
+	roadmapAfter := readProductFileBytes(t, dir, template.ProductRoadmapFile)
+
+	if !bytes.Equal(missionAfter, missionBefore) {
+		t.Fatalf("mission bytes changed unexpectedly: before=%q after=%q", string(missionBefore), string(missionAfter))
+	}
+	if string(roadmapAfter) != updatedRoadmap {
+		t.Fatalf("roadmap content = %q, want %q", string(roadmapAfter), updatedRoadmap)
+	}
+}
+
 func readProductFileBytes(t *testing.T, dir, name string) []byte {
 	t.Helper()
 

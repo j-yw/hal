@@ -15,6 +15,7 @@
 - Keep product interview collection centralized in `collectProductPlanAnswers`; ask only selected target sections and fall back to deterministic per-target default answers when input is empty/EOF.
 - Keep generation prompt assembly centralized in `buildProductPlanGeneratePrompt`; include only selected targets' interview/existing context and enforce JSON-only filename-keyed output contracts.
 - Keep product payload generation centralized in `generateProductPlanPayloadWithDeps`: parse strict JSON with `ParseGeneratedPayload`, run exactly one repair prompt on parse failure, and return actionable errors instead of writing partial output.
+- In `runProductPlanFlowWithDeps`, derive changed-file summaries from selected targets plus non-nil payload fields before writing, then print only those created/updated files so CLI output matches actual writes.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -118,4 +119,14 @@
   - Patterns discovered: keep parse/repair orchestration in a dedicated helper (`generateProductPlanPayloadWithDeps`) with injectable prompt deps so repair-attempt count is testable without real engines.
   - Gotchas encountered: strict JSON-object enforcement should happen before struct unmarshal to reject top-level `null`/array payloads deterministically.
   - Useful context: actionable parse-repair errors should include rerun/engine-switch guidance because the flow intentionally stops after one repair attempt.
+---
+## 2026-04-16 07:59 +08 - US-012
+- Implemented selective write enforcement in `runProductPlanFlowWithDeps`: generated payloads are now written through `product.WriteSelectedFiles`, and the command prints a deterministic created/updated summary for only files actually written in the current run.
+- Added command-level coverage to verify selected-target-only writes, unchanged non-selected files, unknown generated keys ignored during parse, and success output listing only changed files.
+- Added product package coverage for parser unknown-key tolerance and write filtering when payload contains non-selected file content.
+- Files changed: `cmd/product.go`, `cmd/product_test.go`, `internal/product/types_test.go`, `internal/product/write_test.go`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Patterns discovered: use selected targets plus non-nil payload fields as the source of truth for what should be reported as created/updated in CLI success output.
+  - Gotchas encountered: generated payloads can legally include values for non-selected known keys; write enforcement must still gate by selected targets so existing files outside scope remain byte-identical.
+  - Useful context: unknown JSON keys are ignored by `ParseGeneratedPayload`, so safety comes from combining strict target selection with `WriteSelectedFiles` filtering.
 ---

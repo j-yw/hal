@@ -52,12 +52,13 @@ type productInterviewQuestion struct {
 }
 
 type productPlanFlowDeps struct {
-	stat              func(name string) (os.FileInfo, error)
-	loadExistingFiles func(projectDir string) (product.ExistingFiles, error)
-	selectMode        func(in io.Reader, out io.Writer) (productPlanMode, error)
-	selectTargets     func(in io.Reader, out io.Writer) (product.SelectedTargets, error)
-	collectAnswers    func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error)
-	generatePayload   func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error)
+	stat               func(name string) (os.FileInfo, error)
+	loadExistingFiles  func(projectDir string) (product.ExistingFiles, error)
+	selectMode         func(in io.Reader, out io.Writer) (productPlanMode, error)
+	selectTargets      func(in io.Reader, out io.Writer) (product.SelectedTargets, error)
+	collectAnswers     func(in io.Reader, out io.Writer, targets product.SelectedTargets) (product.CollectedAnswers, error)
+	generatePayload    func(ctx context.Context, input productPlanGenerateInput) (product.GeneratedPayload, error)
+	writeSelectedFiles func(projectDir string, targets product.SelectedTargets, payload product.GeneratedPayload) error
 }
 
 type productPlanGenerateInput struct {
@@ -80,12 +81,13 @@ var defaultProductPlanGenerateDeps = productPlanGenerateDeps{
 }
 
 var defaultProductPlanFlowDeps = productPlanFlowDeps{
-	stat:              os.Stat,
-	loadExistingFiles: product.LoadExistingFiles,
-	selectMode:        promptProductPlanMode,
-	selectTargets:     promptProductPlanTargets,
-	collectAnswers:    collectProductPlanAnswers,
-	generatePayload:   generateProductPlanPayload,
+	stat:               os.Stat,
+	loadExistingFiles:  product.LoadExistingFiles,
+	selectMode:         promptProductPlanMode,
+	selectTargets:      promptProductPlanTargets,
+	collectAnswers:     collectProductPlanAnswers,
+	generatePayload:    generateProductPlanPayload,
+	writeSelectedFiles: product.WriteSelectedFiles,
 }
 
 var productCmd = &cobra.Command{
@@ -196,6 +198,9 @@ func runProductPlanFlowWithDeps(ctx context.Context, opts productPlanRunOptions,
 	if deps.generatePayload == nil {
 		deps.generatePayload = defaultProductPlanFlowDeps.generatePayload
 	}
+	if deps.writeSelectedFiles == nil {
+		deps.writeSelectedFiles = defaultProductPlanFlowDeps.writeSelectedFiles
+	}
 
 	promptIn := opts.In
 	if _, ok := promptIn.(*bufio.Reader); !ok {
@@ -239,7 +244,7 @@ func runProductPlanFlowWithDeps(ctx context.Context, opts productPlanRunOptions,
 		return fmt.Errorf("collect product interview answers: %w", err)
 	}
 
-	_, err = deps.generatePayload(ctx, productPlanGenerateInput{
+	payload, err := deps.generatePayload(ctx, productPlanGenerateInput{
 		Engine:   opts.Engine,
 		Targets:  selectedTargets,
 		Answers:  answers,
@@ -249,8 +254,61 @@ func runProductPlanFlowWithDeps(ctx context.Context, opts productPlanRunOptions,
 		return fmt.Errorf("generate product payload: %w", err)
 	}
 
-	fmt.Fprintf(opts.Out, "Product planning preflight complete (%s). Next stories add interactive generation and selective updates.\n", mode)
+	changes := plannedProductFileChanges(selectedTargets, payload, existing)
+	if err := deps.writeSelectedFiles(opts.Dir, selectedTargets, payload); err != nil {
+		return fmt.Errorf("write selected product files: %w", err)
+	}
+
+	writeProductPlanSuccess(opts.Out, mode, changes)
 	return nil
+}
+
+type productFileChange struct {
+	name   string
+	action string
+}
+
+func plannedProductFileChanges(targets product.SelectedTargets, payload product.GeneratedPayload, existing product.ExistingFiles) []productFileChange {
+	changes := make([]productFileChange, 0, len(template.ProductFiles()))
+	if targets.Mission && payload.Mission != nil {
+		changes = append(changes, productFileChange{
+			name:   template.ProductMissionFile,
+			action: fileChangeAction(existing.Mission.Exists),
+		})
+	}
+	if targets.Roadmap && payload.Roadmap != nil {
+		changes = append(changes, productFileChange{
+			name:   template.ProductRoadmapFile,
+			action: fileChangeAction(existing.Roadmap.Exists),
+		})
+	}
+	if targets.TechStack && payload.TechStack != nil {
+		changes = append(changes, productFileChange{
+			name:   template.ProductTechStackFile,
+			action: fileChangeAction(existing.TechStack.Exists),
+		})
+	}
+	return changes
+}
+
+func fileChangeAction(existed bool) string {
+	if existed {
+		return "updated"
+	}
+	return "created"
+}
+
+func writeProductPlanSuccess(out io.Writer, mode productPlanMode, changes []productFileChange) {
+	fmt.Fprintf(out, "Product planning complete (%s).\n", mode)
+	if len(changes) == 0 {
+		fmt.Fprintln(out, "No product files were created or updated.")
+		return
+	}
+
+	fmt.Fprintln(out, "Created/updated files:")
+	for _, change := range changes {
+		fmt.Fprintf(out, "- .hal/product/%s (%s)\n", change.name, change.action)
+	}
 }
 
 func allProductTargets() product.SelectedTargets {

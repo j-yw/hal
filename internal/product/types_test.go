@@ -59,6 +59,28 @@ func TestParseGeneratedPayload_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestParseGeneratedPayload_IgnoresUnknownKeys(t *testing.T) {
+	t.Parallel()
+
+	got, err := ParseGeneratedPayload([]byte(`{
+		"mission.md": "Mission content",
+		"unknown.md": "Unexpected content"
+	}`))
+	if err != nil {
+		t.Fatalf("ParseGeneratedPayload() error = %v", err)
+	}
+
+	if got.Mission == nil || *got.Mission != "Mission content" {
+		t.Fatalf("Mission = %v, want %q", got.Mission, "Mission content")
+	}
+	if got.Roadmap != nil {
+		t.Fatalf("Roadmap = %v, want nil", got.Roadmap)
+	}
+	if got.TechStack != nil {
+		t.Fatalf("TechStack = %v, want nil", got.TechStack)
+	}
+}
+
 func TestParseGeneratedPayload_RejectsNonObjectPayload(t *testing.T) {
 	t.Parallel()
 
