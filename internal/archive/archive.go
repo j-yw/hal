@@ -23,6 +23,10 @@ var featureStateFiles = []string{
 	template.AutoStateFile,
 }
 
+var protectedArchiveDirs = map[string]struct{}{
+	template.ProductDir: {},
+}
+
 const legacyAutoPRDPattern = "auto-prd.legacy-*.json"
 
 // CreateOptions controls which files are archived.
@@ -299,7 +303,14 @@ func Restore(halDir, name string, w io.Writer) error {
 		return fmt.Errorf("failed to read archive directory: %w", err)
 	}
 
+	skippedProtectedDirs := make([]string, 0, len(protectedArchiveDirs))
 	for _, entry := range entries {
+		if isProtectedArchiveDir(entry.Name()) {
+			skippedProtectedDirs = append(skippedProtectedDirs, entry.Name())
+			fmt.Fprintf(w, "  skipped %s (protected)\n", entry.Name())
+			continue
+		}
+
 		src := filepath.Join(archiveDir, entry.Name())
 		dst := filepath.Join(halDir, entry.Name())
 
@@ -316,9 +327,14 @@ func Restore(halDir, name string, w io.Writer) error {
 		fmt.Fprintf(w, "  restored %s\n", entry.Name())
 	}
 
-	// Remove the now-empty archive directory
-	if err := os.Remove(archiveDir); err != nil {
-		return fmt.Errorf("failed to remove archive directory: %w", err)
+	// Remove the archive directory unless protected entries were intentionally left behind.
+	if len(skippedProtectedDirs) == 0 {
+		if err := os.Remove(archiveDir); err != nil {
+			return fmt.Errorf("failed to remove archive directory: %w", err)
+		}
+	} else {
+		sort.Strings(skippedProtectedDirs)
+		fmt.Fprintf(w, "  kept archive %s with protected entries: %s\n", name, strings.Join(skippedProtectedDirs, ", "))
 	}
 
 	fmt.Fprintf(w, "  restored from %s\n", name)
@@ -487,4 +503,9 @@ func fileExists(path string) bool {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func isProtectedArchiveDir(name string) bool {
+	_, ok := protectedArchiveDirs[name]
+	return ok
 }

@@ -41,6 +41,23 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func writeProductFiles(t *testing.T, halDir string, contents map[string]string) {
+	t.Helper()
+	productDir := filepath.Join(halDir, template.ProductDir)
+	for name, content := range contents {
+		writeFile(t, filepath.Join(productDir, name), content)
+	}
+}
+
 func TestCreate(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -224,6 +241,34 @@ func TestCreate(t *testing.T) {
 				}
 				if !fileExists(filepath.Join(halDir, "rules", "rule.md")) {
 					t.Error("rules should not be archived")
+				}
+			},
+		},
+		{
+			name: "product docs remain byte-identical and are not archived",
+			setup: func(t *testing.T, halDir string) {
+				writePRD(t, halDir, template.PRDFile, "hal/feat", nil)
+				writeProductFiles(t, halDir, map[string]string{
+					template.ProductMissionFile:   "mission-current\n",
+					template.ProductRoadmapFile:   "roadmap-current\n",
+					template.ProductTechStackFile: "tech-current\n",
+				})
+			},
+			archName: "feat",
+			check: func(t *testing.T, halDir, archDir string) {
+				want := map[string][]byte{
+					template.ProductMissionFile:   []byte("mission-current\n"),
+					template.ProductRoadmapFile:   []byte("roadmap-current\n"),
+					template.ProductTechStackFile: []byte("tech-current\n"),
+				}
+				for name, expected := range want {
+					got := readFile(t, filepath.Join(halDir, template.ProductDir, name))
+					if !bytes.Equal(got, expected) {
+						t.Errorf("%s changed in halDir: got %q, want %q", name, string(got), string(expected))
+					}
+					if fileExists(filepath.Join(archDir, template.ProductDir, name)) {
+						t.Errorf("%s should not be archived", filepath.Join(template.ProductDir, name))
+					}
 				}
 			},
 		},
@@ -487,7 +532,9 @@ func TestRestore(t *testing.T) {
 				// Restored PRD should be the old one
 				data, _ := os.ReadFile(filepath.Join(halDir, template.PRDFile))
 				var prd engine.PRD
-				json.Unmarshal(data, &prd)
+				if err := json.Unmarshal(data, &prd); err != nil {
+					t.Fatalf("unmarshal restored prd: %v", err)
+				}
 				if prd.BranchName != "hal/old" {
 					t.Errorf("expected restored branch hal/old, got %s", prd.BranchName)
 				}
@@ -549,6 +596,81 @@ func TestRestore(t *testing.T) {
 			},
 		},
 		{
+			name: "product docs stay byte-identical across create and restore",
+			setup: func(t *testing.T, halDir string) string {
+				writePRD(t, halDir, template.PRDFile, "hal/current", nil)
+				writeFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+				writeProductFiles(t, halDir, map[string]string{
+					template.ProductMissionFile:   "mission-current\n",
+					template.ProductRoadmapFile:   "roadmap-current\n",
+					template.ProductTechStackFile: "tech-current\n",
+				})
+
+				var buf bytes.Buffer
+				archiveDir, err := Create(halDir, "current", &buf)
+				if err != nil {
+					t.Fatalf("Create returned error: %v", err)
+				}
+				return filepath.Base(archiveDir)
+			},
+			check: func(t *testing.T, halDir string) {
+				want := map[string][]byte{
+					template.ProductMissionFile:   []byte("mission-current\n"),
+					template.ProductRoadmapFile:   []byte("roadmap-current\n"),
+					template.ProductTechStackFile: []byte("tech-current\n"),
+				}
+				for name, expected := range want {
+					got := readFile(t, filepath.Join(halDir, template.ProductDir, name))
+					if !bytes.Equal(got, expected) {
+						t.Errorf("%s changed after create+restore: got %q, want %q", name, string(got), string(expected))
+					}
+				}
+			},
+		},
+		{
+			name: "restore skips protected product directory from archive",
+			setup: func(t *testing.T, halDir string) string {
+				writeProductFiles(t, halDir, map[string]string{
+					template.ProductMissionFile:   "mission-current\n",
+					template.ProductRoadmapFile:   "roadmap-current\n",
+					template.ProductTechStackFile: "tech-current\n",
+				})
+
+				archiveName := "2026-01-04-with-product"
+				archDir := filepath.Join(halDir, "archive", archiveName)
+				os.MkdirAll(archDir, 0755)
+				writePRD(t, archDir, template.PRDFile, "hal/old", nil)
+				writeProductFiles(t, archDir, map[string]string{
+					template.ProductMissionFile:   "mission-archived\n",
+					template.ProductRoadmapFile:   "roadmap-archived\n",
+					template.ProductTechStackFile: "tech-archived\n",
+				})
+				return archiveName
+			},
+			check: func(t *testing.T, halDir string) {
+				if !fileExists(filepath.Join(halDir, template.PRDFile)) {
+					t.Error("prd.json should be restored")
+				}
+
+				wantCurrent := map[string][]byte{
+					template.ProductMissionFile:   []byte("mission-current\n"),
+					template.ProductRoadmapFile:   []byte("roadmap-current\n"),
+					template.ProductTechStackFile: []byte("tech-current\n"),
+				}
+				for name, expected := range wantCurrent {
+					got := readFile(t, filepath.Join(halDir, template.ProductDir, name))
+					if !bytes.Equal(got, expected) {
+						t.Errorf("%s should not be overwritten during restore: got %q, want %q", name, string(got), string(expected))
+					}
+				}
+
+				archiveProductFile := filepath.Join(halDir, "archive", "2026-01-04-with-product", template.ProductDir, template.ProductMissionFile)
+				if !fileExists(archiveProductFile) {
+					t.Error("protected product files should remain in archive and not be restored")
+				}
+			},
+		},
+		{
 			name: "error on non-existent archive name",
 			setup: func(t *testing.T, halDir string) string {
 				return "does-not-exist"
@@ -606,5 +728,23 @@ func TestFeatureFromBranch(t *testing.T) {
 				t.Errorf("FeatureFromBranch(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFeatureStateFilesExcludeProductContext(t *testing.T) {
+	disallowed := map[string]struct{}{
+		template.ProductDir:           {},
+		template.ProductMissionFile:   {},
+		template.ProductRoadmapFile:   {},
+		template.ProductTechStackFile: {},
+	}
+
+	for _, f := range featureStateFiles {
+		if _, ok := disallowed[f]; ok {
+			t.Fatalf("featureStateFiles should not include product context entry %q", f)
+		}
+		if strings.HasPrefix(f, template.ProductDir+"/") {
+			t.Fatalf("featureStateFiles should not include product context path %q", f)
+		}
 	}
 }

@@ -17,6 +17,7 @@
 - Keep product payload generation centralized in `generateProductPlanPayloadWithDeps`: parse strict JSON with `ParseGeneratedPayload`, run exactly one repair prompt on parse failure, and return actionable errors instead of writing partial output.
 - In `runProductPlanFlowWithDeps`, derive changed-file summaries from selected targets plus non-nil payload fields before writing, then print only those created/updated files so CLI output matches actual writes.
 - Keep `ensureGitignore` as the single migration point for Hal committable exceptions and update `.hal/*` plus every exception (`!.hal/standards/`, `!.hal/commands/`, `!.hal/product/`) together to preserve idempotent `hal init` behavior.
+- In `internal/archive`, treat `template.ProductDir` as a protected directory: create/has-state checks must exclude product docs and restore must skip archived `product/` entries so `.hal/product/*` remains durable context.
 
 ---
 ## 2026-04-16 06:46 +08 - US-001
@@ -139,4 +140,13 @@
   - Patterns discovered: when adding a new committed `.hal/*` exception, update all three `ensureGitignore` branches (already-correct detection, `.hal/*` missing-exception migration, and legacy `.hal`/`.hal/` migration) together.
   - Gotchas encountered: idempotence checks should assert exception counts (for example, `!.hal/product/` appears exactly once) to prevent repeated `hal init` from duplicating lines.
   - Useful context: `runInit` currently creates only core `.hal` runtime dirs/files and leaves `.hal/product` absent until a product-planning write path needs it.
+---
+## 2026-04-16 08:09 +08 - US-014
+- Implemented archive restore protection for product context: `internal/archive.Restore` now skips `product/` entries in archives and keeps those protected entries in place instead of restoring them into `.hal/product/*`.
+- Added archive test coverage to lock non-interference behavior: product files stay byte-identical across archive create/restore and archived `product/` content is never restored over current product docs.
+- Files changed: `internal/archive/archive.go`, `internal/archive/archive_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Patterns discovered: archive lifecycle code should treat `.hal/product/*` as durable context outside feature-state semantics, even if legacy archives contain `product/` directories.
+  - Gotchas encountered: when restore intentionally skips protected archive entries, do not remove the archive directory unconditionally; keep it so protected data is not deleted.
+  - Useful context: lock product non-interference with byte-level tests for `mission.md`, `roadmap.md`, and `tech-stack.md` across both `Create` and `Restore`.
 ---
