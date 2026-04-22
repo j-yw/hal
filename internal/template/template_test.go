@@ -1,6 +1,7 @@
 package template
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,5 +29,38 @@ func TestDefaultPrompt_StopConditionRequiresCleanCommittedBookkeeping(t *testing
 		if !strings.Contains(DefaultPrompt, needle) {
 			t.Fatalf("default prompt should contain %q", needle)
 		}
+	}
+}
+
+func TestProductConstants(t *testing.T) {
+	if ProductDir != "product" {
+		t.Fatalf("ProductDir = %q, want %q", ProductDir, "product")
+	}
+	if ProductMissionFile != "mission.md" {
+		t.Fatalf("ProductMissionFile = %q, want %q", ProductMissionFile, "mission.md")
+	}
+	if ProductRoadmapFile != "roadmap.md" {
+		t.Fatalf("ProductRoadmapFile = %q, want %q", ProductRoadmapFile, "roadmap.md")
+	}
+	if ProductTechStackFile != "tech-stack.md" {
+		t.Fatalf("ProductTechStackFile = %q, want %q", ProductTechStackFile, "tech-stack.md")
+	}
+}
+
+func TestProductFiles_DeterministicOrder(t *testing.T) {
+	want := []string{
+		ProductMissionFile,
+		ProductRoadmapFile,
+		ProductTechStackFile,
+	}
+
+	got := ProductFiles()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ProductFiles() = %v, want %v", got, want)
+	}
+
+	got[0] = "mutated.md"
+	if gotAgain := ProductFiles(); !reflect.DeepEqual(gotAgain, want) {
+		t.Fatalf("ProductFiles() after caller mutation = %v, want %v", gotAgain, want)
 	}
 }

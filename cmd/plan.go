@@ -2,19 +2,25 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/prd"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
 var (
-	planEngineFlag string
-	planFormatFlag string
+	planEngineFlag  string
+	planFormatFlag  string
+	planProductFlag bool
 )
 
 var planCmd = &cobra.Command{
@@ -35,11 +41,13 @@ Examples:
   hal plan                            # Opens editor for full spec
   hal plan "user authentication"      # Interactive PRD generation
   hal plan "add dark mode" -f json    # Output directly to prd.json
-  hal plan "notifications" -e claude  # Use Claude engine`,
+  hal plan "notifications" -e claude  # Use Claude engine
+  hal plan "checkout" -p              # Include .hal/product context`,
 	Example: `  hal plan
   hal plan "user authentication"
   hal plan "add dark mode" --format json
-  hal plan "notifications" --engine codex`,
+  hal plan "notifications" --engine codex
+  hal plan "checkout" --product`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runPlan,
 }
@@ -47,6 +55,10 @@ Examples:
 func init() {
 	planCmd.Flags().StringVarP(&planEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	planCmd.Flags().StringVarP(&planFormatFlag, "format", "f", "markdown", "Output format: markdown, json")
+	planCmd.Flags().BoolVarP(&planProductFlag, "product", "p", false, "Include durable product context from .hal/product/*.md")
+	planCmd.Flags().BoolVar(&planProductFlag, "include-product", false, "(deprecated) use --product")
+	_ = planCmd.Flags().MarkDeprecated("include-product", "use --product")
+	_ = planCmd.Flags().MarkHidden("include-product")
 	rootCmd.AddCommand(planCmd)
 }
 
@@ -72,6 +84,27 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
+	out := io.Writer(os.Stdout)
+	errOut := io.Writer(os.Stderr)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		errOut = cmd.ErrOrStderr()
+	}
+
+	productContext := ""
+	if planProductFlag {
+		loadedContext, missingFiles, err := loadPlanProductContext(".")
+		if err != nil {
+			return fmt.Errorf("failed to load product context: %w", err)
+		}
+		if loadedContext == "" {
+			fmt.Fprintf(errOut, "warning: --product set but no product context files were found under %s\n", filepath.Join(template.HalDir, template.ProductDir))
+		} else {
+			warnMissingPlanProductFiles(errOut, missingFiles)
+		}
+		productContext = loadedContext
+	}
+
 	// Create engine
 	eng, err := newEngine(engineName)
 	if err != nil {
@@ -79,14 +112,17 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create display for streaming feedback
-	display := engine.NewDisplay(os.Stdout)
+	display := engine.NewDisplay(out)
 
 	// Show command header
 	display.ShowCommandHeader("Plan", description, buildHeaderCtx(engineName))
 
 	// Generate PRD
 	ctx := context.Background()
-	outputPath, err := prd.GenerateWithEngine(ctx, eng, description, planFormatFlag, display)
+	outputPath, err := prd.GenerateWithEngineWithOptions(ctx, eng, description, prd.GenerateOptions{
+		Format:         planFormatFlag,
+		ProductContext: productContext,
+	}, display)
 	if err != nil {
 		return fmt.Errorf("PRD generation failed: %w", err)
 	}
@@ -105,6 +141,49 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func loadPlanProductContext(projectDir string) (string, []string, error) {
+	productDir := filepath.Join(projectDir, template.HalDir, template.ProductDir)
+	missing := make([]string, 0, len(template.ProductFiles()))
+	sections := make([]string, 0, len(template.ProductFiles()))
+
+	for _, fileName := range template.ProductFiles() {
+		path := filepath.Join(productDir, fileName)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				missing = append(missing, fileName)
+				continue
+			}
+			return "", nil, fmt.Errorf("read %s: %w", path, err)
+		}
+
+		sections = append(sections, formatPlanProductContextSection(fileName, string(data)))
+	}
+
+	if len(sections) == 0 {
+		return "", missing, nil
+	}
+	return strings.Join(sections, "\n\n"), missing, nil
+}
+
+func formatPlanProductContextSection(fileName, content string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "### %s\n", fileName)
+	sb.WriteString("```markdown\n")
+	sb.WriteString(content)
+	if !strings.HasSuffix(content, "\n") {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("```")
+	return sb.String()
+}
+
+func warnMissingPlanProductFiles(w io.Writer, missing []string) {
+	for _, fileName := range missing {
+		fmt.Fprintf(w, "warning: --product set but %s is missing\n", filepath.Join(template.HalDir, template.ProductDir, fileName))
+	}
 }
 
 func openEditorForInput() (string, error) {

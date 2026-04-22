@@ -676,48 +676,54 @@ func TestEnsureGitignore(t *testing.T) {
 		{
 			name:            "creates new gitignore",
 			existingContent: "",
-			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/"},
 			wantMsgSubstr:   "Added .hal/*",
 		},
 		{
 			name:            "appends to existing",
 			existingContent: "node_modules/\n",
-			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "node_modules/"},
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/", "node_modules/"},
 			wantMsgSubstr:   "Added .hal/*",
 		},
 		{
 			name:            "appends to existing without trailing newline",
 			existingContent: "node_modules/",
-			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "node_modules/"},
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/", "node_modules/"},
 			wantMsgSubstr:   "Added .hal/*",
 		},
 		{
 			name:            "migrates old .hal/ to .hal/* with exceptions",
 			existingContent: ".hal/\n",
-			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/"},
 			wantMsgSubstr:   "Updated .gitignore",
 		},
 		{
 			name:            "migrates old .hal (no slash) to .hal/* with exceptions",
 			existingContent: ".hal\n",
-			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/"},
 			wantMsgSubstr:   "Updated .gitignore",
 		},
 		{
 			name:            "migrates .hal/ preserving other entries",
 			existingContent: "node_modules/\n.hal/\nbuild/\n",
-			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "node_modules/", "build/"},
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/", "node_modules/", "build/"},
 			wantMsgSubstr:   "Updated .gitignore",
 		},
 		{
-			name:            "migrates .hal/* with only standards exception to add commands",
+			name:            "migrates .hal/* with only standards exception to add remaining exceptions",
 			existingContent: ".hal/*\n!.hal/standards/\n",
-			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/"},
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/"},
+			wantMsgSubstr:   "Updated .gitignore",
+		},
+		{
+			name:            "migrates .hal/* with standards and commands to add product",
+			existingContent: ".hal/*\n!.hal/standards/\n!.hal/commands/\n",
+			wantContains:    []string{".hal/*", "!.hal/standards/", "!.hal/commands/", "!.hal/product/"},
 			wantMsgSubstr:   "Updated .gitignore",
 		},
 		{
 			name:            "skips if already correct",
-			existingContent: ".hal/*\n!.hal/standards/\n!.hal/commands/\n",
+			existingContent: ".hal/*\n!.hal/standards/\n!.hal/commands/\n!.hal/product/\n",
 			wantSkip:        true,
 		},
 	}
@@ -773,7 +779,7 @@ func TestEnsureGitignoreIdempotent(t *testing.T) {
 
 	var buf bytes.Buffer
 
-	// First call - should add .hal/* and !.hal/standards/
+	// First call - should add .hal/* and committable exceptions
 	if err := ensureGitignore(tmpDir, &buf); err != nil {
 		t.Fatalf("first ensureGitignore() error = %v", err)
 	}
@@ -797,6 +803,12 @@ func TestEnsureGitignoreIdempotent(t *testing.T) {
 	count := strings.Count(string(content2), ".hal/*")
 	if count != 1 {
 		t.Errorf("expected exactly 1 .hal/* entry, got %d", count)
+	}
+
+	// Should contain exactly one product exception
+	productCount := strings.Count(string(content2), "!.hal/product/")
+	if productCount != 1 {
+		t.Errorf("expected exactly 1 !.hal/product/ entry, got %d", productCount)
 	}
 
 	// Second call should produce no output
@@ -838,6 +850,9 @@ func TestRunInitAddsGitignore(t *testing.T) {
 		if !strings.Contains(string(content), "!.hal/commands/") {
 			t.Errorf(".gitignore should contain !.hal/commands/, got: %q", string(content))
 		}
+		if !strings.Contains(string(content), "!.hal/product/") {
+			t.Errorf(".gitignore should contain !.hal/product/, got: %q", string(content))
+		}
 	})
 
 	t.Run("adds .hal/* to existing gitignore", func(t *testing.T) {
@@ -867,6 +882,26 @@ func TestRunInitAddsGitignore(t *testing.T) {
 		if !strings.Contains(string(content), ".hal/*") {
 			t.Errorf(".gitignore should contain .hal/*, got: %q", string(content))
 		}
+		if !strings.Contains(string(content), "!.hal/product/") {
+			t.Errorf(".gitignore should contain !.hal/product/, got: %q", string(content))
+		}
+	})
+
+	t.Run("does not create product docs by default", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("runInit() error: %v", err)
+		}
+
+		productDir := filepath.Join(dir, template.HalDir, template.ProductDir)
+		if _, err := os.Stat(productDir); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to not exist by default, stat error: %v", productDir, err)
+		}
 	})
 
 	t.Run("does not duplicate on second init", func(t *testing.T) {
@@ -895,6 +930,11 @@ func TestRunInitAddsGitignore(t *testing.T) {
 		count := strings.Count(string(content), ".hal/*")
 		if count != 1 {
 			t.Errorf("expected exactly 1 .hal/* entry, got %d in: %q", count, string(content))
+		}
+
+		productCount := strings.Count(string(content), "!.hal/product/")
+		if productCount != 1 {
+			t.Errorf("expected exactly 1 !.hal/product/ entry, got %d in: %q", productCount, string(content))
 		}
 	})
 }

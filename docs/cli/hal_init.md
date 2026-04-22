@@ -12,7 +12,7 @@ Repo-local setup (always safe):
   .hal/progress.txt      Progress log
   .hal/archive/          Archived runs
   .hal/reports/          Analysis reports
-  .hal/skills/           Hal-managed skills (prd, hal, autospec, etc.)
+  .hal/skills/           Hal-managed skills (prd, hal, product, autospec, etc.)
   .hal/commands/         Agent-invocable commands
   .hal/standards/        Project standards (committed)
 

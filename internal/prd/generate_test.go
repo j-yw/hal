@@ -552,3 +552,23 @@ func TestIsOtherOption(t *testing.T) {
 		})
 	}
 }
+
+func TestGetProjectContextWithProduct_EmptyUsesBaseContext(t *testing.T) {
+	base := getProjectContext()
+	got := getProjectContextWithProduct("")
+	if got != base {
+		t.Fatalf("getProjectContextWithProduct(empty) = %q, want base context %q", got, base)
+	}
+}
+
+func TestGetProjectContextWithProduct_AppendsProductContext(t *testing.T) {
+	productContext := "### mission.md\nMission\n\n### roadmap.md\nRoadmap"
+	got := getProjectContextWithProduct(productContext)
+
+	if !strings.Contains(got, "Durable product context (.hal/product):") {
+		t.Fatalf("expected product context header in project context:\n%s", got)
+	}
+	if !strings.Contains(got, productContext) {
+		t.Fatalf("expected product context body in project context:\n%s", got)
+	}
+}

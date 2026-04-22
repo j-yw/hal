@@ -20,6 +20,7 @@ Examples:
   hal plan "user authentication"      # Interactive PRD generation
   hal plan "add dark mode" -f json    # Output directly to prd.json
   hal plan "notifications" -e claude  # Use Claude engine
+  hal plan "checkout" -p              # Include .hal/product context
 
 ```
 hal plan [feature-description] [flags]
@@ -32,6 +33,7 @@ hal plan [feature-description] [flags]
   hal plan "user authentication"
   hal plan "add dark mode" --format json
   hal plan "notifications" --engine codex
+  hal plan "checkout" --product
 ```
 
 ### Options
@@ -40,6 +42,7 @@ hal plan [feature-description] [flags]
   -e, --engine string   Engine to use (claude, codex, pi) (default "codex")
   -f, --format string   Output format: markdown, json (default "markdown")
   -h, --help            help for plan
+  -p, --product         Include durable product context from .hal/product/*.md
 ```
 
 ### SEE ALSO

@@ -51,6 +51,9 @@ hal init
 # Generate a PRD interactively
 hal plan "add user authentication"
 
+# Include durable product context from .hal/product/*.md
+hal plan "add user authentication" --product
+
 # Convert markdown PRD to JSON (auto-picks .hal/prd-*.md)
 hal convert
 
@@ -66,11 +69,11 @@ hal run
 ### Manual Workflow
 
 ```
-hal init → hal plan → hal convert → hal validate → hal run
+hal init → hal plan [--product] → hal convert → hal validate → hal run
 ```
 
 1. **init** — Set up `.hal/` directory with config, templates, skills, and commands
-2. **plan** — Generate a PRD through clarifying questions
+2. **plan** — Generate a PRD through clarifying questions (optionally include `.hal/product/*.md` context with `--product`)
 3. **convert** — Transform markdown PRD to structured JSON (default no archive; use `--archive` / `--force` for guarded canonical overwrites)
 4. **validate** — Check stories against quality rules
 5. **run** — Loop through stories: pick next, implement, commit, repeat
@@ -144,7 +147,7 @@ Stable JSON contracts for agent integration:
 | Command | Description |
 |---------|-------------|
 | `hal init` | Initialize `.hal/` directory with config, skills, and commands |
-| `hal plan [description]` | Generate PRD (opens editor if no args) |
+| `hal plan [description]` | Generate PRD (opens editor if no args); use `--product` to include `.hal/product/*.md` context |
 | `hal convert [markdown-prd]` | Convert markdown PRD to JSON (auto-discover source when omitted) |
 | `hal validate [prd.json]` | Validate PRD against quality rules |
 | `hal prd audit [--json]` | Audit PRD health and detect markdown↔JSON drift |

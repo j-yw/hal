@@ -17,10 +17,26 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
+// GenerateOptions controls optional context and output behavior for plan generation.
+type GenerateOptions struct {
+	Format         string
+	ProductContext string
+}
+
 // GenerateWithEngine runs the two-phase PRD generation using the prd skill.
 // Phase 1: Generate clarifying questions
 // Phase 2: Collect answers and generate PRD
 func GenerateWithEngine(ctx context.Context, eng engine.Engine, description string, format string, display *engine.Display) (string, error) {
+	return GenerateWithEngineWithOptions(ctx, eng, description, GenerateOptions{Format: format}, display)
+}
+
+// GenerateWithEngineWithOptions runs the two-phase PRD generation using the prd skill.
+func GenerateWithEngineWithOptions(ctx context.Context, eng engine.Engine, description string, opts GenerateOptions, display *engine.Display) (string, error) {
+	format := opts.Format
+	if strings.TrimSpace(format) == "" {
+		format = "markdown"
+	}
+
 	// Load prd skill content
 	prdSkill, err := skills.LoadSkill("prd")
 	if err != nil {
@@ -28,7 +44,7 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 	}
 
 	// Get project context
-	projectInfo := getProjectContext()
+	projectInfo := getProjectContextWithProduct(opts.ProductContext)
 
 	// Phase 1: Generate clarifying questions
 	if display != nil {
@@ -569,6 +585,26 @@ func convertPRDToJSON(ctx context.Context, eng engine.Engine, skill, prdContent,
 	}
 
 	return jsonContent, nil
+}
+
+func getProjectContextWithProduct(productContext string) string {
+	base := getProjectContext()
+	trimmedProductContext := strings.TrimSpace(productContext)
+	if trimmedProductContext == "" {
+		return base
+	}
+
+	var context strings.Builder
+	context.WriteString(base)
+	if !strings.HasSuffix(base, "\n") {
+		context.WriteString("\n")
+	}
+	context.WriteString("Durable product context (.hal/product):\n")
+	context.WriteString(trimmedProductContext)
+	if !strings.HasSuffix(trimmedProductContext, "\n") {
+		context.WriteString("\n")
+	}
+	return context.String()
 }
 
 func getProjectContext() string {
