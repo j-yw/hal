@@ -73,6 +73,9 @@ func (c *CodexLinker) Link(projectDir string, skills []string) error {
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		return err
 	}
+	if err := removeLegacyManagedSkillSymlinks(skillsDir, projectDir); err != nil {
+		return err
+	}
 
 	for _, skill := range skills {
 		// Absolute path required (can't use relative - different tree)
@@ -112,6 +115,9 @@ func (c *CodexLinker) Unlink(projectDir string) error {
 		if existing, err := os.Readlink(link); err == nil && existing == target {
 			os.RemoveAll(link)
 		}
+	}
+	if err := removeLegacyManagedSkillSymlinks(skillsDir, projectDir); err != nil {
+		return err
 	}
 
 	// Unlink commands

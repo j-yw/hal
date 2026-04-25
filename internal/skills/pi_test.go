@@ -96,6 +96,33 @@ func TestPiLinkerLinkIdempotent(t *testing.T) {
 	}
 }
 
+func TestPiLinkerLink_RemovesLegacyManagedProductSymlink(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal", "skills", "testskill"), 0755); err != nil {
+		t.Fatalf("failed to create .hal/skills/testskill: %v", err)
+	}
+
+	legacyLink := filepath.Join(projectDir, ".pi", "skills", "product")
+	if err := os.MkdirAll(filepath.Dir(legacyLink), 0755); err != nil {
+		t.Fatalf("failed to create legacy link parent: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", ".hal", "skills", "product"), legacyLink); err != nil {
+		t.Fatalf("failed to create legacy product symlink: %v", err)
+	}
+
+	linker := &PiLinker{}
+	if err := linker.Link(projectDir, []string{"testskill"}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+
+	if _, err := os.Lstat(legacyLink); !os.IsNotExist(err) {
+		t.Fatalf("legacy managed product symlink should be removed")
+	}
+	if _, err := os.Lstat(filepath.Join(projectDir, ".pi", "skills", "testskill")); err != nil {
+		t.Fatalf("new managed skill symlink should exist: %v", err)
+	}
+}
+
 func TestPiLinkerLinkCommands(t *testing.T) {
 	projectDir := t.TempDir()
 	halCommandsDir := filepath.Join(projectDir, ".hal", "commands")

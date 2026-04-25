@@ -204,6 +204,81 @@ func TestCodexLinkerUnlinkOnlyOwnLinks(t *testing.T) {
 	}
 }
 
+func TestCodexLinkerPreservesOtherProjectLegacyProductLink(t *testing.T) {
+	projectDir1 := t.TempDir()
+	projectDir2 := t.TempDir()
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	legacyTarget := filepath.Join(projectDir1, ".hal", "skills", "product")
+	if err := os.MkdirAll(legacyTarget, 0755); err != nil {
+		t.Fatalf("failed to create legacy product skill dir: %v", err)
+	}
+
+	project2Skill := filepath.Join(projectDir2, ".hal", "skills", "prd")
+	if err := os.MkdirAll(project2Skill, 0755); err != nil {
+		t.Fatalf("failed to create project2 skill dir: %v", err)
+	}
+
+	linker := &CodexLinker{}
+	legacyLink := filepath.Join(linker.SkillsDir(), "product")
+	if err := os.MkdirAll(filepath.Dir(legacyLink), 0755); err != nil {
+		t.Fatalf("failed to create codex skills dir: %v", err)
+	}
+	if err := os.Symlink(legacyTarget, legacyLink); err != nil {
+		t.Fatalf("failed to create legacy product link: %v", err)
+	}
+
+	if err := linker.Link(projectDir2, []string{"prd"}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+	if got, err := os.Readlink(legacyLink); err != nil || got != legacyTarget {
+		t.Fatalf("other project legacy product link should be preserved, got %q err %v", got, err)
+	}
+
+	if err := linker.Unlink(projectDir2); err != nil {
+		t.Fatalf("Unlink() error = %v", err)
+	}
+	if got, err := os.Readlink(legacyLink); err != nil || got != legacyTarget {
+		t.Fatalf("other project legacy product link should survive unlink, got %q err %v", got, err)
+	}
+}
+
+func TestCodexLinkerPreservesUserLegacyProductSkill(t *testing.T) {
+	projectDir := t.TempDir()
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	projectSkill := filepath.Join(projectDir, ".hal", "skills", "prd")
+	if err := os.MkdirAll(projectSkill, 0755); err != nil {
+		t.Fatalf("failed to create project skill dir: %v", err)
+	}
+
+	linker := &CodexLinker{}
+	userProductSkill := filepath.Join(linker.SkillsDir(), "product")
+	if err := os.MkdirAll(userProductSkill, 0755); err != nil {
+		t.Fatalf("failed to create user product skill dir: %v", err)
+	}
+	marker := filepath.Join(userProductSkill, "SKILL.md")
+	if err := os.WriteFile(marker, []byte("user managed"), 0644); err != nil {
+		t.Fatalf("failed to create user product skill marker: %v", err)
+	}
+
+	if err := linker.Link(projectDir, []string{"prd"}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "user managed" {
+		t.Fatalf("user product skill should be preserved after link, got %q err %v", string(data), err)
+	}
+
+	if err := linker.Unlink(projectDir); err != nil {
+		t.Fatalf("Unlink() error = %v", err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "user managed" {
+		t.Fatalf("user product skill should be preserved after unlink, got %q err %v", string(data), err)
+	}
+}
+
 func TestCodexLinkerRegistered(t *testing.T) {
 	linker := GetLinker("codex")
 	if linker == nil {

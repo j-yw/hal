@@ -126,6 +126,9 @@ func (p *PiLinker) Link(projectDir string, skills []string) error {
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		return err
 	}
+	if err := removeLegacyManagedSkillSymlinks(skillsDir, projectDir); err != nil {
+		return err
+	}
 
 	for _, skill := range skills {
 		// Use relative path for symlink (portable across machines)
@@ -150,6 +153,9 @@ func (p *PiLinker) Unlink(projectDir string) error {
 	for _, skill := range ManagedSkillNames {
 		link := filepath.Join(skillsDir, skill)
 		os.RemoveAll(link)
+	}
+	if err := removeLegacyManagedSkillSymlinks(skillsDir, projectDir); err != nil {
+		return err
 	}
 
 	promptsDir := filepath.Join(projectDir, p.CommandsDir())
