@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/engine"
@@ -145,10 +146,13 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 func loadPlanProductContext(projectDir string) (string, []string, error) {
 	productDir := filepath.Join(projectDir, template.HalDir, template.ProductDir)
-	missing := make([]string, 0, len(template.ProductFiles()))
-	sections := make([]string, 0, len(template.ProductFiles()))
+	productFiles := template.ProductFiles()
+	missing := make([]string, 0, len(productFiles))
+	sections := make([]string, 0, len(productFiles))
+	canonical := make(map[string]struct{}, len(productFiles))
 
-	for _, fileName := range template.ProductFiles() {
+	for _, fileName := range productFiles {
+		canonical[fileName] = struct{}{}
 		path := filepath.Join(productDir, fileName)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -162,6 +166,35 @@ func loadPlanProductContext(projectDir string) (string, []string, error) {
 		sections = append(sections, formatPlanProductContextSection(fileName, string(data)))
 	}
 
+	entries, err := os.ReadDir(productDir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", nil, fmt.Errorf("read %s: %w", productDir, err)
+		}
+	} else {
+		extraFiles := make([]string, 0)
+		for _, entry := range entries {
+			fileName := entry.Name()
+			if entry.IsDir() || filepath.Ext(fileName) != ".md" {
+				continue
+			}
+			if _, ok := canonical[fileName]; ok {
+				continue
+			}
+			extraFiles = append(extraFiles, fileName)
+		}
+		sort.Strings(extraFiles)
+
+		for _, fileName := range extraFiles {
+			path := filepath.Join(productDir, fileName)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return "", nil, fmt.Errorf("read %s: %w", path, err)
+			}
+			sections = append(sections, formatPlanProductContextSection(fileName, string(data)))
+		}
+	}
+
 	if len(sections) == 0 {
 		return "", missing, nil
 	}
@@ -169,15 +202,35 @@ func loadPlanProductContext(projectDir string) (string, []string, error) {
 }
 
 func formatPlanProductContextSection(fileName, content string) string {
+	fence := planProductContextFence(content)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "### %s\n", fileName)
-	sb.WriteString("```markdown\n")
+	fmt.Fprintf(&sb, "%smarkdown\n", fence)
 	sb.WriteString(content)
 	if !strings.HasSuffix(content, "\n") {
 		sb.WriteString("\n")
 	}
-	sb.WriteString("```")
+	sb.WriteString(fence)
 	return sb.String()
+}
+
+func planProductContextFence(content string) string {
+	maxRun := 0
+	run := 0
+	for _, r := range content {
+		if r == '`' {
+			run++
+			if run > maxRun {
+				maxRun = run
+			}
+			continue
+		}
+		run = 0
+	}
+	if maxRun < 3 {
+		return "```"
+	}
+	return strings.Repeat("`", maxRun+1)
 }
 
 func warnMissingPlanProductFiles(w io.Writer, missing []string) {

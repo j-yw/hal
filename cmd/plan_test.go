@@ -41,6 +41,75 @@ func TestLoadPlanProductContext_AllFilesPresent(t *testing.T) {
 	}
 }
 
+func TestLoadPlanProductContext_IncludesAdditionalMarkdownFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writePlanProductFile(t, dir, template.ProductMissionFile, "# Mission\nMission content")
+	writePlanProductFile(t, dir, template.ProductRoadmapFile, "# Roadmap\nRoadmap content")
+	writePlanProductFile(t, dir, template.ProductTechStackFile, "# Tech Stack\nTech content")
+	writePlanProductFile(t, dir, "customers.md", "# Customers\nCustomer context")
+	writePlanProductFile(t, dir, "architecture.md", "# Architecture\nArchitecture context")
+	writePlanProductFile(t, dir, "notes.txt", "not markdown")
+
+	contextText, missing, err := loadPlanProductContext(dir)
+	if err != nil {
+		t.Fatalf("loadPlanProductContext() error = %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing = %v, want empty", missing)
+	}
+
+	wantOrder := []string{
+		template.ProductMissionFile,
+		template.ProductRoadmapFile,
+		template.ProductTechStackFile,
+		"architecture.md",
+		"customers.md",
+	}
+	assertPlanProductSectionOrder(t, contextText, wantOrder)
+	if strings.Contains(contextText, "### notes.txt") {
+		t.Fatalf("context should not include non-markdown files\ncontext:\n%s", contextText)
+	}
+}
+
+func TestLoadPlanProductContext_CustomMarkdownOnly(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writePlanProductFile(t, dir, "positioning.md", "# Positioning\nPositioning context")
+
+	contextText, missing, err := loadPlanProductContext(dir)
+	if err != nil {
+		t.Fatalf("loadPlanProductContext() error = %v", err)
+	}
+	if !reflect.DeepEqual(missing, template.ProductFiles()) {
+		t.Fatalf("missing = %v, want %v", missing, template.ProductFiles())
+	}
+	if !strings.Contains(contextText, "### positioning.md") {
+		t.Fatalf("context should include custom markdown content\ncontext:\n%s", contextText)
+	}
+}
+
+func TestLoadPlanProductContext_ContentWithCodeFence(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writePlanProductFile(t, dir, template.ProductTechStackFile, "# Tech Stack\n```go\nfmt.Println(\"hi\")\n```")
+
+	contextText, _, err := loadPlanProductContext(dir)
+	if err != nil {
+		t.Fatalf("loadPlanProductContext() error = %v", err)
+	}
+
+	if !strings.Contains(contextText, "````markdown\n# Tech Stack\n```go") {
+		t.Fatalf("context should use a longer wrapper fence around nested fences\ncontext:\n%s", contextText)
+	}
+	if !strings.HasSuffix(contextText, "\n````") {
+		t.Fatalf("context should close with the longer wrapper fence\ncontext:\n%s", contextText)
+	}
+}
+
 func TestLoadPlanProductContext_MissingFiles(t *testing.T) {
 	t.Parallel()
 
@@ -106,5 +175,21 @@ func writePlanProductFile(t *testing.T, dir, fileName, content string) {
 	path := filepath.Join(productDir, fileName)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func assertPlanProductSectionOrder(t *testing.T, contextText string, fileNames []string) {
+	t.Helper()
+
+	previous := -1
+	for _, fileName := range fileNames {
+		idx := strings.Index(contextText, "### "+fileName)
+		if idx == -1 {
+			t.Fatalf("context missing section header for %q\ncontext:\n%s", fileName, contextText)
+		}
+		if idx <= previous {
+			t.Fatalf("context sections out of order at %q\ncontext:\n%s", fileName, contextText)
+		}
+		previous = idx
 	}
 }
