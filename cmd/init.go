@@ -40,7 +40,7 @@ Repo-local setup (always safe):
   .hal/progress.txt      Progress log
   .hal/archive/          Archived runs
   .hal/reports/          Analysis reports
-  .hal/skills/           Hal-managed skills (prd, hal, product, autospec, etc.)
+  .hal/skills/           Hal-managed skills (prd, hal, plan-product, autospec, etc.)
   .hal/commands/         Agent-invocable commands
   .hal/standards/        Project standards (committed)
 
@@ -268,14 +268,14 @@ func runInitWithWriters(cmd *cobra.Command, args []string, out, errOut io.Writer
 		return err
 	}
 
-	// Install embedded skills to .hal/skills/
-	if err := skills.InstallSkills(projectDir); err != nil {
-		return fmt.Errorf("failed to install skills: %w", err)
-	}
-
 	// Migrate stale templates (idempotent — safe to run every init)
 	if err := migrateTemplates(configDir); err != nil {
 		return fmt.Errorf("failed to migrate templates: %w", err)
+	}
+
+	// Install embedded skills to .hal/skills/
+	if err := skills.InstallSkills(projectDir); err != nil {
+		return fmt.Errorf("failed to install skills: %w", err)
 	}
 
 	// Create symlinks for engine skill discovery
@@ -446,6 +446,11 @@ const canonicalStopConditionBlock = "## Stop Condition\n\n" +
 	"<promise>COMPLETE</promise>\n\n" +
 	"If there are still stories with `passes: false`, end your response normally even if you completed the current story (another iteration will pick up the next story)."
 
+const planProductSkillFrontmatter = "---\n" +
+	"name: plan-product\n" +
+	"description: Establish foundational product documentation through an interactive conversation.\n" +
+	"---\n\n"
+
 var (
 	legacyBrowserVerificationPattern = regexp.MustCompile(`Verify in browser using [A-Za-z0-9_-]+(?: skill)?(?: \([^)\r\n]*\))?`)
 	legacyCommandSafetyPattern       = regexp.MustCompile(`## Command Safety\n\n(?:- [^\n]+\n)+\n`)
@@ -461,6 +466,18 @@ var (
 
 func migrateBrowserVerificationContent(content string) string {
 	return legacyBrowserVerificationPattern.ReplaceAllString(content, template.BrowserVerificationCriterion)
+}
+
+func migratePlanProductSkillContent(content string) string {
+	trimmed := strings.TrimLeft(content, "\ufeff")
+	if strings.HasPrefix(trimmed, "---\n") {
+		if idx := strings.Index(trimmed[4:], "\n---"); idx >= 0 {
+			body := strings.TrimLeft(trimmed[4+idx+len("\n---"):], "\n")
+			return planProductSkillFrontmatter + body
+		}
+	}
+
+	return planProductSkillFrontmatter + strings.TrimLeft(trimmed, "\n")
 }
 
 func migratePromptTemplate(content string) string {
@@ -522,10 +539,44 @@ func migrateSkillFiles(skillsDir string, transform func(string) string) error {
 	return nil
 }
 
+func migratePlanProductSkill(configDir string) error {
+	legacyPath := filepath.Join(configDir, "skills", "product", "SKILL.md")
+	currentPath := filepath.Join(configDir, "skills", "plan-product", "SKILL.md")
+
+	if _, err := os.Stat(currentPath); os.IsNotExist(err) {
+		legacyData, legacyErr := os.ReadFile(legacyPath)
+		if legacyErr == nil {
+			if err := os.MkdirAll(filepath.Dir(currentPath), 0755); err != nil {
+				return fmt.Errorf("failed to create plan-product skill directory: %w", err)
+			}
+			migrated := migratePlanProductSkillContent(string(legacyData))
+			if err := os.WriteFile(currentPath, []byte(migrated), 0644); err != nil {
+				return fmt.Errorf("failed to write plan-product skill: %w", err)
+			}
+		} else if !os.IsNotExist(legacyErr) {
+			return fmt.Errorf("failed to read legacy product skill: %w", legacyErr)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to stat plan-product skill: %w", err)
+	}
+
+	if err := replaceFileContent(currentPath, migratePlanProductSkillContent); err != nil {
+		return err
+	}
+	if err := replaceFileContent(legacyPath, migratePlanProductSkillContent); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // migrateTemplates applies idempotent fixes to existing .hal/ files.
 // This runs on every `hal init` to ensure stale templates pick up fixes.
 func migrateTemplates(configDir string) error {
 	if err := replaceFileContent(filepath.Join(configDir, template.PromptFile), migratePromptTemplate); err != nil {
+		return err
+	}
+	if err := migratePlanProductSkill(configDir); err != nil {
 		return err
 	}
 	return migrateSkillFiles(filepath.Join(configDir, "skills"), migrateBrowserVerificationContent)

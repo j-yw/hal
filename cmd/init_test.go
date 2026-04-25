@@ -645,6 +645,100 @@ func TestMigrateTemplatesPreservesCanonicalBrowserVerificationCriterion(t *testi
 	assertCriterionCounts()
 }
 
+func TestMigrateProductSkillContent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(t *testing.T, got string)
+	}{
+		{
+			name:  "adds frontmatter when absent",
+			input: "# Plan Product\n\nBody\n",
+			check: func(t *testing.T, got string) {
+				if !strings.HasPrefix(got, planProductSkillFrontmatter) {
+					t.Fatalf("expected product frontmatter prefix, got: %s", got)
+				}
+				if !strings.Contains(got, "# Plan Product") {
+					t.Fatalf("expected body content to be preserved, got: %s", got)
+				}
+			},
+		},
+		{
+			name: "rewrites legacy product frontmatter to plan-product",
+			input: "---\n" +
+				"name: product\n" +
+				"description: old\n" +
+				"---\n\n" +
+				"# Plan Product\n",
+			check: func(t *testing.T, got string) {
+				if !strings.HasPrefix(got, planProductSkillFrontmatter) {
+					t.Fatalf("expected rewritten frontmatter prefix, got: %s", got)
+				}
+				if strings.Count(got, "# Plan Product") != 1 {
+					t.Fatalf("expected one body heading, got: %s", got)
+				}
+			},
+		},
+		{
+			name:  "keeps valid frontmatter unchanged",
+			input: planProductSkillFrontmatter + "# Plan Product\n",
+			check: func(t *testing.T, got string) {
+				if got != planProductSkillFrontmatter+"# Plan Product\n" {
+					t.Fatalf("expected unchanged content, got: %s", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := migratePlanProductSkillContent(tt.input)
+			tt.check(t, got)
+		})
+	}
+}
+
+func TestMigrateTemplates_ProductSkillAddsFrontmatter(t *testing.T) {
+	halDir := filepath.Join(t.TempDir(), template.HalDir)
+	if err := os.MkdirAll(filepath.Join(halDir, "skills", "product"), 0755); err != nil {
+		t.Fatalf("failed to create legacy product skill dir: %v", err)
+	}
+	legacyPath := filepath.Join(halDir, "skills", "product", "SKILL.md")
+	writeFile(t, filepath.Join(halDir, "skills", "product"), "SKILL.md", "# Plan Product\n\nBody\n")
+
+	if err := migrateTemplates(halDir); err != nil {
+		t.Fatalf("first migrateTemplates() error: %v", err)
+	}
+
+	planPath := filepath.Join(halDir, "skills", "plan-product", "SKILL.md")
+	first, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("failed to read migrated plan-product skill: %v", err)
+	}
+	if !strings.HasPrefix(string(first), planProductSkillFrontmatter) {
+		t.Fatalf("expected migrated plan-product frontmatter, got: %s", string(first))
+	}
+
+	legacyData, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("failed to read migrated legacy product skill: %v", err)
+	}
+	if !strings.HasPrefix(string(legacyData), planProductSkillFrontmatter) {
+		t.Fatalf("expected legacy product skill to be rewritten with canonical frontmatter, got: %s", string(legacyData))
+	}
+
+	if err := migrateTemplates(halDir); err != nil {
+		t.Fatalf("second migrateTemplates() error: %v", err)
+	}
+	second, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("failed to read plan-product skill after second migration: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("plan-product skill migration should be idempotent\nfirst: %s\nsecond: %s", string(first), string(second))
+	}
+}
+
 func TestMigratePromptTemplate_ReordersBookkeepingBeforeCommitAndHardensStopCondition(t *testing.T) {
 	legacyPrompt := "# Hal Agent Instructions\n\n## Your Task\n\n" +
 		legacyTaskOrderingBlock + "\n\n" +
@@ -901,6 +995,38 @@ func TestRunInitAddsGitignore(t *testing.T) {
 		productDir := filepath.Join(dir, template.HalDir, template.ProductDir)
 		if _, err := os.Stat(productDir); !os.IsNotExist(err) {
 			t.Fatalf("expected %s to not exist by default, stat error: %v", productDir, err)
+		}
+	})
+
+	t.Run("migrates legacy product skill before installing embedded plan product skill", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		if err := os.Chdir(dir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+
+		legacyDir := filepath.Join(dir, template.HalDir, "skills", "product")
+		if err := os.MkdirAll(legacyDir, 0755); err != nil {
+			t.Fatalf("failed to create legacy skill dir: %v", err)
+		}
+		legacyBody := "# Custom Product Skill\n\nPreserve this customized content.\n"
+		if err := os.WriteFile(filepath.Join(legacyDir, "SKILL.md"), []byte(legacyBody), 0644); err != nil {
+			t.Fatalf("failed to write legacy skill: %v", err)
+		}
+
+		if err := runInit(nil, nil); err != nil {
+			t.Fatalf("runInit() error: %v", err)
+		}
+
+		planData, err := os.ReadFile(filepath.Join(dir, template.HalDir, "skills", "plan-product", "SKILL.md"))
+		if err != nil {
+			t.Fatalf("failed to read migrated plan-product skill: %v", err)
+		}
+		if !strings.HasPrefix(string(planData), planProductSkillFrontmatter) {
+			t.Fatalf("expected migrated plan-product frontmatter, got: %s", string(planData))
+		}
+		if !strings.Contains(string(planData), legacyBody) {
+			t.Fatalf("expected migrated plan-product skill to preserve legacy content, got: %s", string(planData))
 		}
 	})
 
