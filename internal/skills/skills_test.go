@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/template"
@@ -28,13 +29,16 @@ func TestLoadSkillFactory(t *testing.T) {
 	}
 }
 
-func TestLoadSkillProduct(t *testing.T) {
-	content, err := LoadSkill("product")
+func TestLoadSkillPlanProduct(t *testing.T) {
+	content, err := LoadSkill("plan-product")
 	if err != nil {
-		t.Fatalf("LoadSkill(product) error = %v", err)
+		t.Fatalf("LoadSkill(plan-product) error = %v", err)
 	}
 	if content == "" {
-		t.Fatal("product skill content should not be empty")
+		t.Fatal("plan-product skill content should not be empty")
+	}
+	if !strings.Contains(content, "description:") {
+		t.Fatalf("plan-product skill should include frontmatter description, got: %s", content)
 	}
 }
 

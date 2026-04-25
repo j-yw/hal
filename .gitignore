@@ -4,6 +4,7 @@ dist/
 
 # hal runtime config (standards and commands are committed)
 .hal/*
+!.hal/product/
 !.hal/commands/
 !.hal/standards/
 *.exe
