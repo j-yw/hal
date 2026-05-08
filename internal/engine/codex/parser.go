@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
 )
@@ -15,11 +16,17 @@ type Parser struct {
 	lastTokenCount     int
 	terminalResultSeen bool
 	terminalSuccess    bool
+	now                func() time.Time
+	taskStart          time.Time
 }
 
 // NewParser creates a new Codex output parser.
 func NewParser() *Parser {
-	return &Parser{}
+	now := time.Now
+	return &Parser{
+		now:       now,
+		taskStart: now(),
+	}
 }
 
 // ParseLine parses a single JSON line from Codex's JSONL output.
@@ -57,6 +64,10 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 }
 
 func (p *Parser) parseThreadStarted(raw map[string]interface{}) *engine.Event {
+	if p.taskStart.IsZero() {
+		p.markTaskStart()
+	}
+
 	// Codex doesn't include model in thread.started — left empty.
 	// Model is shown in the header from config if configured.
 	return &engine.Event{
@@ -184,12 +195,14 @@ func (p *Parser) parseTerminalResult(tokens int) *engine.Event {
 	p.turnFailed = false
 	p.thinkingActive = false
 	p.lastTokenCount = 0
+	durationMs := p.elapsedTaskDurationMs()
 
 	return &engine.Event{
 		Type: engine.EventResult,
 		Data: engine.EventData{
-			Success: success,
-			Tokens:  tokens,
+			Success:    success,
+			Tokens:     tokens,
+			DurationMs: durationMs,
 		},
 	}
 }
@@ -223,6 +236,7 @@ func (p *Parser) parseEventMessage(raw map[string]interface{}) *engine.Event {
 		p.terminalResultSeen = false
 		p.terminalSuccess = false
 		p.lastTokenCount = 0
+		p.markTaskStart()
 		return &engine.Event{Type: engine.EventInit}
 	case "agent_reasoning":
 		if !p.thinkingActive {
@@ -299,6 +313,29 @@ func (p *Parser) ResultStatus() (hasResult bool, success bool) {
 	}
 
 	return true, p.terminalSuccess
+}
+
+func (p *Parser) markTaskStart() {
+	if p.now == nil {
+		p.now = time.Now
+	}
+	p.taskStart = p.now()
+}
+
+func (p *Parser) elapsedTaskDurationMs() float64 {
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.taskStart.IsZero() {
+		p.taskStart = p.now()
+	}
+
+	elapsed := p.now().Sub(p.taskStart)
+	if elapsed < 0 {
+		return 0
+	}
+
+	return float64(elapsed.Milliseconds())
 }
 
 // Helper functions
