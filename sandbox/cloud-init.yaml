@@ -27,17 +27,40 @@ write_files:
       # TAILSCALE_HOSTNAME=hal-dev
 
 runcmd:
-  # Source env vars if populated
+  # Run the universal bootstrap
   - |
     if [ -f /root/.env ]; then
       set -a
       . /root/.env
       set +a
     fi
-  # Run the universal bootstrap
-  - curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
+    setup_url="${HAL_SETUP_URL:-https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh}"
+    case "$setup_url" in
+      https://raw.githubusercontent.com/*|https://github.com/*/raw/*)
+        trusted_github_setup_url=true
+        ;;
+      *)
+        trusted_github_setup_url=false
+        ;;
+    esac
+    script_file=$(mktemp)
+    header_file=""
+    trap 'rm -f "$script_file" "$header_file"' EXIT
+    if [ -n "${GITHUB_TOKEN:-}" ] && [ "$trusted_github_setup_url" = true ]; then
+      header_file=$(mktemp)
+      printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$header_file"
+      curl -fsSL -H @"$header_file" "$setup_url" -o "$script_file" || exit 1
+    else
+      curl -fsSL "$setup_url" -o "$script_file" || exit 1
+    fi
+    bash "$script_file"
   # Start Tailscale if auth key is set
   - |
+    if [ -f /root/.env ]; then
+      set -a
+      . /root/.env
+      set +a
+    fi
     if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
       tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &
       sleep 3
