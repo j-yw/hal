@@ -24,7 +24,7 @@ func TestNoArgsCommandsRejectExtraArgsWithValidationCode(t *testing.T) {
 		{name: "standards list", cmd: standardsListCmd},
 		{name: "standards discover", cmd: standardsDiscoverCmd},
 		{name: "sandbox setup", cmd: sandboxSetupCmd},
-		{name: "sandbox start", cmd: sandboxStartCmd},
+		{name: "sandbox create", cmd: sandboxCreateCmd},
 	}
 
 	for _, tt := range tests {
@@ -49,6 +49,14 @@ func TestNoArgsCommandsRejectExtraArgsWithValidationCode(t *testing.T) {
 				t.Fatalf("%s error = %q, want no-args validation message", tt.name, err.Error())
 			}
 		})
+	}
+}
+
+func TestSandboxStartCommandAcceptsNames(t *testing.T) {
+	if sandboxStartCmd.Args != nil {
+		if err := sandboxStartCmd.Args(sandboxStartCmd, []string{"one", "two"}); err != nil {
+			t.Fatalf("sandbox start should accept names, got %v", err)
+		}
 	}
 }
 
