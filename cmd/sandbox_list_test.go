@@ -32,6 +32,10 @@ func (p *liveTestProvider) Stop(_ context.Context, _ *sandbox.ConnectInfo, out i
 	return nil
 }
 
+func (p *liveTestProvider) Start(_ context.Context, _ *sandbox.ConnectInfo, out io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
+
 func (p *liveTestProvider) Delete(_ context.Context, _ *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
@@ -95,7 +99,7 @@ func TestRunSandboxList_EmptyRegistry(t *testing.T) {
 
 func TestResolveProviderFromGlobalConfig_IgnoresProjectConfigWhenGlobalFileMissing(t *testing.T) {
 	dir := t.TempDir()
-	setupStartTest(t, dir)
+	setupCreateTest(t, dir)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", dir)
 
@@ -136,7 +140,7 @@ sandbox:
 
 func TestResolveProviderWithFallback_UsesProjectConfigWhenGlobalFileMissing(t *testing.T) {
 	dir := t.TempDir()
-	setupStartTest(t, dir)
+	setupCreateTest(t, dir)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", dir)
 

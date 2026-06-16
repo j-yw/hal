@@ -39,6 +39,9 @@ func (m *mockSSHProvider) Create(ctx context.Context, name string, env map[strin
 func (m *mockSSHProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
+func (m *mockSSHProvider) Start(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
 func (m *mockSSHProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }

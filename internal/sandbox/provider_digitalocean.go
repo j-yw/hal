@@ -306,6 +306,30 @@ func (d *DigitalOceanProvider) lookupDropletIP(ctx context.Context, target strin
 	return ip, nil
 }
 
+func (d *DigitalOceanProvider) lookupDropletStatus(ctx context.Context, target string) (string, error) {
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet", "get", target,
+		"--format", "Status",
+		"--no-header",
+	)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Run(); err != nil {
+		return "", wrapDoctlError("compute droplet get", err, stderrBuf.String())
+	}
+	return strings.TrimSpace(stdoutBuf.String()), nil
+}
+
+func isDigitalOceanRunningStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "active", "running":
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
 	if err := d.ensureDoctl(); err != nil {
 		return nil, err
@@ -456,15 +480,74 @@ func (d *DigitalOceanProvider) Stop(ctx context.Context, info *ConnectInfo, out 
 	if err != nil {
 		return err
 	}
-	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", target)
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "shutdown", target, "--wait")
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = safeOut
 	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
-		return wrapDoctlError("compute droplet-action shutdown", err, stderrBuf.String())
+		if !isAlreadyStoppedLifecycleOutput(stderrBuf.String()) {
+			return wrapDoctlError("compute droplet-action shutdown", err, stderrBuf.String())
+		}
+	}
+
+	status, statusErr := d.lookupDropletStatus(ctx, target)
+	if statusErr != nil {
+		if out != nil {
+			fmt.Fprintf(out, "warning: failed to verify droplet status for %q after shutdown: %v\n", target, statusErr)
+		}
+		return nil
+	}
+	if !isDigitalOceanRunningStatus(status) {
+		return nil
+	}
+
+	fallback := d.commandContext(ctx, "doctl", "compute", "droplet-action", "power-off", target, "--wait")
+	var fallbackStderr bytes.Buffer
+	fallback.Stdout = safeOut
+	fallback.Stderr = io.MultiWriter(safeOut, &fallbackStderr)
+	if err := fallback.Run(); err != nil {
+		if isAlreadyStoppedLifecycleOutput(fallbackStderr.String()) {
+			return nil
+		}
+		return wrapDoctlError("compute droplet-action power-off", err, fallbackStderr.String())
 	}
 	return nil
+}
+
+func (d *DigitalOceanProvider) Start(ctx context.Context, info *ConnectInfo, out io.Writer) (*LifecycleResult, error) {
+	if err := d.ensureDoctl(); err != nil {
+		return nil, err
+	}
+
+	safeOut := synchronizedWriter(out)
+	target, err := d.resolveLifecycleTarget(ctx, info, safeOut)
+	if err != nil {
+		return nil, err
+	}
+	cmd := d.commandContext(ctx, "doctl", "compute", "droplet-action", "power-on", target, "--wait")
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
+
+	if err := cmd.Run(); err != nil {
+		if isAlreadyRunningLifecycleOutput(stderrBuf.String()) {
+			ip, lookupErr := d.lookupDropletIP(ctx, target)
+			if lookupErr != nil && out != nil {
+				fmt.Fprintf(out, "warning: failed to refresh droplet IP for %q: %v\n", target, lookupErr)
+			}
+			return &LifecycleResult{Status: StatusRunning, IP: ip}, nil
+		}
+		return nil, wrapDoctlError("compute droplet-action power-on", err, stderrBuf.String())
+	}
+	ip, lookupErr := d.lookupDropletIP(ctx, target)
+	if lookupErr != nil {
+		if out != nil {
+			fmt.Fprintf(out, "warning: failed to refresh droplet IP for %q: %v\n", target, lookupErr)
+		}
+		return &LifecycleResult{Status: StatusRunning}, nil
+	}
+	return &LifecycleResult{Status: StatusRunning, IP: ip}, nil
 }
 
 func (d *DigitalOceanProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
