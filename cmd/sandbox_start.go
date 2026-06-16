@@ -195,6 +195,13 @@ func injectAutoShutdownEnv(env map[string]string, autoShutdown bool, idleHours i
 	}
 }
 
+func configuredTailscaleHostname(name, id string, env map[string]string) string {
+	if strings.TrimSpace(env["TAILSCALE_AUTHKEY"]) == "" {
+		return ""
+	}
+	return sandbox.TailscaleHostnameForInstance(name, id)
+}
+
 // runSandboxStart is the public entry point for sandbox start logic.
 // It creates a sandboxStartDeps from the provided deps and delegates
 // to runSandboxStartWithDeps.
@@ -660,12 +667,18 @@ func createBatchTarget(
 	out io.Writer,
 ) error {
 	ctx := context.Background()
-	// Always set a per-sandbox hostname so legacy static values are replaced.
+	id, err := newSandboxID()
+	if err != nil {
+		return fmt.Errorf("generating ID: %w", err)
+	}
+	tailscaleHostname := configuredTailscaleHostname(name, id, mergedEnv)
 	perEnv := make(map[string]string, len(mergedEnv)+1)
 	for k, v := range mergedEnv {
 		perEnv[k] = v
 	}
-	perEnv["TAILSCALE_HOSTNAME"] = sandbox.TailscaleHostname(name)
+	if tailscaleHostname != "" {
+		perEnv["TAILSCALE_HOSTNAME"] = tailscaleHostname
+	}
 	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
 	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, prefixedOut); err != nil {
 		return err
@@ -675,14 +688,6 @@ func createBatchTarget(
 		return err
 	}
 
-	id, err := newSandboxID()
-	if err != nil {
-		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, prefixedOut); cleanupErr != nil {
-			return fmt.Errorf("generating ID: %w; %v", err, cleanupErr)
-		}
-		return fmt.Errorf("generating ID: %w", err)
-	}
-
 	state := &sandbox.SandboxState{
 		ID:                id,
 		Name:              name,
@@ -690,7 +695,8 @@ func createBatchTarget(
 		WorkspaceID:       result.ID,
 		IP:                result.IP,
 		TailscaleIP:       result.TailscaleIP,
-		TailscaleHostname: sandbox.TailscaleHostname(name),
+		TailscaleHostname: tailscaleHostname,
+		TailscaleLockdown: sandboxCfg.TailscaleLockdown,
 		Status:            sandbox.StatusRunning,
 		CreatedAt:         time.Now(),
 		AutoShutdown:      autoShutdown,
@@ -724,6 +730,34 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
+	id := ""
+	tailscaleHostname := ""
+	prepareIdentity := func() error {
+		if id != "" {
+			return nil
+		}
+
+		// Generate UUIDv7 before provider creation so the Tailscale hostname can be
+		// unique per instance and avoid stale MagicDNS entries from deleted sandboxes.
+		generatedID, err := newSandboxID()
+		if err != nil {
+			return fmt.Errorf("generating sandbox ID: %w", err)
+		}
+		id = generatedID
+
+		tailscaleHostname = configuredTailscaleHostname(name, id, mergedEnv)
+		if tailscaleHostname != "" {
+			mergedEnv["TAILSCALE_HOSTNAME"] = tailscaleHostname
+		}
+		return nil
+	}
+
+	if force {
+		if err := prepareIdentity(); err != nil {
+			return err
+		}
+	}
+
 	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, out); err != nil {
 		return err
 	}
@@ -735,22 +769,16 @@ func runSingleCreate(
 		fmt.Fprintf(out, "%s Starting sandbox %q (%s)...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider)
 	}
 
-	// Always set a per-sandbox hostname so legacy static values are replaced.
-	mergedEnv["TAILSCALE_HOSTNAME"] = sandbox.TailscaleHostname(name)
+	if !force {
+		if err := prepareIdentity(); err != nil {
+			return err
+		}
+	}
 
 	ctx := context.Background()
 	result, err := provider.Create(ctx, name, mergedEnv, out)
 	if err != nil {
 		return fmt.Errorf("sandbox creation failed: %w", err)
-	}
-
-	// Generate UUIDv7 for the sandbox ID
-	id, err := newSandboxID()
-	if err != nil {
-		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, out); cleanupErr != nil {
-			return fmt.Errorf("generating sandbox ID: %w; %v", err, cleanupErr)
-		}
-		return fmt.Errorf("generating sandbox ID: %w", err)
 	}
 
 	// Build state with identity, provider, networking, lifecycle fields
@@ -761,7 +789,8 @@ func runSingleCreate(
 		WorkspaceID:       result.ID,
 		IP:                result.IP,
 		TailscaleIP:       result.TailscaleIP,
-		TailscaleHostname: sandbox.TailscaleHostname(name),
+		TailscaleHostname: tailscaleHostname,
+		TailscaleLockdown: sandboxCfg.TailscaleLockdown,
 		Status:            sandbox.StatusRunning,
 		CreatedAt:         time.Now(),
 		AutoShutdown:      autoShutdown,
@@ -793,6 +822,9 @@ func runSingleCreate(
 	}
 	if result.TailscaleIP != "" {
 		fmt.Fprintf(out, "  Tailscale IP: %s\n", result.TailscaleIP)
+		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
+	} else if tailscaleHostname != "" {
+		fmt.Fprintf(out, "  Tailscale:    %s\n", tailscaleHostname)
 		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
 	}
 	return nil

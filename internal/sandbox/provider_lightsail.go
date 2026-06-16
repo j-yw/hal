@@ -97,7 +97,7 @@ func generateLightsailCloudInit(env map[string]string, tailscaleLockdown bool) s
 	b.WriteString("fi\n")
 
 	// Run full setup (system packages, Node.js, Go, etc.) — this takes a while
-	b.WriteString("curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
+	appendSetupScriptRunner(&b, "")
 
 	return b.String()
 }
@@ -353,10 +353,7 @@ func (l *LightsailProvider) Status(ctx context.Context, info *ConnectInfo, out i
 }
 
 func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, l.TailscaleLockdown)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
@@ -374,10 +371,7 @@ func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, l.TailscaleLockdown)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}

@@ -131,6 +131,43 @@ func fakeBranchResolver(branch string, err error) branchResolver {
 	}
 }
 
+func TestConfiguredTailscaleHostname(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "no auth key",
+			env:  map[string]string{},
+			want: "",
+		},
+		{
+			name: "blank auth key",
+			env:  map[string]string{"TAILSCALE_AUTHKEY": "   "},
+			want: "",
+		},
+		{
+			name: "auth key configured",
+			env:  map[string]string{"TAILSCALE_AUTHKEY": "tskey-auth-test"},
+			want: "hal-dev-4175f9bc",
+		},
+		{
+			name: "legacy hostname without auth key",
+			env:  map[string]string{"TAILSCALE_HOSTNAME": "legacy-shared-host"},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := configuredTailscaleHostname("dev", "019ecfb9-0d08-74d5-b50c-a0a64175f9bc", tt.env); got != tt.want {
+				t.Fatalf("configuredTailscaleHostname() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeGlobalStartDefaults_MergesGlobalDefaultsWithLocalEnv(t *testing.T) {
 	localCfg := &compound.SandboxConfig{
 		Provider: "daytona",
@@ -215,6 +252,9 @@ func TestRunSandboxStart_Success(t *testing.T) {
 	if instance.IP != "10.0.0.1" {
 		t.Errorf("instance.IP = %q, want %q", instance.IP, "10.0.0.1")
 	}
+	if instance.TailscaleHostname != "" {
+		t.Errorf("instance.TailscaleHostname = %q, want empty when Tailscale auth is not configured", instance.TailscaleHostname)
+	}
 	if instance.CreatedAt.IsZero() {
 		t.Error("instance.CreatedAt should not be zero")
 	}
@@ -232,6 +272,52 @@ func TestRunSandboxStart_Success(t *testing.T) {
 	// Verify output mentions provider
 	if !strings.Contains(out.String(), "Sandbox started") {
 		t.Errorf("output missing 'Sandbox started': %q", out.String())
+	}
+}
+
+func TestRunSandboxStart_StoresTailscaleHostnameWhenAuthConfigured(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "dev", ID: "ws-123", IP: "10.0.0.1"},
+	}
+
+	var out bytes.Buffer
+	err := runSandboxStartWithDeps(
+		dir,
+		"dev",
+		0,
+		false,
+		"",
+		"",
+		map[string]string{"TAILSCALE_AUTHKEY": "tskey-auth-test"},
+		autoShutdownOpts{},
+		&out,
+		mock,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.createCalls) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	}
+	gotHostname := mock.createCalls[0].Env["TAILSCALE_HOSTNAME"]
+	if !strings.HasPrefix(gotHostname, "hal-dev-") {
+		t.Fatalf("Create env TAILSCALE_HOSTNAME = %q, want hal-dev-*", gotHostname)
+	}
+
+	instance, err := sandbox.LoadInstance("dev")
+	if err != nil {
+		t.Fatalf("failed to load from global registry: %v", err)
+	}
+	if instance.TailscaleHostname != gotHostname {
+		t.Fatalf("instance.TailscaleHostname = %q, want %q", instance.TailscaleHostname, gotHostname)
+	}
+	if !strings.Contains(out.String(), "Tailscale:") {
+		t.Fatalf("output missing Tailscale hostname: %q", out.String())
 	}
 }
 
@@ -322,6 +408,7 @@ func TestRunSandboxStart_OverridesLegacyTailscaleHostname(t *testing.T) {
 		Provider: "daytona",
 		Env: map[string]string{
 			"API_KEY":            "sk-from-config",
+			"TAILSCALE_AUTHKEY":  "tskey-auth-test",
 			"TAILSCALE_HOSTNAME": "legacy-shared-host",
 		},
 	}
@@ -341,8 +428,8 @@ func TestRunSandboxStart_OverridesLegacyTailscaleHostname(t *testing.T) {
 	}
 
 	env := mock.createCalls[0].Env
-	if env["TAILSCALE_HOSTNAME"] != sandbox.TailscaleHostname("sb") {
-		t.Errorf("TAILSCALE_HOSTNAME = %q, want %q", env["TAILSCALE_HOSTNAME"], sandbox.TailscaleHostname("sb"))
+	if !strings.HasPrefix(env["TAILSCALE_HOSTNAME"], sandbox.TailscaleHostname("sb")+"-") {
+		t.Errorf("TAILSCALE_HOSTNAME = %q, want %q-*", env["TAILSCALE_HOSTNAME"], sandbox.TailscaleHostname("sb"))
 	}
 	if env["API_KEY"] != "sk-from-config" {
 		t.Errorf("API_KEY = %q, want %q", env["API_KEY"], "sk-from-config")
@@ -359,6 +446,7 @@ func TestRunSandboxStart_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *test
 	sandboxCfg := &compound.SandboxConfig{
 		Provider: "daytona",
 		Env: map[string]string{
+			"TAILSCALE_AUTHKEY":  "tskey-auth-test",
 			"TAILSCALE_HOSTNAME": "legacy-shared-host",
 		},
 	}
@@ -378,8 +466,8 @@ func TestRunSandboxStart_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *test
 	}
 
 	for _, call := range mock.createCalls {
-		if got := call.Env["TAILSCALE_HOSTNAME"]; got != sandbox.TailscaleHostname(call.Name) {
-			t.Errorf("%s: TAILSCALE_HOSTNAME = %q, want %q", call.Name, got, sandbox.TailscaleHostname(call.Name))
+		if got := call.Env["TAILSCALE_HOSTNAME"]; !strings.HasPrefix(got, sandbox.TailscaleHostname(call.Name)+"-") {
+			t.Errorf("%s: TAILSCALE_HOSTNAME = %q, want %q-*", call.Name, got, sandbox.TailscaleHostname(call.Name))
 		}
 	}
 }
@@ -2703,7 +2791,7 @@ func TestRunSingleCreate_RegistrationFailureRollsBackCreatedSandbox(t *testing.T
 	}
 }
 
-func TestRunSingleCreate_IDGenerationFailureRollsBackCreatedSandbox(t *testing.T) {
+func TestRunSingleCreate_IDGenerationFailureSkipsProviderCreate(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
 
@@ -2733,15 +2821,66 @@ func TestRunSingleCreate_IDGenerationFailureRollsBackCreatedSandbox(t *testing.T
 		t.Fatalf("error %q should include ID generation context", err.Error())
 	}
 
-	if len(mock.createCalls) != 1 {
-		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("expected no Create call, got %d", len(mock.createCalls))
 	}
-	if len(mock.deleteCalls) != 1 {
-		t.Fatalf("expected 1 Delete call for rollback, got %d", len(mock.deleteCalls))
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected no Delete call, got %d", len(mock.deleteCalls))
 	}
 
 	if _, loadErr := sandbox.LoadInstance("sb"); loadErr == nil {
 		t.Fatal("sandbox should not be registered after ID generation failure")
+	}
+}
+
+func TestRunSingleCreate_IDGenerationFailureSkipsForceDelete(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	existing := &sandbox.SandboxState{
+		ID:          "old-id",
+		Name:        "sb",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	origNewSandboxID := newSandboxID
+	t.Cleanup(func() {
+		newSandboxID = origNewSandboxID
+	})
+	newSandboxID = func() (string, error) {
+		return "", fmt.Errorf("uuid failed")
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-new"},
+	}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := runSingleCreate(dir, "sb", true, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "generating sandbox ID") {
+		t.Fatalf("error %q should include ID generation context", err.Error())
+	}
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("expected no Create call, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected no Delete call before ID generation succeeds, got %d", len(mock.deleteCalls))
+	}
+
+	instance, loadErr := sandbox.LoadInstance("sb")
+	if loadErr != nil {
+		t.Fatalf("existing sandbox should remain registered after ID generation failure: %v", loadErr)
+	}
+	if instance.WorkspaceID != "ws-old" {
+		t.Fatalf("existing sandbox workspace = %q, want %q", instance.WorkspaceID, "ws-old")
 	}
 }
 
@@ -3123,7 +3262,7 @@ func TestCreateBatchTarget_RegistrationFailureRollsBackCreatedSandbox(t *testing
 	}
 }
 
-func TestCreateBatchTarget_IDGenerationFailureRollsBackCreatedSandbox(t *testing.T) {
+func TestCreateBatchTarget_IDGenerationFailureSkipsProviderCreate(t *testing.T) {
 	dir := t.TempDir()
 	setupStartTest(t, dir)
 
@@ -3152,11 +3291,11 @@ func TestCreateBatchTarget_IDGenerationFailureRollsBackCreatedSandbox(t *testing
 		t.Fatalf("error %q should include ID generation context", err.Error())
 	}
 
-	if len(mock.createCalls) != 1 {
-		t.Fatalf("expected 1 Create call, got %d", len(mock.createCalls))
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("expected no Create call, got %d", len(mock.createCalls))
 	}
-	if len(mock.deleteCalls) != 1 {
-		t.Fatalf("expected 1 Delete call for rollback, got %d", len(mock.deleteCalls))
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected no Delete call, got %d", len(mock.deleteCalls))
 	}
 
 	if _, loadErr := sandbox.LoadInstance("worker-01"); loadErr == nil {

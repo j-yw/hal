@@ -22,6 +22,7 @@ type SandboxState struct {
 	IP                string `json:"ip"`
 	TailscaleIP       string `json:"tailscaleIp,omitempty"`
 	TailscaleHostname string `json:"tailscaleHostname,omitempty"`
+	TailscaleLockdown bool   `json:"tailscaleLockdown,omitempty"`
 
 	// Lifecycle
 	Status    string     `json:"status"`

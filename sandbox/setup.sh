@@ -6,7 +6,7 @@
 # Idempotent — safe to run multiple times.
 #
 # Usage (remote):
-#   curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
 #
 # Usage (local):
 #   ./sandbox/setup.sh
@@ -36,6 +36,57 @@ step()  { echo -e "\n${CYAN}${BOLD}── $1 ──${NC}"; }
 ok()    { echo -e "  ${GREEN}✓${NC} $1"; }
 fail()  { echo -e "  ${RED}✗${NC} $1"; }
 
+HAL_REPO="${HAL_REPO:-ReScienceLab/hal}"
+HAL_REPO_URL_EXPLICIT="${HAL_REPO_URL+x}"
+HAL_REPO_URL="${HAL_REPO_URL:-https://github.com/${HAL_REPO}.git}"
+
+is_github_https_repo_url() {
+  case "$1" in
+    https://github.com/*|https://www.github.com/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+clone_hal_repo() {
+  local dest="$1"
+  shift || true
+
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    if [ -z "$HAL_REPO_URL_EXPLICIT" ] && command -v gh &>/dev/null; then
+      echo "$GITHUB_TOKEN" | gh auth login --with-token 2>/dev/null || true
+      gh auth setup-git 2>/dev/null || true
+      if gh repo clone "$HAL_REPO" "$dest" -- "$@" 2>/dev/null; then
+        return 0
+      fi
+    fi
+
+    if ! is_github_https_repo_url "$HAL_REPO_URL"; then
+      git clone "$@" "$HAL_REPO_URL" "$dest"
+      return $?
+    fi
+
+    local askpass status
+    askpass="$(mktemp)"
+    chmod 700 "$askpass"
+    cat > "$askpass" <<'EOF'
+#!/usr/bin/env sh
+case "$1" in
+  *Username*) printf '%s\n' 'x-access-token' ;;
+  *) printf '%s\n' "$GITHUB_TOKEN" ;;
+esac
+EOF
+    if GITHUB_TOKEN="$GITHUB_TOKEN" GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone "$@" "$HAL_REPO_URL" "$dest"; then
+      status=0
+    else
+      status=$?
+    fi
+    rm -f "$askpass"
+    return "$status"
+  fi
+
+  git clone "$@" "$HAL_REPO_URL" "$dest"
+}
+
 # ── Detect environment ───────────────────────────────────────────────────────
 IN_DOCKER="${IN_DOCKER:-false}"
 if [ -f /.dockerenv ]; then
@@ -44,6 +95,11 @@ fi
 
 ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
 HOME_DIR="${HOME:-/root}"
+# SCRIPT_DIR can be overridden (e.g. in Docker) to point at the config source.
+# Resolve it before any cd so relative local invocations keep pointing at this repo.
+if [ -z "${SCRIPT_DIR:-}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 # ── System packages ─────────────────────────────────────────────────────────
 step "System packages"
@@ -160,12 +216,13 @@ else
     HAL_BUILD_DIR="$(pwd)"
   else
     rm -rf "$HAL_BUILD_DIR"
-    git clone --depth 1 https://github.com/jywlabs/hal.git "$HAL_BUILD_DIR"
+    clone_hal_repo "$HAL_BUILD_DIR" --depth 1
   fi
   cd "$HAL_BUILD_DIR"
   go mod download
   make build 2>&1 | tail -1
   cp hal /usr/local/bin/hal
+  cd "$HOME_DIR"
   if [ "$HAL_BUILD_DIR" = "/tmp/hal-build" ]; then
     rm -rf "$HAL_BUILD_DIR"
   fi
@@ -205,10 +262,6 @@ fi
 
 # ── Claude Code config ──────────────────────────────────────────────────────
 step "Claude Code config"
-# SCRIPT_DIR can be overridden (e.g. in Docker) to point at the config source
-if [ -z "${SCRIPT_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
 CLAUDE_DIR="${HOME_DIR}/.claude"
 mkdir -p "${CLAUDE_DIR}/skills" "${CLAUDE_DIR}/agents"
 
@@ -233,13 +286,14 @@ else
   if command -v git &>/dev/null; then
     TEMP_CONF="/tmp/hal-config"
     rm -rf "$TEMP_CONF"
-    git clone --depth 1 --filter=blob:none --sparse https://github.com/jywlabs/hal.git "$TEMP_CONF" 2>/dev/null
+    clone_hal_repo "$TEMP_CONF" --depth 1 --filter=blob:none --sparse
     cd "$TEMP_CONF"
     git sparse-checkout set sandbox/claude 2>/dev/null
     if [ -d sandbox/claude ]; then
       cp -r sandbox/claude/* "${CLAUDE_DIR}/" 2>/dev/null || true
       ok "Configs fetched from GitHub"
     fi
+    cd "$HOME_DIR"
     rm -rf "$TEMP_CONF"
   fi
 fi

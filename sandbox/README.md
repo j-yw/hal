@@ -25,7 +25,7 @@ Portable dev environment you can spin up anywhere — Daytona, any VPS, GitHub C
 SSH into a fresh Ubuntu 22.04+ machine and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
 ```
 
 With environment variables (recommended):
@@ -36,7 +36,7 @@ export GIT_USER_EMAIL="32629001+j-yw@users.noreply.github.com"
 export GITHUB_TOKEN="ghp_..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
-curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
 ```
 
 ### Option 2: Daytona (pre-baked snapshot)
