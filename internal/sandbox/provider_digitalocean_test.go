@@ -52,6 +52,21 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 	}
 }
 
+func TestGenerateDOCloudInit_LockdownRunsFromCloudInit(t *testing.T) {
+	yaml := generateDOCloudInit(map[string]string{"TAILSCALE_AUTHKEY": "tskey-auth-test"}, true)
+
+	for _, want := range []string{
+		"ufw allow in on tailscale0",
+		"ufw allow proto tcp from 100.64.0.0/10 to any port 22",
+		"ufw deny 22/tcp",
+		"ufw --force enable",
+	} {
+		if !strings.Contains(yaml, want) {
+			t.Fatalf("cloud-init missing %q:\n%s", want, yaml)
+		}
+	}
+}
+
 func TestGenerateDOCloudInit_EmptyEnv(t *testing.T) {
 	yaml := generateDOCloudInit(nil, false)
 	if !strings.HasPrefix(yaml, "#cloud-config\n") {
@@ -567,7 +582,8 @@ func TestDigitalOceanProvider_Create_ErrorsWhenPublicIPMissing(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_Create_LockdownFailsWhenTailscaleIPUnavailable(t *testing.T) {
+func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenTailscaleIPUnavailable(t *testing.T) {
+	var calls [][]string
 	dp := &DigitalOceanProvider{
 		SSHKey:            "ab:cd:ef:12:34",
 		Size:              "s-2vcpu-4gb",
@@ -575,6 +591,7 @@ func TestDigitalOceanProvider_Create_LockdownFailsWhenTailscaleIPUnavailable(t *
 		lookPath:          doctlLookPathStub,
 		sleep:             func(time.Duration) {},
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
 			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "create" {
 				return exec.CommandContext(ctx, "true")
 			}
@@ -589,16 +606,27 @@ func TestDigitalOceanProvider_Create_LockdownFailsWhenTailscaleIPUnavailable(t *
 	}
 
 	var out bytes.Buffer
-	_, err := dp.Create(context.Background(), "test-droplet", nil, &out)
-	if err == nil {
-		t.Fatal("Create() expected error when tailscale IP lookup fails in lockdown mode, got nil")
+	result, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error when tailscale IP lookup fails in lockdown mode: %v", err)
 	}
-	if !strings.Contains(err.Error(), "failed to fetch tailscale IP in lockdown mode") {
-		t.Errorf("error %q should mention lockdown tailscale IP failure", err.Error())
+	if result == nil || result.ID != "123456789" || result.IP != "10.20.30.40" {
+		t.Fatalf("Create() result = %#v, want preserved droplet result", result)
+	}
+	if result.TailscaleIP != "" {
+		t.Fatalf("TailscaleIP = %q, want empty when verification fails", result.TailscaleIP)
+	}
+	if !strings.Contains(out.String(), "Warning: could not verify Tailscale IP over public SSH") {
+		t.Fatalf("output missing verification warning: %q", out.String())
+	}
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
+			t.Fatalf("Create() should preserve droplet on Tailscale verification failure, calls=%v", calls)
+		}
 	}
 }
 
-func TestDigitalOceanProvider_Create_LockdownFailsWhenFirewallLockdownFails(t *testing.T) {
+func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenFirewallLockdownFails(t *testing.T) {
 	var calls [][]string
 	sshCalls := 0
 
@@ -625,22 +653,20 @@ func TestDigitalOceanProvider_Create_LockdownFailsWhenFirewallLockdownFails(t *t
 	}
 
 	var out bytes.Buffer
-	_, err := dp.Create(context.Background(), "test-droplet", nil, &out)
-	if err == nil {
-		t.Fatal("Create() expected error when firewall lockdown fails in lockdown mode, got nil")
+	result, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error when firewall lockdown fails in lockdown mode: %v", err)
 	}
-	if !strings.Contains(err.Error(), "failed to apply firewall lockdown in lockdown mode") {
-		t.Errorf("error %q should mention lockdown firewall failure", err.Error())
+	if result == nil || result.TailscaleIP != "100.64.0.99" {
+		t.Fatalf("Create() result = %#v, want verified Tailscale IP", result)
+	}
+	if !strings.Contains(out.String(), "Warning: failed to apply post-create firewall lockdown over public SSH") {
+		t.Fatalf("output missing firewall warning: %q", out.String())
 	}
 
-	var sawCleanupDelete bool
 	for _, call := range calls {
 		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
-			sawCleanupDelete = true
-			break
+			t.Fatalf("Create() should preserve droplet on firewall warning, calls=%v", calls)
 		}
-	}
-	if !sawCleanupDelete {
-		t.Fatalf("expected cleanup delete call after lockdown failure, calls=%v", calls)
 	}
 }
