@@ -175,6 +175,14 @@ func TestPreferredIP(t *testing.T) {
 			want: "203.0.113.11",
 		},
 		{
+			name: "falls back to tailscale hostname before public ip",
+			instance: &SandboxState{
+				IP:                "203.0.113.13",
+				TailscaleHostname: "hal-dev",
+			},
+			want: "hal-dev",
+		},
+		{
 			name: "trims whitespace",
 			instance: &SandboxState{
 				IP:          " 203.0.113.12 ",

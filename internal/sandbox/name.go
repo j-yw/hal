@@ -9,6 +9,8 @@ import (
 
 const (
 	maxSandboxNameLength   = 59
+	maxTailscaleLabelLen   = 63
+	tailscaleIDSuffixLen   = 8
 	tailscalePrefixSandbox = "hal-"
 	defaultSandboxName     = "sandbox"
 )
@@ -43,6 +45,41 @@ func ValidateName(name string) error {
 // TailscaleHostname returns the hostname used for Tailscale DNS.
 func TailscaleHostname(name string) string {
 	return tailscalePrefixSandbox + name
+}
+
+// TailscaleHostnameForInstance returns a per-instance Tailscale DNS label.
+// Tailscale keeps deleted machines around until removed from the admin console;
+// a stable hostname like "hal-dev" can therefore resolve to a stale sandbox
+// after delete/recreate cycles. Adding a short sandbox ID suffix avoids that
+// collision while keeping the human-readable sandbox name in the hostname.
+func TailscaleHostnameForInstance(name, id string) string {
+	base := TailscaleHostname(name)
+	suffix := shortHostnameID(id)
+	if suffix == "" {
+		return base
+	}
+
+	maxBaseLen := maxTailscaleLabelLen - len(suffix) - 1
+	if len(base) > maxBaseLen {
+		base = strings.TrimRight(base[:maxBaseLen], "-")
+	}
+	if base == "" {
+		base = tailscalePrefixSandbox + defaultSandboxName
+	}
+	return base + "-" + suffix
+}
+
+func shortHostnameID(id string) string {
+	var b strings.Builder
+	for i := 0; i < len(id) && b.Len() < tailscaleIDSuffixLen; i++ {
+		c := id[i]
+		isLowerAlpha := c >= 'a' && c <= 'z'
+		isDigit := c >= '0' && c <= '9'
+		if isLowerAlpha || isDigit {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // SandboxNameFromBranch derives a valid sandbox name from a git branch name.

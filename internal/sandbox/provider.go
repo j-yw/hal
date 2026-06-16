@@ -53,6 +53,9 @@ func PreferredIP(instance *SandboxState) string {
 	if strings.TrimSpace(instance.TailscaleIP) != "" {
 		return strings.TrimSpace(instance.TailscaleIP)
 	}
+	if strings.TrimSpace(instance.TailscaleHostname) != "" {
+		return strings.TrimSpace(instance.TailscaleHostname)
+	}
 	return strings.TrimSpace(instance.IP)
 }
 

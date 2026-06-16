@@ -182,6 +182,41 @@ func TestTailscaleHostname(t *testing.T) {
 	}
 }
 
+func TestTailscaleHostnameForInstance(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{
+			name: "dev",
+			id:   "019ecfb9-0d08-74d5-b50c-a0a64175f9bc",
+			want: "hal-dev-019ecfb9",
+		},
+		{
+			name: "dev",
+			id:   "",
+			want: "hal-dev",
+		},
+		{
+			name: strings.Repeat("a", 59),
+			id:   "abcdef12-3456",
+			want: "hal-" + strings.Repeat("a", 50) + "-abcdef12",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := TailscaleHostnameForInstance(tt.name, tt.id); got != tt.want {
+				t.Fatalf("TailscaleHostnameForInstance() = %q, want %q", got, tt.want)
+			}
+			if len(tt.want) > maxTailscaleLabelLen {
+				t.Fatalf("test fixture exceeds max label length: %q", tt.want)
+			}
+		})
+	}
+}
+
 func TestSandboxNameFromBranch(t *testing.T) {
 	tests := []struct {
 		name  string

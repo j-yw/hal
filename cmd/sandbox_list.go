@@ -455,6 +455,8 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 		tailscale := "—"
 		if inst.TailscaleIP != "" {
 			tailscale = inst.TailscaleIP
+		} else if inst.TailscaleHostname != "" {
+			tailscale = inst.TailscaleHostname
 		}
 
 		age := "—"
