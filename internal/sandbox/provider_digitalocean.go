@@ -34,6 +34,97 @@ type DigitalOceanProvider struct {
 	lookPath func(file string) (string, error)
 }
 
+const digitalOceanLockdownMarker = "/root/.hal-tailscale-lockdown"
+
+const (
+	digitalOceanTailscalePublicAttempts   = 18
+	digitalOceanTailscaleHostnameAttempts = 18
+	digitalOceanLockdownVerifyAttempts    = 18
+)
+
+func digitalOceanFirewallLockdownScript() string {
+	return strings.Join([]string{
+		"if ! command -v ufw >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw; fi",
+		"ufw allow in on tailscale0",
+		"ufw allow in on tailscale0 proto udp to any port 60000:61000",
+		"ufw allow proto tcp from 100.64.0.0/10 to any port 22",
+		"ufw deny 22/tcp",
+		"ufw --force enable",
+		"touch " + digitalOceanLockdownMarker,
+	}, " && ")
+}
+
+func digitalOceanLockdownVerifyScript() string {
+	return "test -f " + digitalOceanLockdownMarker + " && ufw status | grep -q 'Status: active'"
+}
+
+func runDigitalOceanSSHCommand(ctx context.Context, sshFn func(context.Context, string, ...string) *exec.Cmd, target, script string, out io.Writer) error {
+	if sshFn == nil {
+		sshFn = exec.CommandContext
+	}
+	sshCmd := sshFn(ctx, "ssh",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=10",
+		fmt.Sprintf("root@%s", target),
+		script,
+	)
+	var stderr bytes.Buffer
+	sshCmd.Stdout = out
+	sshCmd.Stderr = &stderr
+	if err := sshCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%s: %w", msg, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func verifyDigitalOceanLockdownWithProgress(ctx context.Context, sshFn func(context.Context, string, ...string) *exec.Cmd, targets []string, sleepFn func(time.Duration), attempts int, delay time.Duration, out io.Writer) (string, error) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if sleepFn == nil {
+		sleepFn = time.Sleep
+	}
+
+	cleanTargets := make([]string, 0, len(targets))
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" || seen[target] {
+			continue
+		}
+		seen[target] = true
+		cleanTargets = append(cleanTargets, target)
+	}
+	if len(cleanTargets) == 0 {
+		return "", fmt.Errorf("no Tailscale targets available for lockdown verification")
+	}
+
+	var lastAttemptErrors []string
+	for i := 0; i < attempts; i++ {
+		lastAttemptErrors = lastAttemptErrors[:0]
+		for _, target := range cleanTargets {
+			if err := runDigitalOceanSSHCommand(ctx, sshFn, target, digitalOceanLockdownVerifyScript(), out); err == nil {
+				return target, nil
+			} else {
+				lastAttemptErrors = append(lastAttemptErrors, fmt.Sprintf("%s: %v", target, err))
+			}
+		}
+
+		if out != nil {
+			fmt.Fprintf(out, "  Firewall lockdown verification attempt %d/%d for %s...\n", i+1, attempts, strings.Join(cleanTargets, ", "))
+		}
+		if i < attempts-1 {
+			sleepFn(delay)
+		}
+	}
+
+	return "", fmt.Errorf("lockdown marker not verified after %d attempts: %s", attempts, strings.Join(lastAttemptErrors, "; "))
+}
+
 // commandContext returns the configured command builder, defaulting to
 // exec.CommandContext.
 func (d *DigitalOceanProvider) commandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -96,13 +187,21 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("      curl -fsSL https://tailscale.com/install.sh | sh\n")
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
-	b.WriteString("      tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\"\n")
-	b.WriteString("      tailscale ip -4 > /root/.tailscale-ip\n")
-	b.WriteString("      if [ \"${TAILSCALE_LOCKDOWN:-false}\" = \"true\" ] && command -v ufw >/dev/null 2>&1; then\n")
-	b.WriteString("        ufw allow in on tailscale0 || true\n")
-	b.WriteString("        ufw allow proto tcp from 100.64.0.0/10 to any port 22 || true\n")
-	b.WriteString("        ufw deny 22/tcp || true\n")
-	b.WriteString("        ufw --force enable || true\n")
+	b.WriteString("      if tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\" && tailscale ip -4 > /root/.tailscale-ip && [ -s /root/.tailscale-ip ]; then\n")
+	b.WriteString("        if [ \"${TAILSCALE_LOCKDOWN:-false}\" = \"true\" ]; then\n")
+	b.WriteString("          if ! command -v ufw >/dev/null 2>&1; then\n")
+	b.WriteString("            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw\n")
+	b.WriteString("          fi\n")
+	b.WriteString("          ufw allow in on tailscale0 &&\n")
+	b.WriteString("          ufw allow in on tailscale0 proto udp to any port 60000:61000 &&\n")
+	b.WriteString("          ufw allow proto tcp from 100.64.0.0/10 to any port 22 &&\n")
+	b.WriteString("          ufw deny 22/tcp &&\n")
+	b.WriteString("          ufw --force enable &&\n")
+	b.WriteString("          touch " + digitalOceanLockdownMarker + "\n")
+	b.WriteString("        fi\n")
+	b.WriteString("      else\n")
+	b.WriteString("        rm -f /root/.tailscale-ip\n")
+	b.WriteString("        echo \"Tailscale setup failed; leaving public SSH available for recovery\" >&2\n")
 	b.WriteString("      fi\n")
 	b.WriteString("    fi\n")
 	b.WriteString("  - |\n")
@@ -291,40 +390,56 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	result := &SandboxResult{ID: id, Name: name, IP: ip}
 	if d.TailscaleLockdown {
 		fmt.Fprintf(safeOut, "Waiting for Tailscale on %s (cloud-init may take a few minutes)...\n", name)
-		tailscaleIP, err := fetchTailscaleIPWithProgress(ctx, "root", ip, d.sshContext, d.sleep, 18, 10*time.Second, safeOut)
+		tailscaleHostname := strings.TrimSpace(env["TAILSCALE_HOSTNAME"])
+		tailscaleIP, err := fetchTailscaleIPWithProgress(ctx, "root", ip, d.sshContext, d.sleep, digitalOceanTailscalePublicAttempts, 10*time.Second, safeOut)
 		if err != nil {
+			if tailscaleHostname == "" {
+				cleanupDroplet("tailscale IP unavailable")
+				return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
+			}
+
 			fmt.Fprintf(safeOut, "Warning: could not verify Tailscale IP over public SSH: %v\n", err)
-			fmt.Fprintf(safeOut, "Proceeding with Tailscale hostname fallback; use 'hal sandbox status %s' to inspect the saved target.\n", name)
+			fmt.Fprintf(safeOut, "Verifying Tailscale hostname fallback %s...\n", tailscaleHostname)
+			hostnameIP, hostnameErr := fetchTailscaleIPWithProgress(ctx, "root", tailscaleHostname, d.sshContext, d.sleep, digitalOceanTailscaleHostnameAttempts, 10*time.Second, safeOut)
+			if hostnameErr != nil {
+				cleanupDroplet("tailscale IP unavailable")
+				return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: public IP: %w; hostname %q: %v", err, tailscaleHostname, hostnameErr)
+			}
+			result.TailscaleIP = hostnameIP
+			if _, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, []string{tailscaleHostname, hostnameIP}, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut); verifyErr != nil {
+				cleanupDroplet("firewall lockdown unverified")
+				return nil, fmt.Errorf("failed to verify firewall lockdown in lockdown mode via hostname %q: %w", tailscaleHostname, verifyErr)
+			}
 			return result, nil
 		}
+
 		result.TailscaleIP = tailscaleIP
 
-		// Apply firewall lockdown after reading the Tailscale IP as a best-effort
-		// duplicate of cloud-init. If public SSH closes first, keep the sandbox:
-		// the saved Tailscale target remains the user's recovery path.
+		// Apply firewall lockdown after reading the Tailscale IP as a required
+		// duplicate of cloud-init. If public SSH closes first, verify over Tailscale.
 		fmt.Fprintf(safeOut, "Applying firewall lockdown on %s...\n", name)
-		lockdownScript := "ufw allow in on tailscale0 && ufw allow in on tailscale0 proto udp to any port 60000:61000 && ufw deny 22/tcp && ufw --force enable"
-		sshFn := d.sshContext
-		if sshFn == nil {
-			sshFn = exec.CommandContext
-		}
-		sshCmd := sshFn(ctx, "ssh",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "UserKnownHostsFile=/dev/null",
-			"-o", "ConnectTimeout=10",
-			fmt.Sprintf("root@%s", ip),
-			lockdownScript,
-		)
-		var lockStderr bytes.Buffer
-		sshCmd.Stdout = safeOut
-		sshCmd.Stderr = &lockStderr
-		if err := sshCmd.Run(); err != nil {
-			lockMsg := strings.TrimSpace(lockStderr.String())
-			if lockMsg != "" {
-				fmt.Fprintf(safeOut, "Warning: failed to apply post-create firewall lockdown over public SSH: %s: %v\n", lockMsg, err)
-			} else {
-				fmt.Fprintf(safeOut, "Warning: failed to apply post-create firewall lockdown over public SSH: %v\n", err)
+		if err := runDigitalOceanSSHCommand(ctx, d.sshContext, ip, digitalOceanFirewallLockdownScript(), safeOut); err != nil {
+			verifyTargets := []string{tailscaleIP}
+			if tailscaleHostname != "" && tailscaleHostname != tailscaleIP {
+				verifyTargets = append(verifyTargets, tailscaleHostname)
 			}
+			verifiedTarget, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, verifyTargets, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut)
+			if verifyErr == nil {
+				if verifiedTarget == tailscaleIP {
+					fmt.Fprintf(safeOut, "Verified firewall lockdown via Tailscale IP %s after public SSH closed.\n", tailscaleIP)
+				} else {
+					fmt.Fprintf(safeOut, "Verified firewall lockdown via Tailscale hostname %s after public SSH closed.\n", verifiedTarget)
+				}
+				return result, nil
+			}
+
+			if tailscaleHostname != "" && tailscaleHostname != tailscaleIP {
+				cleanupDroplet("firewall lockdown failed")
+				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w; verification via Tailscale targets failed: %v", err, verifyErr)
+			}
+
+			cleanupDroplet("firewall lockdown failed")
+			return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w; verification via Tailscale IP %q failed: %v", err, tailscaleIP, verifyErr)
 		}
 	}
 
@@ -398,7 +513,7 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, ou
 
 func (d *DigitalOceanProvider) resolveConnectIP(info *ConnectInfo) (string, error) {
 	if info != nil {
-		if ip := strings.TrimSpace(info.IP); ip != "" {
+		if ip := preferredConnectAddress(info, d.TailscaleLockdown); ip != "" {
 			return ip, nil
 		}
 		target := strings.TrimSpace(info.WorkspaceID)

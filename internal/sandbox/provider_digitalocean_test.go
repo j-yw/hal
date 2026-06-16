@@ -55,15 +55,25 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 func TestGenerateDOCloudInit_LockdownRunsFromCloudInit(t *testing.T) {
 	yaml := generateDOCloudInit(map[string]string{"TAILSCALE_AUTHKEY": "tskey-auth-test"}, true)
 
+	if !strings.Contains(yaml, "if tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\" && tailscale ip -4 > /root/.tailscale-ip && [ -s /root/.tailscale-ip ]; then") {
+		t.Fatalf("lockdown should be gated on a successful Tailscale join and IP write:\n%s", yaml)
+	}
 	for _, want := range []string{
+		"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw",
 		"ufw allow in on tailscale0",
+		"ufw allow in on tailscale0 proto udp to any port 60000:61000",
 		"ufw allow proto tcp from 100.64.0.0/10 to any port 22",
 		"ufw deny 22/tcp",
 		"ufw --force enable",
+		"touch /root/.hal-tailscale-lockdown",
+		"rm -f /root/.tailscale-ip",
 	} {
 		if !strings.Contains(yaml, want) {
 			t.Fatalf("cloud-init missing %q:\n%s", want, yaml)
 		}
+	}
+	if strings.Contains(yaml, "ufw allow in on tailscale0 || true") {
+		t.Fatalf("cloud-init must not suppress lockdown failures:\n%s", yaml)
 	}
 }
 
@@ -433,6 +443,50 @@ func TestDigitalOceanProvider_Exec_WithConnectInfoIP(t *testing.T) {
 	}
 }
 
+func TestDigitalOceanProvider_SSH_LockdownPrefersTailscaleHostname(t *testing.T) {
+	dp := &DigitalOceanProvider{
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+	}
+
+	cmd, err := dp.SSH(&ConnectInfo{
+		Name:              "my-droplet",
+		IP:                "164.90.190.11",
+		TailscaleHostname: "hal-dev-019ecfc3",
+	})
+	if err != nil {
+		t.Fatalf("SSH() unexpected error: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "root@hal-dev-019ecfc3") {
+		t.Fatalf("SSH cmd should contain root@hal-dev-019ecfc3, got: %s", args)
+	}
+	if strings.Contains(args, "root@164.90.190.11") {
+		t.Fatalf("SSH cmd should not use public IP in lockdown mode, got: %s", args)
+	}
+}
+
+func TestDigitalOceanProvider_SSH_NonLockdownKeepsPublicIPBeforeHostname(t *testing.T) {
+	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
+	}
+
+	cmd, err := dp.SSH(&ConnectInfo{
+		Name:              "my-droplet",
+		IP:                "164.90.190.11",
+		TailscaleHostname: "hal-dev-019ecfc3",
+	})
+	if err != nil {
+		t.Fatalf("SSH() unexpected error: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "root@164.90.190.11") {
+		t.Fatalf("SSH cmd should contain root@164.90.190.11, got: %s", args)
+	}
+}
+
 func TestDigitalOceanProvider_SSH_MissingIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
@@ -582,7 +636,7 @@ func TestDigitalOceanProvider_Create_ErrorsWhenPublicIPMissing(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenTailscaleIPUnavailable(t *testing.T) {
+func TestDigitalOceanProvider_Create_LockdownCleansUpWhenTailscaleIPUnavailable(t *testing.T) {
 	var calls [][]string
 	dp := &DigitalOceanProvider{
 		SSHKey:            "ab:cd:ef:12:34",
@@ -607,26 +661,233 @@ func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenTailscaleIPUnav
 
 	var out bytes.Buffer
 	result, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when tailscale IP lookup fails in lockdown mode, got nil")
+	}
+	if result != nil {
+		t.Fatalf("Create() result = %#v, want nil on lockdown verification failure", result)
+	}
+	if !strings.Contains(err.Error(), "failed to fetch tailscale IP in lockdown mode") {
+		t.Fatalf("error = %q, want tailscale IP failure", err.Error())
+	}
+	if !strings.Contains(out.String(), "Cleaning up test-droplet after failure (tailscale IP unavailable)") {
+		t.Fatalf("output missing cleanup message: %q", out.String())
+	}
+	var deleted bool
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("Create() should delete droplet on Tailscale verification failure, calls=%v", calls)
+	}
+}
+
+func TestDigitalOceanProvider_Create_LockdownCleansUpWhenTailscaleHostnameVerificationFails(t *testing.T) {
+	var calls [][]string
+	dp := &DigitalOceanProvider{
+		SSHKey:            "ab:cd:ef:12:34",
+		Size:              "s-2vcpu-4gb",
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "false")
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "test-droplet", map[string]string{"TAILSCALE_HOSTNAME": "hal-test-droplet-1234"}, &out)
+	if err == nil {
+		t.Fatal("Create() expected error when hostname fallback verification fails, got nil")
+	}
+	if result != nil {
+		t.Fatalf("Create() result = %#v, want nil on lockdown verification failure", result)
+	}
+	if !strings.Contains(err.Error(), "hostname \"hal-test-droplet-1234\"") {
+		t.Fatalf("error = %q, want hostname verification failure", err.Error())
+	}
+	if !strings.Contains(out.String(), "Verifying Tailscale hostname fallback hal-test-droplet-1234") {
+		t.Fatalf("output missing hostname fallback verification: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Cleaning up test-droplet after failure (tailscale IP unavailable)") {
+		t.Fatalf("output missing cleanup message: %q", out.String())
+	}
+	var deleted bool
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("Create() should delete droplet when hostname fallback verification fails, calls=%v", calls)
+	}
+}
+
+func TestDigitalOceanProvider_Create_LockdownKeepsPublicIPRetriesWithHostname(t *testing.T) {
+	var publicCatCalls int
+	var hostnameCatCalls int
+
+	dp := &DigitalOceanProvider{
+		SSHKey:            "ab:cd:ef:12:34",
+		Size:              "s-2vcpu-4gb",
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "root@10.20.30.40") && strings.Contains(joined, "cat /root/.tailscale-ip") {
+				publicCatCalls++
+				if publicCatCalls == 2 {
+					return exec.CommandContext(ctx, "echo", "100.64.0.99")
+				}
+				return exec.CommandContext(ctx, "false")
+			}
+			if strings.Contains(joined, "root@hal-test-droplet-1234") && strings.Contains(joined, "cat /root/.tailscale-ip") {
+				hostnameCatCalls++
+				return exec.CommandContext(ctx, "false")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "test-droplet", map[string]string{"TAILSCALE_HOSTNAME": "hal-test-droplet-1234"}, &out)
 	if err != nil {
-		t.Fatalf("Create() unexpected error when tailscale IP lookup fails in lockdown mode: %v", err)
+		t.Fatalf("Create() unexpected error when public IP succeeds after retry: %v", err)
 	}
-	if result == nil || result.ID != "123456789" || result.IP != "10.20.30.40" {
-		t.Fatalf("Create() result = %#v, want preserved droplet result", result)
+	if result == nil || result.TailscaleIP != "100.64.0.99" {
+		t.Fatalf("Create() result = %#v, want Tailscale IP from public retry", result)
 	}
-	if result.TailscaleIP != "" {
-		t.Fatalf("TailscaleIP = %q, want empty when verification fails", result.TailscaleIP)
+	if publicCatCalls != 2 {
+		t.Fatalf("Create() public IP Tailscale lookups = %d, want 2", publicCatCalls)
 	}
-	if !strings.Contains(out.String(), "Warning: could not verify Tailscale IP over public SSH") {
-		t.Fatalf("output missing verification warning: %q", out.String())
+	if hostnameCatCalls != 0 {
+		t.Fatalf("Create() hostname lookups = %d, want 0 before public retry budget is exhausted", hostnameCatCalls)
+	}
+}
+
+func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenTailscaleHostnameVerified(t *testing.T) {
+	var calls [][]string
+	var sshCalls [][]string
+	dp := &DigitalOceanProvider{
+		SSHKey:            "ab:cd:ef:12:34",
+		Size:              "s-2vcpu-4gb",
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			sshCalls = append(sshCalls, append([]string{name}, args...))
+			if strings.Contains(strings.Join(args, " "), "root@hal-test-droplet-1234") {
+				return exec.CommandContext(ctx, "echo", "100.64.0.99")
+			}
+			return exec.CommandContext(ctx, "false")
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "test-droplet", map[string]string{"TAILSCALE_HOSTNAME": "hal-test-droplet-1234"}, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error when Tailscale hostname fallback is verified: %v", err)
+	}
+	if result == nil || result.TailscaleIP != "100.64.0.99" {
+		t.Fatalf("Create() result = %#v, want verified Tailscale IP", result)
+	}
+	if !strings.Contains(out.String(), "Verifying Tailscale hostname fallback hal-test-droplet-1234") {
+		t.Fatalf("output missing hostname fallback verification: %q", out.String())
+	}
+	for _, call := range sshCalls {
+		if strings.Contains(strings.Join(call, " "), "ufw deny 22/tcp") {
+			t.Fatalf("Create() should not apply public-IP firewall lockdown after hostname verification, sshCalls=%v", sshCalls)
+		}
 	}
 	for _, call := range calls {
 		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
-			t.Fatalf("Create() should preserve droplet on Tailscale verification failure, calls=%v", calls)
+			t.Fatalf("Create() should preserve droplet with verified Tailscale hostname fallback, calls=%v", calls)
 		}
 	}
 }
 
-func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenFirewallLockdownFails(t *testing.T) {
+func TestDigitalOceanProvider_Create_LockdownVerifiesFirewallViaTailscaleIPBeforeHostname(t *testing.T) {
+	var calls [][]string
+	var sshCalls [][]string
+
+	dp := &DigitalOceanProvider{
+		SSHKey:            "ab:cd:ef:12:34",
+		Size:              "s-2vcpu-4gb",
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
+		sleep:             func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			sshCalls = append(sshCalls, append([]string{name}, args...))
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "root@10.20.30.40") && strings.Contains(joined, "cat /root/.tailscale-ip"):
+				return exec.CommandContext(ctx, "echo", "100.64.0.99")
+			case strings.Contains(joined, "root@10.20.30.40") && strings.Contains(joined, "ufw deny 22/tcp"):
+				return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			case strings.Contains(joined, "root@100.64.0.99") && strings.Contains(joined, digitalOceanLockdownMarker):
+				return exec.CommandContext(ctx, "true")
+			case strings.Contains(joined, "root@hal-test-droplet-1234"):
+				return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			default:
+				return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			}
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "test-droplet", map[string]string{"TAILSCALE_HOSTNAME": "hal-test-droplet-1234"}, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error when firewall lockdown verifies over Tailscale IP: %v", err)
+	}
+	if result == nil || result.TailscaleIP != "100.64.0.99" {
+		t.Fatalf("Create() result = %#v, want verified Tailscale IP", result)
+	}
+	if !strings.Contains(out.String(), "Verified firewall lockdown via Tailscale IP 100.64.0.99") {
+		t.Fatalf("output missing Tailscale IP verification: %q", out.String())
+	}
+	for _, call := range sshCalls {
+		if strings.Contains(strings.Join(call, " "), "root@hal-test-droplet-1234") {
+			t.Fatalf("Create() should verify over the known Tailscale IP before hostname fallback, sshCalls=%v", sshCalls)
+		}
+	}
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
+			t.Fatalf("Create() should preserve droplet when Tailscale IP verification succeeds, calls=%v", calls)
+		}
+	}
+}
+
+func TestDigitalOceanProvider_Create_LockdownCleansUpWhenFirewallLockdownFails(t *testing.T) {
 	var calls [][]string
 	sshCalls := 0
 
@@ -654,19 +915,26 @@ func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenFirewallLockdow
 
 	var out bytes.Buffer
 	result, err := dp.Create(context.Background(), "test-droplet", nil, &out)
-	if err != nil {
-		t.Fatalf("Create() unexpected error when firewall lockdown fails in lockdown mode: %v", err)
+	if err == nil {
+		t.Fatal("Create() expected error when firewall lockdown cannot be verified, got nil")
 	}
-	if result == nil || result.TailscaleIP != "100.64.0.99" {
-		t.Fatalf("Create() result = %#v, want verified Tailscale IP", result)
+	if result != nil {
+		t.Fatalf("Create() result = %#v, want nil on lockdown failure", result)
 	}
-	if !strings.Contains(out.String(), "Warning: failed to apply post-create firewall lockdown over public SSH") {
-		t.Fatalf("output missing firewall warning: %q", out.String())
+	if !strings.Contains(err.Error(), "failed to apply firewall lockdown in lockdown mode") {
+		t.Fatalf("error = %q, want firewall lockdown failure", err.Error())
+	}
+	if !strings.Contains(out.String(), "Cleaning up test-droplet after failure (firewall lockdown failed)") {
+		t.Fatalf("output missing cleanup message: %q", out.String())
 	}
 
+	var deleted bool
 	for _, call := range calls {
 		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
-			t.Fatalf("Create() should preserve droplet on firewall warning, calls=%v", calls)
+			deleted = true
 		}
+	}
+	if !deleted {
+		t.Fatalf("Create() should delete droplet when firewall lockdown cannot be verified, calls=%v", calls)
 	}
 }
