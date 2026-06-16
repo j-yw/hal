@@ -231,11 +231,12 @@ hal uses one template snapshot contract:
 
 - template snapshot name is fixed to `hal`
 - template source is fixed to `sandbox/Dockerfile` with build context `.`
-- `hal sandbox start [-n NAME]` always resolves snapshot `hal` (reuse if active, create if missing)
+- `hal sandbox create [-n NAME]` always resolves snapshot `hal` (reuse if active, create if missing)
 
 ```bash
 hal sandbox snapshot create      # create/reuse template snapshot "hal"
-hal sandbox start -n my-box      # start sandbox from template snapshot "hal"
+hal sandbox create -n my-box     # provision sandbox from template snapshot "hal"
+hal sandbox start my-box         # power on a stopped sandbox
 ```
 
 After changing `sandbox/Dockerfile`, refresh the template snapshot:
@@ -248,13 +249,12 @@ hal sandbox snapshot create
 
 ### Sandbox Name and Exec Passthrough
 
-`--name/-n` is available on:
-- `hal sandbox start`
-- `hal sandbox status`
-- `hal sandbox stop`
-- `hal sandbox delete`
-- `hal sandbox shell`
-- `hal sandbox exec`
+`--name/-n` is available on `hal sandbox create`. Lifecycle commands target existing sandboxes positionally:
+- `hal sandbox start NAME`
+- `hal sandbox status NAME`
+- `hal sandbox stop NAME`
+- `hal sandbox delete NAME`
+- `hal sandbox ssh NAME`
 
 For remote commands that start with flags, use `--`:
 

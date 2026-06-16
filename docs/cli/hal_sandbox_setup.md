@@ -22,7 +22,7 @@ All values are saved to global sandbox config (~/.config/hal/sandbox-config.yaml
 unless HAL_CONFIG_HOME is set). Re-running setup lets you update individual
 values — press Enter to keep the current value.
 
-After setup, 'hal sandbox start' injects all configured env vars automatically.
+After setup, 'hal sandbox create' injects all configured env vars automatically.
 
 ```
 hal sandbox setup [flags]
