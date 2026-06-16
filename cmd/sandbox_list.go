@@ -209,7 +209,7 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 	}
 
 	if len(instances) == 0 {
-		fmt.Fprintln(out, "No sandboxes found. Run 'hal sandbox start' to create one.")
+		fmt.Fprintln(out, "No sandboxes found. Run 'hal sandbox create' to provision one.")
 		return nil
 	}
 
@@ -455,6 +455,8 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 		tailscale := "—"
 		if inst.TailscaleIP != "" {
 			tailscale = inst.TailscaleIP
+		} else if inst.TailscaleHostname != "" {
+			tailscale = inst.TailscaleHostname
 		}
 
 		age := "—"

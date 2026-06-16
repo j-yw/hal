@@ -244,16 +244,16 @@ Auto-shutdown after idle? (y/n) [y]:
 Idle timeout hours [48]:
 ```
 
-### `hal sandbox start`
+### `hal sandbox create`
 
 ```bash
-hal sandbox start -n api-backend                     # one sandbox
-hal sandbox start -n worker --count 5                # worker-01..worker-05
-hal sandbox start -n gpu --size s-4vcpu-8gb           # size override
-hal sandbox start -n quick --idle-hours 4             # custom idle timeout
-hal sandbox start -n long-run --no-auto-shutdown      # never auto-stop
-hal sandbox start -n app --repo github.com/me/app     # repo label
-hal sandbox start -n redo --force                     # replace existing
+hal sandbox create -n api-backend                     # one sandbox
+hal sandbox create -n worker --count 5                # worker-01..worker-05
+hal sandbox create -n gpu --size s-4vcpu-8gb           # size override
+hal sandbox create -n quick --idle-hours 4             # custom idle timeout
+hal sandbox create -n long-run --no-auto-shutdown      # never auto-stop
+hal sandbox create -n app --repo github.com/me/app     # repo label
+hal sandbox create -n redo --force                     # replace existing
 ```
 
 | Flag | Type | Default | Description |
@@ -284,6 +284,18 @@ Creating 5 sandboxes (digitalocean)...
 ```
 
 **Partial failure**: Successful instances are kept and registered. Failed instances are reported but not rolled back. Exit code 1 if any failed. User can `hal sandbox delete --pattern "worker-*"` to clean up.
+
+### `hal sandbox start`
+
+```bash
+hal sandbox start api-backend            # one stopped sandbox
+hal sandbox start worker-01 worker-02    # multiple stopped sandboxes
+hal sandbox start --all                  # all stopped
+hal sandbox start --pattern "worker-*"   # stopped sandboxes matching glob
+hal sandbox start                        # auto: if exactly 1 stopped → start it; else error with choices
+```
+
+`start` is a lifecycle power-on command for existing registry entries. Use `hal sandbox create` to provision a new sandbox.
 
 ### `hal sandbox list`
 
@@ -504,7 +516,7 @@ Locked by field-name tests in `cmd/machine_contracts_test.go` and doc-sync tests
 
 | Old command | Old behavior | New behavior |
 |-------------|-------------|--------------|
-| `hal sandbox start -n dev` | Creates one, saves to `.hal/sandbox.json` | Creates one, saves to `~/.config/hal/sandboxes/dev.json` |
+| `hal sandbox create -n dev` | Previously `start` created one and saved `.hal/sandbox.json` | Creates one, saves to `~/.config/hal/sandboxes/dev.json`, and mirrors `.hal/sandbox.json` when `.hal/` exists |
 | `hal sandbox ssh` (no name) | Loads `.hal/sandbox.json` | If exactly 1 sandbox → connect + hint. If 0 → error. If >1 → error listing choices. |
 | `hal sandbox stop` (no name) | Loads `.hal/sandbox.json` | If exactly 1 running → stop + hint. If 0 → error. If >1 → error listing choices. |
 | `hal sandbox delete` (no name) | Loads `.hal/sandbox.json` | If exactly 1 → delete + hint. If 0 → error. If >1 → error listing choices. |
@@ -527,7 +539,7 @@ internal/sandbox/
 │                              ForceWriteInstance, ResolveDefault
 ├── migrate.go               ← Migrate(), 8-case matrix, conditional state cleanup, cross-device safe
 ├── pricing.go               ← hourlyRates, EstimatedCost (all VPS charge when stopped)
-├── provider.go              ← ConnectInfo, Provider interface (refactored signatures)
+├── provider.go              ← ConnectInfo, LifecycleResult, Provider interface
 ├── provider_daytona.go      ← uses ConnectInfo.Name (no StateDir)
 ├── provider_digitalocean.go ← uses ConnectInfo.IP + .WorkspaceID (no StateDir/resolveDropletTarget)
 ├── provider_hetzner.go      ← uses ConnectInfo.IP (no StateDir)
@@ -538,8 +550,9 @@ internal/sandbox/
 
 cmd/
 ├── sandbox.go               ← setup → saves globally, no .hal/ dep
-├── sandbox_start.go         ← --count, --auto-shutdown, --size, --repo, --force, Tailscale hostname
-├── sandbox_list.go          ← NEW: --json, --live, --running, --quiet
+├── sandbox_create.go        ← --count, --auto-shutdown, --size, --repo, --force, Tailscale hostname
+├── sandbox_start.go         ← lifecycle power-on for existing sandboxes
+├── sandbox_list.go          ← NEW: --json, --live
 ├── sandbox_stop.go          ← NAME args, --all, --pattern, no-name compat
 ├── sandbox_delete.go        ← NAME args, --all, --pattern, --yes, no-name compat
 ├── sandbox_ssh.go           ← NAME required (or auto if 1), ConnectInfo
@@ -564,7 +577,7 @@ docs/
 | **4** | `migrate.go` + tests | 2, 3 | M |
 | **5** | Provider interface refactor (all `provider_*.go`) + tests | — | L |
 | **6** | `cmd/sandbox.go` setup → global | 3 | M |
-| **7** | `cmd/sandbox_start.go` (batch, auto-shutdown, Tailscale hostnames) | 2, 3, 5 | L |
+| **7** | `cmd/sandbox_create.go` (batch, auto-shutdown, Tailscale hostnames) | 2, 3, 5 | L |
 | **8** | `cmd/sandbox_list.go` + `pricing.go` + tests | 2 | M |
 | **9** | `cmd/sandbox_stop.go` + `cmd/sandbox_delete.go` updates | 2, 5 | M |
 | **10** | `cmd/sandbox_ssh.go` + `cmd/sandbox_status.go` updates | 2, 5 | S |

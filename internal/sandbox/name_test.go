@@ -182,6 +182,50 @@ func TestTailscaleHostname(t *testing.T) {
 	}
 }
 
+func TestTailscaleHostnameForInstance(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{
+			name: "dev",
+			id:   "019ecfb9-0d08-74d5-b50c-a0a64175f9bc",
+			want: "hal-dev-4175f9bc",
+		},
+		{
+			name: "dev",
+			id:   "",
+			want: "hal-dev",
+		},
+		{
+			name: strings.Repeat("a", 59),
+			id:   "abcdef12-3456",
+			want: "hal-" + strings.Repeat("a", 50) + "-ef123456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := TailscaleHostnameForInstance(tt.name, tt.id); got != tt.want {
+				t.Fatalf("TailscaleHostnameForInstance() = %q, want %q", got, tt.want)
+			}
+			if len(tt.want) > maxTailscaleLabelLen {
+				t.Fatalf("test fixture exceeds max label length: %q", tt.want)
+			}
+		})
+	}
+}
+
+func TestTailscaleHostnameForInstanceUsesUUIDRandomSuffix(t *testing.T) {
+	first := TailscaleHostnameForInstance("dev", "019ecfb9-0d08-74d5-b50c-a0a64175f9bc")
+	second := TailscaleHostnameForInstance("dev", "019ecfb9-0d08-74d5-b50c-a0a64175f9bd")
+
+	if first == second {
+		t.Fatalf("TailscaleHostnameForInstance() reused suffix for distinct IDs: %q", first)
+	}
+}
+
 func TestSandboxNameFromBranch(t *testing.T) {
 	tests := []struct {
 		name  string

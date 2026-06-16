@@ -32,6 +32,10 @@ func (p *liveTestProvider) Stop(_ context.Context, _ *sandbox.ConnectInfo, out i
 	return nil
 }
 
+func (p *liveTestProvider) Start(_ context.Context, _ *sandbox.ConnectInfo, out io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
+
 func (p *liveTestProvider) Delete(_ context.Context, _ *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
@@ -95,7 +99,7 @@ func TestRunSandboxList_EmptyRegistry(t *testing.T) {
 
 func TestResolveProviderFromGlobalConfig_IgnoresProjectConfigWhenGlobalFileMissing(t *testing.T) {
 	dir := t.TempDir()
-	setupStartTest(t, dir)
+	setupCreateTest(t, dir)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", dir)
 
@@ -136,7 +140,7 @@ sandbox:
 
 func TestResolveProviderWithFallback_UsesProjectConfigWhenGlobalFileMissing(t *testing.T) {
 	dir := t.TempDir()
-	setupStartTest(t, dir)
+	setupCreateTest(t, dir)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", dir)
 
@@ -626,6 +630,45 @@ func TestRunSandboxList_NoTailscaleShowsDash(t *testing.T) {
 			break
 		}
 	}
+}
+
+func TestRunSandboxList_TailscaleHostnameFallback(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:                "id-1",
+		Name:              "hostname-ts",
+		Provider:          "digitalocean",
+		Status:            sandbox.StatusRunning,
+		IP:                "203.0.113.10",
+		TailscaleHostname: "hal-dev",
+		CreatedAt:         now.Add(-1 * time.Hour),
+		Size:              "s-1vcpu-1gb",
+		AutoShutdown:      true,
+		IdleHours:         48,
+	})
+
+	var buf bytes.Buffer
+	err := runSandboxList(&buf, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "hostname-ts") {
+			if !strings.Contains(line, "hal-dev") {
+				t.Fatalf("expected tailscale hostname fallback in line: %s", line)
+			}
+			return
+		}
+	}
+	t.Fatalf("sandbox row missing from output: %s", out)
 }
 
 func TestFormatAge(t *testing.T) {

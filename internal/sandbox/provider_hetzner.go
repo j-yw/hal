@@ -77,7 +77,7 @@ func generateCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("    set -a\n")
 	b.WriteString("    . /root/.env\n")
 	b.WriteString("    set +a\n")
-	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
+	appendSetupScriptRunner(&b, "    ")
 
 	return b.String()
 }
@@ -231,6 +231,36 @@ func (h *HetznerProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Wr
 	return nil
 }
 
+func (h *HetznerProvider) Start(ctx context.Context, info *ConnectInfo, out io.Writer) (*LifecycleResult, error) {
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return nil, fmt.Errorf("sandbox name is required")
+	}
+
+	var captured bytes.Buffer
+	stream := io.Writer(&captured)
+	if out != nil {
+		stream = io.MultiWriter(out, &captured)
+	}
+	safeOut := synchronizedWriter(stream)
+	cmd := h.commandContext(ctx, "hcloud", "server", "poweron", name)
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
+	if err := cmd.Run(); err != nil {
+		if isAlreadyRunningLifecycleOutput(captured.String()) {
+			return &LifecycleResult{Status: StatusRunning}, nil
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("hcloud server poweron failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return nil, fmt.Errorf("hcloud server poweron failed: %w", err)
+	}
+	return &LifecycleResult{Status: StatusRunning}, nil
+}
+
 func (h *HetznerProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	name := ""
 	if info != nil {
@@ -254,10 +284,7 @@ func (h *HetznerProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 }
 
 func (h *HetznerProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, h.TailscaleLockdown)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
@@ -274,10 +301,7 @@ func (h *HetznerProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (h *HetznerProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, h.TailscaleLockdown)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}

@@ -28,7 +28,7 @@ func TestSandboxStateJSONTags(t *testing.T) {
 				AutoShutdown: false,
 			},
 			wantPresent: []string{"id", "name", "provider", "ip", "status", "createdAt", "autoShutdown"},
-			wantAbsent:  []string{"workspaceId", "tailscaleIp", "tailscaleHostname", "stoppedAt", "idleHours", "size", "repo", "snapshotId"},
+			wantAbsent:  []string{"workspaceId", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown", "stoppedAt", "idleHours", "size", "repo", "snapshotId"},
 		},
 		{
 			name: "full state includes optional fields with camelCase keys",
@@ -40,6 +40,7 @@ func TestSandboxStateJSONTags(t *testing.T) {
 				IP:                "104.131.5.22",
 				TailscaleIP:       "100.64.1.10",
 				TailscaleHostname: "hal-api-backend",
+				TailscaleLockdown: true,
 				Status:            StatusStopped,
 				CreatedAt:         createdAt,
 				StoppedAt:         &stoppedAt,
@@ -50,7 +51,7 @@ func TestSandboxStateJSONTags(t *testing.T) {
 				SnapshotID:        "snap-123",
 			},
 			wantPresent: []string{
-				"id", "name", "provider", "workspaceId", "ip", "tailscaleIp", "tailscaleHostname",
+				"id", "name", "provider", "workspaceId", "ip", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
 				"status", "createdAt", "stoppedAt", "autoShutdown", "idleHours", "size", "repo", "snapshotId",
 			},
 		},
