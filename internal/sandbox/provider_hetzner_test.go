@@ -271,6 +271,33 @@ func TestHetznerProvider_Stop_Success(t *testing.T) {
 	}
 }
 
+func TestHetznerProvider_Start_Success(t *testing.T) {
+	var capturedArgs []string
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "powered on")
+		},
+	}
+
+	result, err := hp.Start(context.Background(), &ConnectInfo{Name: "my-server"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if result == nil || result.Status != StatusRunning {
+		t.Fatalf("result = %+v, want running status", result)
+	}
+	wantArgs := []string{"hcloud", "server", "poweron", "my-server"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+}
+
 func TestHetznerProvider_Stop_Failure(t *testing.T) {
 	hp := &HetznerProvider{
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {

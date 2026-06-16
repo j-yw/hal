@@ -218,6 +218,24 @@ func (d *DaytonaProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Wr
 	return nil
 }
 
+func (d *DaytonaProvider) Start(ctx context.Context, info *ConnectInfo, out io.Writer) (*LifecycleResult, error) {
+	if err := d.validateCredentials(); err != nil {
+		return nil, err
+	}
+	name, err := daytonaTargetName(info)
+	if err != nil {
+		return nil, err
+	}
+	output, err := d.runDaytona(ctx, out, "start", name)
+	if err != nil {
+		if isAlreadyRunningLifecycleOutput(output) {
+			return &LifecycleResult{Status: StatusRunning}, nil
+		}
+		return nil, wrapDaytonaError("start", err)
+	}
+	return &LifecycleResult{Status: StatusRunning}, nil
+}
+
 func (d *DaytonaProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := d.validateCredentials(); err != nil {
 		return err

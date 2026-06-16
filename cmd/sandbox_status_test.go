@@ -29,6 +29,9 @@ func (m *mockStatusProvider) Create(ctx context.Context, name string, env map[st
 func (m *mockStatusProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }
+func (m *mockStatusProvider) Start(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
 func (m *mockStatusProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }

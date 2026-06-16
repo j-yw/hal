@@ -56,6 +56,10 @@ func (m *mockStopProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo, 
 	return m.stopErr
 }
 
+func (m *mockStopProvider) Start(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
+
 func (m *mockStopProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	return nil
 }

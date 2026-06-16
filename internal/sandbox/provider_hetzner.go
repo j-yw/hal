@@ -231,6 +231,36 @@ func (h *HetznerProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Wr
 	return nil
 }
 
+func (h *HetznerProvider) Start(ctx context.Context, info *ConnectInfo, out io.Writer) (*LifecycleResult, error) {
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return nil, fmt.Errorf("sandbox name is required")
+	}
+
+	var captured bytes.Buffer
+	stream := io.Writer(&captured)
+	if out != nil {
+		stream = io.MultiWriter(out, &captured)
+	}
+	safeOut := synchronizedWriter(stream)
+	cmd := h.commandContext(ctx, "hcloud", "server", "poweron", name)
+	cmd.Stdout = safeOut
+	cmd.Stderr = safeOut
+	if err := cmd.Run(); err != nil {
+		if isAlreadyRunningLifecycleOutput(captured.String()) {
+			return &LifecycleResult{Status: StatusRunning}, nil
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("hcloud server poweron failed with exit code %d: %w", exitErr.ExitCode(), err)
+		}
+		return nil, fmt.Errorf("hcloud server poweron failed: %w", err)
+	}
+	return &LifecycleResult{Status: StatusRunning}, nil
+}
+
 func (h *HetznerProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	name := ""
 	if info != nil {

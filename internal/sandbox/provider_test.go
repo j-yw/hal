@@ -77,6 +77,7 @@ func TestProviderFromConfig_AllKnown(t *testing.T) {
 		{"daytona", "daytona", "*sandbox.DaytonaProvider"},
 		{"hetzner", "hetzner", "*sandbox.HetznerProvider"},
 		{"digitalocean", "digitalocean", "*sandbox.DigitalOceanProvider"},
+		{"lightsail", "lightsail", "*sandbox.LightsailProvider"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

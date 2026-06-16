@@ -69,6 +69,10 @@ func (m *mockDeleteProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo
 	return nil
 }
 
+func (m *mockDeleteProvider) Start(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
+
 func (m *mockDeleteProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

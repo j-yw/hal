@@ -17,6 +17,14 @@ type SandboxResult struct {
 	TailscaleIP string
 }
 
+// LifecycleResult holds the result of a provider lifecycle operation such as
+// starting a stopped sandbox. Command-layer callers persist these fields into
+// SandboxState when they are available.
+type LifecycleResult struct {
+	Status string
+	IP     string
+}
+
 // ConnectInfo is the provider-facing connection target for SSH/Exec/Status
 // style operations. Provider signature migration to this type is incremental;
 // command code can build it ahead of interface changes.
@@ -93,6 +101,24 @@ func preferredConnectAddress(info *ConnectInfo, preferTailscaleHostname bool) st
 	return strings.TrimSpace(info.TailscaleHostname)
 }
 
+func isAlreadyRunningLifecycleOutput(output string) bool {
+	text := strings.ToLower(output)
+	return strings.Contains(text, "already running") ||
+		strings.Contains(text, "already started") ||
+		strings.Contains(text, "already active") ||
+		strings.Contains(text, "already powered on") ||
+		strings.Contains(text, "already on")
+}
+
+func isAlreadyStoppedLifecycleOutput(output string) bool {
+	text := strings.ToLower(output)
+	return strings.Contains(text, "already stopped") ||
+		strings.Contains(text, "already off") ||
+		strings.Contains(text, "already powered off") ||
+		strings.Contains(text, "already shut down") ||
+		strings.Contains(text, "already shutdown")
+}
+
 // Provider defines the interface for sandbox backends.
 // Implementations shell out to CLI tools (daytona, hcloud+ssh) rather than
 // using SDKs, keeping dependencies minimal.
@@ -103,6 +129,9 @@ type Provider interface {
 
 	// Stop halts a running sandbox identified by ConnectInfo.
 	Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error
+
+	// Start powers on a stopped sandbox identified by ConnectInfo.
+	Start(ctx context.Context, info *ConnectInfo, out io.Writer) (*LifecycleResult, error)
 
 	// Delete removes a sandbox permanently.
 	Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error
@@ -130,7 +159,7 @@ func RunCmd(cmd *exec.Cmd, out io.Writer) error {
 }
 
 // ProviderFromConfig returns the Provider implementation matching the given
-// provider name. Known providers: "daytona", "hetzner", "digitalocean".
+// provider name. Known providers: "daytona", "hetzner", "digitalocean", "lightsail".
 func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 	switch provider {
 	case "daytona":

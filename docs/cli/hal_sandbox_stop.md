@@ -1,10 +1,10 @@
 ## hal sandbox stop
 
-Stop one or more running sandboxes
+Power off / shut down one or more running sandboxes
 
 ### Synopsis
 
-Stop one or more running sandboxes.
+Power off / shut down one or more running sandboxes.
 
 Targets can be specified as positional arguments, with --all for every running
 sandbox, or with --pattern to match a glob pattern.
@@ -15,6 +15,9 @@ When no arguments or flags are provided, the command auto-resolves:
   - If multiple are running, an error lists the available choices.
 
 Resolved targets are de-duplicated and sorted by name before execution.
+
+Provider billing note: DigitalOcean and Hetzner continue billing while powered off.
+Use 'hal sandbox delete' to permanently remove a sandbox and end provider charges.
 
 ```
 hal sandbox stop [NAME ...] [flags]
@@ -32,9 +35,9 @@ hal sandbox stop [NAME ...] [flags]
 ### Options
 
 ```
-      --all              Stop all running sandboxes
+      --all              Power off / shut down all running sandboxes
   -h, --help             help for stop
-      --pattern string   Stop sandboxes matching a glob pattern
+      --pattern string   Power off / shut down sandboxes matching a glob pattern
 ```
 
 ### SEE ALSO

@@ -192,12 +192,15 @@ func TestDigitalOceanProvider_Create_VerifiesArgs(t *testing.T) {
 }
 
 func TestDigitalOceanProvider_Stop_VerifiesArgs(t *testing.T) {
-	var capturedArgs []string
+	var calls [][]string
 
 	dp := &DigitalOceanProvider{
 		lookPath: doctlLookPathStub,
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			capturedArgs = append([]string{name}, args...)
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 4 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "off")
+			}
 			return exec.CommandContext(ctx, "true")
 		},
 	}
@@ -207,10 +210,77 @@ func TestDigitalOceanProvider_Stop_VerifiesArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stop() unexpected error: %v", err)
 	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v, want shutdown and status check", calls)
+	}
 
-	joined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(joined, "doctl compute droplet-action shutdown 123456789") {
-		t.Errorf("stop args should contain 'doctl compute droplet-action shutdown 123456789', got: %s", joined)
+	shutdownJoined := strings.Join(calls[0], " ")
+	if !strings.Contains(shutdownJoined, "doctl compute droplet-action shutdown 123456789 --wait") {
+		t.Errorf("stop args should contain shutdown --wait, got: %s", shutdownJoined)
+	}
+	statusJoined := strings.Join(calls[1], " ")
+	if !strings.Contains(statusJoined, "doctl compute droplet get 123456789") || !strings.Contains(statusJoined, "--format Status") {
+		t.Errorf("status args should check droplet status, got: %s", statusJoined)
+	}
+}
+
+func TestDigitalOceanProvider_Stop_FallsBackToPowerOffWhenShutdownLeavesDropletRunning(t *testing.T) {
+	var calls [][]string
+
+	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 4 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "active")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	if err := dp.Stop(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("Stop() unexpected error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("calls = %v, want shutdown, status check, power-off fallback", calls)
+	}
+	fallbackJoined := strings.Join(calls[2], " ")
+	if !strings.Contains(fallbackJoined, "doctl compute droplet-action power-off 123456789 --wait") {
+		t.Fatalf("fallback args = %q, want power-off --wait", fallbackJoined)
+	}
+}
+
+func TestDigitalOceanProvider_Start_VerifiesArgsAndRefreshesIP(t *testing.T) {
+	var calls [][]string
+
+	dp := &DigitalOceanProvider{
+		lookPath: doctlLookPathStub,
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 4 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	result, err := dp.Start(context.Background(), &ConnectInfo{Name: "my-droplet", WorkspaceID: "123456789"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if result == nil || result.Status != StatusRunning || result.IP != "10.20.30.40" {
+		t.Fatalf("result = %+v, want running with refreshed IP", result)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v, want power-on and droplet get", calls)
+	}
+	powerJoined := strings.Join(calls[0], " ")
+	if !strings.Contains(powerJoined, "doctl compute droplet-action power-on 123456789 --wait") {
+		t.Fatalf("power-on args = %q, want power-on with --wait", powerJoined)
+	}
+	getJoined := strings.Join(calls[1], " ")
+	if !strings.Contains(getJoined, "doctl compute droplet get 123456789") || !strings.Contains(getJoined, "--format PublicIPv4") {
+		t.Fatalf("get args = %q, want public IP refresh", getJoined)
 	}
 }
 
@@ -278,6 +348,13 @@ func TestDigitalOceanProvider_LifecycleOpsRequireWorkspaceIDEvenWhenNameIsPresen
 			},
 		},
 		{
+			name: "start",
+			run: func(p *DigitalOceanProvider) error {
+				_, err := p.Start(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+				return err
+			},
+		},
+		{
 			name: "delete",
 			run: func(p *DigitalOceanProvider) error {
 				return p.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
@@ -325,6 +402,13 @@ func TestDigitalOceanProvider_RequiresWorkspaceIDForLifecycleOps(t *testing.T) {
 			name: "stop",
 			run: func(p *DigitalOceanProvider) error {
 				return p.Stop(context.Background(), &ConnectInfo{}, &bytes.Buffer{})
+			},
+		},
+		{
+			name: "start",
+			run: func(p *DigitalOceanProvider) error {
+				_, err := p.Start(context.Background(), &ConnectInfo{}, &bytes.Buffer{})
+				return err
 			},
 		},
 		{
@@ -389,6 +473,11 @@ func TestDigitalOceanProvider_DoctlNotFoundForLifecycleCommands(t *testing.T) {
 	stopErr := dp.Stop(ctx, &ConnectInfo{Name: "test"}, &out)
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "doctl not found") {
 		t.Errorf("Stop() error = %v, want 'doctl not found'", stopErr)
+	}
+
+	_, startErr := dp.Start(ctx, &ConnectInfo{Name: "test"}, &out)
+	if startErr == nil || !strings.Contains(startErr.Error(), "doctl not found") {
+		t.Errorf("Start() error = %v, want 'doctl not found'", startErr)
 	}
 
 	deleteErr := dp.Delete(ctx, &ConnectInfo{Name: "test"}, &out)

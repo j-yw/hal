@@ -21,8 +21,8 @@ import (
 
 var sandboxStopCmd = &cobra.Command{
 	Use:   "stop [NAME ...]",
-	Short: "Stop one or more running sandboxes",
-	Long: `Stop one or more running sandboxes.
+	Short: "Power off / shut down one or more running sandboxes",
+	Long: `Power off / shut down one or more running sandboxes.
 
 Targets can be specified as positional arguments, with --all for every running
 sandbox, or with --pattern to match a glob pattern.
@@ -32,7 +32,10 @@ When no arguments or flags are provided, the command auto-resolves:
   - If zero running sandboxes exist, an error is returned.
   - If multiple are running, an error lists the available choices.
 
-Resolved targets are de-duplicated and sorted by name before execution.`,
+Resolved targets are de-duplicated and sorted by name before execution.
+
+Provider billing note: DigitalOcean and Hetzner continue billing while powered off.
+Use 'hal sandbox delete' to permanently remove a sandbox and end provider charges.`,
 	Example: `  hal sandbox stop my-sandbox
   hal sandbox stop api-backend frontend
   hal sandbox stop --all
@@ -46,8 +49,8 @@ Resolved targets are de-duplicated and sorted by name before execution.`,
 
 func init() {
 	sandboxCmd.AddCommand(sandboxStopCmd)
-	sandboxStopCmd.Flags().Bool("all", false, "Stop all running sandboxes")
-	sandboxStopCmd.Flags().String("pattern", "", "Stop sandboxes matching a glob pattern")
+	sandboxStopCmd.Flags().Bool("all", false, "Power off / shut down all running sandboxes")
+	sandboxStopCmd.Flags().String("pattern", "", "Power off / shut down sandboxes matching a glob pattern")
 }
 
 // sandboxStopListInstances is injectable for testing and resolves only active

@@ -37,7 +37,7 @@ func LoadState(halDir string) (*SandboxState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no active sandbox: %s does not exist (run 'hal sandbox start' first): %w", template.SandboxFile, err)
+			return nil, fmt.Errorf("no active sandbox: %s does not exist (run 'hal sandbox create' first): %w", template.SandboxFile, err)
 		}
 		return nil, fmt.Errorf("failed to read sandbox state: %w", err)
 	}
