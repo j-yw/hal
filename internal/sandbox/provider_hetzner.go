@@ -77,7 +77,7 @@ func generateCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("    set -a\n")
 	b.WriteString("    . /root/.env\n")
 	b.WriteString("    set +a\n")
-	b.WriteString("    curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
+	appendSetupScriptRunner(&b, "    ")
 
 	return b.String()
 }

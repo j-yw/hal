@@ -35,7 +35,7 @@ runcmd:
       set +a
     fi
   # Run the universal bootstrap
-  - curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash
+  - curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
   # Start Tailscale if auth key is set
   - |
     if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then

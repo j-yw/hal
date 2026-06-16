@@ -97,7 +97,7 @@ func generateLightsailCloudInit(env map[string]string, tailscaleLockdown bool) s
 	b.WriteString("fi\n")
 
 	// Run full setup (system packages, Node.js, Go, etc.) — this takes a while
-	b.WriteString("curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
+	appendSetupScriptRunner(&b, "")
 
 	return b.String()
 }

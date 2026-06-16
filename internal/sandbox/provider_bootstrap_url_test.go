@@ -6,8 +6,6 @@ import (
 )
 
 func TestBootstrapScriptsUseCanonicalRepository(t *testing.T) {
-	const want = "https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh"
-
 	tests := []struct {
 		name   string
 		script string
@@ -18,8 +16,14 @@ func TestBootstrapScriptsUseCanonicalRepository(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if !strings.Contains(tt.script, want) {
-			t.Errorf("%s bootstrap script should use %q", tt.name, want)
+		if !strings.Contains(tt.script, defaultSetupScriptURL) {
+			t.Errorf("%s bootstrap script should use %q", tt.name, defaultSetupScriptURL)
+		}
+		if !strings.Contains(tt.script, "GITHUB_TOKEN") {
+			t.Errorf("%s bootstrap script should support authenticated private-repo fetches", tt.name)
+		}
+		if !strings.Contains(tt.script, "curl -fsSL -H @\"$header_file\" \"$setup_url\" | bash") {
+			t.Errorf("%s bootstrap script should pass the GitHub token through a temporary header file", tt.name)
 		}
 	}
 }

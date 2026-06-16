@@ -6,7 +6,7 @@
 # Idempotent — safe to run multiple times.
 #
 # Usage (remote):
-#   curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
 #
 # Usage (local):
 #   ./sandbox/setup.sh
@@ -35,6 +35,22 @@ NC='\033[0m'
 step()  { echo -e "\n${CYAN}${BOLD}── $1 ──${NC}"; }
 ok()    { echo -e "  ${GREEN}✓${NC} $1"; }
 fail()  { echo -e "  ${RED}✗${NC} $1"; }
+
+HAL_REPO="${HAL_REPO:-ReScienceLab/hal}"
+HAL_REPO_URL="${HAL_REPO_URL:-https://github.com/${HAL_REPO}.git}"
+
+clone_hal_repo() {
+  local dest="$1"
+  shift || true
+
+  if [ -n "${GITHUB_TOKEN:-}" ] && command -v gh &>/dev/null; then
+    echo "$GITHUB_TOKEN" | gh auth login --with-token 2>/dev/null || true
+    gh auth setup-git 2>/dev/null || true
+    gh repo clone "$HAL_REPO" "$dest" -- "$@" 2>/dev/null
+  else
+    git clone "$@" "$HAL_REPO_URL" "$dest"
+  fi
+}
 
 # ── Detect environment ───────────────────────────────────────────────────────
 IN_DOCKER="${IN_DOCKER:-false}"
@@ -160,12 +176,13 @@ else
     HAL_BUILD_DIR="$(pwd)"
   else
     rm -rf "$HAL_BUILD_DIR"
-    git clone --depth 1 https://github.com/jywlabs/hal.git "$HAL_BUILD_DIR"
+    clone_hal_repo "$HAL_BUILD_DIR" --depth 1
   fi
   cd "$HAL_BUILD_DIR"
   go mod download
   make build 2>&1 | tail -1
   cp hal /usr/local/bin/hal
+  cd "$HOME_DIR"
   if [ "$HAL_BUILD_DIR" = "/tmp/hal-build" ]; then
     rm -rf "$HAL_BUILD_DIR"
   fi
@@ -233,13 +250,14 @@ else
   if command -v git &>/dev/null; then
     TEMP_CONF="/tmp/hal-config"
     rm -rf "$TEMP_CONF"
-    git clone --depth 1 --filter=blob:none --sparse https://github.com/jywlabs/hal.git "$TEMP_CONF" 2>/dev/null
+    clone_hal_repo "$TEMP_CONF" --depth 1 --filter=blob:none --sparse
     cd "$TEMP_CONF"
     git sparse-checkout set sandbox/claude 2>/dev/null
     if [ -d sandbox/claude ]; then
       cp -r sandbox/claude/* "${CLAUDE_DIR}/" 2>/dev/null || true
       ok "Configs fetched from GitHub"
     fi
+    cd "$HOME_DIR"
     rm -rf "$TEMP_CONF"
   fi
 fi
