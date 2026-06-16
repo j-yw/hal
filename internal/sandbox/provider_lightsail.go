@@ -353,10 +353,7 @@ func (l *LightsailProvider) Status(ctx context.Context, info *ConnectInfo, out i
 }
 
 func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, l.TailscaleLockdown)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
@@ -374,10 +371,7 @@ func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, l.TailscaleLockdown)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}

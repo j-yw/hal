@@ -175,9 +175,25 @@ func TestPreferredIP(t *testing.T) {
 			want: "203.0.113.11",
 		},
 		{
-			name: "falls back to tailscale hostname before public ip",
+			name: "public ip outranks unverified tailscale hostname",
 			instance: &SandboxState{
 				IP:                "203.0.113.13",
+				TailscaleHostname: "hal-dev",
+			},
+			want: "203.0.113.13",
+		},
+		{
+			name: "lockdown hostname outranks public ip",
+			instance: &SandboxState{
+				IP:                "203.0.113.14",
+				TailscaleHostname: "hal-dev",
+				TailscaleLockdown: true,
+			},
+			want: "hal-dev",
+		},
+		{
+			name: "falls back to tailscale hostname when no ip exists",
+			instance: &SandboxState{
 				TailscaleHostname: "hal-dev",
 			},
 			want: "hal-dev",
@@ -215,15 +231,21 @@ func TestConnectInfoFromState(t *testing.T) {
 		{
 			name: "maps name workspace and preferred ip",
 			instance: &SandboxState{
-				Name:        "api-backend",
-				IP:          "203.0.113.20",
-				TailscaleIP: "100.64.0.8",
-				WorkspaceID: "ws-123",
+				Name:              "api-backend",
+				IP:                "203.0.113.20",
+				TailscaleIP:       "100.64.0.8",
+				TailscaleHostname: "hal-api-backend",
+				TailscaleLockdown: true,
+				WorkspaceID:       "ws-123",
 			},
 			want: &ConnectInfo{
-				Name:        "api-backend",
-				IP:          "100.64.0.8",
-				WorkspaceID: "ws-123",
+				Name:              "api-backend",
+				IP:                "100.64.0.8",
+				PublicIP:          "203.0.113.20",
+				TailscaleIP:       "100.64.0.8",
+				TailscaleHostname: "hal-api-backend",
+				TailscaleLockdown: true,
+				WorkspaceID:       "ws-123",
 			},
 		},
 		{
@@ -258,6 +280,18 @@ func TestConnectInfoFromState(t *testing.T) {
 			}
 			if got.IP != tt.want.IP {
 				t.Fatalf("ConnectInfo.IP = %q, want %q", got.IP, tt.want.IP)
+			}
+			if got.PublicIP != tt.want.PublicIP {
+				t.Fatalf("ConnectInfo.PublicIP = %q, want %q", got.PublicIP, tt.want.PublicIP)
+			}
+			if got.TailscaleIP != tt.want.TailscaleIP {
+				t.Fatalf("ConnectInfo.TailscaleIP = %q, want %q", got.TailscaleIP, tt.want.TailscaleIP)
+			}
+			if got.TailscaleHostname != tt.want.TailscaleHostname {
+				t.Fatalf("ConnectInfo.TailscaleHostname = %q, want %q", got.TailscaleHostname, tt.want.TailscaleHostname)
+			}
+			if got.TailscaleLockdown != tt.want.TailscaleLockdown {
+				t.Fatalf("ConnectInfo.TailscaleLockdown = %v, want %v", got.TailscaleLockdown, tt.want.TailscaleLockdown)
 			}
 			if got.WorkspaceID != tt.want.WorkspaceID {
 				t.Fatalf("ConnectInfo.WorkspaceID = %q, want %q", got.WorkspaceID, tt.want.WorkspaceID)

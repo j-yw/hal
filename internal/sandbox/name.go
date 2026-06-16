@@ -70,16 +70,21 @@ func TailscaleHostnameForInstance(name, id string) string {
 }
 
 func shortHostnameID(id string) string {
-	var b strings.Builder
-	for i := 0; i < len(id) && b.Len() < tailscaleIDSuffixLen; i++ {
+	var chars [tailscaleIDSuffixLen]byte
+	pos := tailscaleIDSuffixLen
+	for i := len(id) - 1; i >= 0 && pos > 0; i-- {
 		c := id[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
 		isLowerAlpha := c >= 'a' && c <= 'z'
 		isDigit := c >= '0' && c <= '9'
 		if isLowerAlpha || isDigit {
-			b.WriteByte(c)
+			pos--
+			chars[pos] = c
 		}
 	}
-	return b.String()
+	return string(chars[pos:])
 }
 
 // SandboxNameFromBranch derives a valid sandbox name from a git branch name.

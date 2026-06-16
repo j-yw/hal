@@ -150,7 +150,12 @@ func TestConfiguredTailscaleHostname(t *testing.T) {
 		{
 			name: "auth key configured",
 			env:  map[string]string{"TAILSCALE_AUTHKEY": "tskey-auth-test"},
-			want: "hal-dev-019ecfb9",
+			want: "hal-dev-4175f9bc",
+		},
+		{
+			name: "legacy hostname without auth key",
+			env:  map[string]string{"TAILSCALE_HOSTNAME": "legacy-shared-host"},
+			want: "",
 		},
 	}
 
@@ -403,6 +408,7 @@ func TestRunSandboxStart_OverridesLegacyTailscaleHostname(t *testing.T) {
 		Provider: "daytona",
 		Env: map[string]string{
 			"API_KEY":            "sk-from-config",
+			"TAILSCALE_AUTHKEY":  "tskey-auth-test",
 			"TAILSCALE_HOSTNAME": "legacy-shared-host",
 		},
 	}
@@ -440,6 +446,7 @@ func TestRunSandboxStart_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *test
 	sandboxCfg := &compound.SandboxConfig{
 		Provider: "daytona",
 		Env: map[string]string{
+			"TAILSCALE_AUTHKEY":  "tskey-auth-test",
 			"TAILSCALE_HOSTNAME": "legacy-shared-host",
 		},
 	}
@@ -2823,6 +2830,57 @@ func TestRunSingleCreate_IDGenerationFailureSkipsProviderCreate(t *testing.T) {
 
 	if _, loadErr := sandbox.LoadInstance("sb"); loadErr == nil {
 		t.Fatal("sandbox should not be registered after ID generation failure")
+	}
+}
+
+func TestRunSingleCreate_IDGenerationFailureSkipsForceDelete(t *testing.T) {
+	dir := t.TempDir()
+	setupStartTest(t, dir)
+
+	existing := &sandbox.SandboxState{
+		ID:          "old-id",
+		Name:        "sb",
+		Provider:    "daytona",
+		WorkspaceID: "ws-old",
+		Status:      sandbox.StatusRunning,
+	}
+	if err := sandbox.SaveInstance(existing); err != nil {
+		t.Fatalf("setup: save existing instance: %v", err)
+	}
+
+	origNewSandboxID := newSandboxID
+	t.Cleanup(func() {
+		newSandboxID = origNewSandboxID
+	})
+	newSandboxID = func() (string, error) {
+		return "", fmt.Errorf("uuid failed")
+	}
+
+	mock := &mockProvider{
+		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-new"},
+	}
+	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+
+	err := runSingleCreate(dir, "sb", true, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "generating sandbox ID") {
+		t.Fatalf("error %q should include ID generation context", err.Error())
+	}
+	if len(mock.createCalls) != 0 {
+		t.Fatalf("expected no Create call, got %d", len(mock.createCalls))
+	}
+	if len(mock.deleteCalls) != 0 {
+		t.Fatalf("expected no Delete call before ID generation succeeds, got %d", len(mock.deleteCalls))
+	}
+
+	instance, loadErr := sandbox.LoadInstance("sb")
+	if loadErr != nil {
+		t.Fatalf("existing sandbox should remain registered after ID generation failure: %v", loadErr)
+	}
+	if instance.WorkspaceID != "ws-old" {
+		t.Fatalf("existing sandbox workspace = %q, want %q", instance.WorkspaceID, "ws-old")
 	}
 }
 

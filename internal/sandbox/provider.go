@@ -21,9 +21,13 @@ type SandboxResult struct {
 // style operations. Provider signature migration to this type is incremental;
 // command code can build it ahead of interface changes.
 type ConnectInfo struct {
-	Name        string
-	IP          string
-	WorkspaceID string
+	Name              string
+	IP                string
+	PublicIP          string
+	TailscaleIP       string
+	TailscaleHostname string
+	TailscaleLockdown bool
+	WorkspaceID       string
 }
 
 // ConnectInfoFromState builds ConnectInfo from a persisted SandboxState.
@@ -37,14 +41,21 @@ func ConnectInfoFromState(instance *SandboxState) *ConnectInfo {
 	normalizeRegistryInstance(&normalized, normalized.Name)
 
 	return &ConnectInfo{
-		Name:        normalized.Name,
-		IP:          PreferredIP(&normalized),
-		WorkspaceID: normalized.WorkspaceID,
+		Name:              normalized.Name,
+		IP:                PreferredIP(&normalized),
+		PublicIP:          strings.TrimSpace(normalized.IP),
+		TailscaleIP:       strings.TrimSpace(normalized.TailscaleIP),
+		TailscaleHostname: strings.TrimSpace(normalized.TailscaleHostname),
+		TailscaleLockdown: normalized.TailscaleLockdown,
+		WorkspaceID:       normalized.WorkspaceID,
 	}
 }
 
 // PreferredIP returns the best connect address for a sandbox.
-// Tailscale is preferred when available; otherwise public IP is used.
+// Verified Tailscale IPs are preferred. For Tailscale-lockdown sandboxes, the
+// configured hostname is preferred over the public IP because the public SSH
+// port is expected to be blocked. Non-lockdown sandboxes prefer public IP over
+// a possibly unverified hostname, with hostname as a final fallback.
 func PreferredIP(instance *SandboxState) string {
 	if instance == nil {
 		return ""
@@ -53,10 +64,33 @@ func PreferredIP(instance *SandboxState) string {
 	if strings.TrimSpace(instance.TailscaleIP) != "" {
 		return strings.TrimSpace(instance.TailscaleIP)
 	}
-	if strings.TrimSpace(instance.TailscaleHostname) != "" {
+	if instance.TailscaleLockdown && strings.TrimSpace(instance.TailscaleHostname) != "" {
 		return strings.TrimSpace(instance.TailscaleHostname)
 	}
-	return strings.TrimSpace(instance.IP)
+	if strings.TrimSpace(instance.IP) != "" {
+		return strings.TrimSpace(instance.IP)
+	}
+	return strings.TrimSpace(instance.TailscaleHostname)
+}
+
+func preferredConnectAddress(info *ConnectInfo, preferTailscaleHostname bool) string {
+	if info == nil {
+		return ""
+	}
+
+	if ip := strings.TrimSpace(info.TailscaleIP); ip != "" {
+		return ip
+	}
+	if (preferTailscaleHostname || info.TailscaleLockdown) && strings.TrimSpace(info.TailscaleHostname) != "" {
+		return strings.TrimSpace(info.TailscaleHostname)
+	}
+	if ip := strings.TrimSpace(info.IP); ip != "" {
+		return ip
+	}
+	if ip := strings.TrimSpace(info.PublicIP); ip != "" {
+		return ip
+	}
+	return strings.TrimSpace(info.TailscaleHostname)
 }
 
 // Provider defines the interface for sandbox backends.
