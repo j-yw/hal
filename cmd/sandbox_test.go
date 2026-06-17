@@ -725,8 +725,11 @@ func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 	if !strings.Contains(output, "Provider:   hetzner") {
 		t.Error("output should show hetzner as provider in summary")
 	}
-	if !strings.Contains(output, "ssh-key=my-key") {
-		t.Error("output should show SSH key in summary")
+	if !strings.Contains(output, "Hetzner:    ✓ configured") {
+		t.Error("output should show Hetzner configured in summary")
+	}
+	if strings.Contains(output, "ssh-key=my-key") || strings.Contains(output, "my-key") {
+		t.Error("output should not echo SSH key name in summary")
 	}
 }
 
@@ -830,8 +833,11 @@ func TestRunSandboxSetup_PromptOutput_DigitalOcean(t *testing.T) {
 	if !strings.Contains(output, "Provider:   digitalocean") {
 		t.Error("output should show digitalocean as provider in summary")
 	}
-	if !strings.Contains(output, "ssh-key=ab:cd:ef:12:34") {
-		t.Error("output should show SSH key fingerprint in summary")
+	if !strings.Contains(output, "DigitalOcean: ✓ configured") {
+		t.Error("output should show DigitalOcean configured in summary")
+	}
+	if strings.Contains(output, "ssh-key=ab:cd:ef:12:34") || strings.Contains(output, "ab:cd:ef:12:34") {
+		t.Error("output should not echo SSH key fingerprint in summary")
 	}
 }
 

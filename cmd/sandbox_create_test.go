@@ -320,8 +320,11 @@ func TestRunSandboxCreate_StoresTailscaleHostnameWhenAuthConfigured(t *testing.T
 	if instance.TailscaleHostname != gotHostname {
 		t.Fatalf("instance.TailscaleHostname = %q, want %q", instance.TailscaleHostname, gotHostname)
 	}
-	if !strings.Contains(out.String(), "Tailscale:") {
-		t.Fatalf("output missing Tailscale hostname: %q", out.String())
+	if !strings.Contains(out.String(), "Access:       tailscale pending") {
+		t.Fatalf("output missing access state: %q", out.String())
+	}
+	if strings.Contains(out.String(), gotHostname) {
+		t.Fatalf("output should not reveal Tailscale hostname by default: %q", out.String())
 	}
 }
 

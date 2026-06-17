@@ -21,7 +21,10 @@ var sandboxStatusCmd = &cobra.Command{
 	Long: `Show detailed status of a named sandbox, or list all sandboxes.
 
 When a NAME is provided, queries the provider for live status and displays
-all fields: identity, networking, lifecycle, config, and labels.
+identity, networking access state, lifecycle, config, and labels.
+
+Human output redacts public cloud and Tailscale addresses by default. Use
+--show-addresses only when you intentionally need raw network addresses.
 
 When no NAME is provided, delegates to 'hal sandbox list' to show all
 sandboxes in the global registry.`,
@@ -159,17 +162,26 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 		}
 	}
 
+	redactor := sandboxRedactor(sandboxShowAddresses, nil, instance)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
+
 	// Display detailed info
-	renderSandboxDetail(out, instance, liveErr, liveWarning)
+	renderSandboxDetail(renderOut, instance, liveErr, liveWarning, sandboxShowAddresses)
 	if liveErr != nil {
-		return fmt.Errorf("live sandbox status for %q: %w", instance.Name, liveErr)
+		err := fmt.Errorf("live sandbox status for %q: %w", instance.Name, liveErr)
+		return sandboxSanitizeError(err, redactor)
 	}
 
 	return nil
 }
 
 // renderSandboxDetail renders all SandboxState fields in a detailed view.
-func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liveWarning error) {
+func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liveWarning error, showAddresses bool) {
 	now := sandboxStatusNow()
 
 	// Identity
@@ -207,22 +219,33 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liv
 
 	// Networking
 	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Networking:"))
-	if inst.IP != "" {
-		fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleInfo.Render(inst.IP))
+	fmt.Fprintf(out, "  Access:             %s\n", sandboxAccessLabel(inst))
+	fmt.Fprintf(out, "  SSH command:        %s\n", display.StyleInfo.Render(sandboxSSHCommand(inst.Name)))
+	if inst.TailscaleLockdown {
+		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("blocked"))
+	} else if strings.TrimSpace(inst.IP) != "" {
+		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleWarning.Render("available"))
 	} else {
-		fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleMuted.Render("—"))
+		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("unknown"))
 	}
-	if inst.TailscaleIP != "" {
-		fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleInfo.Render(inst.TailscaleIP))
-	} else {
-		fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleMuted.Render("—"))
-	}
-	if inst.TailscaleHostname != "" {
-		fmt.Fprintf(out, "  Tailscale Hostname: %s\n", inst.TailscaleHostname)
-	}
-	preferredIP := sandbox.PreferredIP(inst)
-	if preferredIP != "" {
-		fmt.Fprintf(out, "  Active SSH IP:      %s\n", display.StyleSuccess.Render(preferredIP))
+	if showAddresses {
+		if inst.IP != "" {
+			fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleInfo.Render(inst.IP))
+		} else {
+			fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleMuted.Render("—"))
+		}
+		if inst.TailscaleIP != "" {
+			fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleInfo.Render(inst.TailscaleIP))
+		} else {
+			fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleMuted.Render("—"))
+		}
+		if inst.TailscaleHostname != "" {
+			fmt.Fprintf(out, "  Tailscale Hostname: %s\n", inst.TailscaleHostname)
+		}
+		preferredIP := sandbox.PreferredIP(inst)
+		if preferredIP != "" {
+			fmt.Fprintf(out, "  Active SSH address: %s\n", display.StyleSuccess.Render(preferredIP))
+		}
 	}
 
 	if inst.WorkspaceID != "" {

@@ -88,26 +88,37 @@ func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern stri
 	if err != nil {
 		return err
 	}
+	redactor := sandboxRedactor(sandboxShowAddresses, nil, targets...)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
 
 	if hint != "" {
-		fmt.Fprintln(out, hint)
+		fmt.Fprintln(renderOut, hint)
 	}
 
 	// Confirmation prompt for --all without --yes
 	if allFlag && !yesFlag {
-		if !confirmDeleteAll(in, out) {
-			fmt.Fprintln(out, "Aborted.")
+		if !confirmDeleteAll(in, renderOut) {
+			fmt.Fprintln(renderOut, "Aborted.")
 			return nil
 		}
 	}
 
-	// Single target: delete inline for simple output
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Delete", fmt.Sprintf("%d target(s)", len(targets)), display.HeaderContext{})
+
+	var runErr error
 	if len(targets) == 1 {
-		return deleteOneTarget(targets[0], ".", out, provider)
+		runErr = deleteOneTarget(targets[0], ".", renderOut, provider)
+	} else {
+		runErr = deleteMultipleTargets(targets, ".", renderOut, provider)
 	}
 
-	// Multiple targets: delete concurrently using errgroup
-	return deleteMultipleTargets(targets, ".", out, provider)
+	return sandboxSanitizeError(runErr, redactor)
 }
 
 // resolveDeleteTargets resolves which sandboxes to delete based on positional args,

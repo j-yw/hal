@@ -43,7 +43,10 @@ Use --repo to tag the sandbox with a repository label (informational only).
 Use --force to replace an existing sandbox with the same name (deletes the old one first).
 
 Auto-shutdown injects HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars into the sandbox
-so that cloud-init can configure idle timers. Defaults come from global sandbox config.`,
+so that cloud-init can configure idle timers. Defaults come from global sandbox config.
+
+Human output redacts public cloud and Tailscale addresses by default. Use
+--show-addresses only when you intentionally need raw network addresses.`,
 	Example: `  hal sandbox create
   hal sandbox create --name hal-dev
   hal sandbox create -n dev --size cx42
@@ -625,7 +628,17 @@ func runBatchCreate(
 	halDir string,
 	out io.Writer,
 ) error {
-	fmt.Fprintf(out, "%s Creating %d sandboxes (%s)...\n", display.StyleInfo.Render("○"), len(targets), sandboxCfg.Provider)
+	redactor := sandboxRedactor(sandboxShowAddresses, mergedEnv)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
+
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Create", fmt.Sprintf("%d targets · %s", len(targets), sandboxCfg.Provider), display.HeaderContext{})
+	fmt.Fprintf(renderOut, "%s Creating %d sandboxes (%s)...\n", display.StyleInfo.Render("○"), len(targets), sandboxCfg.Provider)
 
 	var (
 		mu      sync.Mutex
@@ -637,13 +650,13 @@ func runBatchCreate(
 	for _, name := range targets {
 		name := name // capture for goroutine
 		g.Go(func() error {
-			err := createBatchTarget(projectDir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
+			err := createBatchTarget(projectDir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, renderOut)
 			mu.Lock()
 			if err != nil {
-				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), name, err)
+				fmt.Fprintf(renderOut, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), name, err)
 				results = append(results, batchResult{Name: name, Success: false, Err: err})
 			} else {
-				fmt.Fprintf(out, "Created %s\n", name)
+				fmt.Fprintf(renderOut, "Created %s\n", name)
 				results = append(results, batchResult{Name: name, Success: true})
 			}
 			mu.Unlock()
@@ -665,7 +678,7 @@ func runBatchCreate(
 	}
 
 	total := len(targets)
-	fmt.Fprintf(out, "%d/%d created (%d failed). Failed sandboxes were not registered.\n", success, total, failed)
+	fmt.Fprintf(renderOut, "%d/%d created (%d failed). Failed sandboxes were not registered.\n", success, total, failed)
 
 	if failed > 0 {
 		return fmt.Errorf("%d/%d sandbox creations failed", failed, total)
@@ -768,6 +781,14 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
+	redactor := sandboxRedactor(sandboxShowAddresses, mergedEnv)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
+
 	id := ""
 	tailscaleHostname := ""
 	prepareIdentity := func() error {
@@ -796,15 +817,17 @@ func runSingleCreate(
 		}
 	}
 
-	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, out); err != nil {
-		return err
+	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, renderOut); err != nil {
+		return sandboxSanitizeError(err, redactor)
 	}
 
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Create", fmt.Sprintf("%s · %s", sandboxCfg.Provider, name), display.HeaderContext{})
 	envCount := len(mergedEnv)
 	if envCount > 0 {
-		fmt.Fprintf(out, "%s Creating sandbox %q (%s) with %d env vars...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider, envCount)
+		fmt.Fprintf(renderOut, "%s Creating sandbox %q (%s) with %d env vars...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider, envCount)
 	} else {
-		fmt.Fprintf(out, "%s Creating sandbox %q (%s)...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider)
+		fmt.Fprintf(renderOut, "%s Creating sandbox %q (%s)...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider)
 	}
 
 	if !force {
@@ -814,9 +837,9 @@ func runSingleCreate(
 	}
 
 	ctx := context.Background()
-	result, err := provider.Create(ctx, name, mergedEnv, out)
+	result, err := provider.Create(ctx, name, mergedEnv, renderOut)
 	if err != nil {
-		return fmt.Errorf("sandbox creation failed: %w", err)
+		return sandboxSanitizeError(fmt.Errorf("sandbox creation failed: %w", err), redactor)
 	}
 
 	// Build state with identity, provider, networking, lifecycle fields
@@ -839,29 +862,31 @@ func runSingleCreate(
 
 	// Persist to global registry
 	if err := sandbox.SaveInstance(state); err != nil {
-		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, out); cleanupErr != nil {
-			return fmt.Errorf("registering sandbox: %w; %v", err, cleanupErr)
+		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, renderOut); cleanupErr != nil {
+			return sandboxSanitizeError(fmt.Errorf("registering sandbox: %w; %v", err, cleanupErr), redactor)
 		}
-		return fmt.Errorf("registering sandbox: %w", err)
+		return sandboxSanitizeError(fmt.Errorf("registering sandbox: %w", err), redactor)
 	}
 
 	// Backward compat: also save to local .hal/sandbox.json when .hal/ exists.
-	saveLocalSandboxStateIfHalExists(projectDir, state, out)
+	saveLocalSandboxStateIfHalExists(projectDir, state, renderOut)
 
-	fmt.Fprintf(out, "%s Sandbox created: %s %s\n", display.StyleSuccess.Render("[OK]"), display.StyleBold.Render(name), display.StyleMuted.Render("(provider: "+sandboxCfg.Provider+")"))
-	if result.IP != "" {
-		if sandboxCfg.TailscaleLockdown {
-			fmt.Fprintf(out, "  Public IP:    %s (blocked -- Tailscale only)\n", result.IP)
-		} else {
-			fmt.Fprintf(out, "  Public IP:    %s\n", result.IP)
+	d.ShowCommandSuccess("Sandbox created", fmt.Sprintf("name: %s · provider: %s", name, sandboxCfg.Provider))
+	fmt.Fprintf(renderOut, "  Access:       %s\n", sandboxAccessLabel(state))
+	fmt.Fprintf(renderOut, "  SSH:          %s\n", sandboxSSHCommand(name))
+	if sandboxShowAddresses {
+		if result.IP != "" {
+			if sandboxCfg.TailscaleLockdown {
+				fmt.Fprintf(renderOut, "  Public IP:    %s (blocked -- Tailscale only)\n", result.IP)
+			} else {
+				fmt.Fprintf(renderOut, "  Public IP:    %s\n", result.IP)
+			}
 		}
-	}
-	if result.TailscaleIP != "" {
-		fmt.Fprintf(out, "  Tailscale IP: %s\n", result.TailscaleIP)
-		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
-	} else if tailscaleHostname != "" {
-		fmt.Fprintf(out, "  Tailscale:    %s\n", tailscaleHostname)
-		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
+		if result.TailscaleIP != "" {
+			fmt.Fprintf(renderOut, "  Tailscale IP: %s\n", result.TailscaleIP)
+		} else if tailscaleHostname != "" {
+			fmt.Fprintf(renderOut, "  Tailscale:    %s\n", tailscaleHostname)
+		}
 	}
 	return nil
 }

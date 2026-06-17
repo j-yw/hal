@@ -25,7 +25,11 @@ When no name is provided, the command auto-resolves:
   - If zero sandboxes exist, an error is returned.
   - If multiple exist, an error lists the available choices.
 
-The provider determines the SSH transport.`,
+The provider determines the SSH transport.
+
+Hal redacts addresses from its own connection messages and noninteractive
+command output by default. Once an interactive shell starts, remote programs
+can still print raw network addresses.`,
 	Example: `  hal sandbox ssh my-sandbox
   hal sandbox ssh my-sandbox -- ls -la
   hal sandbox ssh my-sandbox -- bash -c 'echo hello'
@@ -74,6 +78,7 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 	if err := runSandboxAutoMigrate(".", out); err != nil {
 		return err
 	}
+	showAddresses, args := parseSandboxSSHControlFlags(args)
 
 	// Parse args: optional NAME followed by optional [-- command args...]
 	name, remoteArgs := parseSSHArgs(args)
@@ -84,8 +89,16 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 		return err
 	}
 
+	redactor := sandboxRedactor(showAddresses || sandboxShowAddresses, nil, instance)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
+
 	if hint != "" {
-		fmt.Fprintln(out, hint)
+		fmt.Fprintln(renderOut, hint)
 	}
 
 	// Build ConnectInfo with preferred IP
@@ -101,10 +114,11 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 	}
 
 	if len(remoteArgs) == 0 {
+		fmt.Fprintf(renderOut, "Connecting to %s via %s...\n", instance.Name, sandboxAccessLabel(instance))
 		// Interactive SSH session
 		cmd, err := p.SSH(info)
 		if err != nil {
-			return fmt.Errorf("building SSH command: %w", err)
+			return sandboxSanitizeError(fmt.Errorf("building SSH command: %w", err), redactor)
 		}
 
 		if testMode {
@@ -112,13 +126,15 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 			return nil
 		}
 
+		sandboxFlushRedactor(safeOut)
 		return execInteractiveSSH(cmd)
 	}
 
+	fmt.Fprintf(renderOut, "Running command on %s via %s...\n", instance.Name, sandboxAccessLabel(instance))
 	// Remote command execution
 	cmd, err := p.Exec(info, remoteArgs)
 	if err != nil {
-		return fmt.Errorf("building exec command: %w", err)
+		return sandboxSanitizeError(fmt.Errorf("building exec command: %w", err), redactor)
 	}
 
 	if testMode {
@@ -126,7 +142,34 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 		return nil
 	}
 
-	return sandbox.RunCmd(cmd, out)
+	err = sandbox.RunCmd(cmd, renderOut)
+	return sandboxSanitizeError(err, redactor)
+}
+
+func parseSandboxSSHControlFlags(args []string) (bool, []string) {
+	if len(args) == 0 {
+		return false, args
+	}
+	show := false
+	out := make([]string, 0, len(args))
+	afterDashDash := false
+	for _, arg := range args {
+		if afterDashDash {
+			out = append(out, arg)
+			continue
+		}
+		if arg == "--" {
+			afterDashDash = true
+			out = append(out, arg)
+			continue
+		}
+		if arg == "--show-addresses" {
+			show = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	return show, out
 }
 
 // parseSSHArgs separates the optional sandbox name from remote command args.

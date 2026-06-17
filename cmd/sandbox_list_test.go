@@ -64,6 +64,10 @@ func (p *liveTestProvider) Status(ctx context.Context, _ *sandbox.ConnectInfo, o
 
 func setupListTest(t *testing.T) string {
 	t.Helper()
+	oldShowAddresses := sandboxShowAddresses
+	sandboxShowAddresses = false
+	t.Cleanup(func() { sandboxShowAddresses = oldShowAddresses })
+
 	tmpDir := t.TempDir()
 	t.Setenv("HAL_CONFIG_HOME", tmpDir)
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -282,8 +286,8 @@ func TestRunSandboxList_SingleRunning(t *testing.T) {
 	if !strings.Contains(out, "STATUS") {
 		t.Error("missing STATUS column header")
 	}
-	if !strings.Contains(out, "TAILSCALE") {
-		t.Error("missing TAILSCALE column header")
+	if !strings.Contains(out, "ACCESS") {
+		t.Error("missing ACCESS column header")
 	}
 	if !strings.Contains(out, "AGE") {
 		t.Error("missing AGE column header")
@@ -483,9 +487,12 @@ func TestRunSandboxList_MultipleWithMixedStatus(t *testing.T) {
 		t.Error("missing worker")
 	}
 
-	// Tailscale column: api-backend has 100.64.0.1
-	if !strings.Contains(out, "100.64.0.1") {
-		t.Error("missing tailscale IP")
+	// Access column: api-backend has Tailscale access, but raw addresses stay hidden.
+	if !strings.Contains(out, "tailscale") {
+		t.Error("missing tailscale access state")
+	}
+	if strings.Contains(out, "100.64.0.1") {
+		t.Errorf("human output should redact tailscale IP, got: %s", out)
 	}
 
 	// Auto-off: worker has 24h, frontend has off
@@ -620,8 +627,8 @@ func TestRunSandboxList_NoTailscaleShowsDash(t *testing.T) {
 	lines := strings.Split(out, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "no-ts") {
-			if !strings.Contains(line, "—") {
-				t.Errorf("expected — for no tailscale, got line: %s", line)
+			if !strings.Contains(line, "unknown") {
+				t.Errorf("expected unknown access for no network address, got line: %s", line)
 			}
 			// Auto-off should be "off"
 			if !strings.Contains(line, "off") {
@@ -662,8 +669,11 @@ func TestRunSandboxList_TailscaleHostnameFallback(t *testing.T) {
 	lines := strings.Split(out, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "hostname-ts") {
-			if !strings.Contains(line, "hal-dev") {
-				t.Fatalf("expected tailscale hostname fallback in line: %s", line)
+			if !strings.Contains(line, "tailscale pending") {
+				t.Fatalf("expected pending tailscale access in line: %s", line)
+			}
+			if strings.Contains(line, "hal-dev") || strings.Contains(line, "203.0.113.10") {
+				t.Fatalf("expected human row to hide raw addresses and hostnames: %s", line)
 			}
 			return
 		}
@@ -751,7 +761,7 @@ func TestRunSandboxList_TableColumns(t *testing.T) {
 
 	// Header must contain exactly these columns
 	header := lines[0]
-	expectedCols := []string{"NAME", "PROVIDER", "STATUS", "TAILSCALE", "AGE", "AUTO-OFF", "EST.COST"}
+	expectedCols := []string{"NAME", "PROVIDER", "STATUS", "ACCESS", "AGE", "AUTO-OFF", "EST.COST"}
 	for _, col := range expectedCols {
 		if !strings.Contains(header, col) {
 			t.Errorf("header missing column %q: %s", col, header)
@@ -1244,9 +1254,6 @@ func TestRunSandboxList_Live_SuccessKeepsStatus(t *testing.T) {
 	if !strings.Contains(out, "running") {
 		t.Errorf("expected 'running' status preserved after live query, got: %s", out)
 	}
-	if strings.Contains(out, "unknown") {
-		t.Errorf("should not show 'unknown' when live query succeeds, got: %s", out)
-	}
 }
 
 func TestQueryOneStatus_PersistsStatusChange(t *testing.T) {
@@ -1311,9 +1318,6 @@ func TestRunSandboxList_Live_FailurePreservesStoredStatus(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "running") {
 		t.Errorf("expected stored status after live failure, got: %s", out)
-	}
-	if strings.Contains(out, "unknown") {
-		t.Errorf("did not expect 'unknown' status after live failure, got: %s", out)
 	}
 	if !strings.Contains(out, `warning: live status lookup failed for "fail-dev": provider unreachable`) {
 		t.Errorf("expected live warning after failure, got: %s", out)

@@ -92,6 +92,10 @@ func (m *mockSSHProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.
 // injectable vars for test isolation.
 func setupSSHTest(t *testing.T, instances ...*sandbox.SandboxState) {
 	t.Helper()
+	oldShowAddresses := sandboxShowAddresses
+	sandboxShowAddresses = false
+	t.Cleanup(func() { sandboxShowAddresses = oldShowAddresses })
+
 	tmpDir := t.TempDir()
 	t.Setenv("HAL_CONFIG_HOME", tmpDir)
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -181,6 +185,54 @@ func TestRunSandboxSSH_InteractiveWithTailscaleIP(t *testing.T) {
 	}
 }
 
+func TestRunSandboxSSH_RedactsBuildErrorsByDefault(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:        "my-sandbox",
+		Provider:    "hetzner",
+		IP:          "203.0.113.10",
+		TailscaleIP: "100.64.0.5",
+		CreatedAt:   time.Now(),
+		Status:      sandbox.StatusRunning,
+	})
+
+	mock := &mockSSHProvider{sshErr: fmt.Errorf("connection closed by 203.0.113.10; fallback 100.64.0.5")}
+	var out bytes.Buffer
+
+	err := runSandboxSSHWithDeps([]string{"my-sandbox"}, &out, mock, true)
+	if err == nil {
+		t.Fatal("expected SSH build error, got nil")
+	}
+	if strings.Contains(err.Error(), "203.0.113.10") || strings.Contains(err.Error(), "100.64.0.5") {
+		t.Fatalf("error leaked address: %v", err)
+	}
+	if strings.Contains(out.String(), "203.0.113.10") || strings.Contains(out.String(), "100.64.0.5") {
+		t.Fatalf("output leaked address: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Connecting to my-sandbox via tailscale") {
+		t.Fatalf("output missing access-state connection message: %q", out.String())
+	}
+}
+
+func TestRunSandboxSSH_ShowAddressesRevealsBuildErrors(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "my-sandbox",
+		Provider:  "hetzner",
+		IP:        "203.0.113.10",
+		CreatedAt: time.Now(),
+		Status:    sandbox.StatusRunning,
+	})
+
+	mock := &mockSSHProvider{sshErr: fmt.Errorf("connection closed by 203.0.113.10")}
+
+	err := runSandboxSSHWithDeps([]string{"--show-addresses", "my-sandbox"}, io.Discard, mock, true)
+	if err == nil {
+		t.Fatal("expected SSH build error, got nil")
+	}
+	if !strings.Contains(err.Error(), "203.0.113.10") {
+		t.Fatalf("show-addresses error should keep address, got: %v", err)
+	}
+}
+
 func TestRunSandboxSSH_ExecMode(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "my-sandbox",
@@ -219,6 +271,37 @@ func TestRunSandboxSSH_ExecMode(t *testing.T) {
 
 	if lastSSHCmd == nil {
 		t.Fatal("expected lastSSHCmd to be set")
+	}
+}
+
+func TestRunSandboxSSH_ExecOutputIsRedacted(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:        "my-sandbox",
+		Provider:    "hetzner",
+		IP:          "203.0.113.10",
+		TailscaleIP: "100.64.0.5",
+		CreatedAt:   time.Now(),
+		Status:      sandbox.StatusRunning,
+	})
+
+	mock := &mockSSHProvider{
+		execCmd: exec.Command("sh", "-c", "printf 'public=203.0.113.10 tailscale=100.64.0.5\n'"),
+	}
+	var out bytes.Buffer
+
+	err := runSandboxSSHWithDeps([]string{"my-sandbox", "--", "show-ip"}, &out, mock, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := out.String()
+	if strings.Contains(output, "203.0.113.10") || strings.Contains(output, "100.64.0.5") {
+		t.Fatalf("exec output leaked address: %q", output)
+	}
+	if !strings.Contains(output, "<address redacted>") {
+		t.Fatalf("exec output missing redaction placeholder: %q", output)
+	}
+	if !strings.Contains(output, "Running command on my-sandbox via tailscale") {
+		t.Fatalf("output missing access-state exec message: %q", output)
 	}
 }
 

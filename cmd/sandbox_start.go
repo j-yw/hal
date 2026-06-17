@@ -81,14 +81,27 @@ func runSandboxStartWithDeps(args []string, allFlag bool, pattern string, out io
 	if err != nil {
 		return err
 	}
+	redactor := sandboxRedactor(sandboxShowAddresses, nil, targets...)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
 	if hint != "" {
-		fmt.Fprintln(out, hint)
+		fmt.Fprintln(renderOut, hint)
 	}
 
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Start", fmt.Sprintf("%d target(s)", len(targets)), display.HeaderContext{})
+
+	var runErr error
 	if len(targets) == 1 {
-		return startOneTarget(targets[0], out, provider)
+		runErr = startOneTarget(targets[0], renderOut, provider)
+	} else {
+		runErr = startMultipleTargets(targets, renderOut, provider)
 	}
-	return startMultipleTargets(targets, out, provider)
+	return sandboxSanitizeError(runErr, redactor)
 }
 
 func resolveStartTargets(args []string, allFlag bool, pattern string) ([]*sandbox.SandboxState, string, error) {
@@ -253,6 +266,8 @@ func startOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbo
 	}
 
 	fmt.Fprintf(out, "%s Started %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+	fmt.Fprintf(out, "  Access: %s\n", sandboxAccessLabel(target))
+	fmt.Fprintf(out, "  SSH:    %s\n", sandboxSSHCommand(target.Name))
 	return nil
 }
 
