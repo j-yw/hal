@@ -16,6 +16,10 @@ When no name is provided, the command auto-resolves:
 
 The provider determines the SSH transport.
 
+Hal redacts addresses from its own connection messages and noninteractive
+command output by default. Once an interactive shell starts, remote programs
+can still print raw network addresses.
+
 ```
 hal sandbox ssh [NAME] [-- command args...] [flags]
 ```
@@ -33,6 +37,12 @@ hal sandbox ssh [NAME] [-- command args...] [flags]
 
 ```
   -h, --help   help for ssh
+```
+
+### Options inherited from parent commands
+
+```
+      --show-addresses   show raw sandbox network addresses in human output
 ```
 
 ### SEE ALSO

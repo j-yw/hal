@@ -9,6 +9,9 @@ Manage sandbox environments for isolated development.
 Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — run
 'hal sandbox setup' to choose a provider and configure credentials.
 
+Human output redacts public cloud and Tailscale addresses by default. Use
+--show-addresses only when you intentionally need raw network addresses.
+
 Subcommands:
   setup       Configure provider, credentials, and environment
   create      Provision a new sandbox
@@ -30,7 +33,8 @@ Subcommands:
 ### Options
 
 ```
-  -h, --help   help for sandbox
+  -h, --help             help for sandbox
+      --show-addresses   show raw sandbox network addresses in human output
 ```
 
 ### SEE ALSO

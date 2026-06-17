@@ -6,7 +6,9 @@ List all sandboxes
 
 List all sandbox instances from the global registry.
 
-Displays a table with columns: NAME, PROVIDER, STATUS, TAILSCALE, AGE, AUTO-OFF, EST.COST.
+Displays a table with columns: NAME, PROVIDER, STATUS, ACCESS, AGE, AUTO-OFF, EST.COST.
+The ACCESS column uses states like tailscale, tailscale pending, public fallback,
+or unavailable instead of raw network addresses.
 
 Estimated cost is based on embedded hourly rates and time since creation.
 Stopped sandboxes still accrue cost (cloud providers charge for allocated resources).
@@ -34,6 +36,12 @@ hal sandbox list [flags]
   -h, --help   help for list
       --json   Output machine-readable JSON (sandbox-list-v1 contract)
       --live   Fetch fresh status from each provider before rendering
+```
+
+### Options inherited from parent commands
+
+```
+      --show-addresses   show raw sandbox network addresses in human output
 ```
 
 ### SEE ALSO
