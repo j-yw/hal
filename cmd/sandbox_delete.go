@@ -43,7 +43,9 @@ Resolved targets are de-duplicated and sorted by name before execution.`,
 		allFlag, _ := cmd.Flags().GetBool("all")
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxDelete(args, allFlag, yesFlag, pattern, cmd.InOrStdin(), cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Delete failed", func() error {
+			return runSandboxDelete(args, allFlag, yesFlag, pattern, cmd.InOrStdin(), cmd.OutOrStdout(), nil)
+		})
 	},
 }
 

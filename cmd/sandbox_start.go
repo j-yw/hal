@@ -43,7 +43,9 @@ execution.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		allFlag, _ := cmd.Flags().GetBool("all")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxStart(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Start failed", func() error {
+			return runSandboxStart(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		})
 	},
 }
 

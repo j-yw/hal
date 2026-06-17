@@ -67,7 +67,9 @@ Human output redacts public cloud and Tailscale addresses by default. Use
 		envVars := parseEnvFlags(envSlice)
 		opts := autoShutdownOptsFromCommand(cmd)
 
-		return runSandboxCreate(".", name, count, countExplicit, force, size, repo, envVars, opts, cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Create failed", func() error {
+			return runSandboxCreate(".", name, count, countExplicit, force, size, repo, envVars, opts, cmd.OutOrStdout(), nil)
+		})
 	},
 }
 

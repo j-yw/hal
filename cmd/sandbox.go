@@ -88,6 +88,24 @@ func runSandboxAutoMigrate(projectDir string, out io.Writer) error {
 	return nil
 }
 
+func runSandboxCobra(cmd *cobra.Command, title string, run func() error) error {
+	if err := run(); err != nil {
+		return renderSandboxCobraError(cmd, title, err)
+	}
+	return nil
+}
+
+func renderSandboxCobraError(cmd *cobra.Command, title string, err error) error {
+	out := io.Writer(os.Stderr)
+	if cmd != nil {
+		out = cmd.ErrOrStderr()
+	}
+	if out != nil {
+		ui.NewDisplay(out).ShowCommandError(title, []ui.ValidationIssue{{Message: err.Error()}}, nil)
+	}
+	return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
+}
+
 func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
 	globalCfg := func() *sandbox.GlobalConfig {
 		cfg := sandbox.DefaultGlobalConfig()
@@ -217,7 +235,15 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 }
 
 func runSandboxSetupCobra(cmd *cobra.Command, args []string) error {
-	return runSandboxSetup(os.Stdin, os.Stdout)
+	in := io.Reader(os.Stdin)
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		in = cmd.InOrStdin()
+		out = cmd.OutOrStdout()
+	}
+	return runSandboxCobra(cmd, "Sandbox Setup failed", func() error {
+		return runSandboxSetup(in, out)
+	})
 }
 
 func runSandboxSetup(in io.Reader, out io.Writer) error {

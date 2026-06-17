@@ -43,7 +43,9 @@ Use 'hal sandbox delete' to permanently remove a sandbox and end provider charge
 	RunE: func(cmd *cobra.Command, args []string) error {
 		allFlag, _ := cmd.Flags().GetBool("all")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxStop(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Stop failed", func() error {
+			return runSandboxStop(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		})
 	},
 }
 

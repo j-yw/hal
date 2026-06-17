@@ -39,7 +39,9 @@ can still print raw network addresses.`,
 		if isSandboxSSHHelpRequest(args) {
 			return cmd.Help()
 		}
-		return runSandboxSSH(args, cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox SSH failed", func() error {
+			return runSandboxSSH(args, cmd.OutOrStdout(), nil)
+		})
 	},
 }
 

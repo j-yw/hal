@@ -38,10 +38,12 @@ sandboxes in the global registry.`,
 			out = cmd.OutOrStdout()
 			errOut = cmd.ErrOrStderr()
 		}
-		if len(args) == 0 {
-			return runSandboxListWithWriters(out, errOut, false, false)
-		}
-		return runSandboxStatus(args[0], out, nil)
+		return runSandboxCobra(cmd, "Sandbox Status failed", func() error {
+			if len(args) == 0 {
+				return runSandboxListWithWriters(out, errOut, false, false)
+			}
+			return runSandboxStatus(args[0], out, nil)
+		})
 	},
 }
 

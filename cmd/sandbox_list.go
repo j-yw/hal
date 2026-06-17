@@ -65,7 +65,9 @@ Use --json for machine-readable output following the sandbox-list-v1 contract.`,
 				}
 			}
 		}
-		return runSandboxListWithWriters(out, errOut, jsonMode, liveMode)
+		return runSandboxCobra(cmd, "Sandbox List failed", func() error {
+			return runSandboxListWithWriters(out, errOut, jsonMode, liveMode)
+		})
 	},
 }
 
