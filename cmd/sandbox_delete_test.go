@@ -818,6 +818,45 @@ func TestConfirmDeleteAll(t *testing.T) {
 	}
 }
 
+type promptFlushWriter struct {
+	bytes.Buffer
+	flushed bool
+}
+
+func (w *promptFlushWriter) Flush() error {
+	w.flushed = true
+	return nil
+}
+
+type flushAwareReader struct {
+	input   string
+	flushed *bool
+}
+
+func (r *flushAwareReader) Read(p []byte) (int, error) {
+	if !*r.flushed {
+		return 0, errors.New("prompt was not flushed before read")
+	}
+	if r.input == "" {
+		return 0, io.EOF
+	}
+	n := copy(p, r.input)
+	r.input = r.input[n:]
+	return n, nil
+}
+
+func TestConfirmDeleteAllFlushesPromptBeforeRead(t *testing.T) {
+	out := &promptFlushWriter{}
+	in := &flushAwareReader{input: "yes\n", flushed: &out.flushed}
+
+	if !confirmDeleteAll(in, out) {
+		t.Fatal("confirmDeleteAll returned false, want true")
+	}
+	if !out.flushed {
+		t.Fatal("prompt was not flushed")
+	}
+}
+
 func TestRunSandboxDelete_ExplicitName(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
 		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},

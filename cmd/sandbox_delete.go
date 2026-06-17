@@ -269,6 +269,9 @@ func resolveDeleteAutoSelect() ([]*sandbox.SandboxState, string, error) {
 // Returns true if user confirms.
 func confirmDeleteAll(in io.Reader, out io.Writer) bool {
 	fmt.Fprint(out, "Delete all sandboxes? [y/N] ")
+	if flusher, ok := out.(interface{ Flush() error }); ok {
+		_ = flusher.Flush()
+	}
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
 		return false
