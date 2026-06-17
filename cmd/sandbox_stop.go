@@ -311,6 +311,7 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 	if err := p.Stop(ctx, info, out); err != nil {
 		return fmt.Errorf("sandbox stop failed for %q: %w", target.Name, err)
 	}
+	applyResolvedWorkspaceID(target, info)
 
 	if err := persistStoppedState(target); err != nil {
 		return fmt.Errorf("persisting stopped state for %q: %w", target.Name, err)
@@ -359,6 +360,7 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
 				results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
 			} else {
+				applyResolvedWorkspaceID(target, info)
 				if regErr := persistStoppedState(target); regErr != nil {
 					fmt.Fprintf(out, "%s Failed %s: persisting stopped state: %v\n", display.StyleError.Render("[!!]"), target.Name, regErr)
 					results = append(results, stopResult{Name: target.Name, Success: false, Err: regErr})

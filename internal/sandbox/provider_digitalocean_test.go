@@ -336,58 +336,65 @@ func TestDigitalOceanProvider_Status_VerifiesArgs(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_LifecycleOpsRequireWorkspaceIDEvenWhenNameIsPresent(t *testing.T) {
+func TestDigitalOceanProvider_LifecycleOpsLookupWorkspaceIDFromName(t *testing.T) {
 	tests := []struct {
 		name string
-		run  func(*DigitalOceanProvider) error
+		run  func(*DigitalOceanProvider, *ConnectInfo) error
 	}{
 		{
 			name: "stop",
-			run: func(p *DigitalOceanProvider) error {
-				return p.Stop(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			run: func(p *DigitalOceanProvider, info *ConnectInfo) error {
+				return p.Stop(context.Background(), info, &bytes.Buffer{})
 			},
 		},
 		{
 			name: "start",
-			run: func(p *DigitalOceanProvider) error {
-				_, err := p.Start(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			run: func(p *DigitalOceanProvider, info *ConnectInfo) error {
+				_, err := p.Start(context.Background(), info, &bytes.Buffer{})
 				return err
 			},
 		},
 		{
 			name: "delete",
-			run: func(p *DigitalOceanProvider) error {
-				return p.Delete(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			run: func(p *DigitalOceanProvider, info *ConnectInfo) error {
+				return p.Delete(context.Background(), info, &bytes.Buffer{})
 			},
 		},
 		{
 			name: "status",
-			run: func(p *DigitalOceanProvider) error {
-				return p.Status(context.Background(), &ConnectInfo{Name: "my-droplet"}, &bytes.Buffer{})
+			run: func(p *DigitalOceanProvider, info *ConnectInfo) error {
+				return p.Status(context.Background(), info, &bytes.Buffer{})
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var called bool
+			var calls []string
 			dp := &DigitalOceanProvider{
 				lookPath: doctlLookPathStub,
 				cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-					called = true
-					return exec.CommandContext(ctx, "true")
+					calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+					return exec.CommandContext(ctx, "printf", "123456789\n")
 				},
 			}
 
-			err := tt.run(dp)
-			if err == nil {
-				t.Fatal("expected error for missing workspace ID")
+			info := &ConnectInfo{Name: "my-droplet"}
+			err := tt.run(dp, info)
+			if err != nil {
+				t.Fatalf("unexpected error for name fallback: %v", err)
 			}
-			if !strings.Contains(err.Error(), "sandbox workspace ID is required") {
-				t.Fatalf("error = %q, want missing workspace ID message", err.Error())
+			if info.WorkspaceID != "123456789" {
+				t.Fatalf("WorkspaceID = %q, want resolved droplet ID", info.WorkspaceID)
 			}
-			if called {
-				t.Fatal("expected no doctl invocation when workspace ID is missing")
+			if len(calls) < 2 {
+				t.Fatalf("doctl calls = %d, want lookup plus lifecycle call", len(calls))
+			}
+			if !strings.Contains(calls[0], "compute droplet get my-droplet --format ID --no-header") {
+				t.Fatalf("first call = %q, want droplet ID lookup by name", calls[0])
+			}
+			if !strings.Contains(calls[1], "123456789") {
+				t.Fatalf("second call = %q, want lifecycle command to use resolved ID", calls[1])
 			}
 		})
 	}

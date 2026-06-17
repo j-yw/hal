@@ -236,6 +236,7 @@ func startOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbo
 	if err != nil {
 		return fmt.Errorf("sandbox start failed for %q: %w", target.Name, err)
 	}
+	applyResolvedWorkspaceID(target, info)
 	if err := persistStartedState(target, result); err != nil {
 		if warning, ok := asLocalStateSyncWarning(err); ok {
 			fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, warning.Unwrap())
@@ -288,6 +289,7 @@ func startMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provid
 				results = append(results, startResult{Name: target.Name, Success: false, Err: err})
 				return nil
 			}
+			applyResolvedWorkspaceID(target, info)
 			if regErr := persistStartedState(target, result); regErr != nil {
 				if warning, ok := asLocalStateSyncWarning(regErr); ok {
 					fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, warning.Unwrap())

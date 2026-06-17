@@ -95,6 +95,9 @@ func liveStatusWriteTarget(
 		if ip := strings.TrimSpace(updated.IP); ip != "" || shouldClearLiveIP(updated.Status) {
 			current.IP = ip
 		}
+		if workspaceID := strings.TrimSpace(updated.WorkspaceID); workspaceID != "" {
+			current.WorkspaceID = workspaceID
+		}
 		return write(current)
 	}, nil
 }

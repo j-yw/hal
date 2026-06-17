@@ -277,9 +277,21 @@ func (d *DigitalOceanProvider) lookupDropletID(ctx context.Context, name string,
 	return id, nil
 }
 
-func (d *DigitalOceanProvider) resolveLifecycleTarget(ctx context.Context, info *ConnectInfo, _ io.Writer) (string, error) {
+func (d *DigitalOceanProvider) resolveLifecycleTarget(ctx context.Context, info *ConnectInfo, out io.Writer) (string, error) {
 	if info != nil {
 		if target := strings.TrimSpace(info.WorkspaceID); target != "" {
+			info.WorkspaceID = target
+			return target, nil
+		}
+		if name := strings.TrimSpace(info.Name); name != "" {
+			if out == nil {
+				out = io.Discard
+			}
+			target, err := d.lookupDropletID(ctx, name, out)
+			if err != nil {
+				return "", err
+			}
+			info.WorkspaceID = target
 			return target, nil
 		}
 	}
