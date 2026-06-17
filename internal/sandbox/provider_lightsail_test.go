@@ -133,6 +133,26 @@ func TestLightsailProvider_SSH_WithConnectInfoIP(t *testing.T) {
 	}
 }
 
+func TestLightsailProvider_SSH_GlobalLockdownDoesNotOverrideInstanceConnectionState(t *testing.T) {
+	p := &LightsailProvider{TailscaleLockdown: true}
+	cmd, err := p.SSH(&ConnectInfo{
+		Name:              "test-dev",
+		IP:                "44.203.78.182",
+		TailscaleHostname: "hal-test-dev",
+	})
+	if err != nil {
+		t.Fatalf("SSH() error: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "ubuntu@44.203.78.182") {
+		t.Fatalf("SSH cmd should keep instance public IP, got: %s", args)
+	}
+	if strings.Contains(args, "ubuntu@hal-test-dev") {
+		t.Fatalf("SSH cmd should not use hostname unless instance is lockdown-enabled, got: %s", args)
+	}
+}
+
 func TestLightsailProvider_Exec_WithConnectInfoIP(t *testing.T) {
 	p := &LightsailProvider{}
 	cmd, err := p.Exec(&ConnectInfo{Name: "test-dev", IP: "44.203.78.182"}, []string{"ls", "-la"})

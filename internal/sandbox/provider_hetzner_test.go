@@ -432,6 +432,27 @@ func TestHetznerProvider_SSH(t *testing.T) {
 	}
 }
 
+func TestHetznerProvider_SSH_GlobalLockdownDoesNotOverrideInstanceConnectionState(t *testing.T) {
+	hp := &HetznerProvider{TailscaleLockdown: true}
+
+	cmd, err := hp.SSH(&ConnectInfo{
+		Name:              "test-server",
+		IP:                "10.0.0.42",
+		TailscaleHostname: "hal-test-server",
+	})
+	if err != nil {
+		t.Fatalf("SSH() unexpected error: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "root@10.0.0.42") {
+		t.Fatalf("SSH cmd should keep instance public IP, got: %s", args)
+	}
+	if strings.Contains(args, "root@hal-test-server") {
+		t.Fatalf("SSH cmd should not use hostname unless instance is lockdown-enabled, got: %s", args)
+	}
+}
+
 func TestHetznerProvider_SSH_NoIP(t *testing.T) {
 	hp := &HetznerProvider{}
 

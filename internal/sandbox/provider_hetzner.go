@@ -284,7 +284,7 @@ func (h *HetznerProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 }
 
 func (h *HetznerProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	ip := preferredConnectAddress(info, h.TailscaleLockdown)
+	ip := preferredConnectAddress(info, false)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
@@ -301,7 +301,7 @@ func (h *HetznerProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (h *HetznerProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	ip := preferredConnectAddress(info, h.TailscaleLockdown)
+	ip := preferredConnectAddress(info, false)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}

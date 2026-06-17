@@ -542,6 +542,7 @@ func TestDigitalOceanProvider_SSH_LockdownPrefersTailscaleHostname(t *testing.T)
 		Name:              "my-droplet",
 		IP:                "164.90.190.11",
 		TailscaleHostname: "hal-dev-019ecfc3",
+		TailscaleLockdown: true,
 	})
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
@@ -556,9 +557,10 @@ func TestDigitalOceanProvider_SSH_LockdownPrefersTailscaleHostname(t *testing.T)
 	}
 }
 
-func TestDigitalOceanProvider_SSH_NonLockdownKeepsPublicIPBeforeHostname(t *testing.T) {
+func TestDigitalOceanProvider_SSH_GlobalLockdownDoesNotOverrideInstanceConnectionState(t *testing.T) {
 	dp := &DigitalOceanProvider{
-		lookPath: doctlLookPathStub,
+		TailscaleLockdown: true,
+		lookPath:          doctlLookPathStub,
 	}
 
 	cmd, err := dp.SSH(&ConnectInfo{
@@ -573,6 +575,9 @@ func TestDigitalOceanProvider_SSH_NonLockdownKeepsPublicIPBeforeHostname(t *test
 	args := strings.Join(cmd.Args, " ")
 	if !strings.Contains(args, "root@164.90.190.11") {
 		t.Fatalf("SSH cmd should contain root@164.90.190.11, got: %s", args)
+	}
+	if strings.Contains(args, "root@hal-dev-019ecfc3") {
+		t.Fatalf("SSH cmd should not use hostname unless instance is lockdown-enabled, got: %s", args)
 	}
 }
 

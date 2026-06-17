@@ -596,7 +596,7 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, ou
 
 func (d *DigitalOceanProvider) resolveConnectIP(info *ConnectInfo) (string, error) {
 	if info != nil {
-		if ip := preferredConnectAddress(info, d.TailscaleLockdown); ip != "" {
+		if ip := preferredConnectAddress(info, false); ip != "" {
 			return ip, nil
 		}
 		target := strings.TrimSpace(info.WorkspaceID)
