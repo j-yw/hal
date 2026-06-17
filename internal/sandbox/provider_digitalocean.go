@@ -613,6 +613,11 @@ func (d *DigitalOceanProvider) Status(ctx context.Context, info *ConnectInfo, ou
 
 func (d *DigitalOceanProvider) resolveConnectIP(info *ConnectInfo) (string, error) {
 	if info != nil {
+		if info.TailscaleLockdown {
+			if hostname := strings.TrimSpace(info.TailscaleHostname); hostname != "" {
+				return hostname, nil
+			}
+		}
 		if ip := preferredConnectAddress(info, false); ip != "" {
 			return ip, nil
 		}

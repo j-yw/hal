@@ -548,6 +548,7 @@ func TestDigitalOceanProvider_SSH_LockdownPrefersTailscaleHostname(t *testing.T)
 	cmd, err := dp.SSH(&ConnectInfo{
 		Name:              "my-droplet",
 		IP:                "164.90.190.11",
+		TailscaleIP:       "100.64.0.44",
 		TailscaleHostname: "hal-dev-019ecfc3",
 		TailscaleLockdown: true,
 	})
@@ -561,6 +562,9 @@ func TestDigitalOceanProvider_SSH_LockdownPrefersTailscaleHostname(t *testing.T)
 	}
 	if strings.Contains(args, "root@164.90.190.11") {
 		t.Fatalf("SSH cmd should not use public IP in lockdown mode, got: %s", args)
+	}
+	if strings.Contains(args, "root@100.64.0.44") {
+		t.Fatalf("SSH cmd should not use Tailscale IP ahead of hostname in lockdown mode, got: %s", args)
 	}
 }
 
