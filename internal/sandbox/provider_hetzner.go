@@ -40,6 +40,29 @@ func (h *HetznerProvider) commandContext(ctx context.Context, name string, args 
 	return exec.CommandContext(ctx, name, args...)
 }
 
+// wrapHcloudError includes captured CLI output so provider errors retain the
+// actionable details hcloud prints on failure.
+func wrapHcloudError(op string, err error, stdout, stderr string) error {
+	msg := strings.TrimSpace(stderr)
+	if out := strings.TrimSpace(stdout); out != "" {
+		if msg != "" {
+			msg += ": " + out
+		} else {
+			msg = out
+		}
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if msg != "" {
+			return fmt.Errorf("hcloud %s failed with exit code %d: %s: %w", op, exitErr.ExitCode(), msg, err)
+		}
+		return fmt.Errorf("hcloud %s failed with exit code %d: %w", op, exitErr.ExitCode(), err)
+	}
+	if msg != "" {
+		return fmt.Errorf("hcloud %s failed: %s: %w", op, msg, err)
+	}
+	return fmt.Errorf("hcloud %s failed: %w", op, err)
+}
+
 // generateCloudInit creates a cloud-init YAML that writes env vars to
 // /root/.env (base64-encoded to avoid YAML special char issues), then runs
 // setup.sh to bootstrap the full dev environment.
@@ -133,10 +156,7 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 	createCmd.Stderr = &createErr
 
 	if err := createCmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("hcloud server create failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return nil, fmt.Errorf("hcloud server create failed: %w", err)
+		return nil, wrapHcloudError("server create", err, createOut.String(), createErr.String())
 	}
 
 	// Server exists on Hetzner from this point — clean up on any failure.
@@ -163,10 +183,7 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 
 	if err := ipCmd.Run(); err != nil {
 		cleanupServer("failed to get server IP")
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("hcloud server ip failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return nil, fmt.Errorf("hcloud server ip failed: %w", err)
+		return nil, wrapHcloudError("server ip", err, ipBuf.String(), ipErr.String())
 	}
 
 	ip := strings.TrimSpace(ipBuf.String())
@@ -228,10 +245,7 @@ func (h *HetznerProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Wr
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("hcloud server shutdown failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return fmt.Errorf("hcloud server shutdown failed: %w", err)
+		return wrapHcloudError("server shutdown", err, stdout.String(), stderr.String())
 	}
 	return nil
 }
@@ -253,10 +267,7 @@ func (h *HetznerProvider) Start(ctx context.Context, info *ConnectInfo, out io.W
 		if isAlreadyRunningLifecycleOutput(captured.String()) {
 			return &LifecycleResult{Status: StatusRunning}, nil
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("hcloud server poweron failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return nil, fmt.Errorf("hcloud server poweron failed: %w", err)
+		return nil, wrapHcloudError("server poweron", err, captured.String(), "")
 	}
 	return &LifecycleResult{Status: StatusRunning}, nil
 }
@@ -276,10 +287,7 @@ func (h *HetznerProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("hcloud server delete failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return fmt.Errorf("hcloud server delete failed: %w", err)
+		return wrapHcloudError("server delete", err, stdout.String(), stderr.String())
 	}
 	return nil
 }
