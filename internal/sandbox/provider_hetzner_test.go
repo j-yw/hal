@@ -409,8 +409,8 @@ func TestHetznerProvider_SSH(t *testing.T) {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
 
-	// Verify args: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.0.0.42
-	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "root@10.0.0.42"}
+	// Verify args: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@10.0.0.42
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@10.0.0.42"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
@@ -473,7 +473,7 @@ func TestHetznerProvider_Exec(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "root@10.0.0.42", "--", "ls", "-la"}
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@10.0.0.42", "--", "ls", "-la"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}

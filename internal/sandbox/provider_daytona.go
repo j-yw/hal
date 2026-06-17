@@ -100,15 +100,9 @@ func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ..
 	d.applyCredentials(cmd)
 
 	var captured bytes.Buffer
-	if out == nil {
-		safe := synchronizedWriter(&captured)
-		cmd.Stdout = safe
-		cmd.Stderr = safe
-	} else {
-		safe := synchronizedWriter(io.MultiWriter(out, &captured))
-		cmd.Stdout = safe
-		cmd.Stderr = safe
-	}
+	safe := synchronizedWriter(&captured)
+	cmd.Stdout = safe
+	cmd.Stderr = safe
 
 	err := cmd.Run()
 	return captured.String(), err
@@ -206,7 +200,8 @@ func (d *DaytonaProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Wr
 	}
 	cmd := d.commandContext(ctx, "daytona", "stop", name)
 	d.applyCredentials(cmd)
-	safeOut := synchronizedWriter(out)
+	var captured bytes.Buffer
+	safeOut := synchronizedWriter(&captured)
 	cmd.Stdout = safeOut
 	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
@@ -246,7 +241,8 @@ func (d *DaytonaProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 	}
 	cmd := d.commandContext(ctx, "daytona", "delete", name, "--yes")
 	d.applyCredentials(cmd)
-	safeOut := synchronizedWriter(out)
+	var captured bytes.Buffer
+	safeOut := synchronizedWriter(&captured)
 	cmd.Stdout = safeOut
 	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {

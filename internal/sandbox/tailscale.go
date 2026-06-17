@@ -72,7 +72,7 @@ func fetchTailscaleIPWithProgress(ctx context.Context, user, publicIP string, ru
 		}
 
 		if out != nil {
-			fmt.Fprintf(out, "  Tailscale attempt %d/%d for %s...\n", i+1, attempts, publicIP)
+			fmt.Fprintf(out, "  Tailscale attempt %d/%d...\n", i+1, attempts)
 		}
 
 		if i < attempts-1 {

@@ -118,9 +118,8 @@ func TestDaytonaProvider_Create_Success(t *testing.T) {
 		}
 	}
 
-	// Verify output was streamed
-	if !strings.Contains(out.String(), "sandbox created") {
-		t.Errorf("output = %q, want to contain %q", out.String(), "sandbox created")
+	if out.String() != "" {
+		t.Errorf("provider output = %q, want empty structured command output", out.String())
 	}
 }
 
@@ -402,8 +401,8 @@ func TestDaytonaProvider_Stop_Success(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(out.String(), "stopped") {
-		t.Errorf("output = %q, want to contain %q", out.String(), "stopped")
+	if out.String() != "" {
+		t.Errorf("provider output = %q, want empty structured command output", out.String())
 	}
 }
 
@@ -455,8 +454,8 @@ func TestDaytonaProvider_Delete_Success(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(out.String(), "deleted") {
-		t.Errorf("output = %q, want to contain %q", out.String(), "deleted")
+	if out.String() != "" {
+		t.Errorf("provider output = %q, want empty structured command output", out.String())
 	}
 }
 
