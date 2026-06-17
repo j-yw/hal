@@ -73,12 +73,17 @@ func sortedNonEmpty(values []string) []string {
 
 func redactIPCandidates(text string, pattern *regexp.Regexp) string {
 	return pattern.ReplaceAllStringFunc(text, func(candidate string) string {
-		trimmed := strings.Trim(candidate, "[]")
-		if _, err := netip.ParseAddr(trimmed); err != nil {
+		if !validIPCandidate(candidate) {
 			return candidate
 		}
 		return addressPlaceholder
 	})
+}
+
+func validIPCandidate(candidate string) bool {
+	trimmed := strings.Trim(candidate, "[]")
+	_, err := netip.ParseAddr(trimmed)
+	return err == nil
 }
 
 // RedactingWriter sanitizes complete lines as they are written. Call Flush at
@@ -108,6 +113,10 @@ func (w *RedactingWriter) Write(p []byte) (int, error) {
 	}
 	if len(w.pending) > redactionTailBytes {
 		flushLen := len(w.pending) - redactionTailBytes
+		flushLen = w.redactor.safeFlushLen(w.pending, flushLen)
+		if flushLen == 0 {
+			return len(p), nil
+		}
 		if _, err := io.WriteString(w.dst, w.redactor.Redact(w.pending[:flushLen])); err != nil {
 			return 0, err
 		}
@@ -150,6 +159,64 @@ func (w *RedactingWriter) flushCompleteLinesLocked() error {
 		}
 		w.pending = w.pending[idx+1:]
 	}
+}
+
+func (r Redactor) safeFlushLen(text string, proposed int) int {
+	if proposed <= 0 || proposed >= len(text) {
+		return proposed
+	}
+
+	cut := proposed
+	for {
+		adjusted := r.adjustFlushLen(text, cut)
+		if adjusted == cut || adjusted <= 0 {
+			return adjusted
+		}
+		cut = adjusted
+	}
+}
+
+func (r Redactor) adjustFlushLen(text string, cut int) int {
+	adjusted := cut
+	for _, secret := range sortedNonEmpty(r.KnownSecrets) {
+		adjusted = adjustFlushLenForLiteral(text, adjusted, secret)
+	}
+
+	if !r.ShowAddresses {
+		for _, address := range sortedNonEmpty(r.KnownAddresses) {
+			adjusted = adjustFlushLenForLiteral(text, adjusted, address)
+		}
+		adjusted = adjustFlushLenForIPPattern(text, adjusted, ipv4Candidate)
+		adjusted = adjustFlushLenForIPPattern(text, adjusted, ipv6Candidate)
+	}
+
+	return adjusted
+}
+
+func adjustFlushLenForLiteral(text string, cut int, literal string) int {
+	searchStart := 0
+	for {
+		idx := strings.Index(text[searchStart:], literal)
+		if idx < 0 {
+			return cut
+		}
+		start := searchStart + idx
+		end := start + len(literal)
+		if start < cut && cut < end {
+			cut = start
+		}
+		searchStart = start + 1
+	}
+}
+
+func adjustFlushLenForIPPattern(text string, cut int, pattern *regexp.Regexp) int {
+	for _, match := range pattern.FindAllStringIndex(text, -1) {
+		start, end := match[0], match[1]
+		if start < cut && cut < end && validIPCandidate(text[start:end]) {
+			cut = start
+		}
+	}
+	return cut
 }
 
 var _ io.Writer = (*RedactingWriter)(nil)

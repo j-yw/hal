@@ -66,3 +66,48 @@ func TestRedactingWriter_RedactsAcrossSplitWrites(t *testing.T) {
 		t.Fatalf("RedactingWriter output missing redaction placeholder: %q", got)
 	}
 }
+
+func TestRedactingWriter_RedactsAcrossLongLineFlushBoundary(t *testing.T) {
+	tests := []struct {
+		name        string
+		redactor    Redactor
+		sensitive   string
+		placeholder string
+	}{
+		{
+			name:        "secret",
+			redactor:    Redactor{KnownSecrets: []string{"sk-long-boundary-secret"}},
+			sensitive:   "sk-long-boundary-secret",
+			placeholder: secretPlaceholder,
+		},
+		{
+			name:        "address",
+			redactor:    Redactor{},
+			sensitive:   "203.0.113.10",
+			placeholder: addressPlaceholder,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			w := NewRedactingWriter(&buf, tt.redactor)
+			line := tt.sensitive + " " + strings.Repeat("x", redactionTailBytes-len(tt.sensitive))
+
+			if _, err := w.Write([]byte(line)); err != nil {
+				t.Fatalf("Write() error: %v", err)
+			}
+			if err := w.Flush(); err != nil {
+				t.Fatalf("Flush() error: %v", err)
+			}
+
+			got := buf.String()
+			if strings.Contains(got, tt.sensitive) {
+				t.Fatalf("RedactingWriter leaked value across long-line flush boundary: %q", got)
+			}
+			if !strings.Contains(got, tt.placeholder) {
+				t.Fatalf("RedactingWriter output missing redaction placeholder: %q", got)
+			}
+		})
+	}
+}
