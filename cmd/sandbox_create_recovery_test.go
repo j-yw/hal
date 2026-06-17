@@ -8,39 +8,39 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 )
 
-type mockStartPendingRemoval struct {
+type mockCreatePendingRemoval struct {
 	alreadyStaged bool
 	commitCalls   int
 	rollbackCalls int
 }
 
-func (m *mockStartPendingRemoval) Commit() error {
+func (m *mockCreatePendingRemoval) Commit() error {
 	m.commitCalls++
 	return nil
 }
 
-func (m *mockStartPendingRemoval) Rollback() error {
+func (m *mockCreatePendingRemoval) Rollback() error {
 	m.rollbackCalls++
 	return nil
 }
 
-func (m *mockStartPendingRemoval) AlreadyStaged() bool {
+func (m *mockCreatePendingRemoval) AlreadyStaged() bool {
 	return m.alreadyStaged
 }
 
 func TestReplaceExistingSandbox_CommitsInterruptedDeleteRetry(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	pending := &mockStartPendingRemoval{alreadyStaged: true}
-	originalStage := sandboxStartStageInstanceRemoval
-	sandboxStartStageInstanceRemoval = func(name string) (sandboxStartPendingRemoval, error) {
+	pending := &mockCreatePendingRemoval{alreadyStaged: true}
+	originalStage := sandboxCreateStageInstanceRemoval
+	sandboxCreateStageInstanceRemoval = func(name string) (sandboxCreatePendingRemoval, error) {
 		if name != "frontend" {
 			t.Fatalf("staged removal name = %q, want %q", name, "frontend")
 		}
 		return pending, nil
 	}
 	t.Cleanup(func() {
-		sandboxStartStageInstanceRemoval = originalStage
+		sandboxCreateStageInstanceRemoval = originalStage
 	})
 
 	provider := &mockProvider{deleteErr: errors.New("API error: sandbox not found")}

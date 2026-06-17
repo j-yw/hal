@@ -17,13 +17,25 @@ type SandboxResult struct {
 	TailscaleIP string
 }
 
+// LifecycleResult holds the result of a provider lifecycle operation such as
+// starting a stopped sandbox. Command-layer callers persist these fields into
+// SandboxState when they are available.
+type LifecycleResult struct {
+	Status string
+	IP     string
+}
+
 // ConnectInfo is the provider-facing connection target for SSH/Exec/Status
 // style operations. Provider signature migration to this type is incremental;
 // command code can build it ahead of interface changes.
 type ConnectInfo struct {
-	Name        string
-	IP          string
-	WorkspaceID string
+	Name              string
+	IP                string
+	PublicIP          string
+	TailscaleIP       string
+	TailscaleHostname string
+	TailscaleLockdown bool
+	WorkspaceID       string
 }
 
 // ConnectInfoFromState builds ConnectInfo from a persisted SandboxState.
@@ -37,14 +49,21 @@ func ConnectInfoFromState(instance *SandboxState) *ConnectInfo {
 	normalizeRegistryInstance(&normalized, normalized.Name)
 
 	return &ConnectInfo{
-		Name:        normalized.Name,
-		IP:          PreferredIP(&normalized),
-		WorkspaceID: normalized.WorkspaceID,
+		Name:              normalized.Name,
+		IP:                PreferredIP(&normalized),
+		PublicIP:          strings.TrimSpace(normalized.IP),
+		TailscaleIP:       strings.TrimSpace(normalized.TailscaleIP),
+		TailscaleHostname: strings.TrimSpace(normalized.TailscaleHostname),
+		TailscaleLockdown: normalized.TailscaleLockdown,
+		WorkspaceID:       normalized.WorkspaceID,
 	}
 }
 
 // PreferredIP returns the best connect address for a sandbox.
-// Tailscale is preferred when available; otherwise public IP is used.
+// Verified Tailscale IPs are preferred. For Tailscale-lockdown sandboxes, the
+// configured hostname is preferred over the public IP because the public SSH
+// port is expected to be blocked. Non-lockdown sandboxes prefer public IP over
+// a possibly unverified hostname, with hostname as a final fallback.
 func PreferredIP(instance *SandboxState) string {
 	if instance == nil {
 		return ""
@@ -53,7 +72,51 @@ func PreferredIP(instance *SandboxState) string {
 	if strings.TrimSpace(instance.TailscaleIP) != "" {
 		return strings.TrimSpace(instance.TailscaleIP)
 	}
-	return strings.TrimSpace(instance.IP)
+	if instance.TailscaleLockdown && strings.TrimSpace(instance.TailscaleHostname) != "" {
+		return strings.TrimSpace(instance.TailscaleHostname)
+	}
+	if strings.TrimSpace(instance.IP) != "" {
+		return strings.TrimSpace(instance.IP)
+	}
+	return strings.TrimSpace(instance.TailscaleHostname)
+}
+
+func preferredConnectAddress(info *ConnectInfo, preferTailscaleHostname bool) string {
+	if info == nil {
+		return ""
+	}
+
+	if ip := strings.TrimSpace(info.TailscaleIP); ip != "" {
+		return ip
+	}
+	if (preferTailscaleHostname || info.TailscaleLockdown) && strings.TrimSpace(info.TailscaleHostname) != "" {
+		return strings.TrimSpace(info.TailscaleHostname)
+	}
+	if ip := strings.TrimSpace(info.IP); ip != "" {
+		return ip
+	}
+	if ip := strings.TrimSpace(info.PublicIP); ip != "" {
+		return ip
+	}
+	return strings.TrimSpace(info.TailscaleHostname)
+}
+
+func isAlreadyRunningLifecycleOutput(output string) bool {
+	text := strings.ToLower(output)
+	return strings.Contains(text, "already running") ||
+		strings.Contains(text, "already started") ||
+		strings.Contains(text, "already active") ||
+		strings.Contains(text, "already powered on") ||
+		strings.Contains(text, "already on")
+}
+
+func isAlreadyStoppedLifecycleOutput(output string) bool {
+	text := strings.ToLower(output)
+	return strings.Contains(text, "already stopped") ||
+		strings.Contains(text, "already off") ||
+		strings.Contains(text, "already powered off") ||
+		strings.Contains(text, "already shut down") ||
+		strings.Contains(text, "already shutdown")
 }
 
 // Provider defines the interface for sandbox backends.
@@ -66,6 +129,9 @@ type Provider interface {
 
 	// Stop halts a running sandbox identified by ConnectInfo.
 	Stop(ctx context.Context, info *ConnectInfo, out io.Writer) error
+
+	// Start powers on a stopped sandbox identified by ConnectInfo.
+	Start(ctx context.Context, info *ConnectInfo, out io.Writer) (*LifecycleResult, error)
 
 	// Delete removes a sandbox permanently.
 	Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error
@@ -93,7 +159,7 @@ func RunCmd(cmd *exec.Cmd, out io.Writer) error {
 }
 
 // ProviderFromConfig returns the Provider implementation matching the given
-// provider name. Known providers: "daytona", "hetzner", "digitalocean".
+// provider name. Known providers: "daytona", "hetzner", "digitalocean", "lightsail".
 func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 	switch provider {
 	case "daytona":

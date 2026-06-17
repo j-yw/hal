@@ -69,6 +69,10 @@ func (m *mockDeleteProvider) Stop(ctx context.Context, info *sandbox.ConnectInfo
 	return nil
 }
 
+func (m *mockDeleteProvider) Start(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
+
 func (m *mockDeleteProvider) Delete(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1668,24 +1672,20 @@ func TestDeleteConnectInfo_DigitalOceanFallbackOrder(t *testing.T) {
 	}
 }
 
-func TestValidateDeleteConnectInfo_DigitalOceanRequiresWorkspaceID(t *testing.T) {
+func TestValidateDeleteConnectInfo_DigitalOceanAllowsNameFallback(t *testing.T) {
 	target := &sandbox.SandboxState{
 		Name:     "do-box",
 		Provider: "digitalocean",
 	}
 
 	err := validateDeleteConnectInfo(target, &sandbox.ConnectInfo{Name: "do-box"})
-	if err == nil {
-		t.Fatal("validateDeleteConnectInfo() expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "missing DigitalOcean droplet ID") {
-		t.Fatalf("error = %q, want missing droplet ID message", err.Error())
+	if err != nil {
+		t.Fatalf("validateDeleteConnectInfo() unexpected error: %v", err)
 	}
 }
 
 func TestValidateDeleteConnectInfo_DigitalOceanRequiresIdentifier(t *testing.T) {
 	target := &sandbox.SandboxState{
-		Name:     "do-box",
 		Provider: "digitalocean",
 	}
 

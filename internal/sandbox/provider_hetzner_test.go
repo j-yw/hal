@@ -271,6 +271,33 @@ func TestHetznerProvider_Stop_Success(t *testing.T) {
 	}
 }
 
+func TestHetznerProvider_Start_Success(t *testing.T) {
+	var capturedArgs []string
+	hp := &HetznerProvider{
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "echo", "powered on")
+		},
+	}
+
+	result, err := hp.Start(context.Background(), &ConnectInfo{Name: "my-server"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if result == nil || result.Status != StatusRunning {
+		t.Fatalf("result = %+v, want running status", result)
+	}
+	wantArgs := []string{"hcloud", "server", "poweron", "my-server"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if capturedArgs[i] != want {
+			t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+		}
+	}
+}
+
 func TestHetznerProvider_Stop_Failure(t *testing.T) {
 	hp := &HetznerProvider{
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -402,6 +429,27 @@ func TestHetznerProvider_SSH(t *testing.T) {
 	}
 	if cmd.Stderr == nil {
 		t.Error("Stderr should be set")
+	}
+}
+
+func TestHetznerProvider_SSH_GlobalLockdownDoesNotOverrideInstanceConnectionState(t *testing.T) {
+	hp := &HetznerProvider{TailscaleLockdown: true}
+
+	cmd, err := hp.SSH(&ConnectInfo{
+		Name:              "test-server",
+		IP:                "10.0.0.42",
+		TailscaleHostname: "hal-test-server",
+	})
+	if err != nil {
+		t.Fatalf("SSH() unexpected error: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "root@10.0.0.42") {
+		t.Fatalf("SSH cmd should keep instance public IP, got: %s", args)
+	}
+	if strings.Contains(args, "root@hal-test-server") {
+		t.Fatalf("SSH cmd should not use hostname unless instance is lockdown-enabled, got: %s", args)
 	}
 }
 

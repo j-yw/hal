@@ -81,6 +81,42 @@ func TestBuildLightsailCreateArgs(t *testing.T) {
 	}
 }
 
+func TestLightsailProvider_Start_VerifiesArgsAndPollsIP(t *testing.T) {
+	var calls [][]string
+	p := &LightsailProvider{
+		lookPath: func(file string) (string, error) {
+			return "/usr/bin/aws", nil
+		},
+		sleep: func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 2 && args[0] == "lightsail" && args[1] == "get-instance" {
+				return exec.CommandContext(ctx, "echo", "running 44.203.78.182")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	result, err := p.Start(context.Background(), &ConnectInfo{Name: "test-dev"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if result == nil || result.Status != StatusRunning || result.IP != "44.203.78.182" {
+		t.Fatalf("result = %+v, want running with refreshed IP", result)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v, want start-instance and get-instance", calls)
+	}
+	startJoined := strings.Join(calls[0], " ")
+	if !strings.Contains(startJoined, "aws lightsail start-instance --instance-name test-dev") {
+		t.Fatalf("start args = %q, want start-instance", startJoined)
+	}
+	pollJoined := strings.Join(calls[1], " ")
+	if !strings.Contains(pollJoined, "aws lightsail get-instance --instance-name test-dev") || !strings.Contains(pollJoined, "instance.[state.name,publicIpAddress]") {
+		t.Fatalf("poll args = %q, want state/IP query", pollJoined)
+	}
+}
+
 func TestLightsailProvider_SSH_WithConnectInfoIP(t *testing.T) {
 	p := &LightsailProvider{}
 	cmd, err := p.SSH(&ConnectInfo{Name: "test-dev", IP: "44.203.78.182"})
@@ -94,6 +130,26 @@ func TestLightsailProvider_SSH_WithConnectInfoIP(t *testing.T) {
 	}
 	if !strings.Contains(args, "StrictHostKeyChecking=no") {
 		t.Errorf("SSH cmd should contain StrictHostKeyChecking=no, got: %s", args)
+	}
+}
+
+func TestLightsailProvider_SSH_GlobalLockdownDoesNotOverrideInstanceConnectionState(t *testing.T) {
+	p := &LightsailProvider{TailscaleLockdown: true}
+	cmd, err := p.SSH(&ConnectInfo{
+		Name:              "test-dev",
+		IP:                "44.203.78.182",
+		TailscaleHostname: "hal-test-dev",
+	})
+	if err != nil {
+		t.Fatalf("SSH() error: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "ubuntu@44.203.78.182") {
+		t.Fatalf("SSH cmd should keep instance public IP, got: %s", args)
+	}
+	if strings.Contains(args, "ubuntu@hal-test-dev") {
+		t.Fatalf("SSH cmd should not use hostname unless instance is lockdown-enabled, got: %s", args)
 	}
 }
 

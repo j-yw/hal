@@ -27,13 +27,15 @@ Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — 
 
 Subcommands:
   setup       Configure provider, credentials, and environment
-  start       Create and start a sandbox
-  stop        Stop a running sandbox
+  create      Provision a new sandbox
+  start       Start a stopped sandbox
+  stop        Power off / shut down a running sandbox
   status      Show sandbox status
   delete      Delete a sandbox
   ssh         Open an interactive shell or run a remote command`,
 	Example: `  hal sandbox setup
-  hal sandbox start
+  hal sandbox create
+  hal sandbox start my-sandbox
   hal sandbox status`,
 }
 
@@ -59,7 +61,7 @@ All values are saved to global sandbox config (~/.config/hal/sandbox-config.yaml
 unless HAL_CONFIG_HOME is set). Re-running setup lets you update individual
 values — press Enter to keep the current value.
 
-After setup, 'hal sandbox start' injects all configured env vars automatically.`,
+After setup, 'hal sandbox create' injects all configured env vars automatically.`,
 	Example: `  hal sandbox setup`,
 	RunE:    runSandboxSetupCobra,
 }
@@ -626,7 +628,7 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	}
 	fmt.Fprintf(out, "  Sandbox:    %d env vars configured\n", configuredCount)
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "  Run 'hal sandbox start -n dev' to spin up a sandbox.")
+	fmt.Fprintln(out, "  Run 'hal sandbox create -n dev' to provision a sandbox.")
 	fmt.Fprintln(out, "")
 
 	return nil

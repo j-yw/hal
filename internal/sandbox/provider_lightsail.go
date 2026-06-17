@@ -97,7 +97,7 @@ func generateLightsailCloudInit(env map[string]string, tailscaleLockdown bool) s
 	b.WriteString("fi\n")
 
 	// Run full setup (system packages, Node.js, Go, etc.) — this takes a while
-	b.WriteString("curl -fsSL https://raw.githubusercontent.com/jywlabs/hal/main/sandbox/setup.sh | bash\n")
+	appendSetupScriptRunner(&b, "")
 
 	return b.String()
 }
@@ -127,6 +127,17 @@ func buildLightsailCreateArgs(name, az, bundle, keyPair, userDataFilePath string
 		"--key-pair-name", keyPair,
 		"--user-data", "file://" + userDataFilePath,
 	}
+}
+
+func parseLightsailStateIP(output string) (state, ip string) {
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) > 0 {
+		state = fields[0]
+	}
+	if len(fields) > 1 && fields[1] != "None" && fields[1] != "null" {
+		ip = fields[1]
+	}
+	return state, ip
 }
 
 func (l *LightsailProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*SandboxResult, error) {
@@ -295,6 +306,69 @@ func (l *LightsailProvider) Stop(ctx context.Context, info *ConnectInfo, out io.
 	return nil
 }
 
+func (l *LightsailProvider) Start(ctx context.Context, info *ConnectInfo, out io.Writer) (*LifecycleResult, error) {
+	if err := l.ensureAWS(); err != nil {
+		return nil, err
+	}
+
+	name := ""
+	if info != nil {
+		name = strings.TrimSpace(info.Name)
+	}
+	if name == "" {
+		return nil, fmt.Errorf("sandbox name is required")
+	}
+
+	safeOut := synchronizedWriter(out)
+	cmd := l.commandContext(ctx, "aws", "lightsail", "start-instance", "--instance-name", name)
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = safeOut
+	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
+	if err := cmd.Run(); err != nil {
+		if !isAlreadyRunningLifecycleOutput(stderrBuf.String()) {
+			return nil, wrapAWSError("start-instance", err, stderrBuf.String())
+		}
+	}
+
+	sleepFn := l.sleep
+	if sleepFn == nil {
+		sleepFn = time.Sleep
+	}
+	for i := 0; i < 30; i++ {
+		statusCmd := l.commandContext(ctx, "aws",
+			"lightsail", "get-instance",
+			"--instance-name", name,
+			"--query", "instance.[state.name,publicIpAddress]",
+			"--output", "text",
+		)
+		var statusBuf bytes.Buffer
+		var statusErr bytes.Buffer
+		statusCmd.Stdout = &statusBuf
+		statusCmd.Stderr = &statusErr
+		if err := statusCmd.Run(); err == nil {
+			state, ip := parseLightsailStateIP(statusBuf.String())
+			if strings.EqualFold(state, "running") {
+				return &LifecycleResult{Status: StatusRunning, IP: ip}, nil
+			}
+		} else if out != nil {
+			fmt.Fprintf(out, "  Polling status for %s failed (%d/30): %v\n", name, i+1, wrapAWSError("get-instance", err, statusErr.String()))
+		}
+
+		if out != nil {
+			fmt.Fprintf(out, "  Polling start status for %s (%d/30)...\n", name, i+1)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timed out waiting for instance %q to start", name)
+		default:
+		}
+		if i < 29 {
+			sleepFn(5 * time.Second)
+		}
+	}
+	return nil, fmt.Errorf("instance %q did not reach running state after polling", name)
+}
+
 func (l *LightsailProvider) Delete(ctx context.Context, info *ConnectInfo, out io.Writer) error {
 	if err := l.ensureAWS(); err != nil {
 		return err
@@ -353,10 +427,7 @@ func (l *LightsailProvider) Status(ctx context.Context, info *ConnectInfo, out i
 }
 
 func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, false)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
@@ -374,10 +445,7 @@ func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	ip := ""
-	if info != nil {
-		ip = strings.TrimSpace(info.IP)
-	}
+	ip := preferredConnectAddress(info, false)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}

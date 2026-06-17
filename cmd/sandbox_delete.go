@@ -440,7 +440,7 @@ func validateDeleteConnectInfo(target *sandbox.SandboxState, info *sandbox.Conne
 	if info == nil {
 		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID", target.Name)
 	}
-	if strings.TrimSpace(info.WorkspaceID) == "" {
+	if strings.TrimSpace(info.WorkspaceID) == "" && strings.TrimSpace(info.Name) == "" && strings.TrimSpace(target.Name) == "" {
 		return fmt.Errorf("sandbox %q is missing DigitalOcean droplet ID", target.Name)
 	}
 	return nil

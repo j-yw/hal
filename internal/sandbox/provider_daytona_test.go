@@ -124,6 +124,34 @@ func TestDaytonaProvider_Create_Success(t *testing.T) {
 	}
 }
 
+func TestDaytonaProvider_Start_VerifiesArgs(t *testing.T) {
+	var capturedArgs []string
+	dp := &DaytonaProvider{
+		APIKey: "test-key",
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = append([]string{name}, args...)
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	result, err := dp.Start(context.Background(), &ConnectInfo{Name: "my-sandbox"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if result == nil || result.Status != StatusRunning {
+		t.Fatalf("result = %+v, want running status", result)
+	}
+	want := []string{"daytona", "start", "my-sandbox"}
+	if len(capturedArgs) != len(want) {
+		t.Fatalf("args = %v, want %v", capturedArgs, want)
+	}
+	for i := range want {
+		if capturedArgs[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q", i, capturedArgs[i], want[i])
+		}
+	}
+}
+
 func TestDaytonaProvider_Create_Failure(t *testing.T) {
 	dp := &DaytonaProvider{
 		APIKey: "test-key",

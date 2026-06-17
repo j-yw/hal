@@ -1,60 +1,43 @@
 ## hal sandbox start
 
-Create and start a sandbox
+Start stopped sandboxes
 
 ### Synopsis
 
-Create and start a sandbox using the configured provider (Daytona, Hetzner, DigitalOcean, or AWS Lightsail).
+Start one or more stopped sandboxes.
 
-The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
-Use --name to override the default name.
+Targets can be specified as positional arguments, with --all for every stopped
+sandbox, or with --pattern to match a glob pattern.
 
-Environment variables from .hal/config.yaml sandbox.env section are passed to the provider.
-Additional -e/--env flags overlay config values.
+When no arguments or flags are provided, the command auto-resolves:
+  - If exactly one sandbox is stopped, it is selected automatically.
+  - If zero stopped sandboxes exist, an error tells you to create one.
+  - If multiple are stopped, an error lists the available choices.
 
-Use --size to override the provider-specific instance size from config:
-  - Hetzner: server type (e.g., cx22, cx42)
-  - DigitalOcean: droplet size (e.g., s-2vcpu-4gb)
-  - Lightsail: bundle ID (e.g., small_3_0, medium_3_0)
-
-Use --repo to tag the sandbox with a repository label (informational only).
-
-Use --force to replace an existing sandbox with the same name (deletes the old one first).
-
-Auto-shutdown injects HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars into the sandbox
-so that cloud-init can configure idle timers. Defaults come from global sandbox config.
+Explicit names are loaded from the registry regardless of cached lifecycle
+status, so stale registry state can be corrected by the provider's idempotent
+start operation. Resolved targets are de-duplicated and sorted by name before
+execution.
 
 ```
-hal sandbox start [flags]
+hal sandbox start [NAME ...] [flags]
 ```
 
 ### Examples
 
 ```
-  hal sandbox start
-  hal sandbox start --name hal-dev
-  hal sandbox start -n dev --size cx42
-  hal sandbox start -n dev --force
-  hal sandbox start -n dev --repo github.com/org/repo
-  hal sandbox start -n dev -e TAILSCALE_AUTHKEY=tskey-auth-xxx -e ANTHROPIC_API_KEY=sk-ant-xxx
-  hal sandbox start --no-auto-shutdown
-  hal sandbox start --idle-hours 24
-  hal sandbox start -n worker --count 5
+  hal sandbox start my-sandbox
+  hal sandbox start api-backend frontend
+  hal sandbox start --all
+  hal sandbox start --pattern "worker-*"
 ```
 
 ### Options
 
 ```
-      --auto-shutdown      enable auto-shutdown idle timer (default true)
-      --count int          create N sandboxes with names {name}-01..{name}-N
-  -e, --env stringArray    extra environment variables (KEY=VALUE, repeatable)
-  -f, --force              replace existing sandbox with the same name
-  -h, --help               help for start
-      --idle-hours int     hours before idle shutdown (default from global config)
-  -n, --name string        sandbox name (defaults to current git branch)
-      --no-auto-shutdown   disable auto-shutdown idle timer
-  -r, --repo string        repository label for the sandbox (informational)
-  -s, --size string        override provider instance size (e.g., cx42, s-2vcpu-4gb)
+      --all              Start all stopped sandboxes
+  -h, --help             help for start
+      --pattern string   Start sandboxes matching a glob pattern
 ```
 
 ### SEE ALSO
