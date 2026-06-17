@@ -415,26 +415,31 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 	if d.TailscaleLockdown {
 		fmt.Fprintf(safeOut, "Waiting for Tailscale on %s (cloud-init may take a few minutes)...\n", name)
 		tailscaleHostname := strings.TrimSpace(env["TAILSCALE_HOSTNAME"])
-		tailscaleIP, err := fetchTailscaleIPWithProgress(ctx, "root", ip, d.sshContext, d.sleep, digitalOceanTailscalePublicAttempts, 10*time.Second, safeOut)
-		if err != nil {
-			if tailscaleHostname == "" {
-				cleanupDroplet("tailscale IP unavailable")
-				return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
+		var hostnameErr error
+		if tailscaleHostname != "" {
+			fmt.Fprintf(safeOut, "Verifying Tailscale hostname %s...\n", tailscaleHostname)
+			var hostnameIP string
+			hostnameIP, hostnameErr = fetchTailscaleIPWithProgress(ctx, "root", tailscaleHostname, d.sshContext, d.sleep, digitalOceanTailscaleHostnameAttempts, 10*time.Second, safeOut)
+			if hostnameErr == nil {
+				result.TailscaleIP = hostnameIP
+				if _, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, []string{tailscaleHostname, hostnameIP}, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut); verifyErr != nil {
+					cleanupDroplet("firewall lockdown unverified")
+					return nil, fmt.Errorf("failed to verify firewall lockdown in lockdown mode via hostname %q: %w", tailscaleHostname, verifyErr)
+				}
+				return result, nil
 			}
 
-			fmt.Fprintf(safeOut, "Warning: could not verify Tailscale IP over public SSH: %v\n", err)
-			fmt.Fprintf(safeOut, "Verifying Tailscale hostname fallback %s...\n", tailscaleHostname)
-			hostnameIP, hostnameErr := fetchTailscaleIPWithProgress(ctx, "root", tailscaleHostname, d.sshContext, d.sleep, digitalOceanTailscaleHostnameAttempts, 10*time.Second, safeOut)
+			fmt.Fprintf(safeOut, "Warning: could not verify Tailscale hostname %s: %v\n", tailscaleHostname, hostnameErr)
+			fmt.Fprintf(safeOut, "Falling back to public IP %s...\n", ip)
+		}
+
+		tailscaleIP, err := fetchTailscaleIPWithProgress(ctx, "root", ip, d.sshContext, d.sleep, digitalOceanTailscalePublicAttempts, 10*time.Second, safeOut)
+		if err != nil {
+			cleanupDroplet("tailscale IP unavailable")
 			if hostnameErr != nil {
-				cleanupDroplet("tailscale IP unavailable")
-				return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: public IP: %w; hostname %q: %v", err, tailscaleHostname, hostnameErr)
+				return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: hostname %q: %v; public IP %q: %w", tailscaleHostname, hostnameErr, ip, err)
 			}
-			result.TailscaleIP = hostnameIP
-			if _, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, []string{tailscaleHostname, hostnameIP}, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut); verifyErr != nil {
-				cleanupDroplet("firewall lockdown unverified")
-				return nil, fmt.Errorf("failed to verify firewall lockdown in lockdown mode via hostname %q: %w", tailscaleHostname, verifyErr)
-			}
-			return result, nil
+			return nil, fmt.Errorf("failed to fetch tailscale IP in lockdown mode: %w", err)
 		}
 
 		result.TailscaleIP = tailscaleIP
