@@ -274,6 +274,36 @@ func TestRunSandboxSSH_ExecMode(t *testing.T) {
 	}
 }
 
+func TestRunSandboxSSH_PreservesRemoteShowAddressesArg(t *testing.T) {
+	setupSSHTest(t, &sandbox.SandboxState{
+		Name:      "my-sandbox",
+		Provider:  "hetzner",
+		IP:        "10.0.0.42",
+		CreatedAt: time.Now(),
+		Status:    sandbox.StatusRunning,
+	})
+
+	mock := &mockSSHProvider{}
+
+	err := runSandboxSSHWithDeps([]string{"my-sandbox", "tool", "--show-addresses"}, io.Discard, mock, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"tool", "--show-addresses"}
+	if len(mock.execCalls) != 1 {
+		t.Fatalf("expected 1 Exec call, got %d", len(mock.execCalls))
+	}
+	if len(mock.execCalls[0].Args) != len(wantArgs) {
+		t.Fatalf("Exec args = %v, want %v", mock.execCalls[0].Args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if mock.execCalls[0].Args[i] != want {
+			t.Errorf("Exec args[%d] = %q, want %q", i, mock.execCalls[0].Args[i], want)
+		}
+	}
+}
+
 func TestRunSandboxSSH_ExecOutputIsRedacted(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:        "my-sandbox",

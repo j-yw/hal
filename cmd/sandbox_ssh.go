@@ -154,22 +154,17 @@ func parseSandboxSSHControlFlags(args []string) (bool, []string) {
 	}
 	show := false
 	out := make([]string, 0, len(args))
-	afterDashDash := false
-	for _, arg := range args {
-		if afterDashDash {
-			out = append(out, arg)
-			continue
-		}
+	for i, arg := range args {
 		if arg == "--" {
-			afterDashDash = true
-			out = append(out, arg)
-			continue
+			out = append(out, args[i:]...)
+			return show, out
 		}
 		if arg == "--show-addresses" {
 			show = true
 			continue
 		}
-		out = append(out, arg)
+		out = append(out, args[i:]...)
+		return show, out
 	}
 	return show, out
 }

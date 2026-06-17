@@ -31,7 +31,8 @@ var sandboxListCmd = &cobra.Command{
 
 Displays a table with columns: NAME, PROVIDER, STATUS, ACCESS, AGE, AUTO-OFF, EST.COST.
 The ACCESS column uses states like tailscale, tailscale pending, public fallback,
-or unavailable instead of raw network addresses.
+or unavailable instead of raw network addresses. With --show-addresses, the
+table also includes an ADDRESS column with the active SSH address.
 
 Estimated cost is based on embedded hourly rates and time since creation.
 Stopped sandboxes still accrue cost (cloud providers charge for allocated resources).
@@ -227,7 +228,7 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 	}
 
 	// Render table
-	renderSandboxTable(renderOut, instances, now)
+	renderSandboxTable(renderOut, instances, now, sandboxShowAddresses)
 
 	// Render summary
 	renderSandboxSummary(renderOut, instances, now)
@@ -459,9 +460,13 @@ func renderSandboxListJSON(out io.Writer, instances []*sandbox.SandboxState, now
 }
 
 // renderSandboxTable renders the sandbox list as a formatted table.
-func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now time.Time) {
+func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now time.Time, showAddresses bool) {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "%s\n", display.StyleBold.Render("NAME\tPROVIDER\tSTATUS\tACCESS\tAGE\tAUTO-OFF\tEST.COST"))
+	header := "NAME\tPROVIDER\tSTATUS\tACCESS\tAGE\tAUTO-OFF\tEST.COST"
+	if showAddresses {
+		header = "NAME\tPROVIDER\tSTATUS\tACCESS\tADDRESS\tAGE\tAUTO-OFF\tEST.COST"
+	}
+	fmt.Fprintf(w, "%s\n", display.StyleBold.Render(header))
 
 	for _, inst := range instances {
 		normalizedStatus := sandboxNormalizedStatus(inst)
@@ -490,15 +495,32 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 			statusStr = display.StyleMuted.Render(statusStr)
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			inst.Name,
-			inst.Provider,
-			statusStr,
-			access,
-			age,
-			autoOff,
-			cost,
-		)
+		if showAddresses {
+			address := sandbox.PreferredIP(inst)
+			if address == "" {
+				address = "—"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				inst.Name,
+				inst.Provider,
+				statusStr,
+				access,
+				address,
+				age,
+				autoOff,
+				cost,
+			)
+		} else {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				inst.Name,
+				inst.Provider,
+				statusStr,
+				access,
+				age,
+				autoOff,
+				cost,
+			)
+		}
 	}
 
 	w.Flush()

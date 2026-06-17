@@ -477,6 +477,51 @@ type batchResult struct {
 	Err     error
 }
 
+type sandboxCreateIdentity struct {
+	ID                string
+	TailscaleHostname string
+}
+
+type batchCreateTarget struct {
+	Name     string
+	Identity sandboxCreateIdentity
+	Env      map[string]string
+}
+
+func prepareSandboxCreateIdentity(name string, env map[string]string) (sandboxCreateIdentity, error) {
+	id, err := newSandboxID()
+	if err != nil {
+		return sandboxCreateIdentity{}, fmt.Errorf("generating sandbox ID: %w", err)
+	}
+
+	identity := sandboxCreateIdentity{ID: id}
+	identity.TailscaleHostname = configuredTailscaleHostname(name, id, env)
+	if identity.TailscaleHostname != "" {
+		env["TAILSCALE_HOSTNAME"] = identity.TailscaleHostname
+	}
+	return identity, nil
+}
+
+func prepareBatchCreateTargets(names []string, mergedEnv map[string]string) ([]batchCreateTarget, error) {
+	targets := make([]batchCreateTarget, 0, len(names))
+	for _, name := range names {
+		perEnv := make(map[string]string, len(mergedEnv)+1)
+		for k, v := range mergedEnv {
+			perEnv[k] = v
+		}
+		identity, err := prepareSandboxCreateIdentity(name, perEnv)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		targets = append(targets, batchCreateTarget{
+			Name:     name,
+			Identity: identity,
+			Env:      perEnv,
+		})
+	}
+	return targets, nil
+}
+
 func cleanupCreatedSandbox(
 	ctx context.Context,
 	provider sandbox.Provider,
@@ -619,7 +664,7 @@ func finalizeInterruptedCreateReplaceRetry(provider string, pendingRemoval sandb
 // Returns an error when any target fails (exit code 1).
 func runBatchCreate(
 	projectDir string,
-	targets []string,
+	targetNames []string,
 	force bool,
 	provider sandbox.Provider,
 	sandboxCfg *compound.SandboxConfig,
@@ -630,7 +675,14 @@ func runBatchCreate(
 	halDir string,
 	out io.Writer,
 ) error {
+	targets, err := prepareBatchCreateTargets(targetNames, mergedEnv)
+	if err != nil {
+		return err
+	}
 	redactor := sandboxRedactor(sandboxShowAddresses, mergedEnv)
+	for _, target := range targets {
+		redactor.KnownAddresses = append(redactor.KnownAddresses, target.Identity.TailscaleHostname)
+	}
 	safeOut := sandboxRedactingWriter(out, redactor)
 	defer sandboxFlushRedactor(safeOut)
 	renderOut := io.Writer(safeOut)
@@ -649,17 +701,17 @@ func runBatchCreate(
 
 	g := new(errgroup.Group)
 
-	for _, name := range targets {
-		name := name // capture for goroutine
+	for _, target := range targets {
+		target := target // capture for goroutine
 		g.Go(func() error {
-			err := createBatchTarget(projectDir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, renderOut)
+			err := createBatchTarget(projectDir, target, force, provider, sandboxCfg, autoShutdown, idleHours, size, repo, halDir, renderOut)
 			mu.Lock()
 			if err != nil {
-				fmt.Fprintf(renderOut, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), name, err)
-				results = append(results, batchResult{Name: name, Success: false, Err: err})
+				fmt.Fprintf(renderOut, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
+				results = append(results, batchResult{Name: target.Name, Success: false, Err: err})
 			} else {
-				fmt.Fprintf(renderOut, "Created %s\n", name)
-				results = append(results, batchResult{Name: name, Success: true})
+				fmt.Fprintf(renderOut, "Created %s\n", target.Name)
+				results = append(results, batchResult{Name: target.Name, Success: true})
 			}
 			mu.Unlock()
 
@@ -694,11 +746,10 @@ func runBatchCreate(
 // sandbox name so concurrent goroutine output stays readable.
 func createBatchTarget(
 	projectDir string,
-	name string,
+	target batchCreateTarget,
 	force bool,
 	provider sandbox.Provider,
 	sandboxCfg *compound.SandboxConfig,
-	mergedEnv map[string]string,
 	autoShutdown bool,
 	idleHours int,
 	size, repo string,
@@ -706,18 +757,10 @@ func createBatchTarget(
 	out io.Writer,
 ) error {
 	ctx := context.Background()
-	id, err := newSandboxID()
-	if err != nil {
-		return fmt.Errorf("generating ID: %w", err)
-	}
-	tailscaleHostname := configuredTailscaleHostname(name, id, mergedEnv)
-	perEnv := make(map[string]string, len(mergedEnv)+1)
-	for k, v := range mergedEnv {
-		perEnv[k] = v
-	}
-	if tailscaleHostname != "" {
-		perEnv["TAILSCALE_HOSTNAME"] = tailscaleHostname
-	}
+	name := target.Name
+	id := target.Identity.ID
+	tailscaleHostname := target.Identity.TailscaleHostname
+	perEnv := target.Env
 	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
 	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, prefixedOut); err != nil {
 		return err
@@ -783,40 +826,17 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
+	identity, err := prepareSandboxCreateIdentity(name, mergedEnv)
+	if err != nil {
+		return err
+	}
+
 	redactor := sandboxRedactor(sandboxShowAddresses, mergedEnv)
 	safeOut := sandboxRedactingWriter(out, redactor)
 	defer sandboxFlushRedactor(safeOut)
 	renderOut := io.Writer(safeOut)
 	if renderOut == nil {
 		renderOut = out
-	}
-
-	id := ""
-	tailscaleHostname := ""
-	prepareIdentity := func() error {
-		if id != "" {
-			return nil
-		}
-
-		// Generate UUIDv7 before provider creation so the Tailscale hostname can be
-		// unique per instance and avoid stale MagicDNS entries from deleted sandboxes.
-		generatedID, err := newSandboxID()
-		if err != nil {
-			return fmt.Errorf("generating sandbox ID: %w", err)
-		}
-		id = generatedID
-
-		tailscaleHostname = configuredTailscaleHostname(name, id, mergedEnv)
-		if tailscaleHostname != "" {
-			mergedEnv["TAILSCALE_HOSTNAME"] = tailscaleHostname
-		}
-		return nil
-	}
-
-	if force {
-		if err := prepareIdentity(); err != nil {
-			return err
-		}
 	}
 
 	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, renderOut); err != nil {
@@ -832,12 +852,6 @@ func runSingleCreate(
 		fmt.Fprintf(renderOut, "%s Creating sandbox %q (%s)...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider)
 	}
 
-	if !force {
-		if err := prepareIdentity(); err != nil {
-			return err
-		}
-	}
-
 	ctx := context.Background()
 	result, err := provider.Create(ctx, name, mergedEnv, renderOut)
 	if err != nil {
@@ -846,13 +860,13 @@ func runSingleCreate(
 
 	// Build state with identity, provider, networking, lifecycle fields
 	state := &sandbox.SandboxState{
-		ID:                id,
+		ID:                identity.ID,
 		Name:              name,
 		Provider:          sandboxCfg.Provider,
 		WorkspaceID:       result.ID,
 		IP:                result.IP,
 		TailscaleIP:       result.TailscaleIP,
-		TailscaleHostname: tailscaleHostname,
+		TailscaleHostname: identity.TailscaleHostname,
 		TailscaleLockdown: sandboxCfg.TailscaleLockdown,
 		Status:            sandbox.StatusRunning,
 		CreatedAt:         time.Now(),
@@ -886,8 +900,8 @@ func runSingleCreate(
 		}
 		if result.TailscaleIP != "" {
 			fmt.Fprintf(renderOut, "  Tailscale IP: %s\n", result.TailscaleIP)
-		} else if tailscaleHostname != "" {
-			fmt.Fprintf(renderOut, "  Tailscale:    %s\n", tailscaleHostname)
+		} else if identity.TailscaleHostname != "" {
+			fmt.Fprintf(renderOut, "  Tailscale:    %s\n", identity.TailscaleHostname)
 		}
 	}
 	return nil

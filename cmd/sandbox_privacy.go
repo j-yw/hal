@@ -25,6 +25,9 @@ func sandboxRedactor(showAddresses bool, env map[string]string, instances ...*sa
 		)
 	}
 	for key, value := range env {
+		if strings.EqualFold(strings.TrimSpace(key), "TAILSCALE_HOSTNAME") {
+			redactor.KnownAddresses = append(redactor.KnownAddresses, value)
+		}
 		if isSensitiveEnvKey(key) {
 			redactor.KnownSecrets = append(redactor.KnownSecrets, value)
 		}
@@ -71,7 +74,9 @@ func sandboxAccessLabel(inst *sandbox.SandboxState) string {
 		return "tailscale"
 	}
 	if strings.TrimSpace(inst.TailscaleHostname) != "" {
-		return "tailscale pending"
+		if inst.TailscaleLockdown || strings.TrimSpace(inst.IP) == "" {
+			return "tailscale pending"
+		}
 	}
 	if strings.TrimSpace(inst.IP) != "" {
 		if inst.TailscaleLockdown {

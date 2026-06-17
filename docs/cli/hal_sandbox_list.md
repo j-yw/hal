@@ -8,7 +8,8 @@ List all sandbox instances from the global registry.
 
 Displays a table with columns: NAME, PROVIDER, STATUS, ACCESS, AGE, AUTO-OFF, EST.COST.
 The ACCESS column uses states like tailscale, tailscale pending, public fallback,
-or unavailable instead of raw network addresses.
+or unavailable instead of raw network addresses. With --show-addresses, the
+table also includes an ADDRESS column with the active SSH address.
 
 Estimated cost is based on embedded hourly rates and time since creation.
 Stopped sandboxes still accrue cost (cloud providers charge for allocated resources).

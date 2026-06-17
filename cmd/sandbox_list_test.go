@@ -669,8 +669,8 @@ func TestRunSandboxList_TailscaleHostnameFallback(t *testing.T) {
 	lines := strings.Split(out, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "hostname-ts") {
-			if !strings.Contains(line, "tailscale pending") {
-				t.Fatalf("expected pending tailscale access in line: %s", line)
+			if !strings.Contains(line, "public fallback") {
+				t.Fatalf("expected public fallback access in line: %s", line)
 			}
 			if strings.Contains(line, "hal-dev") || strings.Contains(line, "203.0.113.10") {
 				t.Fatalf("expected human row to hide raw addresses and hostnames: %s", line)
@@ -679,6 +679,43 @@ func TestRunSandboxList_TailscaleHostnameFallback(t *testing.T) {
 		}
 	}
 	t.Fatalf("sandbox row missing from output: %s", out)
+}
+
+func TestRunSandboxList_ShowAddressesIncludesAddress(t *testing.T) {
+	setupListTest(t)
+	sandboxShowAddresses = true
+	t.Cleanup(func() { sandboxShowAddresses = false })
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:                "id-1",
+		Name:              "show-ip",
+		Provider:          "digitalocean",
+		Status:            sandbox.StatusRunning,
+		IP:                "203.0.113.10",
+		TailscaleHostname: "hal-dev",
+		CreatedAt:         now.Add(-1 * time.Hour),
+		Size:              "s-1vcpu-1gb",
+	})
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "ADDRESS") {
+		t.Fatalf("expected ADDRESS column in output: %s", out)
+	}
+	if !strings.Contains(out, "203.0.113.10") {
+		t.Fatalf("expected public address in output: %s", out)
+	}
+	if strings.Contains(out, "hal-dev") {
+		t.Fatalf("expected active public address, not unverified hostname: %s", out)
+	}
 }
 
 func TestFormatAge(t *testing.T) {
