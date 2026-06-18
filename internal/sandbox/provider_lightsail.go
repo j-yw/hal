@@ -83,6 +83,9 @@ func generateLightsailCloudInit(env map[string]string, tailscaleLockdown bool) s
 	b.WriteString("set -a\n")
 	b.WriteString(". /root/.env\n")
 	b.WriteString("set +a\n")
+	b.WriteString("touch /root/.hushlogin\n")
+	b.WriteString("touch /home/ubuntu/.hushlogin 2>/dev/null || true\n")
+	b.WriteString("chown ubuntu:ubuntu /home/ubuntu/.hushlogin 2>/dev/null || true\n")
 
 	// Install and configure Tailscale FIRST (before setup.sh which takes minutes).
 	// hal polls for /root/.tailscale-ip via SSH, so this must complete quickly.
@@ -178,8 +181,9 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 	args := buildLightsailCreateArgs(name, az, bundle, l.KeyPairName, tmpFile.Name())
 	createCmd := l.commandContext(ctx, "aws", args...)
 	var stderrBuf bytes.Buffer
-	createCmd.Stdout = safeOut
-	createCmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
+	var createStdout bytes.Buffer
+	createCmd.Stdout = &createStdout
+	createCmd.Stderr = &stderrBuf
 
 	if err := createCmd.Run(); err != nil {
 		return nil, wrapAWSError("create-instances", err, stderrBuf.String())
@@ -202,7 +206,7 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 	}
 
 	// Poll for running state and public IP (Lightsail doesn't have --wait)
-	fmt.Fprintf(safeOut, "Waiting for %s public IP...\n", name)
+	fmt.Fprintf(safeOut, "Waiting for %s network readiness...\n", name)
 	var ip string
 	for i := 0; i < 30; i++ {
 		ipCmd := l.commandContext(ctx, "aws",
@@ -224,7 +228,7 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 			}
 		}
 
-		fmt.Fprintf(safeOut, "  Polling IP for %s (%d/30)...\n", name, i+1)
+		fmt.Fprintf(safeOut, "  Polling network status for %s (%d/30)...\n", name, i+1)
 
 		select {
 		case <-ctx.Done():
@@ -239,7 +243,7 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 		return nil, fmt.Errorf("instance %q created but no public IP assigned after polling", name)
 	}
 
-	fmt.Fprintf(safeOut, "Instance %s ready at %s\n", name, ip)
+	fmt.Fprintf(safeOut, "Instance %s ready\n", name)
 	result := &SandboxResult{ID: name, Name: name, IP: ip}
 	if l.TailscaleLockdown {
 		fmt.Fprintf(safeOut, "Waiting for Tailscale on %s (cloud-init may take a few minutes)...\n", name)
@@ -294,11 +298,11 @@ func (l *LightsailProvider) Stop(ctx context.Context, info *ConnectInfo, out io.
 		return fmt.Errorf("sandbox name is required")
 	}
 
-	safeOut := synchronizedWriter(out)
 	cmd := l.commandContext(ctx, "aws", "lightsail", "stop-instance", "--instance-name", name)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = safeOut
-	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
+	var stdoutBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Run(); err != nil {
 		return wrapAWSError("stop-instance", err, stderrBuf.String())
@@ -319,11 +323,11 @@ func (l *LightsailProvider) Start(ctx context.Context, info *ConnectInfo, out io
 		return nil, fmt.Errorf("sandbox name is required")
 	}
 
-	safeOut := synchronizedWriter(out)
 	cmd := l.commandContext(ctx, "aws", "lightsail", "start-instance", "--instance-name", name)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = safeOut
-	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
+	var stdoutBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 	if err := cmd.Run(); err != nil {
 		if !isAlreadyRunningLifecycleOutput(stderrBuf.String()) {
 			return nil, wrapAWSError("start-instance", err, stderrBuf.String())
@@ -382,14 +386,14 @@ func (l *LightsailProvider) Delete(ctx context.Context, info *ConnectInfo, out i
 		return fmt.Errorf("sandbox name is required")
 	}
 
-	safeOut := synchronizedWriter(out)
 	cmd := l.commandContext(ctx, "aws", "lightsail", "delete-instance",
 		"--instance-name", name,
 		"--force-delete-add-ons",
 	)
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = safeOut
-	cmd.Stderr = io.MultiWriter(safeOut, &stderrBuf)
+	var stdoutBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Run(); err != nil {
 		return wrapAWSError("delete-instance", err, stderrBuf.String())
@@ -427,7 +431,7 @@ func (l *LightsailProvider) Status(ctx context.Context, info *ConnectInfo, out i
 }
 
 func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
-	ip := preferredConnectAddress(info, l.TailscaleLockdown)
+	ip := preferredConnectAddress(info, false)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
@@ -436,6 +440,7 @@ func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
 		"ubuntu@"+ip,
 	)
 	cmd.Stdin = os.Stdin
@@ -445,7 +450,7 @@ func (l *LightsailProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, error) {
-	ip := preferredConnectAddress(info, l.TailscaleLockdown)
+	ip := preferredConnectAddress(info, false)
 	if ip == "" {
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
@@ -453,6 +458,7 @@ func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, e
 	cmdArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
 		"ubuntu@" + ip,
 		"--",
 	}

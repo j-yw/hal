@@ -4,6 +4,10 @@
 **Contract Version:** `sandbox-list-v1`  
 **Stability:** Stable. New fields may be added with `omitempty`; existing fields will not be removed or renamed.
 
+**Privacy boundary:** Human sandbox output redacts public cloud and Tailscale
+addresses by default. This JSON contract is machine-readable output and may
+include raw `ip`, `tailscaleIp`, and `tailscaleHostname` fields when present.
+
 ## Top-Level Structure
 
 | Field | Type | Description |
@@ -147,4 +151,5 @@ These fields use `omitempty` and are only present when the value is non-zero.
 - The `totals.estimatedCost` field aggregates only sandboxes with known rates and is omitted when no sandbox has rate data.
 - Cost accrues from `createdAt` regardless of status, since cloud providers charge for allocated instances even when stopped.
 - The `--live` flag queries providers for fresh status before rendering but does not change the JSON structure.
+- Human table output uses access states instead of raw network addresses. Use `--show-addresses` only when raw values are intentionally needed in human output.
 - New optional fields may be added in future versions with `omitempty`. Consumers should ignore unknown fields for forward compatibility.

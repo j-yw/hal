@@ -292,7 +292,7 @@ func (d *Display) ShowEvent(e *Event) {
 
 	case EventResult:
 		d.emitThinkingCompleteLine()
-		duration := int(e.Data.DurationMs / 1000)
+		duration := d.resultDurationSeconds(e.Data.DurationMs)
 		var statusBadge string
 		if e.Data.Success {
 			statusBadge = StyleSuccess.Render("[OK]")
@@ -513,6 +513,27 @@ func (d *Display) ShowRetry(attempt, max int, delay time.Duration) {
 
 // Helper functions
 
+func (d *Display) resultDurationSeconds(durationMs float64) int {
+	if durationMs > 0 {
+		seconds := int(durationMs / 1000)
+		if seconds < 0 {
+			return 0
+		}
+		return seconds
+	}
+
+	if d.startTime.IsZero() {
+		return 0
+	}
+
+	elapsed := int(time.Since(d.startTime).Seconds())
+	if elapsed < 0 {
+		return 0
+	}
+
+	return elapsed
+}
+
 func formatTokens(n int) string {
 	if n >= 1000000 {
 		return fmt.Sprintf("%.1fM", float64(n)/1000000)
@@ -595,14 +616,26 @@ func (d *Display) ShowCommandHeader(title, context string, hctx HeaderContext) {
 	titleText := StyleTitle.Render(title)
 
 	// Detail line: context │ engine: X · model: Y
-	detail := context + " │ engine: " + hctx.Engine
-	if hctx.Model != "" {
-		detail += " · model: " + hctx.Model
+	details := make([]string, 0, 2)
+	if strings.TrimSpace(context) != "" {
+		details = append(details, context)
+	}
+	if hctx.Engine != "" {
+		engineDetail := "engine: " + hctx.Engine
+		if hctx.Model != "" {
+			engineDetail += " · model: " + hctx.Model
+			d.modelShown = true
+		}
+		details = append(details, engineDetail)
+	} else if hctx.Model != "" {
+		details = append(details, "model: "+hctx.Model)
 		d.modelShown = true
 	}
-	detailLine := StyleMuted.Render(detail)
 
-	content := fmt.Sprintf("%s %s\n%s", icon, titleText, detailLine)
+	content := fmt.Sprintf("%s %s", icon, titleText)
+	if len(details) > 0 {
+		content += "\n" + StyleMuted.Render(strings.Join(details, " │ "))
+	}
 
 	// Repo/branch line
 	if repoBranch := formatRepoBranch(hctx.Repo, hctx.Branch); repoBranch != "" {

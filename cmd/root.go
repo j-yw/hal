@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -89,6 +90,8 @@ func executeWithDeps(root *cobra.Command, errW io.Writer, exitFn func(int)) {
 
 	originalSilenceUsage := root.SilenceUsage
 	originalSilenceErrors := root.SilenceErrors
+	root.SilenceUsage = true
+	root.SilenceErrors = true
 	defer func() {
 		root.SilenceUsage = originalSilenceUsage
 		root.SilenceErrors = originalSilenceErrors
@@ -110,7 +113,15 @@ func executeWithDeps(root *cobra.Command, errW io.Writer, exitFn func(int)) {
 		return
 	}
 
+	renderRootCommandError(errW, err)
 	if exitFn != nil {
 		exitFn(1)
 	}
+}
+
+func renderRootCommandError(errW io.Writer, err error) {
+	if errW == nil || err == nil {
+		return
+	}
+	display.NewDisplay(errW).ShowCommandError("Command failed", []display.ValidationIssue{{Message: err.Error()}}, nil)
 }

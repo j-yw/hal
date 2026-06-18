@@ -40,7 +40,7 @@ func TestExecuteWithDepsTypedErrorPrintsOnceWithoutUsage(t *testing.T) {
 	}
 }
 
-func TestExecuteWithDepsNonTypedErrorKeepsLegacyBehavior(t *testing.T) {
+func TestExecuteWithDepsNonTypedErrorUsesHalUIWithoutUsage(t *testing.T) {
 	root := &cobra.Command{Use: "hal"}
 	broken := &cobra.Command{
 		Use: "broken",
@@ -63,11 +63,17 @@ func TestExecuteWithDepsNonTypedErrorKeepsLegacyBehavior(t *testing.T) {
 	if exitCode != 1 {
 		t.Fatalf("exit code = %d, want %d", exitCode, 1)
 	}
-	if helperErr.Len() != 0 {
-		t.Fatalf("helper stderr should be empty for non-typed errors, got %q", helperErr.String())
+	if !strings.Contains(helperErr.String(), "Command failed") {
+		t.Fatalf("helper stderr = %q, want command error title", helperErr.String())
 	}
-	if !strings.Contains(cobraErr.String(), "boom") {
-		t.Fatalf("cobra stderr = %q, want to contain %q", cobraErr.String(), "boom")
+	if !strings.Contains(helperErr.String(), "boom") {
+		t.Fatalf("helper stderr = %q, want to contain %q", helperErr.String(), "boom")
+	}
+	if strings.Contains(helperErr.String(), "Usage:") || strings.Contains(helperErr.String(), "Error:") {
+		t.Fatalf("helper stderr should not include raw cobra output: %q", helperErr.String())
+	}
+	if cobraErr.Len() != 0 {
+		t.Fatalf("cobra stderr should be empty for non-typed errors, got %q", cobraErr.String())
 	}
 }
 

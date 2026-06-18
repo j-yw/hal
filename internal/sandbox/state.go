@@ -20,8 +20,12 @@ func SaveState(halDir string, state *SandboxState) error {
 
 	path := filepath.Join(halDir, template.SandboxFile)
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write sandbox state: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to set sandbox state permissions: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)

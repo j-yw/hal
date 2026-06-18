@@ -29,6 +29,7 @@ type mockProvider struct {
 	createResult    *sandbox.SandboxResult
 	createErr       error
 	createErrByName map[string]error // per-name error injection for partial failure tests
+	createOutput    func(name string, env map[string]string) string
 	mu              sync.Mutex
 	createCalls     []mockCreateCall
 	deleteCalls     []mockDeleteCall
@@ -54,6 +55,9 @@ func (m *mockProvider) Create(ctx context.Context, name string, env map[string]s
 		if err, ok := m.createErrByName[name]; ok {
 			return nil, err
 		}
+	}
+	if m.createOutput != nil && out != nil {
+		fmt.Fprint(out, m.createOutput(name, env))
 	}
 	return m.createResult, m.createErr
 }
@@ -285,6 +289,9 @@ func TestRunSandboxCreate_StoresTailscaleHostnameWhenAuthConfigured(t *testing.T
 
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{Name: "dev", ID: "ws-123", IP: "10.0.0.1"},
+		createOutput: func(name string, env map[string]string) string {
+			return fmt.Sprintf("verifying Tailscale hostname %s\n", env["TAILSCALE_HOSTNAME"])
+		},
 	}
 
 	var out bytes.Buffer
@@ -320,8 +327,14 @@ func TestRunSandboxCreate_StoresTailscaleHostnameWhenAuthConfigured(t *testing.T
 	if instance.TailscaleHostname != gotHostname {
 		t.Fatalf("instance.TailscaleHostname = %q, want %q", instance.TailscaleHostname, gotHostname)
 	}
-	if !strings.Contains(out.String(), "Tailscale:") {
-		t.Fatalf("output missing Tailscale hostname: %q", out.String())
+	if !strings.Contains(out.String(), "Access:       public fallback") {
+		t.Fatalf("output missing access state: %q", out.String())
+	}
+	if strings.Contains(out.String(), gotHostname) {
+		t.Fatalf("output should not reveal Tailscale hostname by default: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "<address redacted>") {
+		t.Fatalf("output should redact provider hostname output: %q", out.String())
 	}
 }
 
@@ -460,9 +473,13 @@ func TestRunSandboxCreate_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *tes
 
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{ID: "ws-1"},
+		createOutput: func(name string, env map[string]string) string {
+			return fmt.Sprintf("verifying Tailscale hostname %s\n", env["TAILSCALE_HOSTNAME"])
+		},
 	}
 
-	if err := runSandboxCreateWithDeps(dir, "worker", 2, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil); err != nil {
+	var out bytes.Buffer
+	if err := runSandboxCreateWithDeps(dir, "worker", 2, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(mock.createCalls) != 2 {
@@ -470,9 +487,16 @@ func TestRunSandboxCreate_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *tes
 	}
 
 	for _, call := range mock.createCalls {
-		if got := call.Env["TAILSCALE_HOSTNAME"]; !strings.HasPrefix(got, sandbox.TailscaleHostname(call.Name)+"-") {
+		got := call.Env["TAILSCALE_HOSTNAME"]
+		if !strings.HasPrefix(got, sandbox.TailscaleHostname(call.Name)+"-") {
 			t.Errorf("%s: TAILSCALE_HOSTNAME = %q, want %q-*", call.Name, got, sandbox.TailscaleHostname(call.Name))
 		}
+		if strings.Contains(out.String(), got) {
+			t.Fatalf("batch output should not reveal Tailscale hostname %q: %q", got, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "<address redacted>") {
+		t.Fatalf("batch output should redact provider hostname output: %q", out.String())
 	}
 }
 
@@ -3271,8 +3295,14 @@ func TestCreateBatchTarget_RegistrationFailureRollsBackCreatedSandbox(t *testing
 		},
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	env := map[string]string{}
+	identity, err := prepareSandboxCreateIdentity("worker-01", env)
+	if err != nil {
+		t.Fatalf("setup: prepare identity: %v", err)
+	}
+	target := batchCreateTarget{Name: "worker-01", Identity: identity, Env: env}
 
-	err := createBatchTarget(dir, "worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
+	err = createBatchTarget(dir, target, false, mock, sandboxCfg, true, 48, "", "", "", io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -3325,13 +3355,11 @@ func TestCreateBatchTarget_IDGenerationFailureSkipsProviderCreate(t *testing.T) 
 			IP:   "203.0.113.20",
 		},
 	}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
-
-	err := createBatchTarget(dir, "worker-01", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", "", io.Discard)
+	_, err := prepareBatchCreateTargets([]string{"worker-01"}, map[string]string{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "generating ID") {
+	if !strings.Contains(err.Error(), "generating sandbox ID") {
 		t.Fatalf("error %q should include ID generation context", err.Error())
 	}
 

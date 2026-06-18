@@ -2,6 +2,7 @@ package pi
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
 )
@@ -338,6 +339,27 @@ func TestParser_ParseLine_AgentEnd(t *testing.T) {
 	}
 	if !event.Data.Success {
 		t.Error("expected Success=true, got false")
+	}
+}
+
+func TestParser_ParseLine_AgentEnd_IncludesDurationMs(t *testing.T) {
+	base := time.Unix(1700000200, 0)
+	now := base
+	p := NewParser()
+	p.now = func() time.Time { return now }
+	p.runStart = base
+
+	now = base.Add(5 * time.Second)
+	line := `{"type":"agent_end","messages":[]}`
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != engine.EventResult {
+		t.Fatalf("expected Type=EventResult, got %v", event.Type)
+	}
+	if got, want := event.Data.DurationMs, 5000.0; got != want {
+		t.Fatalf("expected DurationMs=%.0f, got %.0f", want, got)
 	}
 }
 

@@ -49,8 +49,9 @@ type localStateSyncWarning struct {
 }
 
 type liveStatusResult struct {
-	Status string
-	IP     string
+	Status      string
+	IP          string
+	WorkspaceID string
 }
 
 func (w *localStateSyncWarning) Error() string {
@@ -96,9 +97,29 @@ func queryProviderLiveStatus(ctx context.Context, provider sandbox.Provider, inf
 	}
 	status, err := normalizeLiveStatus(out.String())
 	return liveStatusResult{
-		Status: status,
-		IP:     parseLiveIP(out.String()),
+		Status:      status,
+		IP:          parseLiveIP(out.String()),
+		WorkspaceID: resolvedWorkspaceID(info),
 	}, err
+}
+
+func resolvedWorkspaceID(info *sandbox.ConnectInfo) string {
+	if info == nil {
+		return ""
+	}
+	return strings.TrimSpace(info.WorkspaceID)
+}
+
+func applyResolvedWorkspaceID(instance *sandbox.SandboxState, info *sandbox.ConnectInfo) bool {
+	workspaceID := resolvedWorkspaceID(info)
+	if instance == nil || workspaceID == "" {
+		return false
+	}
+	if strings.TrimSpace(instance.WorkspaceID) == workspaceID {
+		return false
+	}
+	instance.WorkspaceID = workspaceID
+	return true
 }
 
 func normalizeLiveStatus(output string) (string, error) {
@@ -425,14 +446,19 @@ func persistLiveStatusResult(instance *sandbox.SandboxState, result liveStatusRe
 	previousStatus := instance.Status
 	previousStoppedAt := cloneStoppedAt(instance.StoppedAt)
 	previousIP := instance.IP
+	previousWorkspaceID := instance.WorkspaceID
 	liveIP := strings.TrimSpace(result.IP)
+	workspaceID := strings.TrimSpace(result.WorkspaceID)
 	updateInstanceStatus(instance, result.Status, now)
 	if liveIP != "" {
 		instance.IP = liveIP
 	} else if shouldClearLiveIP(instance.Status) {
 		instance.IP = ""
 	}
-	if (instance.Status == previousStatus && sameStoppedAt(instance.StoppedAt, previousStoppedAt) && instance.IP == previousIP) || write == nil {
+	if workspaceID != "" {
+		instance.WorkspaceID = workspaceID
+	}
+	if (instance.Status == previousStatus && sameStoppedAt(instance.StoppedAt, previousStoppedAt) && instance.IP == previousIP && instance.WorkspaceID == previousWorkspaceID) || write == nil {
 		return nil
 	}
 
@@ -440,9 +466,10 @@ func persistLiveStatusResult(instance *sandbox.SandboxState, result liveStatusRe
 	// target merges them into the current registry entry without overwriting
 	// fields that were not part of the live query.
 	update := &sandbox.SandboxState{
-		Status:    instance.Status,
-		StoppedAt: cloneStoppedAt(instance.StoppedAt),
-		IP:        liveIP,
+		Status:      instance.Status,
+		StoppedAt:   cloneStoppedAt(instance.StoppedAt),
+		IP:          liveIP,
+		WorkspaceID: workspaceID,
 	}
 	if err := write(update); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -451,6 +478,7 @@ func persistLiveStatusResult(instance *sandbox.SandboxState, result liveStatusRe
 		instance.Status = previousStatus
 		instance.StoppedAt = previousStoppedAt
 		instance.IP = previousIP
+		instance.WorkspaceID = previousWorkspaceID
 		return err
 	}
 	if err := syncMatchingLocalSandboxState(filepath.Join(".", template.HalDir), instance); err != nil {

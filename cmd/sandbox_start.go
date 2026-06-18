@@ -43,7 +43,9 @@ execution.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		allFlag, _ := cmd.Flags().GetBool("all")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxStart(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Start failed", func() error {
+			return runSandboxStart(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		})
 	},
 }
 
@@ -81,14 +83,27 @@ func runSandboxStartWithDeps(args []string, allFlag bool, pattern string, out io
 	if err != nil {
 		return err
 	}
+	redactor := sandboxRedactor(sandboxShowAddresses, nil, targets...)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
 	if hint != "" {
-		fmt.Fprintln(out, hint)
+		fmt.Fprintln(renderOut, hint)
 	}
 
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Start", fmt.Sprintf("%d target(s)", len(targets)), display.HeaderContext{})
+
+	var runErr error
 	if len(targets) == 1 {
-		return startOneTarget(targets[0], out, provider)
+		runErr = startOneTarget(targets[0], renderOut, provider)
+	} else {
+		runErr = startMultipleTargets(targets, renderOut, provider)
 	}
-	return startMultipleTargets(targets, out, provider)
+	return sandboxSanitizeError(runErr, redactor)
 }
 
 func resolveStartTargets(args []string, allFlag bool, pattern string) ([]*sandbox.SandboxState, string, error) {
@@ -236,6 +251,7 @@ func startOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbo
 	if err != nil {
 		return fmt.Errorf("sandbox start failed for %q: %w", target.Name, err)
 	}
+	applyResolvedWorkspaceID(target, info)
 	if err := persistStartedState(target, result); err != nil {
 		if warning, ok := asLocalStateSyncWarning(err); ok {
 			fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, warning.Unwrap())
@@ -252,6 +268,8 @@ func startOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbo
 	}
 
 	fmt.Fprintf(out, "%s Started %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+	fmt.Fprintf(out, "  Access: %s\n", sandboxAccessLabel(target))
+	fmt.Fprintf(out, "  SSH:    %s\n", sandboxSSHCommand(target.Name))
 	return nil
 }
 
@@ -288,6 +306,7 @@ func startMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provid
 				results = append(results, startResult{Name: target.Name, Success: false, Err: err})
 				return nil
 			}
+			applyResolvedWorkspaceID(target, info)
 			if regErr := persistStartedState(target, result); regErr != nil {
 				if warning, ok := asLocalStateSyncWarning(regErr); ok {
 					fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, warning.Unwrap())

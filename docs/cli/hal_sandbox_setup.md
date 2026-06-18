@@ -40,6 +40,12 @@ hal sandbox setup [flags]
   -h, --help   help for setup
 ```
 
+### Options inherited from parent commands
+
+```
+      --show-addresses   show raw sandbox network addresses in human output
+```
+
 ### SEE ALSO
 
 * [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments

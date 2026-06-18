@@ -25,6 +25,9 @@ var sandboxCmd = &cobra.Command{
 Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — run
 'hal sandbox setup' to choose a provider and configure credentials.
 
+Human output redacts public cloud and Tailscale addresses by default. Use
+--show-addresses only when you intentionally need raw network addresses.
+
 Subcommands:
   setup       Configure provider, credentials, and environment
   create      Provision a new sandbox
@@ -67,6 +70,7 @@ After setup, 'hal sandbox create' injects all configured env vars automatically.
 }
 
 func init() {
+	sandboxCmd.PersistentFlags().BoolVar(&sandboxShowAddresses, "show-addresses", false, "show raw sandbox network addresses in human output")
 	sandboxCmd.AddCommand(sandboxSetupCmd)
 	rootCmd.AddCommand(sandboxCmd)
 }
@@ -82,6 +86,24 @@ func runSandboxAutoMigrate(projectDir string, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+func runSandboxCobra(cmd *cobra.Command, title string, run func() error) error {
+	if err := run(); err != nil {
+		return renderSandboxCobraError(cmd, title, err)
+	}
+	return nil
+}
+
+func renderSandboxCobraError(cmd *cobra.Command, title string, err error) error {
+	out := io.Writer(os.Stderr)
+	if cmd != nil {
+		out = cmd.ErrOrStderr()
+	}
+	if out != nil {
+		ui.NewDisplay(out).ShowCommandError(title, []ui.ValidationIssue{{Message: err.Error()}}, nil)
+	}
+	return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
 }
 
 func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
@@ -213,7 +235,15 @@ func resolveProviderFromName(dir, _ string) (sandbox.Provider, error) {
 }
 
 func runSandboxSetupCobra(cmd *cobra.Command, args []string) error {
-	return runSandboxSetup(os.Stdin, os.Stdout)
+	in := io.Reader(os.Stdin)
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		in = cmd.InOrStdin()
+		out = cmd.OutOrStdout()
+	}
+	return runSandboxCobra(cmd, "Sandbox Setup failed", func() error {
+		return runSandboxSetup(in, out)
+	})
 }
 
 func runSandboxSetup(in io.Reader, out io.Writer) error {
@@ -297,6 +327,9 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 		defaults := sandbox.DefaultGlobalConfig()
 		existingGlobal = &defaults
 	}
+
+	display := ui.NewDisplay(out)
+	display.ShowCommandHeader("Sandbox Setup", "global config", ui.HeaderContext{})
 
 	// ── Provider selection ──
 	fmt.Fprintln(out, "")
@@ -605,11 +638,14 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	case "daytona":
 		fmt.Fprintln(out, "  Daytona:    ✓ configured")
 	case "hetzner":
-		fmt.Fprintf(out, "  Hetzner:    ✓ ssh-key=%s type=%s image=%s\n", collected["_hetzner_ssh_key"], collected["_hetzner_server_type"], collected["_hetzner_image"])
+		fmt.Fprintln(out, "  Hetzner:    ✓ configured")
+		fmt.Fprintf(out, "  Size:       type=%s image=%s\n", collected["_hetzner_server_type"], collected["_hetzner_image"])
 	case "digitalocean":
-		fmt.Fprintf(out, "  DigitalOcean: ✓ ssh-key=%s size=%s\n", collected["_do_ssh_key"], collected["_do_size"])
+		fmt.Fprintln(out, "  DigitalOcean: ✓ configured")
+		fmt.Fprintf(out, "  Size:       %s\n", collected["_do_size"])
 	case "lightsail":
-		fmt.Fprintf(out, "  Lightsail:  ✓ key=%s bundle=%s region=%s az=%s\n", collected["_ls_key_pair"], collected["_ls_bundle"], collected["_ls_region"], collected["_ls_az"])
+		fmt.Fprintln(out, "  Lightsail:  ✓ configured")
+		fmt.Fprintf(out, "  Size:       bundle=%s region=%s az=%s\n", collected["_ls_bundle"], collected["_ls_region"], collected["_ls_az"])
 	}
 
 	if selectedProvider != "daytona" {

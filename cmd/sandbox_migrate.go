@@ -26,7 +26,9 @@ file.`,
 	Example: `  hal sandbox migrate`,
 	Args:    noArgsValidation(),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSandboxMigrate(".", cmd.OutOrStdout())
+		return runSandboxCobra(cmd, "Sandbox Migrate failed", func() error {
+			return runSandboxMigrate(".", cmd.OutOrStdout())
+		})
 	},
 }
 

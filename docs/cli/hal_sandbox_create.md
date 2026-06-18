@@ -25,6 +25,9 @@ Use --force to replace an existing sandbox with the same name (deletes the old o
 Auto-shutdown injects HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars into the sandbox
 so that cloud-init can configure idle timers. Defaults come from global sandbox config.
 
+Human output redacts public cloud and Tailscale addresses by default. Use
+--show-addresses only when you intentionally need raw network addresses.
+
 ```
 hal sandbox create [flags]
 ```
@@ -56,6 +59,12 @@ hal sandbox create [flags]
       --no-auto-shutdown   disable auto-shutdown idle timer
   -r, --repo string        repository label for the sandbox (informational)
   -s, --size string        override provider instance size (e.g., cx42, s-2vcpu-4gb)
+```
+
+### Options inherited from parent commands
+
+```
+      --show-addresses   show raw sandbox network addresses in human output
 ```
 
 ### SEE ALSO
