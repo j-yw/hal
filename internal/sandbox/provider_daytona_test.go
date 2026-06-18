@@ -176,6 +176,9 @@ func TestDaytonaProvider_Create_Failure(t *testing.T) {
 	if !strings.Contains(err.Error(), "daytona create failed") {
 		t.Errorf("error %q should mention 'daytona create failed'", err.Error())
 	}
+	if !strings.Contains(err.Error(), "error: quota exceeded") {
+		t.Errorf("error %q should include captured CLI output", err.Error())
+	}
 }
 
 func TestDaytonaProvider_Create_RequiresAPIKey(t *testing.T) {
@@ -410,7 +413,7 @@ func TestDaytonaProvider_Stop_Failure(t *testing.T) {
 	dp := &DaytonaProvider{
 		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			return exec.CommandContext(ctx, "sh", "-c", "echo 'workspace not found' >&2; exit 1")
 		},
 	}
 
@@ -424,6 +427,9 @@ func TestDaytonaProvider_Stop_Failure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exit code") {
 		t.Errorf("error %q should mention exit code", err.Error())
+	}
+	if !strings.Contains(err.Error(), "workspace not found") {
+		t.Errorf("error %q should include captured CLI output", err.Error())
 	}
 }
 
@@ -463,7 +469,7 @@ func TestDaytonaProvider_Delete_Failure(t *testing.T) {
 	dp := &DaytonaProvider{
 		APIKey: "test-key",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			return exec.CommandContext(ctx, "sh", "-c", "exit 2")
+			return exec.CommandContext(ctx, "sh", "-c", "echo 'delete denied' >&2; exit 2")
 		},
 	}
 
@@ -477,6 +483,9 @@ func TestDaytonaProvider_Delete_Failure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exit code") {
 		t.Errorf("error %q should mention exit code", err.Error())
+	}
+	if !strings.Contains(err.Error(), "delete denied") {
+		t.Errorf("error %q should include captured CLI output", err.Error())
 	}
 }
 
