@@ -111,8 +111,9 @@ func (w *RedactingWriter) Write(p []byte) (int, error) {
 	if err := w.flushCompleteLinesLocked(); err != nil {
 		return 0, err
 	}
-	if len(w.pending) > redactionTailBytes {
-		flushLen := len(w.pending) - redactionTailBytes
+	tailBytes := w.redactor.pendingTailBytes()
+	if len(w.pending) > tailBytes {
+		flushLen := len(w.pending) - tailBytes
 		flushLen = w.redactor.safeFlushLen(w.pending, flushLen)
 		if flushLen == 0 {
 			return len(p), nil
@@ -174,6 +175,25 @@ func (r Redactor) safeFlushLen(text string, proposed int) int {
 		}
 		cut = adjusted
 	}
+}
+
+func (r Redactor) pendingTailBytes() int {
+	tail := redactionTailBytes
+	for _, secret := range sortedNonEmpty(r.KnownSecrets) {
+		if retain := len(secret) - 1; retain > tail {
+			tail = retain
+		}
+	}
+
+	if !r.ShowAddresses {
+		for _, address := range sortedNonEmpty(r.KnownAddresses) {
+			if retain := len(address) - 1; retain > tail {
+				tail = retain
+			}
+		}
+	}
+
+	return tail
 }
 
 func (r Redactor) adjustFlushLen(text string, cut int) int {

@@ -111,3 +111,28 @@ func TestRedactingWriter_RedactsAcrossLongLineFlushBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactingWriter_RedactsLongKnownSecretAcrossTailBoundary(t *testing.T) {
+	var buf bytes.Buffer
+	secret := "sk-" + strings.Repeat("s", redactionTailBytes+128)
+	w := NewRedactingWriter(&buf, Redactor{KnownSecrets: []string{secret}})
+
+	firstChunkLen := redactionTailBytes + 1
+	if _, err := w.Write([]byte(secret[:firstChunkLen])); err != nil {
+		t.Fatalf("Write() first chunk error: %v", err)
+	}
+	if _, err := w.Write([]byte(secret[firstChunkLen:] + " suffix")); err != nil {
+		t.Fatalf("Write() second chunk error: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush() error: %v", err)
+	}
+
+	got := buf.String()
+	if strings.Contains(got, secret) {
+		t.Fatalf("RedactingWriter leaked long known secret across tail boundary: %q", got)
+	}
+	if !strings.Contains(got, secretPlaceholder) {
+		t.Fatalf("RedactingWriter output missing redaction placeholder: %q", got)
+	}
+}
