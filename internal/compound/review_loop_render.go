@@ -6,20 +6,21 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	ui "github.com/jywlabs/hal/internal/ui"
 )
 
 // Terminal color palette — consistent with engine/styles.go
 var (
-	colorSuccess  = lipgloss.Color("#00D787")
-	colorError    = lipgloss.Color("#FF5F87")
-	colorWarning  = lipgloss.Color("#FFAF00")
-	colorInfo     = lipgloss.Color("#5FAFFF")
-	colorMuted    = lipgloss.Color("#888888")
-	colorAccent   = lipgloss.Color("#AF87FF")
-	colorCritical = lipgloss.Color("#FF5F87")
-	colorHigh     = lipgloss.Color("#FFAF00")
-	colorMedium   = lipgloss.Color("#5FAFFF")
-	colorLow      = lipgloss.Color("#888888")
+	colorSuccess  = ui.ColorSuccess
+	colorError    = ui.ColorError
+	colorWarning  = ui.ColorWarning
+	colorInfo     = ui.ColorInfo
+	colorMuted    = ui.ColorMuted
+	colorAccent   = ui.ColorAccent
+	colorCritical = ui.ColorError
+	colorHigh     = ui.ColorWarning
+	colorMedium   = ui.ColorInfo
+	colorLow      = ui.ColorMuted
 )
 
 // Text styles for terminal rendering

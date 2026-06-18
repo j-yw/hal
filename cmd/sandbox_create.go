@@ -43,7 +43,10 @@ Use --repo to tag the sandbox with a repository label (informational only).
 Use --force to replace an existing sandbox with the same name (deletes the old one first).
 
 Auto-shutdown injects HAL_AUTO_SHUTDOWN and HAL_IDLE_HOURS env vars into the sandbox
-so that cloud-init can configure idle timers. Defaults come from global sandbox config.`,
+so that cloud-init can configure idle timers. Defaults come from global sandbox config.
+
+Human output redacts public cloud and Tailscale addresses by default. Use
+--show-addresses only when you intentionally need raw network addresses.`,
 	Example: `  hal sandbox create
   hal sandbox create --name hal-dev
   hal sandbox create -n dev --size cx42
@@ -64,7 +67,9 @@ so that cloud-init can configure idle timers. Defaults come from global sandbox 
 		envVars := parseEnvFlags(envSlice)
 		opts := autoShutdownOptsFromCommand(cmd)
 
-		return runSandboxCreate(".", name, count, countExplicit, force, size, repo, envVars, opts, cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Create failed", func() error {
+			return runSandboxCreate(".", name, count, countExplicit, force, size, repo, envVars, opts, cmd.OutOrStdout(), nil)
+		})
 	},
 }
 
@@ -472,6 +477,51 @@ type batchResult struct {
 	Err     error
 }
 
+type sandboxCreateIdentity struct {
+	ID                string
+	TailscaleHostname string
+}
+
+type batchCreateTarget struct {
+	Name     string
+	Identity sandboxCreateIdentity
+	Env      map[string]string
+}
+
+func prepareSandboxCreateIdentity(name string, env map[string]string) (sandboxCreateIdentity, error) {
+	id, err := newSandboxID()
+	if err != nil {
+		return sandboxCreateIdentity{}, fmt.Errorf("generating sandbox ID: %w", err)
+	}
+
+	identity := sandboxCreateIdentity{ID: id}
+	identity.TailscaleHostname = configuredTailscaleHostname(name, id, env)
+	if identity.TailscaleHostname != "" {
+		env["TAILSCALE_HOSTNAME"] = identity.TailscaleHostname
+	}
+	return identity, nil
+}
+
+func prepareBatchCreateTargets(names []string, mergedEnv map[string]string) ([]batchCreateTarget, error) {
+	targets := make([]batchCreateTarget, 0, len(names))
+	for _, name := range names {
+		perEnv := make(map[string]string, len(mergedEnv)+1)
+		for k, v := range mergedEnv {
+			perEnv[k] = v
+		}
+		identity, err := prepareSandboxCreateIdentity(name, perEnv)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		targets = append(targets, batchCreateTarget{
+			Name:     name,
+			Identity: identity,
+			Env:      perEnv,
+		})
+	}
+	return targets, nil
+}
+
 func cleanupCreatedSandbox(
 	ctx context.Context,
 	provider sandbox.Provider,
@@ -614,7 +664,7 @@ func finalizeInterruptedCreateReplaceRetry(provider string, pendingRemoval sandb
 // Returns an error when any target fails (exit code 1).
 func runBatchCreate(
 	projectDir string,
-	targets []string,
+	targetNames []string,
 	force bool,
 	provider sandbox.Provider,
 	sandboxCfg *compound.SandboxConfig,
@@ -625,7 +675,24 @@ func runBatchCreate(
 	halDir string,
 	out io.Writer,
 ) error {
-	fmt.Fprintf(out, "%s Creating %d sandboxes (%s)...\n", display.StyleInfo.Render("○"), len(targets), sandboxCfg.Provider)
+	targets, err := prepareBatchCreateTargets(targetNames, mergedEnv)
+	if err != nil {
+		return err
+	}
+	redactor := sandboxRedactor(sandboxShowAddresses, mergedEnv)
+	for _, target := range targets {
+		redactor.KnownAddresses = append(redactor.KnownAddresses, target.Identity.TailscaleHostname)
+	}
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
+
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Create", fmt.Sprintf("%d targets · %s", len(targets), sandboxCfg.Provider), display.HeaderContext{})
+	fmt.Fprintf(renderOut, "%s Creating %d sandboxes (%s)...\n", display.StyleInfo.Render("○"), len(targets), sandboxCfg.Provider)
 
 	var (
 		mu      sync.Mutex
@@ -634,17 +701,17 @@ func runBatchCreate(
 
 	g := new(errgroup.Group)
 
-	for _, name := range targets {
-		name := name // capture for goroutine
+	for _, target := range targets {
+		target := target // capture for goroutine
 		g.Go(func() error {
-			err := createBatchTarget(projectDir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, size, repo, halDir, out)
+			err := createBatchTarget(projectDir, target, force, provider, sandboxCfg, autoShutdown, idleHours, size, repo, halDir, renderOut)
 			mu.Lock()
 			if err != nil {
-				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), name, err)
-				results = append(results, batchResult{Name: name, Success: false, Err: err})
+				fmt.Fprintf(renderOut, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
+				results = append(results, batchResult{Name: target.Name, Success: false, Err: err})
 			} else {
-				fmt.Fprintf(out, "Created %s\n", name)
-				results = append(results, batchResult{Name: name, Success: true})
+				fmt.Fprintf(renderOut, "Created %s\n", target.Name)
+				results = append(results, batchResult{Name: target.Name, Success: true})
 			}
 			mu.Unlock()
 
@@ -665,7 +732,7 @@ func runBatchCreate(
 	}
 
 	total := len(targets)
-	fmt.Fprintf(out, "%d/%d created (%d failed). Failed sandboxes were not registered.\n", success, total, failed)
+	fmt.Fprintf(renderOut, "%d/%d created (%d failed). Failed sandboxes were not registered.\n", success, total, failed)
 
 	if failed > 0 {
 		return fmt.Errorf("%d/%d sandbox creations failed", failed, total)
@@ -679,11 +746,10 @@ func runBatchCreate(
 // sandbox name so concurrent goroutine output stays readable.
 func createBatchTarget(
 	projectDir string,
-	name string,
+	target batchCreateTarget,
 	force bool,
 	provider sandbox.Provider,
 	sandboxCfg *compound.SandboxConfig,
-	mergedEnv map[string]string,
 	autoShutdown bool,
 	idleHours int,
 	size, repo string,
@@ -691,18 +757,10 @@ func createBatchTarget(
 	out io.Writer,
 ) error {
 	ctx := context.Background()
-	id, err := newSandboxID()
-	if err != nil {
-		return fmt.Errorf("generating ID: %w", err)
-	}
-	tailscaleHostname := configuredTailscaleHostname(name, id, mergedEnv)
-	perEnv := make(map[string]string, len(mergedEnv)+1)
-	for k, v := range mergedEnv {
-		perEnv[k] = v
-	}
-	if tailscaleHostname != "" {
-		perEnv["TAILSCALE_HOSTNAME"] = tailscaleHostname
-	}
+	name := target.Name
+	id := target.Identity.ID
+	tailscaleHostname := target.Identity.TailscaleHostname
+	perEnv := target.Env
 	prefixedOut := &prefixWriter{prefix: "[" + name + "] ", w: out}
 	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, prefixedOut); err != nil {
 		return err
@@ -768,66 +826,47 @@ func runSingleCreate(
 	halDir string,
 	out io.Writer,
 ) error {
-	id := ""
-	tailscaleHostname := ""
-	prepareIdentity := func() error {
-		if id != "" {
-			return nil
-		}
-
-		// Generate UUIDv7 before provider creation so the Tailscale hostname can be
-		// unique per instance and avoid stale MagicDNS entries from deleted sandboxes.
-		generatedID, err := newSandboxID()
-		if err != nil {
-			return fmt.Errorf("generating sandbox ID: %w", err)
-		}
-		id = generatedID
-
-		tailscaleHostname = configuredTailscaleHostname(name, id, mergedEnv)
-		if tailscaleHostname != "" {
-			mergedEnv["TAILSCALE_HOSTNAME"] = tailscaleHostname
-		}
-		return nil
-	}
-
-	if force {
-		if err := prepareIdentity(); err != nil {
-			return err
-		}
-	}
-
-	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, out); err != nil {
+	identity, err := prepareSandboxCreateIdentity(name, mergedEnv)
+	if err != nil {
 		return err
 	}
 
-	envCount := len(mergedEnv)
-	if envCount > 0 {
-		fmt.Fprintf(out, "%s Creating sandbox %q (%s) with %d env vars...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider, envCount)
-	} else {
-		fmt.Fprintf(out, "%s Creating sandbox %q (%s)...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider)
+	redactor := sandboxRedactor(sandboxShowAddresses, mergedEnv)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
 	}
 
-	if !force {
-		if err := prepareIdentity(); err != nil {
-			return err
-		}
+	if err := ensureSandboxTargetAvailable(projectDir, name, force, provider, sandboxCfg.Provider, halDir, renderOut); err != nil {
+		return sandboxSanitizeError(err, redactor)
+	}
+
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Create", fmt.Sprintf("%s · %s", sandboxCfg.Provider, name), display.HeaderContext{})
+	envCount := len(mergedEnv)
+	if envCount > 0 {
+		fmt.Fprintf(renderOut, "%s Creating sandbox %q (%s) with %d env vars...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider, envCount)
+	} else {
+		fmt.Fprintf(renderOut, "%s Creating sandbox %q (%s)...\n", display.StyleInfo.Render("○"), name, sandboxCfg.Provider)
 	}
 
 	ctx := context.Background()
-	result, err := provider.Create(ctx, name, mergedEnv, out)
+	result, err := provider.Create(ctx, name, mergedEnv, renderOut)
 	if err != nil {
-		return fmt.Errorf("sandbox creation failed: %w", err)
+		return sandboxSanitizeError(fmt.Errorf("sandbox creation failed: %w", err), redactor)
 	}
 
 	// Build state with identity, provider, networking, lifecycle fields
 	state := &sandbox.SandboxState{
-		ID:                id,
+		ID:                identity.ID,
 		Name:              name,
 		Provider:          sandboxCfg.Provider,
 		WorkspaceID:       result.ID,
 		IP:                result.IP,
 		TailscaleIP:       result.TailscaleIP,
-		TailscaleHostname: tailscaleHostname,
+		TailscaleHostname: identity.TailscaleHostname,
 		TailscaleLockdown: sandboxCfg.TailscaleLockdown,
 		Status:            sandbox.StatusRunning,
 		CreatedAt:         time.Now(),
@@ -839,29 +878,31 @@ func runSingleCreate(
 
 	// Persist to global registry
 	if err := sandbox.SaveInstance(state); err != nil {
-		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, out); cleanupErr != nil {
-			return fmt.Errorf("registering sandbox: %w; %v", err, cleanupErr)
+		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, renderOut); cleanupErr != nil {
+			return sandboxSanitizeError(fmt.Errorf("registering sandbox: %w; %v", err, cleanupErr), redactor)
 		}
-		return fmt.Errorf("registering sandbox: %w", err)
+		return sandboxSanitizeError(fmt.Errorf("registering sandbox: %w", err), redactor)
 	}
 
 	// Backward compat: also save to local .hal/sandbox.json when .hal/ exists.
-	saveLocalSandboxStateIfHalExists(projectDir, state, out)
+	saveLocalSandboxStateIfHalExists(projectDir, state, renderOut)
 
-	fmt.Fprintf(out, "%s Sandbox created: %s %s\n", display.StyleSuccess.Render("[OK]"), display.StyleBold.Render(name), display.StyleMuted.Render("(provider: "+sandboxCfg.Provider+")"))
-	if result.IP != "" {
-		if sandboxCfg.TailscaleLockdown {
-			fmt.Fprintf(out, "  Public IP:    %s (blocked -- Tailscale only)\n", result.IP)
-		} else {
-			fmt.Fprintf(out, "  Public IP:    %s\n", result.IP)
+	d.ShowCommandSuccess("Sandbox created", fmt.Sprintf("name: %s · provider: %s", name, sandboxCfg.Provider))
+	fmt.Fprintf(renderOut, "  Access:       %s\n", sandboxAccessLabel(state))
+	fmt.Fprintf(renderOut, "  SSH:          %s\n", sandboxSSHCommand(name))
+	if sandboxShowAddresses {
+		if result.IP != "" {
+			if sandboxCfg.TailscaleLockdown {
+				fmt.Fprintf(renderOut, "  Public IP:    %s (blocked -- Tailscale only)\n", result.IP)
+			} else {
+				fmt.Fprintf(renderOut, "  Public IP:    %s\n", result.IP)
+			}
 		}
-	}
-	if result.TailscaleIP != "" {
-		fmt.Fprintf(out, "  Tailscale IP: %s\n", result.TailscaleIP)
-		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
-	} else if tailscaleHostname != "" {
-		fmt.Fprintf(out, "  Tailscale:    %s\n", tailscaleHostname)
-		fmt.Fprintln(out, "  SSH:          hal sandbox ssh")
+		if result.TailscaleIP != "" {
+			fmt.Fprintf(renderOut, "  Tailscale IP: %s\n", result.TailscaleIP)
+		} else if identity.TailscaleHostname != "" {
+			fmt.Fprintf(renderOut, "  Tailscale:    %s\n", identity.TailscaleHostname)
+		}
 	}
 	return nil
 }

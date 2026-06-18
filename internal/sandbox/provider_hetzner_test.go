@@ -125,7 +125,7 @@ func TestHetznerProvider_Create_ServerCreateFails(t *testing.T) {
 		ServerType: "cx22",
 		Image:      "ubuntu-24.04",
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			return exec.CommandContext(ctx, "sh", "-c", "echo quota exceeded >&2; exit 1")
 		},
 	}
 
@@ -139,6 +139,9 @@ func TestHetznerProvider_Create_ServerCreateFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hcloud server create failed") {
 		t.Errorf("error %q should mention 'hcloud server create failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "quota exceeded") {
+		t.Errorf("error %q should include hcloud stderr", err.Error())
 	}
 }
 
@@ -181,7 +184,7 @@ func TestHetznerProvider_Create_ServerIPFails(t *testing.T) {
 			if callCount == 1 {
 				return exec.CommandContext(ctx, "true") // create succeeds
 			}
-			return exec.CommandContext(ctx, "sh", "-c", "exit 1") // ip fails
+			return exec.CommandContext(ctx, "sh", "-c", "echo server not found >&2; exit 1") // ip fails
 		},
 	}
 
@@ -195,6 +198,9 @@ func TestHetznerProvider_Create_ServerIPFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hcloud server ip failed") {
 		t.Errorf("error %q should mention 'hcloud server ip failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "server not found") {
+		t.Errorf("error %q should include hcloud stderr", err.Error())
 	}
 }
 
@@ -301,7 +307,7 @@ func TestHetznerProvider_Start_Success(t *testing.T) {
 func TestHetznerProvider_Stop_Failure(t *testing.T) {
 	hp := &HetznerProvider{
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			return exec.CommandContext(ctx, "sh", "-c", "echo shutdown blocked >&2; exit 1")
 		},
 	}
 
@@ -312,6 +318,9 @@ func TestHetznerProvider_Stop_Failure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hcloud server shutdown failed") {
 		t.Errorf("error %q should contain 'hcloud server shutdown failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "shutdown blocked") {
+		t.Errorf("error %q should include hcloud stderr", err.Error())
 	}
 }
 
@@ -344,7 +353,7 @@ func TestHetznerProvider_Delete_Success(t *testing.T) {
 func TestHetznerProvider_Delete_Failure(t *testing.T) {
 	hp := &HetznerProvider{
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			return exec.CommandContext(ctx, "sh", "-c", "echo delete denied >&2; exit 1")
 		},
 	}
 
@@ -355,6 +364,9 @@ func TestHetznerProvider_Delete_Failure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hcloud server delete failed") {
 		t.Errorf("error %q should contain 'hcloud server delete failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "delete denied") {
+		t.Errorf("error %q should include hcloud stderr", err.Error())
 	}
 }
 
@@ -409,8 +421,8 @@ func TestHetznerProvider_SSH(t *testing.T) {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
 
-	// Verify args: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.0.0.42
-	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "root@10.0.0.42"}
+	// Verify args: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@10.0.0.42
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@10.0.0.42"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
@@ -473,7 +485,7 @@ func TestHetznerProvider_Exec(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "root@10.0.0.42", "--", "ls", "-la"}
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@10.0.0.42", "--", "ls", "-la"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}

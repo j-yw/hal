@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/spf13/cobra"
 )
 
 // noopPasswordReader is a passwordReader that is never called in tests
@@ -27,6 +29,32 @@ func fakeLookPath(_ string) (string, error) {
 // fakeLookPathMissing returns an error — simulates CLI not on PATH.
 func fakeLookPathMissing(name string) (string, error) {
 	return "", fmt.Errorf("executable file not found in $PATH: %s", name)
+}
+
+func TestRenderSandboxCobraErrorSuppressesRawUsage(t *testing.T) {
+	cmd := &cobra.Command{Use: "stop"}
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	err := renderSandboxCobraError(cmd, "Sandbox Stop failed", fmt.Errorf("multiple running sandboxes found: agent, code"))
+
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("error = %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeExpectedNonZero {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeExpectedNonZero)
+	}
+	output := stderr.String()
+	if !strings.Contains(output, "Sandbox Stop failed") {
+		t.Fatalf("stderr missing title: %q", output)
+	}
+	if !strings.Contains(output, "multiple running sandboxes found: agent, code") {
+		t.Fatalf("stderr missing message: %q", output)
+	}
+	if strings.Contains(output, "Usage:") || strings.Contains(output, "Error:") {
+		t.Fatalf("stderr should not include raw cobra output: %q", output)
+	}
 }
 
 func setGlobalConfigHomeForTest(t *testing.T, dir string) {
@@ -725,8 +753,11 @@ func TestRunSandboxSetup_PromptOutput_Hetzner(t *testing.T) {
 	if !strings.Contains(output, "Provider:   hetzner") {
 		t.Error("output should show hetzner as provider in summary")
 	}
-	if !strings.Contains(output, "ssh-key=my-key") {
-		t.Error("output should show SSH key in summary")
+	if !strings.Contains(output, "Hetzner:    ✓ configured") {
+		t.Error("output should show Hetzner configured in summary")
+	}
+	if strings.Contains(output, "ssh-key=my-key") || strings.Contains(output, "my-key") {
+		t.Error("output should not echo SSH key name in summary")
 	}
 }
 
@@ -830,8 +861,11 @@ func TestRunSandboxSetup_PromptOutput_DigitalOcean(t *testing.T) {
 	if !strings.Contains(output, "Provider:   digitalocean") {
 		t.Error("output should show digitalocean as provider in summary")
 	}
-	if !strings.Contains(output, "ssh-key=ab:cd:ef:12:34") {
-		t.Error("output should show SSH key fingerprint in summary")
+	if !strings.Contains(output, "DigitalOcean: ✓ configured") {
+		t.Error("output should show DigitalOcean configured in summary")
+	}
+	if strings.Contains(output, "ssh-key=ab:cd:ef:12:34") || strings.Contains(output, "ab:cd:ef:12:34") {
+		t.Error("output should not echo SSH key fingerprint in summary")
 	}
 }
 

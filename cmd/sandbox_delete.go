@@ -43,7 +43,9 @@ Resolved targets are de-duplicated and sorted by name before execution.`,
 		allFlag, _ := cmd.Flags().GetBool("all")
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxDelete(args, allFlag, yesFlag, pattern, cmd.InOrStdin(), cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Delete failed", func() error {
+			return runSandboxDelete(args, allFlag, yesFlag, pattern, cmd.InOrStdin(), cmd.OutOrStdout(), nil)
+		})
 	},
 }
 
@@ -88,26 +90,37 @@ func runSandboxDeleteWithDeps(args []string, allFlag, yesFlag bool, pattern stri
 	if err != nil {
 		return err
 	}
+	redactor := sandboxRedactor(sandboxShowAddresses, nil, targets...)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
 
 	if hint != "" {
-		fmt.Fprintln(out, hint)
+		fmt.Fprintln(renderOut, hint)
 	}
 
 	// Confirmation prompt for --all without --yes
 	if allFlag && !yesFlag {
-		if !confirmDeleteAll(in, out) {
-			fmt.Fprintln(out, "Aborted.")
+		if !confirmDeleteAll(in, renderOut) {
+			fmt.Fprintln(renderOut, "Aborted.")
 			return nil
 		}
 	}
 
-	// Single target: delete inline for simple output
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Delete", fmt.Sprintf("%d target(s)", len(targets)), display.HeaderContext{})
+
+	var runErr error
 	if len(targets) == 1 {
-		return deleteOneTarget(targets[0], ".", out, provider)
+		runErr = deleteOneTarget(targets[0], ".", renderOut, provider)
+	} else {
+		runErr = deleteMultipleTargets(targets, ".", renderOut, provider)
 	}
 
-	// Multiple targets: delete concurrently using errgroup
-	return deleteMultipleTargets(targets, ".", out, provider)
+	return sandboxSanitizeError(runErr, redactor)
 }
 
 // resolveDeleteTargets resolves which sandboxes to delete based on positional args,
@@ -256,6 +269,9 @@ func resolveDeleteAutoSelect() ([]*sandbox.SandboxState, string, error) {
 // Returns true if user confirms.
 func confirmDeleteAll(in io.Reader, out io.Writer) bool {
 	fmt.Fprint(out, "Delete all sandboxes? [y/N] ")
+	if flusher, ok := out.(interface{ Flush() error }); ok {
+		_ = flusher.Flush()
+	}
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
 		return false

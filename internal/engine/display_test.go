@@ -49,6 +49,24 @@ func TestRenderAnimatedSpinnerText_Empty(t *testing.T) {
 	}
 }
 
+func TestShowCommandHeader_OmitsEmptyEngine(t *testing.T) {
+	var out bytes.Buffer
+	d := NewDisplay(&out)
+
+	d.ShowCommandHeader("Sandbox Stop", "1 target(s)", HeaderContext{})
+
+	plain := ansiRegex.ReplaceAllString(out.String(), "")
+	if strings.Contains(plain, "engine:") {
+		t.Fatalf("header should omit empty engine metadata:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Sandbox Stop") {
+		t.Fatalf("header missing title:\n%s", plain)
+	}
+	if !strings.Contains(plain, "1 target(s)") {
+		t.Fatalf("header missing context:\n%s", plain)
+	}
+}
+
 func TestStartSpinner_UpdatesMessageWhenAlreadySpinning(t *testing.T) {
 	var out bytes.Buffer
 	d := NewDisplay(&out)

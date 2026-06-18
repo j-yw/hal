@@ -40,6 +40,12 @@ hal sandbox stop [NAME ...] [flags]
       --pattern string   Power off / shut down sandboxes matching a glob pattern
 ```
 
+### Options inherited from parent commands
+
+```
+      --show-addresses   show raw sandbox network addresses in human output
+```
+
 ### SEE ALSO
 
 * [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments

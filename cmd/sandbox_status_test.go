@@ -50,6 +50,10 @@ func (m *mockStatusProvider) Status(ctx context.Context, info *sandbox.ConnectIn
 
 func setupStatusTest(t *testing.T) (cleanup func()) {
 	t.Helper()
+	oldShowAddresses := sandboxShowAddresses
+	sandboxShowAddresses = false
+	t.Cleanup(func() { sandboxShowAddresses = oldShowAddresses })
+
 	dir := t.TempDir()
 	t.Setenv("HAL_CONFIG_HOME", dir)
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -111,10 +115,13 @@ func TestRunSandboxStatus_DetailedView(t *testing.T) {
 	assertContains(t, output, "Note:       Non-status details below are cached from the registry.")
 
 	// Networking
-	assertContains(t, output, "Public IP:          203.0.113.1")
-	assertContains(t, output, "Tailscale IP:       100.64.0.1")
-	assertContains(t, output, "Tailscale Hostname: hal-my-sandbox")
-	assertContains(t, output, "Active SSH IP:      100.64.0.1")
+	assertContains(t, output, "Access:             tailscale")
+	assertContains(t, output, "SSH command:        hal sandbox ssh my-sandbox")
+	assertContains(t, output, "Public SSH:         available")
+	assertNotContains(t, output, "203.0.113.1")
+	assertNotContains(t, output, "100.64.0.1")
+	assertNotContains(t, output, "hal-my-sandbox")
+	assertNotContains(t, output, "Active SSH")
 	assertContains(t, output, "Workspace ID:       ws-123")
 
 	// Lifecycle
@@ -268,7 +275,10 @@ func TestRunSandboxStatus_PersistsProviderReportedPublicIP(t *testing.T) {
 	}
 
 	output := out.String()
-	assertContains(t, output, "Public IP:          203.0.113.25")
+	assertContains(t, output, "Access:             public fallback")
+	assertContains(t, output, "SSH command:        hal sandbox ssh persisted-ip")
+	assertContains(t, output, "Public SSH:         available")
+	assertNotContains(t, output, "203.0.113.25")
 }
 
 func TestRunSandboxStatus_ContinuesWhenLocalSyncFails(t *testing.T) {
@@ -452,8 +462,11 @@ func TestRunSandboxStatus_MinimalFields(t *testing.T) {
 	output := out.String()
 	assertContains(t, output, "Name:       minimal")
 	assertContains(t, output, "Provider:   daytona")
-	assertContains(t, output, "Public IP:          —")
-	assertContains(t, output, "Tailscale IP:       —")
+	assertContains(t, output, "Access:             unknown")
+	assertContains(t, output, "SSH command:        hal sandbox ssh minimal")
+	assertContains(t, output, "Public SSH:         unknown")
+	assertNotContains(t, output, "Public IP:")
+	assertNotContains(t, output, "Tailscale IP:")
 	assertContains(t, output, "Auto-shutdown: off")
 
 	// Should NOT contain labels section when no repo/snapshot
@@ -605,6 +618,9 @@ func TestRunSandboxStatus_CostDisplay(t *testing.T) {
 
 func TestRunSandboxStatus_PublicIPPreferred(t *testing.T) {
 	setupStatusTest(t)
+	oldShowAddresses := sandboxShowAddresses
+	sandboxShowAddresses = true
+	t.Cleanup(func() { sandboxShowAddresses = oldShowAddresses })
 
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "public-ip-sb",
@@ -624,7 +640,7 @@ func TestRunSandboxStatus_PublicIPPreferred(t *testing.T) {
 
 	output := out.String()
 	assertContains(t, output, "Public IP:          203.0.113.5")
-	assertContains(t, output, "Active SSH IP:      203.0.113.5")
+	assertContains(t, output, "Active SSH address: 203.0.113.5")
 	assertContains(t, output, "Tailscale IP:       —")
 }
 
@@ -692,5 +708,12 @@ func assertContains(t *testing.T, output, want string) {
 	t.Helper()
 	if !strings.Contains(output, want) {
 		t.Errorf("output does not contain %q\noutput:\n%s", want, output)
+	}
+}
+
+func assertNotContains(t *testing.T, output, unwanted string) {
+	t.Helper()
+	if strings.Contains(output, unwanted) {
+		t.Errorf("output should not contain %q\noutput:\n%s", unwanted, output)
 	}
 }

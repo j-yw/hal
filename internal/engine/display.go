@@ -616,14 +616,26 @@ func (d *Display) ShowCommandHeader(title, context string, hctx HeaderContext) {
 	titleText := StyleTitle.Render(title)
 
 	// Detail line: context │ engine: X · model: Y
-	detail := context + " │ engine: " + hctx.Engine
-	if hctx.Model != "" {
-		detail += " · model: " + hctx.Model
+	details := make([]string, 0, 2)
+	if strings.TrimSpace(context) != "" {
+		details = append(details, context)
+	}
+	if hctx.Engine != "" {
+		engineDetail := "engine: " + hctx.Engine
+		if hctx.Model != "" {
+			engineDetail += " · model: " + hctx.Model
+			d.modelShown = true
+		}
+		details = append(details, engineDetail)
+	} else if hctx.Model != "" {
+		details = append(details, "model: "+hctx.Model)
 		d.modelShown = true
 	}
-	detailLine := StyleMuted.Render(detail)
 
-	content := fmt.Sprintf("%s %s\n%s", icon, titleText, detailLine)
+	content := fmt.Sprintf("%s %s", icon, titleText)
+	if len(details) > 0 {
+		content += "\n" + StyleMuted.Render(strings.Join(details, " │ "))
+	}
 
 	// Repo/branch line
 	if repoBranch := formatRepoBranch(hctx.Repo, hctx.Branch); repoBranch != "" {

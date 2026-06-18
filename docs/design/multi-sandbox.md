@@ -274,11 +274,11 @@ hal sandbox create -n redo --force                     # replace existing
 
 ```
 Creating 5 sandboxes (digitalocean)...
-  ✓ worker-01  100.64.1.10  (hal-worker-01)
-  ✓ worker-02  100.64.1.11  (hal-worker-02)
+  ✓ worker-01  access: tailscale ready
+  ✓ worker-02  access: tailscale ready
   ✗ worker-03  error: rate limit exceeded
-  ✓ worker-04  100.64.1.13  (hal-worker-04)
-  ✓ worker-05  100.64.1.14  (hal-worker-05)
+  ✓ worker-04  access: tailscale ready
+  ✓ worker-05  access: tailscale ready
 
 4/5 created (1 failed). Failed sandboxes were not registered.
 ```
@@ -302,11 +302,11 @@ hal sandbox start                        # auto: if exactly 1 stopped → start 
 ```
 $ hal sandbox list
 
-NAME           PROVIDER       STATUS    TAILSCALE         AGE    AUTO-OFF    EST.COST
-api-backend    digitalocean   running   hal-api-backend   2h     48h idle    $0.07
-frontend       digitalocean   running   hal-frontend      2h     48h idle    $0.07
-worker-01      digitalocean   stopped   hal-worker-01     1d     48h idle    $0.84 ⚠
-worker-02      digitalocean   stopped   hal-worker-02     1d     48h idle    $0.84 ⚠
+NAME           PROVIDER       STATUS    ACCESS             AGE    AUTO-OFF    EST.COST
+api-backend    digitalocean   running   tailscale          2h     48h idle    $0.07
+frontend       digitalocean   running   public fallback    2h     48h idle    $0.07
+worker-01      digitalocean   stopped   unavailable        1d     48h idle    $0.84 ⚠
+worker-02      digitalocean   stopped   unavailable        1d     48h idle    $0.84 ⚠
 
 4 sandboxes (2 running, 2 stopped)  •  Est. total: $1.82
 ⚠ = still billing while stopped (delete to stop charges)
@@ -320,6 +320,8 @@ worker-02      digitalocean   stopped   hal-worker-02     1d     48h idle    $0.
 | `-q, --quiet` | bool | Names only, one per line (for scripting) |
 
 **Status freshness**: `list` reads local registry files only (fast, <100ms). `list --live` queries each provider API (slow, seconds). `status NAME` always queries live.
+
+**Privacy**: Human output uses access states instead of public cloud IPs, Tailscale IPs, or Tailscale hostnames. Use `--show-addresses` only when raw network addresses are intentionally needed. `sandbox-list-v1` JSON remains an explicit machine contract and may include raw `ip`, `tailscaleIp`, and `tailscaleHostname` fields.
 
 ### `hal sandbox stop`
 
@@ -362,6 +364,17 @@ Connecting to only active sandbox "api-backend"...
 hal sandbox status api-backend   # detailed live query to provider
 hal sandbox status               # no args = alias for 'hal sandbox list'
 ```
+
+Default networking output:
+
+```
+Networking:
+  Access:       tailscale
+  SSH command:  hal sandbox ssh api-backend
+  Public SSH:   blocked
+```
+
+With `--show-addresses`, status also reveals public IP, Tailscale IP, Tailscale hostname, and the active SSH address.
 
 ### `hal sandbox migrate`
 

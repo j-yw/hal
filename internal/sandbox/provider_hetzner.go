@@ -40,6 +40,29 @@ func (h *HetznerProvider) commandContext(ctx context.Context, name string, args 
 	return exec.CommandContext(ctx, name, args...)
 }
 
+// wrapHcloudError includes captured CLI output so provider errors retain the
+// actionable details hcloud prints on failure.
+func wrapHcloudError(op string, err error, stdout, stderr string) error {
+	msg := strings.TrimSpace(stderr)
+	if out := strings.TrimSpace(stdout); out != "" {
+		if msg != "" {
+			msg += ": " + out
+		} else {
+			msg = out
+		}
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if msg != "" {
+			return fmt.Errorf("hcloud %s failed with exit code %d: %s: %w", op, exitErr.ExitCode(), msg, err)
+		}
+		return fmt.Errorf("hcloud %s failed with exit code %d: %w", op, exitErr.ExitCode(), err)
+	}
+	if msg != "" {
+		return fmt.Errorf("hcloud %s failed: %s: %w", op, msg, err)
+	}
+	return fmt.Errorf("hcloud %s failed: %w", op, err)
+}
+
 // generateCloudInit creates a cloud-init YAML that writes env vars to
 // /root/.env (base64-encoded to avoid YAML special char issues), then runs
 // setup.sh to bootstrap the full dev environment.
@@ -66,6 +89,7 @@ func generateCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("    set -a\n")
 	b.WriteString("    . /root/.env\n")
 	b.WriteString("    set +a\n")
+	b.WriteString("    touch /root/.hushlogin\n")
 	b.WriteString("    if [ -n \"${TAILSCALE_AUTHKEY:-}\" ]; then\n")
 	b.WriteString("      curl -fsSL https://tailscale.com/install.sh | sh\n")
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
@@ -126,14 +150,13 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 		"--ssh-key", h.SSHKey,
 		"--user-data-file", tmpFile.Name(),
 	)
-	createCmd.Stdout = safeOut
-	createCmd.Stderr = safeOut
+	var createOut bytes.Buffer
+	var createErr bytes.Buffer
+	createCmd.Stdout = &createOut
+	createCmd.Stderr = &createErr
 
 	if err := createCmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("hcloud server create failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return nil, fmt.Errorf("hcloud server create failed: %w", err)
+		return nil, wrapHcloudError("server create", err, createOut.String(), createErr.String())
 	}
 
 	// Server exists on Hetzner from this point — clean up on any failure.
@@ -155,14 +178,12 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 	ipCmd := h.commandContext(ctx, "hcloud", "server", "ip", name)
 	var ipBuf bytes.Buffer
 	ipCmd.Stdout = &ipBuf
-	ipCmd.Stderr = safeOut
+	var ipErr bytes.Buffer
+	ipCmd.Stderr = &ipErr
 
 	if err := ipCmd.Run(); err != nil {
 		cleanupServer("failed to get server IP")
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("hcloud server ip failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return nil, fmt.Errorf("hcloud server ip failed: %w", err)
+		return nil, wrapHcloudError("server ip", err, ipBuf.String(), ipErr.String())
 	}
 
 	ip := strings.TrimSpace(ipBuf.String())
@@ -218,15 +239,13 @@ func (h *HetznerProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Wr
 		return fmt.Errorf("sandbox name is required")
 	}
 
-	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "shutdown", name)
-	cmd.Stdout = safeOut
-	cmd.Stderr = safeOut
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("hcloud server shutdown failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return fmt.Errorf("hcloud server shutdown failed: %w", err)
+		return wrapHcloudError("server shutdown", err, stdout.String(), stderr.String())
 	}
 	return nil
 }
@@ -241,22 +260,14 @@ func (h *HetznerProvider) Start(ctx context.Context, info *ConnectInfo, out io.W
 	}
 
 	var captured bytes.Buffer
-	stream := io.Writer(&captured)
-	if out != nil {
-		stream = io.MultiWriter(out, &captured)
-	}
-	safeOut := synchronizedWriter(stream)
 	cmd := h.commandContext(ctx, "hcloud", "server", "poweron", name)
-	cmd.Stdout = safeOut
-	cmd.Stderr = safeOut
+	cmd.Stdout = &captured
+	cmd.Stderr = &captured
 	if err := cmd.Run(); err != nil {
 		if isAlreadyRunningLifecycleOutput(captured.String()) {
 			return &LifecycleResult{Status: StatusRunning}, nil
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("hcloud server poweron failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return nil, fmt.Errorf("hcloud server poweron failed: %w", err)
+		return nil, wrapHcloudError("server poweron", err, captured.String(), "")
 	}
 	return &LifecycleResult{Status: StatusRunning}, nil
 }
@@ -270,15 +281,13 @@ func (h *HetznerProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 		return fmt.Errorf("sandbox name is required")
 	}
 
-	safeOut := synchronizedWriter(out)
 	cmd := h.commandContext(ctx, "hcloud", "server", "delete", name)
-	cmd.Stdout = safeOut
-	cmd.Stderr = safeOut
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("hcloud server delete failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return fmt.Errorf("hcloud server delete failed: %w", err)
+		return wrapHcloudError("server delete", err, stdout.String(), stderr.String())
 	}
 	return nil
 }
@@ -292,6 +301,7 @@ func (h *HetznerProvider) SSH(info *ConnectInfo) (*exec.Cmd, error) {
 	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
 		"root@"+ip,
 	)
 	cmd.Stdin = os.Stdin
@@ -309,6 +319,7 @@ func (h *HetznerProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, err
 	cmdArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
 		"root@" + ip,
 		"--",
 	}

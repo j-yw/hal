@@ -100,25 +100,36 @@ func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ..
 	d.applyCredentials(cmd)
 
 	var captured bytes.Buffer
-	if out == nil {
-		safe := synchronizedWriter(&captured)
-		cmd.Stdout = safe
-		cmd.Stderr = safe
-	} else {
-		safe := synchronizedWriter(io.MultiWriter(out, &captured))
-		cmd.Stdout = safe
-		cmd.Stderr = safe
-	}
+	safe := synchronizedWriter(&captured)
+	cmd.Stdout = safe
+	cmd.Stderr = safe
 
 	err := cmd.Run()
 	return captured.String(), err
 }
 
-func wrapDaytonaError(op string, err error) error {
+func wrapDaytonaError(op string, err error, output string) error {
+	detail := trimDaytonaOutput(output)
 	if exitErr, ok := err.(*exec.ExitError); ok {
+		if detail != "" {
+			return fmt.Errorf("daytona %s failed with exit code %d: %s: %w", op, exitErr.ExitCode(), detail, err)
+		}
 		return fmt.Errorf("daytona %s failed with exit code %d: %w", op, exitErr.ExitCode(), err)
 	}
+	if detail != "" {
+		return fmt.Errorf("daytona %s failed: %s: %w", op, detail, err)
+	}
 	return fmt.Errorf("daytona %s failed: %w", op, err)
+}
+
+func trimDaytonaOutput(output string) string {
+	const maxDetailLength = 1000
+
+	detail := strings.TrimSpace(output)
+	if len(detail) <= maxDetailLength {
+		return detail
+	}
+	return detail[:maxDetailLength] + "..."
 }
 
 func isMissingTemplateSnapshotError(output string) bool {
@@ -162,12 +173,13 @@ func buildSnapshotCreateArgs(helpOutput string) []string {
 func (d *DaytonaProvider) ensureTemplateSnapshot(ctx context.Context, out io.Writer) error {
 	helpOutput, err := d.runDaytona(ctx, io.Discard, "snapshot", "create", "--help")
 	if err != nil {
-		return wrapDaytonaError("snapshot create --help", err)
+		return wrapDaytonaError("snapshot create --help", err, helpOutput)
 	}
 
 	createArgs := buildSnapshotCreateArgs(helpOutput)
-	if _, err := d.runDaytona(ctx, out, createArgs...); err != nil {
-		return wrapDaytonaError("snapshot create", err)
+	output, err := d.runDaytona(ctx, out, createArgs...)
+	if err != nil {
+		return wrapDaytonaError("snapshot create", err, output)
 	}
 
 	return nil
@@ -185,12 +197,13 @@ func (d *DaytonaProvider) Create(ctx context.Context, name string, env map[strin
 			if ensureErr := d.ensureTemplateSnapshot(ctx, out); ensureErr != nil {
 				return nil, fmt.Errorf("daytona create failed and template snapshot %q is missing: %w", templateSnapshotName, ensureErr)
 			}
-			if _, retryErr := d.runDaytona(ctx, out, args...); retryErr != nil {
-				return nil, wrapDaytonaError("create", retryErr)
+			retryOutput, retryErr := d.runDaytona(ctx, out, args...)
+			if retryErr != nil {
+				return nil, wrapDaytonaError("create", retryErr, retryOutput)
 			}
 			return &SandboxResult{Name: name}, nil
 		}
-		return nil, wrapDaytonaError("create", err)
+		return nil, wrapDaytonaError("create", err, output)
 	}
 
 	return &SandboxResult{Name: name}, nil
@@ -206,14 +219,12 @@ func (d *DaytonaProvider) Stop(ctx context.Context, info *ConnectInfo, out io.Wr
 	}
 	cmd := d.commandContext(ctx, "daytona", "stop", name)
 	d.applyCredentials(cmd)
-	safeOut := synchronizedWriter(out)
+	var captured bytes.Buffer
+	safeOut := synchronizedWriter(&captured)
 	cmd.Stdout = safeOut
 	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("daytona stop failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return fmt.Errorf("daytona stop failed: %w", err)
+		return wrapDaytonaError("stop", err, captured.String())
 	}
 	return nil
 }
@@ -231,7 +242,7 @@ func (d *DaytonaProvider) Start(ctx context.Context, info *ConnectInfo, out io.W
 		if isAlreadyRunningLifecycleOutput(output) {
 			return &LifecycleResult{Status: StatusRunning}, nil
 		}
-		return nil, wrapDaytonaError("start", err)
+		return nil, wrapDaytonaError("start", err, output)
 	}
 	return &LifecycleResult{Status: StatusRunning}, nil
 }
@@ -246,14 +257,12 @@ func (d *DaytonaProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 	}
 	cmd := d.commandContext(ctx, "daytona", "delete", name, "--yes")
 	d.applyCredentials(cmd)
-	safeOut := synchronizedWriter(out)
+	var captured bytes.Buffer
+	safeOut := synchronizedWriter(&captured)
 	cmd.Stdout = safeOut
 	cmd.Stderr = safeOut
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("daytona delete failed with exit code %d: %w", exitErr.ExitCode(), err)
-		}
-		return fmt.Errorf("daytona delete failed: %w", err)
+		return wrapDaytonaError("delete", err, captured.String())
 	}
 	return nil
 }

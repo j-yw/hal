@@ -43,7 +43,9 @@ Use 'hal sandbox delete' to permanently remove a sandbox and end provider charge
 	RunE: func(cmd *cobra.Command, args []string) error {
 		allFlag, _ := cmd.Flags().GetBool("all")
 		pattern, _ := cmd.Flags().GetString("pattern")
-		return runSandboxStop(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		return runSandboxCobra(cmd, "Sandbox Stop failed", func() error {
+			return runSandboxStop(args, allFlag, pattern, cmd.OutOrStdout(), nil)
+		})
 	},
 }
 
@@ -91,18 +93,29 @@ func runSandboxStopWithDeps(args []string, allFlag bool, pattern string, out io.
 	if err != nil {
 		return err
 	}
+	redactor := sandboxRedactor(sandboxShowAddresses, nil, targets...)
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
 
 	if hint != "" {
-		fmt.Fprintln(out, hint)
+		fmt.Fprintln(renderOut, hint)
 	}
 
-	// Single target: stop inline for simple output
+	d := display.NewDisplay(renderOut)
+	d.ShowCommandHeader("Sandbox Stop", fmt.Sprintf("%d target(s)", len(targets)), display.HeaderContext{})
+
+	var runErr error
 	if len(targets) == 1 {
-		return stopOneTarget(targets[0], out, provider)
+		runErr = stopOneTarget(targets[0], renderOut, provider)
+	} else {
+		runErr = stopMultipleTargets(targets, renderOut, provider)
 	}
 
-	// Multiple targets: stop concurrently using errgroup
-	return stopMultipleTargets(targets, out, provider)
+	return sandboxSanitizeError(runErr, redactor)
 }
 
 // resolveStopTargets resolves which sandboxes to stop based on positional args,
@@ -321,6 +334,7 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 	}
 
 	fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+	fmt.Fprintf(out, "  Billing: resources may still incur provider charges\n")
 	return nil
 }
 

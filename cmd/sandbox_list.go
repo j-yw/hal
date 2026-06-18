@@ -17,6 +17,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	ui "github.com/jywlabs/hal/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +29,10 @@ var sandboxListCmd = &cobra.Command{
 	Short: "List all sandboxes",
 	Long: `List all sandbox instances from the global registry.
 
-Displays a table with columns: NAME, PROVIDER, STATUS, TAILSCALE, AGE, AUTO-OFF, EST.COST.
+Displays a table with columns: NAME, PROVIDER, STATUS, ACCESS, AGE, AUTO-OFF, EST.COST.
+The ACCESS column uses states like tailscale, tailscale pending, public fallback,
+or unavailable instead of raw network addresses. With --show-addresses, the
+table also includes an ADDRESS column with the active SSH address.
 
 Estimated cost is based on embedded hourly rates and time since creation.
 Stopped sandboxes still accrue cost (cloud providers charge for allocated resources).
@@ -62,7 +66,9 @@ Use --json for machine-readable output following the sandbox-list-v1 contract.`,
 				}
 			}
 		}
-		return runSandboxListWithWriters(out, errOut, jsonMode, liveMode)
+		return runSandboxCobra(cmd, "Sandbox List failed", func() error {
+			return runSandboxListWithWriters(out, errOut, jsonMode, liveMode)
+		})
 	},
 }
 
@@ -202,23 +208,31 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 	}
 
 	now := sandboxListNow()
+	redactor := sandboxRedactor(sandboxShowAddresses, nil, instances...)
 
 	if jsonMode {
-		renderLiveStatusWarnings(warnOut, liveWarnings)
+		renderLiveStatusWarnings(warnOut, liveWarnings, redactor)
 		return renderSandboxListJSON(out, instances, now)
 	}
 
+	safeOut := sandboxRedactingWriter(out, redactor)
+	defer sandboxFlushRedactor(safeOut)
+	renderOut := io.Writer(safeOut)
+	if renderOut == nil {
+		renderOut = out
+	}
+
 	if len(instances) == 0 {
-		fmt.Fprintln(out, "No sandboxes found. Run 'hal sandbox create' to provision one.")
+		fmt.Fprintln(renderOut, "No sandboxes found. Run 'hal sandbox create' to provision one.")
 		return nil
 	}
 
 	// Render table
-	renderSandboxTable(out, instances, now)
+	renderSandboxTable(renderOut, instances, now, sandboxShowAddresses)
 
 	// Render summary
-	renderSandboxSummary(out, instances, now)
-	renderLiveStatusWarnings(out, liveWarnings)
+	renderSandboxSummary(renderOut, instances, now)
+	renderLiveStatusWarnings(renderOut, liveWarnings, redactor)
 
 	return nil
 }
@@ -300,13 +314,13 @@ func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Pr
 	return nil
 }
 
-func renderLiveStatusWarnings(out io.Writer, warnings []liveStatusWarning) {
+func renderLiveStatusWarnings(out io.Writer, warnings []liveStatusWarning, redactor ui.Redactor) {
 	if out == nil || len(warnings) == 0 {
 		return
 	}
 
 	for _, warning := range warnings {
-		fmt.Fprint(out, formatLiveStatusWarning(warning.Name, warning.Err))
+		fmt.Fprint(out, redactor.Redact(formatLiveStatusWarning(warning.Name, warning.Err)))
 	}
 }
 
@@ -446,18 +460,17 @@ func renderSandboxListJSON(out io.Writer, instances []*sandbox.SandboxState, now
 }
 
 // renderSandboxTable renders the sandbox list as a formatted table.
-func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now time.Time) {
+func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now time.Time, showAddresses bool) {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "%s\n", display.StyleBold.Render("NAME\tPROVIDER\tSTATUS\tTAILSCALE\tAGE\tAUTO-OFF\tEST.COST"))
+	header := "NAME\tPROVIDER\tSTATUS\tACCESS\tAGE\tAUTO-OFF\tEST.COST"
+	if showAddresses {
+		header = "NAME\tPROVIDER\tSTATUS\tACCESS\tADDRESS\tAGE\tAUTO-OFF\tEST.COST"
+	}
+	fmt.Fprintf(w, "%s\n", display.StyleBold.Render(header))
 
 	for _, inst := range instances {
 		normalizedStatus := sandboxNormalizedStatus(inst)
-		tailscale := "—"
-		if inst.TailscaleIP != "" {
-			tailscale = inst.TailscaleIP
-		} else if inst.TailscaleHostname != "" {
-			tailscale = inst.TailscaleHostname
-		}
+		access := sandboxAccessLabel(inst)
 
 		age := "—"
 		if !inst.CreatedAt.IsZero() {
@@ -482,15 +495,32 @@ func renderSandboxTable(out io.Writer, instances []*sandbox.SandboxState, now ti
 			statusStr = display.StyleMuted.Render(statusStr)
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			inst.Name,
-			inst.Provider,
-			statusStr,
-			tailscale,
-			age,
-			autoOff,
-			cost,
-		)
+		if showAddresses {
+			address := sandbox.PreferredIP(inst)
+			if address == "" {
+				address = "—"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				inst.Name,
+				inst.Provider,
+				statusStr,
+				access,
+				address,
+				age,
+				autoOff,
+				cost,
+			)
+		} else {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				inst.Name,
+				inst.Provider,
+				statusStr,
+				access,
+				age,
+				autoOff,
+				cost,
+			)
+		}
 	}
 
 	w.Flush()

@@ -249,6 +249,10 @@ hal sandbox snapshot create
 
 ### Sandbox Name and Exec Passthrough
 
+Human sandbox output redacts public cloud and Tailscale addresses by default.
+Use `--show-addresses` only when you intentionally need raw network addresses.
+Machine-readable JSON contracts document which raw values they expose.
+
 `--name/-n` is available on `hal sandbox create`. Lifecycle commands target existing sandboxes positionally:
 - `hal sandbox start NAME`
 - `hal sandbox status NAME`

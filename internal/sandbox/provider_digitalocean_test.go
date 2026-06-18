@@ -823,8 +823,8 @@ func TestDigitalOceanProvider_Create_LockdownCleansUpWhenTailscaleHostnameVerifi
 	if !strings.Contains(out.String(), "Verifying Tailscale hostname hal-test-droplet-1234") {
 		t.Fatalf("output missing hostname verification: %q", out.String())
 	}
-	if !strings.Contains(out.String(), "Falling back to public IP 10.20.30.40") {
-		t.Fatalf("output missing public IP fallback: %q", out.String())
+	if !strings.Contains(out.String(), "Falling back to public SSH") {
+		t.Fatalf("output missing public SSH fallback: %q", out.String())
 	}
 	if !strings.Contains(out.String(), "Cleaning up test-droplet after failure (tailscale IP unavailable)") {
 		t.Fatalf("output missing cleanup message: %q", out.String())
@@ -884,8 +884,8 @@ func TestDigitalOceanProvider_Create_LockdownFallsBackToPublicIPWhenHostnameUnav
 	if publicCatCalls != 1 {
 		t.Fatalf("Create() public IP Tailscale lookups = %d, want 1", publicCatCalls)
 	}
-	if !strings.Contains(out.String(), "Falling back to public IP 10.20.30.40") {
-		t.Fatalf("output missing public IP fallback: %q", out.String())
+	if !strings.Contains(out.String(), "Falling back to public SSH") {
+		t.Fatalf("output missing public SSH fallback: %q", out.String())
 	}
 }
 
@@ -995,7 +995,7 @@ func TestDigitalOceanProvider_Create_LockdownVerifiesFirewallViaTailscaleIPBefor
 	if !strings.Contains(out.String(), "Warning: could not verify Tailscale hostname hal-test-droplet-1234") {
 		t.Fatalf("output missing hostname failure warning before public fallback: %q", out.String())
 	}
-	if !strings.Contains(out.String(), "Verified firewall lockdown via Tailscale IP 100.64.0.99") {
+	if !strings.Contains(out.String(), "Verified firewall lockdown via Tailscale after public SSH closed") {
 		t.Fatalf("output missing Tailscale IP verification: %q", out.String())
 	}
 	if len(verifyTargets) == 0 || verifyTargets[0] != "100.64.0.99" {
