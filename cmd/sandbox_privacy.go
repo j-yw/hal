@@ -17,10 +17,14 @@ func sandboxRedactor(showAddresses bool, env map[string]string, instances ...*sa
 		if inst == nil {
 			continue
 		}
+		tailscaleHostname := inst.TailscaleHostname
+		if strings.TrimSpace(tailscaleHostname) == strings.TrimSpace(inst.Name) {
+			tailscaleHostname = ""
+		}
 		redactor.KnownAddresses = append(redactor.KnownAddresses,
 			inst.IP,
 			inst.TailscaleIP,
-			inst.TailscaleHostname,
+			tailscaleHostname,
 			sandbox.PreferredIP(inst),
 		)
 	}
