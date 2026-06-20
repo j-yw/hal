@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Verify-v1 shared result types and constants live in `internal/verify`; use `SchemaVersion = "verify-v1"` and keep JSON field/tag plus round-trip tests beside the types.
+- Machine contract docs belong in `docs/contracts/` and should be registered in `cmd/contracts_doc_test.go`; add field/value assertions there when a doc must stay synchronized with code constants.
 
 ---
 
@@ -16,4 +17,15 @@
   - Machine-readable contract packages in this repo use package-level string constants for stable status values and focused tests that assert JSON keys and round-trip behavior.
   - The verify-v1 top-level field is `schemaVersion`, not the older `contractVersion` pattern used by some existing command contracts.
   - Running `hal repair --json` can normalize project-local engine skill links; in this run it converted the stale Pi factory skill entry to the same symlink style used by other Pi skills.
+---
+
+## 2026-06-21 04:49 CST - US-002
+- Documented the `verify-v1` machine-readable contract, including top-level fields, summary counts, shell check fields, warning fields, artifact fields, status values, and required-check failure/timeout gate behavior.
+- Added a contract-doc sync test that requires `docs/contracts/verify-v1.md` to exist and contain the verify field names, enum constants, shell adapter value, and gate behavior text.
+- Ran `go test ./cmd`, `make fmt`, `make vet`, `make test`, and `make lint` (lint target returned successfully but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `docs/contracts/verify-v1.md`, `cmd/contracts_doc_test.go`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Contract documentation tests can import the package constants behind a contract, then assert the Markdown includes those enum values.
+  - For verify-v1 docs, the contract identifier is the string `schemaVersion` value `verify-v1`, not a numeric `contractVersion`.
+  - The required gate behavior belongs in the contract doc: required shell check `fail` and `timeout` statuses must make the top-level status `fail`.
 ---
