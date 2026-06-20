@@ -434,6 +434,38 @@ CLI commands should own shared queue submission, and when control-plane
 identifiers should become documented CLI contract fields rather than hidden
 backend details.
 
+## Non-Goal Guardrails
+
+This ADR does not implement a hosted Hal service or turn local workflows into
+networked workflows. It defines architecture terminology and migration
+expectations only.
+
+This ADR does not add server processes, API handlers, database schemas,
+authentication integrations, hosted schedulers, or networked queues. Those
+implementation details require future PRDs, tests, rollout plans, and contract
+updates where applicable.
+
+This ADR does not change runtime behavior for `hal auto`, `hal status`,
+`hal doctor`, `hal continue`, review loops, report generation, CI commands, or
+archive commands. Existing local command semantics remain the compatibility
+baseline.
+
+This ADR does not change any existing machine-readable JSON contract. Stable
+fields documented under `docs/contracts/` remain unchanged, and future
+control-plane identifiers, authorization diagnostics, policy details, queue
+state, or backend run internals must not appear in CLI JSON output unless a
+future contract revision explicitly adds them.
+
+This ADR does not add local authentication, configuration, or state files for
+the future control plane. The current `.hal/` files remain local runtime
+artifacts managed by Hal commands.
+
+Hal-owned runtime state files must not be manually modified to simulate future
+control-plane behavior. Future implementations should introduce explicit
+commands, migrations, dry runs, and repair paths instead of relying on direct
+edits to `.hal/prd.json`, `.hal/progress.txt`, `.hal/auto-state.json`, or other
+Hal-owned runtime files.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared

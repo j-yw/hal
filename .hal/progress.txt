@@ -10,6 +10,7 @@
 - Future shared artifact/audit ADR sections should cover PRDs, reports, logs, review results, run output, audit decisions, state transitions, and data ownership/access expectations without exposing storage keys, backend IDs, role graphs, or permission evaluation internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 - Future policy inheritance ADR sections should define precedence from built-in defaults through organization, project, run, and local overrides while keeping policy evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
 - Future migration strategy ADR sections should phase local `.hal/` state toward shared control-plane authority through shadowing, artifact mirroring, opt-in shared queues, and opt-in shared run coordination; preserve current local CLI behavior early and list compatibility gates/open questions before introducing hosted or networked behavior.
+- Documentation-only control-plane ADR non-goals should explicitly rule out hosted services, server/API/database/auth/networked queue implementations, runtime behavior changes, CLI JSON contract changes, new local control-plane state files, and manual edits to Hal-owned runtime files as an implementation mechanism.
 
 ---
 
@@ -92,4 +93,13 @@
   - Migration strategy sections should keep local `.hal/` files authoritative for current CLI behavior until a future implementation PRD and contract update deliberately move responsibility to shared state.
   - Shared queue migration should be documented separately from artifact mirroring because queue authority depends on leases, heartbeats, stale recovery, RBAC, audit, and idempotency being implemented and tested.
   - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` was skipped because `golangci-lint` was unavailable.
+---
+
+## 2026-06-20 23:55 CST - US-010
+- Added the non-goal guardrails section to the factory control plane ADR, explicitly excluding hosted service implementation, server/API/database/auth/network queue work, runtime behavior changes, CLI JSON contract changes, new local control-plane state files, and manual Hal runtime-file edits as an implementation mechanism.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Documentation-only control-plane ADRs should keep non-goals explicit enough that future readers cannot infer hidden implementation work from architecture terminology.
+  - Non-goal guardrails should call out both runtime command behavior and machine-readable JSON contracts when the ADR discusses future hosted/control-plane concepts.
+  - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
 ---

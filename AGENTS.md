@@ -48,6 +48,7 @@
 - Shared artifact/audit ADR sections should cover PRDs, reports, logs, review results, run output, audit decisions, state transitions, and data ownership/access expectations without exposing storage keys, backend identifiers, role graphs, or permission evaluation internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 - Future policy inheritance ADR sections should define precedence from built-in defaults through organization, project, run, and local overrides while keeping policy evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
 - Future migration strategy ADR sections should phase local `.hal/` state toward shared control-plane authority through shadowing, artifact mirroring, opt-in shared queues, and opt-in shared run coordination; preserve current local CLI behavior early and list compatibility gates/open questions before introducing hosted or networked behavior.
+- Documentation-only control-plane ADR non-goals should explicitly rule out hosted services, server/API/database/auth/networked queue implementations, runtime behavior changes, CLI JSON contract changes, new local control-plane state files, and manual edits to Hal-owned runtime files as an implementation mechanism.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
