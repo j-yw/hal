@@ -18,6 +18,7 @@ which is separate from per-project .hal runtime state.
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory artifacts <run-id>
 ```
 
 ### Options
@@ -29,6 +30,7 @@ which is separate from per-project .hal runtime state.
 ### SEE ALSO
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
+* [hal factory artifacts](hal_factory_artifacts.md)	 - List artifacts for a stored factory run
 * [hal factory list](hal_factory_list.md)	 - List stored factory runs
 * [hal factory run](hal_factory_run.md)	 - Run the local factory executor
 * [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run

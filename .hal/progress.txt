@@ -101,3 +101,12 @@
   - New factory machine-readable command surfaces need the command response type, `cmd/machine_contracts_test.go` field checks, `cmd/contracts_doc_test.go` docs/example sync, a `docs/contracts/*.md` file, and a `docs/contracts/examples/*.json` payload.
   - Warning strings may embed raw addresses inside prose; sanitizer tests should cover sentence-form values, not only bare IP strings.
 ---
+## 2026-06-21 07:47:01 CST - US-010
+- Regenerated CLI reference docs so `hal factory artifacts <run-id>` has its own generated page and is linked from the parent `hal factory` documentation.
+- Verified the existing factory command metadata coverage includes the artifacts command and its examples.
+- Files changed: `docs/cli/hal_factory.md`, `docs/cli/hal_factory_artifacts.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Checks run: `go test ./cmd -run 'TestFactoryCommandHelpMetadata|TestFactoryArtifactsCommandRegistered|TestFactoryGeneratedCLIReferenceLinks|TestCommandTreeHasCompleteMetadata|TestCoreCommandsHaveCompleteMetadata'`, `make docs-cli`, `make docs-check`.
+- **Learnings for future iterations:**
+  - Generated CLI docs are not updated automatically when command metadata changes; run `make docs-cli` and then `make docs-check` before marking CLI docs stories complete.
+  - The generated parent command page is expected to gain a `SEE ALSO` link whenever a new subcommand page is added.
+---
