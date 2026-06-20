@@ -78,6 +78,11 @@ func TestCoreCommandsHaveCompleteMetadata(t *testing.T) {
 			exampleContains: "hal doctor",
 		},
 		{
+			name:            "verify command",
+			path:            []string{"verify"},
+			exampleContains: "hal verify",
+		},
+		{
 			name:            "cleanup command",
 			path:            []string{"cleanup"},
 			exampleContains: "hal cleanup",
