@@ -426,3 +426,4 @@
 - Persist factory run records through `Store.SaveRun` and load them through `Store.LoadRun`; committed records live at `factory/runs/<runID>.json`, writes use `0600` temp files plus rename, and missing loads should remain compatible with `errors.Is(err, fs.ErrNotExist)`.
 - Use `Store.ListRuns` when callers need full run records ordered newest-first by latest created/updated timestamp with run ID tie-breaking; keep `Store.ListRunIDs` for lexicographic ID-only listings.
 - Persist factory timeline events through `Store.AppendEvent` and read them through `Store.LoadEvents`; committed timelines live at `factory/timelines/<runID>.json` as ordered JSON arrays, writes use the same `0600` temp-file-plus-rename path, and missing timelines should load as empty event lists.
+- Keep factory read/list paths scoped to committed `*.json` artifacts via the shared committed-file predicate; stale `*.tmp` and `*.bak` files must remain invisible to run and timeline reads.

@@ -217,6 +217,45 @@ func TestListRunsReturnsCommittedRecordsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestRunReadPathsIgnoreIncompleteTempFiles(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-temp-safe")
+
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	tempPath := filepath.Join(store.RunsDir(), record.RunID+runRecordFileExt+storeTempFileExt)
+	tempRecord := []byte(`{"runId":"run-temp-safe","status":"failed","currentStep":"corrupt"}` + "\n")
+	if err := os.WriteFile(tempPath, tempRecord, 0o600); err != nil {
+		t.Fatalf("write temp run record: %v", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(*loaded, record) {
+		t.Fatalf("LoadRun() = %#v, want committed record %#v", *loaded, record)
+	}
+
+	listed, err := store.ListRuns()
+	if err != nil {
+		t.Fatalf("ListRuns() unexpected error: %v", err)
+	}
+	if len(listed) != 1 || listed[0].RunID != record.RunID || listed[0].Status != record.Status {
+		t.Fatalf("ListRuns() = %#v, want only committed record %q", listed, record.RunID)
+	}
+
+	runIDs, err := store.ListRunIDs()
+	if err != nil {
+		t.Fatalf("ListRunIDs() unexpected error: %v", err)
+	}
+	wantRunIDs := []string{record.RunID}
+	if !reflect.DeepEqual(runIDs, wantRunIDs) {
+		t.Fatalf("ListRunIDs() = %v, want %v", runIDs, wantRunIDs)
+	}
+}
+
 func TestSaveRunAndLoadRunRoundTripWithNewStore(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-001")
@@ -360,6 +399,34 @@ func TestAppendEventAndLoadEventsRoundTripWithNewStore(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, events) {
 		t.Fatalf("LoadEvents() = %#v, want %#v", got, events)
+	}
+}
+
+func TestTimelineReadPathsIgnoreIncompleteTempFiles(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-events-temp-safe"
+	events := []EventRecord{
+		testEventRecord(runID, 1, EventTypeRunCreated),
+		testEventRecord(runID, 2, EventTypeStepStarted),
+	}
+
+	for i := range events {
+		if err := store.AppendEvent(&events[i]); err != nil {
+			t.Fatalf("AppendEvent(%d) unexpected error: %v", events[i].Sequence, err)
+		}
+	}
+	tempPath := filepath.Join(store.TimelinesDir(), runID+runRecordFileExt+storeTempFileExt)
+	tempTimeline := []byte(`[{"sequence":99,"runId":"run-events-temp-safe","eventType":"failure_classification"}]` + "\n")
+	if err := os.WriteFile(tempPath, tempTimeline, 0o600); err != nil {
+		t.Fatalf("write temp timeline: %v", err)
+	}
+
+	got, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(got, events) {
+		t.Fatalf("LoadEvents() = %#v, want committed timeline %#v", got, events)
 	}
 }
 

@@ -237,7 +237,7 @@ func (s Store) ListRuns() ([]RunRecord, error) {
 
 	records := make([]RunRecord, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != runRecordFileExt {
+		if entry.IsDir() || !isCommittedStoreFile(entry.Name()) {
 			continue
 		}
 
@@ -283,7 +283,7 @@ func (s Store) ListRunIDs() ([]string, error) {
 			runIDs = append(runIDs, entry.Name())
 			continue
 		}
-		if filepath.Ext(entry.Name()) != runRecordFileExt {
+		if !isCommittedStoreFile(entry.Name()) {
 			continue
 		}
 		runIDs = append(runIDs, strings.TrimSuffix(entry.Name(), runRecordFileExt))
@@ -360,6 +360,13 @@ func runRecordListTimestamp(record RunRecord) time.Time {
 		timestamp = record.UpdatedAt
 	}
 	return timestamp
+}
+
+func isCommittedStoreFile(name string) bool {
+	if strings.HasSuffix(name, storeTempFileExt) || strings.HasSuffix(name, storeBackupFileExt) {
+		return false
+	}
+	return filepath.Ext(name) == runRecordFileExt
 }
 
 func saveStoreFile(tmpPath, path string) error {
