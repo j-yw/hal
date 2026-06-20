@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Verify-v1 shared result types and constants live in `internal/verify`; use `SchemaVersion = "verify-v1"` and keep JSON field/tag plus round-trip tests beside the types.
+- Verification config lives in `internal/verify`; `LoadConfig(dir)` reads `.hal/config.yaml` `verify.checks`, defaults omitted `required` to true, and normalizes omitted/empty `workDir` to the absolute project root.
 - Machine contract docs belong in `docs/contracts/` and should be registered in `cmd/contracts_doc_test.go`; add field/value assertions there when a doc must stay synchronized with code constants.
 - Contract example payloads live in `docs/contracts/examples/`; reference them from the contract doc and decode them in `cmd/contracts_doc_test.go` with `decodeStrictJSONExample` against the exported schema type.
 - For verify-v1 schema tests, assert exact marshaled JSON keys and include zero-valued fixtures so accidental `omitempty` or required-field omissions fail tests.
@@ -52,4 +53,16 @@
   - Populated fixtures do not catch all `omitempty` regressions; include zero-valued fixtures when every field in a machine contract is required.
   - Keep expected JSON key lists centralized in the package test when the same contract keys are asserted across populated and zero-valued payloads.
   - Lint currently exits successfully with an install hint when `golangci-lint` is not installed.
+---
+
+## 2026-06-21 05:07 CST - US-005
+- Added the verification configuration model in `internal/verify`, including `Config`, `ShellCheck`, `DefaultConfig`, and `LoadConfig(dir)` for `.hal/config.yaml`.
+- Implemented shell check defaulting for omitted `required`, omitted `timeoutSeconds`, and omitted/empty `workDir`, with relative work directories resolved under the project root.
+- Added tests for multiple shell checks, optional checks, absolute and relative work directories, missing required fields, invalid timeouts, missing config files, and invalid YAML.
+- Ran `go test ./internal/verify`, `make fmt`, `make vet`, `make test`, and `make lint` (lint target returned successfully but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `internal/verify/config.go`, `internal/verify/config_test.go`, `AGENTS.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep verify command/config work in `internal/verify` so command output, config loading, and execution can share one package boundary.
+  - Use pointer-backed raw YAML fields when a boolean defaults to true; otherwise omitted `required` and explicit `required: false` cannot be distinguished.
+  - Validation errors for configured checks should include the indexed path, for example `verify.checks[0].command must not be empty`, so users can fix multi-check config quickly.
 ---
