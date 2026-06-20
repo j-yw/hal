@@ -32,8 +32,21 @@ func TestRunStatusConstants(t *testing.T) {
 }
 
 func TestExecutorModeConstants(t *testing.T) {
-	if ExecutorModeLocal != "local" {
-		t.Fatalf("ExecutorModeLocal = %q, want local", ExecutorModeLocal)
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "local", got: ExecutorModeLocal, want: "local"},
+		{name: "sandbox", got: ExecutorModeSandbox, want: "sandbox"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("executor mode = %q, want %q", tt.got, tt.want)
+			}
+		})
 	}
 }
 

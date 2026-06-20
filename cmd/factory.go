@@ -131,17 +131,19 @@ var defaultFactoryStatusDeps = factoryStatusDeps{
 }
 
 type factoryRunDeps struct {
-	defaultStore   func() (factory.Store, error)
-	newRunID       func() (string, error)
-	now            func() time.Time
-	workingDir     func() (string, error)
-	currentBranch  func(string) (string, error)
-	repoRemote     func(string) (string, error)
-	runPipeline    func(context.Context, factoryRunPipelineRequest) error
-	loadVerify     func(string) (*verify.Config, error)
-	runVerify      func(context.Context, *verify.Config) (*verify.Result, error)
-	statusSnapshot func(string) (factorySnapshotArtifact, error)
-	doctorSnapshot func(string) (factorySnapshotArtifact, error)
+	defaultStore    func() (factory.Store, error)
+	newRunID        func() (string, error)
+	now             func() time.Time
+	workingDir      func() (string, error)
+	currentBranch   func(string) (string, error)
+	repoRemote      func(string) (string, error)
+	runPipeline     func(context.Context, factoryRunPipelineRequest) error
+	loadVerify      func(string) (*verify.Config, error)
+	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
+	statusSnapshot  func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
+	sandboxCopier   factory.SandboxArtifactCopier
+	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryRunPipelineRequest struct {
@@ -340,7 +342,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, failedAt, deps); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, failedAt, deps); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
@@ -368,7 +370,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 
 	artifactAt := deps.now()
-	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactAt, deps)
+	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactAt, deps)
 	if err != nil {
 		return err
 	}
@@ -439,6 +441,9 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.doctorSnapshot == nil {
 		deps.doctorSnapshot = defaultFactoryRunDeps.doctorSnapshot
 	}
+	if deps.sandboxRequests == nil {
+		deps.sandboxRequests = defaultFactorySandboxArtifactRequests
+	}
 	return deps
 }
 
@@ -493,7 +498,7 @@ func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now
 	return record, nil
 }
 
-func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req factoryRunRequest, now time.Time, deps factoryRunDeps) (factory.RunRecord, error) {
+func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, now time.Time, deps factoryRunDeps) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
@@ -516,6 +521,9 @@ func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req facto
 	snapshots = append(snapshots, outcomes...)
 
 	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshots); err != nil {
+		return factory.RunRecord{}, err
+	}
+	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, *record, deps); err != nil {
 		return factory.RunRecord{}, err
 	}
 	record, err = store.LoadRun(runID)
@@ -1032,6 +1040,87 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		}
 	}
 	return nil
+}
+
+func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) error {
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requests := deps.sandboxRequests(dir, record)
+	if len(requests) == 0 {
+		return nil
+	}
+	if deps.sandboxCopier == nil {
+		return fmt.Errorf("sandbox artifact copier is required for sandbox factory run %q", record.RunID)
+	}
+	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, deps.sandboxCopier, requests); err != nil {
+		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
+	}
+	return nil
+}
+
+func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+	summary := map[string]any{
+		"executorMode": factory.ExecutorModeSandbox,
+	}
+	if sandboxName := strings.TrimSpace(record.SandboxName); sandboxName != "" {
+		summary["sandboxName"] = sandboxName
+	}
+
+	requests := []factory.SandboxArtifactRequest{
+		{
+			ID:         "sandbox-prd",
+			Name:       "sandbox-prd",
+			Type:       "json",
+			RemotePath: filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
+			Path:       filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
+			Optional:   true,
+			Summary:    summary,
+		},
+		{
+			ID:         "sandbox-auto-state",
+			Name:       "sandbox-auto-state",
+			Type:       "json",
+			RemotePath: filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)),
+			Path:       filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)),
+			Optional:   true,
+			Summary:    summary,
+		},
+		{
+			ID:         "sandbox-progress",
+			Name:       "sandbox-progress",
+			Type:       "text",
+			RemotePath: filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)),
+			Path:       filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)),
+			Optional:   true,
+			Summary:    summary,
+		},
+		{
+			ID:         "sandbox-reports",
+			Name:       "sandbox-reports",
+			Type:       "directory",
+			RemotePath: filepath.ToSlash(filepath.Join(template.HalDir, "reports")),
+			Path:       filepath.ToSlash(filepath.Join(template.HalDir, "reports")),
+			Directory:  true,
+			Optional:   true,
+			Summary:    summary,
+		},
+	}
+	if sourcePath := strings.TrimSpace(record.Source.Path); sourcePath != "" {
+		requests = append([]factory.SandboxArtifactRequest{{
+			ID:         "sandbox-source",
+			Name:       "sandbox-source",
+			Type:       factoryArtifactTypeForPath(sourcePath),
+			RemotePath: filepath.ToSlash(sourcePath),
+			Path:       filepath.ToSlash(sourcePath),
+			Optional:   true,
+			Summary:    summary,
+		}}, requests...)
+	}
+	return requests
 }
 
 type factoryArtifactCollector struct {

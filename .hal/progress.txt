@@ -8,6 +8,7 @@
 - Factory status/doctor snapshots should use structured package results (`status.Get`, `doctor.Run`) behind injectable deps, then flow through normal artifact persistence instead of parsing CLI output.
 - Factory PR/CI outcome artifacts are materialized from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata during `runPRStep` and record partial warning artifacts when outcome state is unavailable.
 - Sandbox artifact collection uses `factory.SandboxArtifactCopier` plus `factory.CollectSandboxArtifacts`; remote paths are copier inputs only, while persisted metadata keeps safe display paths and store-backed paths.
+- Sandbox factory runs collect remote artifacts during `recordFactoryRunArtifacts` when the persisted run record has `ExecutorModeSandbox`; tests should mutate the run record inside the fake pipeline and inject `sandboxCopier`/`sandboxRequests` through `factoryRunDeps`.
 
 ---
 
@@ -66,4 +67,14 @@
   - Sandbox artifact collection should use `factory.CollectSandboxArtifacts` so future sandbox finalization code can stay provider-agnostic and test with fake copiers.
   - Use safe display `Path` values on `SandboxArtifactRequest`; `RemotePath` is only for the copy abstraction and must not be persisted in run JSON.
   - Directory artifacts are copied locally first and then stored as individual file artifacts with stable child IDs.
+---
+## 2026-06-21 07:33:25 CST - US-007
+- Wired sandbox factory artifact collection into the shared run finalization path so successful and failed sandbox-mode runs copy available remote artifacts into the local factory store.
+- Added `factory.ExecutorModeSandbox`, default sandbox artifact requests for canonical `.hal` payloads, injectable sandbox copier/request deps, and focused command tests for sandbox success plus failed-run optional-missing warnings.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `internal/factory/types.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Checks run: `go test ./internal/factory ./cmd`, `make test`, `make vet`; `make lint` was attempted but skipped because `golangci-lint` is not installed.
+- **Learnings for future iterations:**
+  - Sandbox artifact collection is triggered from persisted run metadata, not from a separate command path; set `ExecutorModeSandbox` and `SandboxName` on the run record before finalization.
+  - Keep sandbox provider behavior behind `factory.SandboxArtifactCopier` and inject fake request/copy dependencies in `cmd/factory_test.go`.
+  - Optional missing sandbox artifacts should remain partial warning records so failed sandbox runs still expose available evidence.
 ---
