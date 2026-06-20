@@ -8,7 +8,7 @@
 - Queue commands should use `Store.EnqueueQueueEntry`, `Store.ListQueue`, and `Store.ClaimNextQueueEntry` for FIFO behavior; tests can inject `QueueOperationOptions` for deterministic timestamps and queue IDs.
 - Queue lifecycle transitions should go through Store helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained queue history stay consistent.
 - Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
-- Queue work claiming should use `Store.ClaimNextQueueEntry`, then record the associated run `CurrentStep` as `claimed` plus a claim timeline event; leave actual executor execution to the worker execution path.
+- Queue work should use `Store.ClaimNextQueueEntry`, record the run `CurrentStep` as `claimed` plus a claim timeline event in `cmd`, execute through the shared factory run lifecycle helper, then finalize queue state with `MarkQueueEntrySucceeded` or `MarkQueueEntryFailed`.
 - Factory queue command registration lives in `cmd/factory_queue.go`; wire the command group from `cmd/factory.go`, update `cmd/factory_test.go` metadata/link checks, and run `make docs-cli` when changing CLI docs.
 
 ---
@@ -107,4 +107,16 @@
   - Use injected `factoryQueueWorkDeps` with deterministic `Now` and `QueueClaim` values for command tests; concurrent claim tests can share an isolated `factory.Store` temp root.
   - Browser verification skipped because this story only changes CLI/backend behavior.
   - Checks run: `go test ./cmd -run 'TestRunFactoryQueueWorkWithDeps|TestFactoryQueueWork|TestFactoryCommandHelpMetadata'`, `go test ./...`, `go vet ./...`, `make docs-check`, `make lint` (reported `golangci-lint` is not installed locally).
+---
+## 2026-06-21 05:58:22 CST - US-010
+- Implemented queue worker execution for claimed factory queue entries using the shared factory run lifecycle path.
+- Added queue success/failure finalization so successful workers mark queue entries `succeeded`, executor failures mark entries `failed`, and failed entries remain inspectable with `lastError`.
+- Updated `factory-queue-work-v1` docs and example output so `claimed=true` responses show the post-execution queue entry state.
+- Added deterministic queue worker tests with injected executor success/failure behavior and assertions for run state, timeline events, queue terminal state, and JSON output.
+- Files changed: `cmd/factory.go`, `cmd/factory_queue.go`, `cmd/factory_queue_test.go`, `cmd/contracts_doc_test.go`, `docs/contracts/factory-queue-work-v1.md`, `docs/contracts/examples/factory-queue-work-claimed-v1.json`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Queue worker execution should keep queue-specific claim/finalization in `cmd/factory_queue.go` and reuse the shared factory run lifecycle helper in `cmd/factory.go` for run status, artifacts, failure classification, and timeline events.
+  - `factory-queue-work-v1` keeps the same top-level keys; when work is claimed, `entry.status` now reflects the terminal post-execution queue state (`succeeded` or `failed`).
+  - Browser verification skipped because this story only changes CLI/backend behavior.
+  - Checks run: `go test -timeout=120s ./cmd -run 'TestRunFactoryQueueWorkWithDeps|TestFactoryQueueContractExamples|TestMachineContractFields'`, `go test -timeout=120s ./cmd -run 'TestRunFactoryRunWithDeps|TestRunFactoryRunPipelineWithDeps'`, `make test`, `make vet`, `make docs-check`, `make lint` (reported `golangci-lint` is not installed locally).
 ---

@@ -620,8 +620,8 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if !resp.Claimed {
 			t.Fatal("factory queue work claimed example should set claimed=true")
 		}
-		if resp.Entry == nil || resp.Entry.Status != factory.QueueStatusClaimed {
-			t.Fatalf("factory queue work claimed entry = %#v, want claimed entry", resp.Entry)
+		if resp.Entry == nil || resp.Entry.Status != factory.QueueStatusSucceeded {
+			t.Fatalf("factory queue work claimed entry = %#v, want succeeded entry", resp.Entry)
 		}
 	})
 
