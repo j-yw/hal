@@ -18,7 +18,8 @@ const (
 
 // Executor mode values.
 const (
-	ExecutorModeLocal = "local"
+	ExecutorModeLocal   = "local"
+	ExecutorModeSandbox = "sandbox"
 )
 
 // Run source kind values.

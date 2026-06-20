@@ -937,6 +937,225 @@ func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *te
 	}
 }
 
+func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 4, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	copier := &fakeFactorySandboxArtifactCopier{
+		files: map[string]string{
+			"/workspace/.hal/auto-state.json": `{"step":"done"}` + "\n",
+		},
+		dirs: map[string]map[string]string{
+			"/workspace/.hal/reports": {
+				"review.md":          "# Review\n",
+				"verify/stdout.txt":  "ok\n",
+				"verify/result.json": `{"status":"pass"}` + "\n",
+			},
+		},
+	}
+	requestCalls := 0
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-success", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			record, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() during pipeline error: %v", err)
+			}
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-sandbox"
+			if err := req.Store.SaveRun(record); err != nil {
+				t.Fatalf("SaveRun() sandbox record error: %v", err)
+			}
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxCopier:  copier,
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			requestCalls++
+			if record.ExecutorMode != factory.ExecutorModeSandbox {
+				t.Fatalf("sandbox requests saw executorMode = %q", record.ExecutorMode)
+			}
+			if record.SandboxName != "factory-sandbox" {
+				t.Fatalf("sandbox requests saw sandboxName = %q", record.SandboxName)
+			}
+			return []factory.SandboxArtifactRequest{
+				{
+					ID:         "sandbox-auto-state",
+					Name:       "sandbox-auto-state",
+					Type:       "json",
+					RemotePath: "/workspace/.hal/auto-state.json",
+					Path:       ".hal/auto-state.json",
+					Optional:   true,
+					Summary: map[string]any{
+						"executorMode": factory.ExecutorModeSandbox,
+						"sandboxName":  record.SandboxName,
+					},
+				},
+				{
+					ID:         "sandbox-reports",
+					Name:       "sandbox-reports",
+					Type:       "directory",
+					RemotePath: "/workspace/.hal/reports",
+					Path:       ".hal/reports",
+					Directory:  true,
+					Optional:   true,
+					Summary: map[string]any{
+						"executorMode": factory.ExecutorModeSandbox,
+						"sandboxName":  record.SandboxName,
+					},
+				},
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if requestCalls != 1 {
+		t.Fatalf("sandboxRequests calls = %d, want 1", requestCalls)
+	}
+	if len(copier.fileCalls) != 1 || copier.fileCalls[0] != "/workspace/.hal/auto-state.json" {
+		t.Fatalf("file copy calls = %#v", copier.fileCalls)
+	}
+	if len(copier.dirCalls) != 1 || copier.dirCalls[0] != "/workspace/.hal/reports" {
+		t.Fatalf("dir copy calls = %#v", copier.dirCalls)
+	}
+
+	record, err := store.LoadRun("run-sandbox-success")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusSucceeded)
+	}
+	autoState := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+	if autoState.SourcePath != "" {
+		t.Fatalf("sandbox artifact SourcePath = %q, want empty", autoState.SourcePath)
+	}
+	if autoState.Summary["sandboxName"] != "factory-sandbox" {
+		t.Fatalf("sandbox artifact summary = %#v", autoState.Summary)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/review.md")
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/stdout.txt")
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/result.json")
+	if _, err := os.Stat(filepath.Join(halDir, "artifacts")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("sandbox artifact collection should not create project .hal artifacts, stat error = %v", err)
+	}
+}
+
+func TestRunFactoryRunWithDepsCollectsSandboxWarningsOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 4, 10, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	pipelineErr := errors.New("step run failed: engine unavailable")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			record, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() during pipeline error: %v", err)
+			}
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-sandbox"
+			if err := req.Store.SaveRun(record); err != nil {
+				t.Fatalf("SaveRun() sandbox record error: %v", err)
+			}
+			return pipelineErr
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxCopier: &fakeFactorySandboxArtifactCopier{
+			missing: map[string]bool{"/workspace/.hal/reports": true},
+		},
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{
+				{
+					ID:         "sandbox-reports",
+					Name:       "sandbox-reports",
+					Type:       "directory",
+					RemotePath: "/workspace/.hal/reports",
+					Path:       ".hal/reports",
+					Directory:  true,
+					Optional:   true,
+					Summary: map[string]any{
+						"executorMode": factory.ExecutorModeSandbox,
+						"sandboxName":  record.SandboxName,
+					},
+				},
+			}
+		},
+	})
+	if !errors.Is(err, pipelineErr) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline error", err)
+	}
+
+	record, err := store.LoadRun("run-sandbox-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	missing := requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports")
+	if !missing.Partial {
+		t.Fatalf("missing sandbox artifact Partial = false, want true")
+	}
+	if missing.StoredPath != "" {
+		t.Fatalf("missing sandbox artifact StoredPath = %q, want empty", missing.StoredPath)
+	}
+	if len(missing.Warnings) != 1 || !strings.Contains(missing.Warnings[0], "optional sandbox artifact not found") {
+		t.Fatalf("missing sandbox artifact warnings = %#v", missing.Warnings)
+	}
+	if missing.Summary["sandboxName"] != "factory-sandbox" || missing.Summary["collectionStatus"] != "missing" {
+		t.Fatalf("missing sandbox artifact summary = %#v", missing.Summary)
+	}
+}
+
 func TestRunFactoryRunWithDepsExcludesUnchangedGeneratedStateArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -2971,6 +3190,50 @@ func readStoredFactoryArtifact(t *testing.T, store factory.Store, runID string, 
 		t.Fatalf("ReadFile(%q) error: %v", storedPath, err)
 	}
 	return string(data)
+}
+
+type fakeFactorySandboxArtifactCopier struct {
+	files     map[string]string
+	dirs      map[string]map[string]string
+	missing   map[string]bool
+	fileCalls []string
+	dirCalls  []string
+}
+
+func (f *fakeFactorySandboxArtifactCopier) CopyFile(_ context.Context, remotePath, localPath string) error {
+	f.fileCalls = append(f.fileCalls, remotePath)
+	if f.missing[remotePath] {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	content, ok := f.files[remotePath]
+	if !ok {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(localPath, []byte(content), 0644)
+}
+
+func (f *fakeFactorySandboxArtifactCopier) CopyDir(_ context.Context, remotePath, localPath string) error {
+	f.dirCalls = append(f.dirCalls, remotePath)
+	if f.missing[remotePath] {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	files, ok := f.dirs[remotePath]
+	if !ok {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	for relPath, content := range files {
+		target := filepath.Join(localPath, relPath)
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func requireExactKeys(t *testing.T, got map[string]any, want []string) {
