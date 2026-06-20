@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/jywlabs/hal/internal/verify"
 	"github.com/spf13/cobra"
@@ -127,15 +129,17 @@ var defaultFactoryStatusDeps = factoryStatusDeps{
 }
 
 type factoryRunDeps struct {
-	defaultStore  func() (factory.Store, error)
-	newRunID      func() (string, error)
-	now           func() time.Time
-	workingDir    func() (string, error)
-	currentBranch func(string) (string, error)
-	repoRemote    func(string) (string, error)
-	runPipeline   func(context.Context, factoryRunPipelineRequest) error
-	loadVerify    func(string) (*verify.Config, error)
-	runVerify     func(context.Context, *verify.Config) (*verify.Result, error)
+	defaultStore   func() (factory.Store, error)
+	newRunID       func() (string, error)
+	now            func() time.Time
+	workingDir     func() (string, error)
+	currentBranch  func(string) (string, error)
+	repoRemote     func(string) (string, error)
+	runPipeline    func(context.Context, factoryRunPipelineRequest) error
+	loadVerify     func(string) (*verify.Config, error)
+	runVerify      func(context.Context, *verify.Config) (*verify.Result, error)
+	statusSnapshot func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot func(string) (factorySnapshotArtifact, error)
 }
 
 type factoryRunPipelineRequest struct {
@@ -147,15 +151,17 @@ type factoryRunPipelineRequest struct {
 }
 
 var defaultFactoryRunDeps = factoryRunDeps{
-	defaultStore:  factory.DefaultStore,
-	newRunID:      sandbox.NewV7,
-	now:           time.Now,
-	workingDir:    os.Getwd,
-	currentBranch: compound.CurrentBranchOptionalInDir,
-	repoRemote:    readGitRemoteOptionalInDir,
-	runPipeline:   runFactoryRunPipeline,
-	loadVerify:    verify.LoadConfig,
-	runVerify:     verify.Run,
+	defaultStore:   factory.DefaultStore,
+	newRunID:       sandbox.NewV7,
+	now:            time.Now,
+	workingDir:     os.Getwd,
+	currentBranch:  compound.CurrentBranchOptionalInDir,
+	repoRemote:     readGitRemoteOptionalInDir,
+	runPipeline:    runFactoryRunPipeline,
+	loadVerify:     verify.LoadConfig,
+	runVerify:      verify.Run,
+	statusSnapshot: defaultFactoryStatusSnapshot,
+	doctorSnapshot: defaultFactoryDoctorSnapshot,
 }
 
 type factoryRunRequest struct {
@@ -187,6 +193,14 @@ type factoryTimelineEvent struct {
 
 type factoryRunPipelineDeps struct {
 	runAuto func(context.Context, factoryRunAutoRequest) error
+}
+
+type factorySnapshotArtifact struct {
+	Name     string
+	Path     string
+	Data     []byte
+	Summary  map[string]any
+	Warnings []string
 }
 
 // FactoryListResponse is the machine-readable JSON output for hal factory list --json.
@@ -313,7 +327,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		} else {
 			failedRecord = refreshedRecord
 		}
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
@@ -344,11 +358,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if _, err := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, completedAt); err != nil {
 		return err
 	}
-	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt)
+	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt, deps)
 	if err != nil {
 		return err
 	}
-	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
+	completedRecord, completedAt, err = recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
 	if err != nil {
 		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
 		var recordErrs []error
@@ -409,6 +423,12 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.runVerify == nil {
 		deps.runVerify = defaultFactoryRunDeps.runVerify
 	}
+	if deps.statusSnapshot == nil {
+		deps.statusSnapshot = defaultFactoryRunDeps.statusSnapshot
+	}
+	if deps.doctorSnapshot == nil {
+		deps.doctorSnapshot = defaultFactoryRunDeps.doctorSnapshot
+	}
 	return deps
 }
 
@@ -467,13 +487,21 @@ func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now
 	return record, nil
 }
 
-func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time) (factory.RunRecord, error) {
+func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
 	}
 
-	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot); err != nil {
+	snapshots, cleanup, err := materializeFactorySnapshotArtifacts(dir, deps)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		return factory.RunRecord{}, err
+	}
+
+	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot, snapshots); err != nil {
 		return factory.RunRecord{}, err
 	}
 	record, err = store.LoadRun(runID)
@@ -549,6 +577,107 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, newFactoryRunVerificationFailure(result)
 	}
 	return record, finishedAt, nil
+}
+
+func defaultFactoryStatusSnapshot(dir string) (factorySnapshotArtifact, error) {
+	result := status.Get(dir)
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return factorySnapshotArtifact{}, fmt.Errorf("marshal status snapshot: %w", err)
+	}
+	return factorySnapshotArtifact{
+		Name: "status-snapshot",
+		Path: filepath.ToSlash(filepath.Join("factory", "status-snapshot.json")),
+		Data: append(data, '\n'),
+		Summary: map[string]any{
+			"snapshotKind":  "status",
+			"workflowTrack": result.WorkflowTrack,
+			"state":         result.State,
+			"summary":       result.Summary,
+		},
+	}, nil
+}
+
+func defaultFactoryDoctorSnapshot(dir string) (factorySnapshotArtifact, error) {
+	engine, _ := compound.LoadDefaultEngine(dir)
+	result := doctor.Run(doctor.Options{
+		Dir:    dir,
+		Engine: engine,
+	})
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return factorySnapshotArtifact{}, fmt.Errorf("marshal doctor snapshot: %w", err)
+	}
+	return factorySnapshotArtifact{
+		Name: "doctor-snapshot",
+		Path: filepath.ToSlash(filepath.Join("factory", "doctor-snapshot.json")),
+		Data: append(data, '\n'),
+		Summary: map[string]any{
+			"snapshotKind":  "doctor",
+			"overallStatus": result.OverallStatus,
+			"engine":        result.Engine,
+			"summary":       result.Summary,
+		},
+	}, nil
+}
+
+func materializeFactorySnapshotArtifacts(dir string, deps factoryRunDeps) ([]factory.ArtifactReference, func(), error) {
+	snapshotFns := []func(string) (factorySnapshotArtifact, error){
+		deps.statusSnapshot,
+		deps.doctorSnapshot,
+	}
+
+	artifacts := make([]factory.ArtifactReference, 0, len(snapshotFns))
+	tempPaths := make([]string, 0, len(snapshotFns))
+	cleanup := func() {
+		for _, path := range tempPaths {
+			_ = os.Remove(path)
+		}
+	}
+
+	for _, snapshotFn := range snapshotFns {
+		if snapshotFn == nil {
+			continue
+		}
+		snapshot, err := snapshotFn(dir)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("create factory snapshot artifact: %w", err)
+		}
+		snapshot.Name = strings.TrimSpace(snapshot.Name)
+		snapshot.Path = strings.TrimSpace(snapshot.Path)
+		if snapshot.Name == "" || snapshot.Path == "" || len(snapshot.Data) == 0 {
+			continue
+		}
+
+		tempFile, err := os.CreateTemp("", "hal-factory-snapshot-*.json")
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("create factory snapshot temp file: %w", err)
+		}
+		tempPath := tempFile.Name()
+		tempPaths = append(tempPaths, tempPath)
+		if _, err := tempFile.Write(snapshot.Data); err != nil {
+			_ = tempFile.Close()
+			cleanup()
+			return nil, nil, fmt.Errorf("write factory snapshot temp file: %w", err)
+		}
+		if err := tempFile.Close(); err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("close factory snapshot temp file: %w", err)
+		}
+
+		artifacts = append(artifacts, factory.ArtifactReference{
+			Name:       snapshot.Name,
+			Type:       "json",
+			SourcePath: tempPath,
+			Path:       filepath.ToSlash(snapshot.Path),
+			Summary:    snapshot.Summary,
+			Warnings:   snapshot.Warnings,
+		})
+	}
+
+	return artifacts, cleanup, nil
 }
 
 func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
@@ -692,15 +821,15 @@ func factoryFailureMessageContains(message string, fragments ...string) bool {
 	return false
 }
 
-func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot) []factory.ArtifactReference {
+func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot, snapshots []factory.ArtifactReference) []factory.ArtifactReference {
 	collector := newFactoryArtifactCollector(dir)
 	archived := collectFactoryRunArchivedArtifacts(dir, record.CreatedAt)
 
 	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
-		collector.addExistingOrArchived("source-markdown", markdownPath, archived)
+		collector.addRequestedOrArchived("source-markdown", markdownPath, archived)
 	}
 	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
-		collector.addExistingOrArchived("source-report", reportPath, archived)
+		collector.addRequestedOrArchived("source-report", reportPath, archived)
 	}
 
 	halDir := filepath.Join(dir, template.HalDir)
@@ -738,6 +867,9 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 	for _, artifact := range archived.reportArtifacts {
 		collector.add(artifact)
 	}
+	for _, artifact := range snapshots {
+		collector.add(artifact)
+	}
 
 	if recordPath := factoryRunRecordArtifactPath(store, record.RunID); recordPath != "" {
 		collector.add(factory.ArtifactReference{
@@ -750,11 +882,14 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 	return collector.artifacts
 }
 
-func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot) error {
-	artifacts := collectFactoryRunArtifacts(store, dir, req, record, snapshot)
+func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot, snapshots []factory.ArtifactReference) error {
+	artifacts := collectFactoryRunArtifacts(store, dir, req, record, snapshot, snapshots)
 	missingArtifacts := make([]factory.ArtifactReference, 0)
 	for _, artifact := range artifacts {
 		sourcePath := artifact.Path
+		if artifact.SourcePath != "" {
+			sourcePath = artifact.SourcePath
+		}
 		if sourcePath == "" {
 			continue
 		}
@@ -861,12 +996,31 @@ func (c *factoryArtifactCollector) addExistingOrArchived(name, path string, arch
 	return c.addArchived(name, path, archived)
 }
 
+func (c *factoryArtifactCollector) addRequestedOrArchived(name, path string, archived factoryArchivedArtifacts) bool {
+	if c.addExistingOrArchived(name, path, archived) {
+		return true
+	}
+	return c.addReference(name, path)
+}
+
 func (c *factoryArtifactCollector) addArchived(name, path string, archived factoryArchivedArtifacts) bool {
 	archivedPath := archived.find(path)
 	if archivedPath == "" {
 		return false
 	}
 	return c.addExisting(name, archivedPath)
+}
+
+func (c *factoryArtifactCollector) addReference(name, path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	c.add(factory.ArtifactReference{
+		Name: name,
+		Type: factoryArtifactTypeForPath(path),
+		Path: c.displayPath(path),
+	})
+	return true
 }
 
 func (c *factoryArtifactCollector) addGenerated(name, path string, snapshot factoryArtifactSnapshot) bool {

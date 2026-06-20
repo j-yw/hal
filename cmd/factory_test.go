@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -669,9 +670,12 @@ func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/auto-state.json")
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-20260621.md")
+	requireFactoryArtifactPath(t, record.Artifacts, "factory/status-snapshot.json")
+	requireFactoryArtifactPath(t, record.Artifacts, "factory/doctor-snapshot.json")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-artifacts-markdown.json"))
-	if got := len(record.Artifacts); got != 5 {
-		t.Fatalf("artifacts len = %d, want 5: %#v", got, record.Artifacts)
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/review-20260621.md")
+	if got := len(record.Artifacts); got != 7 {
+		t.Fatalf("artifacts len = %d, want 7: %#v", got, record.Artifacts)
 	}
 }
 
@@ -905,13 +909,132 @@ func TestRunFactoryRunWithDepsExcludesUnchangedGeneratedStateArtifacts(t *testin
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-stale-artifacts.json"))
 }
 
+func TestRunFactoryRunWithDepsCollectsStatusAndDoctorSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 3, 10, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	statusCalls := 0
+	doctorCalls := 0
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-snapshot-artifacts", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		statusSnapshot: func(gotDir string) (factorySnapshotArtifact, error) {
+			statusCalls++
+			if gotDir != dir {
+				t.Fatalf("status snapshot dir = %q, want %q", gotDir, dir)
+			}
+			return factorySnapshotArtifact{
+				Name: "status-snapshot",
+				Path: "factory/status-snapshot.json",
+				Data: []byte(`{"state":"auto_active","summary":"Auto pipeline is active."}` + "\n"),
+				Summary: map[string]any{
+					"snapshotKind": "status",
+					"state":        "auto_active",
+					"summary":      "Auto pipeline is active.",
+				},
+			}, nil
+		},
+		doctorSnapshot: func(gotDir string) (factorySnapshotArtifact, error) {
+			doctorCalls++
+			if gotDir != dir {
+				t.Fatalf("doctor snapshot dir = %q, want %q", gotDir, dir)
+			}
+			return factorySnapshotArtifact{
+				Name: "doctor-snapshot",
+				Path: "factory/doctor-snapshot.json",
+				Data: []byte(`{"overallStatus":"pass","summary":"Hal is ready to use."}` + "\n"),
+				Summary: map[string]any{
+					"snapshotKind":  "doctor",
+					"overallStatus": "pass",
+					"summary":       "Hal is ready to use.",
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if statusCalls != 1 {
+		t.Fatalf("status snapshot calls = %d, want 1", statusCalls)
+	}
+	if doctorCalls != 1 {
+		t.Fatalf("doctor snapshot calls = %d, want 1", doctorCalls)
+	}
+
+	record, err := store.LoadRun("run-snapshot-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	statusArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/status-snapshot.json")
+	if statusArtifact.Summary["snapshotKind"] != "status" || statusArtifact.Summary["state"] != "auto_active" {
+		t.Fatalf("status artifact summary = %#v", statusArtifact.Summary)
+	}
+	doctorArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/doctor-snapshot.json")
+	if doctorArtifact.Summary["snapshotKind"] != "doctor" || doctorArtifact.Summary["overallStatus"] != "pass" {
+		t.Fatalf("doctor artifact summary = %#v", doctorArtifact.Summary)
+	}
+
+	statusPath, err := store.ResolveArtifactPath(record.RunID, statusArtifact.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(status) error: %v", err)
+	}
+	statusData, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatalf("ReadFile(status snapshot) error: %v", err)
+	}
+	if !strings.Contains(string(statusData), `"state":"auto_active"`) {
+		t.Fatalf("status snapshot data = %s", statusData)
+	}
+	doctorPath, err := store.ResolveArtifactPath(record.RunID, doctorArtifact.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(doctor) error: %v", err)
+	}
+	doctorData, err := os.ReadFile(doctorPath)
+	if err != nil {
+		t.Fatalf("ReadFile(doctor snapshot) error: %v", err)
+	}
+	if !strings.Contains(string(doctorData), `"overallStatus":"pass"`) {
+		t.Fatalf("doctor snapshot data = %s", doctorData)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMissingOptionalArtifactWarnings(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
 		t.Fatalf("MkdirAll(halDir) error: %v", err)
 	}
-	writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
 
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 3, 20, 0, 0, time.UTC)
@@ -940,6 +1063,7 @@ func TestRunFactoryRunWithDepsRecordsMissingOptionalArtifactWarnings(t *testing.
 			return "git@github.com:jywlabs/hal.git", nil
 		},
 		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
 			return nil
 		},
 	})
