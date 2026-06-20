@@ -4,6 +4,7 @@
 
 - Factory durable schema additions should preserve compatibility fields like `RunRecord.SandboxName` while adding richer optional objects; lock JSON field names and omission behavior in `internal/factory/types_test.go`.
 - Factory machine contract docs are guarded by `cmd/contracts_doc_test.go`; add reflection-backed JSON tag checks there when documenting nested durable metadata objects so docs drift fails tests.
+- Sandbox-backed factory execution side effects belong behind `factorySandboxExecutorDeps` in `cmd/factory_sandbox_executor.go`; add new remote behavior through normalized injectable dependencies so tests can fake registry, provisioning/start, provider exec, clocks, and store persistence.
 
 ---
 
@@ -29,4 +30,15 @@
   - Factory `run --json` is intentionally compact; durable sandbox details belong in `factory status --json` via the run record.
   - Contract example tests can assert the intended split between compact result surfaces and durable status surfaces.
   - Use reflection over implementation JSON tags in docs tests when nested contract fields should stay synchronized with Go structs.
+---
+## 2026-06-21 07:17 CST - US-003
+- Added the initial sandbox factory executor dependency layer with normalized production defaults for store access, clocks, sandbox resolution/loading, provisioning, start, provider resolution, provider exec, run-record saves, and timeline appends.
+- Added the `sandbox` factory executor mode constant for sandbox-backed run records.
+- Added focused tests proving nil sandbox executor dependencies default to production helpers and that fake dependencies cover explicit loading, default resolution, provisioning/start, provider execution, clock, and persistence boundaries without real sandbox providers or remote commands.
+- Files changed: `cmd/factory_sandbox_executor.go`, `cmd/factory_sandbox_executor_test.go`, `internal/factory/types.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: `go test ./cmd ./internal/factory ./internal/sandbox`.
+- **Learnings for future iterations:**
+  - Keep sandbox-backed factory behavior in `cmd/factory_sandbox_executor.go` behind `factorySandboxExecutorDeps`; later stories should extend those injected boundaries instead of calling registry/provider/store functions directly.
+  - Explicit sandbox targets should flow through the injectable loader, while no-target execution should use the injectable default resolver with the running-only filter.
+  - The production provider exec adapter should run `Provider.Exec` commands through `sandbox.RunCmd` so stdout/stderr handling stays consistent with existing sandbox provider conventions.
 ---
