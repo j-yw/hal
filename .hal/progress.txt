@@ -4,6 +4,7 @@
 
 - Factory `ArtifactReference` keeps `name` and `type` as required stable fields while richer artifact metadata is additive and optional; keep legacy `path` for current CLI compatibility and use `sourcePath`/`storedPath` for durable collection metadata.
 - Factory artifact payloads belong under the global factory store at `artifacts/<run-id>/`; use `Store.SaveArtifactFile` and `Store.ResolveArtifactPath` so writes stay scoped to the store and never create project `.hal` artifact state.
+- Local factory artifact collection keeps legacy display `path` values for CLI compatibility while copying payloads into the store with stable `sourcePath` and `storedPath` metadata.
 
 ---
 
@@ -24,4 +25,13 @@
   - Store-backed artifact files should be copied through `Store.SaveArtifactFile`, which fills `sourcePath`, `storedPath`, `sizeBytes`, and `createdAt` before saving the run record.
   - Stored artifact paths are contract-relative slash paths under `artifacts/<run-id>/`; use `Store.ResolveArtifactPath` before reading them from disk.
   - Project `.hal/` remains runtime state only for this feature; artifact payload persistence belongs in the global factory store.
+---
+## 2026-06-21 07:11:44 CST - US-003
+- Implemented local factory artifact collection so discovered source markdown, report files, log files, JSON result files, verification outputs, auto state, canonical PRD, and factory run records are copied into the global factory store and recorded with durable metadata.
+- Added missing optional artifact warning metadata that does not fail collection, plus recursive `.hal/reports` discovery for nested verification outputs.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `internal/factory/store.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - `recordFactoryRunArtifacts` now routes local file payloads through `Store.SaveArtifactFile`; keep `ArtifactReference.Path` as the user-facing display path while relying on `StoredPath` for durable reads.
+  - Generated report discovery walks `.hal/reports` recursively and filters files older than the run start, so tests that expect collection should set artifact mtimes at or after the run creation time.
+  - Missing requested artifact paths are represented as partial artifact records with warnings; store write failures still return wrapped hard errors.
 ---

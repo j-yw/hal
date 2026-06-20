@@ -78,6 +78,7 @@
 
 - Factory artifact payloads are stored under the global factory store `artifacts/<run-id>/`; use `factory.Store.SaveArtifactFile` for copying and metadata updates, and `factory.Store.ResolveArtifactPath` before reading stored paths.
 - Artifact persistence must not write payloads into the project `.hal/` directory; tests should use temp store roots and assert project `.hal` remains free of artifact payload state.
+- Local factory artifact collection should preserve legacy display `path` values while also populating store-backed `sourcePath`/`storedPath`; use stable artifact IDs for deterministic filenames when multiple artifacts share a display name.
 
 ## Patterns from compound/compound-pipeline-foundations (2026-02-05)
 
