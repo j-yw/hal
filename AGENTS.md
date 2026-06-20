@@ -55,6 +55,7 @@
 - `hal factory run --sandbox` selection belongs in `factoryRunRequest.Sandbox` and dispatches through `factoryRunDeps.runSandbox`; keep the no-flag path on `runPipeline` and cover both paths with injected-dependency tests.
 - Existing sandbox reuse in `runFactorySandboxExecutorWithDeps` should persist `RunRecord.SandboxName` plus `RunRecord.Sandbox` immediately after target resolution/start, and no-name resolution should preserve `sandbox.ResolveDefault` running-only error strings unless provisioning behavior explicitly handles them.
 - Sandbox provision/start failures should be persisted inside `runFactorySandboxExecutorWithDeps` with `RunStatusFailed`, `FailureCategoryPipeline`, and sandbox handoff metadata before returning the wrapped error to the outer factory runner.
+- Sandbox remote execution should pass a structured `factoryRunAutoRequest` through `factorySandboxExecutorRequest`; build exact provider args with `factorySandboxRemoteAutoArgs` at the sandbox executor boundary and avoid env/config pass-through unless a redaction-safe contract explicitly requires it.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 

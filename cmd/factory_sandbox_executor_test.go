@@ -59,7 +59,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 			ExecutorMode: factory.ExecutorModeLocal,
 			RepoRemote:   "git@github.com:example/repo.git",
 		},
-		RemoteArgs:   []string{"hal", "auto", ".hal/prd.md"},
+		RemoteAuto:   factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
 		RemoteOutput: io.Discard,
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) {
@@ -150,6 +150,51 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	}
 	if appendedEvent.RunID != "run-sandbox" || appendedEvent.Metadata["executorMode"] != factory.ExecutorModeSandbox {
 		t.Fatalf("appended event = %#v", appendedEvent)
+	}
+}
+
+func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		req  factoryRunAutoRequest
+		want []string
+	}{
+		{
+			name: "auto discovery",
+			req:  factoryRunAutoRequest{},
+			want: []string{"hal", "auto"},
+		},
+		{
+			name: "markdown with base",
+			req: factoryRunAutoRequest{
+				Args:       []string{" .hal/prd-feature.md "},
+				BaseBranch: " main ",
+			},
+			want: []string{"hal", "auto", ".hal/prd-feature.md", "--base", "main"},
+		},
+		{
+			name: "report with base",
+			req: factoryRunAutoRequest{
+				ReportPath: " .hal/reports/analysis.md ",
+				BaseBranch: " develop ",
+			},
+			want: []string{"hal", "auto", "--report", ".hal/reports/analysis.md", "--base", "develop"},
+		},
+		{
+			name: "empty args are omitted",
+			req: factoryRunAutoRequest{
+				Args: []string{"", "  ", ".hal/prd-feature.md"},
+			},
+			want: []string{"hal", "auto", ".hal/prd-feature.md"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := factorySandboxRemoteAutoArgs(tt.req); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("factorySandboxRemoteAutoArgs() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 

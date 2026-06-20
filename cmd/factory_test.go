@@ -313,9 +313,12 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			if req.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
 				t.Fatalf("sandbox executorMode = %q, want %q", req.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
 			}
-			wantArgs := []string{"hal", "auto", ".hal/prd-feature.md", "--base", "main"}
-			if !reflect.DeepEqual(req.RemoteArgs, wantArgs) {
-				t.Fatalf("remote args = %#v, want %#v", req.RemoteArgs, wantArgs)
+			wantAuto := factoryRunAutoRequest{
+				Args:       []string{".hal/prd-feature.md"},
+				BaseBranch: "main",
+			}
+			if !reflect.DeepEqual(req.RemoteAuto, wantAuto) {
+				t.Fatalf("remote auto request = %#v, want %#v", req.RemoteAuto, wantAuto)
 			}
 			return nil
 		},
