@@ -9,6 +9,7 @@ import (
 
 // Bootstrap failure category values.
 const (
+	BootstrapFailureCategoryValidation  = "validation"
 	BootstrapFailureCategoryRepo        = "repo"
 	BootstrapFailureCategoryAuth        = "auth"
 	BootstrapFailureCategoryDependency  = "dependency"
@@ -31,6 +32,8 @@ func ClassifyBootstrapFailure(step string, command string, output string, err er
 func classifyBootstrapFailureCategory(step string, command string, output string, err error) string {
 	signal := bootstrapFailureSignal(step, command, output, err)
 	switch {
+	case isBootstrapValidationFailure(step, err):
+		return BootstrapFailureCategoryValidation
 	case hasBootstrapMissingDependencySignal(err, signal):
 		return BootstrapFailureCategoryDependency
 	case hasBootstrapAuthSignal(signal):
@@ -42,6 +45,13 @@ func classifyBootstrapFailureCategory(step string, command string, output string
 	default:
 		return BootstrapFailureCategoryUnknown
 	}
+}
+
+func isBootstrapValidationFailure(step string, err error) bool {
+	if strings.TrimSpace(step) == BootstrapStepValidateRequest {
+		return true
+	}
+	return errors.Is(err, errBootstrapRequiredEnvMissing)
 }
 
 func bootstrapFailureSignal(step string, command string, output string, err error) string {
@@ -66,7 +76,6 @@ func hasBootstrapMissingDependencySignal(err error, signal string) bool {
 		"executable file not found",
 		"command not found",
 		"not found in $path",
-		"no such file or directory",
 	)
 }
 
@@ -112,6 +121,8 @@ func isBootstrapRepoCommand(step string, command string) bool {
 func bootstrapFailureMessage(category string, step string, command string) string {
 	context := bootstrapFailureContext(step, command)
 	switch category {
+	case BootstrapFailureCategoryValidation:
+		return "bootstrap request validation failed " + context
 	case BootstrapFailureCategoryRepo:
 		return "repository bootstrap failed " + context
 	case BootstrapFailureCategoryAuth:

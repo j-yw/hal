@@ -58,6 +58,19 @@ type BootstrapStepDeps struct {
 func RunBootstrapStep(ctx context.Context, deps BootstrapStepDeps, stepName string, command BootstrapCommand) (BootstrapStepResult, BootstrapCommandResult, *BootstrapFailure, error) {
 	now := deps.now
 	startedAt := now()
+	if err := validateBootstrapRequiredEnv(deps.Request); err != nil {
+		sanitizedCommand := NewBootstrapSanitizer(deps.Request).SanitizeCommand(command)
+		finishedAt := now()
+		step := BootstrapStepResult{
+			Name:           strings.TrimSpace(stepName),
+			Status:         RunStatusFailed,
+			CommandSummary: sanitizedCommand.Summary(),
+			StartedAt:      startedAt,
+			FinishedAt:     &finishedAt,
+		}
+		failure := ClassifyBootstrapFailure(step.Name, step.CommandSummary, "", err)
+		return step, BootstrapCommandResult{}, &failure, err
+	}
 	command = injectBootstrapRequestEnv(deps.Request, command)
 	sanitizer := NewBootstrapSanitizer(deps.Request)
 	sanitizedCommand := sanitizer.SanitizeCommand(command)

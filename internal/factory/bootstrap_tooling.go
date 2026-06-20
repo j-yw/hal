@@ -44,12 +44,20 @@ type bootstrapToolingPlan struct {
 // factory run starts. Missing CLIs fail as dependency errors unless
 // InstallMissingCLIs is enabled and the check has an installer command.
 func BootstrapVerifyTooling(ctx context.Context, request BootstrapRequest, deps BootstrapToolingDeps) (BootstrapResult, error) {
+	result := BootstrapResult{
+		RepoPath: bootstrapToolingRepoPath(request.WorkspaceDir),
+	}
+	if err := validateBootstrapRequiredEnv(request); err != nil {
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
+	}
+
 	plans, err := bootstrapToolingPlans(request, deps)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
 
-	result := BootstrapResult{
+	result = BootstrapResult{
 		RepoPath: bootstrapToolingRepoPath(request.WorkspaceDir),
 		Steps:    make([]BootstrapStepResult, 0, len(plans)),
 		Timeline: make([]BootstrapTimelineEvent, 0, len(plans)),
