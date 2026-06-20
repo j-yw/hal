@@ -11,6 +11,7 @@
 - Hal template, standards, managed skill, and engine-link setup goes through `internal/factory.BootstrapRefreshHal`; delegate to `hal init` or `hal init --refresh-templates` plus `hal links refresh` through the executor boundary instead of duplicating template or skill ownership logic.
 - Bootstrap request environment values flow through `BootstrapStepDeps.Request`; use `RunBootstrapStep` so request env reaches the executor while returned command summaries and command results are sanitized.
 - Use `NewBootstrapSanitizer` or the `SanitizeBootstrapCommand*` helpers before recording bootstrap command/timeline data; sensitive env keys and their configured values must not appear in serialized records.
+- Record bootstrap step outcomes with `recordBootstrapStepResult` / `BootstrapTimelineEventFromStep` so `BootstrapResult.Steps` and `BootstrapResult.Timeline` stay aligned and timeline events include sanitized command summaries, output metadata, and failure category metadata.
 
 ---
 
@@ -89,4 +90,15 @@
   - Request env injection belongs in `RunBootstrapStep` so repository, tooling, and Hal refresh bootstrap paths inherit the same executor behavior.
   - Command-specific environment values intentionally override request-level values, preserving step-local safety controls like `GIT_TERMINAL_PROMPT=0`.
   - Redaction tests should marshal sanitized command or timeline records and assert both the secret-looking fixture value and sensitive env key name are absent.
+---
+
+## 2026-06-21 05:48 CST - US-009
+- Implemented sanitized bootstrap timeline event generation with `BootstrapTimelineEventFromStep` and wired repository checkout, tooling verification, and Hal refresh paths to record one timeline event per bootstrap step.
+- Added tests for successful and failed timeline event redaction, failure category metadata, deterministic timestamps, output metadata, and high-level Hal refresh timeline population.
+- Files changed: `internal/factory/bootstrap_timeline.go`, `internal/factory/bootstrap_timeline_test.go`, `internal/factory/bootstrap_repository.go`, `internal/factory/bootstrap_tooling.go`, `internal/factory/bootstrap_hal.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Checks run: `go test -timeout 60s ./internal/factory`, `make fmt`, `make vet`, `go test -timeout 120s ./...`, `make lint` (exited 0 with golangci-lint missing hint), `make build`.
+- **Learnings for future iterations:**
+  - Bootstrap result callers should append steps through the shared recorder so step and timeline slices cannot drift.
+  - Timeline event payloads derive their timestamp from the step finish time when available, falling back to the planned step start time for dry-run events.
+  - Failure details belong in event message plus `failureCategory` metadata, while command output metadata is copied through the sanitizer before serialization.
 ---
