@@ -1,0 +1,114 @@
+{
+  "contractVersion": "factory-status-v1",
+  "run": {
+    "runId": "run-20260620-002",
+    "status": "failed",
+    "source": {
+      "kind": "markdown",
+      "path": ".hal/prd-factory.md",
+      "title": "Factory run records"
+    },
+    "repoPath": "/workspace/hal",
+    "repoRemote": "git@github.com:jywlabs/hal.git",
+    "branchName": "hal/factory-run-records",
+    "baseBranch": "develop",
+    "sandboxName": "factory-run-records",
+    "currentStep": "ci",
+    "createdAt": "2026-06-20T16:00:00Z",
+    "updatedAt": "2026-06-20T16:32:00Z",
+    "finishedAt": "2026-06-20T16:33:00Z",
+    "artifacts": [
+      {
+        "name": "prd",
+        "type": "json",
+        "path": ".hal/prd.json"
+      },
+      {
+        "name": "review-report",
+        "type": "markdown",
+        "path": ".hal/reports/review-loop-20260620.md"
+      },
+      {
+        "name": "pull-request",
+        "type": "url",
+        "url": "https://github.com/jywlabs/hal/pull/123"
+      }
+    ],
+    "failure": {
+      "step": "ci",
+      "category": "test",
+      "message": "unit tests failed",
+      "recoverable": true,
+      "exitCode": 1
+    }
+  },
+  "timeline": [
+    {
+      "sequence": 1,
+      "runId": "run-20260620-002",
+      "eventType": "run_created",
+      "timestamp": "2026-06-20T16:00:00Z",
+      "summary": "Run created",
+      "metadata": {
+        "branchName": "hal/factory-run-records",
+        "baseBranch": "develop"
+      }
+    },
+    {
+      "sequence": 2,
+      "runId": "run-20260620-002",
+      "eventType": "step_started",
+      "timestamp": "2026-06-20T16:02:00Z",
+      "summary": "Started run step",
+      "metadata": {
+        "step": "run"
+      }
+    },
+    {
+      "sequence": 3,
+      "runId": "run-20260620-002",
+      "eventType": "command_output_summary",
+      "timestamp": "2026-06-20T16:18:00Z",
+      "summary": "Tests completed",
+      "metadata": {
+        "command": "go test -timeout=120s ./...",
+        "exitCode": 0
+      }
+    },
+    {
+      "sequence": 4,
+      "runId": "run-20260620-002",
+      "eventType": "verification_result",
+      "timestamp": "2026-06-20T16:20:00Z",
+      "message": "Browser verification skipped",
+      "summary": "No dev server was running",
+      "metadata": {
+        "check": "browser",
+        "ok": false
+      }
+    },
+    {
+      "sequence": 5,
+      "runId": "run-20260620-002",
+      "eventType": "ci_state",
+      "timestamp": "2026-06-20T16:31:00Z",
+      "summary": "CI failed",
+      "metadata": {
+        "status": "failing",
+        "failing": 1,
+        "passing": 8
+      }
+    },
+    {
+      "sequence": 6,
+      "runId": "run-20260620-002",
+      "eventType": "failure_classification",
+      "timestamp": "2026-06-20T16:32:00Z",
+      "summary": "Failure classified",
+      "metadata": {
+        "category": "test",
+        "recoverable": true
+      }
+    }
+  ]
+}
