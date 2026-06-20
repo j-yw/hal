@@ -14,6 +14,7 @@ import (
 type factorySandboxProvisionRequest struct {
 	ProjectDir string
 	Name       string
+	BranchName string
 	Repo       string
 	Out        io.Writer
 }
@@ -110,20 +111,38 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if name := strings.TrimSpace(req.SandboxName); name != "" {
 		target, err = deps.loadSandbox(name)
 		if err != nil {
+			record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
 			target, err = deps.provision(ctx, factorySandboxProvisionRequest{
 				ProjectDir: req.ProjectDir,
-				Name:       req.SandboxName,
+				Name:       name,
+				BranchName: record.BranchName,
 				Repo:       record.RepoRemote,
 				Out:        req.RemoteOutput,
 			})
 			if err != nil {
+				_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err)
 				return fmt.Errorf("provision factory sandbox: %w", err)
 			}
 		}
 	} else {
 		target, _, err = deps.resolveDefault(factoryRunningSandboxFilter)
 		if err != nil {
-			return err
+			if !isFactorySandboxProvisionableResolutionError(err) {
+				return err
+			}
+			name := factorySandboxProvisionName(record)
+			record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
+			target, err = deps.provision(ctx, factorySandboxProvisionRequest{
+				ProjectDir: req.ProjectDir,
+				Name:       name,
+				BranchName: record.BranchName,
+				Repo:       record.RepoRemote,
+				Out:        req.RemoteOutput,
+			})
+			if err != nil {
+				_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err)
+				return fmt.Errorf("provision factory sandbox: %w", err)
+			}
 		}
 	}
 	if target == nil {
@@ -131,10 +150,12 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 
 	if target.Status != sandbox.StatusRunning {
-		target, err = deps.startSandbox(ctx, target, req.RemoteOutput)
+		startedTarget, err := deps.startSandbox(ctx, target, req.RemoteOutput)
 		if err != nil {
+			_ = recordFactorySandboxFailure(store, deps, &record, target, "start", err)
 			return fmt.Errorf("start factory sandbox %q: %w", target.Name, err)
 		}
+		target = startedTarget
 	}
 
 	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
@@ -164,6 +185,59 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	})
 }
 
+func isFactorySandboxProvisionableResolutionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return msg == "no sandboxes found" || msg == "no running sandboxes"
+}
+
+func factorySandboxProvisionName(record factory.RunRecord) string {
+	if name := strings.TrimSpace(record.SandboxName); name != "" {
+		return name
+	}
+	return sandbox.SandboxNameFromBranch(record.BranchName)
+}
+
+func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error) error {
+	if record == nil {
+		return nil
+	}
+	failedAt := deps.now().UTC()
+	if target != nil {
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+	} else if strings.TrimSpace(record.SandboxName) == "" && record.Sandbox == nil {
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromName("")
+	}
+	record.Status = factory.RunStatusFailed
+	record.CurrentStep = step
+	record.UpdatedAt = failedAt
+	record.FinishedAt = &failedAt
+	failure := factory.FailureSummary{
+		Step:             step,
+		Category:         factory.FailureCategoryPipeline,
+		Message:          failureErr.Error(),
+		Recoverable:      true,
+		SuggestedCommand: factoryRunInspectCommand(record.RunID),
+	}
+	record.Failure = &failure
+	if err := deps.saveRun(store, record); err != nil {
+		return err
+	}
+	return deps.appendEvent(store, &factory.EventRecord{
+		RunID:     record.RunID,
+		EventType: factory.EventTypeFailureClassification,
+		Timestamp: failedAt,
+		Summary:   "Sandbox factory executor failed",
+		Metadata: map[string]any{
+			"step":        step,
+			"category":    failure.Category,
+			"recoverable": failure.Recoverable,
+		},
+	})
+}
+
 func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *factory.SandboxMetadata) {
 	if instance == nil {
 		return "", nil
@@ -180,6 +254,20 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 		Handoff:        fmt.Sprintf("Inspect sandbox with `hal sandbox ssh %s`.", instance.Name),
 	}
 	return instance.Name, metadata
+}
+
+func factorySandboxMetadataFromName(name string) (string, *factory.SandboxMetadata) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", nil
+	}
+	return name, &factory.SandboxMetadata{
+		Name:           name,
+		Status:         sandbox.StatusUnknown,
+		SSHCommand:     fmt.Sprintf("hal sandbox ssh %s", name),
+		CleanupCommand: fmt.Sprintf("hal sandbox delete %s", name),
+		Handoff:        fmt.Sprintf("Inspect sandbox with `hal sandbox ssh %s`.", name),
+	}
 }
 
 func factorySandboxConnectionMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxConnectionMetadata {
@@ -211,7 +299,7 @@ func factoryRunningSandboxFilter(instance *sandbox.SandboxState) bool {
 func provisionFactorySandbox(ctx context.Context, req factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
 	name := req.Name
 	if name == "" {
-		name = sandbox.SandboxNameFromBranch(req.Repo)
+		name = sandbox.SandboxNameFromBranch(req.BranchName)
 	}
 	if err := runSandboxCreate(req.ProjectDir, name, 1, false, false, "", req.Repo, nil, autoShutdownOpts{}, req.Out, nil); err != nil {
 		return nil, err

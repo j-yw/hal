@@ -7,6 +7,7 @@
 - Sandbox-backed factory execution side effects belong behind `factorySandboxExecutorDeps` in `cmd/factory_sandbox_executor.go`; add new remote behavior through normalized injectable dependencies so tests can fake registry, provisioning/start, provider exec, clocks, and store persistence.
 - `hal factory run --sandbox` selection lives in `factoryRunRequest.Sandbox` and dispatches through `factoryRunDeps.runSandbox`; keep local execution behind `runPipeline` so no-flag factory runs stay on the existing local path.
 - Existing sandbox reuse in `runFactorySandboxExecutorWithDeps` should persist `RunRecord.SandboxName` and `RunRecord.Sandbox` immediately after target resolution/start; no-name resolution should keep `sandbox.ResolveDefault` running-only error strings unless a later provisioning path intentionally handles them.
+- Sandbox provision/start failures should be persisted inside `runFactorySandboxExecutorWithDeps` with `RunStatusFailed`, `FailureCategoryPipeline`, and sandbox handoff metadata before returning the wrapped error to the outer factory runner.
 
 ---
 
@@ -66,4 +67,16 @@
   - Persist sandbox metadata as soon as a target is selected so later execution/failure paths can rely on durable local handoff context.
   - No-name sandbox factory runs should use the same running-only filter semantics as `sandbox.ResolveDefault`; tests should assert stopped sandboxes are rejected by that filter.
   - Keep provisioning behavior explicit by target mode: explicit missing targets can still flow through the provision dependency, while default registry errors remain visible until a provisioning story intentionally changes that behavior.
+---
+## 2026-06-21 07:31 CST - US-006
+- Added sandbox provisioning when default running-only resolution reports no usable sandbox, deriving default sandbox names from the factory run branch while preserving ambiguous default-resolution errors.
+- Kept explicit missing sandbox targets on the provision path and stopped sandbox targets on the injected start path, with persisted sandbox metadata before remote execution.
+- Recorded provision/start failures as failed factory run records with pipeline failure summaries, failed step names, and safe sandbox handoff metadata when a sandbox name or state is known.
+- Added fake-dependency tests for no-usable-target provisioning, ambiguous default-resolution preservation, provision failure persistence, and start failure handoff metadata.
+- Files changed: `cmd/factory_sandbox_executor.go`, `cmd/factory_sandbox_executor_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: focused `go test ./cmd -run 'TestRunFactorySandboxExecutorWithDeps|TestNormalizeFactorySandboxExecutorDeps'`, `make test`, and `make vet` passed.
+- **Learnings for future iterations:**
+  - Treat only exact `sandbox.ResolveDefault` no-match strings (`no sandboxes found`, `no running sandboxes`) as provisionable; ambiguity should remain a user-visible resolver error.
+  - For sandbox lifecycle failures, save the run failure and handoff metadata in the sandbox executor before returning so outer factory result handling can preserve context.
+  - Default sandbox names for factory provisioning should be derived from the factory branch, while repository cloning/setup still uses the run record repo remote.
 ---
