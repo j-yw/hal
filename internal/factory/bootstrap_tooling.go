@@ -56,7 +56,7 @@ func BootstrapVerifyTooling(ctx context.Context, request BootstrapRequest, deps 
 
 	for _, plan := range plans {
 		if request.Options.DryRun {
-			result.Steps = append(result.Steps, plannedBootstrapToolingStep(deps, plan.stepName, plan.check.Command))
+			result.Steps = append(result.Steps, plannedBootstrapToolingStep(deps, request, plan.stepName, plan.check.Command))
 			continue
 		}
 
@@ -69,7 +69,7 @@ func BootstrapVerifyTooling(ctx context.Context, request BootstrapRequest, deps 
 }
 
 func runBootstrapToolingPlan(ctx context.Context, request BootstrapRequest, deps BootstrapToolingDeps, result *BootstrapResult, plan bootstrapToolingPlan) error {
-	step, _, failure, err := RunBootstrapStep(ctx, deps.stepDeps(), plan.stepName, plan.check.Command)
+	step, _, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), plan.stepName, plan.check.Command)
 	result.Steps = append(result.Steps, step)
 	if err == nil {
 		return nil
@@ -80,14 +80,14 @@ func runBootstrapToolingPlan(ctx context.Context, request BootstrapRequest, deps
 		return err
 	}
 
-	installStep, _, installFailure, installErr := RunBootstrapStep(ctx, deps.stepDeps(), plan.install, *plan.check.InstallCommand)
+	installStep, _, installFailure, installErr := RunBootstrapStep(ctx, deps.stepDeps(request), plan.install, *plan.check.InstallCommand)
 	result.Steps = append(result.Steps, installStep)
 	if installErr != nil {
 		result.Failure = installFailure
 		return installErr
 	}
 
-	recheckStep, _, recheckFailure, recheckErr := RunBootstrapStep(ctx, deps.stepDeps(), plan.recheck, plan.check.Command)
+	recheckStep, _, recheckFailure, recheckErr := RunBootstrapStep(ctx, deps.stepDeps(request), plan.recheck, plan.check.Command)
 	result.Steps = append(result.Steps, recheckStep)
 	if recheckErr != nil {
 		result.Failure = recheckFailure
@@ -150,7 +150,9 @@ func validateBootstrapToolingCheck(check BootstrapToolingCheck) error {
 	return nil
 }
 
-func plannedBootstrapToolingStep(deps BootstrapToolingDeps, stepName string, command BootstrapCommand) BootstrapStepResult {
+func plannedBootstrapToolingStep(deps BootstrapToolingDeps, request BootstrapRequest, stepName string, command BootstrapCommand) BootstrapStepResult {
+	command = injectBootstrapRequestEnv(request, command)
+	command = NewBootstrapSanitizer(request).SanitizeCommand(command)
 	return BootstrapStepResult{
 		Name:           strings.TrimSpace(stepName),
 		Status:         RunStatusPending,
@@ -195,10 +197,11 @@ func bootstrapToolingRepoPath(path string) string {
 	return filepath.Clean(path)
 }
 
-func (d BootstrapToolingDeps) stepDeps() BootstrapStepDeps {
+func (d BootstrapToolingDeps) stepDeps(request BootstrapRequest) BootstrapStepDeps {
 	return BootstrapStepDeps{
 		Executor: d.Executor,
 		Now:      d.Now,
+		Request:  request,
 	}
 }
 

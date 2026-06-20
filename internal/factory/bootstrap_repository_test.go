@@ -353,7 +353,7 @@ func TestBootstrapBranchProbePropagatesExecutorErrorWithoutExitCode(t *testing.T
 		},
 	}
 
-	exists, err := deps.probeBranch(context.Background(), BootstrapCommand{
+	exists, err := deps.probeBranch(context.Background(), BootstrapRequest{}, BootstrapCommand{
 		Name: "git",
 		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/run"},
 		Dir:  "/workspace/hal",
@@ -363,6 +363,49 @@ func TestBootstrapBranchProbePropagatesExecutorErrorWithoutExitCode(t *testing.T
 	}
 	if exists {
 		t.Fatal("probeBranch() exists = true, want false")
+	}
+}
+
+func TestBootstrapBranchProbeReceivesRequestEnvironment(t *testing.T) {
+	secret := "ghp_branch_probe_secret_value"
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0},
+		},
+	}
+	deps := BootstrapRepositoryDeps{
+		Executor: executor,
+	}
+
+	exists, err := deps.probeBranch(context.Background(), BootstrapRequest{
+		Env: map[string]string{
+			"GITHUB_TOKEN": secret,
+			"HAL_ENGINE":   "codex",
+		},
+	}, BootstrapCommand{
+		Name: "git",
+		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/run"},
+		Dir:  "/workspace/hal",
+		Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+	}, 1)
+	if err != nil {
+		t.Fatalf("probeBranch() error = %v", err)
+	}
+	if !exists {
+		t.Fatal("probeBranch() exists = false, want true")
+	}
+	if len(executor.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(executor.calls))
+	}
+	gotEnv := executor.calls[0].Env
+	if gotEnv["GITHUB_TOKEN"] != secret {
+		t.Fatalf("GITHUB_TOKEN = %q, want request secret", gotEnv["GITHUB_TOKEN"])
+	}
+	if gotEnv["HAL_ENGINE"] != "codex" {
+		t.Fatalf("HAL_ENGINE = %q, want codex", gotEnv["HAL_ENGINE"])
+	}
+	if gotEnv["GIT_TERMINAL_PROMPT"] != "0" {
+		t.Fatalf("GIT_TERMINAL_PROMPT = %q, want 0", gotEnv["GIT_TERMINAL_PROMPT"])
 	}
 }
 

@@ -50,6 +50,7 @@ type BootstrapCommandExecutor interface {
 type BootstrapStepDeps struct {
 	Executor BootstrapCommandExecutor
 	Now      func() time.Time
+	Request  BootstrapRequest
 }
 
 // RunBootstrapStep executes one bootstrap command through the injected
@@ -57,13 +58,17 @@ type BootstrapStepDeps struct {
 func RunBootstrapStep(ctx context.Context, deps BootstrapStepDeps, stepName string, command BootstrapCommand) (BootstrapStepResult, BootstrapCommandResult, *BootstrapFailure, error) {
 	now := deps.now
 	startedAt := now()
+	command = injectBootstrapRequestEnv(deps.Request, command)
+	sanitizer := NewBootstrapSanitizer(deps.Request)
+	sanitizedCommand := sanitizer.SanitizeCommand(command)
+	commandSummary := sanitizedCommand.Summary()
 
 	if deps.Executor == nil {
 		finishedAt := now()
 		step := BootstrapStepResult{
 			Name:           strings.TrimSpace(stepName),
 			Status:         RunStatusFailed,
-			CommandSummary: command.Summary(),
+			CommandSummary: commandSummary,
 			StartedAt:      startedAt,
 			FinishedAt:     &finishedAt,
 		}
@@ -72,6 +77,7 @@ func RunBootstrapStep(ctx context.Context, deps BootstrapStepDeps, stepName stri
 	}
 
 	result, err := deps.Executor.Run(ctx, command)
+	sanitizedResult := sanitizer.SanitizeCommandResult(result)
 	finishedAt := now()
 	if err == nil && result.ExitCode != 0 {
 		err = bootstrapCommandExitError{exitCode: result.ExitCode}
@@ -85,18 +91,18 @@ func RunBootstrapStep(ctx context.Context, deps BootstrapStepDeps, stepName stri
 	step := BootstrapStepResult{
 		Name:           strings.TrimSpace(stepName),
 		Status:         status,
-		CommandSummary: command.Summary(),
+		CommandSummary: commandSummary,
 		StartedAt:      startedAt,
 		FinishedAt:     &finishedAt,
 		ExitCode:       result.ExitCode,
 	}
 
 	if err != nil {
-		failure := ClassifyBootstrapFailure(step.Name, command.Summary(), result.classificationOutput(), err)
-		return step, result, &failure, err
+		failure := ClassifyBootstrapFailure(step.Name, commandSummary, result.classificationOutput(), err)
+		return step, sanitizedResult, &failure, err
 	}
 
-	return step, result, nil, nil
+	return step, sanitizedResult, nil, nil
 }
 
 // Summary returns a deterministic human-readable command label for bootstrap
@@ -125,4 +131,32 @@ func (r BootstrapCommandResult) classificationOutput() string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func injectBootstrapRequestEnv(request BootstrapRequest, command BootstrapCommand) BootstrapCommand {
+	if len(request.Env) == 0 {
+		return command
+	}
+
+	env := make(map[string]string, len(request.Env)+len(command.Env))
+	for key, value := range request.Env {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		env[key] = value
+	}
+	for key, value := range command.Env {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		env[key] = value
+	}
+	if len(env) == 0 {
+		command.Env = nil
+		return command
+	}
+	command.Env = env
+	return command
 }

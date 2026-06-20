@@ -2,8 +2,10 @@ package factory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -118,6 +120,118 @@ func TestRunBootstrapStepUsesInjectedExecutor(t *testing.T) {
 	}
 }
 
+func TestRunBootstrapStepInjectsRequestEnvironmentAndSanitizesResult(t *testing.T) {
+	secret := "ghp_fixture_secret_value_12345"
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{
+				ExitCode:      0,
+				OutputSummary: "using GITHUB_TOKEN=" + secret,
+				Metadata: map[string]string{
+					"GITHUB_TOKEN": secret,
+					"engine":       "codex",
+				},
+			},
+		},
+	}
+	request := BootstrapRequest{
+		RequiredEnvKeys: []string{"GITHUB_TOKEN"},
+		Env: map[string]string{
+			"GITHUB_TOKEN": secret,
+			"HAL_ENGINE":   "codex",
+		},
+	}
+
+	command := BootstrapCommand{
+		Name: "hal",
+		Args: []string{"init"},
+		Dir:  "/workspace/hal",
+		Env: map[string]string{
+			"HAL_ENGINE": "override-engine",
+		},
+	}
+	step, result, failure, err := RunBootstrapStep(
+		context.Background(),
+		BootstrapStepDeps{
+			Executor: executor,
+			Now:      incrementingClock(t, time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)),
+			Request:  request,
+		},
+		"setup_hal_templates",
+		command,
+	)
+	if err != nil {
+		t.Fatalf("RunBootstrapStep() error = %v", err)
+	}
+	if failure != nil {
+		t.Fatalf("failure = %#v, want nil", failure)
+	}
+
+	if len(executor.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(executor.calls))
+	}
+	gotEnv := executor.calls[0].Env
+	if gotEnv["GITHUB_TOKEN"] != secret {
+		t.Fatalf("GITHUB_TOKEN = %q, want secret value", gotEnv["GITHUB_TOKEN"])
+	}
+	if gotEnv["HAL_ENGINE"] != "override-engine" {
+		t.Fatalf("HAL_ENGINE = %q, want command env to override request env", gotEnv["HAL_ENGINE"])
+	}
+	if strings.Contains(step.CommandSummary, secret) || strings.Contains(step.CommandSummary, "GITHUB_TOKEN") {
+		t.Fatalf("command summary leaked sensitive environment data: %q", step.CommandSummary)
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal(result) error = %v", err)
+	}
+	assertDoesNotContainSensitiveFixture(t, data, secret)
+}
+
+func TestBootstrapSanitizersRedactTimelineAndCommandRecords(t *testing.T) {
+	secret := "github_pat_fixture_secret_value_67890"
+	request := BootstrapRequest{
+		RequiredEnvKeys: []string{"GITHUB_TOKEN"},
+		Env: map[string]string{
+			"GITHUB_TOKEN": secret,
+			"HAL_ENGINE":   "codex",
+		},
+	}
+
+	command := SanitizeBootstrapCommand(request, BootstrapCommand{
+		Name: "git",
+		Args: []string{"clone", "https://" + secret + "@github.com/jywlabs/hal.git"},
+		Dir:  "/workspace/hal",
+		Env: map[string]string{
+			"GITHUB_TOKEN": secret,
+			"HAL_ENGINE":   "codex",
+		},
+	})
+	commandData, err := json.Marshal(command)
+	if err != nil {
+		t.Fatalf("json.Marshal(command) error = %v", err)
+	}
+	assertDoesNotContainSensitiveFixture(t, commandData, secret)
+
+	event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+		Timestamp:      time.Date(2026, 6, 21, 8, 10, 0, 0, time.UTC),
+		Step:           "clone_repository",
+		Status:         RunStatusFailed,
+		Message:        "GITHUB_TOKEN failed authentication",
+		CommandSummary: "git clone https://" + secret + "@github.com/jywlabs/hal.git",
+		OutputSummary:  "remote rejected " + secret,
+		Metadata: map[string]string{
+			"GITHUB_TOKEN": secret,
+			"engine":       "codex",
+		},
+	})
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal(event) error = %v", err)
+	}
+	assertDoesNotContainSensitiveFixture(t, eventData, secret)
+}
+
 func TestRunBootstrapStepClassifiesExecutorFailure(t *testing.T) {
 	startedAt := time.Date(2026, 6, 21, 2, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
@@ -219,5 +333,18 @@ func TestRunBootstrapStepRequiresExecutor(t *testing.T) {
 	}
 	if failure.Category != BootstrapFailureCategoryUnknown {
 		t.Fatalf("failure category = %q, want %q", failure.Category, BootstrapFailureCategoryUnknown)
+	}
+}
+
+func assertDoesNotContainSensitiveFixture(t *testing.T, data []byte, secret string) {
+	t.Helper()
+	payload := string(data)
+	for _, unexpected := range []string{secret, "GITHUB_TOKEN"} {
+		if strings.Contains(payload, unexpected) {
+			t.Fatalf("serialized payload leaked %q: %s", unexpected, payload)
+		}
+	}
+	if !strings.Contains(payload, bootstrapRedactedValue) {
+		t.Fatalf("serialized payload missing redaction marker: %s", payload)
 	}
 }

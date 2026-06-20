@@ -5,12 +5,13 @@ import "time"
 // BootstrapRequest captures the repository workspace setup contract for future
 // factory executors without tying them to CLI state.
 type BootstrapRequest struct {
-	RepositoryURL   string           `json:"repositoryUrl"`
-	BaseBranch      string           `json:"baseBranch"`
-	RunBranch       string           `json:"runBranch"`
-	WorkspaceDir    string           `json:"workspaceDir"`
-	RequiredEnvKeys []string         `json:"requiredEnvKeys"`
-	Options         BootstrapOptions `json:"options"`
+	RepositoryURL   string            `json:"repositoryUrl"`
+	BaseBranch      string            `json:"baseBranch"`
+	RunBranch       string            `json:"runBranch"`
+	WorkspaceDir    string            `json:"workspaceDir"`
+	RequiredEnvKeys []string          `json:"requiredEnvKeys"`
+	Env             map[string]string `json:"env,omitempty"`
+	Options         BootstrapOptions  `json:"options"`
 }
 
 // BootstrapOptions controls repository and Hal setup behavior for a bootstrap

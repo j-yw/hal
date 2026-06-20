@@ -146,6 +146,9 @@ func TestBootstrapRequestJSONFields(t *testing.T) {
 		RunBranch:       "hal/factory-remote-workspace-bootstrap",
 		WorkspaceDir:    "/workspace/hal",
 		RequiredEnvKeys: []string{"GITHUB_TOKEN", "HAL_ENGINE"},
+		Env: map[string]string{
+			"HAL_ENGINE": "codex",
+		},
 		Options: BootstrapOptions{
 			RefreshHal:         true,
 			InstallMissingCLIs: true,
@@ -169,11 +172,20 @@ func TestBootstrapRequestJSONFields(t *testing.T) {
 		"runBranch",
 		"workspaceDir",
 		"requiredEnvKeys",
+		"env",
 		"options",
 	} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("missing bootstrap request JSON field %q", key)
 		}
+	}
+
+	env, ok := raw["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("env should be an object, got %T", raw["env"])
+	}
+	if env["HAL_ENGINE"] != "codex" {
+		t.Fatalf("HAL_ENGINE env value = %#v, want codex", env["HAL_ENGINE"])
 	}
 
 	options, ok := raw["options"].(map[string]any)
