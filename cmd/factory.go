@@ -146,7 +146,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	workingDir:    os.Getwd,
 	currentBranch: compound.CurrentBranchOptionalInDir,
 	repoRemote:    readGitRemoteOptionalInDir,
-	runPipeline:   runFactoryRunPipelineNotImplemented,
+	runPipeline:   runFactoryRunPipeline,
 }
 
 type factoryRunRequest struct {
@@ -154,6 +154,16 @@ type factoryRunRequest struct {
 	ReportPath   string
 	BaseBranch   string
 	JSON         bool
+}
+
+type factoryRunAutoRequest struct {
+	Args       []string
+	ReportPath string
+	BaseBranch string
+}
+
+type factoryRunPipelineDeps struct {
+	runAuto func(context.Context, factoryRunAutoRequest) error
 }
 
 // FactoryListResponse is the machine-readable JSON output for hal factory list --json.
@@ -360,8 +370,51 @@ func factoryRunSourceFromRequest(req factoryRunRequest) factory.SourceMetadata {
 	}
 }
 
-func runFactoryRunPipelineNotImplemented(context.Context, factoryRunPipelineRequest) error {
-	return fmt.Errorf("factory run execution is not implemented yet")
+func runFactoryRunPipeline(ctx context.Context, req factoryRunPipelineRequest) error {
+	return runFactoryRunPipelineWithDeps(ctx, req, factoryRunPipelineDeps{
+		runAuto: runAutoForFactoryRun,
+	})
+}
+
+func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRequest, deps factoryRunPipelineDeps) error {
+	if deps.runAuto == nil {
+		return fmt.Errorf("factory run auto dependency is required")
+	}
+
+	autoReq := factoryRunAutoRequest{
+		ReportPath: strings.TrimSpace(req.Request.ReportPath),
+		BaseBranch: strings.TrimSpace(req.Request.BaseBranch),
+	}
+	if markdownPath := strings.TrimSpace(req.Request.MarkdownPath); markdownPath != "" {
+		autoReq.Args = []string{markdownPath}
+	}
+
+	return deps.runAuto(ctx, autoReq)
+}
+
+func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cmd := &cobra.Command{Use: "auto"}
+	cmd.SetContext(ctx)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().Bool("resume", false, "")
+	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().Bool("skip-pr", false, "")
+	cmd.Flags().Bool("no-review", false, "")
+	cmd.Flags().String("mode", "", "")
+	cmd.Flags().Int("review-streak", 0, "")
+	cmd.Flags().Int("review-max", 0, "")
+	cmd.Flags().String("report", strings.TrimSpace(req.ReportPath), "")
+	cmd.Flags().String("engine", "codex", "")
+	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
+	cmd.Flags().Bool("json", false, "")
+
+	return runAuto(cmd, req.Args)
 }
 
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {

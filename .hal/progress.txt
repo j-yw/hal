@@ -5,6 +5,7 @@
 - Factory machine-readable contracts should be locked in code, docs, and examples together: define the command response struct/renderer in `cmd`, document fields in `docs/contracts/<contract>.md`, add an example in `docs/contracts/examples/`, and cover it in `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, and `cmd/contracts_doc_test.go`.
 - Factory command parser changes should update Cobra metadata, focused `cmd/factory_test.go` registration/validation tests, and regenerated `docs/cli` pages via `make docs-cli`; docs drift is enforced by `make docs-check`.
 - Factory run execution should stay dependency-injected at the command layer: create a pending `factory.RunRecord`, persist the running transition, then invoke the pipeline dependency so tests can use `factory.NewStore(t.TempDir())` without real engines or CLIs.
+- Factory-to-auto execution should test the handoff boundary, not the real pipeline: map markdown PRDs to auto positional args, report sources to auto `--report`, and propagate `--base` through an injected auto runner.
 
 ---
 
@@ -45,4 +46,17 @@
   - `factory.RunRecord` is the shared durable surface for factory status; adding fields there requires updating type tests, status contract docs, and strict example payloads.
   - Keep `hal factory run` pipeline work behind `factoryRunDeps.runPipeline` so command tests can assert state ordering without invoking real `hal auto`, engines, network calls, or long-running local pipelines.
   - The production `factory run` path still returns the existing not-implemented pipeline error after record creation; US-004 should replace that dependency with the existing compound pipeline entry.
+---
+
+## 2026-06-21 01:18 CST - US-004
+- Replaced the factory run placeholder pipeline with a production wrapper that delegates to the existing `hal auto` command-level pipeline path.
+- Added an injected factory-to-auto handoff helper so markdown PRD entries become auto positional args, report entries become auto `--report`, and `--base` is propagated without invoking real engines in tests.
+- Added focused command tests for markdown and report handoff semantics, context propagation, and base-branch propagation.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test ./cmd -run 'Test(RunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto|RunFactoryRunPipelineWithDepsPassesReportEntryToAuto|RunFactoryRunWithDepsCreatesMarkdownRunRecordBeforePipeline|RunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline)'`, `make test`, `make vet`.
+- Browser verification: skipped because this story only changes CLI execution plumbing and unit-tested command behavior.
+- **Learnings for future iterations:**
+  - `runFactoryRunPipelineWithDeps` is the boundary for verifying factory-to-auto option mapping without real auto pipeline execution.
+  - Keep factory JSON mode separate from auto JSON mode; factory result rendering is a later contract story, so the auto wrapper discards auto output for now.
+  - The production wrapper delegates to `runAuto` through a synthetic Cobra command with the auto flags that `runAuto` reads; update this wrapper if new auto flags become relevant to factory execution.
 ---

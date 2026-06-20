@@ -388,6 +388,71 @@ func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T)
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
+	ctx := context.WithValue(context.Background(), testContextKey("factory-run"), "markdown")
+	var gotCtx context.Context
+	var got factoryRunAutoRequest
+	called := false
+
+	err := runFactoryRunPipelineWithDeps(ctx, factoryRunPipelineRequest{
+		Request: factoryRunRequest{
+			MarkdownPath: " .hal/prd-feature.md ",
+			BaseBranch:   " develop ",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(ctx context.Context, req factoryRunAutoRequest) error {
+			called = true
+			gotCtx = ctx
+			got = req
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("auto dependency was not invoked")
+	}
+	if gotCtx != ctx {
+		t.Fatal("auto dependency did not receive the original context")
+	}
+	want := factoryRunAutoRequest{
+		Args:       []string{".hal/prd-feature.md"},
+		BaseBranch: "develop",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("auto request = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsPassesReportEntryToAuto(t *testing.T) {
+	var got factoryRunAutoRequest
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		Request: factoryRunRequest{
+			ReportPath: ".hal/reports/analysis.md",
+			BaseBranch: "release",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(_ context.Context, req factoryRunAutoRequest) error {
+			got = req
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	want := factoryRunAutoRequest{
+		ReportPath: ".hal/reports/analysis.md",
+		BaseBranch: "release",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("auto request = %#v, want %#v", got, want)
+	}
+}
+
+type testContextKey string
+
 func TestRunFactoryListJSONEmptyState(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	var buf bytes.Buffer
