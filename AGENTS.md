@@ -446,3 +446,7 @@
 - Factory run result payloads and non-JSON summaries should be built from the saved `factory.RunRecord` and `Store.LoadEvents` after terminal status is persisted, so `hal factory run` output reflects durable state rather than transient in-memory state.
 - On factory run failures, render the JSON or human result before returning the original pipeline error; this preserves actionable output while keeping non-zero CLI exit behavior.
 - Factory run failure categories are constants in `internal/factory/types.go`; classify wrapped pipeline errors in `cmd/factory.go` from explicit exit codes, canonical `step <name> failed:` auto errors, and conservative message fragments, defaulting to `unknown` when context is insufficient.
+
+## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
+
+- Factory bootstrap request/result DTOs live in `internal/factory` alongside durable run/timeline records; keep them independent of command/runtime dependencies, and lock exported machine-readable fields with explicit JSON tags, raw-key assertions, and round-trip tests in `internal/factory/types_test.go`.

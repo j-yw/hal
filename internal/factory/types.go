@@ -1,4 +1,4 @@
-// Package factory defines durable factory run records and timeline events.
+// Package factory defines durable factory run records, timeline events, and bootstrap contracts.
 package factory
 
 import "time"

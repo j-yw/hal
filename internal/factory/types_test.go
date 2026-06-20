@@ -111,6 +111,12 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(ArtifactReference{}),
 		reflect.TypeOf(FailureSummary{}),
 		reflect.TypeOf(EventRecord{}),
+		reflect.TypeOf(BootstrapRequest{}),
+		reflect.TypeOf(BootstrapOptions{}),
+		reflect.TypeOf(BootstrapResult{}),
+		reflect.TypeOf(BootstrapStepResult{}),
+		reflect.TypeOf(BootstrapTimelineEvent{}),
+		reflect.TypeOf(BootstrapFailure{}),
 	}
 
 	for _, typ := range types {
@@ -127,6 +133,190 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBootstrapRequestJSONFields(t *testing.T) {
+	original := BootstrapRequest{
+		RepositoryURL:   "git@github.com:jywlabs/hal.git",
+		BaseBranch:      "main",
+		RunBranch:       "hal/factory-remote-workspace-bootstrap",
+		WorkspaceDir:    "/workspace/hal",
+		RequiredEnvKeys: []string{"GITHUB_TOKEN", "HAL_ENGINE"},
+		Options: BootstrapOptions{
+			RefreshHal:         true,
+			InstallMissingCLIs: true,
+			DryRun:             true,
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	for _, key := range []string{
+		"repositoryUrl",
+		"baseBranch",
+		"runBranch",
+		"workspaceDir",
+		"requiredEnvKeys",
+		"options",
+	} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing bootstrap request JSON field %q", key)
+		}
+	}
+
+	options, ok := raw["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("options should be an object, got %T", raw["options"])
+	}
+	for _, key := range []string{"refreshHal", "installMissingClis", "dryRun"} {
+		if _, ok := options[key]; !ok {
+			t.Errorf("missing bootstrap option JSON field %q", key)
+		}
+	}
+
+	var decoded BootstrapRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestBootstrapResultJSONFields(t *testing.T) {
+	startedAt := time.Date(2026, 6, 20, 20, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(15 * time.Second)
+	original := BootstrapResult{
+		RepoPath:         "/workspace/hal",
+		CheckedOutBranch: "hal/factory-remote-workspace-bootstrap",
+		Steps: []BootstrapStepResult{
+			{
+				Name:           "clone",
+				Status:         RunStatusFailed,
+				CommandSummary: "git clone <repository> /workspace/hal",
+				StartedAt:      startedAt,
+				FinishedAt:     &finishedAt,
+				ExitCode:       128,
+			},
+		},
+		Timeline: []BootstrapTimelineEvent{
+			{
+				Timestamp:      finishedAt,
+				Step:           "clone",
+				Status:         RunStatusFailed,
+				Message:        "repository clone failed",
+				CommandSummary: "git clone <repository> /workspace/hal",
+				OutputSummary:  "remote rejected authentication",
+				Metadata: map[string]string{
+					"remote": "github",
+				},
+			},
+		},
+		Failure: &BootstrapFailure{
+			Step:     "clone",
+			Category: "repo",
+			Message:  "repository clone failed",
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	for _, key := range []string{"repoPath", "checkedOutBranch", "steps", "timeline", "failure"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing bootstrap result JSON field %q", key)
+		}
+	}
+
+	steps, ok := raw["steps"].([]any)
+	if !ok {
+		t.Fatalf("steps should be an array, got %T", raw["steps"])
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps length = %d, want 1", len(steps))
+	}
+	step, ok := steps[0].(map[string]any)
+	if !ok {
+		t.Fatalf("steps[0] should be an object, got %T", steps[0])
+	}
+	for _, key := range []string{"name", "status", "commandSummary", "startedAt", "finishedAt", "exitCode"} {
+		if _, ok := step[key]; !ok {
+			t.Errorf("missing bootstrap step JSON field %q", key)
+		}
+	}
+
+	timeline, ok := raw["timeline"].([]any)
+	if !ok {
+		t.Fatalf("timeline should be an array, got %T", raw["timeline"])
+	}
+	if len(timeline) != 1 {
+		t.Fatalf("timeline length = %d, want 1", len(timeline))
+	}
+	event, ok := timeline[0].(map[string]any)
+	if !ok {
+		t.Fatalf("timeline[0] should be an object, got %T", timeline[0])
+	}
+	for _, key := range []string{"timestamp", "step", "status", "message", "commandSummary", "outputSummary", "metadata"} {
+		if _, ok := event[key]; !ok {
+			t.Errorf("missing bootstrap timeline JSON field %q", key)
+		}
+	}
+
+	failure, ok := raw["failure"].(map[string]any)
+	if !ok {
+		t.Fatalf("failure should be an object, got %T", raw["failure"])
+	}
+	for _, key := range []string{"step", "category", "message"} {
+		if _, ok := failure[key]; !ok {
+			t.Errorf("missing bootstrap failure JSON field %q", key)
+		}
+	}
+
+	var decoded BootstrapResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestBootstrapResultOptionalFailureOmitted(t *testing.T) {
+	original := BootstrapResult{
+		RepoPath:         "/workspace/hal",
+		CheckedOutBranch: "hal/factory-remote-workspace-bootstrap",
+		Steps:            []BootstrapStepResult{},
+		Timeline:         []BootstrapTimelineEvent{},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	if _, ok := raw["failure"]; ok {
+		t.Errorf("unexpected optional bootstrap failure field in %s", string(data))
 	}
 }
 

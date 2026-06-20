@@ -1,0 +1,177 @@
+{
+  "project": "Factory Remote Workspace Bootstrap",
+  "branchName": "hal/factory-remote-workspace-bootstrap",
+  "description": "Add a reusable remote workspace bootstrap subsystem for Hal factory runs, covering request/result contracts, idempotent repository and branch setup, tooling and Hal setup checks, safe environment injection, failure classification, sanitized timeline events, and deterministic unit tests with fake executor dependencies.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Define Bootstrap Request And Result Types",
+      "description": "As a factory executor developer, I want structured bootstrap input and output types so that future executors can call bootstrap logic without depending on CLI-specific state",
+      "acceptanceCriteria": [
+        "A bootstrap request type captures repository URL, base branch, run branch, workspace directory, required environment keys, and bootstrap options",
+        "A bootstrap result type captures final repo path, checked-out branch, executed steps, sanitized timeline events, and failure classification when applicable",
+        "Types live in a focused factory bootstrap package or equivalent internal factory subpackage",
+        "Types do not reference queue, trigger, verify, policy, secrets, or handoff implementation details",
+        "Unit tests assert JSON or struct field behavior for exported machine-readable bootstrap result fields",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Define Bootstrap Failure Classifications",
+      "description": "As a factory run reporter, I want bootstrap failures classified consistently so that users and automation can identify whether setup failed because of repository access, authentication, dependencies, or engine setup",
+      "acceptanceCriteria": [
+        "Failure categories include repo, auth, dependency, engine_setup, and unknown",
+        "Unknown or uncategorized command failures are represented explicitly instead of being mapped to repo, auth, dependency, or engine_setup",
+        "Failure classification includes a sanitized message suitable for timeline output",
+        "Unit tests cover classification for git clone or fetch errors, authentication failures, missing CLI dependencies, Hal setup failures, and unknown command failures",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Add Executor Boundary For Bootstrap Commands",
+      "description": "As a bootstrap subsystem maintainer, I want command execution behind a small interface so that bootstrap behavior can be tested without invoking real git, Hal, or engine CLIs",
+      "acceptanceCriteria": [
+        "Bootstrap logic depends on an injected executor interface for running commands",
+        "The executor interface captures command name, arguments, working directory, environment values, and sanitized output or result metadata",
+        "Fake executor tests can assert command ordering, arguments, working directories, and environment values without invoking real CLIs",
+        "Production adapter types can be added without changing existing sandbox executor behavior",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Bootstrap Repository Checkout",
+      "description": "As a factory run, I want bootstrap to clone or update the target repository and check out the requested base branch so that later Hal commands run against the expected codebase state",
+      "acceptanceCriteria": [
+        "When the repository directory does not exist, bootstrap executes or plans a clone from the configured repository URL",
+        "When the repository directory already exists, bootstrap executes or plans fetch or update commands instead of recloning",
+        "Bootstrap checks out the requested base branch before preparing the run branch",
+        "Repository command construction is deterministic and covered by unit tests",
+        "Repository failures are classified as repo unless authentication-specific evidence maps them to auth",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Prepare Run Branch Idempotently",
+      "description": "As a retried or resumed factory run, I want bootstrap to create or reuse the run branch safely so that repeated bootstrap attempts do not fail when prior setup partially completed",
+      "acceptanceCriteria": [
+        "Bootstrap accepts an explicit run branch name",
+        "If the run branch already exists locally, bootstrap reuses it",
+        "If the run branch exists remotely or can be fetched, bootstrap checks it out without recreating it",
+        "If the run branch does not exist locally or remotely, bootstrap creates it from the requested base branch",
+        "Unit tests cover first-run, local retry, and remote branch resume command construction",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Verify Required Tooling",
+      "description": "As a factory run, I want bootstrap to verify required CLIs before execution so that missing dependencies fail early with actionable classification",
+      "acceptanceCriteria": [
+        "Bootstrap verifies Hal is available or installable according to selected bootstrap options",
+        "Bootstrap verifies required engine CLIs through configurable command checks",
+        "Missing Hal or engine CLIs are classified as dependency when the executable is absent",
+        "Hal or engine setup command failures after dependency discovery are classified as engine_setup",
+        "Verification commands are recorded in sanitized bootstrap steps",
+        "Unit tests cover missing dependency and failed engine setup classification",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Refresh Hal Templates And Skills",
+      "description": "As a factory run, I want the remote workspace to have current Hal templates, skills, and project standards so that execution behaves like the local repository workflow expects",
+      "acceptanceCriteria": [
+        "Bootstrap includes a step to initialize or refresh .hal templates when needed",
+        "Bootstrap includes a step to verify or refresh Hal skills using existing Hal command patterns where available",
+        "Bootstrap uses existing template and skill management APIs or commands instead of duplicating ownership logic",
+        "Failures during template or skill setup are classified as engine_setup unless a dependency is missing",
+        "Unit tests assert the expected setup commands are included in the bootstrap plan",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Inject Required Environment Values Safely",
+      "description": "As a factory run, I want required environment values made available to bootstrap commands without printing or storing secrets in plain run events",
+      "acceptanceCriteria": [
+        "Bootstrap request can specify required environment keys and non-secret values needed during bootstrap",
+        "Bootstrap command execution receives environment values through the executor boundary",
+        "Timeline events and command result records redact configured secret values",
+        "Timeline events and command result records redact sensitive environment keys",
+        "Serialized timeline events and sanitized command records do not contain secret-looking fixture values in unit tests",
+        "This story does not add new policy, secrets storage, or credential handoff behavior",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Record Sanitized Bootstrap Timeline Events",
+      "description": "As a factory run observer, I want bootstrap commands and outcomes recorded in timeline-ready events so that setup progress and failures are auditable",
+      "acceptanceCriteria": [
+        "Each bootstrap step produces a timeline-ready event with step name, command summary, status, timestamps or deterministic test equivalents, and sanitized output metadata",
+        "Failed step events include failure category and sanitized failure message",
+        "Timeline event generation is separate from queue or run persistence",
+        "Unit tests assert successful event payloads do not contain plain secrets",
+        "Unit tests assert failed event payloads do not contain plain secrets",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Provide High-Level Bootstrap Orchestration",
+      "description": "As a future factory executor, I want one reusable bootstrap entrypoint so that executor implementations can prepare workspaces without reimplementing repository, branch, tooling, and Hal setup",
+      "acceptanceCriteria": [
+        "A high-level bootstrap function accepts the bootstrap request type and injected dependencies",
+        "The function executes steps in deterministic order: repository setup, base checkout, run branch preparation, tooling verification, Hal template and skill setup, and environment-aware final checks",
+        "The function stops on the first blocking failure and returns a classified result",
+        "The function is idempotent for repeated calls against an already-prepared fake workspace model",
+        "Unit tests cover successful bootstrap, retry or resume bootstrap, and failure stop behavior",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
