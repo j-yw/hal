@@ -7,6 +7,7 @@
 - Future control-plane ADR sections should distinguish organization-level ownership from project-level membership, and should not present future domain terms as CLI JSON contract fields unless `docs/contracts/` is updated.
 - Future RBAC/control-plane ADR sections should name authorization as a shared control-plane responsibility while keeping permission evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
 - Future shared queue/run lifecycle ADR sections should document leases, heartbeats, cancellation, stale recovery, concurrency, and idempotency as architecture expectations without exposing backend attempt IDs, idempotency keys, or lease internals as CLI JSON contract fields unless `docs/contracts/` is updated.
+- Future shared artifact/audit ADR sections should cover PRDs, reports, logs, review results, run output, audit decisions, state transitions, and data ownership/access expectations without exposing storage keys, backend IDs, role graphs, or permission evaluation internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 
 ---
 
@@ -61,5 +62,14 @@
 - **Learnings for future iterations:**
   - Shared lifecycle concepts should remain architecture expectations in the ADR until a future implementation PRD and `docs/contracts/` update make them runtime or CLI contract fields.
   - Lease, heartbeat, and idempotency details are useful for future backend design, but should be described without binding the current CLI to backend attempt IDs or idempotency keys.
+  - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
+---
+
+## 2026-06-20 23:43 CST - US-007
+- Added the shared artifact and audit model section to the factory control plane ADR, covering shared PRD, report, log, review-result, and run-output artifacts plus audit logging for decisions and state transitions.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Shared artifact sections should describe ownership, access, retention, and audit expectations without turning storage keys or backend identifiers into CLI contract fields.
+  - Artifact/audit documentation should keep local `.hal/` files as the current CLI runtime boundary until future implementation PRDs and contract updates define shared behavior.
   - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
 ---

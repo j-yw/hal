@@ -231,6 +231,77 @@ entries, or repository side effects. Idempotency keys, attempt identifiers, and
 artifact references should be treated as backend implementation details unless
 a future CLI contract deliberately exposes them.
 
+## Shared Artifact and Audit Model
+
+The future shared control plane should treat artifacts as project-owned records
+stored in a durable shared artifact store. The artifact store is the shared
+source for organization and project collaboration, while local `.hal/` files
+remain the current CLI runtime boundary until a future implementation PRD and
+contract update deliberately changes that behavior.
+
+PRD artifacts should include the submitted requirements source, canonical PRD
+representation, generated planning context where retained, branch or project
+association, author or automation identity, timestamps, and provenance needed to
+explain why the work entered the factory. A shared PRD artifact may have many
+local projections, but the control plane should keep the shared record stable
+enough for review, retry, audit, and migration workflows.
+
+Report artifacts should cover generated auto-pipeline reports, summary reports,
+review reports, CI or handoff summaries, and any future project-level status
+reports. Reports should be associated with the organization, project, queue
+item, run, commit range, and producing actor where applicable. Once finalized,
+reports should be immutable or versioned so later retries do not silently
+replace the evidence used for previous decisions.
+
+Log artifacts should capture engine logs, command transcripts, execution
+diagnostics, and operator-visible warnings that are needed to debug a shared
+run. Log storage should support retention, redaction, and segmented upload so
+large or sensitive logs can be handled without relying on local filesystem path
+conventions. Logs may be streamed while a run is active, but finalized log
+records should remain tied to the run and lease context that produced them.
+
+Review-result artifacts should preserve review-loop JSON and markdown outputs,
+including issue findings, validation results, fixed issue counts, affected
+files, recommendations, and iteration summaries. These artifacts are part of
+the shared decision record for whether work can proceed, but their persisted
+shape should remain aligned with documented artifact contracts rather than
+leaking backend reviewer, queue, or lease internals into CLI JSON surfaces.
+
+Run-output artifacts should include stdout and stderr summaries, command exit
+metadata, generated file references, patch or diff summaries, and any other
+durable output needed to reconstruct what a run did. Only the authorized lease
+holder or control-plane recovery process should append mutable run output for
+an active run. Terminal run output should be retained with the queue item and
+run attempt so later operators can distinguish completed, failed, cancelled,
+and recovered work.
+
+Audit logging should be append-only for control-plane decisions. Decisions that
+should produce audit records include authorization allow or deny outcomes,
+policy resolution, queue creation and prioritization, assignment, lease claims,
+heartbeat acceptance or rejection, cancellation, retries, artifact retention or
+export, and administrative overrides. Each audit record should identify the
+actor or automation identity, organization, project, resource class, decision
+class, timestamp, outcome, and enough rationale or policy reference for an
+operator to understand the decision without exposing hidden role graphs or
+permission evaluation internals.
+
+State transitions should also be audited. Queue item and run transitions should
+record the previous state, requested next state, accepted next state, actor,
+policy or version precondition, terminal reason when applicable, and links to
+the artifacts produced by the transition. Failed or rejected transition attempts
+should leave an audit trail when they affect operator understanding, such as
+conflicting lease claims, stale heartbeat rejection, unauthorized cancellation,
+or retry denial.
+
+Data ownership follows the organization and project model. The organization
+owns the top-level governance context, while projects own their queues, runs,
+and artifacts within that organization. Access to PRDs, reports, logs, review
+results, run output, audit records, exports, and retention controls should be
+authorized through the control plane rather than through storage keys, URLs, or
+local path conventions. Future implementations should define retention,
+deletion, export, and redaction behavior explicitly so project members can
+collaborate without weakening organization-level data governance.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared
