@@ -442,11 +442,12 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			{Name: "report", Type: "markdown", Path: ".hal/reports/factory.md"},
 		},
 		Failure: &factory.FailureSummary{
-			Step:        "ci",
-			Category:    "test",
-			Message:     "unit tests failed",
-			Recoverable: true,
-			ExitCode:    1,
+			Step:             "ci",
+			Category:         factory.FailureCategoryCI,
+			Message:          "unit tests failed",
+			Recoverable:      true,
+			SuggestedCommand: "hal factory status run-contract --json",
+			ExitCode:         1,
 		},
 	}
 	events := []factory.EventRecord{

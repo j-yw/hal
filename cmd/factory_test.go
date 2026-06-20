@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/spf13/cobra"
 )
@@ -527,6 +528,7 @@ func TestRunFactoryRunWithDepsRecordsTimelineEventsForFailure(t *testing.T) {
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
 		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
 	})
 	assertFactoryEventSequences(t, events)
 	if !events[2].Timestamp.Equal(failedAt) {
@@ -540,6 +542,15 @@ func TestRunFactoryRunWithDepsRecordsTimelineEventsForFailure(t *testing.T) {
 	}
 	if events[2].Metadata["error"] != pipelineErr.Error() {
 		t.Fatalf("failure error metadata = %#v", events[2].Metadata)
+	}
+	if !events[3].Timestamp.Equal(failedAt) {
+		t.Fatalf("classification timestamp = %s, want %s", events[3].Timestamp, failedAt)
+	}
+	if events[3].Summary != "Failure classified" {
+		t.Fatalf("classification summary = %q", events[3].Summary)
+	}
+	if events[3].Metadata["category"] != factory.FailureCategoryPipeline {
+		t.Fatalf("classification category metadata = %#v", events[3].Metadata)
 	}
 }
 
@@ -772,6 +783,181 @@ func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/auto-state.json")
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/ci-output.log")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-artifacts-report-failure.json"))
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	if record.CurrentStep != "run" {
+		t.Fatalf("currentStep = %q, want run", record.CurrentStep)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(failedAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, failedAt)
+	}
+	if record.Failure == nil {
+		t.Fatal("failure summary should be persisted")
+	}
+	if record.Failure.Category != factory.FailureCategoryPipeline {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryPipeline)
+	}
+	if record.Failure.Message != pipelineErr.Error() {
+		t.Fatalf("failure message = %q, want %q", record.Failure.Message, pipelineErr.Error())
+	}
+	if record.Failure.SuggestedCommand != "hal factory status run-artifacts-report-failure --json" {
+		t.Fatalf("failure suggestedCommand = %q", record.Failure.SuggestedCommand)
+	}
+}
+
+func TestRunFactoryRunWithDepsPersistsFailedStatusAndDetails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 20, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	pipelineErr := errors.New("step ci failed: workflow check failed")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-failed-terminal", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return pipelineErr
+		},
+	})
+	if !errors.Is(err, pipelineErr) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline error", err)
+	}
+
+	record, err := store.LoadRun("run-failed-terminal")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	if record.CurrentStep != compound.StepCI {
+		t.Fatalf("currentStep = %q, want %q", record.CurrentStep, compound.StepCI)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(failedAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, failedAt)
+	}
+	if record.Failure == nil {
+		t.Fatal("failure summary should be persisted")
+	}
+	if record.Failure.Step != compound.StepCI {
+		t.Fatalf("failure step = %q, want %q", record.Failure.Step, compound.StepCI)
+	}
+	if record.Failure.Category != factory.FailureCategoryCI {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryCI)
+	}
+	if record.Failure.Message != pipelineErr.Error() {
+		t.Fatalf("failure message = %q, want %q", record.Failure.Message, pipelineErr.Error())
+	}
+	if !record.Failure.Recoverable {
+		t.Fatal("failure should be recoverable")
+	}
+	if record.Failure.SuggestedCommand != "hal factory status run-failed-terminal --json" {
+		t.Fatalf("failure suggestedCommand = %q", record.Failure.SuggestedCommand)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-failed-terminal.json"))
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	classification := events[3]
+	if classification.Metadata["step"] != compound.StepCI {
+		t.Fatalf("classification step metadata = %#v", classification.Metadata)
+	}
+	if classification.Metadata["category"] != factory.FailureCategoryCI {
+		t.Fatalf("classification category metadata = %#v", classification.Metadata)
+	}
+	if classification.Metadata["suggestedCommand"] != "hal factory status run-failed-terminal --json" {
+		t.Fatalf("classification suggestedCommand metadata = %#v", classification.Metadata)
+	}
+}
+
+func TestClassifyFactoryRunFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "validation exit code",
+			err:  exitWithCode(nil, ExitCodeValidation, errors.New("invalid input")),
+			want: factory.FailureCategoryValidation,
+		},
+		{
+			name: "validate step",
+			err:  errors.New("step validate failed: invalid PRD"),
+			want: factory.FailureCategoryValidation,
+		},
+		{
+			name: "ci step",
+			err:  errors.New("step ci failed: workflow failed"),
+			want: factory.FailureCategoryCI,
+		},
+		{
+			name: "branch step",
+			err:  errors.New("step branch failed: git checkout failed"),
+			want: factory.FailureCategoryGit,
+		},
+		{
+			name: "engine message",
+			err:  errors.New("failed to create engine: codex unavailable"),
+			want: factory.FailureCategoryEngine,
+		},
+		{
+			name: "pipeline message",
+			err:  errors.New("pipeline failed"),
+			want: factory.FailureCategoryPipeline,
+		},
+		{
+			name: "unknown message",
+			err:  errors.New("boom"),
+			want: factory.FailureCategoryUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyFactoryRunFailure(tt.err); got != tt.want {
+				t.Fatalf("classifyFactoryRunFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {

@@ -37,9 +37,10 @@
     ],
     "failure": {
       "step": "ci",
-      "category": "test",
+      "category": "ci",
       "message": "unit tests failed",
       "recoverable": true,
+      "suggestedCommand": "hal factory status run-20260620-002 --json",
       "exitCode": 1
     }
   },
@@ -107,8 +108,9 @@
       "timestamp": "2026-06-20T16:32:00Z",
       "summary": "Failure classified",
       "metadata": {
-        "category": "test",
-        "recoverable": true
+        "category": "ci",
+        "recoverable": true,
+        "suggestedCommand": "hal factory status run-20260620-002 --json"
       }
     }
   ]

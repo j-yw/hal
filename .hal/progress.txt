@@ -9,6 +9,7 @@
 - Factory run timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use the injected `RecordProgress` hook for progress events and keep completion/failure lifecycle events outside the wrapped `hal auto` implementation.
 - Factory run artifact references are collected in the `cmd/factory.go` wrapper after `factoryRunDeps.runPipeline` returns; explicit source paths and the factory store run-record path are always relevant, while optional `.hal` artifacts should be detected with template constants and skipped when absent.
 - Factory run final results should be rendered from the persisted `factory.RunRecord` plus `Store.LoadEvents` after terminal status/final timestamps are saved, so command output matches durable state.
+- Factory run failure categories are centralized in `internal/factory/types.go`; classify pipeline errors in the command wrapper from explicit `ExitCodeError`, `step <name> failed:` auto-step messages, then conservative message fragments, defaulting to `unknown` when context is insufficient.
 
 ---
 
@@ -101,4 +102,17 @@
   - Save terminal success status before rendering the factory run result; then load the record and timeline back from `factory.Store` so output cannot drift from durable state.
   - The success next action can be derived deterministically from the run ID as `hal factory status <run-id> --json`, which works regardless of optional artifact availability.
   - Keep `currentStep` as `done` for successful terminal factory runs, matching the single-pipeline done-state convention.
+---
+
+## 2026-06-21 02:22 CST - US-008
+- Persisted failed local factory runs as terminal `failed` records with `finishedAt`, updated step, failure summary, retained artifacts, and inspection guidance.
+- Added deterministic failure category classification for validation, pipeline, engine, git, CI, and unknown cases, plus durable `failure_classification` timeline events.
+- Updated factory list/status failure contracts and examples to include centralized category values and `suggestedCommand`.
+- Files changed: `cmd/factory.go`, `cmd/factory_run_result.go`, `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, `cmd/contracts_doc_test.go`, `internal/factory/types.go`, `internal/factory/types_test.go`, `docs/contracts/factory-list-v1.md`, `docs/contracts/factory-status-v1.md`, `docs/contracts/examples/factory-list-v1.json`, `docs/contracts/examples/factory-status-v1.json`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test ./cmd -run 'Test(RunFactoryRunWithDepsPersistsFailedStatusAndDetails|RunFactoryRunWithDepsRecordsReportArtifactsOnFailure|RunFactoryRunWithDepsRecordsTimelineEventsForFailure|ClassifyFactoryRunFailure|RenderFactoryRunJSONLocksResultContract|MachineContractFields_FactoryCommandOutputs|ContractDocsIncludeFactoryFields|FactoryContractExamplesMatchCommandSchemas)'`, `go test ./internal/factory`, `make test`, `make vet`, `make docs-check`, `git diff --check`.
+- Browser verification: skipped because this story only changes CLI persistence and machine-readable contract output.
+- **Learnings for future iterations:**
+  - Failure persistence should record artifacts before saving terminal failure status so failed records keep source and generated artifact context.
+  - Use `autoFailedStep` when classifying wrapped auto-pipeline failures; it recognizes canonical `step <step> failed:` errors and avoids relying only on free-form error text.
+  - Keep factory failure category values in `internal/factory` constants and use those constants in docs, examples, and tests to avoid contract drift.
 ---

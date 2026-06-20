@@ -67,13 +67,13 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 }
 
 func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
-	runID := strings.TrimSpace(record.RunID)
-	if runID == "" {
+	command := factoryRunInspectCommand(record.RunID)
+	if command == "" {
 		return nil
 	}
 	return &FactoryRunNextAction{
 		ID:          "inspect_factory_run",
-		Command:     fmt.Sprintf("hal factory status %s --json", runID),
+		Command:     command,
 		Description: "Inspect the durable run record and timeline.",
 	}
 }
@@ -84,16 +84,26 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 	}
 	classification := strings.TrimSpace(record.Failure.Category)
 	if classification == "" {
-		classification = "unknown"
+		classification = factory.FailureCategoryUnknown
 	}
 	failure := &FactoryRunFailure{
 		Classification: classification,
 		ErrorMessage:   record.Failure.Message,
 	}
-	if nextAction := newFactoryRunNextAction(record); nextAction != nil {
+	if suggested := strings.TrimSpace(record.Failure.SuggestedCommand); suggested != "" {
+		failure.SuggestedCommand = suggested
+	} else if nextAction := newFactoryRunNextAction(record); nextAction != nil {
 		failure.SuggestedCommand = nextAction.Command
 	}
 	return failure
+}
+
+func factoryRunInspectCommand(runID string) string {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ""
+	}
+	return fmt.Sprintf("hal factory status %s --json", runID)
 }
 
 func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {

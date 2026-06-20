@@ -25,6 +25,16 @@ const (
 	SourceKindPRD           = "prd"
 )
 
+// Failure category values.
+const (
+	FailureCategoryValidation = "validation"
+	FailureCategoryPipeline   = "pipeline"
+	FailureCategoryEngine     = "engine"
+	FailureCategoryGit        = "git"
+	FailureCategoryCI         = "ci"
+	FailureCategoryUnknown    = "unknown"
+)
+
 // Timeline event type values.
 const (
 	EventTypeRunCreated            = "run_created"
@@ -74,11 +84,12 @@ type ArtifactReference struct {
 
 // FailureSummary records the terminal failure context for a run.
 type FailureSummary struct {
-	Step        string `json:"step"`
-	Category    string `json:"category,omitempty"`
-	Message     string `json:"message"`
-	Recoverable bool   `json:"recoverable"`
-	ExitCode    int    `json:"exitCode,omitempty"`
+	Step             string `json:"step"`
+	Category         string `json:"category,omitempty"`
+	Message          string `json:"message"`
+	Recoverable      bool   `json:"recoverable"`
+	SuggestedCommand string `json:"suggestedCommand,omitempty"`
+	ExitCode         int    `json:"exitCode,omitempty"`
 }
 
 // EventRecord captures one append-only timeline entry for a factory run.

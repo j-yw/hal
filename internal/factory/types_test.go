@@ -56,6 +56,29 @@ func TestSourceKindConstants(t *testing.T) {
 	}
 }
 
+func TestFailureCategoryConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "validation", got: FailureCategoryValidation, want: "validation"},
+		{name: "pipeline", got: FailureCategoryPipeline, want: "pipeline"},
+		{name: "engine", got: FailureCategoryEngine, want: "engine"},
+		{name: "git", got: FailureCategoryGit, want: "git"},
+		{name: "ci", got: FailureCategoryCI, want: "ci"},
+		{name: "unknown", got: FailureCategoryUnknown, want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("failure category = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEventTypeConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -137,11 +160,12 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 				{Name: "pull_request", Type: "url", URL: "https://github.com/jywlabs/hal/pull/123"},
 			},
 			Failure: &FailureSummary{
-				Step:        "ci",
-				Category:    "test",
-				Message:     "unit tests failed",
-				Recoverable: true,
-				ExitCode:    1,
+				Step:             "ci",
+				Category:         FailureCategoryCI,
+				Message:          "unit tests failed",
+				Recoverable:      true,
+				SuggestedCommand: "hal factory status 01975515-52ad-7f20-8f10-b35c07051b9f --json",
+				ExitCode:         1,
 			},
 		}
 
@@ -151,11 +175,12 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 
 	t.Run("failure summary", func(t *testing.T) {
 		original := FailureSummary{
-			Step:        "review",
-			Category:    "validation",
-			Message:     "review found valid issues",
-			Recoverable: true,
-			ExitCode:    2,
+			Step:             "review",
+			Category:         FailureCategoryValidation,
+			Message:          "review found valid issues",
+			Recoverable:      true,
+			SuggestedCommand: "hal factory status run-review --json",
+			ExitCode:         2,
 		}
 
 		var decoded FailureSummary
@@ -230,11 +255,12 @@ func TestRunRecordJSONFields(t *testing.T) {
 			},
 		},
 		Failure: &FailureSummary{
-			Step:        "ci",
-			Category:    "test",
-			Message:     "unit tests failed",
-			Recoverable: true,
-			ExitCode:    1,
+			Step:             "ci",
+			Category:         FailureCategoryCI,
+			Message:          "unit tests failed",
+			Recoverable:      true,
+			SuggestedCommand: "hal factory status 01975515-52ad-7f20-8f10-b35c07051b9f --json",
+			ExitCode:         1,
 		},
 	}
 
@@ -308,7 +334,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("failure should be an object, got %T", raw["failure"])
 	}
-	for _, key := range []string{"step", "category", "message", "recoverable", "exitCode"} {
+	for _, key := range []string{"step", "category", "message", "recoverable", "suggestedCommand", "exitCode"} {
 		if _, ok := failure[key]; !ok {
 			t.Errorf("missing failure JSON field %q", key)
 		}

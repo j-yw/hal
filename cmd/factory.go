@@ -299,14 +299,28 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 	if err := deps.runPipeline(ctx, pipelineReq); err != nil {
 		failedAt := deps.now()
-		if _, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, failedAt); artifactErr != nil {
-			if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, err); eventErr != nil {
-				return errors.Join(err, fmt.Errorf("record factory artifacts: %w", artifactErr), fmt.Errorf("record factory failure event: %w", eventErr))
-			}
-			return errors.Join(err, fmt.Errorf("record factory artifacts: %w", artifactErr))
+		failedRecord := runningRecord
+		var recordErrs []error
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, failedAt); artifactErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
+		} else {
+			failedRecord = artifactRecord
+		}
+
+		failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, err)
+		if failureErr != nil {
+			recordErrs = append(recordErrs, failureErr)
 		}
 		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, err); eventErr != nil {
-			return errors.Join(err, fmt.Errorf("record factory failure event: %w", eventErr))
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure event: %w", eventErr))
+		}
+		if failedRecord.Failure != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+			}
+		}
+		if len(recordErrs) > 0 {
+			return errors.Join(append([]error{err}, recordErrs...)...)
 		}
 		return err
 	}
@@ -430,6 +444,124 @@ func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now 
 		return factory.RunRecord{}, fmt.Errorf("mark factory run succeeded: %w", err)
 	}
 	return record, nil
+}
+
+func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error) (factory.RunRecord, error) {
+	finishedAt := now.UTC()
+	failure := newFactoryRunFailureSummary(record.RunID, record.CurrentStep, pipelineErr)
+	record.Status = factory.RunStatusFailed
+	record.CurrentStep = failure.Step
+	record.UpdatedAt = finishedAt
+	record.FinishedAt = &finishedAt
+	record.Failure = &failure
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("mark factory run failed: %w", err)
+	}
+	return record, nil
+}
+
+func newFactoryRunFailureSummary(runID, currentStep string, pipelineErr error) factory.FailureSummary {
+	category := classifyFactoryRunFailure(pipelineErr)
+	failure := factory.FailureSummary{
+		Step:             factoryRunFailureStep(currentStep, pipelineErr),
+		Category:         category,
+		Message:          factoryRunFailureMessage(pipelineErr),
+		Recoverable:      factoryRunFailureRecoverable(category),
+		SuggestedCommand: factoryRunInspectCommand(runID),
+		ExitCode:         factoryRunFailureExitCode(pipelineErr),
+	}
+	if strings.TrimSpace(failure.Message) == "" {
+		failure.Message = "factory run failed"
+	}
+	return failure
+}
+
+func classifyFactoryRunFailure(err error) string {
+	if err == nil {
+		return factory.FailureCategoryUnknown
+	}
+
+	var exitErr *ExitCodeError
+	if errors.As(err, &exitErr) && exitErr.Code == ExitCodeValidation {
+		return factory.FailureCategoryValidation
+	}
+
+	step := autoFailedStep(err)
+	switch step {
+	case compound.StepValidate:
+		return factory.FailureCategoryValidation
+	case compound.StepCI:
+		return factory.FailureCategoryCI
+	case compound.StepBranch:
+		return factory.FailureCategoryGit
+	}
+
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case factoryFailureMessageContains(message, "validation", "validate", "invalid"):
+		return factory.FailureCategoryValidation
+	case factoryFailureMessageContains(message, "engine", "codex", "claude"):
+		return factory.FailureCategoryEngine
+	case factoryFailureMessageContains(message, "github", "git ", " git", "merge-base", "commit", "branch"):
+		return factory.FailureCategoryGit
+	case factoryFailureMessageContains(message, " ci", "ci ", "ci:", "ci-", "ci_", "workflow", "status check", "check run"):
+		return factory.FailureCategoryCI
+	case factoryFailureMessageContains(message, "pipeline") || step != "":
+		return factory.FailureCategoryPipeline
+	default:
+		return factory.FailureCategoryUnknown
+	}
+}
+
+func factoryRunFailureStep(currentStep string, err error) string {
+	if step := autoFailedStep(err); step != "" {
+		return step
+	}
+	if step := strings.TrimSpace(currentStep); step != "" {
+		return step
+	}
+	return "run"
+}
+
+func factoryRunFailureMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func factoryRunFailureRecoverable(category string) bool {
+	switch category {
+	case factory.FailureCategoryValidation,
+		factory.FailureCategoryPipeline,
+		factory.FailureCategoryEngine,
+		factory.FailureCategoryGit,
+		factory.FailureCategoryCI:
+		return true
+	default:
+		return false
+	}
+}
+
+func factoryRunFailureExitCode(err error) int {
+	var exitErr *ExitCodeError
+	if errors.As(err, &exitErr) {
+		return exitErr.Code
+	}
+	var execErr *exec.ExitError
+	if errors.As(err, &execErr) {
+		return execErr.ExitCode()
+	}
+	return 0
+}
+
+func factoryFailureMessageContains(message string, fragments ...string) bool {
+	for _, fragment := range fragments {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord) []factory.ArtifactReference {
@@ -709,6 +841,26 @@ func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
 		},
+	})
+}
+
+func recordFactoryRunFailureClassified(store factory.Store, runID string, now time.Time, failure factory.FailureSummary) error {
+	metadata := map[string]any{
+		"step":        failure.Step,
+		"category":    failure.Category,
+		"recoverable": failure.Recoverable,
+	}
+	if failure.SuggestedCommand != "" {
+		metadata["suggestedCommand"] = failure.SuggestedCommand
+	}
+	if failure.ExitCode != 0 {
+		metadata["exitCode"] = failure.ExitCode
+	}
+
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeFailureClassification,
+		Summary:   "Failure classified",
+		Metadata:  metadata,
 	})
 }
 
