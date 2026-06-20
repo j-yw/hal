@@ -427,3 +427,9 @@
 - Use `Store.ListRuns` when callers need full run records ordered newest-first by latest created/updated timestamp with run ID tie-breaking; keep `Store.ListRunIDs` for lexicographic ID-only listings.
 - Persist factory timeline events through `Store.AppendEvent` and read them through `Store.LoadEvents`; committed timelines live at `factory/timelines/<runID>.json` as ordered JSON arrays, writes use the same `0600` temp-file-plus-rename path, and missing timelines should load as empty event lists.
 - Keep factory read/list paths scoped to committed `*.json` artifacts via the shared committed-file predicate; stale `*.tmp` and `*.bak` files must remain invisible to run and timeline reads.
+
+## Patterns from hal/factory-list-json-command (2026-06-21)
+
+- Factory CLI surfaces live in `cmd/factory.go`; keep command logic behind injectable deps so tests can use isolated `factory.Store` roots instead of global config state.
+- `hal factory list --json` uses `FactoryListContractVersion` (`factory-list-v1`) and emits `runs` as summaries from `Store.ListRuns`; omit full `artifacts` and timeline events from list output, using `artifactCount` for compact history inspection.
+- Adding a new factory command page requires command metadata coverage plus `make docs-cli`/`make docs-check`, because generated `docs/cli/hal_factory*.md` files are part of CI drift checks.

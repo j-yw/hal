@@ -8,6 +8,7 @@
 - Use `Store.ListRuns` for full factory run records ordered newest-first by latest created/updated timestamp with run ID as the stable tie-breaker; keep `ListRunIDs` for lexicographic ID-only listings.
 - Factory timelines are persisted through `Store.AppendEvent`/`Store.LoadEvents` as `timelines/<runID>.json`; append rewrites the JSON array through the same `0600` temp-file-plus-rename path and `LoadEvents` returns empty state for missing timelines.
 - Factory read/list paths should only consider committed `*.json` files via `isCommittedStoreFile`; leftover `*.tmp` and `*.bak` artifacts must stay invisible to run and timeline reads.
+- Factory command surfaces live in `cmd/factory.go`; `hal factory list --json` should emit `factory-list-v1` with `runs` summaries from `Store.ListRuns`, omit full artifacts/timelines, and regenerate `docs/cli/hal_factory*.md` with `make docs-cli`.
 
 ---
 
@@ -75,4 +76,16 @@
   - Use `isCommittedStoreFile` when adding factory read/list paths that scan storage directories.
   - `LoadRun` and `LoadEvents` should keep reading only committed paths; temp files may contain conflicting or partial JSON and should never be consulted.
   - Temp-artifact regression tests should assert both direct loads and list surfaces so future command layers inherit the same safety.
+---
+
+## 2026-06-21 00:00 CST - US-007
+- Implemented the `hal factory list` command family with `--json` output using the `factory-list-v1` contract and compact run summaries sourced from `Store.ListRuns`.
+- Added focused command tests for empty-state JSON, newest-first ordering, top-level/run JSON keys, omitted artifact/timeline payloads, and command registration with the `--json` flag.
+- Regenerated CLI docs so the new `hal factory` and `hal factory list` pages are included in `docs/cli`.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `cmd/docs_metadata_core_test.go`, `cmd/docs_metadata_archive_sandbox_test.go`, `docs/cli/hal.md`, `docs/cli/hal_factory.md`, `docs/cli/hal_factory_list.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test -timeout=120s ./cmd` passed; `go test -timeout=120s ./...` passed; `perl -e 'alarm shift; exec @ARGV' 180 go vet ./...` passed; `perl -e 'alarm shift; exec @ARGV' 180 make docs-check` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - New top-level Cobra command families need metadata coverage and regenerated `docs/cli` artifacts because `make docs-check` is part of CI.
+  - Keep factory list JSON summary-only: expose `artifactCount` but omit full `artifacts`, `events`, and timeline fields so status/detail commands can own full run inspection later.
+  - Command tests can use isolated `factory.NewStore(t.TempDir())` roots through injected deps instead of mutating global factory config paths.
 ---
