@@ -49,9 +49,11 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			cmd:  factoryRunCmd,
 			requiredLongPhrases: []string{
 				"existing hal auto compound",
+				"managed sandbox",
 				"positional PRD markdown path",
 				"--report <path>",
 				"--base <branch>",
+				"--sandbox",
 				"--json",
 				"factory-run-v1",
 			},
@@ -59,6 +61,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory run .hal/prd-feature.md",
 				"hal factory run --report .hal/reports/analysis.md",
 				"hal factory run .hal/prd-feature.md --base main --json",
+				"hal factory run .hal/prd-feature.md --sandbox",
 			},
 		},
 		{
@@ -130,6 +133,7 @@ func TestParseFactoryRunRequest(t *testing.T) {
 		reportPath string
 		baseBranch string
 		jsonMode   bool
+		sandbox    bool
 		want       factoryRunRequest
 		wantErr    string
 	}{
@@ -159,6 +163,15 @@ func TestParseFactoryRunRequest(t *testing.T) {
 			},
 		},
 		{
+			name:    "sandbox option",
+			args:    []string{".hal/prd-feature.md"},
+			sandbox: true,
+			want: factoryRunRequest{
+				MarkdownPath: ".hal/prd-feature.md",
+				Sandbox:      true,
+			},
+		},
+		{
 			name:       "positional and report conflict",
 			args:       []string{".hal/prd-feature.md"},
 			reportPath: ".hal/reports/analysis.md",
@@ -174,7 +187,7 @@ func TestParseFactoryRunRequest(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseFactoryRunRequest(tt.args, tt.reportPath, tt.baseBranch, tt.jsonMode)
+			got, err := parseFactoryRunRequest(tt.args, tt.reportPath, tt.baseBranch, tt.jsonMode, tt.sandbox)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("parseFactoryRunRequest() error = nil, want %q", tt.wantErr)
@@ -199,7 +212,7 @@ func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "json"} {
+	for _, flagName := range []string{"report", "base", "sandbox", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
@@ -229,6 +242,97 @@ func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *t
 	}
 	if !strings.Contains(err.Error(), "--report cannot be used with a positional PRD markdown path") {
 		t.Fatalf("Args() error = %q", err.Error())
+	}
+}
+
+func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	localCalled := false
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-local-default", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			localCalled = true
+			if req.Record.ExecutorMode != factory.ExecutorModeLocal {
+				t.Fatalf("local executorMode = %q, want %q", req.Record.ExecutorMode, factory.ExecutorModeLocal)
+			}
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not be called without --sandbox")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !localCalled {
+		t.Fatal("local pipeline was not called")
+	}
+}
+
+func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	sandboxCalled := false
+
+	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-selected", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called with --sandbox")
+			return nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			sandboxCalled = true
+			if req.ProjectDir != "/workspace/hal" {
+				t.Fatalf("sandbox ProjectDir = %q, want /workspace/hal", req.ProjectDir)
+			}
+			if req.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
+				t.Fatalf("sandbox executorMode = %q, want %q", req.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
+			}
+			wantArgs := []string{"hal", "auto", ".hal/prd-feature.md", "--base", "main"}
+			if !reflect.DeepEqual(req.RemoteArgs, wantArgs) {
+				t.Fatalf("remote args = %#v, want %#v", req.RemoteArgs, wantArgs)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !sandboxCalled {
+		t.Fatal("sandbox executor was not called")
+	}
+
+	record, err := store.LoadRun("run-sandbox-selected")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("persisted executorMode = %q, want %q", record.ExecutorMode, factory.ExecutorModeSandbox)
 	}
 }
 

@@ -34,6 +34,7 @@ var factoryStatusJSONFlag bool
 var factoryRunReportFlag string
 var factoryRunBaseFlag string
 var factoryRunJSONFlag bool
+var factoryRunSandboxFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -52,19 +53,20 @@ which is separate from per-project .hal runtime state.`,
 
 var factoryRunCmd = &cobra.Command{
 	Use:   "run [prd-path]",
-	Short: "Run the local factory executor",
+	Short: "Run a factory executor",
 	Args:  validateFactoryRunArgs,
 	Long: `Run the local factory executor by wrapping the existing hal auto compound
-pipeline.
+pipeline, or pass --sandbox to run the factory executor in a managed sandbox.
 
 Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
-base branch to the executor and --json for machine-readable factory-run-v1
-output.`,
+base branch to the executor, --sandbox for remote sandbox-backed execution, and
+--json for machine-readable factory-run-v1 output.`,
 	Example: `  hal factory run .hal/prd-feature.md
   hal factory run --report .hal/reports/analysis.md
-  hal factory run .hal/prd-feature.md --base main --json`,
+  hal factory run .hal/prd-feature.md --base main --json
+  hal factory run .hal/prd-feature.md --sandbox`,
 	RunE: runFactoryRun,
 }
 
@@ -100,6 +102,7 @@ JSON output includes the full run record and timeline events in append order.`,
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
+	factoryRunCmd.Flags().BoolVar(&factoryRunSandboxFlag, "sandbox", false, "Run the factory executor in a managed sandbox")
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
@@ -133,6 +136,7 @@ type factoryRunDeps struct {
 	currentBranch func(string) (string, error)
 	repoRemote    func(string) (string, error)
 	runPipeline   func(context.Context, factoryRunPipelineRequest) error
+	runSandbox    func(context.Context, factorySandboxExecutorRequest) error
 }
 
 type factoryRunPipelineRequest struct {
@@ -151,12 +155,16 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	currentBranch: compound.CurrentBranchOptionalInDir,
 	repoRemote:    readGitRemoteOptionalInDir,
 	runPipeline:   runFactoryRunPipeline,
+	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
+	},
 }
 
 type factoryRunRequest struct {
 	MarkdownPath string
 	ReportPath   string
 	BaseBranch   string
+	Sandbox      bool
 	JSON         bool
 }
 
@@ -229,7 +237,7 @@ func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
 		reportPath = value
 	}
 
-	if _, err := parseFactoryRunRequest(args, reportPath, "", false); err != nil {
+	if _, err := parseFactoryRunRequest(args, reportPath, "", false, false); err != nil {
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	return nil
@@ -264,6 +272,9 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if deps.runPipeline == nil {
 		return fmt.Errorf("factory run pipeline dependency is required")
 	}
+	if deps.runSandbox == nil {
+		return fmt.Errorf("factory sandbox executor dependency is required")
+	}
 
 	store, err := deps.defaultStore()
 	if err != nil {
@@ -297,7 +308,18 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
 		},
 	}
-	if err := deps.runPipeline(ctx, pipelineReq); err != nil {
+	runErr := error(nil)
+	if req.Sandbox {
+		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
+			ProjectDir:   dir,
+			RunRecord:    runningRecord,
+			RemoteArgs:   factoryRunRemoteAutoArgs(req),
+			RemoteOutput: out,
+		})
+	} else {
+		runErr = deps.runPipeline(ctx, pipelineReq)
+	}
+	if runErr != nil {
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
@@ -307,11 +329,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 			failedRecord = artifactRecord
 		}
 
-		failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, err)
+		failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, runErr)
 		if failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
 		}
-		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, err); eventErr != nil {
+		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, runErr); eventErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory failure event: %w", eventErr))
 		}
 		if failedRecord.Failure != nil {
@@ -320,12 +342,12 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 			}
 		}
 		if len(recordErrs) > 0 {
-			return errors.Join(append([]error{err}, recordErrs...)...)
+			return errors.Join(append([]error{runErr}, recordErrs...)...)
 		}
 		if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID, req.JSON); renderErr != nil {
-			return errors.Join(err, renderErr)
+			return errors.Join(runErr, renderErr)
 		}
-		return err
+		return runErr
 	}
 
 	completedAt := deps.now()
@@ -365,6 +387,9 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryRunDeps.runPipeline
 	}
+	if deps.runSandbox == nil {
+		deps.runSandbox = defaultFactoryRunDeps.runSandbox
+	}
 	return deps
 }
 
@@ -390,7 +415,7 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 	return factory.RunRecord{
 		RunID:        runID,
 		Status:       factory.RunStatusPending,
-		ExecutorMode: factory.ExecutorModeLocal,
+		ExecutorMode: factoryExecutorModeFromRequest(req),
 		Source:       factoryRunSourceFromRequest(req),
 		RepoPath:     repoPath,
 		RepoRemote:   repoRemote,
@@ -400,6 +425,13 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
+}
+
+func factoryExecutorModeFromRequest(req factoryRunRequest) string {
+	if req.Sandbox {
+		return factory.ExecutorModeSandbox
+	}
+	return factory.ExecutorModeLocal
 }
 
 func createFactoryRunRecord(store factory.Store, record factory.RunRecord) error {
@@ -940,6 +972,20 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	return deps.runAuto(ctx, autoReq)
 }
 
+func factoryRunRemoteAutoArgs(req factoryRunRequest) []string {
+	args := []string{"hal", "auto"}
+	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
+		args = append(args, markdownPath)
+	}
+	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
+		args = append(args, "--report", reportPath)
+	}
+	if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
+		args = append(args, "--base", baseBranch)
+	}
+	return args
+}
+
 func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -969,6 +1015,7 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	reportPath := factoryRunReportFlag
 	baseBranch := factoryRunBaseFlag
 	jsonMode := factoryRunJSONFlag
+	sandboxMode := factoryRunSandboxFlag
 
 	if cmd != nil {
 		if cmd.Flags().Lookup("report") != nil {
@@ -992,16 +1039,23 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			}
 			jsonMode = value
 		}
+		if cmd.Flags().Lookup("sandbox") != nil {
+			value, err := cmd.Flags().GetBool("sandbox")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			sandboxMode = value
+		}
 	}
 
-	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, jsonMode)
+	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, jsonMode, sandboxMode)
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	return req, nil
 }
 
-func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMode bool) (factoryRunRequest, error) {
+func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool) (factoryRunRequest, error) {
 	if len(args) > 1 {
 		return factoryRunRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
 	}
@@ -1012,6 +1066,7 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMo
 	req := factoryRunRequest{
 		ReportPath: reportPath,
 		BaseBranch: baseBranch,
+		Sandbox:    sandboxMode,
 		JSON:       jsonMode,
 	}
 	if len(args) == 1 {

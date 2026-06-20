@@ -5,6 +5,7 @@
 - Factory durable schema additions should preserve compatibility fields like `RunRecord.SandboxName` while adding richer optional objects; lock JSON field names and omission behavior in `internal/factory/types_test.go`.
 - Factory machine contract docs are guarded by `cmd/contracts_doc_test.go`; add reflection-backed JSON tag checks there when documenting nested durable metadata objects so docs drift fails tests.
 - Sandbox-backed factory execution side effects belong behind `factorySandboxExecutorDeps` in `cmd/factory_sandbox_executor.go`; add new remote behavior through normalized injectable dependencies so tests can fake registry, provisioning/start, provider exec, clocks, and store persistence.
+- `hal factory run --sandbox` selection lives in `factoryRunRequest.Sandbox` and dispatches through `factoryRunDeps.runSandbox`; keep local execution behind `runPipeline` so no-flag factory runs stay on the existing local path.
 
 ---
 
@@ -41,4 +42,15 @@
   - Keep sandbox-backed factory behavior in `cmd/factory_sandbox_executor.go` behind `factorySandboxExecutorDeps`; later stories should extend those injected boundaries instead of calling registry/provider/store functions directly.
   - Explicit sandbox targets should flow through the injectable loader, while no-target execution should use the injectable default resolver with the running-only filter.
   - The production provider exec adapter should run `Provider.Exec` commands through `sandbox.RunCmd` so stdout/stderr handling stays consistent with existing sandbox provider conventions.
+---
+## 2026-06-21 07:23 CST - US-004
+- Added the `--sandbox` flag to `hal factory run` command metadata, help text, and examples.
+- Wired sandbox selection into factory run parsing and dispatch while preserving the existing no-flag local pipeline path.
+- Added tests for sandbox flag registration, sandbox request parsing, local default execution, and sandbox executor selection with deterministic remote auto args.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: focused `go test ./cmd -run 'TestFactoryCommandHelpMetadata|TestParseFactoryRunRequest|TestFactoryRunCommandRegisteredWithInputFlags|TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag|TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag'`, `make test`, `make vet`.
+- **Learnings for future iterations:**
+  - Factory run mode selection happens before pipeline execution by setting `ExecutorMode` from `factoryRunRequest.Sandbox`.
+  - Add new factory run execution modes as injected `factoryRunDeps` functions so tests can assert dispatch without invoking real CLIs, providers, or network calls.
+  - Generated CLI docs are intentionally left to the dedicated documentation story when command metadata changes.
 ---
