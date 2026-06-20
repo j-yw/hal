@@ -1,7 +1,11 @@
 // Package factory defines durable factory run records and timeline events.
 package factory
 
-import "time"
+import (
+	"time"
+
+	"github.com/jywlabs/hal/internal/verify"
+)
 
 // Run status values.
 const (
@@ -63,6 +67,7 @@ type RunRecord struct {
 	UpdatedAt    time.Time           `json:"updatedAt"`
 	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
 	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
+	Verification *VerificationRecord `json:"verification,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
 }
 
@@ -80,6 +85,12 @@ type ArtifactReference struct {
 	Type string `json:"type"`
 	Path string `json:"path,omitempty"`
 	URL  string `json:"url,omitempty"`
+}
+
+// VerificationRecord captures verification metadata associated with a run.
+type VerificationRecord struct {
+	Summary   verify.Summary             `json:"summary"`
+	Artifacts []verify.ArtifactReference `json:"artifacts,omitempty"`
 }
 
 // FailureSummary records the terminal failure context for a run.

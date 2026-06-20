@@ -471,7 +471,8 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			requiredFields: []string{
 				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-				"finishedAt", "artifacts", "failure", "suggestedCommand",
+				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
+				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -485,6 +486,8 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.FailureCategoryGit,
 				factory.FailureCategoryCI,
 				factory.FailureCategoryUnknown,
+				verify.ArtifactKindStdout,
+				verify.ArtifactKindStderr,
 			},
 		},
 		{
@@ -559,6 +562,15 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if len(resp.Timeline) == 0 {
 			t.Fatal("factory status example should include timeline events")
+		}
+		if resp.Run.Verification == nil {
+			t.Fatal("factory status example should include verification metadata")
+		}
+		if resp.Run.Verification.Summary.Total == 0 {
+			t.Fatal("factory status example should include verification summary totals")
+		}
+		if len(resp.Run.Verification.Artifacts) == 0 {
+			t.Fatal("factory status example should include verification artifact references")
 		}
 	})
 
