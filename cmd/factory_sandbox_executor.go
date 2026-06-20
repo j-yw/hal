@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
@@ -164,16 +166,27 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		return fmt.Errorf("record factory sandbox metadata: %w", err)
 	}
 
+	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput)
+
 	remoteArgs := factorySandboxRemoteAutoArgs(req.RemoteAuto)
 	provider, err := deps.resolveProvider(target.Provider)
 	if err != nil {
 		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
 	}
-	if err := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, req.RemoteOutput); err != nil {
-		return fmt.Errorf("execute factory sandbox command: %w", err)
+	runErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, remoteOutput)
+	flushErr := remoteOutput.Flush()
+	if runErr != nil {
+		if flushErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
+		}
+		return fmt.Errorf("execute factory sandbox command: %w", runErr)
+	}
+	if flushErr != nil {
+		return fmt.Errorf("record remote sandbox output: %w", flushErr)
 	}
 
 	return deps.appendEvent(store, &factory.EventRecord{
+		Sequence:  remoteOutput.NextSequence(),
 		RunID:     record.RunID,
 		EventType: factory.EventTypeStepStarted,
 		Timestamp: deps.now().UTC(),
@@ -184,6 +197,145 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			"provider":     target.Provider,
 		},
 	})
+}
+
+type factorySandboxTimelineWriter struct {
+	mu           sync.Mutex
+	dst          io.Writer
+	store        factory.Store
+	deps         factorySandboxExecutorDeps
+	runID        string
+	sandboxName  string
+	provider     string
+	redact       func(string) string
+	pending      string
+	nextSequence int64
+}
+
+func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, dst io.Writer) *factorySandboxTimelineWriter {
+	if dst == nil {
+		dst = io.Discard
+	}
+	runID := ""
+	if record != nil {
+		runID = record.RunID
+	}
+	sandboxName := ""
+	provider := ""
+	if target != nil {
+		sandboxName = target.Name
+		provider = target.Provider
+	}
+	events, err := store.LoadEvents(runID)
+	nextSequence := int64(1)
+	if err == nil {
+		nextSequence = nextFactoryRunEventSequence(events)
+	}
+	redactor := sandboxRedactor(false, nil, target)
+	return &factorySandboxTimelineWriter{
+		dst:          dst,
+		store:        store,
+		deps:         deps,
+		runID:        runID,
+		sandboxName:  sandboxName,
+		provider:     provider,
+		redact:       redactor.Redact,
+		nextSequence: nextSequence,
+	}
+}
+
+func (w *factorySandboxTimelineWriter) Write(p []byte) (int, error) {
+	if w == nil {
+		return len(p), nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.dst != nil {
+		if _, err := w.dst.Write(p); err != nil {
+			return 0, err
+		}
+	}
+	w.pending += string(p)
+	if err := w.flushCompleteLinesLocked(); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (w *factorySandboxTimelineWriter) Flush() error {
+	if w == nil {
+		return nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if err := w.flushCompleteLinesLocked(); err != nil {
+		return err
+	}
+	line := strings.TrimSpace(w.pending)
+	w.pending = ""
+	if line == "" {
+		return nil
+	}
+	return w.appendLineLocked(line)
+}
+
+func (w *factorySandboxTimelineWriter) NextSequence() int64 {
+	if w == nil {
+		return 1
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.nextSequence
+}
+
+func (w *factorySandboxTimelineWriter) flushCompleteLinesLocked() error {
+	for {
+		idx := strings.IndexByte(w.pending, '\n')
+		if idx < 0 {
+			return nil
+		}
+		line := strings.TrimSpace(w.pending[:idx])
+		w.pending = w.pending[idx+1:]
+		if line == "" {
+			continue
+		}
+		if err := w.appendLineLocked(line); err != nil {
+			return err
+		}
+	}
+}
+
+func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
+	if strings.TrimSpace(w.runID) == "" {
+		return nil
+	}
+	if w.redact != nil {
+		line = w.redact(line)
+	}
+	event := factory.EventRecord{
+		Sequence:  w.nextSequence,
+		RunID:     w.runID,
+		EventType: factory.EventTypeCommandOutputSummary,
+		Timestamp: w.deps.now().UTC(),
+		Message:   line,
+		Summary:   "Remote sandbox output",
+		Metadata: map[string]any{
+			"source":      "remote_sandbox",
+			"stream":      "remote",
+			"sandboxName": w.sandboxName,
+			"provider":    w.provider,
+		},
+	}
+	if err := w.deps.appendEvent(w.store, &event); err != nil {
+		return err
+	}
+	w.nextSequence++
+	return nil
 }
 
 func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {

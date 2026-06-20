@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,6 +197,75 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 				t.Fatalf("factorySandboxRemoteAutoArgs() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *testing.T) {
+	now := time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-remote",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "203.0.113.42",
+	}
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName:  "factory-remote",
+		RunRecord:    factory.RunRecord{RunID: "run-remote-output", Status: factory.RunStatusRunning},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		loadSandbox:  func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			if _, err := io.WriteString(out, "Step: run\nconnecting to 203.0."); err != nil {
+				return err
+			}
+			_, err := io.WriteString(out, "113.42\n")
+			return err
+		},
+		saveRun: func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if out.String() != "Step: run\nconnecting to 203.0.113.42\n" {
+		t.Fatalf("remote output writer = %q", out.String())
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	}
+	firstLine, secondLine := events[0], events[1]
+	if firstLine.EventType != factory.EventTypeCommandOutputSummary || secondLine.EventType != factory.EventTypeCommandOutputSummary {
+		t.Fatalf("remote event types = %q/%q, want command output summaries", firstLine.EventType, secondLine.EventType)
+	}
+	if firstLine.Message != "Step: run" {
+		t.Fatalf("first remote message = %q", firstLine.Message)
+	}
+	if strings.Contains(secondLine.Message, "203.0.113.42") {
+		t.Fatalf("second remote message leaked address: %q", secondLine.Message)
+	}
+	if !strings.Contains(secondLine.Message, "<address redacted>") {
+		t.Fatalf("second remote message missing redaction marker: %q", secondLine.Message)
+	}
+	if secondLine.Metadata["source"] != "remote_sandbox" || secondLine.Metadata["stream"] != "remote" {
+		t.Fatalf("second remote metadata = %#v", secondLine.Metadata)
+	}
+	if secondLine.Metadata["sandboxName"] != "factory-remote" || secondLine.Metadata["provider"] != "daytona" {
+		t.Fatalf("second remote target metadata = %#v", secondLine.Metadata)
+	}
+	if events[2].EventType != factory.EventTypeStepStarted {
+		t.Fatalf("final event type = %q, want %q", events[2].EventType, factory.EventTypeStepStarted)
 	}
 }
 
