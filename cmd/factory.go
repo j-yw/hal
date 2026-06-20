@@ -322,6 +322,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		if len(recordErrs) > 0 {
 			return errors.Join(append([]error{err}, recordErrs...)...)
 		}
+		if req.JSON {
+			if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID); renderErr != nil {
+				return errors.Join(err, renderErr)
+			}
+		}
 		return err
 	}
 

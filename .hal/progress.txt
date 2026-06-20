@@ -9,6 +9,7 @@
 - Factory run timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use the injected `RecordProgress` hook for progress events and keep completion/failure lifecycle events outside the wrapped `hal auto` implementation.
 - Factory run artifact references are collected in the `cmd/factory.go` wrapper after `factoryRunDeps.runPipeline` returns; explicit source paths and the factory store run-record path are always relevant, while optional `.hal` artifacts should be detected with template constants and skipped when absent.
 - Factory run final results should be rendered from the persisted `factory.RunRecord` plus `Store.LoadEvents` after terminal status/final timestamps are saved, so command output matches durable state.
+- `hal factory run --json` failure paths should render the persisted `factory-run-v1` result after failure status/classification/timeline events are saved, then still return the original pipeline error so CLI exit behavior stays non-zero.
 - Factory run failure categories are centralized in `internal/factory/types.go`; classify pipeline errors in the command wrapper from explicit `ExitCodeError`, `step <name> failed:` auto-step messages, then conservative message fragments, defaulting to `unknown` when context is insufficient.
 
 ---
@@ -115,4 +116,16 @@
   - Failure persistence should record artifacts before saving terminal failure status so failed records keep source and generated artifact context.
   - Use `autoFailedStep` when classifying wrapped auto-pipeline failures; it recognizes canonical `step <step> failed:` errors and avoids relying only on free-form error text.
   - Keep factory failure category values in `internal/factory` constants and use those constants in docs, examples, and tests to avoid contract drift.
+---
+
+## 2026-06-21 02:32 CST - US-009
+- Implemented JSON rendering for failed `hal factory run --json` executions after the durable failed status, artifacts, failure classification, and timeline events are persisted.
+- Added tests proving `factory-run-v1` JSON output for both markdown and report entry flows on success and failure, including run ID, status, next action, artifact references, event summary, failure classification, error message, and suggested command.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test -timeout=120s ./cmd -run 'Test(RunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows|RunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows|RunFactoryRunWithDepsPersistsSuccessfulStatusAndResult|RunFactoryRunWithDepsPersistsFailedStatusAndDetails|RenderFactoryRunJSONLocksResultContract)'`, `make test`, `make vet`, `make docs-check`, `git diff --check`.
+- Browser verification: skipped because this story only changes CLI JSON behavior and command-layer tests.
+- **Learnings for future iterations:**
+  - Render factory run JSON from the store after terminal persistence in both success and failure paths so stdout matches durable state.
+  - Preserve the original pipeline error after rendering failure JSON; callers need the payload and a non-zero command result.
+  - Table-driven command-helper tests can cover markdown and report entry flows with an injected `factory.NewStore(t.TempDir())` and no real `hal auto` invocation.
 ---

@@ -723,6 +723,232 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulStatusAndResult(t *testing.T) {
 	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
 }
 
+func TestRunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows(t *testing.T) {
+	tests := []struct {
+		name       string
+		runID      string
+		sourcePath string
+		req        factoryRunRequest
+	}{
+		{
+			name:       "markdown",
+			runID:      "run-json-markdown-success",
+			sourcePath: ".hal/prd-feature.md",
+			req: factoryRunRequest{
+				MarkdownPath: ".hal/prd-feature.md",
+				JSON:         true,
+			},
+		},
+		{
+			name:       "report",
+			runID:      "run-json-report-success",
+			sourcePath: ".hal/reports/analysis.md",
+			req: factoryRunRequest{
+				ReportPath: ".hal/reports/analysis.md",
+				JSON:       true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, ".hal")
+			reportsDir := filepath.Join(halDir, "reports")
+			if err := os.MkdirAll(reportsDir, 0755); err != nil {
+				t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+			}
+			writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+			writeFile(t, reportsDir, "analysis.md", "# Analysis\n")
+
+			store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+			createdAt := time.Date(2026, 6, 21, 1, 40, 0, 0, time.UTC)
+			startedAt := createdAt.Add(1 * time.Minute)
+			completedAt := createdAt.Add(2 * time.Minute)
+			times := []time.Time{createdAt, startedAt, completedAt}
+			var buf bytes.Buffer
+
+			err := runFactoryRunWithDeps(context.Background(), dir, tt.req, &buf, factoryRunDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				newRunID:     func() (string, error) { return tt.runID, nil },
+				now: func() time.Time {
+					if len(times) == 0 {
+						return completedAt
+					}
+					next := times[0]
+					times = times[1:]
+					return next
+				},
+				workingDir: func() (string, error) { return dir, nil },
+				currentBranch: func(string) (string, error) {
+					return "hal/factory", nil
+				},
+				repoRemote: func(string) (string, error) {
+					return "git@github.com:jywlabs/hal.git", nil
+				},
+				runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+					writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+			}
+
+			var resp FactoryRunResponse
+			if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+			}
+			if resp.ContractVersion != FactoryRunContractVersion {
+				t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
+			}
+			if resp.RunID != tt.runID {
+				t.Fatalf("runId = %q, want %q", resp.RunID, tt.runID)
+			}
+			if resp.Status != factory.RunStatusSucceeded {
+				t.Fatalf("status = %q, want %q", resp.Status, factory.RunStatusSucceeded)
+			}
+			if resp.NextAction == nil || resp.NextAction.Command != "hal factory status "+tt.runID+" --json" {
+				t.Fatalf("nextAction = %#v", resp.NextAction)
+			}
+			if resp.EventSummary.Total != 3 {
+				t.Fatalf("eventSummary.total = %d, want 3", resp.EventSummary.Total)
+			}
+			if resp.EventSummary.ByType[factory.EventTypeStepEnded] != 1 {
+				t.Fatalf("eventSummary.byType[%q] = %d, want 1", factory.EventTypeStepEnded, resp.EventSummary.ByType[factory.EventTypeStepEnded])
+			}
+			if resp.EventSummary.LastSummary != "Local compound pipeline completed" {
+				t.Fatalf("eventSummary.lastSummary = %q", resp.EventSummary.LastSummary)
+			}
+			if resp.Failure != nil {
+				t.Fatalf("failure = %#v, want nil", resp.Failure)
+			}
+			requireFactoryArtifactPath(t, resp.Artifacts, tt.sourcePath)
+			requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
+			requireFactoryArtifactPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
+		})
+	}
+}
+
+func TestRunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows(t *testing.T) {
+	tests := []struct {
+		name       string
+		runID      string
+		sourcePath string
+		req        factoryRunRequest
+	}{
+		{
+			name:       "markdown",
+			runID:      "run-json-markdown-failure",
+			sourcePath: ".hal/prd-feature.md",
+			req: factoryRunRequest{
+				MarkdownPath: ".hal/prd-feature.md",
+				JSON:         true,
+			},
+		},
+		{
+			name:       "report",
+			runID:      "run-json-report-failure",
+			sourcePath: ".hal/reports/analysis.md",
+			req: factoryRunRequest{
+				ReportPath: ".hal/reports/analysis.md",
+				JSON:       true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			halDir := filepath.Join(dir, ".hal")
+			reportsDir := filepath.Join(halDir, "reports")
+			if err := os.MkdirAll(reportsDir, 0755); err != nil {
+				t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+			}
+			writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+			writeFile(t, reportsDir, "analysis.md", "# Analysis\n")
+
+			store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+			createdAt := time.Date(2026, 6, 21, 1, 50, 0, 0, time.UTC)
+			startedAt := createdAt.Add(1 * time.Minute)
+			failedAt := createdAt.Add(2 * time.Minute)
+			times := []time.Time{createdAt, startedAt, failedAt}
+			pipelineErr := errors.New("step ci failed: workflow check failed")
+			var buf bytes.Buffer
+
+			err := runFactoryRunWithDeps(context.Background(), dir, tt.req, &buf, factoryRunDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				newRunID:     func() (string, error) { return tt.runID, nil },
+				now: func() time.Time {
+					if len(times) == 0 {
+						return failedAt
+					}
+					next := times[0]
+					times = times[1:]
+					return next
+				},
+				workingDir: func() (string, error) { return dir, nil },
+				currentBranch: func(string) (string, error) {
+					return "hal/factory", nil
+				},
+				repoRemote: func(string) (string, error) {
+					return "git@github.com:jywlabs/hal.git", nil
+				},
+				runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+					writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+					return pipelineErr
+				},
+			})
+			if !errors.Is(err, pipelineErr) {
+				t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline error", err)
+			}
+
+			var resp FactoryRunResponse
+			if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+			}
+			if resp.ContractVersion != FactoryRunContractVersion {
+				t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
+			}
+			if resp.RunID != tt.runID {
+				t.Fatalf("runId = %q, want %q", resp.RunID, tt.runID)
+			}
+			if resp.Status != factory.RunStatusFailed {
+				t.Fatalf("status = %q, want %q", resp.Status, factory.RunStatusFailed)
+			}
+			if resp.NextAction == nil || resp.NextAction.Command != "hal factory status "+tt.runID+" --json" {
+				t.Fatalf("nextAction = %#v", resp.NextAction)
+			}
+			if resp.Failure == nil {
+				t.Fatal("failure should be emitted")
+			}
+			if resp.Failure.Classification != factory.FailureCategoryCI {
+				t.Fatalf("failure.classification = %q, want %q", resp.Failure.Classification, factory.FailureCategoryCI)
+			}
+			if resp.Failure.ErrorMessage != pipelineErr.Error() {
+				t.Fatalf("failure.errorMessage = %q, want %q", resp.Failure.ErrorMessage, pipelineErr.Error())
+			}
+			if resp.Failure.SuggestedCommand != "hal factory status "+tt.runID+" --json" {
+				t.Fatalf("failure.suggestedCommand = %q", resp.Failure.SuggestedCommand)
+			}
+			if resp.EventSummary.Total != 4 {
+				t.Fatalf("eventSummary.total = %d, want 4", resp.EventSummary.Total)
+			}
+			if resp.EventSummary.ByType[factory.EventTypeFailureClassification] != 1 {
+				t.Fatalf("eventSummary.byType[%q] = %d, want 1", factory.EventTypeFailureClassification, resp.EventSummary.ByType[factory.EventTypeFailureClassification])
+			}
+			if resp.EventSummary.LastEventType != factory.EventTypeFailureClassification {
+				t.Fatalf("eventSummary.lastEventType = %q", resp.EventSummary.LastEventType)
+			}
+			requireFactoryArtifactPath(t, resp.Artifacts, tt.sourcePath)
+			requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
+			requireFactoryArtifactPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
+		})
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
