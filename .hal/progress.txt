@@ -14,3 +14,12 @@
   - For documentation-only architecture work, `make test` provides Go typecheck coverage and `make vet` is the companion static check.
   - Keep ADR scope explicit when no runtime behavior or machine-readable CLI contracts are intended to change.
 ---
+
+## 2026-06-20 23:27 CST - US-002
+- Documented Hal's current local execution boundary in the factory control plane ADR.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Current Hal workflow state should be described as local to the active worktree's `.hal/` directory until a future PRD explicitly introduces a shared state source.
+  - Documentation-only ADR stories still use `make test` and `make vet` as the quality gate for typecheck/static coverage.
+  - `golangci-lint` was not installed in this environment, so `make lint` was skipped rather than relying on the Makefile's non-failing install hint.
+---
