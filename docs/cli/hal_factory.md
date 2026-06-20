@@ -7,13 +7,15 @@ Inspect factory run history
 Inspect durable factory run history stored under Hal's global config directory.
 
 Factory commands read the global factory store, which is separate from per-project
-.hal runtime state. Use the list command to inspect stored run summaries.
+.hal runtime state. Use the list command to inspect stored run summaries and the
+status command to inspect one run and its timeline.
 
 ### Examples
 
 ```
   hal factory list
   hal factory list --json
+  hal factory status <run-id> --json
 ```
 
 ### Options
@@ -26,4 +28,5 @@ Factory commands read the global factory store, which is separate from per-proje
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
 * [hal factory list](hal_factory_list.md)	 - List stored factory runs
+* [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run
 

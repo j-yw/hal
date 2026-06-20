@@ -9,6 +9,7 @@
 - Factory timelines are persisted through `Store.AppendEvent`/`Store.LoadEvents` as `timelines/<runID>.json`; append rewrites the JSON array through the same `0600` temp-file-plus-rename path and `LoadEvents` returns empty state for missing timelines.
 - Factory read/list paths should only consider committed `*.json` files via `isCommittedStoreFile`; leftover `*.tmp` and `*.bak` artifacts must stay invisible to run and timeline reads.
 - Factory command surfaces live in `cmd/factory.go`; `hal factory list --json` should emit `factory-list-v1` with `runs` summaries from `Store.ListRuns`, omit full artifacts/timelines, and regenerate `docs/cli/hal_factory*.md` with `make docs-cli`.
+- `hal factory status <run-id> --json` should emit `factory-status-v1` with a full `run` and append-ordered `timeline`; missing run IDs must return before writing any JSON payload.
 
 ---
 
@@ -88,4 +89,16 @@
   - New top-level Cobra command families need metadata coverage and regenerated `docs/cli` artifacts because `make docs-check` is part of CI.
   - Keep factory list JSON summary-only: expose `artifactCount` but omit full `artifacts`, `events`, and timeline fields so status/detail commands can own full run inspection later.
   - Command tests can use isolated `factory.NewStore(t.TempDir())` roots through injected deps instead of mutating global factory config paths.
+---
+
+## 2026-06-21 00:06 CST - US-008
+- Implemented `hal factory status <run-id> --json` with the `factory-status-v1` contract, including the full factory run record and append-ordered timeline events.
+- Added missing-run handling that returns a non-zero error before writing JSON, plus command tests for JSON shape, timeline order, command registration, and no-payload missing-run behavior.
+- Regenerated factory CLI docs for the new `hal factory status` page.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `docs/cli/hal_factory.md`, `docs/cli/hal_factory_status.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test -timeout=120s ./cmd` passed; `go test -timeout=120s ./...` passed; `perl -e 'alarm shift; exec @ARGV' 180 go vet ./...` passed; `perl -e 'alarm shift; exec @ARGV' 180 make docs-check` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - Keep one-run factory inspection in `hal factory status`; `hal factory list` remains summary-only.
+  - Load the run before loading the timeline so missing IDs can fail without emitting partial or malformed JSON.
+  - Factory command JSON tests should assert top-level keys and timeline append order rather than sorting by event sequence.
 ---

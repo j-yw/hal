@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +139,139 @@ func TestFactoryListCommandRegisteredWithJSONFlag(t *testing.T) {
 	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory list missing metadata fields: %v", missing)
+	}
+}
+
+func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(20 * time.Minute)
+	record := testFactoryRunRecord("run-status", base, base.Add(10*time.Minute))
+	record.Status = factory.RunStatusSucceeded
+	record.SandboxName = "factory-status"
+	record.FinishedAt = &finishedAt
+	record.Artifacts = []factory.ArtifactReference{
+		{Name: "report", Type: "markdown", Path: ".hal/reports/run-status.md"},
+	}
+	record.Failure = &factory.FailureSummary{
+		Step:     "review",
+		Category: "validation",
+		Message:  "review found issues",
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	events := []factory.EventRecord{
+		{
+			Sequence:  2,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(3 * time.Minute),
+			Message:   "run step completed",
+			Summary:   "completed run",
+			Metadata:  map[string]any{"validIssues": float64(0)},
+		},
+		{
+			Sequence:  1,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeRunCreated,
+			Timestamp: base.Add(1 * time.Minute),
+			Summary:   "created run",
+		},
+	}
+	for _, event := range events {
+		event := event
+		if err := store.AppendEvent(&event); err != nil {
+			t.Fatalf("AppendEvent(%d) error: %v", event.Sequence, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryStatusResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.ContractVersion != FactoryStatusContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryStatusContractVersion)
+	}
+	if resp.Run.RunID != record.RunID {
+		t.Fatalf("run.runId = %q, want %q", resp.Run.RunID, record.RunID)
+	}
+	if len(resp.Run.Artifacts) != 1 {
+		t.Fatalf("run.artifacts len = %d, want 1", len(resp.Run.Artifacts))
+	}
+	gotSequence := make([]int64, 0, len(resp.Timeline))
+	for _, event := range resp.Timeline {
+		gotSequence = append(gotSequence, event.Sequence)
+	}
+	wantSequence := []int64{2, 1}
+	if !reflect.DeepEqual(gotSequence, wantSequence) {
+		t.Fatalf("timeline sequence order = %v, want append order %v", gotSequence, wantSequence)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal(raw) error: %v", err)
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "run", "timeline"})
+	run, ok := raw["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("run should be an object, got %T", raw["run"])
+	}
+	requireFactoryFields(t, "factory status run", run, []string{
+		"runId", "status", "source", "repoPath", "repoRemote", "branchName",
+		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
+		"finishedAt", "artifacts", "failure",
+	})
+	timeline, ok := raw["timeline"].([]any)
+	if !ok || len(timeline) != 2 {
+		t.Fatalf("timeline should be an array of 2, got %T len %d", raw["timeline"], len(resp.Timeline))
+	}
+	firstEvent, ok := timeline[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first timeline event should be an object, got %T", timeline[0])
+	}
+	requireFactoryFields(t, "factory status event", firstEvent, []string{
+		"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata",
+	})
+}
+
+func TestRunFactoryStatusJSONMissingRunReturnsErrorWithoutPayload(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	var buf bytes.Buffer
+
+	err := runFactoryStatusWithDeps(&buf, "missing-run", true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err == nil {
+		t.Fatal("runFactoryStatusWithDeps() error = nil, want missing-run error")
+	}
+	if !strings.Contains(err.Error(), `factory run "missing-run" not found`) {
+		t.Fatalf("error = %q, want missing-run message", err.Error())
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("missing run should not write JSON payload, got %q", buf.String())
+	}
+}
+
+func TestFactoryStatusCommandRegisteredWithJSONFlag(t *testing.T) {
+	cmd, err := commandAtPath(Root(), "factory", "status")
+	if err != nil {
+		t.Fatalf("factory status command missing: %v", err)
+	}
+	if cmd.Flags().Lookup("json") == nil {
+		t.Fatal("factory status should expose --json flag")
+	}
+	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
+		t.Fatalf("factory status missing metadata fields: %v", missing)
 	}
 }
 

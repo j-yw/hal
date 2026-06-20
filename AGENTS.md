@@ -432,4 +432,5 @@
 
 - Factory CLI surfaces live in `cmd/factory.go`; keep command logic behind injectable deps so tests can use isolated `factory.Store` roots instead of global config state.
 - `hal factory list --json` uses `FactoryListContractVersion` (`factory-list-v1`) and emits `runs` as summaries from `Store.ListRuns`; omit full `artifacts` and timeline events from list output, using `artifactCount` for compact history inspection.
+- `hal factory status <run-id> --json` uses `FactoryStatusContractVersion` (`factory-status-v1`) and emits full `run` plus append-ordered `timeline`; load the run before the timeline so missing run IDs return an error without writing a JSON payload.
 - Adding a new factory command page requires command metadata coverage plus `make docs-cli`/`make docs-check`, because generated `docs/cli/hal_factory*.md` files are part of CI drift checks.
