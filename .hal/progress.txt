@@ -4,6 +4,7 @@
 
 - Factory queue JSON contracts are split between reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; keep docs/examples/tests aligned when implementing queue commands.
 - Factory queue storage builds on `internal/factory.Store`: keep durable queue state at the global config-backed factory root (`StoreDir()/queue.json`), return empty state for missing files without creating directories, and preserve corrupt files by returning parse errors without mutation.
+- Queue read-modify-write paths should use `Store.UpdateQueue`; it holds `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local queue workers preserve all updates.
 
 ---
 ## 2026-06-21 04:50:06 CST - US-001
@@ -23,6 +24,16 @@
 - **Learnings for future iterations:**
   - Reuse `factory.Store` for queue persistence so future queue commands share the same global config precedence as existing factory run/timeline storage.
   - Read-only queue loads should not create global directories; command implementations can treat a missing queue file as an empty queue.
+  - Browser verification skipped because this story only changes backend queue storage.
+  - Checks run: `go test ./internal/factory`, `make test`, `make vet`.
+---
+## 2026-06-21 05:04:02 CST - US-003
+- Implemented atomic queue mutation support with `Store.UpdateQueue`, a local `queue.lock` guard, and locked `SaveQueue` writes.
+- Added deterministic queue tests for failed save preservation, temp cleanup, and concurrent read-modify-write mutation safety.
+- Files changed: `internal/factory/queue.go`, `internal/factory/queue_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Use `Store.UpdateQueue` for enqueue/claim/lifecycle changes so load, mutation, and save happen under one local lock.
+  - `SaveQueue` is still useful for whole-state replacement, but command-level mutations should avoid separate `LoadQueue`/`SaveQueue` sequences.
   - Browser verification skipped because this story only changes backend queue storage.
   - Checks run: `go test ./internal/factory`, `make test`, `make vet`.
 ---
