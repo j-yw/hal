@@ -163,6 +163,49 @@ func TestMachineContractFields(t *testing.T) {
 		}
 	})
 
+	t.Run("plan contract v1 fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := outputPlanJSON(&buf, PlanResult{
+			ContractVersion: PlanContractVersion,
+			OK:              true,
+			OutputPath:      ".hal/prd.json",
+			Format:          "json",
+			InputSource:     PlanInputSourceFile,
+			QuestionsAsked:  false,
+			NextSteps:       []string{"hal validate --json", "hal run --json"},
+			Summary:         "PRD created",
+		}); err != nil {
+			t.Fatalf("outputPlanJSON error: %v", err)
+		}
+
+		var raw map[string]interface{}
+		if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+			t.Fatalf("JSON parse error: %v", err)
+		}
+
+		requiredFields := []string{
+			"contractVersion", "ok", "outputPath", "format",
+			"inputSource", "questionsAsked", "nextSteps", "summary",
+		}
+		for _, f := range requiredFields {
+			if _, ok := raw[f]; !ok {
+				t.Errorf("plan JSON missing required field %q", f)
+			}
+		}
+		if v, ok := raw["contractVersion"].(float64); !ok || int(v) != PlanContractVersion {
+			t.Fatalf("contractVersion = %v, want %d", raw["contractVersion"], PlanContractVersion)
+		}
+		validInputSources := map[string]bool{
+			PlanInputSourceArgument: true,
+			PlanInputSourceFile:     true,
+			PlanInputSourceStdin:    true,
+			PlanInputSourceEditor:   true,
+		}
+		if !validInputSources[raw["inputSource"].(string)] {
+			t.Fatalf("unexpected inputSource %q", raw["inputSource"])
+		}
+	})
+
 	t.Run("status contract version is 1", func(t *testing.T) {
 		dir := t.TempDir()
 		os.MkdirAll(filepath.Join(dir, template.HalDir), 0755)
@@ -866,6 +909,61 @@ func TestNextActionFieldsConsistent(t *testing.T) {
 			}
 			if !validActionIDs[jr.NextAction.ID] {
 				t.Fatalf("nextAction.id %q is not a recognized action ID", jr.NextAction.ID)
+			}
+		})
+	}
+}
+
+func TestMachineContractFields_PlanV1Examples(t *testing.T) {
+	requiredFields := []string{"contractVersion", "ok", "format", "inputSource", "questionsAsked", "summary"}
+	validInputSources := map[string]bool{PlanInputSourceArgument: true, PlanInputSourceFile: true, PlanInputSourceStdin: true, PlanInputSourceEditor: true}
+	validFormats := map[string]bool{"markdown": true, "json": true}
+
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{name: "success example", path: filepath.Join("..", "docs", "contracts", "examples", "plan-v1-success.json")},
+		{name: "failure example", path: filepath.Join("..", "docs", "contracts", "examples", "plan-v1-failure.json")},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.path, err)
+			}
+			if !json.Valid(data) {
+				t.Fatalf("example %s is not valid JSON", tc.path)
+			}
+
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("unmarshal %s: %v", tc.path, err)
+			}
+			for _, f := range requiredFields {
+				if _, ok := raw[f]; !ok {
+					t.Errorf("%s missing required field %q", tc.path, f)
+				}
+			}
+			if v, ok := raw["contractVersion"].(float64); !ok || int(v) != PlanContractVersion {
+				t.Fatalf("contractVersion = %v, want %d", raw["contractVersion"], PlanContractVersion)
+			}
+			if source, _ := raw["inputSource"].(string); !validInputSources[source] {
+				t.Fatalf("inputSource = %q, want one of argument/file/stdin", source)
+			}
+			if format, _ := raw["format"].(string); !validFormats[format] {
+				t.Fatalf("format = %q, want markdown or json", format)
+			}
+			if ok, _ := raw["ok"].(bool); ok {
+				if _, hasOutput := raw["outputPath"]; !hasOutput {
+					t.Fatal("success example missing outputPath")
+				}
+				if _, hasNextSteps := raw["nextSteps"]; !hasNextSteps {
+					t.Fatal("success example missing nextSteps")
+				}
+			} else if _, hasError := raw["error"]; !hasError {
+				t.Fatal("failure example missing error")
 			}
 		})
 	}

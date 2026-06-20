@@ -24,6 +24,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"status-v1", "../docs/contracts/status-v1.md"},
 		{"doctor-v1", "../docs/contracts/doctor-v1.md"},
 		{"continue-v1", "../docs/contracts/continue-v1.md"},
+		{"plan-v1", "../docs/contracts/plan-v1.md"},
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
 		{"auto-v2", "../docs/contracts/auto-v2.md"},
 		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
@@ -143,6 +144,53 @@ func TestContractDocsIncludeCheckIDs(t *testing.T) {
 		if !strings.Contains(content, check.ID) {
 			t.Errorf("doctor-v1.md missing check ID %q", check.ID)
 		}
+	}
+}
+
+func TestContractDocsIncludePlanV1Fields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/plan-v1.md")
+	if err != nil {
+		t.Skipf("cannot read plan-v1.md: %v", err)
+	}
+	content := string(data)
+
+	requiredFields := []string{"contractVersion", "ok", "outputPath", "format", "inputSource", "questionsAsked", "nextSteps", "error", "summary"}
+	for _, f := range requiredFields {
+		if !strings.Contains(content, "`"+f+"`") {
+			t.Errorf("plan-v1.md missing field %q", f)
+		}
+	}
+	for _, value := range []string{PlanInputSourceArgument, PlanInputSourceFile, PlanInputSourceStdin, PlanInputSourceEditor, "markdown", "json"} {
+		if !strings.Contains(content, "`"+value+"`") && !strings.Contains(content, "\""+value+"\"") {
+			t.Errorf("plan-v1.md missing value %q", value)
+		}
+	}
+	if !strings.Contains(content, "Contract Version:** 1") {
+		t.Error("plan-v1.md missing numeric contract version declaration")
+	}
+}
+
+func TestContractDocsIncludePlanV1Examples(t *testing.T) {
+	successPath := "../docs/contracts/examples/plan-v1-success.json"
+	failurePath := "../docs/contracts/examples/plan-v1-failure.json"
+
+	if _, err := os.Stat(successPath); os.IsNotExist(err) {
+		t.Fatalf("plan v1 success example is missing at %s", successPath)
+	}
+	if _, err := os.Stat(failurePath); os.IsNotExist(err) {
+		t.Fatalf("plan v1 failure example is missing at %s", failurePath)
+	}
+
+	data, err := os.ReadFile("../docs/contracts/plan-v1.md")
+	if err != nil {
+		t.Skipf("cannot read plan-v1.md: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "plan-v1-success.json") {
+		t.Error("plan-v1.md should reference plan-v1-success.json")
+	}
+	if !strings.Contains(content, "plan-v1-failure.json") {
+		t.Error("plan-v1.md should reference plan-v1-failure.json")
 	}
 }
 
