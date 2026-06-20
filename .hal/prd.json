@@ -1,0 +1,179 @@
+{
+  "project": "Factory Control Plane ADR",
+  "branchName": "hal/factory-control-plane-adr-prd",
+  "description": "Create a documentation-only ADR for Hal's future team and organization factory control plane, defining the current local workflow boundary, future shared control-plane architecture, CLI contract compatibility expectations, operational concerns, and phased migration strategy without changing runtime behavior.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Create ADR Document Shell",
+      "description": "As a maintainer, I want the factory control plane decision recorded in the repository documentation so that future implementation work has a stable architectural reference.",
+      "acceptanceCriteria": [
+        "An ADR-style document exists under docs/adr/ unless an existing ADR convention is identified and followed instead",
+        "The ADR title clearly references Hal's future team and organization factory control plane",
+        "The ADR links to ReScienceLab/hal#16",
+        "The ADR status is explicit as Proposed",
+        "The ADR states that the change is documentation-only",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Document Current Local Boundary",
+      "description": "As a developer, I want the ADR to describe Hal's current local execution model so that future backend work does not accidentally break existing workflows.",
+      "acceptanceCriteria": [
+        "The ADR describes local .hal/ runtime state as the current source of workflow state",
+        "The ADR describes per-worktree execution boundaries",
+        "The ADR describes local artifacts including PRDs, reports, logs, review outputs, and run output",
+        "The ADR states that current queue coordination is local rather than shared across users or organizations",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Document CLI Contract Boundary",
+      "description": "As an agent integrator, I want the ADR to define which JSON contracts remain stable so that automation can safely depend on Hal CLI output.",
+      "acceptanceCriteria": [
+        "The ADR covers hal status --json",
+        "The ADR covers hal doctor --json",
+        "The ADR covers hal continue --json",
+        "The ADR covers hal auto --json",
+        "The ADR covers review-loop and report artifacts where relevant",
+        "The ADR identifies stable contract areas",
+        "The ADR identifies additive extension points",
+        "The ADR states that backend implementation details remain hidden from CLI consumers unless explicitly added to a contract",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Define Control Plane Domain Model",
+      "description": "As a future backend implementer, I want the ADR to define the core shared control plane entities so that future PRDs can build on consistent terminology.",
+      "acceptanceCriteria": [
+        "The ADR defines users",
+        "The ADR defines owners",
+        "The ADR defines organizations",
+        "The ADR defines projects",
+        "The ADR defines project membership",
+        "The ADR distinguishes organization-level ownership from project-level membership",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Define RBAC Boundaries",
+      "description": "As an organization administrator, I want the ADR to describe permission checks so that shared factory operations can be governed safely.",
+      "acceptanceCriteria": [
+        "The ADR describes RBAC expectations for queue operations",
+        "The ADR describes RBAC expectations for run operations",
+        "The ADR describes RBAC expectations for artifact access",
+        "The ADR describes RBAC expectations for policy operations",
+        "The ADR identifies authorization as a control-plane responsibility",
+        "The ADR states that authorization internals are not CLI JSON contract details",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Define Shared Queue and Run Lifecycle",
+      "description": "As a factory operator, I want the ADR to describe shared queue and run coordination so that multiple agents can cooperate without corrupting work state.",
+      "acceptanceCriteria": [
+        "The ADR defines a queue item lifecycle from creation through completion or failure",
+        "The ADR describes run leases",
+        "The ADR describes heartbeat requirements",
+        "The ADR describes cancellation semantics",
+        "The ADR describes stale lease detection and recovery",
+        "The ADR describes concurrency expectations for queue and run transitions",
+        "The ADR describes idempotency expectations for queue and run transitions",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Define Shared Artifact and Audit Model",
+      "description": "As a maintainer, I want the ADR to describe shared artifacts and audit logging so that future systems are debuggable and accountable.",
+      "acceptanceCriteria": [
+        "The ADR describes a shared artifact store for PRDs",
+        "The ADR describes artifact handling for reports",
+        "The ADR describes artifact handling for logs",
+        "The ADR describes artifact handling for review results",
+        "The ADR describes artifact handling for run output",
+        "The ADR describes audit logging for control-plane decisions",
+        "The ADR describes audit logging for state transitions",
+        "The ADR includes data ownership and access expectations",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Define Policy Inheritance and Overrides",
+      "description": "As an organization owner, I want the ADR to define policy precedence so that organization, project, run, and local settings resolve predictably.",
+      "acceptanceCriteria": [
+        "The ADR defines organization-level policy inheritance",
+        "The ADR defines project-level policy inheritance",
+        "The ADR defines run-level policy overrides",
+        "The ADR defines local override rules",
+        "The ADR provides explicit precedence ordering",
+        "The ADR identifies which local overrides should remain allowed for developer ergonomics",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Document Migration Strategy",
+      "description": "As a future implementation planner, I want the ADR to outline a migration path from local state to a shared control plane so that future PRDs can be phased safely.",
+      "acceptanceCriteria": [
+        "The ADR describes migration from local file state",
+        "The ADR describes migration from local queue coordination",
+        "The ADR preserves existing CLI behavior during early migration phases",
+        "The ADR includes a phased plan suitable for future PRDs",
+        "The ADR identifies compatibility gates before hosted or networked behavior is introduced",
+        "The ADR includes open questions for future implementation PRDs",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Add Non-Goal Guardrails",
+      "description": "As a reviewer, I want the ADR to clearly state what is out of scope so that this documentation task does not become an implementation change.",
+      "acceptanceCriteria": [
+        "The ADR states that no hosted service is implemented",
+        "The ADR states that no server, API handlers, database schema, auth integration, or networked queue are implemented",
+        "The ADR states that no runtime behavior changes are made to hal auto, hal status, hal doctor, hal continue, or review loops",
+        "The ADR states that no existing machine-readable JSON contracts are changed",
+        "The ADR states that no local auth, config, or state files are added for the future control plane",
+        "The ADR states that Hal-owned runtime state files are not manually modified",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- ADRs live under `docs/adr/` using numbered lowercase slug filenames (for example `0001-topic.md`) and should include explicit `Status`, related issue, and scope sections.
+
+---
+
+## 2026-06-20 23:23 CST - US-001
+- Created the ADR shell for Hal's future team and organization factory control plane.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - The repository did not previously have a `docs/adr/` convention, so this story establishes numbered ADR filenames under that directory.
+  - For documentation-only architecture work, `make test` provides Go typecheck coverage and `make vet` is the companion static check.
+  - Keep ADR scope explicit when no runtime behavior or machine-readable CLI contracts are intended to change.
+---

@@ -5,6 +5,7 @@
 - `internal/`: core packages (`archive/`, `doctor/`, `engine/`, `loop/`, `prd/`, `skills/`, `status/`, `template/`).
 - `main.go`: CLI entrypoint wiring.
 - `agent-os/`: product/roadmap documentation.
+- `docs/adr/`: architecture decision records using numbered lowercase slug filenames.
 - `docs/contracts/`: versioned machine contract documentation (status-v1, doctor-v1, continue-v1).
 - `.hal/`: runtime config created by `hal init` (`config.yaml`, `prd.json`, `progress.txt`, `prompt.md`, `skills/`, `archive/`, `reports/`).
 
@@ -36,6 +37,10 @@
 - Include PRD story IDs when applicable (e.g., `feat: US-008 - ...`).
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
+
+## Documentation Guidelines
+- ADRs live under `docs/adr/` with numbered lowercase slug filenames (for example `0001-topic.md`).
+- ADRs should include explicit `Status`, related issue, and scope sections; documentation-only ADRs must state that runtime behavior and machine-readable CLI contracts are unchanged.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
