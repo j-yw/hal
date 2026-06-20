@@ -117,6 +117,8 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(BootstrapStepResult{}),
 		reflect.TypeOf(BootstrapTimelineEvent{}),
 		reflect.TypeOf(BootstrapFailure{}),
+		reflect.TypeOf(BootstrapCommand{}),
+		reflect.TypeOf(BootstrapCommandResult{}),
 	}
 
 	for _, typ := range types {
