@@ -51,9 +51,11 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 		Artifacts:     []ArtifactReference{},
 	}
 	artifactsDir := verifyArtifactsDir(resolveProjectRoot(cfg))
+	artifactIDs := make(map[string]struct{}, len(cfg.Checks))
 
-	for _, check := range cfg.Checks {
-		checkResult, artifacts, err := runShellCheck(ctx, check, deps, artifactsDir)
+	for i, check := range cfg.Checks {
+		artifactID := uniqueArtifactID(check.ID, i, artifactIDs)
+		checkResult, artifacts, err := runShellCheck(ctx, check, deps, artifactsDir, artifactID)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +74,7 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 	return result, nil
 }
 
-func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifactsDir string) (CheckResult, []ArtifactReference, error) {
+func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifactsDir string, artifactID string) (CheckResult, []ArtifactReference, error) {
 	startedAt := deps.now()
 	result := baseCheckResult(check, startedAt)
 	if missingMessage, ok := missingShellCheckMessage(check); ok {
@@ -107,16 +109,22 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifact
 	result.DurationMs = finishedAt.Sub(startedAt).Milliseconds()
 
 	if err != nil {
+		if errors.Is(checkCtx.Err(), context.Canceled) {
+			return CheckResult{}, nil, checkCtx.Err()
+		}
 		result.Status = CheckStatusFail
 		result.ExitCode = exitCode(err)
 		result.Message = fmt.Sprintf("check failed: %v", err)
 		if errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
 			result.Status = CheckStatusTimeout
 			result.Message = fmt.Sprintf("check timed out after %d seconds", check.TimeoutSeconds)
+		} else if isMissingCommandFailure(result.ExitCode, stderr.String()) {
+			result.Status = CheckStatusMissing
+			result.Message = "check command is unavailable"
 		}
 	}
 
-	artifacts, err := writeCheckArtifacts(check.ID, stdout.Bytes(), stderr.Bytes(), artifactsDir)
+	artifacts, err := writeCheckArtifacts(check.ID, artifactID, stdout.Bytes(), stderr.Bytes(), artifactsDir)
 	if err != nil {
 		return CheckResult{}, nil, err
 	}
@@ -148,17 +156,17 @@ func verifyArtifactsDir(projectRoot string) string {
 	return filepath.Join(projectRoot, template.HalDir, "reports", "verify")
 }
 
-func writeCheckArtifacts(checkID string, stdout []byte, stderr []byte, artifactsDir string) ([]ArtifactReference, error) {
+func writeCheckArtifacts(checkID string, artifactID string, stdout []byte, stderr []byte, artifactsDir string) ([]ArtifactReference, error) {
 	artifacts := make([]ArtifactReference, 0, 2)
 	if len(stdout) > 0 {
-		artifact, err := writeCheckArtifact(checkID, ArtifactKindStdout, stdout, artifactsDir)
+		artifact, err := writeCheckArtifact(checkID, artifactID, ArtifactKindStdout, stdout, artifactsDir)
 		if err != nil {
 			return nil, err
 		}
 		artifacts = append(artifacts, artifact)
 	}
 	if len(stderr) > 0 {
-		artifact, err := writeCheckArtifact(checkID, ArtifactKindStderr, stderr, artifactsDir)
+		artifact, err := writeCheckArtifact(checkID, artifactID, ArtifactKindStderr, stderr, artifactsDir)
 		if err != nil {
 			return nil, err
 		}
@@ -167,12 +175,12 @@ func writeCheckArtifacts(checkID string, stdout []byte, stderr []byte, artifacts
 	return artifacts, nil
 }
 
-func writeCheckArtifact(checkID, kind string, data []byte, artifactsDir string) (ArtifactReference, error) {
+func writeCheckArtifact(checkID, artifactID, kind string, data []byte, artifactsDir string) (ArtifactReference, error) {
 	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 		return ArtifactReference{}, fmt.Errorf("create verify artifacts directory: %w", err)
 	}
 
-	fileName := fmt.Sprintf("%s-%s.txt", safeArtifactID(checkID), kind)
+	fileName := fmt.Sprintf("%s-%s.txt", artifactID, kind)
 	artifactPath := filepath.Join(artifactsDir, fileName)
 	if err := os.WriteFile(artifactPath, data, 0644); err != nil {
 		return ArtifactReference{}, fmt.Errorf("write verify artifact %s: %w", fileName, err)
@@ -183,6 +191,24 @@ func writeCheckArtifact(checkID, kind string, data []byte, artifactsDir string) 
 		Kind:    kind,
 		Path:    path.Join(template.HalDir, "reports", "verify", fileName),
 	}, nil
+}
+
+func uniqueArtifactID(checkID string, checkIndex int, used map[string]struct{}) string {
+	baseID := safeArtifactID(checkID)
+	if _, ok := used[baseID]; !ok {
+		used[baseID] = struct{}{}
+		return baseID
+	}
+
+	candidatePrefix := fmt.Sprintf("%s-%d", baseID, checkIndex+1)
+	candidate := candidatePrefix
+	for suffix := 2; ; suffix++ {
+		if _, ok := used[candidate]; !ok {
+			used[candidate] = struct{}{}
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s-%d", candidatePrefix, suffix)
+	}
 }
 
 func safeArtifactID(checkID string) string {
@@ -253,6 +279,17 @@ func exitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return -1
+}
+
+func isMissingCommandFailure(code int, stderr string) bool {
+	stderr = strings.ToLower(stderr)
+	if code == 127 && (strings.Contains(stderr, "not found") || strings.Contains(stderr, "not found:")) {
+		return true
+	}
+	if runtime.GOOS == "windows" && code == 1 && strings.Contains(stderr, "not recognized") {
+		return true
+	}
+	return false
 }
 
 func applyCheckSummary(result *Result, check CheckResult) {

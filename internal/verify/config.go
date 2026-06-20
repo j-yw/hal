@@ -79,11 +79,16 @@ func LoadConfig(dir string) (*Config, error) {
 	cfg := DefaultConfig()
 	cfg.ProjectRoot = projectRoot
 	cfg.Checks = make([]ShellCheck, 0, len(raw.Verify.Checks))
+	seenIDs := make(map[string]int, len(raw.Verify.Checks))
 	for i, rawCheck := range raw.Verify.Checks {
 		check, err := normalizeShellCheck(rawCheck, projectRoot)
 		if err != nil {
 			return nil, fmt.Errorf("verify.checks[%d].%w", i, err)
 		}
+		if firstIndex, ok := seenIDs[check.ID]; ok {
+			return nil, fmt.Errorf("verify.checks[%d].id duplicates verify.checks[%d].id (%q)", i, firstIndex, check.ID)
+		}
+		seenIDs[check.ID] = i
 		cfg.Checks = append(cfg.Checks, check)
 	}
 

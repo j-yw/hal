@@ -174,6 +174,19 @@ func TestLoadConfigValidationErrors(t *testing.T) {
 			yaml:       ":::not yaml",
 			wantErrSub: "cannot unmarshal",
 		},
+		{
+			name: "duplicate id",
+			yaml: `verify:
+  checks:
+    - id: test
+      name: Unit tests
+      command: go test ./...
+    - id: test
+      name: Duplicate
+      command: go test ./...
+`,
+			wantErrSub: `verify.checks[1].id duplicates verify.checks[0].id ("test")`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -36,22 +36,22 @@
       "status": "missing",
       "required": false,
       "command": "golangci-lint run",
-      "workDir": "/work/hal",
+      "workDir": "/work/hal/missing",
       "timeoutSeconds": 120,
       "startedAt": "2026-06-20T12:00:02Z",
       "finishedAt": "2026-06-20T12:00:02Z",
       "durationMs": 0,
-      "exitCode": 0,
+      "exitCode": -1,
       "stdoutArtifact": "",
       "stderrArtifact": "",
-      "message": "optional check command is unavailable"
+      "message": "check working directory is missing: /work/hal/missing"
     }
   ],
   "warnings": [
     {
       "checkId": "optional-lint",
       "status": "missing",
-      "message": "optional check command is unavailable"
+      "message": "check working directory is missing: /work/hal/missing"
     }
   ],
   "artifacts": [
