@@ -5,6 +5,7 @@
 - Factory bootstrap request/result DTOs live in `internal/factory`; add explicit JSON tags and lock exported machine-readable fields with raw-key plus round-trip tests in `internal/factory/types_test.go`.
 - Bootstrap failure classification lives in `internal/factory/bootstrap_failure.go` with a separate bootstrap taxonomy (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) and sanitized messages that avoid raw command output.
 - Factory bootstrap command execution goes through `internal/factory.BootstrapCommandExecutor` and `RunBootstrapStep`; tests should inject fake executors and deterministic clocks rather than spawning git, Hal, or engine CLIs directly.
+- Repository checkout bootstrap goes through `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so clone/fetch/checkout command construction is tested deterministically without touching real repositories.
 
 ---
 
@@ -35,4 +36,13 @@
   - Keep bootstrap command construction as structured `BootstrapCommand` values so later repository, tooling, and Hal setup stories can assert command name, args, dir, and env without parsing shell strings.
   - `RunBootstrapStep` is the command-backed bootstrap helper to reuse for future orchestration; inject a clock in tests to keep step timestamps deterministic.
   - `hal repair --json` may normalize stale engine-local skill links before story work; check `.pi/skills/*` diffs deliberately before committing.
+---
+
+## 2026-06-21 05:06 CST - US-004
+- Implemented repository checkout bootstrap with deterministic clone vs fetch command selection, base-branch checkout, dry-run planning, and repo/auth failure classification through the executor boundary.
+- Files changed: `internal/factory/bootstrap_repository.go`, `internal/factory/bootstrap_repository_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Treat `BootstrapRequest.WorkspaceDir` as the final repository path for bootstrap repository setup; clone commands run from its parent directory and checkout/fetch commands run inside it.
+  - Existing repository setup should fetch `origin` and then checkout the requested base branch; missing repository setup should clone first and then checkout the same base branch.
+  - Dry-run repository bootstrap records pending `BootstrapStepResult` entries with command summaries instead of requiring an executor.
 ---
