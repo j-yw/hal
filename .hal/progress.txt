@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - ADRs live under `docs/adr/` using numbered lowercase slug filenames (for example `0001-topic.md`) and should include explicit `Status`, related issue, and scope sections.
+- Machine-readable CLI compatibility should reference `docs/contracts/` as the canonical source; ADRs should separate stable JSON contract fields from hidden backend implementation details.
 
 ---
 
@@ -22,4 +23,13 @@
   - Current Hal workflow state should be described as local to the active worktree's `.hal/` directory until a future PRD explicitly introduces a shared state source.
   - Documentation-only ADR stories still use `make test` and `make vet` as the quality gate for typecheck/static coverage.
   - `golangci-lint` was not installed in this environment, so `make lint` was skipped rather than relying on the Makefile's non-failing install hint.
+---
+
+## 2026-06-20 23:30 CST - US-003
+- Documented the CLI machine contract boundary in the factory control plane ADR, covering `hal status --json`, `hal doctor --json`, `hal continue --json`, `hal auto --json`, review-loop artifacts, report artifacts, stable contract areas, and additive extension rules.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Formal JSON CLI contract behavior is documented under `docs/contracts/`; ADRs should reference those docs rather than restating implementation internals as public API.
+  - Review-loop JSON artifacts are persisted under `.hal/reports/` and use the shared `compound.ReviewLoopResult` shape for automation-facing review summaries.
+  - Documentation-only ADR stories should still run `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
 ---

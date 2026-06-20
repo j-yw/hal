@@ -41,6 +41,7 @@
 ## Documentation Guidelines
 - ADRs live under `docs/adr/` with numbered lowercase slug filenames (for example `0001-topic.md`).
 - ADRs should include explicit `Status`, related issue, and scope sections; documentation-only ADRs must state that runtime behavior and machine-readable CLI contracts are unchanged.
+- When ADRs discuss machine-readable CLI compatibility, cite `docs/contracts/` as the canonical source and distinguish stable JSON contract fields from hidden implementation details.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 

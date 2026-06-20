@@ -49,6 +49,46 @@ work from local PRD and auto-state files rather than from a shared organization
 queue. There is no cross-user leasing, shared run ownership, hosted scheduler,
 or organization-wide queue arbitration in the current runtime behavior.
 
+## CLI Machine Contract Boundary
+
+The future control plane must preserve the existing machine-readable CLI
+contract boundary for agent integrations. Commands that publish formal JSON
+contracts under `docs/contracts/` are the compatibility surface; local storage
+choices, hosted service topology, queue implementation details, authorization
+internals, and run orchestration internals remain hidden from CLI consumers
+unless they are explicitly added to a documented contract.
+
+The stable contract areas are:
+
+- `hal status --json` follows `docs/contracts/status-v1.md`. It exposes the
+  workflow track, state, artifact presence, recommended next action, summary,
+  and optional details such as the configured engine, manual progress,
+  auto-pipeline step detail, review-loop report path, and canonical paths.
+- `hal doctor --json` follows `docs/contracts/doctor-v1.md`. It exposes
+  readiness checks, ordered check identifiers, check status and applicability,
+  remediation identifiers, safe remediation commands, aggregate counts, and
+  summary fields.
+- `hal continue --json` follows `docs/contracts/continue-v1.md`. It combines
+  status and doctor output into a single readiness decision and next command,
+  with doctor failures blocking readiness and doctor warnings remaining
+  advisory.
+- `hal auto --json` follows `docs/contracts/auto-v2.md`. It exposes the
+  auto-pipeline result, entry mode, resume flag, fixed step map, step statuses,
+  summary, optional error and duration fields, and optional next action.
+- Review-loop artifacts written under `.hal/reports/` preserve their persisted
+  JSON result shape for review automation, including requested and completed
+  iterations, stop reason, aggregate issue/fix totals, affected files, and
+  per-iteration issue summaries. Summary reports under `.hal/reports/` remain
+  workflow artifacts, not an authorization or backend implementation contract.
+
+Additive extensions are allowed when they follow the existing contract posture:
+new optional fields may be added, new optional health checks may be added, and
+new step telemetry may be added without renaming or removing documented fields,
+state values, action identifiers, check identifiers, or required step keys. A
+future hosted control plane may expose organization, project, queue, run,
+policy, or audit identifiers through these JSON surfaces only through explicit
+contract updates and corresponding tests.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared
@@ -67,7 +107,8 @@ precedence, migration strategy, and explicit non-goals.
 
 ## Topics To Define
 
-The following sections will be expanded by subsequent stories:
+The following sections track this ADR's major subjects and may be expanded by
+subsequent stories:
 
 - Current local execution boundary
 - CLI machine contract boundary
