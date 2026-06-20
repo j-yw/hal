@@ -7,7 +7,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 const (
@@ -26,6 +30,12 @@ type queueState struct {
 
 // QueueUpdateFunc applies a read-modify-write mutation to queue entries.
 type QueueUpdateFunc func([]QueueEntry) ([]QueueEntry, error)
+
+// QueueOperationOptions injects non-deterministic queue operation sources.
+type QueueOperationOptions struct {
+	Now        func() time.Time
+	NewQueueID func() (string, error)
+}
 
 // QueuePath returns the committed queue state file path.
 func (s Store) QueuePath() string {
@@ -81,6 +91,85 @@ func (s Store) UpdateQueue(update QueueUpdateFunc) ([]QueueEntry, error) {
 		return []QueueEntry{}, nil
 	}
 	return updated, nil
+}
+
+// EnqueueQueueEntry appends one queued factory run entry using the store's
+// atomic queue mutation path.
+func (s Store) EnqueueQueueEntry(runID, executorMode string, opts QueueOperationOptions) (QueueEntry, error) {
+	runID, err := validateRunID(runID)
+	if err != nil {
+		return QueueEntry{}, err
+	}
+	executorMode, err = validateQueueExecutorMode(executorMode)
+	if err != nil {
+		return QueueEntry{}, err
+	}
+
+	opts = normalizeQueueOperationOptions(opts)
+	queueID, err := opts.NewQueueID()
+	if err != nil {
+		return QueueEntry{}, fmt.Errorf("create factory queue ID: %w", err)
+	}
+	queueID, err = validateQueueID(queueID)
+	if err != nil {
+		return QueueEntry{}, err
+	}
+
+	entry := QueueEntry{
+		QueueID:      queueID,
+		RunID:        runID,
+		ExecutorMode: executorMode,
+		Status:       QueueStatusQueued,
+		CreatedAt:    opts.Now().UTC(),
+		AttemptCount: 0,
+	}
+
+	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+		return append(entries, entry), nil
+	}); err != nil {
+		return QueueEntry{}, err
+	}
+
+	return entry, nil
+}
+
+// ListQueue returns queue entries in FIFO order by creation time.
+func (s Store) ListQueue() ([]QueueEntry, error) {
+	entries, err := s.LoadQueue()
+	if err != nil {
+		return nil, err
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		return queueEntryFIFOBefore(entries[i], entries[j])
+	})
+	return entries, nil
+}
+
+// ClaimNextQueueEntry claims the oldest queued entry. It returns nil when no
+// queued entries are available.
+func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, error) {
+	opts = normalizeQueueOperationOptions(opts)
+
+	var claimed *QueueEntry
+	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+		idx := oldestQueuedEntryIndex(entries)
+		if idx < 0 {
+			return entries, nil
+		}
+
+		claimedAt := opts.Now().UTC()
+		entries[idx].Status = QueueStatusClaimed
+		entries[idx].ClaimedAt = &claimedAt
+
+		entry := entries[idx]
+		claimed = &entry
+		return entries, nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return claimed, nil
 }
 
 func (s Store) loadQueue() ([]QueueEntry, error) {
@@ -196,11 +285,81 @@ func copyQueueEntries(entries []QueueEntry) []QueueEntry {
 	out := make([]QueueEntry, len(entries))
 	copy(out, entries)
 	for i := range out {
-		if out[i].Claim == nil {
-			continue
+		if out[i].ClaimedAt != nil {
+			claimedAt := *out[i].ClaimedAt
+			out[i].ClaimedAt = &claimedAt
 		}
-		claim := *out[i].Claim
-		out[i].Claim = &claim
+		if out[i].CompletedAt != nil {
+			completedAt := *out[i].CompletedAt
+			out[i].CompletedAt = &completedAt
+		}
+		if out[i].Claim != nil {
+			claim := *out[i].Claim
+			out[i].Claim = &claim
+		}
 	}
 	return out
+}
+
+func normalizeQueueOperationOptions(opts QueueOperationOptions) QueueOperationOptions {
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if opts.NewQueueID == nil {
+		opts.NewQueueID = newQueueID
+	}
+	return opts
+}
+
+func newQueueID() (string, error) {
+	id, err := sandbox.NewV7()
+	if err != nil {
+		return "", err
+	}
+	return "queue-" + id, nil
+}
+
+func validateQueueID(queueID string) (string, error) {
+	trimmedQueueID := strings.TrimSpace(queueID)
+	if trimmedQueueID == "" {
+		return "", fmt.Errorf("factory queue ID is required")
+	}
+	if queueID != trimmedQueueID {
+		return "", fmt.Errorf("factory queue ID %q is invalid", queueID)
+	}
+	return trimmedQueueID, nil
+}
+
+func validateQueueExecutorMode(executorMode string) (string, error) {
+	trimmedExecutorMode := strings.TrimSpace(executorMode)
+	if trimmedExecutorMode == "" {
+		return "", fmt.Errorf("factory executor mode is required")
+	}
+	if executorMode != trimmedExecutorMode {
+		return "", fmt.Errorf("factory executor mode %q is invalid", executorMode)
+	}
+	return trimmedExecutorMode, nil
+}
+
+func oldestQueuedEntryIndex(entries []QueueEntry) int {
+	oldest := -1
+	for i, entry := range entries {
+		if entry.Status != QueueStatusQueued {
+			continue
+		}
+		if oldest < 0 || queueEntryFIFOBefore(entry, entries[oldest]) {
+			oldest = i
+		}
+	}
+	return oldest
+}
+
+func queueEntryFIFOBefore(left, right QueueEntry) bool {
+	if !left.CreatedAt.Equal(right.CreatedAt) {
+		return left.CreatedAt.Before(right.CreatedAt)
+	}
+	if left.QueueID != right.QueueID {
+		return left.QueueID < right.QueueID
+	}
+	return left.RunID < right.RunID
 }

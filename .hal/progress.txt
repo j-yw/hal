@@ -5,6 +5,7 @@
 - Factory queue JSON contracts are split between reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; keep docs/examples/tests aligned when implementing queue commands.
 - Factory queue storage builds on `internal/factory.Store`: keep durable queue state at the global config-backed factory root (`StoreDir()/queue.json`), return empty state for missing files without creating directories, and preserve corrupt files by returning parse errors without mutation.
 - Queue read-modify-write paths should use `Store.UpdateQueue`; it holds `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local queue workers preserve all updates.
+- Queue commands should use `Store.EnqueueQueueEntry`, `Store.ListQueue`, and `Store.ClaimNextQueueEntry` for FIFO behavior; tests can inject `QueueOperationOptions` for deterministic timestamps and queue IDs.
 
 ---
 ## 2026-06-21 04:50:06 CST - US-001
@@ -36,4 +37,15 @@
   - `SaveQueue` is still useful for whole-state replacement, but command-level mutations should avoid separate `LoadQueue`/`SaveQueue` sequences.
   - Browser verification skipped because this story only changes backend queue storage.
   - Checks run: `go test ./internal/factory`, `make test`, `make vet`.
+---
+## 2026-06-21 05:11:40 CST - US-004
+- Implemented FIFO queue operations in `internal/factory`: enqueue, FIFO list, and claim-next behavior using the existing atomic queue update path.
+- Added deterministic queue tests with injected timestamps and queue IDs for enqueue creation, FIFO listing, queued-only claim selection, and no-work claiming.
+- Files changed: `internal/factory/queue.go`, `internal/factory/queue_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Use `QueueOperationOptions` to inject `Now` and `NewQueueID` for deterministic queue operation tests.
+  - `ListQueue` and `ClaimNextQueueEntry` centralize FIFO ordering by `CreatedAt` with `QueueID` as a stable tie-break; command code should not duplicate that ordering logic.
+  - `ClaimNextQueueEntry` marks the selected queued entry as `claimed` and sets `claimedAt`, while leaving non-queued entries untouched.
+  - Browser verification skipped because this story only changes backend queue storage.
+  - Checks run: `go test ./internal/factory`, `make test`, `make vet`. `make lint` skipped because `golangci-lint` is not installed locally.
 ---

@@ -223,6 +223,149 @@ func TestUpdateQueueSerializesConcurrentMutations(t *testing.T) {
 	}
 }
 
+func TestEnqueueQueueEntryCreatesSingleQueuedEntryWithInjectedSources(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 9, 15, 0, 0, time.FixedZone("CST", 8*60*60))
+
+	got, err := store.EnqueueQueueEntry("run-001", ExecutorModeLocal, QueueOperationOptions{
+		Now: func() time.Time { return createdAt },
+		NewQueueID: func() (string, error) {
+			return "queue-001", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnqueueQueueEntry() unexpected error: %v", err)
+	}
+
+	want := QueueEntry{
+		QueueID:      "queue-001",
+		RunID:        "run-001",
+		ExecutorMode: ExecutorModeLocal,
+		Status:       QueueStatusQueued,
+		CreatedAt:    createdAt.UTC(),
+		AttemptCount: 0,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("EnqueueQueueEntry() = %#v, want %#v", got, want)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(entries, []QueueEntry{want}) {
+		t.Fatalf("LoadQueue() = %#v, want one queued entry %#v", entries, want)
+	}
+}
+
+func TestListQueueReturnsFIFOOrder(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	entries := []QueueEntry{
+		testQueueEntry("queue-003", "run-new", base.Add(10*time.Minute)),
+		testQueueEntry("queue-002", "run-tie-b", base),
+		testQueueEntry("queue-001", "run-old", base.Add(-10*time.Minute)),
+		testQueueEntry("queue-004", "run-tie-a", base),
+	}
+	if err := store.SaveQueue(entries); err != nil {
+		t.Fatalf("SaveQueue() unexpected error: %v", err)
+	}
+
+	got, err := store.ListQueue()
+	if err != nil {
+		t.Fatalf("ListQueue() unexpected error: %v", err)
+	}
+
+	gotQueueIDs := make([]string, 0, len(got))
+	for _, entry := range got {
+		gotQueueIDs = append(gotQueueIDs, entry.QueueID)
+	}
+	wantQueueIDs := []string{"queue-001", "queue-002", "queue-004", "queue-003"}
+	if !reflect.DeepEqual(gotQueueIDs, wantQueueIDs) {
+		t.Fatalf("ListQueue() queue IDs = %v, want FIFO %v", gotQueueIDs, wantQueueIDs)
+	}
+}
+
+func TestClaimNextQueueEntrySelectsOldestQueuedEntry(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	entries := []QueueEntry{
+		testQueueEntryWithStatus("queue-failed-old", "run-failed", QueueStatusFailed, base.Add(-30*time.Minute)),
+		testQueueEntryWithStatus("queue-queued-new", "run-new", QueueStatusQueued, base.Add(10*time.Minute)),
+		testQueueEntryWithStatus("queue-claimed-old", "run-claimed", QueueStatusClaimed, base.Add(-20*time.Minute)),
+		testQueueEntryWithStatus("queue-queued-old", "run-old", QueueStatusQueued, base.Add(-10*time.Minute)),
+	}
+	if err := store.SaveQueue(entries); err != nil {
+		t.Fatalf("SaveQueue() unexpected error: %v", err)
+	}
+
+	claimedAt := base.Add(30 * time.Minute)
+	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{
+		Now: func() time.Time { return claimedAt },
+	})
+	if err != nil {
+		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("ClaimNextQueueEntry() = nil, want claimed entry")
+	}
+	if got.QueueID != "queue-queued-old" {
+		t.Fatalf("ClaimNextQueueEntry() queue ID = %q, want oldest queued entry", got.QueueID)
+	}
+	if got.Status != QueueStatusClaimed {
+		t.Fatalf("ClaimNextQueueEntry() status = %q, want %q", got.Status, QueueStatusClaimed)
+	}
+	if got.ClaimedAt == nil || !got.ClaimedAt.Equal(claimedAt.UTC()) {
+		t.Fatalf("ClaimNextQueueEntry() claimedAt = %v, want %v", got.ClaimedAt, claimedAt.UTC())
+	}
+
+	reloaded, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() unexpected error: %v", err)
+	}
+	byQueueID := queueEntriesByID(reloaded)
+	if byQueueID["queue-queued-old"].Status != QueueStatusClaimed {
+		t.Fatalf("oldest queued entry status = %q, want claimed", byQueueID["queue-queued-old"].Status)
+	}
+	if byQueueID["queue-queued-new"].Status != QueueStatusQueued {
+		t.Fatalf("newer queued entry status = %q, want still queued", byQueueID["queue-queued-new"].Status)
+	}
+	if byQueueID["queue-failed-old"].Status != QueueStatusFailed {
+		t.Fatalf("failed entry status = %q, want unchanged", byQueueID["queue-failed-old"].Status)
+	}
+	if byQueueID["queue-claimed-old"].Status != QueueStatusClaimed {
+		t.Fatalf("claimed entry status = %q, want unchanged", byQueueID["queue-claimed-old"].Status)
+	}
+}
+
+func TestClaimNextQueueEntryReturnsNilWhenNoQueuedEntries(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	entries := []QueueEntry{
+		testQueueEntryWithStatus("queue-claimed", "run-claimed", QueueStatusClaimed, base),
+		testQueueEntryWithStatus("queue-failed", "run-failed", QueueStatusFailed, base.Add(time.Minute)),
+	}
+	if err := store.SaveQueue(entries); err != nil {
+		t.Fatalf("SaveQueue() unexpected error: %v", err)
+	}
+
+	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{})
+	if err != nil {
+		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ClaimNextQueueEntry() = %#v, want nil", got)
+	}
+
+	reloaded, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(reloaded, entries) {
+		t.Fatalf("LoadQueue() = %#v, want unchanged %#v", reloaded, entries)
+	}
+}
+
 func testQueueEntry(queueID, runID string, createdAt time.Time) QueueEntry {
 	return QueueEntry{
 		QueueID:      queueID,
@@ -232,4 +375,18 @@ func testQueueEntry(queueID, runID string, createdAt time.Time) QueueEntry {
 		CreatedAt:    createdAt,
 		AttemptCount: 0,
 	}
+}
+
+func testQueueEntryWithStatus(queueID, runID, status string, createdAt time.Time) QueueEntry {
+	entry := testQueueEntry(queueID, runID, createdAt)
+	entry.Status = status
+	return entry
+}
+
+func queueEntriesByID(entries []QueueEntry) map[string]QueueEntry {
+	byQueueID := make(map[string]QueueEntry, len(entries))
+	for _, entry := range entries {
+		byQueueID[entry.QueueID] = entry
+	}
+	return byQueueID
 }
