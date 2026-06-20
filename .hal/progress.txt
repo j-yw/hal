@@ -5,6 +5,7 @@
 - Verify-v1 shared result types and constants live in `internal/verify`; use `SchemaVersion = "verify-v1"` and keep JSON field/tag plus round-trip tests beside the types.
 - Machine contract docs belong in `docs/contracts/` and should be registered in `cmd/contracts_doc_test.go`; add field/value assertions there when a doc must stay synchronized with code constants.
 - Contract example payloads live in `docs/contracts/examples/`; reference them from the contract doc and decode them in `cmd/contracts_doc_test.go` with `decodeStrictJSONExample` against the exported schema type.
+- For verify-v1 schema tests, assert exact marshaled JSON keys and include zero-valued fixtures so accidental `omitempty` or required-field omissions fail tests.
 
 ---
 
@@ -41,4 +42,14 @@
   - Example payloads should use the same exported schema type as command output when tests can decode them strictly.
   - Keep contract docs and example filenames synchronized with a focused doc test so checked-in examples remain discoverable.
   - Empty output artifacts are represented as empty strings in per-check fields when no artifact exists, not omitted fields.
+---
+
+## 2026-06-21 05:01 CST - US-004
+- Strengthened verify-v1 schema tests to require exact top-level, summary, per-check, warning, and artifact JSON keys.
+- Split round-trip coverage into its own test and added zero-valued emission coverage so required fields still appear when values are empty, false, or zero.
+- Files changed: `internal/verify/types_test.go`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Populated fixtures do not catch all `omitempty` regressions; include zero-valued fixtures when every field in a machine contract is required.
+  - Keep expected JSON key lists centralized in the package test when the same contract keys are asserted across populated and zero-valued payloads.
+  - Lint currently exits successfully with an install hint when `golangci-lint` is not installed.
 ---
