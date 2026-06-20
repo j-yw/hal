@@ -3,6 +3,7 @@
   "run": {
     "runId": "run-20260620-002",
     "status": "failed",
+    "executorMode": "local",
     "source": {
       "kind": "markdown",
       "path": ".hal/prd-factory.md",

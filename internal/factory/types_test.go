@@ -29,6 +29,33 @@ func TestRunStatusConstants(t *testing.T) {
 	}
 }
 
+func TestExecutorModeConstants(t *testing.T) {
+	if ExecutorModeLocal != "local" {
+		t.Fatalf("ExecutorModeLocal = %q, want local", ExecutorModeLocal)
+	}
+}
+
+func TestSourceKindConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "auto_discovery", got: SourceKindAutoDiscovery, want: "auto_discovery"},
+		{name: "markdown", got: SourceKindMarkdown, want: "markdown"},
+		{name: "report", got: SourceKindReport, want: "report"},
+		{name: "prd", got: SourceKindPRD, want: "prd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("source kind = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEventTypeConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -87,10 +114,11 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 
 	t.Run("run record", func(t *testing.T) {
 		original := RunRecord{
-			RunID:  "01975515-52ad-7f20-8f10-b35c07051b9f",
-			Status: RunStatusFailed,
+			RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
+			Status:       RunStatusFailed,
+			ExecutorMode: ExecutorModeLocal,
 			Source: SourceMetadata{
-				Kind:       "markdown",
+				Kind:       SourceKindMarkdown,
 				Path:       ".hal/prd-factory.md",
 				ReportPath: ".hal/reports/factory.md",
 				Title:      "Factory run records",
@@ -171,10 +199,11 @@ func TestRunRecordJSONFields(t *testing.T) {
 	finishedAt := createdAt.Add(25 * time.Minute)
 
 	original := RunRecord{
-		RunID:  "01975515-52ad-7f20-8f10-b35c07051b9f",
-		Status: RunStatusFailed,
+		RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
 		Source: SourceMetadata{
-			Kind:       "markdown",
+			Kind:       SourceKindMarkdown,
 			Path:       ".hal/prd-factory.md",
 			ReportPath: ".hal/reports/factory.md",
 			Title:      "Factory run records",
@@ -222,6 +251,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 	for _, key := range []string{
 		"runId",
 		"status",
+		"executorMode",
 		"source",
 		"repoPath",
 		"repoRemote",
@@ -311,16 +341,17 @@ func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
 func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 	original := RunRecord{
-		RunID:       "01975515-b042-7731-8a28-76532001fe4f",
-		Status:      RunStatusRunning,
-		Source:      SourceMetadata{Kind: "report"},
-		RepoPath:    "/work/hal",
-		RepoRemote:  "git@github.com:jywlabs/hal.git",
-		BranchName:  "hal/factory-run-records",
-		BaseBranch:  "develop",
-		CurrentStep: "run",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		RunID:        "01975515-b042-7731-8a28-76532001fe4f",
+		Status:       RunStatusRunning,
+		ExecutorMode: ExecutorModeLocal,
+		Source:       SourceMetadata{Kind: SourceKindReport},
+		RepoPath:     "/work/hal",
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
+		BranchName:   "hal/factory-run-records",
+		BaseBranch:   "develop",
+		CurrentStep:  "run",
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 
 	data, err := json.Marshal(original)

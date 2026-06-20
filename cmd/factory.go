@@ -1,17 +1,22 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 )
 
@@ -117,6 +122,33 @@ var defaultFactoryStatusDeps = factoryStatusDeps{
 	defaultStore: factory.DefaultStore,
 }
 
+type factoryRunDeps struct {
+	defaultStore  func() (factory.Store, error)
+	newRunID      func() (string, error)
+	now           func() time.Time
+	workingDir    func() (string, error)
+	currentBranch func(string) (string, error)
+	repoRemote    func(string) (string, error)
+	runPipeline   func(context.Context, factoryRunPipelineRequest) error
+}
+
+type factoryRunPipelineRequest struct {
+	RunID   string
+	Request factoryRunRequest
+	Record  factory.RunRecord
+	Store   factory.Store
+}
+
+var defaultFactoryRunDeps = factoryRunDeps{
+	defaultStore:  factory.DefaultStore,
+	newRunID:      sandbox.NewV7,
+	now:           time.Now,
+	workingDir:    os.Getwd,
+	currentBranch: compound.CurrentBranchOptionalInDir,
+	repoRemote:    readGitRemoteOptionalInDir,
+	runPipeline:   runFactoryRunPipelineNotImplemented,
+}
+
 type factoryRunRequest struct {
 	MarkdownPath string
 	ReportPath   string
@@ -177,9 +209,158 @@ func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
 }
 
 func runFactoryRun(cmd *cobra.Command, args []string) error {
-	if _, err := factoryRunRequestFromCommand(cmd, args); err != nil {
+	req, err := factoryRunRequestFromCommand(cmd, args)
+	if err != nil {
 		return err
 	}
+
+	ctx := context.Background()
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		if cmd.Context() != nil {
+			ctx = cmd.Context()
+		}
+		out = cmd.OutOrStdout()
+	}
+
+	return runFactoryRunWithDeps(ctx, ".", req, out, defaultFactoryRunDeps)
+}
+
+func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, deps factoryRunDeps) error {
+	_ = out
+	deps = normalizeFactoryRunDeps(deps)
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+	if deps.runPipeline == nil {
+		return fmt.Errorf("factory run pipeline dependency is required")
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+	record, err := newFactoryRunRecord(dir, req, deps)
+	if err != nil {
+		return err
+	}
+	if err := createFactoryRunRecord(store, record); err != nil {
+		return err
+	}
+
+	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
+	if err != nil {
+		return err
+	}
+
+	return deps.runPipeline(ctx, factoryRunPipelineRequest{
+		RunID:   runningRecord.RunID,
+		Request: req,
+		Record:  runningRecord,
+		Store:   store,
+	})
+}
+
+func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
+	if deps.defaultStore == nil {
+		deps.defaultStore = defaultFactoryRunDeps.defaultStore
+	}
+	if deps.newRunID == nil {
+		deps.newRunID = defaultFactoryRunDeps.newRunID
+	}
+	if deps.now == nil {
+		deps.now = defaultFactoryRunDeps.now
+	}
+	if deps.workingDir == nil {
+		deps.workingDir = defaultFactoryRunDeps.workingDir
+	}
+	if deps.currentBranch == nil {
+		deps.currentBranch = defaultFactoryRunDeps.currentBranch
+	}
+	if deps.repoRemote == nil {
+		deps.repoRemote = defaultFactoryRunDeps.repoRemote
+	}
+	if deps.runPipeline == nil {
+		deps.runPipeline = defaultFactoryRunDeps.runPipeline
+	}
+	return deps
+}
+
+func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps) (factory.RunRecord, error) {
+	runID, err := deps.newRunID()
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("create factory run ID: %w", err)
+	}
+	now := deps.now().UTC()
+	repoPath, err := deps.workingDir()
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("resolve repository path: %w", err)
+	}
+	branchName, err := deps.currentBranch(dir)
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("resolve current branch: %w", err)
+	}
+	repoRemote, err := deps.repoRemote(dir)
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("resolve repository remote: %w", err)
+	}
+
+	return factory.RunRecord{
+		RunID:        runID,
+		Status:       factory.RunStatusPending,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Source:       factoryRunSourceFromRequest(req),
+		RepoPath:     repoPath,
+		RepoRemote:   repoRemote,
+		BranchName:   branchName,
+		BaseBranch:   strings.TrimSpace(req.BaseBranch),
+		CurrentStep:  factory.RunStatusPending,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, nil
+}
+
+func createFactoryRunRecord(store factory.Store, record factory.RunRecord) error {
+	if err := store.SaveRun(&record); err != nil {
+		return fmt.Errorf("create factory run record: %w", err)
+	}
+	return nil
+}
+
+func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
+	record.Status = factory.RunStatusRunning
+	record.CurrentStep = "run"
+	record.UpdatedAt = now.UTC()
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("mark factory run in progress: %w", err)
+	}
+	return record, nil
+}
+
+func factoryRunSourceFromRequest(req factoryRunRequest) factory.SourceMetadata {
+	markdownPath := strings.TrimSpace(req.MarkdownPath)
+	reportPath := strings.TrimSpace(req.ReportPath)
+
+	switch {
+	case markdownPath != "":
+		return factory.SourceMetadata{
+			Kind: factory.SourceKindMarkdown,
+			Path: markdownPath,
+		}
+	case reportPath != "":
+		return factory.SourceMetadata{
+			Kind:       factory.SourceKindReport,
+			Path:       reportPath,
+			ReportPath: reportPath,
+		}
+	default:
+		return factory.SourceMetadata{
+			Kind: factory.SourceKindAutoDiscovery,
+		}
+	}
+}
+
+func runFactoryRunPipelineNotImplemented(context.Context, factoryRunPipelineRequest) error {
 	return fmt.Errorf("factory run execution is not implemented yet")
 }
 
@@ -434,4 +615,24 @@ func formatFactoryListTime(t time.Time) string {
 		return "-"
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func readGitRemoteOptionalInDir(dir string) (string, error) {
+	cmd := exec.Command("git", "config", "--get", "remote.origin.url")
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("read git remote origin: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }

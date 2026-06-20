@@ -12,6 +12,19 @@ const (
 	RunStatusCanceled  = "canceled"
 )
 
+// Executor mode values.
+const (
+	ExecutorModeLocal = "local"
+)
+
+// Run source kind values.
+const (
+	SourceKindAutoDiscovery = "auto_discovery"
+	SourceKindMarkdown      = "markdown"
+	SourceKindReport        = "report"
+	SourceKindPRD           = "prd"
+)
+
 // Timeline event type values.
 const (
 	EventTypeRunCreated            = "run_created"
@@ -26,20 +39,21 @@ const (
 
 // RunRecord captures persisted state for one factory run.
 type RunRecord struct {
-	RunID       string              `json:"runId"`
-	Status      string              `json:"status"`
-	Source      SourceMetadata      `json:"source"`
-	RepoPath    string              `json:"repoPath"`
-	RepoRemote  string              `json:"repoRemote"`
-	BranchName  string              `json:"branchName"`
-	BaseBranch  string              `json:"baseBranch"`
-	SandboxName string              `json:"sandboxName,omitempty"`
-	CurrentStep string              `json:"currentStep"`
-	CreatedAt   time.Time           `json:"createdAt"`
-	UpdatedAt   time.Time           `json:"updatedAt"`
-	FinishedAt  *time.Time          `json:"finishedAt,omitempty"`
-	Artifacts   []ArtifactReference `json:"artifacts,omitempty"`
-	Failure     *FailureSummary     `json:"failure,omitempty"`
+	RunID        string              `json:"runId"`
+	Status       string              `json:"status"`
+	ExecutorMode string              `json:"executorMode"`
+	Source       SourceMetadata      `json:"source"`
+	RepoPath     string              `json:"repoPath"`
+	RepoRemote   string              `json:"repoRemote"`
+	BranchName   string              `json:"branchName"`
+	BaseBranch   string              `json:"baseBranch"`
+	SandboxName  string              `json:"sandboxName,omitempty"`
+	CurrentStep  string              `json:"currentStep"`
+	CreatedAt    time.Time           `json:"createdAt"`
+	UpdatedAt    time.Time           `json:"updatedAt"`
+	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
+	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
+	Failure      *FailureSummary     `json:"failure,omitempty"`
 }
 
 // SourceMetadata identifies the input that started a factory run.

@@ -394,7 +394,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			path:          "../docs/contracts/factory-status-v1.md",
 			contractValue: FactoryStatusContractVersion,
 			requiredFields: []string{
-				"contractVersion", "run", "timeline", "runId", "status", "source", "repoPath", "repoRemote",
+				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "failure",
 			},

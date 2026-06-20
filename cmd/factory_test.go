@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -225,6 +227,164 @@ func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *t
 	}
 	if !strings.Contains(err.Error(), "--report cannot be used with a positional PRD markdown path") {
 		t.Fatalf("Args() error = %q", err.Error())
+	}
+}
+
+func TestFactoryRunRecordCreateAndInProgressTransition(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 20, 19, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(2 * time.Minute)
+	record := factory.RunRecord{
+		RunID:        "run-transition",
+		Status:       factory.RunStatusPending,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Source:       factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-feature.md"},
+		RepoPath:     "/workspace/hal",
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
+		BranchName:   "hal/factory",
+		BaseBranch:   "develop",
+		CurrentStep:  factory.RunStatusPending,
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt,
+	}
+
+	if err := createFactoryRunRecord(store, record); err != nil {
+		t.Fatalf("createFactoryRunRecord() unexpected error: %v", err)
+	}
+	pending, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun(pending) error: %v", err)
+	}
+	if pending.Status != factory.RunStatusPending {
+		t.Fatalf("pending status = %q, want %q", pending.Status, factory.RunStatusPending)
+	}
+	if pending.CurrentStep != factory.RunStatusPending {
+		t.Fatalf("pending currentStep = %q, want %q", pending.CurrentStep, factory.RunStatusPending)
+	}
+
+	running, err := markFactoryRunInProgress(store, record, updatedAt)
+	if err != nil {
+		t.Fatalf("markFactoryRunInProgress() unexpected error: %v", err)
+	}
+	if running.Status != factory.RunStatusRunning {
+		t.Fatalf("running status = %q, want %q", running.Status, factory.RunStatusRunning)
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun(running) error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusRunning {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, factory.RunStatusRunning)
+	}
+	if loaded.CurrentStep != "run" {
+		t.Fatalf("loaded currentStep = %q, want run", loaded.CurrentStep)
+	}
+	if !loaded.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("loaded updatedAt = %s, want %s", loaded.UpdatedAt, updatedAt)
+	}
+}
+
+func TestRunFactoryRunWithDepsCreatesMarkdownRunRecordBeforePipeline(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 20, 20, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	times := []time.Time{createdAt, startedAt}
+	pipelineCalled := false
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "develop",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-markdown-record", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return startedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			pipelineCalled = true
+			if req.RunID != "run-markdown-record" {
+				t.Fatalf("pipeline RunID = %q, want run-markdown-record", req.RunID)
+			}
+			if req.Request.MarkdownPath != ".hal/prd-feature.md" {
+				t.Fatalf("pipeline markdown path = %q", req.Request.MarkdownPath)
+			}
+			loaded, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("pipeline LoadRun() error: %v", err)
+			}
+			assertFactoryRunRecordReadyForPipeline(t, *loaded, factory.SourceMetadata{
+				Kind: factory.SourceKindMarkdown,
+				Path: ".hal/prd-feature.md",
+			})
+			if loaded.BaseBranch != "develop" {
+				t.Fatalf("baseBranch = %q, want develop", loaded.BaseBranch)
+			}
+			if !loaded.CreatedAt.Equal(createdAt) {
+				t.Fatalf("createdAt = %s, want %s", loaded.CreatedAt, createdAt)
+			}
+			if !loaded.UpdatedAt.Equal(startedAt) {
+				t.Fatalf("updatedAt = %s, want %s", loaded.UpdatedAt, startedAt)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !pipelineCalled {
+		t.Fatal("pipeline dependency was not invoked")
+	}
+}
+
+func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 20, 21, 0, 0, 0, time.UTC)
+	pipelineCalled := false
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		ReportPath: ".hal/reports/analysis.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-report-record", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			pipelineCalled = true
+			loaded, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("pipeline LoadRun() error: %v", err)
+			}
+			assertFactoryRunRecordReadyForPipeline(t, *loaded, factory.SourceMetadata{
+				Kind:       factory.SourceKindReport,
+				Path:       ".hal/reports/analysis.md",
+				ReportPath: ".hal/reports/analysis.md",
+			})
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !pipelineCalled {
+		t.Fatal("pipeline dependency was not invoked")
 	}
 }
 
@@ -538,7 +698,7 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 		t.Fatalf("run should be an object, got %T", raw["run"])
 	}
 	requireFactoryFields(t, "factory status run", run, []string{
-		"runId", "status", "source", "repoPath", "repoRemote", "branchName",
+		"runId", "status", "executorMode", "source", "repoPath", "repoRemote", "branchName",
 		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
 		"finishedAt", "artifacts", "failure",
 	})
@@ -650,16 +810,43 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 
 func testFactoryRunRecord(runID string, createdAt, updatedAt time.Time) factory.RunRecord {
 	return factory.RunRecord{
-		RunID:       runID,
-		Status:      factory.RunStatusRunning,
-		Source:      factory.SourceMetadata{Kind: "prd", Path: ".hal/prd.json", Title: "Factory"},
-		RepoPath:    "/workspace/hal",
-		RepoRemote:  "git@github.com:jywlabs/hal.git",
-		BranchName:  "hal/factory",
-		BaseBranch:  "develop",
-		CurrentStep: "run",
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
+		RunID:        runID,
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Source:       factory.SourceMetadata{Kind: factory.SourceKindPRD, Path: ".hal/prd.json", Title: "Factory"},
+		RepoPath:     "/workspace/hal",
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
+		BranchName:   "hal/factory",
+		BaseBranch:   "develop",
+		CurrentStep:  "run",
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}
+}
+
+func assertFactoryRunRecordReadyForPipeline(t *testing.T, record factory.RunRecord, wantSource factory.SourceMetadata) {
+	t.Helper()
+
+	if record.Status != factory.RunStatusRunning {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusRunning)
+	}
+	if record.ExecutorMode != factory.ExecutorModeLocal {
+		t.Fatalf("executorMode = %q, want %q", record.ExecutorMode, factory.ExecutorModeLocal)
+	}
+	if !reflect.DeepEqual(record.Source, wantSource) {
+		t.Fatalf("source = %#v, want %#v", record.Source, wantSource)
+	}
+	if record.RepoPath != "/workspace/hal" {
+		t.Fatalf("repoPath = %q, want /workspace/hal", record.RepoPath)
+	}
+	if record.RepoRemote != "git@github.com:jywlabs/hal.git" {
+		t.Fatalf("repoRemote = %q, want git@github.com:jywlabs/hal.git", record.RepoRemote)
+	}
+	if record.BranchName != "hal/factory" {
+		t.Fatalf("branchName = %q, want hal/factory", record.BranchName)
+	}
+	if record.CurrentStep != "run" {
+		t.Fatalf("currentStep = %q, want run", record.CurrentStep)
 	}
 }
 

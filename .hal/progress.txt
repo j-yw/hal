@@ -4,6 +4,7 @@
 
 - Factory machine-readable contracts should be locked in code, docs, and examples together: define the command response struct/renderer in `cmd`, document fields in `docs/contracts/<contract>.md`, add an example in `docs/contracts/examples/`, and cover it in `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, and `cmd/contracts_doc_test.go`.
 - Factory command parser changes should update Cobra metadata, focused `cmd/factory_test.go` registration/validation tests, and regenerated `docs/cli` pages via `make docs-cli`; docs drift is enforced by `make docs-check`.
+- Factory run execution should stay dependency-injected at the command layer: create a pending `factory.RunRecord`, persist the running transition, then invoke the pipeline dependency so tests can use `factory.NewStore(t.TempDir())` without real engines or CLIs.
 
 ---
 
@@ -31,4 +32,17 @@
   - Factory command family metadata tests are table-driven in `cmd/factory_test.go`; add new subcommands there so required help phrases and examples are locked.
   - Generated CLI docs must be refreshed after Cobra command metadata changes because tests assert factory command reference links.
   - Parser-only factory stories can use a small parse helper and validation tests without touching `internal/factory.Store` or invoking the wrapped pipeline.
+---
+
+## 2026-06-21 01:12 CST - US-003
+- Implemented durable factory run record creation for `hal factory run` before pipeline invocation, including pending creation and running state transition through the injected factory store.
+- Added local executor mode and source-kind constants to `internal/factory`, plus an `executorMode` field on run records exposed through `factory-status-v1`.
+- Added command tests for markdown and report entry flows using an injected `factory.NewStore(t.TempDir())`, and updated factory type/storage contract tests and docs examples.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, `cmd/contracts_doc_test.go`, `internal/factory/types.go`, `internal/factory/types_test.go`, `internal/factory/store_test.go`, `docs/contracts/factory-status-v1.md`, `docs/contracts/examples/factory-status-v1.json`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test -timeout=120s ./cmd -run 'Test(FactoryRunRecordCreateAndInProgressTransition|RunFactoryRunWithDepsCreatesMarkdownRunRecordBeforePipeline|RunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline|RunFactoryStatusJSONIncludesRunAndOrderedTimeline|MachineContractFields_FactoryCommandOutputs|ContractDocsIncludeFactoryFields|FactoryContractExamplesMatchCommandSchemas)'`, `go test -timeout=120s ./internal/factory`, `go test -timeout=300s ./...`, `perl -e 'alarm shift; exec @ARGV' 300 go vet ./...`, `perl -e 'alarm shift; exec @ARGV' 300 make docs-check`.
+- Browser verification: skipped because this story only changes CLI persistence behavior and machine-readable contract documentation.
+- **Learnings for future iterations:**
+  - `factory.RunRecord` is the shared durable surface for factory status; adding fields there requires updating type tests, status contract docs, and strict example payloads.
+  - Keep `hal factory run` pipeline work behind `factoryRunDeps.runPipeline` so command tests can assert state ordering without invoking real `hal auto`, engines, network calls, or long-running local pipelines.
+  - The production `factory run` path still returns the existing not-implemented pipeline error after record creation; US-004 should replace that dependency with the existing compound pipeline entry.
 ---

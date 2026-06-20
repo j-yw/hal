@@ -24,6 +24,7 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 |-------|------|-------------|
 | `runId` | string | Stable factory run identifier |
 | `status` | string | Run lifecycle status; see status values below |
+| `executorMode` | string | Factory executor mode that produced the run record |
 | `source` | object | Input source metadata for the run |
 | `repoPath` | string | Repository path recorded for the run |
 | `repoRemote` | string | Repository remote recorded for the run |
@@ -48,7 +49,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `kind` | string | yes | Source kind, such as `markdown`, `report`, or `prd` |
+| `kind` | string | yes | Source kind, such as `auto_discovery`, `markdown`, `report`, or `prd` |
 | `path` | string | no | Source file path when the run started from a local file |
 | `reportPath` | string | no | Report path when the run started from an analysis report |
 | `title` | string | no | Human-readable source title |
@@ -85,6 +86,12 @@ When `failure` is present:
 | `succeeded` | Run completed successfully |
 | `failed` | Run reached a terminal failure |
 | `canceled` | Run was stopped before completion |
+
+## Executor Mode Values
+
+| Mode | Meaning |
+|------|---------|
+| `local` | Run was executed by the local factory executor wrapping the local auto pipeline |
 
 ## Timeline
 
