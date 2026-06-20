@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +34,57 @@ func TestRunStatusConstants(t *testing.T) {
 func TestExecutorModeConstants(t *testing.T) {
 	if ExecutorModeLocal != "local" {
 		t.Fatalf("ExecutorModeLocal = %q, want local", ExecutorModeLocal)
+	}
+}
+
+func TestValidateExecutorMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "local",
+			mode: ExecutorModeLocal,
+			want: ExecutorModeLocal,
+		},
+		{
+			name:    "empty",
+			wantErr: "factory executor mode is required",
+		},
+		{
+			name:    "whitespace",
+			mode:    " local ",
+			wantErr: `factory executor mode " local " is invalid`,
+		},
+		{
+			name:    "unsupported",
+			mode:    "remote",
+			wantErr: `unsupported factory executor mode "remote" (supported: local)`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ValidateExecutorMode(tt.mode)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("ValidateExecutorMode() error = nil, want %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ValidateExecutorMode() error = %q, want %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateExecutorMode() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ValidateExecutorMode() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

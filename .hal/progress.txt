@@ -7,6 +7,7 @@
 - Queue read-modify-write paths should use `Store.UpdateQueue`; it holds `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local queue workers preserve all updates.
 - Queue commands should use `Store.EnqueueQueueEntry`, `Store.ListQueue`, and `Store.ClaimNextQueueEntry` for FIFO behavior; tests can inject `QueueOperationOptions` for deterministic timestamps and queue IDs.
 - Queue lifecycle transitions should go through Store helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained queue history stay consistent.
+- Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
 - Factory queue command registration lives in `cmd/factory_queue.go`; wire the command group from `cmd/factory.go`, update `cmd/factory_test.go` metadata/link checks, and run `make docs-cli` when changing CLI docs.
 
 ---
@@ -72,4 +73,16 @@
   - Queue leaf command behavior is still intentionally stubbed; future add/list/work stories should replace `runFactoryQueue*` implementations while preserving the registered command and flag contracts.
   - Browser verification skipped because this story only changes CLI command registration and docs.
   - Checks run: `go test -timeout=120s ./cmd -run 'TestFactoryCommandHelpMetadata|TestCommandFamiliesHaveCompleteMetadata|TestFactoryGeneratedCLIReferenceLinks|TestCoreCommandsHaveCompleteMetadata'`, `go test -timeout=120s ./...`, `go vet ./...`, `make docs-check`. `golangci-lint` skipped because it is not installed locally.
+---
+## 2026-06-21 05:32:07 CST - US-007
+- Implemented `hal factory queue add` for existing factory runs with executor-mode validation, FIFO queue entry creation, human output, and `factory-queue-add-v1` JSON output.
+- Added run-state and timeline recording when a run is queued so factory run history reflects queue additions.
+- Added deterministic command tests for successful add, missing operands, invalid executor mode, JSON output, and run/timeline updates; added reusable factory executor-mode validation coverage.
+- Files changed: `internal/factory/types.go`, `internal/factory/queue.go`, `internal/factory/types_test.go`, `cmd/factory_queue.go`, `cmd/factory_queue_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep executor-mode validation centralized in `internal/factory.ValidateExecutorMode`; `Store.EnqueueQueueEntry` now rejects unsupported modes as well as blank/whitespace modes.
+  - Queue commands should update both queue state and factory run history: queue entries live in the global factory queue, while run state/timeline updates are recorded through `Store.SaveRun` and `appendFactoryRunTimelineEvent`.
+  - Command tests can inject `factoryQueueAddDeps` with temp stores, deterministic timestamps, and queue IDs instead of touching the real global factory store.
+  - Browser verification skipped because this story only changes CLI/backend behavior.
+  - Checks run: `go test -timeout=120s ./internal/factory`, `go test -timeout=120s ./cmd -run 'TestFactoryQueueAdd|TestRunFactoryQueueAdd|TestFactoryCommandHelpMetadata|TestCommandFamiliesHaveCompleteMetadata|TestCoreCommandsHaveCompleteMetadata'`, `make test`, `make vet`, `make docs-check`. `make lint` reported `golangci-lint` is not installed locally.
 ---
