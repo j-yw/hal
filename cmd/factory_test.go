@@ -2560,6 +2560,9 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 			name: "factory run cli reference links parent",
 			path: "../docs/cli/hal_factory_run.md",
 			wantFragments: []string{
+				"managed sandbox",
+				"hal factory run .hal/prd-feature.md --sandbox",
+				"--sandbox",
 				"[hal factory](hal_factory.md)",
 			},
 		},

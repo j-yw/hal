@@ -30,6 +30,6 @@ which is separate from per-project .hal runtime state.
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
 * [hal factory list](hal_factory_list.md)	 - List stored factory runs
-* [hal factory run](hal_factory_run.md)	 - Run the local factory executor
+* [hal factory run](hal_factory_run.md)	 - Run a factory executor
 * [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run
 
