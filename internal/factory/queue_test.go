@@ -2,12 +2,14 @@ package factory
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -107,6 +109,117 @@ func TestLoadQueueCorruptJSONReturnsErrorAndPreservesFile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(after, contents) {
 		t.Fatalf("queue file changed after parse failure: got %q, want %q", after, contents)
+	}
+}
+
+func TestSaveQueueFailurePreservesCommittedState(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	original := []QueueEntry{
+		testQueueEntry("queue-001", "run-001", time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)),
+	}
+	next := []QueueEntry{
+		testQueueEntry("queue-002", "run-002", time.Date(2026, 6, 20, 17, 5, 0, 0, time.UTC)),
+	}
+
+	if err := store.SaveQueue(original); err != nil {
+		t.Fatalf("initial SaveQueue() unexpected error: %v", err)
+	}
+	before, err := os.ReadFile(store.QueuePath())
+	if err != nil {
+		t.Fatalf("read initial queue: %v", err)
+	}
+
+	originalSaveQueueFile := saveQueueFile
+	t.Cleanup(func() {
+		saveQueueFile = originalSaveQueueFile
+	})
+	saveQueueFile = func(_, _ string) error {
+		return fmt.Errorf("forced queue save failure")
+	}
+
+	err = store.SaveQueue(next)
+	if err == nil {
+		t.Fatalf("SaveQueue() expected error")
+	}
+	if !strings.Contains(err.Error(), "save factory queue") {
+		t.Fatalf("SaveQueue() error = %q, want save factory queue context", err.Error())
+	}
+
+	after, err := os.ReadFile(store.QueuePath())
+	if err != nil {
+		t.Fatalf("read queue after failed save: %v", err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("committed queue changed after failed save:\ngot  %s\nwant %s", after, before)
+	}
+	if _, err := os.Stat(store.QueuePath() + storeTempFileExt); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("temp file should be removed after failed SaveQueue(), stat error = %v", err)
+	}
+
+	reloaded, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() after failed save unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(reloaded, original) {
+		t.Fatalf("LoadQueue() after failed save = %#v, want %#v", reloaded, original)
+	}
+}
+
+func TestUpdateQueueSerializesConcurrentMutations(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	const workerCount = 24
+
+	start := make(chan struct{})
+	errs := make(chan error, workerCount)
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+
+			_, err := store.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+				time.Sleep(time.Millisecond)
+				createdAt := time.Date(2026, 6, 20, 17, i, 0, 0, time.UTC)
+				entry := testQueueEntry(
+					fmt.Sprintf("queue-%03d", i),
+					fmt.Sprintf("run-%03d", i),
+					createdAt,
+				)
+				return append(entries, entry), nil
+			})
+			errs <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("UpdateQueue() concurrent mutation unexpected error: %v", err)
+		}
+	}
+
+	got, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() unexpected error: %v", err)
+	}
+	if len(got) != workerCount {
+		t.Fatalf("LoadQueue() entries len = %d, want %d; entries = %#v", len(got), workerCount, got)
+	}
+
+	seen := make(map[string]bool, workerCount)
+	for _, entry := range got {
+		seen[entry.QueueID] = true
+	}
+	for i := 0; i < workerCount; i++ {
+		queueID := fmt.Sprintf("queue-%03d", i)
+		if !seen[queueID] {
+			t.Fatalf("queue entry %q missing after concurrent mutations; entries = %#v", queueID, got)
+		}
 	}
 }
 
