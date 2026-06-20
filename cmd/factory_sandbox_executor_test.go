@@ -209,6 +209,9 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 	if provisionReq.ProjectDir != "/repo" || provisionReq.Name != "factory-new" || provisionReq.Repo != "git@github.com:example/repo.git" {
 		t.Fatalf("provision request = %#v", provisionReq)
 	}
+	if provisionReq.BranchName != "" {
+		t.Fatalf("provision branchName = %q, want empty", provisionReq.BranchName)
+	}
 	if !startCalled {
 		t.Fatalf("startSandbox was not called for stopped provisioned target")
 	}
@@ -265,12 +268,24 @@ func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTa
 	}
 }
 
-func TestRunFactorySandboxExecutorWithDepsReturnsDefaultResolutionError(t *testing.T) {
+func TestRunFactorySandboxExecutorWithDepsProvisionsWhenDefaultResolutionHasNoUsableTarget(t *testing.T) {
 	resolveErr := errNoFactorySandbox
-	provisionCalled := false
+	provisioned := &sandbox.SandboxState{
+		Name:     "hal-feature",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+
+	var provisionReq factorySandboxProvisionRequest
+	var savedRecords []factory.RunRecord
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
-		RunRecord: factory.RunRecord{RunID: "run-no-default"},
+		ProjectDir: "/repo",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-no-default",
+			BranchName: "hal/feature",
+			RepoRemote: "git@github.com:example/repo.git",
+		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
@@ -284,6 +299,42 @@ func TestRunFactorySandboxExecutorWithDepsReturnsDefaultResolutionError(t *testi
 			if filter(&sandbox.SandboxState{Status: sandbox.StatusStopped}) {
 				t.Fatalf("running sandbox filter accepted stopped target")
 			}
+			return nil, "", resolveErr
+		},
+		provision: func(_ context.Context, req factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionReq = req
+			return provisioned, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if provisionReq.Name != "hal-feature" || provisionReq.BranchName != "hal/feature" || provisionReq.ProjectDir != "/repo" || provisionReq.Repo != "git@github.com:example/repo.git" {
+		t.Fatalf("provision request = %#v", provisionReq)
+	}
+	if len(savedRecords) < 2 || savedRecords[1].SandboxName != "hal-feature" {
+		t.Fatalf("saved records = %#v", savedRecords)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsReturnsAmbiguousDefaultResolutionError(t *testing.T) {
+	resolveErr := factorySandboxTestError("multiple sandboxes found: one, two")
+	provisionCalled := false
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		RunRecord: factory.RunRecord{RunID: "run-ambiguous-default"},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
 			return nil, "", resolveErr
 		},
 		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
@@ -300,7 +351,111 @@ func TestRunFactorySandboxExecutorWithDepsReturnsDefaultResolutionError(t *testi
 		t.Fatalf("error = %q, want %q", err.Error(), resolveErr.Error())
 	}
 	if provisionCalled {
-		t.Fatalf("provision should not be called when default resolution fails")
+		t.Fatalf("provision should not be called when default resolution is ambiguous")
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRecordsProvisionFailure(t *testing.T) {
+	now := time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC)
+	provisionErr := factorySandboxTestError("provider quota exceeded")
+	var savedRecords []factory.RunRecord
+	var events []factory.EventRecord
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:  "/repo",
+		SandboxName: "factory-new",
+		RunRecord: factory.RunRecord{
+			RunID:       "run-provision-failure",
+			Status:      factory.RunStatusRunning,
+			CurrentStep: "run",
+			BranchName:  "hal/factory-sandbox-executor",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return nil, errNoFactorySandbox
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			return nil, provisionErr
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err == nil || err.Error() != "provision factory sandbox: provider quota exceeded" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(savedRecords) != 2 {
+		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	}
+	failed := savedRecords[1]
+	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "provision" {
+		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
+	}
+	if failed.SandboxName != "factory-new" || failed.Sandbox == nil || failed.Sandbox.Handoff != "Inspect sandbox with `hal sandbox ssh factory-new`." {
+		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)
+	}
+	if failed.Failure == nil || failed.Failure.Category != factory.FailureCategoryPipeline || failed.Failure.Message != provisionErr.Error() {
+		t.Fatalf("failed failure summary = %#v", failed.Failure)
+	}
+	if len(events) != 1 || events[0].EventType != factory.EventTypeFailureClassification || events[0].Metadata["step"] != "provision" {
+		t.Fatalf("failure events = %#v", events)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata(t *testing.T) {
+	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
+	startErr := factorySandboxTestError("start failed")
+	target := &sandbox.SandboxState{
+		Name:     "factory-stopped",
+		Provider: "hetzner",
+		Status:   sandbox.StatusStopped,
+	}
+	var savedRecords []factory.RunRecord
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-stopped",
+		RunRecord: factory.RunRecord{
+			RunID:       "run-start-failure",
+			Status:      factory.RunStatusRunning,
+			CurrentStep: "run",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
+			return nil, startErr
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err == nil || err.Error() != "start factory sandbox \"factory-stopped\": start failed" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(savedRecords) != 2 {
+		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	}
+	failed := savedRecords[1]
+	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "start" {
+		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
+	}
+	if failed.SandboxName != "factory-stopped" || failed.Sandbox == nil || failed.Sandbox.Provider != "hetzner" || failed.Sandbox.Status != sandbox.StatusStopped {
+		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)
+	}
+	if failed.Sandbox.SSHCommand != "hal sandbox ssh factory-stopped" {
+		t.Fatalf("ssh command = %q", failed.Sandbox.SSHCommand)
 	}
 }
 
