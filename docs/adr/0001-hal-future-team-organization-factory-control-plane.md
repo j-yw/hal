@@ -89,6 +89,47 @@ future hosted control plane may expose organization, project, queue, run,
 policy, or audit identifiers through these JSON surfaces only through explicit
 contract updates and corresponding tests.
 
+## Control-Plane Domain Model
+
+The future shared control plane should use a small set of stable domain terms so
+implementation PRDs can extend the architecture without redefining core
+ownership concepts.
+
+A user is an authenticated actor that can initiate Hal workflows, inspect
+authorized artifacts, receive assignments, and perform control-plane operations
+according to role and project membership. A user may act as an individual
+contributor, project maintainer, organization owner, or automation identity, but
+the control plane should still model the actor consistently as a user.
+
+An owner is a user or owner group with organization-level administrative
+authority. Owners manage organization membership, organization policy,
+project creation defaults, and other control-plane settings that apply above a
+single project. Owner status is not the same as membership in every project:
+owners may have broad administrative authority while still needing explicit or
+policy-derived access for project-scoped workflow operations.
+
+An organization is the top-level shared administrative boundary. It groups
+users, owners, projects, policy defaults, audit records, and shared factory
+resources under one governance context. Organization-scoped settings establish
+the default posture for projects, but they should not expose implementation
+details through CLI JSON contracts unless a future contract revision documents
+those fields.
+
+A project is the unit that maps Hal factory work to a repository, workspace, or
+other implementation-defined codebase boundary. Projects own queues, runs,
+project-scoped policy overrides, project artifacts, and project membership.
+Future implementations may map one organization to many projects, and a single
+project should belong to exactly one organization for authorization and audit
+purposes.
+
+Project membership is the project-level relationship between a user and a
+project. Membership grants project-scoped abilities such as viewing project
+queues, starting or reviewing runs, reading artifacts, or administering project
+settings according to the assigned role. This is distinct from
+organization-level ownership: organization owners govern the organization and
+its defaults, while project members participate in or administer a specific
+project's workflows.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared

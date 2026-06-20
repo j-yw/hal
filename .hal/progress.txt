@@ -4,6 +4,7 @@
 
 - ADRs live under `docs/adr/` using numbered lowercase slug filenames (for example `0001-topic.md`) and should include explicit `Status`, related issue, and scope sections.
 - Machine-readable CLI compatibility should reference `docs/contracts/` as the canonical source; ADRs should separate stable JSON contract fields from hidden backend implementation details.
+- Future control-plane ADR sections should distinguish organization-level ownership from project-level membership, and should not present future domain terms as CLI JSON contract fields unless `docs/contracts/` is updated.
 
 ---
 
@@ -32,4 +33,13 @@
   - Formal JSON CLI contract behavior is documented under `docs/contracts/`; ADRs should reference those docs rather than restating implementation internals as public API.
   - Review-loop JSON artifacts are persisted under `.hal/reports/` and use the shared `compound.ReviewLoopResult` shape for automation-facing review summaries.
   - Documentation-only ADR stories should still run `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
+---
+
+## 2026-06-20 23:34 CST - US-004
+- Added the control-plane domain model section to the factory control plane ADR, defining users, owners, organizations, projects, project membership, and the distinction between organization ownership and project membership.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep future control-plane domain concepts in the ADR as architecture terminology, not as new CLI JSON contract fields unless a future contract doc explicitly adds them.
+  - Organization ownership should be described separately from project membership so later RBAC, policy, and artifact sections can use consistent authorization boundaries.
+  - Documentation-only ADR stories continue to use `make test` and `make vet`; `golangci-lint` was unavailable in this environment.
 ---
