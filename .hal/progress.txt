@@ -1,0 +1,19 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Verify-v1 shared result types and constants live in `internal/verify`; use `SchemaVersion = "verify-v1"` and keep JSON field/tag plus round-trip tests beside the types.
+
+---
+
+## 2026-06-21 04:44 CST - US-001
+- Implemented the initial verify-v1 machine-readable result model with top-level result, summary, check result, warning, and artifact reference types.
+- Added verify status constants (`pass`, `fail`, `warn`), check status constants (`pass`, `fail`, `timeout`, `missing`, `skipped`), and shell adapter constant.
+- Added focused tests for schema/status constants, explicit JSON tags, required emitted JSON field names, and marshal/unmarshal round trips.
+- Ran `make fmt`, `make vet`, `make test`, and `make lint` (lint target passed but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `internal/verify/types.go`, `internal/verify/types_test.go`, formatter updates in `internal/ci/auth.go`, `internal/ci/auth_test.go`, `internal/ci/push.go`, Hal link repair for `.pi/skills/factory`, `.hal/prd.json`, `.hal/progress.txt`, and `AGENTS.md`.
+- **Learnings for future iterations:**
+  - Machine-readable contract packages in this repo use package-level string constants for stable status values and focused tests that assert JSON keys and round-trip behavior.
+  - The verify-v1 top-level field is `schemaVersion`, not the older `contractVersion` pattern used by some existing command contracts.
+  - Running `hal repair --json` can normalize project-local engine skill links; in this run it converted the stale Pi factory skill entry to the same symlink style used by other Pi skills.
+---
