@@ -5,6 +5,7 @@
 - ADRs live under `docs/adr/` using numbered lowercase slug filenames (for example `0001-topic.md`) and should include explicit `Status`, related issue, and scope sections.
 - Machine-readable CLI compatibility should reference `docs/contracts/` as the canonical source; ADRs should separate stable JSON contract fields from hidden backend implementation details.
 - Future control-plane ADR sections should distinguish organization-level ownership from project-level membership, and should not present future domain terms as CLI JSON contract fields unless `docs/contracts/` is updated.
+- Future RBAC/control-plane ADR sections should name authorization as a shared control-plane responsibility while keeping permission evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
 
 ---
 
@@ -42,4 +43,13 @@
   - Keep future control-plane domain concepts in the ADR as architecture terminology, not as new CLI JSON contract fields unless a future contract doc explicitly adds them.
   - Organization ownership should be described separately from project membership so later RBAC, policy, and artifact sections can use consistent authorization boundaries.
   - Documentation-only ADR stories continue to use `make test` and `make vet`; `golangci-lint` was unavailable in this environment.
+---
+
+## 2026-06-20 23:37 CST - US-005
+- Added the RBAC and authorization boundary section to the factory control plane ADR, covering queue operations, run operations, artifact access, policy operations, and the control-plane responsibility for authorization decisions.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Future RBAC sections should describe permission expectations by operation class while avoiding specific role graphs unless a future implementation PRD defines them.
+  - Authorization internals should remain hidden backend details and should not appear in CLI JSON contracts unless a future `docs/contracts/` revision explicitly adds them.
+  - Documentation-only ADR stories continue to use `make test` and `make vet`; `golangci-lint` was unavailable in this environment, so `make lint` was skipped.
 ---

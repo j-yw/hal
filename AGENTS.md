@@ -43,6 +43,7 @@
 - ADRs should include explicit `Status`, related issue, and scope sections; documentation-only ADRs must state that runtime behavior and machine-readable CLI contracts are unchanged.
 - When ADRs discuss machine-readable CLI compatibility, cite `docs/contracts/` as the canonical source and distinguish stable JSON contract fields from hidden implementation details.
 - For future control-plane ADR sections, distinguish organization-level ownership from project-level membership, and do not present future domain terms as CLI JSON contract fields unless `docs/contracts/` is updated.
+- RBAC/authorization ADR sections should describe authorization as a control-plane responsibility while keeping role graphs, permission evaluation, and membership expansion out of CLI JSON contract details unless `docs/contracts/` is updated.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 

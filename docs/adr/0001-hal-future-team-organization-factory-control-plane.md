@@ -130,6 +130,50 @@ organization-level ownership: organization owners govern the organization and
 its defaults, while project members participate in or administer a specific
 project's workflows.
 
+## RBAC and Authorization Boundary
+
+The future shared control plane is responsible for authorization. It should
+evaluate who may inspect or mutate organization, project, queue, run, artifact,
+and policy resources before any shared operation is accepted. Local CLI callers
+may request actions, but the shared control plane must make the final
+authorization decision for hosted or networked resources.
+
+Queue operations should require project-scoped permissions. Users who can view a
+project may inspect authorized queue state, while creating, prioritizing,
+assigning, retrying, cancelling, or removing queue items should require roles
+that explicitly allow coordination of factory work for that project. Queue
+authorization should also account for organization policy, project membership,
+and ownership of the queue item when future implementations define those
+details.
+
+Run operations should be authorized separately from queue visibility. Starting a
+run, claiming a run lease, extending a lease, cancelling a run, approving a
+retry, or attaching run results should require project membership or an
+automation identity with run privileges. Read-only access to run status may be
+broader than mutation access, but mutation rights should be limited to actors
+trusted to affect repository state, engine execution, CI, or review output.
+
+Artifact access should be governed by the project and organization that own the
+artifact. PRDs, reports, logs, review results, archived state, and run output may
+contain source context, issue details, credentials-adjacent diagnostics, or
+decision history. The control plane should enforce read, write, retention, and
+export permissions consistently across artifact types rather than relying on
+artifact path conventions or client-side filtering.
+
+Policy operations should be restricted to the administrative boundary that owns
+the policy. Organization owners manage organization-wide defaults and guardrails;
+project administrators manage project-scoped overrides only when organization
+policy allows them; run-level overrides should be limited to actors authorized
+to start or administer that run. Local developer overrides may remain useful for
+ergonomics, but shared policy decisions must be validated by the control plane
+before they influence hosted queue, run, or artifact behavior.
+
+Authorization internals are not CLI JSON contract details. Role names,
+permission graphs, membership expansion, owner-group resolution, and policy
+evaluation traces should remain hidden backend implementation details unless a
+future `docs/contracts/` revision explicitly adds a field, state value, action
+identifier, or diagnostic surface for them.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared
