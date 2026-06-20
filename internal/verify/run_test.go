@@ -106,6 +106,56 @@ func TestRunNilConfigReturnsPassingEmptyResult(t *testing.T) {
 	}
 }
 
+func TestRunRequiredShellCheckFailure(t *testing.T) {
+	projectRoot := t.TempDir()
+
+	result, err := Run(context.Background(), &Config{
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "exit-code", "23"),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	if result.Status != StatusFail {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusFail)
+	}
+	if result.Summary.Total != 1 {
+		t.Errorf("Summary.Total = %d, want 1", result.Summary.Total)
+	}
+	if result.Summary.Failed != 1 {
+		t.Errorf("Summary.Failed = %d, want 1", result.Summary.Failed)
+	}
+	if result.Summary.Passed != 0 || result.Summary.TimedOut != 0 || result.Summary.Missing != 0 || result.Summary.Skipped != 0 || result.Summary.Warnings != 0 {
+		t.Errorf("Summary has unexpected non-fail counts: %#v", result.Summary)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("Warnings length = %d, want 0", len(result.Warnings))
+	}
+	if len(result.Checks) != 1 {
+		t.Fatalf("Checks length = %d, want 1", len(result.Checks))
+	}
+
+	check := result.Checks[0]
+	if check.Status != CheckStatusFail {
+		t.Errorf("check Status = %q, want %q", check.Status, CheckStatusFail)
+	}
+	if !check.Required {
+		t.Errorf("check Required = false, want true")
+	}
+	if check.ExitCode != 23 {
+		t.Errorf("check ExitCode = %d, want 23", check.ExitCode)
+	}
+}
+
 func TestVerifyHelperProcess(t *testing.T) {
 	args := os.Args
 	for i, arg := range args {
@@ -119,6 +169,15 @@ func TestVerifyHelperProcess(t *testing.T) {
 		switch args[i+1] {
 		case "noop":
 			os.Exit(0)
+		case "exit-code":
+			if len(args) <= i+2 {
+				os.Exit(2)
+			}
+			code, err := strconv.Atoi(args[i+2])
+			if err != nil {
+				os.Exit(2)
+			}
+			os.Exit(code)
 		case "write-pwd":
 			if len(args) <= i+2 {
 				os.Exit(2)

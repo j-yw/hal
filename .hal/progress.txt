@@ -8,6 +8,7 @@
 - Contract example payloads live in `docs/contracts/examples/`; reference them from the contract doc and decode them in `cmd/contracts_doc_test.go` with `decodeStrictJSONExample` against the exported schema type.
 - For verify-v1 schema tests, assert exact marshaled JSON keys and include zero-valued fixtures so accidental `omitempty` or required-field omissions fail tests.
 - Verify shell execution lives in `internal/verify.Run`; it uses each configured `ShellCheck` command/workDir/timeout and aggregates `CheckResult` values into verify-v1 summary/status fields.
+- Verify execution tests use `helperCommand`/`TestVerifyHelperProcess` in `internal/verify/run_test.go` to simulate shell behavior deterministically; extend helper subcommands instead of relying on platform-specific shell utilities.
 
 ---
 
@@ -77,4 +78,14 @@
   - Keep verify execution in `internal/verify` so future `hal verify --json` command wiring can load config and delegate to the same package.
   - Tests can invoke the current Go test binary through the shell to exercise real command execution without depending on platform-specific utilities.
   - Passing shell checks should produce `status=pass`, `exitCode=0`, populated timing metadata, and no warning entries.
+---
+
+## 2026-06-21 05:17 CST - US-007
+- Added focused coverage for required shell check failures, asserting per-check fail status, top-level fail status, exit code retention, failed summary counts, and no warnings.
+- Extended the verify test helper process with an `exit-code` subcommand for deterministic non-zero shell command simulation.
+- Ran `go test ./internal/verify`, `make fmt`, `make vet`, `make test`, and `make lint` (lint target returned successfully but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `internal/verify/run_test.go`, `AGENTS.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - For verify execution tests, use the current test binary via `helperCommand` and `TestVerifyHelperProcess` to simulate shell behavior with deterministic subcommands.
+  - Required shell failures should be counted in `Summary.Failed`, keep `Warnings` empty, and drive top-level `StatusFail`.
 ---
