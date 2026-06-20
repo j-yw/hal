@@ -47,6 +47,7 @@
 - Bootstrap request environment values belong on `BootstrapRequest.Env` and flow through `BootstrapStepDeps.Request`; call `RunBootstrapStep` so env injection, command-summary sanitization, and command-result sanitization stay centralized.
 - Bootstrap command/timeline persistence should use `NewBootstrapSanitizer` or `SanitizeBootstrapCommand*` helpers so sensitive env key names and configured secret values are redacted before serialization.
 - Bootstrap callers should record step outcomes through `recordBootstrapStepResult` / `BootstrapTimelineEventFromStep` so `BootstrapResult.Steps` and `BootstrapResult.Timeline` stay one-to-one with sanitized command summaries, output metadata, and failure category metadata.
+- High-level remote workspace setup should enter through `internal/factory.BootstrapWorkspace` with one `BootstrapDeps` value; it composes repository checkout, tooling verification, Hal refresh, and final checks while preserving shared executor, clock, branch probes, env injection, and first-failure stop behavior.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
