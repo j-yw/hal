@@ -16,6 +16,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -829,6 +830,163 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulStatusAndResult(t *testing.T) {
 	}
 	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd-feature.md")
 	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
+}
+
+func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-success", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory-sandbox-executor", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-remote"
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:           "factory-remote",
+				Provider:       "daytona",
+				Status:         sandbox.StatusRunning,
+				Connection:     &factory.SandboxConnectionMetadata{PublicIP: "203.0.113.42"},
+				SSHCommand:     "hal sandbox ssh factory-remote",
+				CleanupCommand: "hal sandbox delete factory-remote",
+				Handoff:        "Inspect sandbox with `hal sandbox ssh factory-remote`.",
+			}
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			if err := appendFactoryRunTimelineEvent(store, record.RunID, startedAt.Add(10*time.Second), factoryTimelineEvent{
+				EventType: factory.EventTypeStepStarted,
+				Summary:   "Remote sandbox execution started",
+				Metadata: map[string]any{
+					"source":      "remote_sandbox",
+					"sandboxName": "factory-remote",
+					"provider":    "daytona",
+					"status":      factory.RunStatusRunning,
+				},
+			}); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(req.RemoteOutput, "remote ok\n"); err != nil {
+				return err
+			}
+			if err := appendFactoryRunTimelineEvent(store, record.RunID, startedAt.Add(20*time.Second), factoryTimelineEvent{
+				EventType: factory.EventTypeCommandOutputSummary,
+				Message:   "remote ok",
+				Summary:   "Remote sandbox output",
+				Metadata: map[string]any{
+					"source":      "remote_sandbox",
+					"sandboxName": "factory-remote",
+					"provider":    "daytona",
+				},
+			}); err != nil {
+				return err
+			}
+			if err := appendFactoryRunTimelineEvent(store, record.RunID, startedAt.Add(30*time.Second), factoryTimelineEvent{
+				EventType: factory.EventTypeStepEnded,
+				Summary:   "Remote sandbox execution completed",
+				Metadata: map[string]any{
+					"source":      "remote_sandbox",
+					"sandboxName": "factory-remote",
+					"provider":    "daytona",
+					"status":      factory.RunStatusSucceeded,
+				},
+			}); err != nil {
+				return err
+			}
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-sandbox-success")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded || record.CurrentStep != "done" {
+		t.Fatalf("terminal status/step = %s/%s, want succeeded/done", record.Status, record.CurrentStep)
+	}
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("executorMode = %q, want sandbox", record.ExecutorMode)
+	}
+	if record.SandboxName != "factory-remote" || record.Sandbox == nil {
+		t.Fatalf("sandbox metadata = %#v", record.Sandbox)
+	}
+	if record.Sandbox.Provider != "daytona" || record.Sandbox.Status != sandbox.StatusRunning {
+		t.Fatalf("sandbox provider/status = %#v", record.Sandbox)
+	}
+	if record.Sandbox.Connection == nil || record.Sandbox.Connection.PublicIP != "203.0.113.42" {
+		t.Fatalf("sandbox connection = %#v", record.Sandbox.Connection)
+	}
+	if record.Sandbox.SSHCommand != "hal sandbox ssh factory-remote" || record.Sandbox.CleanupCommand != "hal sandbox delete factory-remote" {
+		t.Fatalf("sandbox commands = %#v", record.Sandbox)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-sandbox-success.json"))
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepStarted,
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepEnded,
+	})
+	assertFactoryEventSequences(t, events)
+	if events[2].Summary != "Remote sandbox execution started" || events[2].Metadata["source"] != "remote_sandbox" {
+		t.Fatalf("remote start event = %#v", events[2])
+	}
+	if events[3].Summary != "Remote sandbox output" || events[3].Message != "remote ok" {
+		t.Fatalf("remote output event = %#v", events[3])
+	}
+	if events[4].Summary != "Remote sandbox execution completed" || events[4].Metadata["status"] != factory.RunStatusSucceeded {
+		t.Fatalf("remote completion event = %#v", events[4])
+	}
+	if events[5].Summary != "Local compound pipeline completed" {
+		t.Fatalf("terminal completion event = %#v", events[5])
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "remote ok") || !strings.Contains(output, "Status: succeeded") {
+		t.Fatalf("output = %q, want remote output and success summary", output)
+	}
 }
 
 func TestRunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows(t *testing.T) {
