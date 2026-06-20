@@ -42,6 +42,7 @@
 - Factory queue storage should build on `internal/factory.Store`: keep queue state under the global config-backed factory root (`StoreDir()/queue.json`), treat a missing queue file as empty read-only state, and preserve corrupt queue files by returning parse errors without overwriting or deleting them.
 - Queue read-modify-write operations should use `Store.UpdateQueue` instead of separate `LoadQueue`/`SaveQueue` calls; it holds the local `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local workers do not lose updates.
 - Queue command code should use the Store-level FIFO helpers (`EnqueueQueueEntry`, `ListQueue`, `ClaimNextQueueEntry`) and inject `QueueOperationOptions` in tests; FIFO order is by `CreatedAt` with `QueueID` as the stable tie-break.
+- Queue lifecycle transitions should use Store-level helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained history stay consistent.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 

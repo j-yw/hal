@@ -300,8 +300,10 @@ func TestClaimNextQueueEntrySelectsOldestQueuedEntry(t *testing.T) {
 	}
 
 	claimedAt := base.Add(30 * time.Minute)
+	claim := QueueClaim{WorkerID: "worker-a", PID: 4242, Hostname: "factory-host"}
 	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{
-		Now: func() time.Time { return claimedAt },
+		Now:   func() time.Time { return claimedAt },
+		Claim: &claim,
 	})
 	if err != nil {
 		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
@@ -318,14 +320,30 @@ func TestClaimNextQueueEntrySelectsOldestQueuedEntry(t *testing.T) {
 	if got.ClaimedAt == nil || !got.ClaimedAt.Equal(claimedAt.UTC()) {
 		t.Fatalf("ClaimNextQueueEntry() claimedAt = %v, want %v", got.ClaimedAt, claimedAt.UTC())
 	}
+	if got.Claim == nil || !reflect.DeepEqual(*got.Claim, claim) {
+		t.Fatalf("ClaimNextQueueEntry() claim = %#v, want %#v", got.Claim, claim)
+	}
+	if got.AttemptCount != 1 {
+		t.Fatalf("ClaimNextQueueEntry() attemptCount = %d, want 1", got.AttemptCount)
+	}
 
 	reloaded, err := store.LoadQueue()
 	if err != nil {
 		t.Fatalf("LoadQueue() unexpected error: %v", err)
 	}
 	byQueueID := queueEntriesByID(reloaded)
-	if byQueueID["queue-queued-old"].Status != QueueStatusClaimed {
-		t.Fatalf("oldest queued entry status = %q, want claimed", byQueueID["queue-queued-old"].Status)
+	claimedEntry := byQueueID["queue-queued-old"]
+	if claimedEntry.Status != QueueStatusClaimed {
+		t.Fatalf("oldest queued entry status = %q, want claimed", claimedEntry.Status)
+	}
+	if claimedEntry.ClaimedAt == nil || !claimedEntry.ClaimedAt.Equal(claimedAt.UTC()) {
+		t.Fatalf("oldest queued entry claimedAt = %v, want %v", claimedEntry.ClaimedAt, claimedAt.UTC())
+	}
+	if claimedEntry.Claim == nil || !reflect.DeepEqual(*claimedEntry.Claim, claim) {
+		t.Fatalf("oldest queued entry claim = %#v, want %#v", claimedEntry.Claim, claim)
+	}
+	if claimedEntry.AttemptCount != 1 {
+		t.Fatalf("oldest queued entry attemptCount = %d, want 1", claimedEntry.AttemptCount)
 	}
 	if byQueueID["queue-queued-new"].Status != QueueStatusQueued {
 		t.Fatalf("newer queued entry status = %q, want still queued", byQueueID["queue-queued-new"].Status)
@@ -363,6 +381,153 @@ func TestClaimNextQueueEntryReturnsNilWhenNoQueuedEntries(t *testing.T) {
 	}
 	if !reflect.DeepEqual(reloaded, entries) {
 		t.Fatalf("LoadQueue() = %#v, want unchanged %#v", reloaded, entries)
+	}
+}
+
+func TestMarkQueueEntrySucceededRecordsTerminalState(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 13, 0, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	completedAt := createdAt.Add(30 * time.Minute)
+	claim := QueueClaim{WorkerID: "worker-success", PID: 4343, Hostname: "factory-host"}
+	entry := testQueueEntryWithStatus("queue-success", "run-success", QueueStatusClaimed, createdAt)
+	entry.ClaimedAt = &claimedAt
+	entry.Claim = &claim
+	entry.AttemptCount = 1
+	entry.LastError = "old failure"
+	if err := store.SaveQueue([]QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() unexpected error: %v", err)
+	}
+
+	got, err := store.MarkQueueEntrySucceeded("queue-success", QueueOperationOptions{
+		Now: func() time.Time { return completedAt },
+	})
+	if err != nil {
+		t.Fatalf("MarkQueueEntrySucceeded() unexpected error: %v", err)
+	}
+
+	if got.Status != QueueStatusSucceeded {
+		t.Fatalf("MarkQueueEntrySucceeded() status = %q, want %q", got.Status, QueueStatusSucceeded)
+	}
+	if got.CompletedAt == nil || !got.CompletedAt.Equal(completedAt.UTC()) {
+		t.Fatalf("MarkQueueEntrySucceeded() completedAt = %v, want %v", got.CompletedAt, completedAt.UTC())
+	}
+	if got.AttemptCount != 1 {
+		t.Fatalf("MarkQueueEntrySucceeded() attemptCount = %d, want 1", got.AttemptCount)
+	}
+	if got.LastError != "" {
+		t.Fatalf("MarkQueueEntrySucceeded() lastError = %q, want empty", got.LastError)
+	}
+
+	listed, err := store.ListQueue()
+	if err != nil {
+		t.Fatalf("ListQueue() unexpected error: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Status != QueueStatusSucceeded {
+		t.Fatalf("ListQueue() = %#v, want retained succeeded entry", listed)
+	}
+}
+
+func TestMarkQueueEntryFailedRecordsInspectableState(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 14, 0, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(3 * time.Minute)
+	completedAt := createdAt.Add(25 * time.Minute)
+	claim := QueueClaim{WorkerID: "worker-failed", PID: 4444, Hostname: "factory-host"}
+	entry := testQueueEntryWithStatus("queue-failed", "run-failed", QueueStatusClaimed, createdAt)
+	entry.ClaimedAt = &claimedAt
+	entry.Claim = &claim
+	if err := store.SaveQueue([]QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() unexpected error: %v", err)
+	}
+
+	got, err := store.MarkQueueEntryFailed("queue-failed", " unit tests failed ", QueueOperationOptions{
+		Now: func() time.Time { return completedAt },
+	})
+	if err != nil {
+		t.Fatalf("MarkQueueEntryFailed() unexpected error: %v", err)
+	}
+
+	if got.Status != QueueStatusFailed {
+		t.Fatalf("MarkQueueEntryFailed() status = %q, want %q", got.Status, QueueStatusFailed)
+	}
+	if got.CompletedAt == nil || !got.CompletedAt.Equal(completedAt.UTC()) {
+		t.Fatalf("MarkQueueEntryFailed() completedAt = %v, want %v", got.CompletedAt, completedAt.UTC())
+	}
+	if got.AttemptCount != 1 {
+		t.Fatalf("MarkQueueEntryFailed() attemptCount = %d, want 1", got.AttemptCount)
+	}
+	if got.LastError != "unit tests failed" {
+		t.Fatalf("MarkQueueEntryFailed() lastError = %q, want trimmed error", got.LastError)
+	}
+
+	reloadedStore := NewStore(store.Root())
+	reloaded, err := reloadedStore.ListQueue()
+	if err != nil {
+		t.Fatalf("ListQueue() after reload unexpected error: %v", err)
+	}
+	if len(reloaded) != 1 {
+		t.Fatalf("ListQueue() after reload len = %d, want 1", len(reloaded))
+	}
+	if !reflect.DeepEqual(reloaded[0], got) {
+		t.Fatalf("ListQueue() after reload = %#v, want retained failed entry %#v", reloaded[0], got)
+	}
+}
+
+func TestQueueLifecycleStateSurvivesReload(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	entries := []QueueEntry{
+		testQueueEntry("queue-claimed", "run-claimed", base),
+		testQueueEntry("queue-failed", "run-failed", base.Add(time.Minute)),
+	}
+	if err := store.SaveQueue(entries); err != nil {
+		t.Fatalf("SaveQueue() unexpected error: %v", err)
+	}
+
+	claimedAt := base.Add(10 * time.Minute)
+	claim := QueueClaim{WorkerID: "worker-reload", PID: 4545, Hostname: "factory-host"}
+	claimed, err := store.ClaimNextQueueEntry(QueueOperationOptions{
+		Now:   func() time.Time { return claimedAt },
+		Claim: &claim,
+	})
+	if err != nil {
+		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
+	}
+	if claimed == nil {
+		t.Fatalf("ClaimNextQueueEntry() = nil, want claimed entry")
+	}
+
+	secondClaimedAt := base.Add(12 * time.Minute)
+	secondClaimed, err := store.ClaimNextQueueEntry(QueueOperationOptions{
+		Now:   func() time.Time { return secondClaimedAt },
+		Claim: &claim,
+	})
+	if err != nil {
+		t.Fatalf("second ClaimNextQueueEntry() unexpected error: %v", err)
+	}
+	if secondClaimed == nil {
+		t.Fatalf("second ClaimNextQueueEntry() = nil, want claimed entry")
+	}
+	failedAt := base.Add(40 * time.Minute)
+	failed, err := store.MarkQueueEntryFailed(secondClaimed.QueueID, "executor failed", QueueOperationOptions{
+		Now: func() time.Time { return failedAt },
+	})
+	if err != nil {
+		t.Fatalf("MarkQueueEntryFailed() unexpected error: %v", err)
+	}
+
+	reloadedStore := NewStore(store.Root())
+	reloaded, err := reloadedStore.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() after restart unexpected error: %v", err)
+	}
+	byQueueID := queueEntriesByID(reloaded)
+	if !reflect.DeepEqual(byQueueID[claimed.QueueID], *claimed) {
+		t.Fatalf("reloaded claimed entry = %#v, want %#v", byQueueID[claimed.QueueID], *claimed)
+	}
+	if !reflect.DeepEqual(byQueueID[failed.QueueID], failed) {
+		t.Fatalf("reloaded failed entry = %#v, want %#v", byQueueID[failed.QueueID], failed)
 	}
 }
 

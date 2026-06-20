@@ -6,6 +6,7 @@
 - Factory queue storage builds on `internal/factory.Store`: keep durable queue state at the global config-backed factory root (`StoreDir()/queue.json`), return empty state for missing files without creating directories, and preserve corrupt files by returning parse errors without mutation.
 - Queue read-modify-write paths should use `Store.UpdateQueue`; it holds `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local queue workers preserve all updates.
 - Queue commands should use `Store.EnqueueQueueEntry`, `Store.ListQueue`, and `Store.ClaimNextQueueEntry` for FIFO behavior; tests can inject `QueueOperationOptions` for deterministic timestamps and queue IDs.
+- Queue lifecycle transitions should go through Store helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained queue history stay consistent.
 
 ---
 ## 2026-06-21 04:50:06 CST - US-001
@@ -48,4 +49,15 @@
   - `ClaimNextQueueEntry` marks the selected queued entry as `claimed` and sets `claimedAt`, while leaving non-queued entries untouched.
   - Browser verification skipped because this story only changes backend queue storage.
   - Checks run: `go test ./internal/factory`, `make test`, `make vet`. `make lint` skipped because `golangci-lint` is not installed locally.
+---
+## 2026-06-21 05:17:55 CST - US-005
+- Implemented queue lifecycle state transitions for claimed, succeeded, and failed entries, including worker claim metadata, attempt counts, terminal timestamps, retained terminal history, and failure messages.
+- Added deterministic unit tests for claim metadata, success completion, failed completion, retained failure state, and restart-safe reload of claimed/failed entries.
+- Clarified the queue entry contract to document retained succeeded/failed history and active-work selection by `queued` status.
+- Files changed: `internal/factory/queue.go`, `internal/factory/queue_test.go`, `docs/contracts/factory-queue-entry-v1.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Use `QueueOperationOptions.Claim` in tests and future queue worker commands to make claim metadata deterministic; default claims include process metadata.
+  - Terminal queue entries are retained in `queue.json`; worker selection should continue to filter only `QueueStatusQueued`.
+  - Browser verification skipped because this story only changes backend queue lifecycle storage.
+  - Checks run: `go test -timeout=120s ./internal/factory`, `make test`, `make vet`. `make lint` skipped because `golangci-lint` is not installed locally.
 ---
