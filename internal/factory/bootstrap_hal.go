@@ -38,6 +38,10 @@ func BootstrapRefreshHal(ctx context.Context, request BootstrapRequest, deps Boo
 		Steps:    make([]BootstrapStepResult, 0, len(commands)),
 		Timeline: make([]BootstrapTimelineEvent, 0, len(commands)),
 	}
+	if err := validateBootstrapRequiredEnv(request); err != nil {
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
+	}
 
 	for _, planned := range commands {
 		if request.Options.DryRun {

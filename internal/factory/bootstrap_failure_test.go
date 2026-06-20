@@ -13,6 +13,7 @@ func TestBootstrapFailureCategoryConstants(t *testing.T) {
 		got  string
 		want string
 	}{
+		{name: "validation", got: BootstrapFailureCategoryValidation, want: "validation"},
 		{name: "repo", got: BootstrapFailureCategoryRepo, want: "repo"},
 		{name: "auth", got: BootstrapFailureCategoryAuth, want: "auth"},
 		{name: "dependency", got: BootstrapFailureCategoryDependency, want: "dependency"},
@@ -57,6 +58,15 @@ func TestClassifyBootstrapFailure(t *testing.T) {
 			err:          errors.New("exit status 128"),
 			wantCategory: BootstrapFailureCategoryRepo,
 			wantMessage:  "repository bootstrap failed while running git fetch",
+		},
+		{
+			name:         "git missing workspace file is repository failure",
+			step:         "checkout_base",
+			command:      "git checkout -B main origin/main",
+			output:       "fatal: cannot stat '.hal/prd.json': No such file or directory",
+			err:          errors.New("exit status 128"),
+			wantCategory: BootstrapFailureCategoryRepo,
+			wantMessage:  "repository bootstrap failed while running git checkout",
 		},
 		{
 			name:         "authentication failure",

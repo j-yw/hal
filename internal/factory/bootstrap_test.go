@@ -27,6 +27,9 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 		BaseBranch:    "main",
 		RunBranch:     "hal/factory-remote-workspace-bootstrap",
 		WorkspaceDir:  "/workspace/hal",
+		RequiredEnvKeys: []string{
+			"HAL_ENGINE",
+		},
 		Env: map[string]string{
 			"HAL_ENGINE": "codex",
 		},
@@ -88,7 +91,7 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 	gotSummaries := bootstrapCommandSummaries(executor.calls)
 	wantSummaries := []string{
 		"git fetch --prune origin",
-		"git checkout main",
+		"git checkout -B main origin/main",
 		"git checkout -b hal/factory-remote-workspace-bootstrap main",
 		"hal --version",
 		"codex --version",
@@ -232,6 +235,126 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 	gotSummaries := bootstrapCommandSummaries(executor.calls)
 	if containsCommandSummary(gotSummaries, "hal init") || containsCommandSummary(gotSummaries, "hal doctor --json") {
 		t.Fatalf("bootstrap continued after first failure: %#v", gotSummaries)
+	}
+}
+
+func TestBootstrapWorkspaceValidatesRequiredEnvBeforeCommands(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+	}{
+		{name: "missing"},
+		{name: "empty", env: map[string]string{"GITHUB_TOKEN": " \t "}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &fakeBootstrapExecutor{}
+			request := BootstrapRequest{
+				RepositoryURL:   "git@github.com:jywlabs/hal.git",
+				BaseBranch:      "main",
+				RunBranch:       "hal/factory-remote-workspace-bootstrap",
+				WorkspaceDir:    "/workspace/hal",
+				RequiredEnvKeys: []string{"GITHUB_TOKEN"},
+				Env:             tt.env,
+			}
+
+			result, err := BootstrapWorkspace(context.Background(), request, BootstrapDeps{
+				Executor: executor,
+				Now:      incrementingClock(t, time.Date(2026, 6, 21, 9, 15, 0, 0, time.UTC)),
+				RepoExists: func(path string) (bool, error) {
+					return path == "/workspace/hal", nil
+				},
+			})
+			if !errors.Is(err, errBootstrapRequiredEnvMissing) {
+				t.Fatalf("BootstrapWorkspace() error = %v, want %v", err, errBootstrapRequiredEnvMissing)
+			}
+			if len(executor.calls) != 0 {
+				t.Fatalf("executor calls = %#v, want none", bootstrapCommandSummaries(executor.calls))
+			}
+			if result.Failure == nil {
+				t.Fatal("failure = nil, want validation failure")
+			}
+			if result.Failure.Category != BootstrapFailureCategoryValidation {
+				t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryValidation)
+			}
+			assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepValidateRequest})
+		})
+	}
+}
+
+func TestBootstrapWorkspaceClassifiesRepositoryPlanningValidationFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		request    BootstrapRequest
+		wantErr    error
+		repoExists func(path string) (bool, error)
+	}{
+		{
+			name: "missing base branch",
+			request: BootstrapRequest{
+				RepositoryURL: "git@github.com:jywlabs/hal.git",
+				WorkspaceDir:  "/workspace/hal",
+			},
+			wantErr: errBootstrapBaseBranchRequired,
+		},
+		{
+			name: "missing repository url",
+			request: BootstrapRequest{
+				BaseBranch:   "main",
+				WorkspaceDir: "/workspace/hal",
+			},
+			wantErr: errBootstrapRepositoryURLRequired,
+			repoExists: func(path string) (bool, error) {
+				return false, nil
+			},
+		},
+		{
+			name: "missing workspace dir",
+			request: BootstrapRequest{
+				RepositoryURL: "git@github.com:jywlabs/hal.git",
+				BaseBranch:    "main",
+			},
+			wantErr: errBootstrapWorkspaceDirRequired,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &fakeBootstrapExecutor{}
+			repoExists := tt.repoExists
+			if repoExists == nil {
+				repoExists = func(path string) (bool, error) {
+					t.Fatalf("repoExists(%q) called before request validation completed", path)
+					return false, nil
+				}
+			}
+
+			result, err := BootstrapWorkspace(context.Background(), tt.request, BootstrapDeps{
+				Executor:   executor,
+				Now:        incrementingClock(t, time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)),
+				RepoExists: repoExists,
+			})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("BootstrapWorkspace() error = %v, want %v", err, tt.wantErr)
+			}
+			if len(executor.calls) != 0 {
+				t.Fatalf("executor calls = %#v, want none", bootstrapCommandSummaries(executor.calls))
+			}
+			if result.Failure == nil {
+				t.Fatal("failure = nil, want validation failure")
+			}
+			if result.Failure.Category != BootstrapFailureCategoryValidation {
+				t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryValidation)
+			}
+			assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepValidateRequest})
+			if len(result.Timeline) != 1 {
+				t.Fatalf("timeline events = %d, want 1", len(result.Timeline))
+			}
+			if result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey] != BootstrapFailureCategoryValidation {
+				t.Fatalf("timeline failure category = %q, want %q", result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey], BootstrapFailureCategoryValidation)
+			}
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ const (
 	BootstrapStepCloneRepository = "clone_repository"
 	BootstrapStepFetchRepository = "fetch_repository"
 	BootstrapStepCheckoutBase    = "checkout_base"
+	BootstrapStepCheckLocalRun   = "check_local_run_branch"
+	BootstrapStepCheckRemoteRun  = "check_remote_run_branch"
 	BootstrapStepFetchRunBranch  = "fetch_run_branch"
 	BootstrapStepCheckoutRun     = "checkout_run_branch"
 	BootstrapStepCreateRunBranch = "create_run_branch"
@@ -45,21 +48,45 @@ type bootstrapRepositoryCommand struct {
 	command  BootstrapCommand
 }
 
+type bootstrapBranchProbeFailure struct {
+	step          BootstrapStepResult
+	commandResult BootstrapCommandResult
+	failure       BootstrapFailure
+	err           error
+}
+
+func (e *bootstrapBranchProbeFailure) Error() string {
+	return e.err.Error()
+}
+
+func (e *bootstrapBranchProbeFailure) Unwrap() error {
+	return e.err
+}
+
 // BootstrapRepositoryCheckout clones or updates the target repository, checks
 // out the requested base branch, and prepares the explicit run branch when one
 // is provided.
 func BootstrapRepositoryCheckout(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps) (BootstrapResult, error) {
 	repoPath, err := normalizeBootstrapRepoPath(request.WorkspaceDir)
+	result := BootstrapResult{
+		RepoPath: repoPath,
+	}
 	if err != nil {
-		return BootstrapResult{}, err
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
+	}
+	if err := validateBootstrapRequiredEnv(request); err != nil {
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
 	}
 
 	commands, err := bootstrapRepositoryCommands(request, deps, repoPath)
 	if err != nil {
-		return BootstrapResult{RepoPath: repoPath}, err
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
 	}
 
-	result := BootstrapResult{
+	result = BootstrapResult{
 		RepoPath: repoPath,
 		Steps:    make([]BootstrapStepResult, 0, len(commands)),
 		Timeline: make([]BootstrapTimelineEvent, 0, len(commands)),
@@ -75,8 +102,9 @@ func BootstrapRepositoryCheckout(ctx context.Context, request BootstrapRequest, 
 		return result, nil
 	}
 
-	runBranchCommands, err := bootstrapRunBranchCommands(ctx, request, deps, repoPath)
+	runBranchCommands, err := bootstrapRunBranchCommands(ctx, request, deps, &result, repoPath)
 	if err != nil {
+		recordBootstrapBranchProbeFailure(&result, request, deps, err)
 		return result, err
 	}
 	if err := runBootstrapRepositoryCommands(ctx, request, deps, &result, runBranchCommands); err != nil {
@@ -84,6 +112,32 @@ func BootstrapRepositoryCheckout(ctx context.Context, request BootstrapRequest, 
 	}
 	result.CheckedOutBranch = runBranch
 	return result, nil
+}
+
+func recordBootstrapBranchProbeFailure(result *BootstrapResult, request BootstrapRequest, deps BootstrapRepositoryDeps, err error) {
+	var probeFailure *bootstrapBranchProbeFailure
+	if errors.As(err, &probeFailure) {
+		failure := probeFailure.failure
+		result.Failure = &failure
+		recordBootstrapStepResult(result, request, probeFailure.step, probeFailure.commandResult, &failure)
+		return
+	}
+
+	stepName := BootstrapStepCheckLocalRun
+	if strings.Contains(strings.ToLower(err.Error()), "remote run branch") {
+		stepName = BootstrapStepCheckRemoteRun
+	}
+	startedAt := deps.now()
+	finishedAt := deps.now()
+	step := BootstrapStepResult{
+		Name:       stepName,
+		Status:     RunStatusFailed,
+		StartedAt:  startedAt,
+		FinishedAt: &finishedAt,
+	}
+	failure := ClassifyBootstrapFailure(step.Name, "", "", err)
+	result.Failure = &failure
+	recordBootstrapStepResult(result, request, step, BootstrapCommandResult{}, &failure)
 }
 
 func runBootstrapRepositoryCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, result *BootstrapResult, commands []bootstrapRepositoryCommand) error {
@@ -142,11 +196,15 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 		})
 	}
 
+	checkoutArgs := []string{"checkout", baseBranch}
+	if exists {
+		checkoutArgs = []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
+	}
 	commands = append(commands, bootstrapRepositoryCommand{
 		stepName: BootstrapStepCheckoutBase,
 		command: BootstrapCommand{
 			Name: "git",
-			Args: []string{"checkout", baseBranch},
+			Args: checkoutArgs,
 			Dir:  repoPath,
 			Env:  bootstrapGitEnv(),
 		},
@@ -155,14 +213,14 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	return commands, nil
 }
 
-func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, repoPath string) ([]bootstrapRepositoryCommand, error) {
+func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, result *BootstrapResult, repoPath string) ([]bootstrapRepositoryCommand, error) {
 	runBranch := strings.TrimSpace(request.RunBranch)
 	if runBranch == "" {
 		return nil, nil
 	}
 	baseBranch := strings.TrimSpace(request.BaseBranch)
 
-	localExists, err := deps.localBranchExists(ctx, request, repoPath, runBranch)
+	localExists, err := deps.recordedLocalBranchExists(ctx, request, result, repoPath, runBranch)
 	if err != nil {
 		return nil, fmt.Errorf("check local run branch %q: %w", runBranch, err)
 	}
@@ -180,7 +238,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 		}, nil
 	}
 
-	remoteExists, err := deps.remoteBranchExists(ctx, request, repoPath, runBranch)
+	remoteExists, err := deps.recordedRemoteBranchExists(ctx, request, result, repoPath, runBranch)
 	if err != nil {
 		return nil, fmt.Errorf("check remote run branch %q: %w", runBranch, err)
 	}
@@ -275,7 +333,51 @@ func (d BootstrapRepositoryDeps) repoExists(path string) (bool, error) {
 	if !info.IsDir() {
 		return false, fmt.Errorf("repository path exists but is not a directory")
 	}
+
+	hasGitMetadata, err := hasBootstrapGitMetadata(path)
+	if err != nil {
+		return false, err
+	}
+	if hasGitMetadata {
+		return true, nil
+	}
+
+	empty, err := bootstrapDirIsEmpty(path)
+	if err != nil {
+		return false, err
+	}
+	if empty {
+		return false, nil
+	}
+	return false, fmt.Errorf("repository path exists but is not a git checkout and is not empty")
+}
+
+func hasBootstrapGitMetadata(path string) (bool, error) {
+	_, err := os.Stat(filepath.Join(path, ".git"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+func bootstrapDirIsEmpty(path string) (bool, error) {
+	dir, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer dir.Close()
+
+	_, err = dir.Readdirnames(1)
+	if errors.Is(err, io.EOF) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (d BootstrapRepositoryDeps) localBranchExists(ctx context.Context, request BootstrapRequest, repoPath string, branch string) (bool, error) {
@@ -285,12 +387,7 @@ func (d BootstrapRepositoryDeps) localBranchExists(ctx context.Context, request 
 	if request.Options.DryRun || d.Executor == nil {
 		return false, nil
 	}
-	return d.probeBranch(ctx, request, BootstrapCommand{
-		Name: "git",
-		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch},
-		Dir:  repoPath,
-		Env:  bootstrapGitEnv(),
-	}, 1)
+	return d.probeBranch(ctx, request, localRunBranchProbeCommand(repoPath, branch), BootstrapStepCheckLocalRun, 1)
 }
 
 func (d BootstrapRepositoryDeps) remoteBranchExists(ctx context.Context, request BootstrapRequest, repoPath string, branch string) (bool, error) {
@@ -300,31 +397,104 @@ func (d BootstrapRepositoryDeps) remoteBranchExists(ctx context.Context, request
 	if request.Options.DryRun || d.Executor == nil {
 		return false, nil
 	}
-	return d.probeBranch(ctx, request, BootstrapCommand{
+	return d.probeBranch(ctx, request, remoteRunBranchProbeCommand(repoPath, branch), BootstrapStepCheckRemoteRun, 2)
+}
+
+func (d BootstrapRepositoryDeps) recordedLocalBranchExists(ctx context.Context, request BootstrapRequest, result *BootstrapResult, repoPath string, branch string) (bool, error) {
+	if d.LocalBranchExists != nil || request.Options.DryRun || d.Executor == nil {
+		return d.localBranchExists(ctx, request, repoPath, branch)
+	}
+	return d.recordedProbeBranch(ctx, request, result, localRunBranchProbeCommand(repoPath, branch), BootstrapStepCheckLocalRun, 1)
+}
+
+func (d BootstrapRepositoryDeps) recordedRemoteBranchExists(ctx context.Context, request BootstrapRequest, result *BootstrapResult, repoPath string, branch string) (bool, error) {
+	if d.RemoteBranchExists != nil || request.Options.DryRun || d.Executor == nil {
+		return d.remoteBranchExists(ctx, request, repoPath, branch)
+	}
+	return d.recordedProbeBranch(ctx, request, result, remoteRunBranchProbeCommand(repoPath, branch), BootstrapStepCheckRemoteRun, 2)
+}
+
+func localRunBranchProbeCommand(repoPath string, branch string) BootstrapCommand {
+	return BootstrapCommand{
+		Name: "git",
+		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch},
+		Dir:  repoPath,
+		Env:  bootstrapGitEnv(),
+	}
+}
+
+func remoteRunBranchProbeCommand(repoPath string, branch string) BootstrapCommand {
+	return BootstrapCommand{
 		Name: "git",
 		Args: []string{"ls-remote", "--exit-code", "--heads", "origin", branch},
 		Dir:  repoPath,
 		Env:  bootstrapGitEnv(),
-	}, 2)
+	}
 }
 
-func (d BootstrapRepositoryDeps) probeBranch(ctx context.Context, request BootstrapRequest, command BootstrapCommand, missingExitCode int) (bool, error) {
-	command = injectBootstrapRequestEnv(request, command)
-	result, err := d.Executor.Run(ctx, command)
+func (d BootstrapRepositoryDeps) probeBranch(ctx context.Context, request BootstrapRequest, command BootstrapCommand, stepName string, missingExitCode int) (bool, error) {
+	exists, step, commandResult, failure, err := d.probeBranchStep(ctx, request, command, stepName, missingExitCode)
 	if err != nil {
-		if result.ExitCode == missingExitCode {
-			return false, nil
+		return false, bootstrapBranchProbeStepError(step, commandResult, failure, err)
+	}
+	return exists, nil
+}
+
+func (d BootstrapRepositoryDeps) recordedProbeBranch(ctx context.Context, request BootstrapRequest, result *BootstrapResult, command BootstrapCommand, stepName string, missingExitCode int) (bool, error) {
+	exists, step, commandResult, failure, err := d.probeBranchStep(ctx, request, command, stepName, missingExitCode)
+	if err != nil {
+		return false, bootstrapBranchProbeStepError(step, commandResult, failure, err)
+	}
+	if result != nil {
+		recordBootstrapStepResult(result, request, step, commandResult, nil)
+	}
+	return exists, nil
+}
+
+func (d BootstrapRepositoryDeps) probeBranchStep(ctx context.Context, request BootstrapRequest, command BootstrapCommand, stepName string, missingExitCode int) (bool, BootstrapStepResult, BootstrapCommandResult, *BootstrapFailure, error) {
+	step, commandResult, failure, err := RunBootstrapStep(ctx, d.stepDeps(request), stepName, command)
+	if err != nil {
+		if commandResult.ExitCode == missingExitCode {
+			step.Status = RunStatusSucceeded
+			return false, step, commandResult, nil, nil
 		}
-		return false, err
+		return false, step, commandResult, failure, err
 	}
-	switch result.ExitCode {
-	case 0:
-		return true, nil
-	case missingExitCode:
-		return false, nil
+	return true, step, commandResult, nil, nil
+}
+
+func bootstrapBranchProbeStepError(step BootstrapStepResult, commandResult BootstrapCommandResult, failure *BootstrapFailure, err error) error {
+	if failure == nil {
+		return err
 	}
-	if result.ExitCode != 0 {
-		return false, bootstrapCommandExitError{exitCode: result.ExitCode}
+	return &bootstrapBranchProbeFailure{
+		step:          step,
+		commandResult: commandResult,
+		failure:       *failure,
+		err:           err,
 	}
-	return true, nil
+}
+
+func (d BootstrapRepositoryDeps) branchProbeFailure(request BootstrapRequest, stepName string, command BootstrapCommand, result BootstrapCommandResult, err error) error {
+	startedAt := d.now()
+	finishedAt := d.now()
+	sanitizer := NewBootstrapSanitizer(request)
+	sanitizedCommand := sanitizer.SanitizeCommand(command)
+	sanitizedResult := sanitizer.SanitizeCommandResult(result)
+	commandSummary := sanitizedCommand.Summary()
+	failure := ClassifyBootstrapFailure(stepName, commandSummary, result.classificationOutput(), err)
+
+	return &bootstrapBranchProbeFailure{
+		step: BootstrapStepResult{
+			Name:           stepName,
+			Status:         RunStatusFailed,
+			CommandSummary: commandSummary,
+			StartedAt:      startedAt,
+			FinishedAt:     &finishedAt,
+			ExitCode:       result.ExitCode,
+		},
+		commandResult: sanitizedResult,
+		failure:       failure,
+		err:           err,
+	}
 }

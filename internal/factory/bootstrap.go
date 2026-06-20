@@ -2,15 +2,29 @@ package factory
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 )
 
 const (
+	BootstrapStepValidateRequest     = "validate_bootstrap_request"
 	BootstrapStepFinalCheckHalDoctor = "final_check_hal_doctor"
 
 	bootstrapFinalCheckStepPrefix = "final_check_"
 )
+
+var errBootstrapRequiredEnvMissing = errors.New("bootstrap required environment value is missing")
+
+type bootstrapRequiredEnvError struct{}
+
+func (bootstrapRequiredEnvError) Error() string {
+	return errBootstrapRequiredEnvMissing.Error()
+}
+
+func (bootstrapRequiredEnvError) Unwrap() error {
+	return errBootstrapRequiredEnvMissing
+}
 
 // BootstrapDeps holds all dependencies needed by the high-level workspace
 // bootstrap entrypoint. Nil FinalChecks runs the default Hal doctor check after
@@ -38,6 +52,10 @@ type bootstrapFinalCheckDeps struct {
 func BootstrapWorkspace(ctx context.Context, request BootstrapRequest, deps BootstrapDeps) (BootstrapResult, error) {
 	result := BootstrapResult{
 		RepoPath: bootstrapToolingRepoPath(request.WorkspaceDir),
+	}
+	if err := validateBootstrapRequiredEnv(request); err != nil {
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
 	}
 
 	repositoryResult, err := BootstrapRepositoryCheckout(ctx, request, deps.repositoryDeps())
@@ -78,6 +96,10 @@ func bootstrapRunFinalChecks(ctx context.Context, request BootstrapRequest, deps
 		RepoPath: repoPath,
 		Steps:    make([]BootstrapStepResult, 0, len(checks)),
 		Timeline: make([]BootstrapTimelineEvent, 0, len(checks)),
+	}
+	if err := validateBootstrapRequiredEnv(request); err != nil {
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
 	}
 
 	for _, check := range checks {
@@ -122,6 +144,47 @@ func appendBootstrapResult(dst *BootstrapResult, src BootstrapResult) {
 	if src.Failure != nil {
 		dst.Failure = src.Failure
 	}
+}
+
+func validateBootstrapRequiredEnv(request BootstrapRequest) error {
+	if len(request.RequiredEnvKeys) == 0 {
+		return nil
+	}
+
+	env := make(map[string]string, len(request.Env))
+	for key, value := range request.Env {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		env[key] = value
+	}
+	for _, key := range request.RequiredEnvKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		value, ok := env[key]
+		if !ok || strings.TrimSpace(value) == "" {
+			return bootstrapRequiredEnvError{}
+		}
+	}
+	return nil
+}
+
+func recordBootstrapRequestValidationFailure(result *BootstrapResult, request BootstrapRequest, nowFn func() time.Time, err error) {
+	now := bootstrapNow(nowFn)
+	startedAt := now()
+	finishedAt := now()
+	step := BootstrapStepResult{
+		Name:       BootstrapStepValidateRequest,
+		Status:     RunStatusFailed,
+		StartedAt:  startedAt,
+		FinishedAt: &finishedAt,
+	}
+	failure := ClassifyBootstrapFailure(step.Name, "", "", err)
+	result.Failure = &failure
+	recordBootstrapStepResult(result, request, step, BootstrapCommandResult{}, &failure)
 }
 
 func normalizeBootstrapFinalChecks(repoPath string, checks []BootstrapToolingCheck) []BootstrapToolingCheck {
@@ -197,9 +260,19 @@ func (d BootstrapDeps) finalCheckDeps(repoPath string) bootstrapFinalCheckDeps {
 	}
 }
 
+func (d BootstrapDeps) now() time.Time {
+	return bootstrapNow(d.Now)()
+}
+
 func (d bootstrapFinalCheckDeps) now() time.Time {
-	if d.Now != nil {
-		return d.Now()
+	return bootstrapNow(d.Now)()
+}
+
+func bootstrapNow(nowFn func() time.Time) func() time.Time {
+	if nowFn != nil {
+		return nowFn
 	}
-	return time.Now().UTC()
+	return func() time.Time {
+		return time.Now().UTC()
+	}
 }
