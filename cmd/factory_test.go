@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -11,7 +12,92 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/spf13/cobra"
 )
+
+func TestFactoryCommandHelpMetadata(t *testing.T) {
+	tests := []struct {
+		name                 string
+		cmd                  *cobra.Command
+		requiredLongPhrases  []string
+		requiredExampleLines []string
+	}{
+		{
+			name: "factory root command",
+			cmd:  factoryCmd,
+			requiredLongPhrases: []string{
+				"Inspect durable factory run history",
+				"global factory store",
+				"separate from per-project",
+				"status command",
+			},
+			requiredExampleLines: []string{
+				"hal factory list",
+				"hal factory list --json",
+				"hal factory status <run-id> --json",
+			},
+		},
+		{
+			name: "factory list command",
+			cmd:  factoryListCmd,
+			requiredLongPhrases: []string{
+				"global factory store",
+				"--json",
+				"factory-list-v1 contract",
+				"run summaries only",
+				"timelines are intentionally omitted",
+			},
+			requiredExampleLines: []string{
+				"hal factory list",
+				"hal factory list --json",
+			},
+		},
+		{
+			name: "factory status command",
+			cmd:  factoryStatusCmd,
+			requiredLongPhrases: []string{
+				"global factory store",
+				"--json",
+				"factory-status-v1 contract",
+				"full run record",
+				"timeline events in append order",
+			},
+			requiredExampleLines: []string{
+				"hal factory status run-20260620-001",
+				"hal factory status run-20260620-001 --json",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.cmd == nil {
+				t.Fatal("command is nil")
+			}
+			if missing := missingCommandMetadataFields(tt.cmd); len(missing) > 0 {
+				t.Fatalf("command %q is missing metadata fields: %s", commandPathLabel(tt.cmd), strings.Join(missing, ", "))
+			}
+
+			commandPath := commandPathLabel(tt.cmd)
+			if !strings.Contains(tt.cmd.Example, commandPath) {
+				t.Fatalf("command %q example must include %q, got %q", commandPath, commandPath, tt.cmd.Example)
+			}
+
+			for _, phrase := range tt.requiredLongPhrases {
+				if !strings.Contains(tt.cmd.Long, phrase) {
+					t.Fatalf("command %q long help must include %q, got %q", commandPath, phrase, tt.cmd.Long)
+				}
+			}
+
+			for _, line := range tt.requiredExampleLines {
+				if !strings.Contains(tt.cmd.Example, line) {
+					t.Fatalf("command %q example must include %q, got %q", commandPath, line, tt.cmd.Example)
+				}
+			}
+		})
+	}
+}
 
 func TestRunFactoryListJSONEmptyState(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
@@ -272,6 +358,60 @@ func TestFactoryStatusCommandRegisteredWithJSONFlag(t *testing.T) {
 	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory status missing metadata fields: %v", missing)
+	}
+}
+
+func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
+	tests := []struct {
+		name          string
+		path          string
+		wantFragments []string
+	}{
+		{
+			name: "root cli reference links factory command",
+			path: "../docs/cli/hal.md",
+			wantFragments: []string{
+				"[hal factory](hal_factory.md)",
+			},
+		},
+		{
+			name: "factory cli reference links subcommands",
+			path: "../docs/cli/hal_factory.md",
+			wantFragments: []string{
+				"[hal factory list](hal_factory_list.md)",
+				"[hal factory status](hal_factory_status.md)",
+			},
+		},
+		{
+			name: "factory list cli reference links parent",
+			path: "../docs/cli/hal_factory_list.md",
+			wantFragments: []string{
+				"[hal factory](hal_factory.md)",
+			},
+		},
+		{
+			name: "factory status cli reference links parent",
+			path: "../docs/cli/hal_factory_status.md",
+			wantFragments: []string{
+				"[hal factory](hal_factory.md)",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := os.ReadFile(tt.path)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) error: %v", tt.path, err)
+			}
+			text := string(data)
+			for _, fragment := range tt.wantFragments {
+				if !strings.Contains(text, fragment) {
+					t.Fatalf("%s missing %q", tt.path, fragment)
+				}
+			}
+		})
 	}
 }
 
