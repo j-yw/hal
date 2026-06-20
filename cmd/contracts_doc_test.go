@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -401,8 +402,10 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			contractValue: FactoryStatusContractVersion,
 			requiredFields: []string{
 				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
-				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
+				"branchName", "baseBranch", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "failure", "suggestedCommand",
+				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
+				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -416,6 +419,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.FailureCategoryGit,
 				factory.FailureCategoryCI,
 				factory.FailureCategoryUnknown,
+				"sandbox",
 			},
 		},
 		{
@@ -463,6 +467,51 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 	}
 }
 
+func TestFactoryStatusDocsIncludeSandboxMetadataJSONFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/factory-status-v1.md")
+	if err != nil {
+		t.Fatalf("cannot read factory-status-v1.md: %v", err)
+	}
+	content := string(data)
+
+	fields := append(
+		jsonFieldNames(t, reflect.TypeOf(factory.SandboxMetadata{})),
+		jsonFieldNames(t, reflect.TypeOf(factory.SandboxConnectionMetadata{}))...,
+	)
+	for _, field := range fields {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("factory-status-v1.md missing sandbox metadata JSON field %q", field)
+		}
+	}
+	for _, forbidden := range []string{"`token`", "`privateKey`", "`credential`", "`env`", "`apiKey`"} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("factory-status-v1.md documents forbidden sandbox field %s", forbidden)
+		}
+	}
+}
+
+func jsonFieldNames(t *testing.T, typ reflect.Type) []string {
+	t.Helper()
+
+	var fields []string
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			t.Fatalf("%s.%s missing json tag", typ.Name(), field.Name)
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" {
+			t.Fatalf("%s.%s has empty json tag name", typ.Name(), field.Name)
+		}
+		fields = append(fields, name)
+	}
+	return fields
+}
+
 func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 	t.Run("factory list example", func(t *testing.T) {
 		var resp FactoryListResponse
@@ -491,6 +540,12 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if len(resp.Timeline) == 0 {
 			t.Fatal("factory status example should include timeline events")
 		}
+		if resp.Run.Sandbox == nil {
+			t.Fatal("factory status example should include sandbox metadata for a sandbox-backed run")
+		}
+		if resp.Run.Sandbox.Connection == nil {
+			t.Fatal("factory status example should include sandbox connection metadata")
+		}
 	})
 
 	t.Run("factory run example", func(t *testing.T) {
@@ -515,6 +570,9 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if resp.Failure == nil {
 			t.Fatal("factory run example should include failure details")
+		}
+		if _, ok := raw["sandbox"]; ok {
+			t.Fatal("factory run example should not include full sandbox metadata; use factory status for durable sandbox details")
 		}
 	})
 }

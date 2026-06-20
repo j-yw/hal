@@ -41,9 +41,41 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | Field | Type | Description |
 |-------|------|-------------|
 | `sandboxName` | string | Sandbox name used for the run |
+| `sandbox` | object | Redaction-safe sandbox execution metadata for sandbox-backed runs |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
 | `artifacts` | array | Full artifact references associated with the run |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
+
+`sandboxName` is retained as a compatibility summary field. New consumers
+should read `sandbox.name` when the `sandbox` object is present.
+
+## Sandbox Metadata
+
+When `sandbox` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Sandbox registry name used for the run |
+| `provider` | string | yes | Sandbox provider identifier |
+| `status` | string | yes | Final known sandbox lifecycle status, such as `running`, `stopped`, or `unknown` |
+| `connection` | object | no | Safe connection display fields |
+| `sshCommand` | string | no | Suggested local command for interactive inspection |
+| `cleanupCommand` | string | no | Suggested local command for sandbox cleanup |
+| `handoff` | string | no | Human-readable diagnostic or continuation guidance |
+
+Sandbox metadata is safe for durable local records. It must not include tokens,
+private keys, secret environment values, raw credentials, API keys, or unsafe
+environment values.
+
+When `sandbox.connection` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `address` | string | no | Preferred safe display address for the sandbox |
+| `publicIp` | string | no | Public IP address when safe to display |
+| `tailscaleIp` | string | no | Tailscale IP address when available |
+| `tailscaleHostname` | string | no | Tailscale hostname when available |
+| `tailscaleLockdown` | boolean | no | Whether provider access expects Tailscale-only connectivity |
 
 ## Source Metadata
 
@@ -93,6 +125,7 @@ When `failure` is present:
 | Mode | Meaning |
 |------|---------|
 | `local` | Run was executed by the local factory executor wrapping the local auto pipeline |
+| `sandbox` | Run was executed by a sandbox-backed factory executor wrapping the remote auto pipeline |
 
 ## Timeline
 

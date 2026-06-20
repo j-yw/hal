@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory durable schema additions should preserve compatibility fields like `RunRecord.SandboxName` while adding richer optional objects; lock JSON field names and omission behavior in `internal/factory/types_test.go`.
+- Factory machine contract docs are guarded by `cmd/contracts_doc_test.go`; add reflection-backed JSON tag checks there when documenting nested durable metadata objects so docs drift fails tests.
 
 ---
 
@@ -16,4 +17,16 @@
   - Factory durable schemas use explicit JSON tags on exported fields, enforced by `TestFactoryTypesHaveJSONTags`.
   - Keep legacy summary fields such as `sandboxName` when adding richer metadata so existing records and consumers remain readable.
   - Safe sandbox metadata belongs in `internal/factory` contract types and should not include tokens, private keys, credentials, API keys, or raw env values.
+---
+## 2026-06-21 07:11 CST - US-002
+- Documented sandbox metadata contract behavior for factory run/status machine-readable surfaces.
+- Added `factory-status-v1` sandbox metadata and safe connection field tables, including redaction guidance and the `sandbox` executor mode.
+- Updated the factory status contract example to show a sandbox-backed run record while keeping the compact factory run example free of full sandbox metadata.
+- Added doc sync tests that assert sandbox metadata JSON tag fields from `internal/factory` are documented and that the examples match the intended schema split.
+- Files changed: `docs/contracts/factory-run-v1.md`, `docs/contracts/factory-status-v1.md`, `docs/contracts/examples/factory-status-v1.json`, `cmd/contracts_doc_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: focused `go test ./cmd -run 'TestContractDocsIncludeFactoryFields|TestFactoryStatusDocsIncludeSandboxMetadataJSONFields|TestFactoryContractExamplesMatchCommandSchemas|TestMachineContractFields_FactoryCommandOutputs'`, `make test`, and `make vet` passed.
+- **Learnings for future iterations:**
+  - Factory `run --json` is intentionally compact; durable sandbox details belong in `factory status --json` via the run record.
+  - Contract example tests can assert the intended split between compact result surfaces and durable status surfaces.
+  - Use reflection over implementation JSON tags in docs tests when nested contract fields should stay synchronized with Go structs.
 ---

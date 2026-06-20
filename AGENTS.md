@@ -188,6 +188,7 @@
 ## Patterns from autoresearch/hal-ux-machine-readability (2026-03-18)
 
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
+- For nested durable contract objects, use reflection-backed JSON tag checks in `cmd/contracts_doc_test.go` so documented field names stay synchronized with implementation structs.
 - Workflow state classification lives in `internal/status` — a pure filesystem package with no engine or config dependencies. The `cmd/status.go` wrapper adds engine from config.
 - Health/readiness checks live in `internal/doctor` — each check has `scope` (repo/engine_local/engine_global/migration) and `applicability` (required/optional/not_applicable) fields. The check order is locked by `TestRun_CheckCount`.
 - For doctor checks that depend on GitHub context (`github_auth`), treat non-git directories, missing `origin`, and non-GitHub remotes as `status=skip` + `applicability=not_applicable`; only emit a warning with remediation `gh auth login` (`Safe=false`) when a valid GitHub remote lacks authentication.
