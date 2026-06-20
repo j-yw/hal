@@ -8,6 +8,7 @@
 - Queue commands should use `Store.EnqueueQueueEntry`, `Store.ListQueue`, and `Store.ClaimNextQueueEntry` for FIFO behavior; tests can inject `QueueOperationOptions` for deterministic timestamps and queue IDs.
 - Queue lifecycle transitions should go through Store helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained queue history stay consistent.
 - Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
+- Queue work claiming should use `Store.ClaimNextQueueEntry`, then record the associated run `CurrentStep` as `claimed` plus a claim timeline event; leave actual executor execution to the worker execution path.
 - Factory queue command registration lives in `cmd/factory_queue.go`; wire the command group from `cmd/factory.go`, update `cmd/factory_test.go` metadata/link checks, and run `make docs-cli` when changing CLI docs.
 
 ---
@@ -95,4 +96,15 @@
   - `FactoryQueueListResponse` should always emit an `entries` array, even when the queue file is missing and the durable store returns empty state.
   - Browser verification skipped because this story only changes CLI/backend behavior.
   - Checks run: `go test -timeout=120s ./cmd -run 'TestRunFactoryQueueList|TestFactoryQueue|TestFactoryCommandHelpMetadata|TestCommandFamiliesHaveCompleteMetadata|TestCoreCommandsHaveCompleteMetadata'`, `go test -timeout=120s ./...`, `go vet ./...`, `make docs-check`, `make lint` (reported `golangci-lint` is not installed locally).
+---
+## 2026-06-21 05:47:02 CST - US-009
+- Implemented `hal factory queue work` claiming for at most one queued entry per invocation, including no-work success behavior and `factory-queue-work-v1` JSON rendering.
+- Added run/timeline claim recording so claimed queue entries update the associated factory run's `CurrentStep` and append claim metadata to the run timeline.
+- Added deterministic command tests for no-work JSON, single-entry claim state, FIFO claim order, concurrent single-entry claim safety, and claimed run/event state updates.
+- Files changed: `cmd/factory_queue.go`, `cmd/factory_queue_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep queue-work claim behavior in `cmd/factory_queue.go` thin: delegate atomic selection to `Store.ClaimNextQueueEntry`, then synchronize factory run history in the command layer.
+  - Use injected `factoryQueueWorkDeps` with deterministic `Now` and `QueueClaim` values for command tests; concurrent claim tests can share an isolated `factory.Store` temp root.
+  - Browser verification skipped because this story only changes CLI/backend behavior.
+  - Checks run: `go test ./cmd -run 'TestRunFactoryQueueWorkWithDeps|TestFactoryQueueWork|TestFactoryCommandHelpMetadata'`, `go test ./...`, `go vet ./...`, `make docs-check`, `make lint` (reported `golangci-lint` is not installed locally).
 ---
