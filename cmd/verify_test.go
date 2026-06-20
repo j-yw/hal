@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,6 +164,28 @@ func TestVerifyCommandExposesJSONFlag(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Fatalf("--json default = %q, want false", flag.DefValue)
+	}
+}
+
+func TestVerifyCommandHelpDocumentsConfiguration(t *testing.T) {
+	help := verifyCmd.Long + "\n" + verifyCmd.Example
+	requiredPhrases := []string{
+		"hal verify --json",
+		"Minimal shell-check configuration",
+		"verify:",
+		"checks:",
+		"command: go test ./...",
+		"required: false",
+		"Required checks fail the verification gate",
+		"Optional checks produce warnings",
+		"pass and warn results",
+		"fail results",
+	}
+
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(help, phrase) {
+			t.Fatalf("verify help missing %q:\n%s", phrase, help)
+		}
 	}
 }
 
