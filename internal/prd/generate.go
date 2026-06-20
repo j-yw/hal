@@ -17,10 +17,24 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
+// GenerateOptions controls PRD generation behavior.
+type GenerateOptions struct {
+	Format       string
+	AskQuestions bool
+}
+
 // GenerateWithEngine runs the two-phase PRD generation using the prd skill.
 // Phase 1: Generate clarifying questions
 // Phase 2: Collect answers and generate PRD
 func GenerateWithEngine(ctx context.Context, eng engine.Engine, description string, format string, display *engine.Display) (string, error) {
+	return GenerateWithEngineOptions(ctx, eng, description, GenerateOptions{Format: format, AskQuestions: true}, display)
+}
+
+// GenerateWithEngineOptions generates a PRD using the prd skill.
+// When AskQuestions is true, it preserves the existing interactive two-phase flow.
+// When AskQuestions is false, it generates directly from the provided brief and
+// records unresolved ambiguity in the PRD's Open Questions section.
+func GenerateWithEngineOptions(ctx context.Context, eng engine.Engine, description string, opts GenerateOptions, display *engine.Display) (string, error) {
 	// Load prd skill content
 	prdSkill, err := skills.LoadSkill("prd")
 	if err != nil {
@@ -30,29 +44,46 @@ func GenerateWithEngine(ctx context.Context, eng engine.Engine, description stri
 	// Get project context
 	projectInfo := getProjectContext()
 
-	// Phase 1: Generate clarifying questions
-	if display != nil {
-		display.ShowPhase(1, 2, "Questions")
-	}
-	questions, err := generateQuestions(ctx, eng, prdSkill, description, projectInfo, display)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate questions: %w", err)
+	var prdContent string
+	if opts.AskQuestions {
+		// Phase 1: Generate clarifying questions
+		if display != nil {
+			display.ShowPhase(1, 2, "Questions")
+		}
+		questions, err := generateQuestions(ctx, eng, prdSkill, description, projectInfo, display)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate questions: %w", err)
+		}
+
+		// Collect answers from user (uses styled display)
+		answers, err := collectAnswersStyled(questions, display)
+		if err != nil {
+			return "", fmt.Errorf("failed to collect answers: %w", err)
+		}
+
+		// Phase 2: Generate PRD
+		if display != nil {
+			display.ShowPhase(2, 2, "Generate")
+		}
+		prdContent, err = generatePRD(ctx, eng, prdSkill, description, questions, answers, projectInfo, display)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate PRD: %w", err)
+		}
+	} else {
+		if display != nil {
+			display.ShowPhase(1, 1, "Generate")
+		}
+		prdContent, err = generatePRDWithoutQuestions(ctx, eng, prdSkill, description, projectInfo, display)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate PRD: %w", err)
+		}
 	}
 
-	// Collect answers from user (uses styled display)
-	answers, err := collectAnswersStyled(questions, display)
-	if err != nil {
-		return "", fmt.Errorf("failed to collect answers: %w", err)
-	}
+	return writeGeneratedPRD(ctx, eng, description, opts.Format, prdContent, display)
+}
 
-	// Phase 2: Generate PRD
-	if display != nil {
-		display.ShowPhase(2, 2, "Generate")
-	}
-	prdContent, err := generatePRD(ctx, eng, prdSkill, description, questions, answers, projectInfo, display)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate PRD: %w", err)
-	}
+func writeGeneratedPRD(ctx context.Context, eng engine.Engine, description string, format string, prdContent string, display *engine.Display) (string, error) {
+	format = strings.ToLower(strings.TrimSpace(format))
 
 	// Determine output path and write
 	var outputPath string
@@ -495,6 +526,38 @@ Generate a complete PRD following the skill format. Requirements:
 
 IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
 File saving is handled by the caller. Return ONLY the markdown PRD content (no JSON, no code blocks wrapping it).`, skill, projectInfo, description, answerText.String(), template.BrowserVerificationCriterion)
+
+	if display != nil {
+		return eng.StreamPrompt(ctx, prompt, display)
+	}
+	return eng.Prompt(ctx, prompt)
+}
+
+func generatePRDWithoutQuestions(ctx context.Context, eng engine.Engine, skill, description string, projectInfo string, display *engine.Display) (string, error) {
+	prompt := fmt.Sprintf(`You are generating a Product Requirements Document from a feature brief.
+
+<skill>
+%s
+</skill>
+
+Project context:
+%s
+
+Feature brief:
+%s
+
+Generate a complete PRD following the skill format. Requirements:
+- Do not ask clarifying questions.
+- Make safe, conservative assumptions where the brief is incomplete.
+- Put unresolved ambiguity in the PRD's Open Questions section.
+- Each user story must be small enough to complete in one iteration.
+- Acceptance criteria must be verifiable (not vague).
+- Include "Typecheck passes" for all stories.
+- Include "%s" for UI stories.
+- Order: schema changes → backend → frontend.
+
+IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
+File saving is handled by the caller. Return ONLY the markdown PRD content (no JSON, no code blocks wrapping it).`, skill, projectInfo, description, template.BrowserVerificationCriterion)
 
 	if display != nil {
 		return eng.StreamPrompt(ctx, prompt, display)

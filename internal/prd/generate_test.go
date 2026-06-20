@@ -67,6 +67,7 @@ type sequenceMockEngine struct {
 	promptResponses []string
 	promptErrors    []error
 	promptCalls     int
+	prompts         []string
 }
 
 func (m *sequenceMockEngine) Name() string {
@@ -78,6 +79,7 @@ func (m *sequenceMockEngine) Execute(ctx context.Context, prompt string, display
 }
 
 func (m *sequenceMockEngine) Prompt(ctx context.Context, prompt string) (string, error) {
+	m.prompts = append(m.prompts, prompt)
 	i := m.promptCalls
 	m.promptCalls++
 
@@ -277,6 +279,74 @@ func TestGenerateWithEngine_JSONOutputReplacesExistingCanonicalPRD(t *testing.T)
 	}
 	if got := readPRDBranchName(t, outPath); got != "hal/new-feature" {
 		t.Fatalf("output branchName = %q, want %q", got, "hal/new-feature")
+	}
+}
+
+func TestGenerateWithEngineOptions_NoQuestionsSkipsQuestionPhase(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+
+	eng := &sequenceMockEngine{
+		promptResponses: []string{
+			"# PRD: New Dashboard\n\n## Open Questions\n\n- Confirm analytics source.",
+		},
+	}
+
+	gotPath, err := GenerateWithEngineOptions(context.Background(), eng, "new dashboard", GenerateOptions{Format: "markdown", AskQuestions: false}, nil)
+	if err != nil {
+		t.Fatalf("GenerateWithEngineOptions() error = %v, want nil", err)
+	}
+	if gotPath != filepath.Join(template.HalDir, "prd-new-dashboard.md") {
+		t.Fatalf("output path = %q, want %q", gotPath, filepath.Join(template.HalDir, "prd-new-dashboard.md"))
+	}
+	if eng.promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want 1 direct generation prompt", eng.promptCalls)
+	}
+	if len(eng.prompts) != 1 || !strings.Contains(eng.prompts[0], "Do not ask clarifying questions") {
+		t.Fatalf("direct prompt should instruct no clarifying questions, got: %#v", eng.prompts)
+	}
+	if strings.Contains(eng.prompts[0], "Generate 3-5 clarifying questions") {
+		t.Fatalf("direct prompt should not use question-generation prompt: %s", eng.prompts[0])
+	}
+}
+
+func TestGenerateWithEngine_DefaultAsksQuestions(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+
+	stdinReader, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stdin pipe: %v", err)
+	}
+	if _, err := stdinWriter.WriteString("1A\n"); err != nil {
+		t.Fatalf("failed to seed stdin: %v", err)
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatalf("failed to close stdin writer: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = stdinReader
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		_ = stdinReader.Close()
+	})
+
+	eng := &sequenceMockEngine{
+		promptResponses: []string{
+			`{"questions":[{"number":1,"text":"Goal?","options":[{"letter":"A","label":"Option A"},{"letter":"B","label":"Option B"},{"letter":"C","label":"Option C"},{"letter":"D","label":"Other (specify)"}]}]}`,
+			"# PRD: New Dashboard\n\n## Open Questions\n\n- None.",
+		},
+	}
+
+	_, err = GenerateWithEngine(context.Background(), eng, "new dashboard", "markdown", nil)
+	if err != nil {
+		t.Fatalf("GenerateWithEngine() error = %v, want nil", err)
+	}
+	if eng.promptCalls != 2 {
+		t.Fatalf("prompt calls = %d, want question + PRD prompts", eng.promptCalls)
+	}
+	if len(eng.prompts) < 1 || !strings.Contains(eng.prompts[0], "Generate 3-5 clarifying questions") {
+		t.Fatalf("first prompt should ask for clarifying questions, got: %#v", eng.prompts)
 	}
 }
 

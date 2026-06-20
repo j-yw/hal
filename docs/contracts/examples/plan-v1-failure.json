@@ -1,0 +1,9 @@
+{
+  "contractVersion": 1,
+  "ok": false,
+  "format": "json",
+  "inputSource": "file",
+  "questionsAsked": false,
+  "error": "PRD generation failed: engine prompt failed",
+  "summary": "PRD generation failed"
+}

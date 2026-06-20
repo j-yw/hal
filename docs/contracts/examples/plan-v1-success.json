@@ -1,0 +1,13 @@
+{
+  "contractVersion": 1,
+  "ok": true,
+  "outputPath": ".hal/prd.json",
+  "format": "json",
+  "inputSource": "file",
+  "questionsAsked": false,
+  "nextSteps": [
+    "hal validate --json",
+    "hal run --json"
+  ],
+  "summary": "PRD created"
+}

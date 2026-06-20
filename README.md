@@ -132,6 +132,7 @@ Stable JSON contracts for agent integration:
 - [`docs/contracts/status-v1.md`](docs/contracts/status-v1.md) — Workflow state machine
 - [`docs/contracts/doctor-v1.md`](docs/contracts/doctor-v1.md) — Health/readiness checks
 - [`docs/contracts/continue-v1.md`](docs/contracts/continue-v1.md) — What to do next
+- [`docs/contracts/plan-v1.md`](docs/contracts/plan-v1.md) — `hal plan --json` output contract
 - [`docs/contracts/ci-push-v1.md`](docs/contracts/ci-push-v1.md) — `hal ci push` output contract
 - [`docs/contracts/ci-status-v1.md`](docs/contracts/ci-status-v1.md) — `hal ci status` output contract
 - [`docs/contracts/ci-fix-v1.md`](docs/contracts/ci-fix-v1.md) — `hal ci fix` output contract
@@ -144,7 +145,7 @@ Stable JSON contracts for agent integration:
 | Command | Description |
 |---------|-------------|
 | `hal init` | Initialize `.hal/` directory with config, skills, and commands |
-| `hal plan [description]` | Generate PRD (opens editor if no args) |
+| `hal plan [description]` | Generate PRD (opens editor for humans; use `--input`/`--json` for agents) |
 | `hal convert [markdown-prd]` | Convert markdown PRD to JSON (auto-discover source when omitted) |
 | `hal validate [prd.json]` | Validate PRD against quality rules |
 | `hal prd audit [--json]` | Audit PRD health and detect markdown↔JSON drift |
@@ -286,6 +287,15 @@ hal plan "add dark mode toggle to settings"
 ```
 
 Good for quick, well-defined features.
+
+### Agent-Safe File/Stdin Mode
+
+```bash
+hal plan --input .hal/input/feature.md --no-questions --format json --json
+hal plan --input - --no-questions --format json --json < .hal/input/feature.md
+```
+
+Use `--input` for long briefs instead of pasting large text into argv. `--input -` reads stdin. In `--json` mode, `hal plan` is fully non-interactive: pass `--no-questions` plus explicit input, and parse the `plan-v1` JSON result on stdout.
 
 ### Output Formats
 
