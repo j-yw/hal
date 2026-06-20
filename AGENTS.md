@@ -43,6 +43,7 @@
 - Queue read-modify-write operations should use `Store.UpdateQueue` instead of separate `LoadQueue`/`SaveQueue` calls; it holds the local `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local workers do not lose updates.
 - Queue command code should use the Store-level FIFO helpers (`EnqueueQueueEntry`, `ListQueue`, `ClaimNextQueueEntry`) and inject `QueueOperationOptions` in tests; FIFO order is by `CreatedAt` with `QueueID` as the stable tie-break.
 - Queue lifecycle transitions should use Store-level helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained history stay consistent.
+- Factory queue command definitions live in `cmd/factory_queue.go`; wire them from `cmd/factory.go`, update factory command metadata/link tests in `cmd/factory_test.go`, and regenerate `docs/cli` with `make docs-cli`.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
