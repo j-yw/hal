@@ -81,6 +81,7 @@
 - Local factory artifact collection should preserve legacy display `path` values while also populating store-backed `sourcePath`/`storedPath`; use stable artifact IDs for deterministic filenames when multiple artifacts share a display name.
 - Factory status/doctor snapshots are generated from structured packages (`internal/status.Get`, `internal/doctor.Run`) via injectable `factoryRunDeps` hooks, then materialized as JSON artifacts and saved through `Store.SaveArtifactFile`.
 - PR/CI factory outcome artifacts are derived from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata there in `runPRStep`, and materialize stored JSON artifacts plus warning-only partial records when outcome state is unavailable.
+- Sandbox artifact collection should go through `factory.SandboxArtifactCopier` and `factory.CollectSandboxArtifacts`; treat remote paths as copier inputs only, persist safe display `path`/`storedPath` metadata, and represent optional missing remote artifacts as partial warning records.
 
 ## Patterns from compound/compound-pipeline-foundations (2026-02-05)
 

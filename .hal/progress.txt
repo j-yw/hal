@@ -7,6 +7,7 @@
 - Local factory artifact collection keeps legacy display `path` values for CLI compatibility while copying payloads into the store with stable `sourcePath` and `storedPath` metadata.
 - Factory status/doctor snapshots should use structured package results (`status.Get`, `doctor.Run`) behind injectable deps, then flow through normal artifact persistence instead of parsing CLI output.
 - Factory PR/CI outcome artifacts are materialized from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata during `runPRStep` and record partial warning artifacts when outcome state is unavailable.
+- Sandbox artifact collection uses `factory.SandboxArtifactCopier` plus `factory.CollectSandboxArtifacts`; remote paths are copier inputs only, while persisted metadata keeps safe display paths and store-backed paths.
 
 ---
 
@@ -54,4 +55,15 @@
   - `runPRStep` is the structured point where PR URL/number/ref metadata is available; store safe fields on `CIState` before waiting for checks.
   - Factory outcome artifacts should be small materialized JSON files under display paths like `factory/pr-outcome.json` and `factory/ci-outcome.json`.
   - When outcome telemetry is missing, record partial artifacts with warnings instead of failing artifact collection.
+---
+## 2026-06-21 07:27:31 CST - US-006
+- Added the sandbox artifact copy abstraction in `internal/factory`, including `SandboxArtifactCopier`, `SandboxArtifactRequest`, `ErrSandboxArtifactNotFound`, and `CollectSandboxArtifacts`.
+- Implemented file and directory collection through the copier, store-backed persistence via `Store.SaveArtifactFile`, warning-only records for optional missing artifacts, and safe metadata that does not persist remote workspace paths.
+- Added focused tests with fake copy dependencies for file and directory success, optional missing artifact warnings, and required copy failure handling.
+- Files changed: `internal/factory/sandbox_artifacts.go`, `internal/factory/sandbox_artifacts_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Checks run: `go test ./internal/factory`, `make test`, `make vet`; `make lint` was attempted but skipped because `golangci-lint` is not installed.
+- **Learnings for future iterations:**
+  - Sandbox artifact collection should use `factory.CollectSandboxArtifacts` so future sandbox finalization code can stay provider-agnostic and test with fake copiers.
+  - Use safe display `Path` values on `SandboxArtifactRequest`; `RemotePath` is only for the copy abstraction and must not be persisted in run JSON.
+  - Directory artifacts are copied locally first and then stored as individual file artifacts with stable child IDs.
 ---
