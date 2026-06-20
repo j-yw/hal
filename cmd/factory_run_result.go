@@ -1,0 +1,84 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+
+	"github.com/jywlabs/hal/internal/factory"
+)
+
+// FactoryRunResponse is the machine-readable JSON output for hal factory run --json.
+type FactoryRunResponse struct {
+	ContractVersion string                      `json:"contractVersion"`
+	Version         string                      `json:"version"`
+	RunID           string                      `json:"runId"`
+	Status          string                      `json:"status"`
+	NextAction      *FactoryRunNextAction       `json:"nextAction"`
+	Artifacts       []factory.ArtifactReference `json:"artifacts"`
+	EventSummary    FactoryRunEventSummary      `json:"eventSummary"`
+	Failure         *FactoryRunFailure          `json:"failure"`
+}
+
+// FactoryRunNextAction suggests what to do after a local factory run.
+type FactoryRunNextAction struct {
+	ID          string `json:"id"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// FactoryRunEventSummary summarizes the durable timeline associated with a run.
+type FactoryRunEventSummary struct {
+	Total         int            `json:"total"`
+	ByType        map[string]int `json:"byType"`
+	LastEventType string         `json:"lastEventType,omitempty"`
+	LastSummary   string         `json:"lastSummary,omitempty"`
+}
+
+// FactoryRunFailure is the result-surface failure detail for failed factory runs.
+type FactoryRunFailure struct {
+	Classification   string `json:"classification"`
+	ErrorMessage     string `json:"errorMessage"`
+	SuggestedCommand string `json:"suggestedCommand,omitempty"`
+}
+
+func renderFactoryRunJSON(out io.Writer, resp FactoryRunResponse) error {
+	resp = normalizeFactoryRunResponse(resp)
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory run result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {
+	if resp.Artifacts == nil {
+		resp.Artifacts = []factory.ArtifactReference{}
+	}
+	if resp.EventSummary.ByType == nil {
+		resp.EventSummary.ByType = map[string]int{}
+	}
+	return resp
+}
+
+func newFactoryRunEventSummary(events []factory.EventRecord) FactoryRunEventSummary {
+	summary := FactoryRunEventSummary{
+		Total:  len(events),
+		ByType: map[string]int{},
+	}
+
+	for _, event := range events {
+		if event.EventType != "" {
+			summary.ByType[event.EventType]++
+		}
+	}
+
+	if len(events) > 0 {
+		last := events[len(events)-1]
+		summary.LastEventType = last.EventType
+		summary.LastSummary = last.Summary
+	}
+
+	return summary
+}

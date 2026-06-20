@@ -1,0 +1,20 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory machine-readable contracts should be locked in code, docs, and examples together: define the command response struct/renderer in `cmd`, document fields in `docs/contracts/<contract>.md`, add an example in `docs/contracts/examples/`, and cover it in `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, and `cmd/contracts_doc_test.go`.
+
+---
+
+## 2026-06-21 00:54 CST - US-001
+- Implemented the stable `factory-run-v1` JSON result contract surface with response structs, next action, artifact references, event summary, failure details, and JSON rendering helper.
+- Added `docs/contracts/factory-run-v1.md` and `docs/contracts/examples/factory-run-v1.json` documenting every emitted field, status value, event summary field, and failure classification.
+- Added contract tests for JSON key names, doc coverage, and strict example decoding.
+- Files changed: `cmd/factory.go`, `cmd/factory_run_result.go`, `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, `cmd/contracts_doc_test.go`, `docs/contracts/factory-run-v1.md`, `docs/contracts/examples/factory-run-v1.json`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test -timeout=120s ./cmd -run 'Test(RenderFactoryRunJSONLocksResultContract|MachineContractFields_FactoryCommandOutputs|ContractDocsExist|ContractDocsIncludeFactoryFields|FactoryContractExamplesMatchCommandSchemas)'`, `go test -timeout=120s ./internal/factory`, `go test -timeout=180s ./...`, `go vet ./...`.
+- Browser verification: skipped because this story only changes CLI JSON contracts and documentation.
+- **Learnings for future iterations:**
+  - Factory list/status already use string-valued contract identifiers and command-layer response structs; `factory-run-v1` follows that pattern.
+  - `cmd/contracts_doc_test.go` is the sync point for requiring new contract docs and validating strict JSON examples against command response structs.
+  - Use the existing factory event types from `internal/factory` when documenting event summary values so docs stay tied to shared constants.
+---

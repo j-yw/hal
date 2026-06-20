@@ -215,6 +215,102 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	}
 }
 
+func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
+	base := time.Date(2026, 6, 20, 18, 30, 0, 0, time.UTC)
+	events := []factory.EventRecord{
+		{
+			Sequence:  1,
+			RunID:     "run-json-contract",
+			EventType: factory.EventTypeRunCreated,
+			Timestamp: base,
+			Summary:   "Run created",
+		},
+		{
+			Sequence:  2,
+			RunID:     "run-json-contract",
+			EventType: factory.EventTypeFailureClassification,
+			Timestamp: base.Add(2 * time.Minute),
+			Summary:   "Failure classified",
+		},
+	}
+	resp := FactoryRunResponse{
+		ContractVersion: FactoryRunContractVersion,
+		Version:         "dev",
+		RunID:           "run-json-contract",
+		Status:          factory.RunStatusFailed,
+		NextAction: &FactoryRunNextAction{
+			ID:          "inspect_factory_run",
+			Command:     "hal factory status run-json-contract --json",
+			Description: "Inspect the durable run record and timeline.",
+		},
+		Artifacts: []factory.ArtifactReference{
+			{Name: "run-record", Type: "json", Path: "factory/runs/run-json-contract.json"},
+		},
+		EventSummary: newFactoryRunEventSummary(events),
+		Failure: &FactoryRunFailure{
+			Classification:   "ci",
+			ErrorMessage:     "unit tests failed",
+			SuggestedCommand: "hal factory status run-json-contract --json",
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderFactoryRunJSON(&buf, resp); err != nil {
+		t.Fatalf("renderFactoryRunJSON() error: %v", err)
+	}
+
+	var decoded FactoryRunResponse
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if decoded.ContractVersion != FactoryRunContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", decoded.ContractVersion, FactoryRunContractVersion)
+	}
+	if decoded.EventSummary.Total != len(events) {
+		t.Fatalf("eventSummary.total = %d, want %d", decoded.EventSummary.Total, len(events))
+	}
+	if decoded.EventSummary.ByType[factory.EventTypeFailureClassification] != 1 {
+		t.Fatalf("eventSummary.byType[%q] = %d, want 1", factory.EventTypeFailureClassification, decoded.EventSummary.ByType[factory.EventTypeFailureClassification])
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal(raw) error: %v", err)
+	}
+	requireExactKeys(t, raw, []string{
+		"contractVersion", "version", "runId", "status", "nextAction",
+		"artifacts", "eventSummary", "failure",
+	})
+
+	nextAction, ok := raw["nextAction"].(map[string]any)
+	if !ok {
+		t.Fatalf("nextAction should be an object, got %T", raw["nextAction"])
+	}
+	requireFactoryFields(t, "factory run nextAction", nextAction, []string{"id", "command", "description"})
+
+	artifacts, ok := raw["artifacts"].([]any)
+	if !ok || len(artifacts) != 1 {
+		t.Fatalf("artifacts should be an array of 1, got %T len %d", raw["artifacts"], len(resp.Artifacts))
+	}
+	firstArtifact, ok := artifacts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("artifacts[0] should be an object, got %T", artifacts[0])
+	}
+	requireFactoryFields(t, "factory run artifact", firstArtifact, []string{"name", "type", "path"})
+
+	eventSummary, ok := raw["eventSummary"].(map[string]any)
+	if !ok {
+		t.Fatalf("eventSummary should be an object, got %T", raw["eventSummary"])
+	}
+	requireFactoryFields(t, "factory run eventSummary", eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
+
+	failure, ok := raw["failure"].(map[string]any)
+	if !ok {
+		t.Fatalf("failure should be an object, got %T", raw["failure"])
+	}
+	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
+}
+
 func TestFactoryListCommandRegisteredWithJSONFlag(t *testing.T) {
 	cmd, err := commandAtPath(Root(), "factory", "list")
 	if err != nil {

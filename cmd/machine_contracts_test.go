@@ -505,6 +505,59 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			t.Fatalf("factory status contractVersion = %v, want %q", raw["contractVersion"], FactoryStatusContractVersion)
 		}
 	})
+
+	t.Run("factory run result keys", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := renderFactoryRunJSON(&buf, FactoryRunResponse{
+			ContractVersion: FactoryRunContractVersion,
+			Version:         "dev",
+			RunID:           record.RunID,
+			Status:          record.Status,
+			NextAction: &FactoryRunNextAction{
+				ID:          "inspect_factory_run",
+				Command:     "hal factory status run-contract --json",
+				Description: "Inspect the durable run record and timeline.",
+			},
+			Artifacts:    record.Artifacts,
+			EventSummary: newFactoryRunEventSummary(events),
+			Failure: &FactoryRunFailure{
+				Classification:   "ci",
+				ErrorMessage:     "unit tests failed",
+				SuggestedCommand: "hal factory status run-contract --json",
+			},
+		})
+		if err != nil {
+			t.Fatalf("renderFactoryRunJSON error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		if raw["contractVersion"] != FactoryRunContractVersion {
+			t.Fatalf("factory run contractVersion = %v, want %q", raw["contractVersion"], FactoryRunContractVersion)
+		}
+
+		nextAction, ok := raw["nextAction"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("nextAction should be object, got %T", raw["nextAction"])
+		}
+		for _, field := range []string{"id", "command", "description"} {
+			if _, ok := nextAction[field].(string); !ok {
+				t.Fatalf("nextAction.%s should be a string", field)
+			}
+		}
+
+		eventSummary, ok := raw["eventSummary"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("eventSummary should be object, got %T", raw["eventSummary"])
+		}
+		requireExactKeys(t, eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
+
+		failure, ok := raw["failure"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("failure should be object, got %T", raw["failure"])
+		}
+		requireExactKeys(t, failure, []string{"classification", "errorMessage", "suggestedCommand"})
+	})
 }
 
 func TestMachineContractFields_StatusDetail(t *testing.T) {

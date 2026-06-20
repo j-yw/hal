@@ -34,6 +34,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
 		{"ci-fix-v1", "../docs/contracts/ci-fix-v1.md"},
 		{"ci-merge-v1", "../docs/contracts/ci-merge-v1.md"},
+		{"factory-run-v1", "../docs/contracts/factory-run-v1.md"},
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
@@ -347,6 +348,31 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 		requiredValues []string
 	}{
 		{
+			name:          "factory-run-v1",
+			path:          "../docs/contracts/factory-run-v1.md",
+			contractValue: FactoryRunContractVersion,
+			requiredFields: []string{
+				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
+				"eventSummary", "failure", "id", "command", "description", "total", "byType",
+				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
+			},
+			requiredValues: []string{
+				factory.RunStatusPending,
+				factory.RunStatusRunning,
+				factory.RunStatusSucceeded,
+				factory.RunStatusFailed,
+				factory.RunStatusCanceled,
+				factory.EventTypeRunCreated,
+				factory.EventTypeFailureClassification,
+				"validation",
+				"pipeline",
+				"engine",
+				"git",
+				"ci",
+				"unknown",
+			},
+		},
+		{
 			name:          "factory-list-v1",
 			path:          "../docs/contracts/factory-list-v1.md",
 			contractValue: FactoryListContractVersion,
@@ -452,6 +478,31 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if len(resp.Timeline) == 0 {
 			t.Fatal("factory status example should include timeline events")
+		}
+	})
+
+	t.Run("factory run example", func(t *testing.T) {
+		var resp FactoryRunResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-run-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		if resp.ContractVersion != FactoryRunContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory run example should include a run ID")
+		}
+		if resp.NextAction == nil {
+			t.Fatal("factory run example should include nextAction")
+		}
+		if len(resp.Artifacts) == 0 {
+			t.Fatal("factory run example should include artifacts")
+		}
+		if resp.EventSummary.Total == 0 {
+			t.Fatal("factory run example should include event summary totals")
+		}
+		if resp.Failure == nil {
+			t.Fatal("factory run example should include failure details")
 		}
 	})
 }

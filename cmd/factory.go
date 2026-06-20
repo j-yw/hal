@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	FactoryRunContractVersion    = "factory-run-v1"
 	FactoryListContractVersion   = "factory-list-v1"
 	FactoryStatusContractVersion = "factory-status-v1"
 )
