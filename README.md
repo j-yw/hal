@@ -129,10 +129,12 @@ Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) w
 
 Stable JSON contracts for agent integration:
 
+- [`docs/contracts/auto-v2.md`](docs/contracts/auto-v2.md) — `hal auto --json` output contract
 - [`docs/contracts/status-v1.md`](docs/contracts/status-v1.md) — Workflow state machine
 - [`docs/contracts/doctor-v1.md`](docs/contracts/doctor-v1.md) — Health/readiness checks
 - [`docs/contracts/continue-v1.md`](docs/contracts/continue-v1.md) — What to do next
 - [`docs/contracts/plan-v1.md`](docs/contracts/plan-v1.md) — `hal plan --json` output contract
+- [`docs/contracts/sandbox-list-v1.md`](docs/contracts/sandbox-list-v1.md) — `hal sandbox list --json` output contract
 - [`docs/contracts/ci-push-v1.md`](docs/contracts/ci-push-v1.md) — `hal ci push` output contract
 - [`docs/contracts/ci-status-v1.md`](docs/contracts/ci-status-v1.md) — `hal ci status` output contract
 - [`docs/contracts/ci-fix-v1.md`](docs/contracts/ci-fix-v1.md) — `hal ci fix` output contract
@@ -182,7 +184,7 @@ Stable JSON contracts for agent integration:
 |---------|-------------|
 | `hal report` | Generate summary report → `.hal/reports/`, update AGENTS.md |
 | `hal review --base <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e`; do not combine positional iterations with `-i/--iterations`) |
-| `hal auto [prd-path]` | Run single auto pipeline (`analyze → ... → archive`) with runtime PRD `.hal/prd.json`; source discovery uses `auto.sourcePriority` and convert policy uses `auto.convertMode` |
+| `hal auto [prd-path] [--json]` | Run single auto pipeline (`analyze → ... → archive`) with runtime PRD `.hal/prd.json`; source discovery uses `auto.sourcePriority` and convert policy uses `auto.convertMode` |
 | `hal analyze [report] --format text\|json` | Analyze a report to find priority item (`--output` is deprecated) |
 | `hal explode <prd.md> --branch <name>` | Deprecated shim for `hal convert --granular` (keeps explode compatibility output) |
 
@@ -202,7 +204,7 @@ Stable JSON contracts for agent integration:
 | `hal archive list` | List all archived features (`--name/-n` is invalid here) |
 | `hal archive restore <name>` | Restore an archived feature (`--name/-n` is invalid here) |
 
-Archive contract details:
+Archive command details:
 - `hal archive` is the create alias
 - `--name/-n` is only valid for `hal archive` and `hal archive create`
 - If no name is provided and stdin is non-interactive, the command fails and asks for `--name/-n`
@@ -212,11 +214,10 @@ Archive contract details:
 | Command | Description |
 |---------|-------------|
 | `hal config` | Show current configuration |
-| `hal config add-rule <name>` | Create a custom rule template (deprecated in v0.2.0, removed in v1.0.0; use standards workflow) |
 | `hal cleanup` | Remove orphaned legacy files (supports `--dry-run`) |
 | `hal version` | Show version information |
 
-### Analyze Output Contract
+### Analyze JSON Output
 
 ```bash
 hal analyze --format text
@@ -252,7 +253,7 @@ hal sandbox snapshot create
 
 Human sandbox output redacts public cloud and Tailscale addresses by default.
 Use `--show-addresses` only when you intentionally need raw network addresses.
-Machine-readable JSON contracts document which raw values they expose.
+The `sandbox-list-v1` contract documents which raw values list JSON exposes.
 
 `--name/-n` is available on `hal sandbox create`. Lifecycle commands target existing sandboxes positionally:
 - `hal sandbox start NAME`
