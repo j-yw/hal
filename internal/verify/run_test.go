@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunPassingShellChecks(t *testing.T) {
@@ -156,6 +158,65 @@ func TestRunRequiredShellCheckFailure(t *testing.T) {
 	}
 }
 
+func TestRunRequiredShellCheckTimeout(t *testing.T) {
+	projectRoot := t.TempDir()
+	marker := filepath.Join(projectRoot, "timeout-marker.txt")
+
+	result, err := Run(context.Background(), &Config{
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "sleep-then-write", "2s", marker),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 1,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	if result.Status != StatusFail {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusFail)
+	}
+	if result.Summary.Total != 1 {
+		t.Errorf("Summary.Total = %d, want 1", result.Summary.Total)
+	}
+	if result.Summary.TimedOut != 1 {
+		t.Errorf("Summary.TimedOut = %d, want 1", result.Summary.TimedOut)
+	}
+	if result.Summary.Passed != 0 || result.Summary.Failed != 0 || result.Summary.Missing != 0 || result.Summary.Skipped != 0 || result.Summary.Warnings != 0 {
+		t.Errorf("Summary has unexpected non-timeout counts: %#v", result.Summary)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("Warnings length = %d, want 0", len(result.Warnings))
+	}
+	if len(result.Checks) != 1 {
+		t.Fatalf("Checks length = %d, want 1", len(result.Checks))
+	}
+
+	check := result.Checks[0]
+	if check.Status != CheckStatusTimeout {
+		t.Errorf("check Status = %q, want %q", check.Status, CheckStatusTimeout)
+	}
+	if !check.Required {
+		t.Errorf("check Required = false, want true")
+	}
+	if !strings.Contains(check.Message, "timed out after 1 seconds") {
+		t.Errorf("check Message = %q, want timeout message", check.Message)
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("process group cleanup is Unix-only")
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("timed-out command wrote marker after timeout; stat err = %v", err)
+	}
+}
+
 func TestVerifyHelperProcess(t *testing.T) {
 	args := os.Args
 	for i, arg := range args {
@@ -178,6 +239,19 @@ func TestVerifyHelperProcess(t *testing.T) {
 				os.Exit(2)
 			}
 			os.Exit(code)
+		case "sleep-then-write":
+			if len(args) <= i+3 {
+				os.Exit(2)
+			}
+			delay, err := time.ParseDuration(args[i+2])
+			if err != nil {
+				os.Exit(2)
+			}
+			time.Sleep(delay)
+			if err := os.WriteFile(args[i+3], []byte("finished"), 0644); err != nil {
+				os.Exit(2)
+			}
+			os.Exit(0)
 		case "write-pwd":
 			if len(args) <= i+2 {
 				os.Exit(2)

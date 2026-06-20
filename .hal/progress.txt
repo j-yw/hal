@@ -8,6 +8,7 @@
 - Contract example payloads live in `docs/contracts/examples/`; reference them from the contract doc and decode them in `cmd/contracts_doc_test.go` with `decodeStrictJSONExample` against the exported schema type.
 - For verify-v1 schema tests, assert exact marshaled JSON keys and include zero-valued fixtures so accidental `omitempty` or required-field omissions fail tests.
 - Verify shell execution lives in `internal/verify.Run`; it uses each configured `ShellCheck` command/workDir/timeout and aggregates `CheckResult` values into verify-v1 summary/status fields.
+- Verify shell timeout execution uses platform-specific `internal/verify/sysproc_*.go` helpers; set both `cmd.SysProcAttr` and `setupProcessCleanup(cmd)` so Unix timeouts kill shell child process groups.
 - Verify execution tests use `helperCommand`/`TestVerifyHelperProcess` in `internal/verify/run_test.go` to simulate shell behavior deterministically; extend helper subcommands instead of relying on platform-specific shell utilities.
 
 ---
@@ -88,4 +89,15 @@
 - **Learnings for future iterations:**
   - For verify execution tests, use the current test binary via `helperCommand` and `TestVerifyHelperProcess` to simulate shell behavior with deterministic subcommands.
   - Required shell failures should be counted in `Summary.Failed`, keep `Warnings` empty, and drive top-level `StatusFail`.
+---
+
+## 2026-06-21 05:22 CST - US-008
+- Enforced shell-check timeout cleanup by wiring verification command execution through platform-specific process helpers.
+- Added timeout coverage for required shell checks, asserting timeout status, failing top-level status, timeout summary counts, timeout message text, and Unix process-group termination.
+- Ran `go test ./internal/verify`, `make fmt`, `make vet`, `make test`, and `make lint` (lint target returned successfully but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `internal/verify/run.go`, `internal/verify/sysproc_unix.go`, `internal/verify/sysproc_windows.go`, `internal/verify/run_test.go`, `AGENTS.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Verification shell timeout cleanup now mirrors the engine process-isolation pattern with `newSysProcAttr` and `setupProcessCleanup` helpers in the verify package.
+  - Timeout tests can reuse `TestVerifyHelperProcess`; add helper subcommands such as `sleep-then-write` to make cancellation behavior observable without external commands.
+  - On Unix, killing the shell process alone is not enough for reliable timeout enforcement because child processes may survive; kill the process group.
 ---
