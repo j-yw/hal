@@ -45,7 +45,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	}
 
 	var calls []string
-	var savedRecord factory.RunRecord
+	var savedRecords []factory.RunRecord
 	var appendedEvent factory.EventRecord
 	var gotExecArgs []string
 	var gotExecInfo *sandbox.ConnectInfo
@@ -104,7 +104,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		},
 		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
 			calls = append(calls, "save")
-			savedRecord = *record
+			savedRecords = append(savedRecords, *record)
 			return nil
 		},
 		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
@@ -117,15 +117,30 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
 
-	wantCalls := []string{"store", "now", "save", "load", "provider", "exec", "now", "event"}
+	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "now", "event"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
-	if savedRecord.ExecutorMode != factory.ExecutorModeSandbox {
-		t.Fatalf("saved executorMode = %q, want %q", savedRecord.ExecutorMode, factory.ExecutorModeSandbox)
+	if len(savedRecords) != 2 {
+		t.Fatalf("saved records = %d, want 2", len(savedRecords))
 	}
-	if !savedRecord.UpdatedAt.Equal(now) {
-		t.Fatalf("saved UpdatedAt = %s, want %s", savedRecord.UpdatedAt, now)
+	if savedRecords[0].ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("saved executorMode = %q, want %q", savedRecords[0].ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	if !savedRecords[0].UpdatedAt.Equal(now) {
+		t.Fatalf("saved UpdatedAt = %s, want %s", savedRecords[0].UpdatedAt, now)
+	}
+	if savedRecords[1].SandboxName != "factory-dev" {
+		t.Fatalf("saved sandboxName = %q, want factory-dev", savedRecords[1].SandboxName)
+	}
+	if savedRecords[1].Sandbox == nil {
+		t.Fatalf("saved sandbox metadata = nil")
+	}
+	if savedRecords[1].Sandbox.Name != "factory-dev" || savedRecords[1].Sandbox.Provider != "daytona" || savedRecords[1].Sandbox.Status != sandbox.StatusRunning {
+		t.Fatalf("saved sandbox metadata = %#v", savedRecords[1].Sandbox)
+	}
+	if savedRecords[1].Sandbox.Connection == nil || savedRecords[1].Sandbox.Connection.PublicIP != "127.0.0.1" {
+		t.Fatalf("saved sandbox connection = %#v", savedRecords[1].Sandbox.Connection)
 	}
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
@@ -207,6 +222,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTa
 	}
 
 	resolved := false
+	var savedRecords []factory.RunRecord
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		RunRecord: factory.RunRecord{RunID: "run-default"},
 	}, factorySandboxExecutorDeps{
@@ -226,7 +242,10 @@ func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTa
 		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
 			return nil
 		},
-		saveRun:     func(factory.Store, *factory.RunRecord) error { return nil },
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
 		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
 	})
 	if err != nil {
@@ -234,6 +253,54 @@ func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTa
 	}
 	if !resolved {
 		t.Fatalf("resolveDefault was not called")
+	}
+	if len(savedRecords) != 2 {
+		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	}
+	if savedRecords[1].SandboxName != "factory-only" {
+		t.Fatalf("saved sandboxName = %q, want factory-only", savedRecords[1].SandboxName)
+	}
+	if savedRecords[1].Sandbox == nil || savedRecords[1].Sandbox.Provider != "daytona" {
+		t.Fatalf("saved sandbox metadata = %#v", savedRecords[1].Sandbox)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsReturnsDefaultResolutionError(t *testing.T) {
+	resolveErr := errNoFactorySandbox
+	provisionCalled := false
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		RunRecord: factory.RunRecord{RunID: "run-no-default"},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			t.Fatalf("loadSandbox should not be called without explicit sandbox target")
+			return nil, nil
+		},
+		resolveDefault: func(filter func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			if !filter(&sandbox.SandboxState{Status: sandbox.StatusRunning}) {
+				t.Fatalf("running sandbox filter rejected running target")
+			}
+			if filter(&sandbox.SandboxState{Status: sandbox.StatusStopped}) {
+				t.Fatalf("running sandbox filter accepted stopped target")
+			}
+			return nil, "", resolveErr
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+		saveRun:     func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err == nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() error = nil, want %q", resolveErr)
+	}
+	if err.Error() != resolveErr.Error() {
+		t.Fatalf("error = %q, want %q", err.Error(), resolveErr.Error())
+	}
+	if provisionCalled {
+		t.Fatalf("provision should not be called when default resolution fails")
 	}
 }
 
