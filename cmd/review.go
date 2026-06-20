@@ -51,7 +51,12 @@ var reviewCmd = &cobra.Command{
 	Long: `Run an iterative review-and-fix loop against a base branch.
 
 This command powers branch-vs-branch review loops.
-Use 'hal report' for legacy session reporting.`,
+Use 'hal report' for legacy session reporting.
+
+Side effects:
+- Runs the selected engine against the branch diff.
+- May apply fixes to the working tree during validation/autofix.
+- Writes review-loop JSON and markdown reports under .hal/reports/.`,
 	Example: `  hal review --base develop
   hal review --base develop --json
   hal review --base origin/main 5

@@ -12,14 +12,14 @@ It delegates conversion to:
 
 Behavior:
 - Prints a deprecation warning to stderr.
-- Preserves the explode --json output contract.
+- Preserves the existing explode --json output shape for compatibility.
 - Passes through --branch and --engine.
 
 Examples:
   hal explode .hal/prd-feature.md                    # Deprecated shim to convert --granular
   hal explode .hal/prd-feature.md --branch feature   # Pin branchName in generated prd.json
   hal explode .hal/prd-feature.md --engine claude    # Use specific engine
-  hal explode .hal/prd-feature.md --json             # Machine-readable explode contract
+  hal explode .hal/prd-feature.md --json             # Machine-readable JSON output
 
 ```
 hal explode [prd-path] [flags]

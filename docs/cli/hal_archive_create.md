@@ -7,6 +7,8 @@ Archive current feature state
 Archive all feature state files from .hal/ into .hal/archive/<date>-<name>/.
 
 Use --name/-n to set the archive name, or omit it to be prompted interactively.
+For agents, pass --name/-n in non-interactive or --json runs; otherwise the
+command may prompt for an archive name.
 
 ```
 hal archive create [flags]

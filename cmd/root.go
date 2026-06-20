@@ -43,6 +43,12 @@ Status / health:
   hal continue [--json]
   hal repair [--dry-run] [--json]
 
+Agent-safe examples:
+  hal plan --input .hal/input/feature.md --no-questions --format json --json
+  hal plan --input - --no-questions --format json --json < .hal/input/feature.md
+  hal auto .hal/prd-feature.md --dry-run --json
+  hal archive create --name checkout-flow
+
 Links:
   hal links status [--json]
   hal links refresh [engine]

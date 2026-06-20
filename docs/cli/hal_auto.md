@@ -13,6 +13,13 @@ Canonical runtime PRD:
 Pipeline order:
   analyze -> spec -> branch -> convert -> validate -> run -> review -> ci -> report -> archive
 
+Side effects:
+- May create or switch git branches, write .hal/prd.json and .hal/auto-state.json,
+  migrate progress state, invoke AI engines, commit changes through run/review,
+  generate reports, push/create pull requests during CI, and archive completed state.
+- Use --dry-run to preview pipeline steps without executing them.
+- Use --no-review or --no-ci to disable the review or CI gates for one run.
+
 Entry behavior:
 - hal auto <prd-path>: skips analyze/spec and starts at branch
 - --resume ignores positional prd-path and --report
@@ -28,6 +35,11 @@ Convert mode policy:
   - auto.convertMode=auto (default): markdown entry -> standard, report entry -> granular
   - auto.convertMode=standard|granular overrides entry defaults for new runs
   - --resume always uses saved state convert mode
+
+Agent-safe usage:
+- Pass a positional PRD path or --report <path> to avoid source discovery ambiguity.
+- Use --resume only when continuing saved state.
+- Use --json for the auto-v2 machine-readable contract.
 
 Examples:
   hal auto                           # Uses auto.sourcePriority discovery + auto.convertMode policy

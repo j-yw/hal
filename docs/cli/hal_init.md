@@ -24,6 +24,14 @@ Global links (affects ~/.codex — only for Codex users):
   ~/.codex/skills/       Symlinks for Codex skill discovery
   ~/.codex/commands/     Symlinks for Codex commands
 
+Side effects:
+- Creates or preserves .hal/ files and directories.
+- Updates .gitignore so .hal/ runtime state is ignored while standards and
+  commands remain committable.
+- Migrates legacy .goralph/ to .hal/ when present.
+- Creates or refreshes project-local engine links under .claude/ and .pi/.
+- May update Codex global links under ~/.codex for Codex users.
+
 Use 'hal doctor' to check environment health.
 Use 'hal status' to check workflow state.
 

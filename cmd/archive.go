@@ -51,6 +51,7 @@ and reports/* (non-hidden files).
 Never touches: config.yaml, prompt.md, skills/, rules/.
 
 Use --name/-n to set the archive name, or you will be prompted interactively.
+For agents, pass --name/-n in non-interactive or --json runs.
 
 'hal archive' is an alias for 'hal archive create'.`,
 	Example: `  hal archive
@@ -64,7 +65,9 @@ var archiveCreateCmd = &cobra.Command{
 	Args:  noArgsValidation(),
 	Long: `Archive all feature state files from .hal/ into .hal/archive/<date>-<name>/.
 
-Use --name/-n to set the archive name, or omit it to be prompted interactively.`,
+Use --name/-n to set the archive name, or omit it to be prompted interactively.
+For agents, pass --name/-n in non-interactive or --json runs; otherwise the
+command may prompt for an archive name.`,
 	Example: `  hal archive create
   hal archive create --name checkout-flow`,
 	RunE: runArchiveCreateCommand,
@@ -95,6 +98,11 @@ var archiveRestoreCmd = &cobra.Command{
 	Long: `Restore files from an archive directory back into .hal/.
 
 If there is current feature state, it will be auto-archived first.
+
+Side effects:
+- Auto-archives current feature state when present.
+- Moves files from the selected archive back into .hal/.
+- Restores reports/ contents and removes the restored archive directory.
 
 The name argument is the archive directory name (e.g., 2026-01-15-my-feature).
 Use 'hal archive list' to see available archives.`,

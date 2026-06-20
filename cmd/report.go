@@ -52,6 +52,11 @@ The report process:
 The generated report can be used by 'hal auto' to identify
 the next priority item to work on.
 
+Side effects:
+- Writes .hal/reports/review-*.md unless --dry-run is set.
+- May update AGENTS.md with discovered patterns unless --skip-agents is set.
+- Runs the selected engine unless --dry-run is set.
+
 Examples:
   hal report                  # Generate report with codex engine (default)
   hal report --engine claude  # Use Claude instead

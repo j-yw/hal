@@ -61,6 +61,11 @@ each AI engine can discover project skills. These links are:
   Global (single-active-repo):
     ~/.codex/skills/  → .hal/skills/  (Codex)
 
+Side effects:
+- refresh creates or replaces engine skill and command symlinks in .claude/,
+  .pi/, and ~/.codex for Codex.
+- clean removes deprecated or broken engine skill symlinks.
+
 Use 'hal links status' to inspect link health.
 Use 'hal links refresh' to recreate all links.`,
 	Example: `  hal links status
