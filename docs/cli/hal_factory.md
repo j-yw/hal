@@ -19,6 +19,7 @@ pending local factory work in the same global store.
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory trigger --repo . --prd .hal/prd-feature.md --json
   hal factory queue list --json
 ```
 
@@ -35,4 +36,5 @@ pending local factory work in the same global store.
 * [hal factory queue](hal_factory_queue.md)	 - Manage queued factory work
 * [hal factory run](hal_factory_run.md)	 - Run the local factory executor
 * [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run
+* [hal factory trigger](hal_factory_trigger.md)	 - Create queued factory runs from trigger payloads
 
