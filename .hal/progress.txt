@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory run/event schemas live in `internal/factory`; exported JSON DTO fields should use explicit camelCase tags and be locked with marshal/unmarshal key tests before storage or CLI layers consume them.
+- Factory store paths live in `internal/factory`; the default root is `sandbox.GlobalDir()/factory` with `runs/` and `timelines/` directories created at `0700`, and read-only list operations treat missing directories as empty state.
 
 ---
 
@@ -15,4 +16,15 @@
   - Existing machine-readable DTO tests in `internal/ci` and `internal/sandbox` use explicit JSON tags plus map-based key assertions; factory schemas now follow the same pattern.
   - Keep optional JSON fields behind `omitempty` and test both populated and omitted forms so later contract docs can rely on the behavior.
   - `EventRecord` uses a monotonically increasing `sequence` field rather than a separate event ID, which gives later append/load work a clear ordering key.
+---
+
+## 2026-06-20 23:31 CST - US-002
+- Implemented factory store path resolution under Hal's global config directory with `Store`, `DefaultStore`, `StoreDir`, `EnsureStoreDir`, `RunsDir`, `TimelinesDir`, and deterministic empty-state `ListRunIDs`.
+- Added tests for `HAL_CONFIG_HOME`/`XDG_CONFIG_HOME`/`HOME` precedence, restrictive `0700` store directory creation, idempotent ensure behavior, missing-store list behavior, and deterministic run ID ordering.
+- Files changed: `internal/factory/store.go`, `internal/factory/store_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test -timeout=120s ./internal/factory` passed; `go test -timeout=120s ./...` passed; `perl -e 'alarm shift; exec @ARGV' 180 go vet ./...` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - Use `sandbox.GlobalDir()` for the factory default store root so factory state follows the same global config precedence as sandbox state while staying outside per-project `.hal/`.
+  - `EnsureStoreDir` should create the global root, `factory/`, `factory/runs/`, and `factory/timelines/` with restrictive `0700` permissions.
+  - Read-only factory listing paths should return empty results for missing directories instead of creating global state.
 ---

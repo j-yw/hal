@@ -418,3 +418,8 @@
 
 - When adding or changing `hal ci` command surfaces, update the README command tables and machine-contract links together so human docs stay aligned with generated and machine-readable docs.
 - Regenerate CLI docs with `make docs-cli` and verify with `make docs-check`; commit both new command pages (`docs/cli/hal_ci*.md`) and any updated parent pages (for example `docs/cli/hal.md`).
+
+## Patterns from hal/factory-store-paths (2026-06-20)
+
+- Factory persistent state belongs in `internal/factory.Store`, rooted at `sandbox.GlobalDir()/factory`; do not put factory run records under per-project `.hal/`.
+- Use `Store.Ensure` or `EnsureStoreDir` to create `factory/`, `factory/runs/`, and `factory/timelines/` with `0700` permissions, and keep read-only list paths empty-state when directories are missing.
