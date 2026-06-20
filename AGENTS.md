@@ -82,6 +82,7 @@
 - Factory status/doctor snapshots are generated from structured packages (`internal/status.Get`, `internal/doctor.Run`) via injectable `factoryRunDeps` hooks, then materialized as JSON artifacts and saved through `Store.SaveArtifactFile`.
 - PR/CI factory outcome artifacts are derived from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata there in `runPRStep`, and materialize stored JSON artifacts plus warning-only partial records when outcome state is unavailable.
 - Sandbox artifact collection should go through `factory.SandboxArtifactCopier` and `factory.CollectSandboxArtifacts`; treat remote paths as copier inputs only, persist safe display `path`/`storedPath` metadata, and represent optional missing remote artifacts as partial warning records.
+- Factory artifact read-only JSON surfaces should use command-specific safe response structs instead of raw `factory.ArtifactReference`; omit `sourcePath`/`url`, keep display `path` plus store-relative `storedPath`, and sanitize summary/warning values that contain secrets or raw IP addresses.
 
 ## Patterns from compound/compound-pipeline-foundations (2026-02-05)
 

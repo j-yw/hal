@@ -106,6 +106,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			},
 			requiredExampleLines: []string{
 				"hal factory artifacts run-20260620-001",
+				"hal factory artifacts run-20260620-001 --json",
 			},
 		},
 	}
@@ -2768,7 +2769,7 @@ func TestRunFactoryArtifactsListsCollectedArtifacts(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := runFactoryArtifactsWithDeps(&buf, record.RunID, factoryArtifactsDeps{
+	err := runFactoryArtifactsWithDeps(&buf, record.RunID, false, factoryArtifactsDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 	})
 	if err != nil {
@@ -2799,7 +2800,7 @@ func TestRunFactoryArtifactsMissingRunReturnsError(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	var buf bytes.Buffer
 
-	err := runFactoryArtifactsWithDeps(&buf, "missing-run", factoryArtifactsDeps{
+	err := runFactoryArtifactsWithDeps(&buf, "missing-run", false, factoryArtifactsDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 	})
 	if err == nil {
@@ -2822,7 +2823,7 @@ func TestRunFactoryArtifactsEmptyState(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := runFactoryArtifactsWithDeps(&buf, record.RunID, factoryArtifactsDeps{
+	err := runFactoryArtifactsWithDeps(&buf, record.RunID, false, factoryArtifactsDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 	})
 	if err != nil {
@@ -2838,10 +2839,154 @@ func TestRunFactoryArtifactsEmptyState(t *testing.T) {
 	}
 }
 
+func TestRunFactoryArtifactsJSONEmitsSafePayload(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 8, 20, 0, 0, time.UTC)
+	size := int64(512)
+	createdAt := base.Add(time.Minute)
+	record := testFactoryRunRecord("run-artifacts-json", base, base.Add(3*time.Minute))
+	record.Artifacts = []factory.ArtifactReference{
+		{
+			ID:         "status-snapshot",
+			Name:       "status-snapshot",
+			Type:       "json",
+			SourcePath: "/tmp/workspace/status-snapshot.json",
+			Path:       "factory/status-snapshot.json",
+			StoredPath: "artifacts/run-artifacts-json/status-snapshot.json",
+			SizeBytes:  &size,
+			CreatedAt:  &createdAt,
+			Summary: map[string]any{
+				"snapshotKind": "status",
+				"state":        "auto_active",
+				"apiToken":     "secret-token",
+				"endpoint":     "http://192.0.2.10:8080/status",
+			},
+		},
+		{
+			ID:       "missing-report",
+			Name:     "missing-report",
+			Type:     "markdown",
+			Path:     ".hal/reports/missing.md",
+			URL:      "http://192.0.2.20/report",
+			Warnings: []string{"optional artifact not found at 198.51.100.2"},
+			Partial:  true,
+			Summary: map[string]any{
+				"collectionStatus": "missing",
+			},
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryArtifactsWithDeps(&buf, record.RunID, true, factoryArtifactsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryArtifactsWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryArtifactsResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.ContractVersion != FactoryArtifactsContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryArtifactsContractVersion)
+	}
+	if resp.RunID != record.RunID {
+		t.Fatalf("runId = %q, want %q", resp.RunID, record.RunID)
+	}
+	if len(resp.Artifacts) != 2 {
+		t.Fatalf("artifacts len = %d, want 2", len(resp.Artifacts))
+	}
+	if resp.Summary.Total != 2 || resp.Summary.Partial != 1 || resp.Summary.Warnings != 1 {
+		t.Fatalf("summary = %#v, want total=2 partial=1 warnings=1", resp.Summary)
+	}
+	first := resp.Artifacts[0]
+	if first.Path != "factory/status-snapshot.json" || first.StoredPath != "artifacts/run-artifacts-json/status-snapshot.json" {
+		t.Fatalf("first artifact paths = path %q storedPath %q", first.Path, first.StoredPath)
+	}
+	if first.Summary["snapshotKind"] != "status" || first.Summary["state"] != "auto_active" {
+		t.Fatalf("first summary preserved safe fields: %#v", first.Summary)
+	}
+	if first.Summary["apiToken"] != "[redacted]" || first.Summary["endpoint"] != "[redacted]" {
+		t.Fatalf("first summary should redact secret/network values: %#v", first.Summary)
+	}
+	if resp.Artifacts[1].Warnings[0] != "[redacted]" {
+		t.Fatalf("warning should be redacted, got %#v", resp.Artifacts[1].Warnings)
+	}
+	if len(resp.Warnings) != 1 || resp.Warnings[0] != "[redacted]" {
+		t.Fatalf("top-level warnings = %#v, want redacted warning", resp.Warnings)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal(raw) error: %v", err)
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "runId", "artifacts", "warnings", "summary"})
+	artifacts, ok := raw["artifacts"].([]any)
+	if !ok || len(artifacts) != 2 {
+		t.Fatalf("artifacts should be array of 2, got %T", raw["artifacts"])
+	}
+	firstRaw, ok := artifacts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("artifacts[0] should be object, got %T", artifacts[0])
+	}
+	requireFactoryFields(t, "factory artifacts entry", firstRaw, []string{
+		"id", "name", "type", "path", "storedPath", "sizeBytes", "createdAt", "summary",
+	})
+	if _, ok := firstRaw["sourcePath"]; ok {
+		t.Fatalf("artifact JSON must not expose sourcePath: %#v", firstRaw)
+	}
+	if _, ok := firstRaw["url"]; ok {
+		t.Fatalf("artifact JSON must not expose url: %#v", firstRaw)
+	}
+	summary, ok := raw["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary should be object, got %T", raw["summary"])
+	}
+	requireExactKeys(t, summary, []string{"total", "partial", "warnings"})
+}
+
+func TestRunFactoryArtifactsJSONEmptyState(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 8, 30, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-artifacts-json-empty", base, base.Add(time.Minute))
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryArtifactsWithDeps(&buf, record.RunID, true, factoryArtifactsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryArtifactsWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryArtifactsResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Artifacts == nil || len(resp.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want empty non-nil array", resp.Artifacts)
+	}
+	if resp.Warnings == nil || len(resp.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want empty non-nil array", resp.Warnings)
+	}
+	if resp.Summary.Total != 0 || resp.Summary.Partial != 0 || resp.Summary.Warnings != 0 {
+		t.Fatalf("summary = %#v, want zero counts", resp.Summary)
+	}
+}
+
 func TestFactoryArtifactsCommandRegistered(t *testing.T) {
 	cmd, err := commandAtPath(Root(), "factory", "artifacts")
 	if err != nil {
 		t.Fatalf("factory artifacts command missing: %v", err)
+	}
+	if cmd.Flags().Lookup("json") == nil {
+		t.Fatal("factory artifacts should expose --json flag")
 	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory artifacts missing metadata fields: %v", missing)

@@ -10,6 +10,7 @@
 - Sandbox artifact collection uses `factory.SandboxArtifactCopier` plus `factory.CollectSandboxArtifacts`; remote paths are copier inputs only, while persisted metadata keeps safe display paths and store-backed paths.
 - Sandbox factory runs collect remote artifacts during `recordFactoryRunArtifacts` when the persisted run record has `ExecutorModeSandbox`; tests should mutate the run record inside the fake pipeline and inject `sandboxCopier`/`sandboxRequests` through `factoryRunDeps`.
 - Read-only factory subcommands should use small injectable deps structs with `defaultStore func() (factory.Store, error)` so command tests can use isolated `factory.NewStore(t.TempDir())` roots.
+- Factory artifact JSON read surfaces should use dedicated safe response structs, not raw `factory.ArtifactReference`; omit `sourcePath`/`url`, keep display `path` plus store-relative `storedPath`, and sanitize summary/warning strings that contain secrets or raw IP addresses.
 
 ---
 
@@ -88,4 +89,15 @@
   - Read-only factory commands should mirror `list`/`status`: use an injectable deps struct for the store, return `factory run "<id>" not found` for missing records, and avoid writing output when the run is missing.
   - Human artifact output should prefer the durable display `Path` and `StoredPath`; avoid showing `SourcePath` by default because it can be an absolute temp or workspace path.
   - Summary metadata rendering should sort keys for deterministic command tests.
+---
+## 2026-06-21 07:44:47 CST - US-009
+- Added `hal factory artifacts <run-id> --json` with a `factory-artifacts-v1` response containing run ID, safe artifact entries, aggregate warnings, and summary counts.
+- Added command-specific safe artifact JSON structs that omit raw `sourcePath` and `url`, preserve display/store paths, and redact secret-like metadata plus raw network addresses from summaries and warnings.
+- Added contract documentation, an example payload, README contract discovery, field-locking tests, docs-code sync tests, and focused command tests for safe payloads, empty state, missing runs, and flag registration.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, `cmd/contracts_doc_test.go`, `docs/contracts/factory-artifacts-v1.md`, `docs/contracts/examples/factory-artifacts-v1.json`, `README.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Checks run: `go test ./cmd -run 'TestRunFactoryArtifacts|TestFactoryArtifactsCommandRegistered|TestMachineContractFields_FactoryCommandOutputs|TestContractDocsExist|TestContractDocsIncludeFactoryFields|TestFactoryContractExamplesMatchCommandSchemas|TestFactoryCommandHelpMetadata'`, `go test ./cmd -run 'TestCommandTreeHasCompleteMetadata|TestCoreCommandsHaveCompleteMetadata|TestFactoryGeneratedCLIReferenceLinks'`, `make test`, `make vet`, `make lint`; `make lint` reported `golangci-lint` is not installed.
+- **Learnings for future iterations:**
+  - Artifact read-only JSON should not marshal raw `factory.ArtifactReference` because `sourcePath` and `url` can expose workspace-local paths or uncontracted network addresses.
+  - New factory machine-readable command surfaces need the command response type, `cmd/machine_contracts_test.go` field checks, `cmd/contracts_doc_test.go` docs/example sync, a `docs/contracts/*.md` file, and a `docs/contracts/examples/*.json` payload.
+  - Warning strings may embed raw addresses inside prose; sanitizer tests should cover sentence-form values, not only bare IP strings.
 ---
