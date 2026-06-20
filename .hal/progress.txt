@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory queue JSON contracts are split between reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; keep docs/examples/tests aligned when implementing queue commands.
+- Factory queue storage builds on `internal/factory.Store`: keep durable queue state at the global config-backed factory root (`StoreDir()/queue.json`), return empty state for missing files without creating directories, and preserve corrupt files by returning parse errors without mutation.
 
 ---
 ## 2026-06-21 04:50:06 CST - US-001
@@ -14,4 +15,14 @@
   - Factory machine contracts are locked in three places: DTO JSON key tests, contract docs, and strict example decoding with `DisallowUnknownFields`.
   - Queue command implementations should reuse `factory.QueueEntry` and the `FactoryQueue*Response` structs instead of defining separate response shapes.
   - Focused checks run so far: `go test -timeout=120s ./internal/factory ./cmd`.
+---
+## 2026-06-21 04:56:42 CST - US-002
+- Implemented global config-backed factory queue storage in `internal/factory/queue.go` with `QueuePath`, `LoadQueue`, and `SaveQueue`.
+- Added deterministic queue storage tests for global path placement, missing-file empty state, durable save/load behavior, file permissions, temp cleanup, and corrupt JSON preservation.
+- Files changed: `internal/factory/queue.go`, `internal/factory/queue_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Reuse `factory.Store` for queue persistence so future queue commands share the same global config precedence as existing factory run/timeline storage.
+  - Read-only queue loads should not create global directories; command implementations can treat a missing queue file as an empty queue.
+  - Browser verification skipped because this story only changes backend queue storage.
+  - Checks run: `go test ./internal/factory`, `make test`, `make vet`.
 ---
