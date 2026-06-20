@@ -23,15 +23,27 @@ type factoryQueueAddDeps struct {
 	newQueueID   func() (string, error)
 }
 
+type factoryQueueListDeps struct {
+	defaultStore func() (factory.Store, error)
+}
+
 type factoryQueueAddRequest struct {
 	RunID        string
 	ExecutorMode string
 	JSON         bool
 }
 
+type factoryQueueListRequest struct {
+	JSON bool
+}
+
 var defaultFactoryQueueAddDeps = factoryQueueAddDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
+}
+
+var defaultFactoryQueueListDeps = factoryQueueListDeps{
+	defaultStore: factory.DefaultStore,
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -114,7 +126,17 @@ func runFactoryQueueAdd(cmd *cobra.Command, args []string) error {
 }
 
 func runFactoryQueueList(cmd *cobra.Command, _ []string) error {
-	return exitWithCode(cmd, ExitCodeExpectedNonZero, errors.New("hal factory queue list is not implemented yet"))
+	req, err := factoryQueueListRequestFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+
+	return runFactoryQueueListWithDeps(out, req, defaultFactoryQueueListDeps)
 }
 
 func runFactoryQueueWork(cmd *cobra.Command, _ []string) error {
@@ -155,6 +177,19 @@ func factoryQueueAddRequestFromCommand(cmd *cobra.Command, args []string) (facto
 	}, nil
 }
 
+func factoryQueueListRequestFromCommand(cmd *cobra.Command) (factoryQueueListRequest, error) {
+	jsonMode := factoryQueueListJSONFlag
+	if cmd != nil && cmd.Flags().Lookup("json") != nil {
+		value, err := cmd.Flags().GetBool("json")
+		if err != nil {
+			return factoryQueueListRequest{}, err
+		}
+		jsonMode = value
+	}
+
+	return factoryQueueListRequest{JSON: jsonMode}, nil
+}
+
 func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps factoryQueueAddDeps) error {
 	if out == nil {
 		out = io.Discard
@@ -191,12 +226,41 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 	return renderFactoryQueueAddResult(out, entry, req.JSON)
 }
 
+func runFactoryQueueListWithDeps(out io.Writer, req factoryQueueListRequest, deps factoryQueueListDeps) error {
+	if out == nil {
+		out = io.Discard
+	}
+	deps = normalizeFactoryQueueListDeps(deps)
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+
+	entries, err := store.ListQueue()
+	if err != nil {
+		return fmt.Errorf("list factory queue: %w", err)
+	}
+
+	return renderFactoryQueueListResult(out, entries, req.JSON)
+}
+
 func normalizeFactoryQueueAddDeps(deps factoryQueueAddDeps) factoryQueueAddDeps {
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryQueueAddDeps.defaultStore
 	}
 	if deps.now == nil {
 		deps.now = defaultFactoryQueueAddDeps.now
+	}
+	return deps
+}
+
+func normalizeFactoryQueueListDeps(deps factoryQueueListDeps) factoryQueueListDeps {
+	if deps.defaultStore == nil {
+		deps.defaultStore = defaultFactoryQueueListDeps.defaultStore
 	}
 	return deps
 }
@@ -243,6 +307,40 @@ func renderFactoryQueueAddResult(out io.Writer, entry factory.QueueEntry, jsonMo
 	return nil
 }
 
+func renderFactoryQueueListResult(out io.Writer, entries []factory.QueueEntry, jsonMode bool) error {
+	if entries == nil {
+		entries = []factory.QueueEntry{}
+	}
+
+	resp := FactoryQueueListResponse{
+		ContractVersion: FactoryQueueListContractVersion,
+		Entries:         entries,
+		Summary:         factoryQueueListSummary(entries),
+	}
+	if jsonMode {
+		data, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal factory queue list: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	fmt.Fprintln(out, resp.Summary)
+	for _, entry := range entries {
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", entry.QueueID, entry.RunID, entry.ExecutorMode, entry.Status)
+	}
+	return nil
+}
+
 func factoryQueueAddSummary(entry factory.QueueEntry) string {
 	return fmt.Sprintf("queued run %s", entry.RunID)
+}
+
+func factoryQueueListSummary(entries []factory.QueueEntry) string {
+	count := len(entries)
+	if count == 1 {
+		return "1 queue entry"
+	}
+	return fmt.Sprintf("%d queue entries", count)
 }
