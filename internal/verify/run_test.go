@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -198,6 +199,50 @@ func TestRunCapturesShellCheckArtifacts(t *testing.T) {
 	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stderr.txt"), "unit stderr")
 }
 
+func TestRunDisambiguatesSanitizedArtifactIDs(t *testing.T) {
+	projectRoot := t.TempDir()
+
+	result, err := Run(context.Background(), &Config{
+		ProjectRoot: projectRoot,
+		Checks: []ShellCheck{
+			{
+				ID:             "a/b",
+				Name:           "Slash check",
+				Command:        helperCommand(t, "write-output", "slash stdout", ""),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+			{
+				ID:             "a_b",
+				Name:           "Underscore check",
+				Command:        helperCommand(t, "write-output", "underscore stdout", ""),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if len(result.Checks) != 2 {
+		t.Fatalf("Checks length = %d, want 2", len(result.Checks))
+	}
+
+	if result.Checks[0].StdoutArtifact != ".hal/reports/verify/a_b-stdout.txt" {
+		t.Errorf("first StdoutArtifact = %q, want .hal/reports/verify/a_b-stdout.txt", result.Checks[0].StdoutArtifact)
+	}
+	if result.Checks[1].StdoutArtifact != ".hal/reports/verify/a_b-2-stdout.txt" {
+		t.Errorf("second StdoutArtifact = %q, want .hal/reports/verify/a_b-2-stdout.txt", result.Checks[1].StdoutArtifact)
+	}
+
+	requireArtifact(t, result.Artifacts, "a/b", ArtifactKindStdout, ".hal/reports/verify/a_b-stdout.txt")
+	requireArtifact(t, result.Artifacts, "a_b", ArtifactKindStdout, ".hal/reports/verify/a_b-2-stdout.txt")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "a_b-stdout.txt"), "slash stdout")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "a_b-2-stdout.txt"), "underscore stdout")
+}
+
 func TestRunRequiredShellCheckTimeout(t *testing.T) {
 	projectRoot := t.TempDir()
 	marker := filepath.Join(projectRoot, "timeout-marker.txt")
@@ -254,6 +299,31 @@ func TestRunRequiredShellCheckTimeout(t *testing.T) {
 	time.Sleep(2500 * time.Millisecond)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("timed-out command wrote marker after timeout; stat err = %v", err)
+	}
+}
+
+func TestRunCanceledContextReturnsError(t *testing.T) {
+	projectRoot := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := Run(ctx, &Config{
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "noop"),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if result != nil {
+		t.Fatalf("Run() result = %#v, want nil", result)
 	}
 }
 
@@ -389,6 +459,53 @@ func TestRunOptionalShellCheckMissingWarns(t *testing.T) {
 		if warning.Message == "" {
 			t.Errorf("warning %s Message is empty", warning.CheckID)
 		}
+	}
+}
+
+func TestRunOptionalShellCheckUnavailableCommandWarns(t *testing.T) {
+	projectRoot := t.TempDir()
+
+	result, err := Run(context.Background(), &Config{
+		Checks: []ShellCheck{
+			{
+				ID:             "lint",
+				Name:           "Lint",
+				Command:        "hal-verify-missing-command-for-test run",
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       false,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	if result.Status != StatusWarn {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusWarn)
+	}
+	if result.Summary.Missing != 1 {
+		t.Errorf("Summary.Missing = %d, want 1", result.Summary.Missing)
+	}
+	if result.Summary.Warnings != 1 {
+		t.Errorf("Summary.Warnings = %d, want 1", result.Summary.Warnings)
+	}
+	check := result.Checks[0]
+	if check.Status != CheckStatusMissing {
+		t.Errorf("check Status = %q, want %q", check.Status, CheckStatusMissing)
+	}
+	if check.ExitCode == 0 {
+		t.Errorf("check ExitCode = 0, want shell missing-command exit code")
+	}
+	if !strings.Contains(check.Message, "command is unavailable") {
+		t.Errorf("check Message = %q, want unavailable command details", check.Message)
+	}
+	warning := result.Warnings[0]
+	if warning.Status != CheckStatusMissing {
+		t.Errorf("warning Status = %q, want %q", warning.Status, CheckStatusMissing)
+	}
+	if !strings.Contains(warning.Message, "command is unavailable") {
+		t.Errorf("warning Message = %q, want unavailable command details", warning.Message)
 	}
 }
 

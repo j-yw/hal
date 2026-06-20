@@ -20,6 +20,7 @@ import (
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/jywlabs/hal/internal/verify"
 	"github.com/spf13/cobra"
 )
 
@@ -133,6 +134,8 @@ type factoryRunDeps struct {
 	currentBranch func(string) (string, error)
 	repoRemote    func(string) (string, error)
 	runPipeline   func(context.Context, factoryRunPipelineRequest) error
+	loadVerify    func(string) (*verify.Config, error)
+	runVerify     func(context.Context, *verify.Config) (*verify.Result, error)
 }
 
 type factoryRunPipelineRequest struct {
@@ -151,6 +154,8 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	currentBranch: compound.CurrentBranchOptionalInDir,
 	repoRemote:    readGitRemoteOptionalInDir,
 	runPipeline:   runFactoryRunPipeline,
+	loadVerify:    verify.LoadConfig,
+	runVerify:     verify.Run,
 }
 
 type factoryRunRequest struct {
@@ -343,6 +348,29 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return err
 	}
+	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
+	if err != nil {
+		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
+		var recordErrs []error
+		if failureErr != nil {
+			recordErrs = append(recordErrs, failureErr)
+		}
+		if eventErr := recordFactoryRunVerificationFailed(store, failedRecord.RunID, completedAt, err); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory verification failure event: %w", eventErr))
+		}
+		if failedRecord.Failure != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+			}
+		}
+		if len(recordErrs) > 0 {
+			return errors.Join(append([]error{err}, recordErrs...)...)
+		}
+		if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID, req.JSON); renderErr != nil {
+			return errors.Join(err, renderErr)
+		}
+		return err
+	}
 	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
 	if err != nil {
 		return err
@@ -374,6 +402,12 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryRunDeps.runPipeline
+	}
+	if deps.loadVerify == nil {
+		deps.loadVerify = defaultFactoryRunDeps.loadVerify
+	}
+	if deps.runVerify == nil {
+		deps.runVerify = defaultFactoryRunDeps.runVerify
 	}
 	return deps
 }
@@ -469,6 +503,48 @@ func refreshFactoryRunBranch(store factory.Store, runID, dir string, deps factor
 	return *record, nil
 }
 
+func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps) (factory.RunRecord, time.Time, error) {
+	startedAt := deps.now()
+	record.CurrentStep = "verify"
+	record.UpdatedAt = startedAt.UTC()
+	if err := store.SaveRun(&record); err != nil {
+		return record, deps.now(), fmt.Errorf("mark factory run verifying: %w", err)
+	}
+
+	cfg, err := deps.loadVerify(dir)
+	if err != nil {
+		return record, deps.now(), fmt.Errorf("load verification config: %w", err)
+	}
+	if cfg == nil || len(cfg.Checks) == 0 {
+		return record, deps.now(), nil
+	}
+
+	result, err := deps.runVerify(ctx, cfg)
+	finishedAt := deps.now()
+	if err != nil {
+		return record, finishedAt, fmt.Errorf("run verification: %w", err)
+	}
+	if result == nil {
+		return record, finishedAt, fmt.Errorf("run verification: no result")
+	}
+
+	record.Verification = &factory.VerificationRecord{
+		Summary:   result.Summary,
+		Artifacts: result.Artifacts,
+	}
+	record.UpdatedAt = finishedAt.UTC()
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
+	}
+	if err := recordFactoryRunVerificationResult(store, record.RunID, finishedAt, *result); err != nil {
+		return record, finishedAt, fmt.Errorf("record factory verification event: %w", err)
+	}
+	if result.Status == verify.StatusFail {
+		return record, finishedAt, newFactoryRunVerificationFailure(result)
+	}
+	return record, finishedAt, nil
+}
+
 func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
 	finishedAt := now.UTC()
 	record.Status = factory.RunStatusSucceeded
@@ -512,6 +588,14 @@ func newFactoryRunFailureSummary(runID, currentStep string, pipelineErr error) f
 	return failure
 }
 
+func newFactoryRunVerificationFailure(result *verify.Result) error {
+	if result == nil {
+		return fmt.Errorf("verification failed")
+	}
+	summary := result.Summary
+	return fmt.Errorf("verification failed: %d failed, %d timed out, %d missing", summary.Failed, summary.TimedOut, summary.Missing)
+}
+
 func classifyFactoryRunFailure(err error) string {
 	if err == nil {
 		return factory.FailureCategoryUnknown
@@ -535,6 +619,8 @@ func classifyFactoryRunFailure(err error) string {
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
 	case factoryFailureMessageContains(message, "validation", "validate", "invalid"):
+		return factory.FailureCategoryValidation
+	case factoryFailureMessageContains(message, "verification", "verify"):
 		return factory.FailureCategoryValidation
 	case factoryFailureMessageContains(message, "engine", "codex", "claude"):
 		return factory.FailureCategoryEngine
@@ -1104,6 +1190,37 @@ func recordFactoryRunProgress(store factory.Store, runID string, now time.Time, 
 	})
 }
 
+func recordFactoryRunVerificationResult(store factory.Store, runID string, now time.Time, result verify.Result) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeVerificationResult,
+		Summary:   factoryRunVerificationSummary(result),
+		Metadata: map[string]any{
+			"status":        result.Status,
+			"total":         result.Summary.Total,
+			"passed":        result.Summary.Passed,
+			"failed":        result.Summary.Failed,
+			"timedOut":      result.Summary.TimedOut,
+			"missing":       result.Summary.Missing,
+			"skipped":       result.Summary.Skipped,
+			"warnings":      result.Summary.Warnings,
+			"artifactCount": len(result.Artifacts),
+		},
+	})
+}
+
+func factoryRunVerificationSummary(result verify.Result) string {
+	switch result.Status {
+	case verify.StatusPass:
+		return "Verification passed"
+	case verify.StatusWarn:
+		return "Verification completed with warnings"
+	case verify.StatusFail:
+		return "Verification failed"
+	default:
+		return "Verification completed"
+	}
+}
+
 func recordFactoryRunPipelineSucceeded(store factory.Store, runID string, now time.Time) error {
 	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
@@ -1123,6 +1240,18 @@ func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.
 			"step":   "run",
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
+		},
+	})
+}
+
+func recordFactoryRunVerificationFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Verification failed",
+		Metadata: map[string]any{
+			"step":   "verify",
+			"status": factory.RunStatusFailed,
+			"error":  verificationErr.Error(),
 		},
 	})
 }
