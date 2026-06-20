@@ -302,6 +302,68 @@ local path conventions. Future implementations should define retention,
 deletion, export, and redaction behavior explicitly so project members can
 collaborate without weakening organization-level data governance.
 
+## Policy Inheritance and Overrides
+
+The future shared control plane should resolve policy through explicit
+inheritance and bounded overrides. Policies define operational requirements such
+as queue admission rules, allowed engines or execution environments, lease and
+heartbeat limits, retry posture, artifact retention, review or CI gates,
+network access, and administrative guardrails. Policy resolution is an
+architecture concern for the control plane and should not become a CLI JSON
+contract detail unless a future `docs/contracts/` revision deliberately exposes
+it.
+
+Organization-level policy is the root of inheritance. Organization owners define
+defaults and non-overridable guardrails for all projects in the organization.
+Defaults provide the starting posture for new projects, while guardrails define
+requirements that project, run, or local settings cannot weaken. Examples
+include minimum artifact retention, required audit logging, maximum lease
+duration, required review gates, and restrictions on execution environments or
+network access.
+
+Project-level policy inherits organization policy and may refine it for a
+specific repository, workspace, or codebase boundary. Project administrators may
+set project defaults, tighten organization defaults, choose project-specific
+engine or CI expectations, define queue concurrency, and configure artifact
+visibility when organization policy allows those choices. Project overrides
+should be validated by the control plane before they affect shared queues,
+runs, artifacts, or audit behavior.
+
+Run-level overrides are request-scoped choices made when an authorized actor
+starts, retries, or administers a specific run. They may select an allowed
+engine profile, iteration limit, branch target, execution environment, retry
+limit, or other operational option within the bounds established by
+organization and project policy. Run-level overrides should be recorded with
+the run and included in audit context so later operators can explain why a run
+used settings that differ from project defaults.
+
+Local overrides remain useful for developer ergonomics, but they should not
+change shared governance decisions. Local CLI flags, environment variables, and
+worktree configuration may control local presentation, editor preferences,
+diagnostic verbosity, local binary paths, local worktree or sandbox paths, and
+other machine-specific execution details. They should not override shared
+authorization, artifact visibility, retention, queue priority, lease ownership,
+or required review and CI gates for hosted or networked control-plane
+operations.
+
+Policy precedence should be deterministic:
+
+1. Built-in defaults apply only when no higher policy source sets a value.
+2. Organization defaults replace built-in defaults.
+3. Project defaults replace organization defaults where organization policy
+   allows project choice.
+4. Run-level overrides replace project defaults only for the specific run and
+   only when both organization and project policy allow the override.
+5. Local overrides apply last for local developer ergonomics, but they cannot
+   weaken organization guardrails, project restrictions, run authorization, or
+   shared artifact and audit requirements.
+
+If a higher policy marks a setting as non-overridable, lower policy sources
+must either comply or receive an explicit conflict response. Future
+implementations should make conflict handling predictable, auditable, and
+recoverable without requiring users or agents to inspect hidden backend policy
+graphs or manually edit local `.hal/` runtime files.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared

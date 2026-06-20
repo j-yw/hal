@@ -8,6 +8,7 @@
 - Future RBAC/control-plane ADR sections should name authorization as a shared control-plane responsibility while keeping permission evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
 - Future shared queue/run lifecycle ADR sections should document leases, heartbeats, cancellation, stale recovery, concurrency, and idempotency as architecture expectations without exposing backend attempt IDs, idempotency keys, or lease internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 - Future shared artifact/audit ADR sections should cover PRDs, reports, logs, review results, run output, audit decisions, state transitions, and data ownership/access expectations without exposing storage keys, backend IDs, role graphs, or permission evaluation internals as CLI JSON contract fields unless `docs/contracts/` is updated.
+- Future policy inheritance ADR sections should define precedence from built-in defaults through organization, project, run, and local overrides while keeping policy evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
 
 ---
 
@@ -71,5 +72,14 @@
 - **Learnings for future iterations:**
   - Shared artifact sections should describe ownership, access, retention, and audit expectations without turning storage keys or backend identifiers into CLI contract fields.
   - Artifact/audit documentation should keep local `.hal/` files as the current CLI runtime boundary until future implementation PRDs and contract updates define shared behavior.
+  - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
+---
+
+## 2026-06-20 23:47 CST - US-008
+- Added the policy inheritance and overrides section to the factory control plane ADR, covering organization defaults and guardrails, project refinements, run-level overrides, local developer overrides, and deterministic precedence.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Policy inheritance should be described as control-plane architecture and not as new CLI JSON contract fields unless a future `docs/contracts/` update adds them.
+  - Local overrides are appropriate for developer ergonomics, but ADR wording should keep shared authorization, artifact access, retention, lease ownership, and required gates under control-plane policy.
   - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
 ---
