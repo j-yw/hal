@@ -388,6 +388,161 @@ func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T)
 	}
 }
 
+func TestRunFactoryRunWithDepsRecordsTimelineEventsForSuccess(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 20, 22, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	progressAt := createdAt.Add(2 * time.Minute)
+	completedAt := createdAt.Add(3 * time.Minute)
+	times := []time.Time{createdAt, startedAt, progressAt, completedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-timeline-success", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			events, err := req.Store.LoadEvents(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadEvents(before progress) error: %v", err)
+			}
+			assertFactoryEventTypes(t, events, []string{
+				factory.EventTypeRunCreated,
+				factory.EventTypeStepStarted,
+			})
+			if req.RecordProgress == nil {
+				t.Fatal("RecordProgress hook is nil")
+			}
+			return req.RecordProgress(factoryRunProgressEvent{
+				Summary: "Auto validate step completed",
+				Metadata: map[string]any{
+					"step":   "validate",
+					"status": "completed",
+				},
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents("run-timeline-success")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepEnded,
+	})
+	assertFactoryEventSequences(t, events)
+	if !events[0].Timestamp.Equal(createdAt) {
+		t.Fatalf("start timestamp = %s, want %s", events[0].Timestamp, createdAt)
+	}
+	if !events[1].Timestamp.Equal(startedAt) {
+		t.Fatalf("pipeline start timestamp = %s, want %s", events[1].Timestamp, startedAt)
+	}
+	if !events[2].Timestamp.Equal(progressAt) {
+		t.Fatalf("progress timestamp = %s, want %s", events[2].Timestamp, progressAt)
+	}
+	if !events[3].Timestamp.Equal(completedAt) {
+		t.Fatalf("completion timestamp = %s, want %s", events[3].Timestamp, completedAt)
+	}
+	if events[2].Summary != "Auto validate step completed" {
+		t.Fatalf("progress summary = %q", events[2].Summary)
+	}
+	if events[2].Metadata["step"] != "validate" {
+		t.Fatalf("progress step metadata = %#v", events[2].Metadata)
+	}
+	if events[3].Metadata["status"] != factory.RunStatusSucceeded {
+		t.Fatalf("completion status metadata = %#v", events[3].Metadata)
+	}
+}
+
+func TestRunFactoryRunWithDepsRecordsTimelineEventsForFailure(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 20, 23, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	pipelineErr := errors.New("pipeline stopped")
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		ReportPath: ".hal/reports/analysis.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-timeline-failure", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			events, err := req.Store.LoadEvents(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadEvents(before failure) error: %v", err)
+			}
+			assertFactoryEventTypes(t, events, []string{
+				factory.EventTypeRunCreated,
+				factory.EventTypeStepStarted,
+			})
+			return pipelineErr
+		},
+	})
+	if !errors.Is(err, pipelineErr) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline error", err)
+	}
+
+	events, err := store.LoadEvents("run-timeline-failure")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+	})
+	assertFactoryEventSequences(t, events)
+	if !events[2].Timestamp.Equal(failedAt) {
+		t.Fatalf("failure timestamp = %s, want %s", events[2].Timestamp, failedAt)
+	}
+	if events[2].Summary != "Local compound pipeline failed" {
+		t.Fatalf("failure summary = %q", events[2].Summary)
+	}
+	if events[2].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("failure status metadata = %#v", events[2].Metadata)
+	}
+	if events[2].Metadata["error"] != pipelineErr.Error() {
+		t.Fatalf("failure error metadata = %#v", events[2].Metadata)
+	}
+}
+
 func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 	ctx := context.WithValue(context.Background(), testContextKey("factory-run"), "markdown")
 	var gotCtx context.Context
@@ -912,6 +1067,29 @@ func assertFactoryRunRecordReadyForPipeline(t *testing.T, record factory.RunReco
 	}
 	if record.CurrentStep != "run" {
 		t.Fatalf("currentStep = %q, want run", record.CurrentStep)
+	}
+}
+
+func assertFactoryEventTypes(t *testing.T, events []factory.EventRecord, want []string) {
+	t.Helper()
+
+	got := make([]string, 0, len(events))
+	for _, event := range events {
+		got = append(got, event.EventType)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+}
+
+func assertFactoryEventSequences(t *testing.T, events []factory.EventRecord) {
+	t.Helper()
+
+	for i, event := range events {
+		want := int64(i + 1)
+		if event.Sequence != want {
+			t.Fatalf("event %d sequence = %d, want %d", i, event.Sequence, want)
+		}
 	}
 }
 

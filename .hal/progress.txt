@@ -6,6 +6,7 @@
 - Factory command parser changes should update Cobra metadata, focused `cmd/factory_test.go` registration/validation tests, and regenerated `docs/cli` pages via `make docs-cli`; docs drift is enforced by `make docs-check`.
 - Factory run execution should stay dependency-injected at the command layer: create a pending `factory.RunRecord`, persist the running transition, then invoke the pipeline dependency so tests can use `factory.NewStore(t.TempDir())` without real engines or CLIs.
 - Factory-to-auto execution should test the handoff boundary, not the real pipeline: map markdown PRDs to auto positional args, report sources to auto `--report`, and propagate `--base` through an injected auto runner.
+- Factory run timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use the injected `RecordProgress` hook for progress events and keep completion/failure lifecycle events outside the wrapped `hal auto` implementation.
 
 ---
 
@@ -59,4 +60,17 @@
   - `runFactoryRunPipelineWithDeps` is the boundary for verifying factory-to-auto option mapping without real auto pipeline execution.
   - Keep factory JSON mode separate from auto JSON mode; factory result rendering is a later contract story, so the auto wrapper discards auto output for now.
   - The production wrapper delegates to `runAuto` through a synthetic Cobra command with the auto flags that `runAuto` reads; update this wrapper if new auto flags become relevant to factory execution.
+---
+
+## 2026-06-21 01:24 CST - US-005
+- Recorded local factory run timeline events for run start, local compound pipeline start, successful pipeline completion, and failed pipeline completion.
+- Added an injected `RecordProgress` callback on `factoryRunPipelineRequest` so wrapped pipeline hooks can append durable `command_output_summary` progress events without coupling tests to real pipeline execution.
+- Added success and failure path tests that verify durable timeline event ordering, sequence assignment, timestamps, progress metadata, and failure error metadata.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: `go test -timeout=120s ./cmd -run 'Test(RunFactoryRunWithDepsRecordsTimelineEventsForSuccess|RunFactoryRunWithDepsRecordsTimelineEventsForFailure|RunFactoryRunWithDepsCreatesMarkdownRunRecordBeforePipeline|RunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline|RunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto|RunFactoryRunPipelineWithDepsPassesReportEntryToAuto)'`, `go test -timeout=120s ./internal/factory`, `go test -timeout=180s ./cmd`, `go test -timeout=300s ./...`, `perl -e 'alarm shift; exec @ARGV' 300 go vet ./...`, `perl -e 'alarm shift; exec @ARGV' 300 make docs-check`.
+- Browser verification: skipped because this story only changes CLI persistence behavior and unit-tested command behavior.
+- **Learnings for future iterations:**
+  - Generate timeline sequence numbers by loading existing events and using max sequence + 1 so future progress hooks appended during pipeline execution can sit between lifecycle start and terminal events.
+  - `factoryRunPipelineRequest.RecordProgress` is the command-layer extension point for progress events; production `runAuto` does not expose fine-grained progress callbacks yet.
+  - Completion and failure events are lifecycle timeline records only in this story; terminal run status persistence remains scoped to later stories.
 ---

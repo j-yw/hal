@@ -133,10 +133,11 @@ type factoryRunDeps struct {
 }
 
 type factoryRunPipelineRequest struct {
-	RunID   string
-	Request factoryRunRequest
-	Record  factory.RunRecord
-	Store   factory.Store
+	RunID          string
+	Request        factoryRunRequest
+	Record         factory.RunRecord
+	Store          factory.Store
+	RecordProgress func(factoryRunProgressEvent) error
 }
 
 var defaultFactoryRunDeps = factoryRunDeps{
@@ -160,6 +161,19 @@ type factoryRunAutoRequest struct {
 	Args       []string
 	ReportPath string
 	BaseBranch string
+}
+
+type factoryRunProgressEvent struct {
+	Message  string
+	Summary  string
+	Metadata map[string]any
+}
+
+type factoryTimelineEvent struct {
+	EventType string
+	Message   string
+	Summary   string
+	Metadata  map[string]any
 }
 
 type factoryRunPipelineDeps struct {
@@ -257,18 +271,35 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err := createFactoryRunRecord(store, record); err != nil {
 		return err
 	}
+	if err := recordFactoryRunStarted(store, record); err != nil {
+		return err
+	}
 
 	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
 	if err != nil {
 		return err
 	}
+	if err := recordFactoryRunPipelineStarted(store, runningRecord); err != nil {
+		return err
+	}
 
-	return deps.runPipeline(ctx, factoryRunPipelineRequest{
+	pipelineReq := factoryRunPipelineRequest{
 		RunID:   runningRecord.RunID,
 		Request: req,
 		Record:  runningRecord,
 		Store:   store,
-	})
+		RecordProgress: func(event factoryRunProgressEvent) error {
+			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
+		},
+	}
+	if err := deps.runPipeline(ctx, pipelineReq); err != nil {
+		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, deps.now(), err); eventErr != nil {
+			return errors.Join(err, fmt.Errorf("record factory failure event: %w", eventErr))
+		}
+		return err
+	}
+
+	return recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, deps.now())
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
@@ -345,6 +376,92 @@ func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now
 		return factory.RunRecord{}, fmt.Errorf("mark factory run in progress: %w", err)
 	}
 	return record, nil
+}
+
+func recordFactoryRunStarted(store factory.Store, record factory.RunRecord) error {
+	return appendFactoryRunTimelineEvent(store, record.RunID, record.CreatedAt, factoryTimelineEvent{
+		EventType: factory.EventTypeRunCreated,
+		Summary:   "Factory run started",
+		Metadata: map[string]any{
+			"executorMode": record.ExecutorMode,
+			"sourceKind":   record.Source.Kind,
+			"status":       record.Status,
+		},
+	})
+}
+
+func recordFactoryRunPipelineStarted(store factory.Store, record factory.RunRecord) error {
+	return appendFactoryRunTimelineEvent(store, record.RunID, record.UpdatedAt, factoryTimelineEvent{
+		EventType: factory.EventTypeStepStarted,
+		Summary:   "Local compound pipeline started",
+		Metadata: map[string]any{
+			"step":   record.CurrentStep,
+			"status": record.Status,
+		},
+	})
+}
+
+func recordFactoryRunProgress(store factory.Store, runID string, now time.Time, event factoryRunProgressEvent) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeCommandOutputSummary,
+		Message:   event.Message,
+		Summary:   event.Summary,
+		Metadata:  event.Metadata,
+	})
+}
+
+func recordFactoryRunPipelineSucceeded(store factory.Store, runID string, now time.Time) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Local compound pipeline completed",
+		Metadata: map[string]any{
+			"step":   "run",
+			"status": factory.RunStatusSucceeded,
+		},
+	})
+}
+
+func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.Time, pipelineErr error) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Local compound pipeline failed",
+		Metadata: map[string]any{
+			"step":   "run",
+			"status": factory.RunStatusFailed,
+			"error":  pipelineErr.Error(),
+		},
+	})
+}
+
+func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent) error {
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		return fmt.Errorf("load factory timeline %q: %w", runID, err)
+	}
+
+	record := factory.EventRecord{
+		Sequence:  nextFactoryRunEventSequence(events),
+		RunID:     runID,
+		EventType: event.EventType,
+		Timestamp: timestamp.UTC(),
+		Message:   event.Message,
+		Summary:   event.Summary,
+		Metadata:  event.Metadata,
+	}
+	if err := store.AppendEvent(&record); err != nil {
+		return fmt.Errorf("append factory timeline event %q: %w", runID, err)
+	}
+	return nil
+}
+
+func nextFactoryRunEventSequence(events []factory.EventRecord) int64 {
+	var maxSequence int64
+	for _, event := range events {
+		if event.Sequence > maxSequence {
+			maxSequence = event.Sequence
+		}
+	}
+	return maxSequence + 1
 }
 
 func factoryRunSourceFromRequest(req factoryRunRequest) factory.SourceMetadata {
