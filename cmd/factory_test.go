@@ -44,6 +44,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory list",
 				"hal factory list --json",
 				"hal factory status <run-id> --json",
+				"hal factory artifacts <run-id>",
 			},
 		},
 		{
@@ -91,6 +92,20 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			requiredExampleLines: []string{
 				"hal factory status run-20260620-001",
 				"hal factory status run-20260620-001 --json",
+			},
+		},
+		{
+			name: "factory artifacts command",
+			cmd:  factoryArtifactsCmd,
+			requiredLongPhrases: []string{
+				"collected artifacts",
+				"global factory store",
+				"display path",
+				"store-backed path",
+				"summary metadata",
+			},
+			requiredExampleLines: []string{
+				"hal factory artifacts run-20260620-001",
 			},
 		},
 	}
@@ -3007,6 +3022,123 @@ func TestFactoryStatusCommandRegisteredWithJSONFlag(t *testing.T) {
 	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory status missing metadata fields: %v", missing)
+	}
+}
+
+func TestRunFactoryArtifactsListsCollectedArtifacts(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
+	size := int64(2048)
+	createdAt := base.Add(2 * time.Minute)
+	record := testFactoryRunRecord("run-artifact-list", base, base.Add(5*time.Minute))
+	record.Artifacts = []factory.ArtifactReference{
+		{
+			ID:         "status-snapshot",
+			Name:       "status-snapshot",
+			Type:       "json",
+			Path:       "factory/status-snapshot.json",
+			StoredPath: "artifacts/run-artifact-list/status-snapshot.json",
+			SizeBytes:  &size,
+			CreatedAt:  &createdAt,
+			Summary: map[string]any{
+				"snapshotKind": "status",
+				"state":        "auto_active",
+			},
+		},
+		{
+			ID:       "missing-report",
+			Name:     "missing-report",
+			Type:     "markdown",
+			Path:     ".hal/reports/missing.md",
+			Warnings: []string{"optional artifact not found"},
+			Partial:  true,
+			Summary: map[string]any{
+				"missing": true,
+			},
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryArtifactsWithDeps(&buf, record.RunID, factoryArtifactsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryArtifactsWithDeps() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"Run ID: run-artifact-list",
+		"NAME",
+		"status-snapshot",
+		"factory/status-snapshot.json",
+		"artifacts/run-artifact-list/status-snapshot.json",
+		"snapshotKind=\"status\"",
+		"state=\"auto_active\"",
+		"missing-report",
+		".hal/reports/missing.md",
+		"missing=true",
+		"optional artifact not found",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRunFactoryArtifactsMissingRunReturnsError(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	var buf bytes.Buffer
+
+	err := runFactoryArtifactsWithDeps(&buf, "missing-run", factoryArtifactsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err == nil {
+		t.Fatal("runFactoryArtifactsWithDeps() error = nil, want missing-run error")
+	}
+	if !strings.Contains(err.Error(), `factory run "missing-run" not found`) {
+		t.Fatalf("error = %q, want missing-run message", err.Error())
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("missing run should not write output, got %q", buf.String())
+	}
+}
+
+func TestRunFactoryArtifactsEmptyState(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 8, 10, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-no-artifacts", base, base.Add(1*time.Minute))
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryArtifactsWithDeps(&buf, record.RunID, factoryArtifactsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryArtifactsWithDeps() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Run ID: run-no-artifacts") {
+		t.Fatalf("output missing run ID:\n%s", output)
+	}
+	if !strings.Contains(output, "No artifacts collected for factory run run-no-artifacts.") {
+		t.Fatalf("output missing empty-state message:\n%s", output)
+	}
+}
+
+func TestFactoryArtifactsCommandRegistered(t *testing.T) {
+	cmd, err := commandAtPath(Root(), "factory", "artifacts")
+	if err != nil {
+		t.Fatalf("factory artifacts command missing: %v", err)
+	}
+	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
+		t.Fatalf("factory artifacts missing metadata fields: %v", missing)
 	}
 }
 
