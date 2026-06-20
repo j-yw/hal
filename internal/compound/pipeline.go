@@ -1413,6 +1413,12 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	if state.CI == nil {
 		state.CI = &CIState{}
 	}
+	state.CI.PRURL = prURL
+	state.CI.PRNumber = pushResult.PullRequest.Number
+	state.CI.PRTitle = strings.TrimSpace(pushResult.PullRequest.Title)
+	state.CI.PRHeadRef = strings.TrimSpace(pushResult.PullRequest.HeadRef)
+	state.CI.PRBaseRef = strings.TrimSpace(pushResult.PullRequest.BaseRef)
+	state.CI.PRReused = pushResult.PullRequest.Existing
 
 	// 2. Wait for CI checks.
 	p.display.ShowInfo("   Waiting for CI checks...\n")

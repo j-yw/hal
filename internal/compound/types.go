@@ -53,6 +53,12 @@ type CIState struct {
 	Reason       string `json:"reason,omitempty"`
 	FixAttempts  int    `json:"fixAttempts,omitempty"`
 	FixesApplied int    `json:"fixesApplied,omitempty"`
+	PRURL        string `json:"prUrl,omitempty"`
+	PRNumber     int    `json:"prNumber,omitempty"`
+	PRTitle      string `json:"prTitle,omitempty"`
+	PRHeadRef    string `json:"prHeadRef,omitempty"`
+	PRBaseRef    string `json:"prBaseRef,omitempty"`
+	PRReused     bool   `json:"prReused,omitempty"`
 }
 
 // Valid step values for PipelineState.Step.
