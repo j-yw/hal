@@ -480,7 +480,13 @@ func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now 
 
 func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error) (factory.RunRecord, error) {
 	finishedAt := now.UTC()
+	existingFailure := record.Failure
 	failure := newFactoryRunFailureSummary(record.RunID, record.CurrentStep, pipelineErr)
+	if existingFailure != nil && record.ExecutorMode == factory.ExecutorModeSandbox {
+		if command := strings.TrimSpace(existingFailure.SuggestedCommand); command != "" {
+			failure.SuggestedCommand = command
+		}
+	}
 	record.Status = factory.RunStatusFailed
 	record.CurrentStep = failure.Step
 	record.UpdatedAt = finishedAt

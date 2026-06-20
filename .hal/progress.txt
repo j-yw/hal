@@ -11,6 +11,7 @@
 - Sandbox remote execution should carry a structured `factoryRunAutoRequest` from factory dispatch into `factorySandboxExecutorRequest`; build exact provider args with `factorySandboxRemoteAutoArgs` at the sandbox executor boundary and avoid adding env/config pass-through unless explicitly required.
 - Sandbox remote output timeline capture belongs at the sandbox executor boundary: tee provider exec output to the user-facing writer, split complete lines, sanitize with the sandbox redactor, and persist `command_output_summary` events tagged with `source=remote_sandbox`.
 - Sandbox executor remote lifecycle events should be appended through `factorySandboxTimelineWriter` so start/output/completion events share one sequence counter and consistent `source=remote_sandbox` metadata before the outer factory runner records terminal success/failure.
+- Sandbox remote execution failures should be sanitized and saved by `runFactorySandboxExecutorWithDeps` before returning; the outer factory runner reloads the durable record for artifacts and should preserve existing sandbox SSH handoff commands.
 
 ---
 
@@ -115,4 +116,15 @@
   - Keep remote sandbox start/output/completion timeline writes behind `factorySandboxTimelineWriter` so sequence numbers stay coherent across injected append-event fakes and durable stores.
   - Sandbox executor success should record remote lifecycle details, but the outer `runFactoryRunWithDeps` success path should remain responsible for artifacts, final `RunStatusSucceeded`, `FinishedAt`, and local result rendering.
   - Sandbox remote output is intentionally streamed to the user-facing writer in human mode; tests that assert final JSON should avoid mixing synthetic remote log bytes into the JSON buffer unless that contract is changed separately.
+---
+## 2026-06-21 07:51 CST - US-010
+- Persisted remote sandbox execution failures with sandbox name, provider, status, safe connection metadata, SSH/cleanup handoff commands, sanitized failure message, and a remote-sandbox failure timeline event.
+- Preserved `hal sandbox ssh <name>` as the user-facing suggested command when the outer factory runner records the terminal failed run after sandbox execution returns an error.
+- Added regression tests for sanitized remote provider errors, sanitized remote output failure events, saved sandbox failure handoff metadata, and human failure output containing the sandbox SSH command.
+- Files changed: `cmd/factory_sandbox_executor.go`, `cmd/factory_sandbox_executor_test.go`, `cmd/factory.go`, `cmd/factory_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: focused `go test ./cmd -run 'TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff|TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand|TestRunFactorySandboxExecutorWithDeps|TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome'`, `make test`, and `make vet` passed.
+- **Learnings for future iterations:**
+  - Remote sandbox provider errors can include connection details, so sanitize error text before saving failure summaries, timeline messages, or returning wrapped executor errors.
+  - `runFactoryRunWithDeps` reloads the sandbox executor's saved record when recording artifacts on failure, so executor-persisted sandbox metadata survives the outer terminal failure path.
+  - Preserve sandbox SSH handoff commands across `markFactoryRunFailed`; the factory status command remains available as `nextAction`, while the failure suggestion should support immediate remote diagnosis.
 ---

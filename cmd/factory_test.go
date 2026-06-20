@@ -989,6 +989,88 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	}
 }
 
+func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 2, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-failure", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory-sandbox-executor", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-remote"
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:           "factory-remote",
+				Provider:       "daytona",
+				Status:         sandbox.StatusRunning,
+				SSHCommand:     "hal sandbox ssh factory-remote",
+				CleanupCommand: "hal sandbox delete factory-remote",
+				Handoff:        "Inspect sandbox with `hal sandbox ssh factory-remote`.",
+			}
+			record.Status = factory.RunStatusFailed
+			record.CurrentStep = "run"
+			record.Failure = &factory.FailureSummary{
+				Step:             "run",
+				Category:         factory.FailureCategoryPipeline,
+				Message:          "remote pipeline failed",
+				Recoverable:      true,
+				SuggestedCommand: "hal sandbox ssh factory-remote",
+			}
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			return factorySandboxTestError("execute factory sandbox command: remote pipeline failed")
+		},
+	})
+	if err == nil {
+		t.Fatalf("runFactoryRunWithDeps() error = nil, want sandbox failure")
+	}
+
+	record, loadErr := store.LoadRun("run-sandbox-failure")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if record.Failure == nil {
+		t.Fatalf("failure summary = nil")
+	}
+	if record.Failure.SuggestedCommand != "hal sandbox ssh factory-remote" {
+		t.Fatalf("suggested command = %q", record.Failure.SuggestedCommand)
+	}
+	if !strings.Contains(buf.String(), "Suggested command: hal sandbox ssh factory-remote") {
+		t.Fatalf("output = %q, want sandbox ssh handoff", buf.String())
+	}
+}
+
 func TestRunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows(t *testing.T) {
 	tests := []struct {
 		name       string

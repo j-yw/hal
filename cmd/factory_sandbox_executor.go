@@ -185,7 +185,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if flushErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
 		}
-		return fmt.Errorf("execute factory sandbox command: %w", runErr)
+		sanitizedErr := factorySandboxSanitizedError(target, runErr)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", fmt.Errorf("%s", sanitizedErr))
+		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
 	}
 	if flushErr != nil {
 		return fmt.Errorf("record remote sandbox output: %w", flushErr)
@@ -416,12 +418,13 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	record.CurrentStep = step
 	record.UpdatedAt = failedAt
 	record.FinishedAt = &failedAt
+	message := factorySandboxSanitizedError(target, failureErr)
 	failure := factory.FailureSummary{
 		Step:             step,
 		Category:         factory.FailureCategoryPipeline,
-		Message:          failureErr.Error(),
+		Message:          message,
 		Recoverable:      true,
-		SuggestedCommand: factoryRunInspectCommand(record.RunID),
+		SuggestedCommand: factorySandboxFailureSuggestedCommand(record),
 	}
 	record.Failure = &failure
 	if err := deps.saveRun(store, record); err != nil {
@@ -431,13 +434,45 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 		RunID:     record.RunID,
 		EventType: factory.EventTypeFailureClassification,
 		Timestamp: failedAt,
+		Message:   message,
 		Summary:   "Sandbox factory executor failed",
 		Metadata: map[string]any{
 			"step":        step,
 			"category":    failure.Category,
 			"recoverable": failure.Recoverable,
+			"source":      "remote_sandbox",
 		},
 	})
+}
+
+func factorySandboxSanitizedError(target *sandbox.SandboxState, err error) string {
+	if err == nil {
+		return "sandbox factory executor failed"
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		message = "sandbox factory executor failed"
+	}
+	if target == nil {
+		return message
+	}
+	redactor := sandboxRedactor(false, nil, target)
+	return redactor.Redact(message)
+}
+
+func factorySandboxFailureSuggestedCommand(record *factory.RunRecord) string {
+	if record == nil {
+		return ""
+	}
+	if record.Sandbox != nil {
+		if command := strings.TrimSpace(record.Sandbox.SSHCommand); command != "" {
+			return command
+		}
+	}
+	if name := strings.TrimSpace(record.SandboxName); name != "" {
+		return fmt.Sprintf("hal sandbox ssh %s", name)
+	}
+	return factoryRunInspectCommand(record.RunID)
 }
 
 func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *factory.SandboxMetadata) {

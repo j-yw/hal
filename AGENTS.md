@@ -58,6 +58,7 @@
 - Sandbox remote execution should pass a structured `factoryRunAutoRequest` through `factorySandboxExecutorRequest`; build exact provider args with `factorySandboxRemoteAutoArgs` at the sandbox executor boundary and avoid env/config pass-through unless a redaction-safe contract explicitly requires it.
 - Sandbox remote output timeline capture belongs at the sandbox executor boundary: wrap the provider exec writer, tee to user output, split complete lines, sanitize with the sandbox redactor, and persist `command_output_summary` events tagged with `source=remote_sandbox`.
 - Sandbox executor remote lifecycle events should be appended through `factorySandboxTimelineWriter` so start/output/completion events share one sequence counter and consistent `source=remote_sandbox` metadata before the outer factory runner records terminal success/failure.
+- Sandbox remote execution failures should be sanitized and saved inside `runFactorySandboxExecutorWithDeps` before returning to the outer factory runner; `markFactoryRunFailed` should preserve existing sandbox SSH handoff commands while the status inspection command remains available through `nextAction`.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
