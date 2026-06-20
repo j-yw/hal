@@ -7,6 +7,7 @@
 - Queue read-modify-write paths should use `Store.UpdateQueue`; it holds `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local queue workers preserve all updates.
 - Queue commands should use `Store.EnqueueQueueEntry`, `Store.ListQueue`, and `Store.ClaimNextQueueEntry` for FIFO behavior; tests can inject `QueueOperationOptions` for deterministic timestamps and queue IDs.
 - Queue lifecycle transitions should go through Store helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained queue history stay consistent.
+- Factory queue command registration lives in `cmd/factory_queue.go`; wire the command group from `cmd/factory.go`, update `cmd/factory_test.go` metadata/link checks, and run `make docs-cli` when changing CLI docs.
 
 ---
 ## 2026-06-21 04:50:06 CST - US-001
@@ -60,4 +61,15 @@
   - Terminal queue entries are retained in `queue.json`; worker selection should continue to filter only `QueueStatusQueued`.
   - Browser verification skipped because this story only changes backend queue lifecycle storage.
   - Checks run: `go test -timeout=120s ./internal/factory`, `make test`, `make vet`. `make lint` skipped because `golangci-lint` is not installed locally.
+---
+## 2026-06-21 05:23:51 CST - US-006
+- Registered the `hal factory queue` command group with `add`, `list`, and `work` subcommands, including help text, examples, and `--json` flags tied to the documented queue contracts.
+- Added focused factory command metadata and generated CLI-reference link coverage for the new queue command pages.
+- Regenerated CLI markdown docs for the factory queue command group.
+- Files changed: `cmd/factory.go`, `cmd/factory_queue.go`, `cmd/factory_test.go`, `docs/cli/hal_factory.md`, `docs/cli/hal_factory_queue*.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Factory command-family additions need both focused help metadata assertions in `cmd/factory_test.go` and regenerated `docs/cli` pages; `make docs-check` catches stale or missing pages.
+  - Queue leaf command behavior is still intentionally stubbed; future add/list/work stories should replace `runFactoryQueue*` implementations while preserving the registered command and flag contracts.
+  - Browser verification skipped because this story only changes CLI command registration and docs.
+  - Checks run: `go test -timeout=120s ./cmd -run 'TestFactoryCommandHelpMetadata|TestCommandFamiliesHaveCompleteMetadata|TestFactoryGeneratedCLIReferenceLinks|TestCoreCommandsHaveCompleteMetadata'`, `go test -timeout=120s ./...`, `go vet ./...`, `make docs-check`. `golangci-lint` skipped because it is not installed locally.
 ---

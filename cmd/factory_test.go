@@ -35,6 +35,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"global factory store",
 				"separate from per-project",
 				"Factory run wraps the local auto pipeline",
+				"Queue commands manage",
 			},
 			requiredExampleLines: []string{
 				"hal factory run .hal/prd-feature.md",
@@ -42,6 +43,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory list",
 				"hal factory list --json",
 				"hal factory status <run-id> --json",
+				"hal factory queue list --json",
 			},
 		},
 		{
@@ -89,6 +91,64 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			requiredExampleLines: []string{
 				"hal factory status run-20260620-001",
 				"hal factory status run-20260620-001 --json",
+			},
+		},
+		{
+			name: "factory queue command",
+			cmd:  factoryQueueCmd,
+			requiredLongPhrases: []string{
+				"global factory queue",
+				"enqueue existing factory runs",
+				"claim one queued run",
+				"survives CLI exits and restarts",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue add run-20260620-001 local",
+				"hal factory queue list --json",
+				"hal factory queue work --json",
+			},
+		},
+		{
+			name: "factory queue add command",
+			cmd:  factoryQueueAddCmd,
+			requiredLongPhrases: []string{
+				"existing factory run",
+				"executor mode",
+				"--json",
+				"factory-queue-add-v1",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue add run-20260620-001 local",
+				"hal factory queue add run-20260620-001 local --json",
+			},
+		},
+		{
+			name: "factory queue list command",
+			cmd:  factoryQueueListCmd,
+			requiredLongPhrases: []string{
+				"global factory store",
+				"--json",
+				"factory-queue-list-v1",
+				"queued, claimed, and failed entries",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue list",
+				"hal factory queue list --json",
+			},
+		},
+		{
+			name: "factory queue work command",
+			cmd:  factoryQueueWorkCmd,
+			requiredLongPhrases: []string{
+				"at most one queued factory run",
+				"atomically claim",
+				"--json",
+				"factory-queue-work-v1",
+				"no-work response",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue work",
+				"hal factory queue work --json",
 			},
 		},
 	}
@@ -1913,6 +1973,38 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 				"[hal factory run](hal_factory_run.md)",
 				"[hal factory list](hal_factory_list.md)",
 				"[hal factory status](hal_factory_status.md)",
+				"[hal factory queue](hal_factory_queue.md)",
+			},
+		},
+		{
+			name: "factory queue cli reference links parent and subcommands",
+			path: "../docs/cli/hal_factory_queue.md",
+			wantFragments: []string{
+				"[hal factory](hal_factory.md)",
+				"[hal factory queue add](hal_factory_queue_add.md)",
+				"[hal factory queue list](hal_factory_queue_list.md)",
+				"[hal factory queue work](hal_factory_queue_work.md)",
+			},
+		},
+		{
+			name: "factory queue add cli reference links parent",
+			path: "../docs/cli/hal_factory_queue_add.md",
+			wantFragments: []string{
+				"[hal factory queue](hal_factory_queue.md)",
+			},
+		},
+		{
+			name: "factory queue list cli reference links parent",
+			path: "../docs/cli/hal_factory_queue_list.md",
+			wantFragments: []string{
+				"[hal factory queue](hal_factory_queue.md)",
+			},
+		},
+		{
+			name: "factory queue work cli reference links parent",
+			path: "../docs/cli/hal_factory_queue_work.md",
+			wantFragments: []string{
+				"[hal factory queue](hal_factory_queue.md)",
 			},
 		},
 		{
