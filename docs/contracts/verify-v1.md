@@ -1,7 +1,7 @@
 # Verify Contract v1
 
-**Command:** `hal verify --json`  
-**Contract Version:** `verify-v1`  
+**Command:** `hal verify --json`
+**Contract Version:** `verify-v1`
 **Stability:** Stable. New fields may be added; existing fields will not be removed or renamed.
 
 The verify contract reports configured project verification checks in a machine-readable format. Shell-command checks use the `shell` adapter and include command metadata, timing, gate status, and output artifact references.
