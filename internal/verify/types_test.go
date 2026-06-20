@@ -3,6 +3,7 @@ package verify
 import (
 	"encoding/json"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -87,12 +88,102 @@ func TestResultTypesHaveJSONTags(t *testing.T) {
 	}
 }
 
-func TestResultJSONFieldsAndRoundTrip(t *testing.T) {
+func TestResultJSONEmitsExactFieldContracts(t *testing.T) {
+	original := verifyResultFixture()
+
+	raw := marshalRawObject(t, original)
+
+	requireExactJSONKeys(t, "result", raw, resultJSONKeys)
+	summary, ok := raw["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary should be an object, got %T", raw["summary"])
+	}
+	requireExactJSONKeys(t, "summary", summary, summaryJSONKeys)
+
+	check := firstObjectInArray(t, raw, "checks")
+	requireExactJSONKeys(t, "checks[0]", check, checkResultJSONKeys)
+
+	warning := firstObjectInArray(t, raw, "warnings")
+	requireExactJSONKeys(t, "warnings[0]", warning, warningJSONKeys)
+
+	artifact := firstObjectInArray(t, raw, "artifacts")
+	requireExactJSONKeys(t, "artifacts[0]", artifact, artifactReferenceJSONKeys)
+}
+
+func TestResultJSONEmitsRequiredFieldsWhenZeroValued(t *testing.T) {
+	raw := marshalRawObject(t, Result{
+		Summary:   Summary{},
+		Checks:    []CheckResult{{}},
+		Warnings:  []Warning{{}},
+		Artifacts: []ArtifactReference{{}},
+	})
+
+	requireExactJSONKeys(t, "result", raw, resultJSONKeys)
+	summary, ok := raw["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary should be an object, got %T", raw["summary"])
+	}
+	requireExactJSONKeys(t, "summary", summary, summaryJSONKeys)
+
+	check := firstObjectInArray(t, raw, "checks")
+	requireExactJSONKeys(t, "checks[0]", check, checkResultJSONKeys)
+
+	warning := firstObjectInArray(t, raw, "warnings")
+	requireExactJSONKeys(t, "warnings[0]", warning, warningJSONKeys)
+
+	artifact := firstObjectInArray(t, raw, "artifacts")
+	requireExactJSONKeys(t, "artifacts[0]", artifact, artifactReferenceJSONKeys)
+}
+
+func TestResultJSONRoundTrip(t *testing.T) {
+	original := verifyResultFixture()
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded Result
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+var resultJSONKeys = []string{"schemaVersion", "generatedAt", "status", "summary", "checks", "warnings", "artifacts"}
+
+var summaryJSONKeys = []string{"total", "passed", "failed", "timedOut", "missing", "skipped", "warnings"}
+
+var checkResultJSONKeys = []string{
+	"id",
+	"name",
+	"adapter",
+	"status",
+	"required",
+	"command",
+	"workDir",
+	"timeoutSeconds",
+	"startedAt",
+	"finishedAt",
+	"durationMs",
+	"exitCode",
+	"stdoutArtifact",
+	"stderrArtifact",
+	"message",
+}
+
+var warningJSONKeys = []string{"checkId", "status", "message"}
+
+var artifactReferenceJSONKeys = []string{"checkId", "kind", "path"}
+
+func verifyResultFixture() Result {
 	startedAt := time.Date(2026, time.June, 20, 12, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(2 * time.Second)
 	generatedAt := finishedAt.Add(100 * time.Millisecond)
 
-	original := Result{
+	return Result{
 		SchemaVersion: SchemaVersion,
 		GeneratedAt:   generatedAt,
 		Status:        StatusWarn,
@@ -139,8 +230,12 @@ func TestResultJSONFieldsAndRoundTrip(t *testing.T) {
 			},
 		},
 	}
+}
 
-	data, err := json.Marshal(original)
+func marshalRawObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+
+	data, err := json.Marshal(value)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
@@ -149,96 +244,51 @@ func TestResultJSONFieldsAndRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
+	return raw
+}
 
-	for _, key := range []string{"schemaVersion", "generatedAt", "status", "summary", "checks", "warnings", "artifacts"} {
-		if _, ok := raw[key]; !ok {
-			t.Errorf("missing result JSON field %q", key)
+func firstObjectInArray(t *testing.T, raw map[string]any, field string) map[string]any {
+	t.Helper()
+
+	items, ok := raw[field].([]any)
+	if !ok {
+		t.Fatalf("%s should be an array, got %T", field, raw[field])
+	}
+	if len(items) == 0 {
+		t.Fatalf("%s should include at least one item", field)
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("%s[0] should be an object, got %T", field, items[0])
+	}
+	return item
+}
+
+func requireExactJSONKeys(t *testing.T, label string, got map[string]any, want []string) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("%s JSON keys = %v, want exactly %v", label, sortedJSONKeys(got), sortedStrings(want))
+	}
+
+	for _, key := range want {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("%s missing JSON field %q; keys = %v", label, key, sortedJSONKeys(got))
 		}
 	}
+}
 
-	summary, ok := raw["summary"].(map[string]any)
-	if !ok {
-		t.Fatalf("summary should be an object, got %T", raw["summary"])
+func sortedJSONKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
 	}
-	for _, key := range []string{"total", "passed", "failed", "timedOut", "missing", "skipped", "warnings"} {
-		if _, ok := summary[key]; !ok {
-			t.Errorf("missing summary JSON field %q", key)
-		}
-	}
+	sort.Strings(keys)
+	return keys
+}
 
-	checks, ok := raw["checks"].([]any)
-	if !ok {
-		t.Fatalf("checks should be an array, got %T", raw["checks"])
-	}
-	if len(checks) != 1 {
-		t.Fatalf("checks length = %d, want 1", len(checks))
-	}
-
-	check, ok := checks[0].(map[string]any)
-	if !ok {
-		t.Fatalf("checks[0] should be an object, got %T", checks[0])
-	}
-	for _, key := range []string{
-		"id",
-		"name",
-		"adapter",
-		"status",
-		"required",
-		"command",
-		"workDir",
-		"timeoutSeconds",
-		"startedAt",
-		"finishedAt",
-		"durationMs",
-		"exitCode",
-		"stdoutArtifact",
-		"stderrArtifact",
-		"message",
-	} {
-		if _, ok := check[key]; !ok {
-			t.Errorf("missing check JSON field %q", key)
-		}
-	}
-
-	warnings, ok := raw["warnings"].([]any)
-	if !ok {
-		t.Fatalf("warnings should be an array, got %T", raw["warnings"])
-	}
-	if len(warnings) != 1 {
-		t.Fatalf("warnings length = %d, want 1", len(warnings))
-	}
-	warning, ok := warnings[0].(map[string]any)
-	if !ok {
-		t.Fatalf("warnings[0] should be an object, got %T", warnings[0])
-	}
-	for _, key := range []string{"checkId", "status", "message"} {
-		if _, ok := warning[key]; !ok {
-			t.Errorf("missing warning JSON field %q", key)
-		}
-	}
-
-	artifacts, ok := raw["artifacts"].([]any)
-	if !ok {
-		t.Fatalf("artifacts should be an array, got %T", raw["artifacts"])
-	}
-	if len(artifacts) != 1 {
-		t.Fatalf("artifacts length = %d, want 1", len(artifacts))
-	}
-	artifact, ok := artifacts[0].(map[string]any)
-	if !ok {
-		t.Fatalf("artifacts[0] should be an object, got %T", artifacts[0])
-	}
-	for _, key := range []string{"checkId", "kind", "path"} {
-		if _, ok := artifact[key]; !ok {
-			t.Errorf("missing artifact JSON field %q", key)
-		}
-	}
-
-	var decoded Result
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
-	}
-	if !reflect.DeepEqual(decoded, original) {
-		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
-	}
+func sortedStrings(values []string) []string {
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+	return sorted
 }
