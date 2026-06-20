@@ -9,6 +9,7 @@
 - Future shared queue/run lifecycle ADR sections should document leases, heartbeats, cancellation, stale recovery, concurrency, and idempotency as architecture expectations without exposing backend attempt IDs, idempotency keys, or lease internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 - Future shared artifact/audit ADR sections should cover PRDs, reports, logs, review results, run output, audit decisions, state transitions, and data ownership/access expectations without exposing storage keys, backend IDs, role graphs, or permission evaluation internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 - Future policy inheritance ADR sections should define precedence from built-in defaults through organization, project, run, and local overrides while keeping policy evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
+- Future migration strategy ADR sections should phase local `.hal/` state toward shared control-plane authority through shadowing, artifact mirroring, opt-in shared queues, and opt-in shared run coordination; preserve current local CLI behavior early and list compatibility gates/open questions before introducing hosted or networked behavior.
 
 ---
 
@@ -82,4 +83,13 @@
   - Policy inheritance should be described as control-plane architecture and not as new CLI JSON contract fields unless a future `docs/contracts/` update adds them.
   - Local overrides are appropriate for developer ergonomics, but ADR wording should keep shared authorization, artifact access, retention, lease ownership, and required gates under control-plane policy.
   - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
+---
+
+## 2026-06-20 23:52 CST - US-009
+- Added the migration strategy section to the factory control plane ADR, covering local file-state migration, local queue coordination migration, preservation of existing CLI behavior, a phased plan, compatibility gates, and open questions for future implementation PRDs.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Migration strategy sections should keep local `.hal/` files authoritative for current CLI behavior until a future implementation PRD and contract update deliberately move responsibility to shared state.
+  - Shared queue migration should be documented separately from artifact mirroring because queue authority depends on leases, heartbeats, stale recovery, RBAC, audit, and idempotency being implemented and tested.
+  - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` was skipped because `golangci-lint` was unavailable.
 ---

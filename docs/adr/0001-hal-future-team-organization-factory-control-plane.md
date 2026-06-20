@@ -364,6 +364,76 @@ implementations should make conflict handling predictable, auditable, and
 recoverable without requiring users or agents to inspect hidden backend policy
 graphs or manually edit local `.hal/` runtime files.
 
+## Migration Strategy
+
+Migration from local Hal workflows to a shared control plane should be phased,
+opt-in, and compatibility-gated. The existing local `.hal/` runtime files remain
+authoritative for current CLI behavior until a future implementation PRD,
+contract update, and migration plan deliberately move a specific responsibility
+to shared state. Early migration phases should add projections, mirrors, and
+diagnostics around local workflows rather than replacing the local source of
+truth.
+
+Local file state should migrate by introducing shared records as durable copies
+of existing artifacts before any hosted service becomes authoritative. PRDs,
+progress logs, reports, review outputs, run output, archive metadata, and
+auto-state summaries can be uploaded, mirrored, or referenced by future
+commands, but local commands should continue to read and write the existing
+files in local mode. Shared records should carry provenance that ties them back
+to the worktree, branch, commit range, actor, and CLI version that produced the
+local artifact.
+
+Local queue coordination should migrate separately from artifact sharing. The
+first shared queue phase should allow authorized users to submit or inspect
+queue items without requiring `hal auto`, `hal status`, `hal doctor`,
+`hal continue`, or review loops to depend on networked coordination. A later
+opt-in phase can let a project claim shared queue items and project them into a
+local worktree. Only after lease, heartbeat, cancellation, stale recovery,
+idempotency, RBAC, and audit behavior are implemented and tested should the
+shared queue become authoritative for hosted runs.
+
+Existing CLI behavior must be preserved during early migration phases. Local
+mode should remain available, existing command meanings should stay stable, and
+machine-readable fields documented under `docs/contracts/` should not be
+renamed or repurposed to expose hosted implementation details. New hosted or
+networked behavior should appear as explicit opt-in configuration, new commands,
+or additive optional contract fields with documentation and tests.
+
+Future implementation PRDs should use a phased plan:
+
+1. Establish the local baseline by keeping current CLI contracts, local `.hal/`
+   state, and documentation-only architecture references unchanged.
+2. Add read-only control-plane discovery and diagnostics so projects can verify
+   organization, project, auth, and policy readiness without changing local
+   execution.
+3. Add artifact mirroring for PRDs, reports, logs, review results, run output,
+   and audit records while preserving local files as the runtime source of
+   truth.
+4. Add opt-in shared queue submission and inspection for projects that have
+   passed authorization, policy, retention, and audit readiness checks.
+5. Add opt-in shared run coordination with leases, heartbeats, cancellation,
+   stale recovery, and idempotent terminal transitions while treating local
+   auto-state as a projection of the shared run.
+6. Consider hosted or networked behavior as a default only after migration,
+   rollback, offline fallback, and contract compatibility gates have passed.
+
+Compatibility gates should be explicit before hosted or networked behavior is
+introduced. At minimum, future PRDs should require updated contract
+documentation and field-locking tests for any JSON surface changes; migration
+dry runs and rollback paths for local state; local/offline fallback behavior;
+authorization, retention, and audit tests; clear handling for local/shared state
+divergence; and operator documentation that explains how a project opts in,
+opts out, or recovers from a failed migration.
+
+Open questions for future implementation PRDs include which identity provider
+and organization model should back user membership, how projects map to
+repositories and worktrees, which artifacts need retention or redaction
+controls first, how much historical `.hal/archive/` state should be backfilled,
+what conflict response is best when local and shared run state diverge, which
+CLI commands should own shared queue submission, and when control-plane
+identifiers should become documented CLI contract fields rather than hidden
+backend details.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared
