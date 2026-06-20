@@ -38,6 +38,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-run-v1", "../docs/contracts/factory-run-v1.md"},
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
+		{"factory-artifacts-v1", "../docs/contracts/factory-artifacts-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
 		{"verify-v1", "../docs/contracts/verify-v1.md"},
 	}
@@ -491,6 +492,23 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			},
 		},
 		{
+			name:          "factory-artifacts-v1",
+			path:          "../docs/contracts/factory-artifacts-v1.md",
+			contractValue: FactoryArtifactsContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "artifacts", "warnings", "summary",
+				"id", "name", "type", "path", "storedPath", "sizeBytes", "createdAt",
+				"partial", "total",
+			},
+			requiredValues: []string{
+				"factory-artifacts-v1",
+				"json",
+				"markdown",
+				"text",
+				"[redacted]",
+			},
+		},
+		{
 			name:          "factory-timeline-v1",
 			path:          "../docs/contracts/factory-timeline-v1.md",
 			contractValue: "factory-status-v1",
@@ -571,6 +589,25 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if len(resp.Run.Verification.Artifacts) == 0 {
 			t.Fatal("factory status example should include verification artifact references")
+		}
+	})
+
+	t.Run("factory artifacts example", func(t *testing.T) {
+		var resp FactoryArtifactsResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-artifacts-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "artifacts", "warnings", "summary"})
+		if resp.ContractVersion != FactoryArtifactsContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryArtifactsContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory artifacts example should include a run ID")
+		}
+		if len(resp.Artifacts) == 0 {
+			t.Fatal("factory artifacts example should include artifacts")
+		}
+		if resp.Summary.Total != len(resp.Artifacts) {
+			t.Fatalf("summary.total = %d, want artifacts len %d", resp.Summary.Total, len(resp.Artifacts))
 		}
 	})
 

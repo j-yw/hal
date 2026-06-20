@@ -29,13 +29,15 @@ import (
 )
 
 const (
-	FactoryRunContractVersion    = "factory-run-v1"
-	FactoryListContractVersion   = "factory-list-v1"
-	FactoryStatusContractVersion = "factory-status-v1"
+	FactoryRunContractVersion       = "factory-run-v1"
+	FactoryListContractVersion      = "factory-list-v1"
+	FactoryStatusContractVersion    = "factory-status-v1"
+	FactoryArtifactsContractVersion = "factory-artifacts-v1"
 )
 
 var factoryListJSONFlag bool
 var factoryStatusJSONFlag bool
+var factoryArtifactsJSONFlag bool
 var factoryRunReportFlag string
 var factoryRunBaseFlag string
 var factoryRunJSONFlag bool
@@ -110,10 +112,12 @@ var factoryArtifactsCmd = &cobra.Command{
 	Long: `List collected artifacts for one stored factory run from the global factory store.
 
 The output includes each artifact's display path, store-backed path when
-available, type, warning state, and summary metadata. Use this command when
-you need run evidence paths without opening the stored run JSON manually.`,
-	Example: `  hal factory artifacts run-20260620-001`,
-	RunE:    runFactoryArtifacts,
+available, type, warning state, and summary metadata. Use --json for
+machine-readable output following the factory-artifacts-v1 contract. JSON
+output omits raw source paths and remote URLs from artifact records.`,
+	Example: `  hal factory artifacts run-20260620-001
+  hal factory artifacts run-20260620-001 --json`,
+	RunE: runFactoryArtifacts,
 }
 
 func init() {
@@ -122,6 +126,7 @@ func init() {
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
+	factoryArtifactsCmd.Flags().BoolVar(&factoryArtifactsJSONFlag, "json", false, "Output machine-readable JSON (factory-artifacts-v1 contract)")
 	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
@@ -259,6 +264,40 @@ type FactoryStatusResponse struct {
 	ContractVersion string                `json:"contractVersion"`
 	Run             factory.RunRecord     `json:"run"`
 	Timeline        []factory.EventRecord `json:"timeline"`
+}
+
+// FactoryArtifactsResponse is the machine-readable JSON output for
+// hal factory artifacts <run-id> --json.
+type FactoryArtifactsResponse struct {
+	ContractVersion string                   `json:"contractVersion"`
+	RunID           string                   `json:"runId"`
+	Artifacts       []FactoryArtifactSummary `json:"artifacts"`
+	Warnings        []string                 `json:"warnings"`
+	Summary         FactoryArtifactsSummary  `json:"summary"`
+}
+
+// FactoryArtifactSummary is the safe artifact list surface for one stored
+// artifact. It intentionally omits sourcePath and url because those fields can
+// contain workspace-local paths or uncontracted network addresses.
+type FactoryArtifactSummary struct {
+	ID         string         `json:"id,omitempty"`
+	Name       string         `json:"name"`
+	Type       string         `json:"type"`
+	Path       string         `json:"path,omitempty"`
+	StoredPath string         `json:"storedPath,omitempty"`
+	SizeBytes  *int64         `json:"sizeBytes,omitempty"`
+	CreatedAt  *time.Time     `json:"createdAt,omitempty"`
+	Summary    map[string]any `json:"summary,omitempty"`
+	Warnings   []string       `json:"warnings,omitempty"`
+	Partial    bool           `json:"partial,omitempty"`
+}
+
+// FactoryArtifactsSummary captures aggregate artifact counts for the JSON
+// surface.
+type FactoryArtifactsSummary struct {
+	Total    int `json:"total"`
+	Partial  int `json:"partial"`
+	Warnings int `json:"warnings"`
 }
 
 // FactoryRunSummary is the list surface for one factory run. It intentionally
@@ -2167,15 +2206,23 @@ func runFactoryStatusWithDeps(out io.Writer, runID string, jsonMode bool, deps f
 
 func runFactoryArtifacts(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
+	jsonMode := factoryArtifactsJSONFlag
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
 	}
 
-	return runFactoryArtifactsWithDeps(out, args[0], defaultFactoryArtifactsDeps)
+	return runFactoryArtifactsWithDeps(out, args[0], jsonMode, defaultFactoryArtifactsDeps)
 }
 
-func runFactoryArtifactsWithDeps(out io.Writer, runID string, deps factoryArtifactsDeps) error {
+func runFactoryArtifactsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryArtifactsDeps) error {
 	if out == nil {
 		out = io.Discard
 	}
@@ -2195,6 +2242,9 @@ func runFactoryArtifactsWithDeps(out io.Writer, runID string, deps factoryArtifa
 		return fmt.Errorf("load factory run %q: %w", runID, err)
 	}
 
+	if jsonMode {
+		return renderFactoryArtifactsJSON(out, *record)
+	}
 	renderFactoryArtifactsTable(out, *record)
 	return nil
 }
@@ -2229,6 +2279,69 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func renderFactoryArtifactsJSON(out io.Writer, record factory.RunRecord) error {
+	resp := newFactoryArtifactsResponse(record)
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory artifacts: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func newFactoryArtifactsResponse(record factory.RunRecord) FactoryArtifactsResponse {
+	artifacts := make([]FactoryArtifactSummary, 0, len(record.Artifacts))
+	warningSet := map[string]bool{}
+	partialCount := 0
+	warningCount := 0
+
+	for _, artifact := range record.Artifacts {
+		entry := FactoryArtifactSummary{
+			ID:         strings.TrimSpace(artifact.ID),
+			Name:       strings.TrimSpace(artifact.Name),
+			Type:       strings.TrimSpace(artifact.Type),
+			Path:       strings.TrimSpace(artifact.Path),
+			StoredPath: strings.TrimSpace(artifact.StoredPath),
+			SizeBytes:  artifact.SizeBytes,
+			CreatedAt:  artifact.CreatedAt,
+			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
+			Warnings:   sanitizeFactoryArtifactWarnings(artifact.Warnings),
+			Partial:    artifact.Partial,
+		}
+		if entry.Path == "" && entry.StoredPath == "" && artifact.URL != "" {
+			entry.Path = "[redacted]"
+		}
+		if entry.Partial {
+			partialCount++
+		}
+		warningCount += len(entry.Warnings)
+		for _, warning := range entry.Warnings {
+			if warning != "" {
+				warningSet[warning] = true
+			}
+		}
+		artifacts = append(artifacts, entry)
+	}
+
+	warnings := make([]string, 0, len(warningSet))
+	for warning := range warningSet {
+		warnings = append(warnings, warning)
+	}
+	sort.Strings(warnings)
+
+	return FactoryArtifactsResponse{
+		ContractVersion: FactoryArtifactsContractVersion,
+		RunID:           record.RunID,
+		Artifacts:       artifacts,
+		Warnings:        warnings,
+		Summary: FactoryArtifactsSummary{
+			Total:    len(artifacts),
+			Partial:  partialCount,
+			Warnings: warningCount,
+		},
+	}
 }
 
 func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, jsonMode bool) error {
@@ -2380,6 +2493,132 @@ func formatFactoryArtifactWarnings(artifact factory.ArtifactReference) string {
 		return "-"
 	}
 	return strings.Join(warnings, "; ")
+}
+
+func sanitizeFactoryArtifactSummary(summary map[string]any) map[string]any {
+	if len(summary) == 0 {
+		return nil
+	}
+	safe := make(map[string]any, len(summary))
+	for key, value := range summary {
+		safe[key] = sanitizeFactoryArtifactValue(key, value)
+	}
+	return safe
+}
+
+func sanitizeFactoryArtifactWarnings(warnings []string) []string {
+	if len(warnings) == 0 {
+		return nil
+	}
+	safe := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		warning = strings.TrimSpace(warning)
+		if warning == "" {
+			continue
+		}
+		if factoryArtifactStringNeedsRedaction(warning) {
+			warning = "[redacted]"
+		}
+		safe = append(safe, warning)
+	}
+	if len(safe) == 0 {
+		return nil
+	}
+	return safe
+}
+
+func sanitizeFactoryArtifactValue(key string, value any) any {
+	if factoryArtifactSecretKey(key) {
+		return "[redacted]"
+	}
+	switch v := value.(type) {
+	case string:
+		if factoryArtifactStringNeedsRedaction(v) {
+			return "[redacted]"
+		}
+		return v
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, sanitizeFactoryArtifactValue("", item))
+		}
+		return out
+	case map[string]any:
+		return sanitizeFactoryArtifactSummary(v)
+	case map[string]string:
+		out := make(map[string]any, len(v))
+		for itemKey, itemValue := range v {
+			out[itemKey] = sanitizeFactoryArtifactValue(itemKey, itemValue)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func factoryArtifactSecretKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	secretFragments := []string{
+		"token",
+		"secret",
+		"password",
+		"passwd",
+		"credential",
+		"private_key",
+		"private-key",
+		"api_key",
+		"api-key",
+		"access_key",
+		"access-key",
+		"auth",
+	}
+	for _, fragment := range secretFragments {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return key == "key" || strings.HasSuffix(key, "_key") || strings.HasSuffix(key, "-key")
+}
+
+func factoryArtifactStringNeedsRedaction(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if net.ParseIP(strings.Trim(value, "[]")) != nil {
+		return true
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return true
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err == nil {
+			if parsed.User != nil {
+				return true
+			}
+			if host := strings.TrimSpace(parsed.Hostname()); host != "" && net.ParseIP(host) != nil {
+				return true
+			}
+			for key := range parsed.Query() {
+				if factoryArtifactSecretKey(key) {
+					return true
+				}
+			}
+		}
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '/' || r == ',' || r == ';' || r == '=' || r == '(' || r == ')' || r == '[' || r == ']'
+	})
+	for _, field := range fields {
+		if net.ParseIP(strings.Trim(field, "[]")) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func formatFactoryListTime(t time.Time) string {
