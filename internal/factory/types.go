@@ -1,7 +1,11 @@
 // Package factory defines durable factory run records and timeline events.
 package factory
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Run status values.
 const (
@@ -16,6 +20,31 @@ const (
 const (
 	ExecutorModeLocal = "local"
 )
+
+// SupportedExecutorModes returns the executor modes implemented by the factory
+// executor layer.
+func SupportedExecutorModes() []string {
+	return []string{ExecutorModeLocal}
+}
+
+// ValidateExecutorMode normalizes and validates a factory executor mode.
+func ValidateExecutorMode(executorMode string) (string, error) {
+	trimmedExecutorMode := strings.TrimSpace(executorMode)
+	if trimmedExecutorMode == "" {
+		return "", fmt.Errorf("factory executor mode is required")
+	}
+	if executorMode != trimmedExecutorMode {
+		return "", fmt.Errorf("factory executor mode %q is invalid", executorMode)
+	}
+
+	for _, supported := range SupportedExecutorModes() {
+		if trimmedExecutorMode == supported {
+			return trimmedExecutorMode, nil
+		}
+	}
+
+	return "", fmt.Errorf("unsupported factory executor mode %q (supported: %s)", trimmedExecutorMode, strings.Join(SupportedExecutorModes(), ", "))
+}
 
 // Queue status values.
 const (

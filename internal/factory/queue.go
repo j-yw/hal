@@ -425,14 +425,7 @@ func validateQueueID(queueID string) (string, error) {
 }
 
 func validateQueueExecutorMode(executorMode string) (string, error) {
-	trimmedExecutorMode := strings.TrimSpace(executorMode)
-	if trimmedExecutorMode == "" {
-		return "", fmt.Errorf("factory executor mode is required")
-	}
-	if executorMode != trimmedExecutorMode {
-		return "", fmt.Errorf("factory executor mode %q is invalid", executorMode)
-	}
-	return trimmedExecutorMode, nil
+	return ValidateExecutorMode(executorMode)
 }
 
 func oldestQueuedEntryIndex(entries []QueueEntry) int {
