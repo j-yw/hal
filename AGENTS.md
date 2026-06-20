@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
+
+- Factory bootstrap command execution belongs behind `internal/factory.BootstrapCommandExecutor`; use `RunBootstrapStep` with injected fake executors and deterministic clocks in tests instead of spawning git, Hal, or engine CLIs directly.
+
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
 - For runtime directory renames, use template.HalDir in Go code but separately sweep hardcoded user-facing strings in cmd/* and prompt templates (e.g., config.go, explode.go) so paths like .hal stay consistent.

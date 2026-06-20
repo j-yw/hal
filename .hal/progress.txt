@@ -4,6 +4,7 @@
 
 - Factory bootstrap request/result DTOs live in `internal/factory`; add explicit JSON tags and lock exported machine-readable fields with raw-key plus round-trip tests in `internal/factory/types_test.go`.
 - Bootstrap failure classification lives in `internal/factory/bootstrap_failure.go` with a separate bootstrap taxonomy (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) and sanitized messages that avoid raw command output.
+- Factory bootstrap command execution goes through `internal/factory.BootstrapCommandExecutor` and `RunBootstrapStep`; tests should inject fake executors and deterministic clocks rather than spawning git, Hal, or engine CLIs directly.
 
 ---
 
@@ -24,4 +25,14 @@
   - Classification should prefer dependency and auth evidence before generic repository setup because git failures can carry executable-not-found or credential-specific signals.
   - Failure messages returned for bootstrap timeline/result output should be controlled summaries, not raw command output, so later environment and secret redaction stories have a safer base.
   - `make fmt` can surface existing gofmt alignment changes outside the story files; keep them if they are pure formatter output from the standard repo target.
+---
+
+## 2026-06-21 04:52 CST - US-003
+- Implemented a bootstrap command execution boundary with `BootstrapCommand`, `BootstrapCommandResult`, `BootstrapCommandExecutor`, and `RunBootstrapStep` in `internal/factory`.
+- Added fake-executor tests covering command ordering, arguments, working directories, environment values, deterministic timestamps, result metadata, missing executor handling, and classified command failures.
+- Files changed: `internal/factory/bootstrap_executor.go`, `internal/factory/bootstrap_executor_test.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`, `.pi/skills/factory/SKILL.md`.
+- **Learnings for future iterations:**
+  - Keep bootstrap command construction as structured `BootstrapCommand` values so later repository, tooling, and Hal setup stories can assert command name, args, dir, and env without parsing shell strings.
+  - `RunBootstrapStep` is the command-backed bootstrap helper to reuse for future orchestration; inject a clock in tests to keep step timestamps deterministic.
+  - `hal repair --json` may normalize stale engine-local skill links before story work; check `.pi/skills/*` diffs deliberately before committing.
 ---
