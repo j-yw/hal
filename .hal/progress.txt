@@ -4,6 +4,7 @@
 
 - Factory run/event schemas live in `internal/factory`; exported JSON DTO fields should use explicit camelCase tags and be locked with marshal/unmarshal key tests before storage or CLI layers consume them.
 - Factory store paths live in `internal/factory`; the default root is `sandbox.GlobalDir()/factory` with `runs/` and `timelines/` directories created at `0700`, and read-only list operations treat missing directories as empty state.
+- Factory run records are persisted through `Store.SaveRun`/`Store.LoadRun` as `runs/<runID>.json`; writes use `0600` temp files plus rename, and missing loads must wrap `fs.ErrNotExist`.
 
 ---
 
@@ -27,4 +28,15 @@
   - Use `sandbox.GlobalDir()` for the factory default store root so factory state follows the same global config precedence as sandbox state while staying outside per-project `.hal/`.
   - `EnsureStoreDir` should create the global root, `factory/`, `factory/runs/`, and `factory/timelines/` with restrictive `0700` permissions.
   - Read-only factory listing paths should return empty results for missing directories instead of creating global state.
+---
+
+## 2026-06-20 23:36 CST - US-003
+- Implemented durable factory run record persistence with `Store.SaveRun` and `Store.LoadRun`, including stable run ID pathing, atomic temp-file-plus-rename writes, restrictive file permissions, update support, and missing-run `fs.ErrNotExist` compatibility.
+- Added focused store tests for save/load across a new store instance, existing record updates, missing-run errors, required run IDs, committed file permissions, and temp-file cleanup.
+- Files changed: `internal/factory/store.go`, `internal/factory/store_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test ./internal/factory` passed; `go test ./...` passed; `go vet ./...` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - Use `Store.SaveRun` and `Store.LoadRun` as the factory run-record API instead of reading or writing files directly.
+  - Factory run record writes follow the sandbox registry durability pattern: marshal indented JSON, write `<run>.json.tmp` at `0600`, then rename to the committed `.json` file.
+  - Missing factory run loads intentionally wrap `fs.ErrNotExist` so callers and command layers can use `errors.Is(err, fs.ErrNotExist)`.
 ---

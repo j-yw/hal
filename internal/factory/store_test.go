@@ -1,11 +1,14 @@
 package factory
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestStoreDirReusesGlobalConfigPrecedence(t *testing.T) {
@@ -146,6 +149,112 @@ func TestListRunIDsReturnsDeterministicOrder(t *testing.T) {
 	}
 }
 
+func TestSaveRunAndLoadRunRoundTripWithNewStore(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-001")
+
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	recordPath := filepath.Join(store.RunsDir(), record.RunID+runRecordFileExt)
+	info, err := os.Stat(recordPath)
+	if err != nil {
+		t.Fatalf("expected committed run record: %v", err)
+	}
+	if info.IsDir() {
+		t.Fatalf("run record path should be a file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("run record permissions = %o, want %o", info.Mode().Perm(), 0o600)
+	}
+	if _, err := os.Stat(recordPath + storeTempFileExt); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("temp file should not remain after SaveRun(), stat error = %v", err)
+	}
+
+	reloadedStore := NewStore(store.Root())
+	loaded, err := reloadedStore.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(*loaded, record) {
+		t.Fatalf("LoadRun() = %#v, want %#v", *loaded, record)
+	}
+}
+
+func TestSaveRunUpdatesExistingRunRecord(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-002")
+
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun(initial) unexpected error: %v", err)
+	}
+
+	record.Status = RunStatusSucceeded
+	record.CurrentStep = "done"
+	record.UpdatedAt = record.UpdatedAt.Add(5 * time.Minute)
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun(update) unexpected error: %v", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	if loaded.Status != RunStatusSucceeded {
+		t.Fatalf("loaded status = %q, want %q", loaded.Status, RunStatusSucceeded)
+	}
+	if loaded.CurrentStep != "done" {
+		t.Fatalf("loaded current step = %q, want done", loaded.CurrentStep)
+	}
+	if !loaded.UpdatedAt.Equal(record.UpdatedAt) {
+		t.Fatalf("loaded updatedAt = %s, want %s", loaded.UpdatedAt, record.UpdatedAt)
+	}
+}
+
+func TestLoadRunMissingReturnsNotExist(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	_, err := store.LoadRun("missing-run")
+	if err == nil {
+		t.Fatalf("LoadRun() expected error")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadRun() error = %v, want errors.Is(..., fs.ErrNotExist)", err)
+	}
+}
+
+func TestSaveRunRequiresStableRunID(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("")
+
+	if err := store.SaveRun(&record); err == nil {
+		t.Fatalf("SaveRun() expected missing run ID error")
+	}
+}
+
+func TestSaveRunRejectsInvalidRunID(t *testing.T) {
+	tests := []string{
+		" run-003",
+		"run-003 ",
+		"../run-003",
+		`run\003`,
+		".",
+		"..",
+	}
+
+	for _, runID := range tests {
+		t.Run(runID, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "factory"))
+			record := testRunRecord(runID)
+
+			if err := store.SaveRun(&record); err == nil {
+				t.Fatalf("SaveRun() expected invalid run ID error")
+			}
+		})
+	}
+}
+
 func assertFactoryDirExists(t *testing.T, path string) {
 	t.Helper()
 
@@ -167,5 +276,30 @@ func assertFactoryDirPerm(t *testing.T, path string, want os.FileMode) {
 	}
 	if info.Mode().Perm() != want {
 		t.Fatalf("permissions for %q = %o, want %o", path, info.Mode().Perm(), want)
+	}
+}
+
+func testRunRecord(runID string) RunRecord {
+	createdAt := time.Date(2026, 6, 20, 15, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(2 * time.Minute)
+
+	return RunRecord{
+		RunID:  runID,
+		Status: RunStatusRunning,
+		Source: SourceMetadata{
+			Kind:  "markdown",
+			Path:  ".hal/prd-factory.md",
+			Title: "Factory run records",
+		},
+		RepoPath:    "/work/hal",
+		RepoRemote:  "git@github.com:jywlabs/hal.git",
+		BranchName:  "hal/factory-run-records",
+		BaseBranch:  "develop",
+		CurrentStep: "run",
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+		Artifacts: []ArtifactReference{
+			{Name: "prd", Type: "json", Path: ".hal/prd.json"},
+		},
 	}
 }
