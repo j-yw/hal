@@ -1,0 +1,18 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory run/event schemas live in `internal/factory`; exported JSON DTO fields should use explicit camelCase tags and be locked with marshal/unmarshal key tests before storage or CLI layers consume them.
+
+---
+
+## 2026-06-20 23:24 CST - US-001
+- Implemented centralized factory run and event schemas with stable JSON field names, run status constants, and supported timeline event type constants.
+- Added JSON contract-style tests for run records, source metadata, artifact references, failure summaries, events, optional field omission, constants, and round-trip marshal/unmarshal behavior.
+- Files changed: `internal/factory/types.go`, `internal/factory/types_test.go`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test -timeout=120s ./...` passed; `perl -e 'alarm shift; exec @ARGV' 120 go vet ./...` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - Existing machine-readable DTO tests in `internal/ci` and `internal/sandbox` use explicit JSON tags plus map-based key assertions; factory schemas now follow the same pattern.
+  - Keep optional JSON fields behind `omitempty` and test both populated and omitted forms so later contract docs can rely on the behavior.
+  - `EventRecord` uses a monotonically increasing `sequence` field rather than a separate event ID, which gives later append/load work a clear ordering key.
+---

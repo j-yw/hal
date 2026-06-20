@@ -1,0 +1,192 @@
+{
+  "project": "Factory Run Records and Event Timeline",
+  "branchName": "hal/factory-run-records-and-event-timeline-prd",
+  "description": "Add a durable file-backed factory store under Hal's global config directory, with persisted run records, append-only event timelines, JSON CLI read surfaces, contract documentation, examples, and tests while leaving existing .hal runtime state contracts unchanged.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Define factory run and event schemas",
+      "description": "As a Hal maintainer, I want centralized run and event types so that factory state has a stable internal and JSON representation.",
+      "acceptanceCriteria": [
+        "Add an internal/factory package with exported run record and event timeline types.",
+        "Run records include run ID, status, source metadata, repository path, repository remote, branch name, base branch, optional sandbox name, current pipeline step, timestamps, artifact references, and optional failure summary.",
+        "Event records include an event ID or sequence field, run ID, event type, timestamp, message or summary, and optional structured metadata.",
+        "JSON tags are stable camelCase names.",
+        "Marshal and unmarshal tests assert the JSON keys for run records, artifact references, failure summaries, and events.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Resolve global factory store paths",
+      "description": "As a Hal maintainer, I want the factory store rooted under Hal's global config directory so that run records are separate from per-project .hal state.",
+      "acceptanceCriteria": [
+        "Factory store path resolution reuses the existing global config directory precedence.",
+        "Factory store directories are created with restrictive permissions consistent with sandbox registry and global config patterns.",
+        "Missing factory store directories are treated as empty state for list operations.",
+        "Tests isolate the global config path with environment variables.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Persist and load factory run records",
+      "description": "As a factory user, I want a run record to be saved and loaded by ID so that run state survives process restart.",
+      "acceptanceCriteria": [
+        "Store API can create or save a run record with a stable run ID.",
+        "Store API can load a run record by run ID.",
+        "Loading a missing run returns an error compatible with errors.Is(..., fs.ErrNotExist).",
+        "Run record writes use temp-file plus rename atomic persistence.",
+        "Saved run records use restrictive file permissions consistent with global sandbox registry writes.",
+        "Tests verify a saved run can be loaded by a new store instance.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "List stored factory run records",
+      "description": "As a factory user, I want stored run records to be listed deterministically so that factory history can be inspected after restart.",
+      "acceptanceCriteria": [
+        "Store API can list all committed run records.",
+        "Runs are ordered newest-first by creation or update timestamp with a stable tie-breaker by run ID.",
+        "Missing factory directories return an empty list without creating malformed state.",
+        "Tests verify empty-state listing and deterministic ordering.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Append durable timeline events",
+      "description": "As a factory user, I want timeline events to append durably so that lifecycle history remains available and ordered.",
+      "acceptanceCriteria": [
+        "Store API can append an event to a run timeline without replacing previous events.",
+        "Store API can load events for a run in append order.",
+        "Supported event types include run creation, step start, step end, command output summary, verification result, CI state, artifact sync, and failure classification.",
+        "Timeline event writes are committed atomically.",
+        "Tests verify event ordering remains unchanged after creating a new store instance.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Ignore incomplete factory temp files",
+      "description": "As a Hal maintainer, I want failed or leftover temp writes to avoid corrupting existing records or timelines.",
+      "acceptanceCriteria": [
+        "Store read paths ignore incomplete temp files.",
+        "A leftover temp file does not replace or corrupt an existing run record.",
+        "A leftover temp file does not replace or corrupt an existing event timeline.",
+        "Tests create temp-file artifacts and verify previously committed run records still load correctly.",
+        "Tests create temp-file artifacts and verify previously committed timelines still load correctly.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Add factory list JSON command",
+      "description": "As an automation user, I want hal factory list --json to emit stored runs in deterministic order so that scripts can inspect factory history.",
+      "acceptanceCriteria": [
+        "Add hal factory list --json.",
+        "JSON output includes an explicit documented contract version.",
+        "JSON output includes an array of run summaries without full event timelines.",
+        "Runs are emitted newest-first by creation or update timestamp with stable tie-breaking by run ID.",
+        "Empty state emits valid JSON with an empty runs array.",
+        "Command tests verify JSON keys, ordering, and empty-state behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Add factory status JSON command",
+      "description": "As an automation user, I want hal factory status \u003crun-id\u003e --json to emit a run record and timeline so that one run can be inspected programmatically.",
+      "acceptanceCriteria": [
+        "Add hal factory status \u003crun-id\u003e --json.",
+        "JSON output includes an explicit documented contract version.",
+        "JSON output includes the full run record and event timeline.",
+        "Timeline events preserve append order in command output.",
+        "Missing run IDs return a non-zero error with no malformed JSON payload.",
+        "Command tests verify JSON shape, ordered timeline output, and missing-run behavior.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Document factory JSON contracts",
+      "description": "As an integrator, I want contract documentation and examples so that machine-readable factory output can be consumed safely.",
+      "acceptanceCriteria": [
+        "Add contract documentation under docs/contracts/ for factory list, factory status, and timeline surfaces.",
+        "Add example JSON payloads for list output and status output with timeline events.",
+        "Documentation names required fields, optional fields, status values, event types, ordering rules, and error behavior.",
+        "Documentation states that existing .hal/prd.json, .hal/auto-state.json, and .hal/progress.txt contracts are unchanged.",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Lock factory JSON contracts with tests",
+      "description": "As a Hal maintainer, I want contract-locking tests so that future changes do not accidentally break machine-readable factory output.",
+      "acceptanceCriteria": [
+        "Add machine-contract tests that assert exact top-level JSON keys for factory list output.",
+        "Add machine-contract tests that assert exact top-level JSON keys for factory status output.",
+        "Add doc-code sync tests that verify factory JSON examples remain valid against the command output schema.",
+        "Add round-trip tests for run records, failure summaries, artifact references, and timeline events.",
+        "go test ./... passes",
+        "go vet ./... passes",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Add factory command metadata coverage",
+      "description": "As a Hal maintainer, I want command metadata tests for the factory command family so that generated CLI docs remain complete.",
+      "acceptanceCriteria": [
+        "Factory command and subcommands include Use, Short, Long, and Example metadata.",
+        "Command metadata tests cover the factory command family.",
+        "Focused help tests assert required help phrases for factory list and factory status JSON usage.",
+        "README or generated CLI reference links remain consistent with the new command family when docs are generated.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
