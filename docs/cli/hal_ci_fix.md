@@ -10,6 +10,11 @@ The command retries up to --max-attempts. Each attempt uses the shared
 single-attempt CI fix core operation and waits for fresh CI status before
 continuing. Use --json for machine-readable output.
 
+Side effects:
+- When failing checks are found, runs the selected engine against CI context.
+- May edit files, stage changes, commit fixes, push the current branch, and
+  wait for fresh CI status between attempts.
+
 ```
 hal ci fix [flags]
 ```

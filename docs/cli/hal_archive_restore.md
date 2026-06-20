@@ -8,6 +8,11 @@ Restore files from an archive directory back into .hal/.
 
 If there is current feature state, it will be auto-archived first.
 
+Side effects:
+- Auto-archives current feature state when present.
+- Moves files from the selected archive back into .hal/.
+- Restores reports/ contents and removes the restored archive directory.
+
 The name argument is the archive directory name (e.g., 2026-01-15-my-feature).
 Use 'hal archive list' to see available archives.
 

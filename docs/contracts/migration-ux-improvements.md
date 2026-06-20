@@ -47,24 +47,27 @@ hal links refresh codex   # Refresh only Codex links
 hal links clean           # Remove deprecated/broken links
 ```
 
-## `--json` Flag on All Commands
+## `--json` Flag on Core Commands
 
-Every core command now supports `--json` for machine-readable output:
+Core commands support `--json` for machine-readable output. Only outputs with
+dedicated contract documents are stable formal contracts; other JSON outputs are
+machine-readable results and should be treated as best-effort unless promoted in
+a future contract.
 
 | Command | JSON Result Type |
 |---------|-----------------|
-| `hal init --json` | `{ok, created, skipped, summary}` |
-| `hal run --json` | `{ok, iterations, complete, prd, nextAction, summary}` |
-| `hal report --json` | `{ok, reportPath, patternsAdded, recommendations, nextAction}` |
+| `hal init --json` | `{ok, created, skipped, summary}` best-effort result |
+| `hal run --json` | `{ok, iterations, complete, prd, nextAction, summary}` best-effort result |
+| `hal report --json` | `{ok, reportPath, patternsAdded, recommendations, nextAction}` best-effort result |
 | `hal auto --json` | `auto-v2` contract (`{contractVersion, ok, entryMode, resumed, steps, summary, ...}`) |
 | `hal plan --json` | `plan-v1` contract (`{contractVersion, ok, outputPath, format, inputSource, questionsAsked, summary, ...}`) |
-| `hal validate --json` | `{valid, errors, warnings}` |
-| `hal convert --json` | `{ok, outputPath, valid, summary}` |
-| `hal cleanup --json` | `{ok, removed, dryRun, summary}` |
-| `hal analyze --json` | Analysis result (shorthand for `--format json`) |
-| `hal review --json` | `ReviewLoopResult` directly |
-| `hal archive list --json` | `{contractVersion, ok, archives, error, summary}` |
-| `hal version --json` | `{version, commit, buildDate, go, os, arch}` |
+| `hal validate --json` | `{valid, errors, warnings}` best-effort result |
+| `hal convert --json` | `{ok, outputPath, valid, summary}` best-effort result |
+| `hal cleanup --json` | `{ok, removed, dryRun, summary}` best-effort result |
+| `hal analyze --json` | Analysis best-effort result (shorthand for `--format json`) |
+| `hal review --json` | `ReviewLoopResult` best-effort result |
+| `hal archive list --json` | `{contractVersion, ok, archives, error, summary}` best-effort result |
+| `hal version --json` | `{version, commit, buildDate, go, os, arch}` best-effort result |
 
 ## UX Changes
 

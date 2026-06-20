@@ -12,6 +12,7 @@ and reports/* (non-hidden files).
 Never touches: config.yaml, prompt.md, skills/, rules/.
 
 Use --name/-n to set the archive name, or you will be prompted interactively.
+For agents, pass --name/-n in non-interactive or --json runs.
 
 'hal archive' is an alias for 'hal archive create'.
 

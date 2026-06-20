@@ -314,7 +314,7 @@ worker-02      digitalocean   stopped   unavailable        1d     48h idle    $0
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--json` | bool | Machine-readable JSON (contract v1) |
+| `--json` | bool | Machine-readable JSON (`sandbox-list-v1` contract) |
 | `--live` | bool | Query provider APIs for fresh status |
 | `--running` | bool | Only show running sandboxes |
 | `-q, --quiet` | bool | Names only, one per line (for scripting) |
@@ -492,7 +492,7 @@ Remediation:   { Command: "hal sandbox migrate", Safe: true }
 
 ```json
 {
-  "contractVersion": 1,
+  "contractVersion": "sandbox-list-v1",
   "sandboxes": [
     {
       "id": "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",

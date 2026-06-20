@@ -12,6 +12,12 @@ Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — 
 Human output redacts public cloud and Tailscale addresses by default. Use
 --show-addresses only when you intentionally need raw network addresses.
 
+Side effects:
+- setup writes global sandbox config under HAL_CONFIG_HOME, XDG_CONFIG_HOME, or
+  ~/.config/hal.
+- Lifecycle commands may create, start, stop, connect to, or delete remote cloud
+  resources and update the global sandbox registry.
+
 Subcommands:
   setup       Configure provider, credentials, and environment
   create      Provision a new sandbox

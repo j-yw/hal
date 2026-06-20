@@ -14,13 +14,14 @@ This creates a mixed UX and lower operator confidence during long auto runs.
 
 1. Use one shared visual language (lipgloss styles + display primitives) for **both** `hal auto` and `hal run` human output.
 2. Preserve and surface useful engine signal (especially structured JSON responses) without dumping noisy raw payloads.
-3. Keep machine output contracts unchanged (`hal auto --json` and `hal run --json` remain byte-shape stable).
+3. Keep machine output stable: `hal auto --json` stays contract-stable, and
+   `hal run --json` keeps its JSON shape byte-stable.
 4. Avoid command-surface bloat (no new user-facing flags/subcommands).
 
 ## Non-Goals
 
 - No pipeline behavior changes (step order/gates remain unchanged).
-- No changes to contract versions or field names.
+- No changes to contract versions or JSON field names.
 - No changes to engine execution semantics/timeouts/retries.
 
 ---
@@ -141,7 +142,7 @@ Rules:
 - `cmd/auto_test.go`
   - no-report path renders display warning/hints consistently
 
-### Contract tests (must remain stable)
+### Machine-output tests (must remain stable)
 - `cmd/machine_contracts_test.go`
 - `cmd/contracts_doc_test.go` (if docs impacted)
 
@@ -203,4 +204,4 @@ Rules:
 
 1. Ship display helper + run/auto unification in one PR.
 2. Validate in dry-run and normal-run scenarios.
-3. If needed, iterate on summary heuristics in a follow-up PR without changing command contracts.
+3. If needed, iterate on summary heuristics in a follow-up PR without changing machine-output shapes.

@@ -80,8 +80,8 @@ The loop spawns fresh AI instances that:
 5. Update prd.json to mark story complete
 6. Repeat until all stories pass or max iterations reached
 
-With --json, outputs a stable machine-readable result contract suitable
-for agent orchestration and tooling integration.
+With --json, outputs machine-readable result JSON suitable for agent
+orchestration and tooling integration.
 
 Examples:
   hal run                          # Run with defaults (10 iterations)

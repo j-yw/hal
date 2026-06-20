@@ -25,22 +25,22 @@ otherwise shows default values.
 
 With --json, outputs the configuration as JSON.`,
 	Example: `  hal config
-  hal config --json
-  hal config add-rule testing`,
+  hal config --json`,
 	RunE: runConfig,
 }
 
 var addRuleCmd = &cobra.Command{
 	Use:        "add-rule <name>",
 	Short:      "Add a rule to config",
-	Deprecated: "deprecated in v0.2.0; will be removed in v1.0.0. Use 'hal standards discover' and 'hal standards list' instead.",
-	Long: `Add a new rule to the .hal/rules/ directory.
+	Deprecated: "since v0.2.0; will be removed in v1.0.0. Use 'hal standards discover' and 'hal standards list' instead.",
+	Long: `Deprecated compatibility command for legacy .hal/rules/ files.
 
-Rules are markdown files that provide additional context or
-instructions for task execution.
+.hal/rules/ is legacy and is replaced by the standards workflow. Use
+'hal standards discover' to capture project conventions and 'hal standards list'
+to inspect configured standards.
 
 Example:
-  hal config add-rule testing     # Creates .hal/rules/testing.md`,
+  hal config add-rule testing     # Legacy only; creates .hal/rules/testing.md`,
 	Example: `  hal config add-rule testing`,
 	Args:    exactArgsValidation(1),
 	RunE:    runAddRule,

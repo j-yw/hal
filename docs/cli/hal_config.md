@@ -20,7 +20,6 @@ hal config [flags]
 ```
   hal config
   hal config --json
-  hal config add-rule testing
 ```
 
 ### Options
