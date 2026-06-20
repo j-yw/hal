@@ -30,5 +30,5 @@ hal factory status <run-id> [flags]
 
 ### SEE ALSO
 
-* [hal factory](hal_factory.md)	 - Inspect factory run history
+* [hal factory](hal_factory.md)	 - Run and inspect factory workflows
 

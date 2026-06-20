@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,15 +27,34 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			name: "factory root command",
 			cmd:  factoryCmd,
 			requiredLongPhrases: []string{
-				"Inspect durable factory run history",
+				"Run local factory workflows",
 				"global factory store",
 				"separate from per-project",
-				"status command",
+				"Factory run wraps the local auto pipeline",
 			},
 			requiredExampleLines: []string{
+				"hal factory run .hal/prd-feature.md",
+				"hal factory run --report .hal/reports/analysis.md --json",
 				"hal factory list",
 				"hal factory list --json",
 				"hal factory status <run-id> --json",
+			},
+		},
+		{
+			name: "factory run command",
+			cmd:  factoryRunCmd,
+			requiredLongPhrases: []string{
+				"existing hal auto compound",
+				"positional PRD markdown path",
+				"--report <path>",
+				"--base <branch>",
+				"--json",
+				"factory-run-v1",
+			},
+			requiredExampleLines: []string{
+				"hal factory run .hal/prd-feature.md",
+				"hal factory run --report .hal/reports/analysis.md",
+				"hal factory run .hal/prd-feature.md --base main --json",
 			},
 		},
 		{
@@ -96,6 +116,115 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseFactoryRunRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		reportPath string
+		baseBranch string
+		jsonMode   bool
+		want       factoryRunRequest
+		wantErr    string
+	}{
+		{
+			name: "no explicit source",
+			want: factoryRunRequest{},
+		},
+		{
+			name: "positional markdown path",
+			args: []string{".hal/prd-feature.md"},
+			want: factoryRunRequest{MarkdownPath: ".hal/prd-feature.md"},
+		},
+		{
+			name:       "report path",
+			reportPath: ".hal/reports/analysis.md",
+			want:       factoryRunRequest{ReportPath: ".hal/reports/analysis.md"},
+		},
+		{
+			name:       "base and json options",
+			args:       []string{".hal/prd-feature.md"},
+			baseBranch: "main",
+			jsonMode:   true,
+			want: factoryRunRequest{
+				MarkdownPath: ".hal/prd-feature.md",
+				BaseBranch:   "main",
+				JSON:         true,
+			},
+		},
+		{
+			name:       "positional and report conflict",
+			args:       []string{".hal/prd-feature.md"},
+			reportPath: ".hal/reports/analysis.md",
+			wantErr:    "--report cannot be used with a positional PRD markdown path",
+		},
+		{
+			name:    "too many positional args",
+			args:    []string{"one.md", "two.md"},
+			wantErr: "accepts at most 1 arg(s), received 2",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseFactoryRunRequest(tt.args, tt.reportPath, tt.baseBranch, tt.jsonMode)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseFactoryRunRequest() error = nil, want %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseFactoryRunRequest() error = %q, want %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseFactoryRunRequest() unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseFactoryRunRequest() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
+	cmd, err := commandAtPath(Root(), "factory", "run")
+	if err != nil {
+		t.Fatalf("factory run command missing: %v", err)
+	}
+	for _, flagName := range []string{"report", "base", "json"} {
+		if cmd.Flags().Lookup(flagName) == nil {
+			t.Fatalf("factory run should expose --%s flag", flagName)
+		}
+	}
+	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
+		t.Fatalf("factory run missing metadata fields: %v", missing)
+	}
+}
+
+func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *testing.T) {
+	cmd := &cobra.Command{Use: "run", Args: validateFactoryRunArgs}
+	cmd.Flags().String("report", "", "")
+	if err := cmd.Flags().Set("report", ".hal/reports/analysis.md"); err != nil {
+		t.Fatalf("Set(report) error: %v", err)
+	}
+
+	err := cmd.Args(cmd, []string{".hal/prd-feature.md"})
+	if err == nil {
+		t.Fatal("Args() error = nil, want validation error")
+	}
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Args() error type = %T, want *ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeValidation {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+	}
+	if !strings.Contains(err.Error(), "--report cannot be used with a positional PRD markdown path") {
+		t.Fatalf("Args() error = %q", err.Error())
 	}
 }
 
@@ -474,8 +603,16 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 			name: "factory cli reference links subcommands",
 			path: "../docs/cli/hal_factory.md",
 			wantFragments: []string{
+				"[hal factory run](hal_factory_run.md)",
 				"[hal factory list](hal_factory_list.md)",
 				"[hal factory status](hal_factory_status.md)",
+			},
+		},
+		{
+			name: "factory run cli reference links parent",
+			path: "../docs/cli/hal_factory_run.md",
+			wantFragments: []string{
+				"[hal factory](hal_factory.md)",
 			},
 		},
 		{

@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -22,18 +23,41 @@ const (
 
 var factoryListJSONFlag bool
 var factoryStatusJSONFlag bool
+var factoryRunReportFlag string
+var factoryRunBaseFlag string
+var factoryRunJSONFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
-	Short: "Inspect factory run history",
-	Long: `Inspect durable factory run history stored under Hal's global config directory.
+	Short: "Run and inspect factory workflows",
+	Long: `Run local factory workflows and inspect durable factory run history stored
+under Hal's global config directory.
 
-Factory commands read the global factory store, which is separate from per-project
-.hal runtime state. Use the list command to inspect stored run summaries and the
-status command to inspect one run and its timeline.`,
-	Example: `  hal factory list
+Factory run wraps the local auto pipeline while list and status read the global factory store,
+which is separate from per-project .hal runtime state.`,
+	Example: `  hal factory run .hal/prd-feature.md
+  hal factory run --report .hal/reports/analysis.md --json
+  hal factory list
   hal factory list --json
   hal factory status <run-id> --json`,
+}
+
+var factoryRunCmd = &cobra.Command{
+	Use:   "run [prd-path]",
+	Short: "Run the local factory executor",
+	Args:  validateFactoryRunArgs,
+	Long: `Run the local factory executor by wrapping the existing hal auto compound
+pipeline.
+
+Provide at most one positional PRD markdown path to start from an existing
+spec, or use --report <path> to start from an analysis report. The positional
+path and --report are mutually exclusive. Use --base <branch> to pass a target
+base branch to the executor and --json for machine-readable factory-run-v1
+output.`,
+	Example: `  hal factory run .hal/prd-feature.md
+  hal factory run --report .hal/reports/analysis.md
+  hal factory run .hal/prd-feature.md --base main --json`,
+	RunE: runFactoryRun,
 }
 
 var factoryListCmd = &cobra.Command{
@@ -66,8 +90,12 @@ JSON output includes the full run record and timeline events in append order.`,
 }
 
 func init() {
+	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
+	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
+	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
+	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
 	rootCmd.AddCommand(factoryCmd)
@@ -87,6 +115,13 @@ type factoryStatusDeps struct {
 
 var defaultFactoryStatusDeps = factoryStatusDeps{
 	defaultStore: factory.DefaultStore,
+}
+
+type factoryRunRequest struct {
+	MarkdownPath string
+	ReportPath   string
+	BaseBranch   string
+	JSON         bool
 }
 
 // FactoryListResponse is the machine-readable JSON output for hal factory list --json.
@@ -119,6 +154,88 @@ type FactoryRunSummary struct {
 	FinishedAt    *time.Time              `json:"finishedAt,omitempty"`
 	ArtifactCount int                     `json:"artifactCount"`
 	Failure       *factory.FailureSummary `json:"failure,omitempty"`
+}
+
+func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
+	if len(args) > 1 {
+		return maxArgsValidation(1)(cmd, args)
+	}
+
+	reportPath := ""
+	if cmd != nil && cmd.Flags().Lookup("report") != nil {
+		value, err := cmd.Flags().GetString("report")
+		if err != nil {
+			return err
+		}
+		reportPath = value
+	}
+
+	if _, err := parseFactoryRunRequest(args, reportPath, "", false); err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	return nil
+}
+
+func runFactoryRun(cmd *cobra.Command, args []string) error {
+	if _, err := factoryRunRequestFromCommand(cmd, args); err != nil {
+		return err
+	}
+	return fmt.Errorf("factory run execution is not implemented yet")
+}
+
+func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {
+	reportPath := factoryRunReportFlag
+	baseBranch := factoryRunBaseFlag
+	jsonMode := factoryRunJSONFlag
+
+	if cmd != nil {
+		if cmd.Flags().Lookup("report") != nil {
+			value, err := cmd.Flags().GetString("report")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			reportPath = value
+		}
+		if cmd.Flags().Lookup("base") != nil {
+			value, err := cmd.Flags().GetString("base")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			baseBranch = value
+		}
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			jsonMode = value
+		}
+	}
+
+	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, jsonMode)
+	if err != nil {
+		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	return req, nil
+}
+
+func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMode bool) (factoryRunRequest, error) {
+	if len(args) > 1 {
+		return factoryRunRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
+	}
+	if len(args) == 1 && strings.TrimSpace(reportPath) != "" {
+		return factoryRunRequest{}, fmt.Errorf("--report cannot be used with a positional PRD markdown path")
+	}
+
+	req := factoryRunRequest{
+		ReportPath: reportPath,
+		BaseBranch: baseBranch,
+		JSON:       jsonMode,
+	}
+	if len(args) == 1 {
+		req.MarkdownPath = args[0]
+	}
+	return req, nil
 }
 
 func runFactoryList(cmd *cobra.Command, args []string) error {

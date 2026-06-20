@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory machine-readable contracts should be locked in code, docs, and examples together: define the command response struct/renderer in `cmd`, document fields in `docs/contracts/<contract>.md`, add an example in `docs/contracts/examples/`, and cover it in `cmd/factory_test.go`, `cmd/machine_contracts_test.go`, and `cmd/contracts_doc_test.go`.
+- Factory command parser changes should update Cobra metadata, focused `cmd/factory_test.go` registration/validation tests, and regenerated `docs/cli` pages via `make docs-cli`; docs drift is enforced by `make docs-check`.
 
 ---
 
@@ -17,4 +18,17 @@
   - Factory list/status already use string-valued contract identifiers and command-layer response structs; `factory-run-v1` follows that pattern.
   - `cmd/contracts_doc_test.go` is the sync point for requiring new contract docs and validating strict JSON examples against command response structs.
   - Use the existing factory event types from `internal/factory` when documenting event summary values so docs stay tied to shared constants.
+---
+
+## 2026-06-21 01:02 CST - US-002
+- Added `hal factory run [prd-path]` command input parsing with `--report`, `--base`, and `--json` flags, including mutual exclusion validation for positional markdown paths and report paths.
+- Added focused factory parser, command registration, validation, help metadata, and generated CLI reference link tests.
+- Regenerated CLI docs so `hal factory run` appears in the command reference with documented positional and flag usage.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `docs/cli/hal.md`, `docs/cli/hal_factory.md`, `docs/cli/hal_factory_run.md`, `docs/cli/hal_factory_list.md`, `docs/cli/hal_factory_status.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test ./cmd -run 'Test(FactoryCommandHelpMetadata|ParseFactoryRunRequest|FactoryRunCommandRegisteredWithInputFlags|FactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution|FactoryGeneratedCLIReferenceLinks)'`, `make docs-check`, `go test -timeout=180s ./cmd`, `go test -timeout=300s ./...`, `go vet ./...`.
+- Browser verification: skipped because this story only changes CLI command parsing and generated CLI documentation.
+- **Learnings for future iterations:**
+  - Factory command family metadata tests are table-driven in `cmd/factory_test.go`; add new subcommands there so required help phrases and examples are locked.
+  - Generated CLI docs must be refreshed after Cobra command metadata changes because tests assert factory command reference links.
+  - Parser-only factory stories can use a small parse helper and validation tests without touching `internal/factory.Store` or invoking the wrapped pipeline.
 ---
