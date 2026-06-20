@@ -279,11 +279,7 @@ func (s Store) ListRunIDs() ([]string, error) {
 
 	runIDs := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
-			runIDs = append(runIDs, entry.Name())
-			continue
-		}
-		if !isCommittedStoreFile(entry.Name()) {
+		if entry.IsDir() || !isCommittedStoreFile(entry.Name()) {
 			continue
 		}
 		runIDs = append(runIDs, strings.TrimSuffix(entry.Name(), runRecordFileExt))

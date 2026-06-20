@@ -126,7 +126,7 @@ func TestListRunIDsReturnsDeterministicOrder(t *testing.T) {
 	if err := store.Ensure(); err != nil {
 		t.Fatalf("Ensure() unexpected error: %v", err)
 	}
-	for _, name := range []string{"run-c.json", "README.md", "run-a.json", "run-b"} {
+	for _, name := range []string{"run-c.json", "README.md", "run-a.json", "run-dir", "run-b.json"} {
 		path := filepath.Join(store.RunsDir(), name)
 		if filepath.Ext(name) == "" {
 			if err := os.MkdirAll(path, 0o700); err != nil {
