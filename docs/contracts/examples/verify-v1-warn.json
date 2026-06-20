@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "verify-v1",
+  "generatedAt": "2026-06-20T12:00:02.050Z",
+  "status": "warn",
+  "summary": {
+    "total": 2,
+    "passed": 1,
+    "failed": 0,
+    "timedOut": 0,
+    "missing": 1,
+    "skipped": 0,
+    "warnings": 1
+  },
+  "checks": [
+    {
+      "id": "test",
+      "name": "Unit tests",
+      "adapter": "shell",
+      "status": "pass",
+      "required": true,
+      "command": "go test ./...",
+      "workDir": "/work/hal",
+      "timeoutSeconds": 60,
+      "startedAt": "2026-06-20T12:00:00Z",
+      "finishedAt": "2026-06-20T12:00:02Z",
+      "durationMs": 2000,
+      "exitCode": 0,
+      "stdoutArtifact": ".hal/reports/verify/test-stdout.txt",
+      "stderrArtifact": ".hal/reports/verify/test-stderr.txt",
+      "message": "check passed"
+    },
+    {
+      "id": "optional-lint",
+      "name": "Optional lint",
+      "adapter": "shell",
+      "status": "missing",
+      "required": false,
+      "command": "golangci-lint run",
+      "workDir": "/work/hal",
+      "timeoutSeconds": 120,
+      "startedAt": "2026-06-20T12:00:02Z",
+      "finishedAt": "2026-06-20T12:00:02Z",
+      "durationMs": 0,
+      "exitCode": 0,
+      "stdoutArtifact": "",
+      "stderrArtifact": "",
+      "message": "optional check command is unavailable"
+    }
+  ],
+  "warnings": [
+    {
+      "checkId": "optional-lint",
+      "status": "missing",
+      "message": "optional check command is unavailable"
+    }
+  ],
+  "artifacts": [
+    {
+      "checkId": "test",
+      "kind": "stdout",
+      "path": ".hal/reports/verify/test-stdout.txt"
+    },
+    {
+      "checkId": "test",
+      "kind": "stderr",
+      "path": ".hal/reports/verify/test-stderr.txt"
+    }
+  ]
+}

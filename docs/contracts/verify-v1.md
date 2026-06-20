@@ -88,6 +88,12 @@ Required check failures and timeouts produce a failing gate. A required shell-co
 | `missing` | Check could not run because the command or working directory was unavailable |
 | `skipped` | Check was intentionally not run |
 
+## Example Artifacts
+
+- `docs/contracts/examples/verify-v1-pass.json`
+- `docs/contracts/examples/verify-v1-fail.json`
+- `docs/contracts/examples/verify-v1-warn.json`
+
 ## Example
 
 ```json

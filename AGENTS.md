@@ -176,6 +176,7 @@
 ## Patterns from autoresearch/hal-ux-machine-readability (2026-03-18)
 
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
+- Contract example payloads should live under `docs/contracts/examples/`, be referenced from the corresponding contract doc, and be decoded with `decodeStrictJSONExample` against the exported schema type so unknown fields fail tests.
 - Verify-v1 shared result types live in `internal/verify`: keep `SchemaVersion = "verify-v1"`, status/check-status constants, explicit JSON tags, emitted-key tests, and round-trip tests together there for future verify command/config stories.
 - Workflow state classification lives in `internal/status` — a pure filesystem package with no engine or config dependencies. The `cmd/status.go` wrapper adds engine from config.
 - Health/readiness checks live in `internal/doctor` — each check has `scope` (repo/engine_local/engine_global/migration) and `applicability` (required/optional/not_applicable) fields. The check order is locked by `TestRun_CheckCount`.
