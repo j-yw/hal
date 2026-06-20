@@ -23,7 +23,7 @@ type factorySandboxExecutorRequest struct {
 	ProjectDir   string
 	SandboxName  string
 	RunRecord    factory.RunRecord
-	RemoteArgs   []string
+	RemoteAuto   factoryRunAutoRequest
 	RemoteOutput io.Writer
 }
 
@@ -164,11 +164,12 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		return fmt.Errorf("record factory sandbox metadata: %w", err)
 	}
 
+	remoteArgs := factorySandboxRemoteAutoArgs(req.RemoteAuto)
 	provider, err := deps.resolveProvider(target.Provider)
 	if err != nil {
 		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
 	}
-	if err := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), req.RemoteArgs, req.RemoteOutput); err != nil {
+	if err := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, req.RemoteOutput); err != nil {
 		return fmt.Errorf("execute factory sandbox command: %w", err)
 	}
 
@@ -183,6 +184,22 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			"provider":     target.Provider,
 		},
 	})
+}
+
+func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
+	args := []string{"hal", "auto"}
+	for _, arg := range req.Args {
+		if trimmed := strings.TrimSpace(arg); trimmed != "" {
+			args = append(args, trimmed)
+		}
+	}
+	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
+		args = append(args, "--report", reportPath)
+	}
+	if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
+		args = append(args, "--base", baseBranch)
+	}
+	return args
 }
 
 func isFactorySandboxProvisionableResolutionError(err error) bool {

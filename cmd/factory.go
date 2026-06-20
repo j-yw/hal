@@ -315,7 +315,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
 			ProjectDir:   dir,
 			RunRecord:    runningRecord,
-			RemoteArgs:   factoryRunRemoteAutoArgs(req),
+			RemoteAuto:   factoryRunAutoRequestFromFactoryRequest(req),
 			RemoteOutput: out,
 		})
 	} else {
@@ -1244,35 +1244,23 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 		return fmt.Errorf("factory run auto dependency is required")
 	}
 
-	baseBranch := strings.TrimSpace(req.Request.BaseBranch)
-	if baseBranch == "" {
-		baseBranch = strings.TrimSpace(req.Record.BaseBranch)
+	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
+	if strings.TrimSpace(autoReq.BaseBranch) == "" {
+		autoReq.BaseBranch = strings.TrimSpace(req.Record.BaseBranch)
 	}
-
-	autoReq := factoryRunAutoRequest{
-		ReportPath:     strings.TrimSpace(req.Request.ReportPath),
-		BaseBranch:     baseBranch,
-		RecordProgress: req.RecordProgress,
-	}
-	if markdownPath := strings.TrimSpace(req.Request.MarkdownPath); markdownPath != "" {
-		autoReq.Args = []string{markdownPath}
-	}
-
+	autoReq.RecordProgress = req.RecordProgress
 	return deps.runAuto(ctx, autoReq)
 }
 
-func factoryRunRemoteAutoArgs(req factoryRunRequest) []string {
-	args := []string{"hal", "auto"}
+func factoryRunAutoRequestFromFactoryRequest(req factoryRunRequest) factoryRunAutoRequest {
+	autoReq := factoryRunAutoRequest{
+		ReportPath: strings.TrimSpace(req.ReportPath),
+		BaseBranch: strings.TrimSpace(req.BaseBranch),
+	}
 	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
-		args = append(args, markdownPath)
+		autoReq.Args = []string{markdownPath}
 	}
-	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
-		args = append(args, "--report", reportPath)
-	}
-	if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
-		args = append(args, "--base", baseBranch)
-	}
-	return args
+	return autoReq
 }
 
 func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error {
