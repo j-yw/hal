@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "verify-v1",
+  "generatedAt": "2026-06-20T12:00:01.250Z",
+  "status": "fail",
+  "summary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "timedOut": 0,
+    "missing": 0,
+    "skipped": 0,
+    "warnings": 0
+  },
+  "checks": [
+    {
+      "id": "test",
+      "name": "Unit tests",
+      "adapter": "shell",
+      "status": "fail",
+      "required": true,
+      "command": "go test ./...",
+      "workDir": "/work/hal",
+      "timeoutSeconds": 60,
+      "startedAt": "2026-06-20T12:00:00Z",
+      "finishedAt": "2026-06-20T12:00:01Z",
+      "durationMs": 1000,
+      "exitCode": 1,
+      "stdoutArtifact": ".hal/reports/verify/test-stdout.txt",
+      "stderrArtifact": ".hal/reports/verify/test-stderr.txt",
+      "message": "required check failed with exit code 1"
+    }
+  ],
+  "warnings": [],
+  "artifacts": [
+    {
+      "checkId": "test",
+      "kind": "stdout",
+      "path": ".hal/reports/verify/test-stdout.txt"
+    },
+    {
+      "checkId": "test",
+      "kind": "stderr",
+      "path": ".hal/reports/verify/test-stderr.txt"
+    }
+  ]
+}

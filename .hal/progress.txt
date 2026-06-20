@@ -4,6 +4,7 @@
 
 - Verify-v1 shared result types and constants live in `internal/verify`; use `SchemaVersion = "verify-v1"` and keep JSON field/tag plus round-trip tests beside the types.
 - Machine contract docs belong in `docs/contracts/` and should be registered in `cmd/contracts_doc_test.go`; add field/value assertions there when a doc must stay synchronized with code constants.
+- Contract example payloads live in `docs/contracts/examples/`; reference them from the contract doc and decode them in `cmd/contracts_doc_test.go` with `decodeStrictJSONExample` against the exported schema type.
 
 ---
 
@@ -28,4 +29,16 @@
   - Contract documentation tests can import the package constants behind a contract, then assert the Markdown includes those enum values.
   - For verify-v1 docs, the contract identifier is the string `schemaVersion` value `verify-v1`, not a numeric `contractVersion`.
   - The required gate behavior belongs in the contract doc: required shell check `fail` and `timeout` statuses must make the top-level status `fail`.
+---
+
+## 2026-06-21 04:56 CST - US-003
+- Added passing, failing, and warning-only optional-check verify-v1 example payloads under `docs/contracts/examples/`.
+- Referenced the verify-v1 examples from `docs/contracts/verify-v1.md`.
+- Added contract-doc tests that require the example files to exist, be referenced by the docs, decode against `internal/verify.Result`, and use the documented top-level/per-check/warning/artifact field names exactly.
+- Ran `go test ./cmd -run 'TestContractDocsIncludeVerifyV1|TestVerifyContractExamplesMatchSchema'`, `make fmt`, `make vet`, `make test`, and `make lint` (lint target returned successfully but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `docs/contracts/examples/verify-v1-pass.json`, `docs/contracts/examples/verify-v1-fail.json`, `docs/contracts/examples/verify-v1-warn.json`, `docs/contracts/verify-v1.md`, `cmd/contracts_doc_test.go`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Example payloads should use the same exported schema type as command output when tests can decode them strictly.
+  - Keep contract docs and example filenames synchronized with a focused doc test so checked-in examples remain discoverable.
+  - Empty output artifacts are represented as empty strings in per-check fields when no artifact exists, not omitted fields.
 ---
