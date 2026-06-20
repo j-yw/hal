@@ -587,6 +587,90 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t *testing.T) {
+	now := time.Date(2026, 6, 21, 11, 15, 0, 0, time.UTC)
+	execErr := factorySandboxTestError("remote pipeline failed on 203.0.113.42")
+	target := &sandbox.SandboxState{
+		Name:     "factory-failed",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "203.0.113.42",
+	}
+	var out bytes.Buffer
+	var savedRecords []factory.RunRecord
+	var events []factory.EventRecord
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName:  "factory-failed",
+		RunRecord:    factory.RunRecord{RunID: "run-remote-failure", Status: factory.RunStatusRunning, CurrentStep: "run"},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		now:          func() time.Time { return now },
+		loadSandbox:  func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			if _, err := io.WriteString(out, "remote stderr mentions 203.0.113.42\n"); err != nil {
+				return err
+			}
+			return execErr
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() error = nil, want remote failure")
+	}
+	if strings.Contains(err.Error(), "203.0.113.42") {
+		t.Fatalf("returned error leaked address: %v", err)
+	}
+	if !strings.Contains(err.Error(), "<address redacted>") {
+		t.Fatalf("returned error missing redaction marker: %v", err)
+	}
+	if len(savedRecords) != 3 {
+		t.Fatalf("saved records = %d, want 3", len(savedRecords))
+	}
+	failed := savedRecords[2]
+	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "run" {
+		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
+	}
+	if failed.SandboxName != "factory-failed" || failed.Sandbox == nil || failed.Sandbox.Provider != "daytona" {
+		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)
+	}
+	if failed.Sandbox.Connection == nil || failed.Sandbox.Connection.PublicIP != "203.0.113.42" {
+		t.Fatalf("failed sandbox connection = %#v", failed.Sandbox.Connection)
+	}
+	if failed.Failure == nil {
+		t.Fatalf("failed failure summary = nil")
+	}
+	if failed.Failure.SuggestedCommand != "hal sandbox ssh factory-failed" {
+		t.Fatalf("suggested command = %q", failed.Failure.SuggestedCommand)
+	}
+	if strings.Contains(failed.Failure.Message, "203.0.113.42") {
+		t.Fatalf("failure message leaked address: %q", failed.Failure.Message)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	}
+	if events[1].EventType != factory.EventTypeCommandOutputSummary || strings.Contains(events[1].Message, "203.0.113.42") {
+		t.Fatalf("remote output event was not sanitized: %#v", events[1])
+	}
+	if events[2].EventType != factory.EventTypeFailureClassification || events[2].Metadata["source"] != "remote_sandbox" {
+		t.Fatalf("failure event = %#v", events[2])
+	}
+	if strings.Contains(events[2].Message, "203.0.113.42") {
+		t.Fatalf("failure event leaked address: %q", events[2].Message)
+	}
+}
+
 type factorySandboxTestError string
 
 func (e factorySandboxTestError) Error() string { return string(e) }
