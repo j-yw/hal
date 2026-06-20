@@ -8,6 +8,8 @@ Factory queue entries represent file-backed local factory work stored under Hal'
 
 This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.json`, or `.hal/progress.txt` contracts.
 
+Succeeded and failed entries are retained in queue state as inspectable history. Workers should only select entries with `status` set to `queued` as active work.
+
 ## Queue Entry
 
 | Field | Type | Required | Description |
@@ -39,7 +41,7 @@ When `claim` is present:
 |--------|---------|
 | `queued` | Entry is waiting for a worker |
 | `claimed` | Entry has been claimed by one worker and is in progress or recoverable after interruption |
-| `succeeded` | Entry completed successfully if retained in queue history |
+| `succeeded` | Entry completed successfully and remains retained in queue history |
 | `failed` | Entry failed and remains inspectable through queue JSON output |
 
 ## Executor Mode Values

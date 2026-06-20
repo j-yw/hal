@@ -35,6 +35,7 @@ type QueueUpdateFunc func([]QueueEntry) ([]QueueEntry, error)
 type QueueOperationOptions struct {
 	Now        func() time.Time
 	NewQueueID func() (string, error)
+	Claim      *QueueClaim
 }
 
 // QueuePath returns the committed queue state file path.
@@ -150,6 +151,7 @@ func (s Store) ListQueue() ([]QueueEntry, error) {
 // queued entries are available.
 func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, error) {
 	opts = normalizeQueueOperationOptions(opts)
+	claim := opts.queueClaim()
 
 	var claimed *QueueEntry
 	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
@@ -161,6 +163,10 @@ func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, err
 		claimedAt := opts.Now().UTC()
 		entries[idx].Status = QueueStatusClaimed
 		entries[idx].ClaimedAt = &claimedAt
+		entries[idx].CompletedAt = nil
+		entries[idx].Claim = &claim
+		entries[idx].AttemptCount++
+		entries[idx].LastError = ""
 
 		entry := entries[idx]
 		claimed = &entry
@@ -170,6 +176,82 @@ func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, err
 	}
 
 	return claimed, nil
+}
+
+// MarkQueueEntrySucceeded records successful completion while retaining the
+// terminal queue entry for history and JSON inspection.
+func (s Store) MarkQueueEntrySucceeded(queueID string, opts QueueOperationOptions) (QueueEntry, error) {
+	queueID, err := validateQueueID(queueID)
+	if err != nil {
+		return QueueEntry{}, err
+	}
+	opts = normalizeQueueOperationOptions(opts)
+
+	var updated QueueEntry
+	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+		idx := queueEntryIndex(entries, queueID)
+		if idx < 0 {
+			return nil, fmt.Errorf("factory queue entry %q does not exist", queueID)
+		}
+		if entries[idx].Status != QueueStatusClaimed {
+			return nil, fmt.Errorf("factory queue entry %q is %q, want %q", queueID, entries[idx].Status, QueueStatusClaimed)
+		}
+
+		completedAt := opts.Now().UTC()
+		entries[idx].Status = QueueStatusSucceeded
+		entries[idx].CompletedAt = &completedAt
+		if entries[idx].AttemptCount == 0 {
+			entries[idx].AttemptCount = 1
+		}
+		entries[idx].LastError = ""
+
+		updated = entries[idx]
+		return entries, nil
+	}); err != nil {
+		return QueueEntry{}, err
+	}
+
+	return updated, nil
+}
+
+// MarkQueueEntryFailed records failed completion and leaves the entry
+// inspectable through queue JSON output.
+func (s Store) MarkQueueEntryFailed(queueID, errorMessage string, opts QueueOperationOptions) (QueueEntry, error) {
+	queueID, err := validateQueueID(queueID)
+	if err != nil {
+		return QueueEntry{}, err
+	}
+	errorMessage = strings.TrimSpace(errorMessage)
+	if errorMessage == "" {
+		return QueueEntry{}, fmt.Errorf("factory queue failure message is required")
+	}
+	opts = normalizeQueueOperationOptions(opts)
+
+	var updated QueueEntry
+	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+		idx := queueEntryIndex(entries, queueID)
+		if idx < 0 {
+			return nil, fmt.Errorf("factory queue entry %q does not exist", queueID)
+		}
+		if entries[idx].Status != QueueStatusClaimed {
+			return nil, fmt.Errorf("factory queue entry %q is %q, want %q", queueID, entries[idx].Status, QueueStatusClaimed)
+		}
+
+		completedAt := opts.Now().UTC()
+		entries[idx].Status = QueueStatusFailed
+		entries[idx].CompletedAt = &completedAt
+		if entries[idx].AttemptCount == 0 {
+			entries[idx].AttemptCount = 1
+		}
+		entries[idx].LastError = errorMessage
+
+		updated = entries[idx]
+		return entries, nil
+	}); err != nil {
+		return QueueEntry{}, err
+	}
+
+	return updated, nil
 }
 
 func (s Store) loadQueue() ([]QueueEntry, error) {
@@ -311,6 +393,18 @@ func normalizeQueueOperationOptions(opts QueueOperationOptions) QueueOperationOp
 	return opts
 }
 
+func (opts QueueOperationOptions) queueClaim() QueueClaim {
+	if opts.Claim != nil {
+		return *opts.Claim
+	}
+
+	hostname, _ := os.Hostname()
+	return QueueClaim{
+		PID:      os.Getpid(),
+		Hostname: hostname,
+	}
+}
+
 func newQueueID() (string, error) {
 	id, err := sandbox.NewV7()
 	if err != nil {
@@ -352,6 +446,15 @@ func oldestQueuedEntryIndex(entries []QueueEntry) int {
 		}
 	}
 	return oldest
+}
+
+func queueEntryIndex(entries []QueueEntry, queueID string) int {
+	for i, entry := range entries {
+		if entry.QueueID == queueID {
+			return i
+		}
+	}
+	return -1
 }
 
 func queueEntryFIFOBefore(left, right QueueEntry) bool {
