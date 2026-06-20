@@ -53,6 +53,7 @@
 
 - Sandbox-backed factory execution side effects belong behind `factorySandboxExecutorDeps` in `cmd/factory_sandbox_executor.go`; extend the normalized dependency struct for registry, provisioning/start, provider exec, clock, and store persistence behavior so tests can fake each boundary without real sandbox providers or remote commands.
 - `hal factory run --sandbox` selection belongs in `factoryRunRequest.Sandbox` and dispatches through `factoryRunDeps.runSandbox`; keep the no-flag path on `runPipeline` and cover both paths with injected-dependency tests.
+- Existing sandbox reuse in `runFactorySandboxExecutorWithDeps` should persist `RunRecord.SandboxName` plus `RunRecord.Sandbox` immediately after target resolution/start, and no-name resolution should preserve `sandbox.ResolveDefault` running-only error strings unless provisioning behavior explicitly handles them.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 

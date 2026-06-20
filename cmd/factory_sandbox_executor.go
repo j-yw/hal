@@ -109,18 +109,21 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	var target *sandbox.SandboxState
 	if name := strings.TrimSpace(req.SandboxName); name != "" {
 		target, err = deps.loadSandbox(name)
+		if err != nil {
+			target, err = deps.provision(ctx, factorySandboxProvisionRequest{
+				ProjectDir: req.ProjectDir,
+				Name:       req.SandboxName,
+				Repo:       record.RepoRemote,
+				Out:        req.RemoteOutput,
+			})
+			if err != nil {
+				return fmt.Errorf("provision factory sandbox: %w", err)
+			}
+		}
 	} else {
 		target, _, err = deps.resolveDefault(factoryRunningSandboxFilter)
-	}
-	if err != nil {
-		target, err = deps.provision(ctx, factorySandboxProvisionRequest{
-			ProjectDir: req.ProjectDir,
-			Name:       req.SandboxName,
-			Repo:       record.RepoRemote,
-			Out:        req.RemoteOutput,
-		})
 		if err != nil {
-			return fmt.Errorf("provision factory sandbox: %w", err)
+			return err
 		}
 	}
 	if target == nil {
@@ -132,6 +135,12 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if err != nil {
 			return fmt.Errorf("start factory sandbox %q: %w", target.Name, err)
 		}
+	}
+
+	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+	record.UpdatedAt = deps.now().UTC()
+	if err := deps.saveRun(store, &record); err != nil {
+		return fmt.Errorf("record factory sandbox metadata: %w", err)
 	}
 
 	provider, err := deps.resolveProvider(target.Provider)
@@ -153,6 +162,46 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			"provider":     target.Provider,
 		},
 	})
+}
+
+func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *factory.SandboxMetadata) {
+	if instance == nil {
+		return "", nil
+	}
+
+	connection := factorySandboxConnectionMetadataFromState(instance)
+	metadata := &factory.SandboxMetadata{
+		Name:           instance.Name,
+		Provider:       instance.Provider,
+		Status:         instance.Status,
+		Connection:     connection,
+		SSHCommand:     fmt.Sprintf("hal sandbox ssh %s", instance.Name),
+		CleanupCommand: fmt.Sprintf("hal sandbox delete %s", instance.Name),
+		Handoff:        fmt.Sprintf("Inspect sandbox with `hal sandbox ssh %s`.", instance.Name),
+	}
+	return instance.Name, metadata
+}
+
+func factorySandboxConnectionMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxConnectionMetadata {
+	if instance == nil {
+		return nil
+	}
+
+	connection := &factory.SandboxConnectionMetadata{
+		Address:           instance.IP,
+		PublicIP:          instance.IP,
+		TailscaleIP:       instance.TailscaleIP,
+		TailscaleHostname: instance.TailscaleHostname,
+		TailscaleLockdown: instance.TailscaleLockdown,
+	}
+	if connection.Address == "" &&
+		connection.PublicIP == "" &&
+		connection.TailscaleIP == "" &&
+		connection.TailscaleHostname == "" &&
+		!connection.TailscaleLockdown {
+		return nil
+	}
+	return connection
 }
 
 func factoryRunningSandboxFilter(instance *sandbox.SandboxState) bool {

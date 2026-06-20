@@ -6,6 +6,7 @@
 - Factory machine contract docs are guarded by `cmd/contracts_doc_test.go`; add reflection-backed JSON tag checks there when documenting nested durable metadata objects so docs drift fails tests.
 - Sandbox-backed factory execution side effects belong behind `factorySandboxExecutorDeps` in `cmd/factory_sandbox_executor.go`; add new remote behavior through normalized injectable dependencies so tests can fake registry, provisioning/start, provider exec, clocks, and store persistence.
 - `hal factory run --sandbox` selection lives in `factoryRunRequest.Sandbox` and dispatches through `factoryRunDeps.runSandbox`; keep local execution behind `runPipeline` so no-flag factory runs stay on the existing local path.
+- Existing sandbox reuse in `runFactorySandboxExecutorWithDeps` should persist `RunRecord.SandboxName` and `RunRecord.Sandbox` immediately after target resolution/start; no-name resolution should keep `sandbox.ResolveDefault` running-only error strings unless a later provisioning path intentionally handles them.
 
 ---
 
@@ -53,4 +54,16 @@
   - Factory run mode selection happens before pipeline execution by setting `ExecutorMode` from `factoryRunRequest.Sandbox`.
   - Add new factory run execution modes as injected `factoryRunDeps` functions so tests can assert dispatch without invoking real CLIs, providers, or network calls.
   - Generated CLI docs are intentionally left to the dedicated documentation story when command metadata changes.
+---
+## 2026-06-21 07:26 CST - US-005
+- Reused existing managed sandboxes for sandbox-backed factory execution by resolving explicit targets through the injected loader and no-name targets through the injected `sandbox.ResolveDefault` running-only path.
+- Persisted resolved sandbox name, provider, status, safe connection display fields, and handoff commands on the local factory run record before remote provider execution.
+- Preserved default-resolution error strings for no-name sandbox runs instead of provisioning on empty or ambiguous registry state.
+- Added fake-dependency tests for explicit and default sandbox resolution, metadata persistence, running-only filtering, provider exec inputs, and default-resolution errors without real providers or network calls.
+- Files changed: `cmd/factory_sandbox_executor.go`, `cmd/factory_sandbox_executor_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: focused `go test ./cmd -run 'TestRunFactorySandboxExecutorWithDeps|TestNormalizeFactorySandboxExecutorDeps'`, `make test`, and `make vet` passed.
+- **Learnings for future iterations:**
+  - Persist sandbox metadata as soon as a target is selected so later execution/failure paths can rely on durable local handoff context.
+  - No-name sandbox factory runs should use the same running-only filter semantics as `sandbox.ResolveDefault`; tests should assert stopped sandboxes are rejected by that filter.
+  - Keep provisioning behavior explicit by target mode: explicit missing targets can still flow through the provision dependency, while default registry errors remain visible until a provisioning story intentionally changes that behavior.
 ---
