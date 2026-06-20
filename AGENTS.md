@@ -40,6 +40,7 @@
 ## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
 
 - Factory bootstrap command execution belongs behind `internal/factory.BootstrapCommandExecutor`; use `RunBootstrapStep` with injected fake executors and deterministic clocks in tests instead of spawning git, Hal, or engine CLIs directly.
+- Tooling verification bootstrap belongs in `internal/factory.BootstrapVerifyTooling`; configure Hal and engine checks with `BootstrapToolingCheck`, and use `InstallCommand` only with `BootstrapOptions.InstallMissingCLIs` so missing executables classify as `dependency` while failed setup commands classify as `engine_setup`.
 - Repository checkout bootstrap belongs in `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so tests assert deterministic git clone/fetch/checkout commands without touching real repositories.
 - Run branch preparation also belongs in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests can cover local retry, remote resume, and first-run branch creation without real git refs.
 
@@ -457,3 +458,4 @@
 
 - Factory bootstrap request/result DTOs live in `internal/factory` alongside durable run/timeline records; keep them independent of command/runtime dependencies, and lock exported machine-readable fields with explicit JSON tags, raw-key assertions, and round-trip tests in `internal/factory/types_test.go`.
 - Bootstrap failure classification uses bootstrap-specific categories (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) in `internal/factory/bootstrap_failure.go`; keep this separate from generic factory run categories and avoid putting raw command output into timeline-ready failure messages.
+- Tooling verification bootstrap belongs in `internal/factory.BootstrapVerifyTooling`; configure Hal and engine checks with `BootstrapToolingCheck`, and use `InstallCommand` only with `BootstrapOptions.InstallMissingCLIs` so missing executables classify as `dependency` while failed setup commands classify as `engine_setup`.

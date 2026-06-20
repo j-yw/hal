@@ -5,6 +5,7 @@
 - Factory bootstrap request/result DTOs live in `internal/factory`; add explicit JSON tags and lock exported machine-readable fields with raw-key plus round-trip tests in `internal/factory/types_test.go`.
 - Bootstrap failure classification lives in `internal/factory/bootstrap_failure.go` with a separate bootstrap taxonomy (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) and sanitized messages that avoid raw command output.
 - Factory bootstrap command execution goes through `internal/factory.BootstrapCommandExecutor` and `RunBootstrapStep`; tests should inject fake executors and deterministic clocks rather than spawning git, Hal, or engine CLIs directly.
+- Tooling verification goes through `internal/factory.BootstrapVerifyTooling`; configure required Hal/engine checks with `BootstrapToolingCheck`, and only attach installer commands when `BootstrapOptions.InstallMissingCLIs` should allow install-and-recheck behavior.
 - Repository checkout bootstrap goes through `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so clone/fetch/checkout command construction is tested deterministically without touching real repositories.
 - Run branch preparation stays in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests cover local retry, remote resume, and first-run branch creation without real git refs.
 
@@ -55,4 +56,13 @@
   - Run branch setup should happen after base checkout so branch creation always has a deterministic base ref.
   - Branch existence should be injected with `LocalBranchExists` and `RemoteBranchExists` in tests; the default path can probe via the executor boundary when a real executor exists.
   - Remote branch resume fetches the run branch into `refs/remotes/origin/<branch>` before `git checkout --track origin/<branch>` so checkout does not depend on implicit fetch refspec behavior.
+---
+
+## 2026-06-21 05:23 CST - US-006
+- Implemented factory tooling verification for Hal and configurable engine CLI checks, including optional install-and-recheck behavior when `InstallMissingCLIs` is enabled.
+- Files changed: `internal/factory/bootstrap_tooling.go`, `internal/factory/bootstrap_tooling_test.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep required CLI checks as structured `BootstrapToolingCheck` values so tests can assert command name, args, directory, and optional installer behavior without invoking real CLIs.
+  - Missing executable errors should flow through `RunBootstrapStep` and `ClassifyBootstrapFailure` so they stay categorized as `dependency`; non-missing Hal/engine setup command failures should classify as `engine_setup`.
+  - `make lint` still exits successfully with only an install hint when `golangci-lint` is unavailable; include that nuance when reporting checks.
 ---
