@@ -5,6 +5,7 @@
 - Factory run/event schemas live in `internal/factory`; exported JSON DTO fields should use explicit camelCase tags and be locked with marshal/unmarshal key tests before storage or CLI layers consume them.
 - Factory store paths live in `internal/factory`; the default root is `sandbox.GlobalDir()/factory` with `runs/` and `timelines/` directories created at `0700`, and read-only list operations treat missing directories as empty state.
 - Factory run records are persisted through `Store.SaveRun`/`Store.LoadRun` as `runs/<runID>.json`; writes use `0600` temp files plus rename, and missing loads must wrap `fs.ErrNotExist`.
+- Use `Store.ListRuns` for full factory run records ordered newest-first by latest created/updated timestamp with run ID as the stable tie-breaker; keep `ListRunIDs` for lexicographic ID-only listings.
 
 ---
 
@@ -39,4 +40,15 @@
   - Use `Store.SaveRun` and `Store.LoadRun` as the factory run-record API instead of reading or writing files directly.
   - Factory run record writes follow the sandbox registry durability pattern: marshal indented JSON, write `<run>.json.tmp` at `0600`, then rename to the committed `.json` file.
   - Missing factory run loads intentionally wrap `fs.ErrNotExist` so callers and command layers can use `errors.Is(err, fs.ErrNotExist)`.
+---
+
+## 2026-06-20 23:42 CST - US-004
+- Implemented `Store.ListRuns` to load committed factory run records and return them newest-first by latest created/updated timestamp with run ID as a deterministic tie-breaker.
+- Added focused tests for missing-store empty-state behavior, no directory creation on read-only listing, ignored non-record artifacts, full record loading, newest-first ordering, and stable tie-breaking.
+- Files changed: `internal/factory/store.go`, `internal/factory/store_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test ./internal/factory` passed; `go test ./...` passed; `go vet ./...` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - `Store.ListRuns` is the full-record API for later factory list/status commands; `Store.ListRunIDs` remains an ID-only lexicographic helper.
+  - Full run listing should only read committed `*.json` files under `factory/runs/` and should ignore directories, non-JSON files, and temp-like files such as `*.json.tmp`.
+  - Read-only factory listing methods should not call `Ensure`, so missing store directories remain empty state without creating global config artifacts.
 ---

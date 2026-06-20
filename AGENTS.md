@@ -424,3 +424,4 @@
 - Factory persistent state belongs in `internal/factory.Store`, rooted at `sandbox.GlobalDir()/factory`; do not put factory run records under per-project `.hal/`.
 - Use `Store.Ensure` or `EnsureStoreDir` to create `factory/`, `factory/runs/`, and `factory/timelines/` with `0700` permissions, and keep read-only list paths empty-state when directories are missing.
 - Persist factory run records through `Store.SaveRun` and load them through `Store.LoadRun`; committed records live at `factory/runs/<runID>.json`, writes use `0600` temp files plus rename, and missing loads should remain compatible with `errors.Is(err, fs.ErrNotExist)`.
+- Use `Store.ListRuns` when callers need full run records ordered newest-first by latest created/updated timestamp with run ID tie-breaking; keep `Store.ListRunIDs` for lexicographic ID-only listings.

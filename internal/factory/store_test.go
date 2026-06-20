@@ -149,6 +149,74 @@ func TestListRunIDsReturnsDeterministicOrder(t *testing.T) {
 	}
 }
 
+func TestListRunsTreatsMissingStoreAsEmpty(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	got, err := store.ListRuns()
+	if err != nil {
+		t.Fatalf("ListRuns() unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListRuns() = %v, want empty", got)
+	}
+	if _, err := os.Stat(store.Root()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ListRuns() should not create store root, stat error = %v", err)
+	}
+}
+
+func TestListRunsReturnsCommittedRecordsNewestFirst(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 20, 16, 0, 0, 0, time.UTC)
+
+	records := []RunRecord{
+		testRunRecord("run-old"),
+		testRunRecord("run-tie-b"),
+		testRunRecord("run-tie-a"),
+		testRunRecord("run-new"),
+	}
+	records[0].CreatedAt = base.Add(1 * time.Minute)
+	records[0].UpdatedAt = base.Add(2 * time.Minute)
+	records[1].CreatedAt = base.Add(4 * time.Minute)
+	records[1].UpdatedAt = base.Add(10 * time.Minute)
+	records[2].CreatedAt = base.Add(5 * time.Minute)
+	records[2].UpdatedAt = base.Add(10 * time.Minute)
+	records[3].CreatedAt = base.Add(20 * time.Minute)
+	records[3].UpdatedAt = base.Add(20 * time.Minute)
+	records[3].CurrentStep = "ci"
+
+	for i := range records {
+		record := records[i]
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun(%q) unexpected error: %v", record.RunID, err)
+		}
+	}
+	for _, name := range []string{"README.md", "run-temp.json.tmp"} {
+		if err := os.WriteFile(filepath.Join(store.RunsDir(), name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write %q: %v", name, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(store.RunsDir(), "run-dir"), 0o700); err != nil {
+		t.Fatalf("mkdir run-dir: %v", err)
+	}
+
+	got, err := store.ListRuns()
+	if err != nil {
+		t.Fatalf("ListRuns() unexpected error: %v", err)
+	}
+
+	gotRunIDs := make([]string, 0, len(got))
+	for _, record := range got {
+		gotRunIDs = append(gotRunIDs, record.RunID)
+	}
+	wantRunIDs := []string{"run-new", "run-tie-a", "run-tie-b", "run-old"}
+	if !reflect.DeepEqual(gotRunIDs, wantRunIDs) {
+		t.Fatalf("ListRuns() run IDs = %v, want %v", gotRunIDs, wantRunIDs)
+	}
+	if got[0].CurrentStep != records[3].CurrentStep {
+		t.Fatalf("ListRuns() should return full run records, got currentStep %q", got[0].CurrentStep)
+	}
+}
+
 func TestSaveRunAndLoadRunRoundTripWithNewStore(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-001")

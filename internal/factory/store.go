@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 )
@@ -167,6 +168,48 @@ func (s Store) LoadRun(runID string) (*RunRecord, error) {
 	return &record, nil
 }
 
+// ListRuns returns committed run records ordered newest-first by their latest
+// creation or update timestamp, with run ID as a stable tie-breaker.
+func (s Store) ListRuns() ([]RunRecord, error) {
+	runsDir := s.RunsDir()
+	if runsDir == "" {
+		return nil, errStoreDirUnavailable
+	}
+
+	entries, err := os.ReadDir(runsDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read factory runs dir: %w", err)
+	}
+
+	records := make([]RunRecord, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != runRecordFileExt {
+			continue
+		}
+
+		runID := strings.TrimSuffix(entry.Name(), runRecordFileExt)
+		record, err := s.LoadRun(runID)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, *record)
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		leftTime := runRecordListTimestamp(records[i])
+		rightTime := runRecordListTimestamp(records[j])
+		if !leftTime.Equal(rightTime) {
+			return leftTime.After(rightTime)
+		}
+		return records[i].RunID < records[j].RunID
+	})
+
+	return records, nil
+}
+
 // ListRunIDs returns known run IDs in deterministic order. Missing store
 // directories are empty state so read-only callers do not create global files.
 func (s Store) ListRunIDs() ([]string, error) {
@@ -218,6 +261,14 @@ func (s Store) runRecordPath(runID string) (string, error) {
 	}
 
 	return filepath.Join(runsDir, runID+runRecordFileExt), nil
+}
+
+func runRecordListTimestamp(record RunRecord) time.Time {
+	timestamp := record.CreatedAt
+	if record.UpdatedAt.After(timestamp) {
+		timestamp = record.UpdatedAt
+	}
+	return timestamp
 }
 
 func saveStoreFile(tmpPath, path string) error {
