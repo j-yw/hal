@@ -9,6 +9,8 @@
 - Repository checkout bootstrap goes through `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so clone/fetch/checkout command construction is tested deterministically without touching real repositories.
 - Run branch preparation stays in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests cover local retry, remote resume, and first-run branch creation without real git refs.
 - Hal template, standards, managed skill, and engine-link setup goes through `internal/factory.BootstrapRefreshHal`; delegate to `hal init` or `hal init --refresh-templates` plus `hal links refresh` through the executor boundary instead of duplicating template or skill ownership logic.
+- Bootstrap request environment values flow through `BootstrapStepDeps.Request`; use `RunBootstrapStep` so request env reaches the executor while returned command summaries and command results are sanitized.
+- Use `NewBootstrapSanitizer` or the `SanitizeBootstrapCommand*` helpers before recording bootstrap command/timeline data; sensitive env keys and their configured values must not appear in serialized records.
 
 ---
 
@@ -77,4 +79,14 @@
   - `BootstrapOptions.RefreshHal` controls whether the setup command includes `--refresh-templates`; plain `hal init` remains the safe create/preserve path.
   - Missing `hal` executable errors still classify as `dependency` because missing-dependency classification intentionally runs before engine setup classification.
   - `make lint` exits successfully with an install hint when `golangci-lint` is missing in this environment; `make vet`, `make test`, and `make build` provided active verification.
+---
+
+## 2026-06-21 05:41 CST - US-008
+- Implemented request-level bootstrap environment injection with sanitized command summaries/results, plus public sanitizer helpers for command records and timeline events.
+- Added tests proving env values reach fake executors while serialized sanitized command results, command records, and timeline events omit secret-looking fixture values and sensitive env key names.
+- Files changed: `internal/factory/bootstrap_types.go`, `internal/factory/bootstrap_executor.go`, `internal/factory/bootstrap_sanitize.go`, `internal/factory/bootstrap_executor_test.go`, `internal/factory/bootstrap_repository.go`, `internal/factory/bootstrap_repository_test.go`, `internal/factory/bootstrap_tooling.go`, `internal/factory/bootstrap_hal.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Request env injection belongs in `RunBootstrapStep` so repository, tooling, and Hal refresh bootstrap paths inherit the same executor behavior.
+  - Command-specific environment values intentionally override request-level values, preserving step-local safety controls like `GIT_TERMINAL_PROMPT=0`.
+  - Redaction tests should marshal sanitized command or timeline records and assert both the secret-looking fixture value and sensitive env key name are absent.
 ---

@@ -40,11 +40,11 @@ func BootstrapRefreshHal(ctx context.Context, request BootstrapRequest, deps Boo
 
 	for _, planned := range commands {
 		if request.Options.DryRun {
-			result.Steps = append(result.Steps, plannedBootstrapHalStep(deps, planned.stepName, planned.command))
+			result.Steps = append(result.Steps, plannedBootstrapHalStep(deps, request, planned.stepName, planned.command))
 			continue
 		}
 
-		step, _, failure, err := RunBootstrapStep(ctx, deps.stepDeps(), planned.stepName, planned.command)
+		step, _, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), planned.stepName, planned.command)
 		result.Steps = append(result.Steps, step)
 		if err != nil {
 			result.Failure = failure
@@ -81,7 +81,9 @@ func bootstrapHalCommands(request BootstrapRequest, repoPath string) []bootstrap
 	}
 }
 
-func plannedBootstrapHalStep(deps BootstrapHalDeps, stepName string, command BootstrapCommand) BootstrapStepResult {
+func plannedBootstrapHalStep(deps BootstrapHalDeps, request BootstrapRequest, stepName string, command BootstrapCommand) BootstrapStepResult {
+	command = injectBootstrapRequestEnv(request, command)
+	command = NewBootstrapSanitizer(request).SanitizeCommand(command)
 	return BootstrapStepResult{
 		Name:           strings.TrimSpace(stepName),
 		Status:         RunStatusPending,
@@ -90,10 +92,11 @@ func plannedBootstrapHalStep(deps BootstrapHalDeps, stepName string, command Boo
 	}
 }
 
-func (d BootstrapHalDeps) stepDeps() BootstrapStepDeps {
+func (d BootstrapHalDeps) stepDeps(request BootstrapRequest) BootstrapStepDeps {
 	return BootstrapStepDeps{
 		Executor: d.Executor,
 		Now:      d.Now,
+		Request:  request,
 	}
 }
 
