@@ -1,0 +1,16 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory bootstrap request/result DTOs live in `internal/factory`; add explicit JSON tags and lock exported machine-readable fields with raw-key plus round-trip tests in `internal/factory/types_test.go`.
+
+---
+
+## 2026-06-21 04:39 CST - US-001
+- Implemented exported bootstrap request/result contracts in `internal/factory`, including options, step records, sanitized timeline events, and failure detail shape.
+- Files changed: `internal/factory/bootstrap_types.go`, `internal/factory/types.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Factory bootstrap contracts belong in `internal/factory` alongside durable run/timeline DTOs, with command/runtime behavior added later behind injectable dependencies.
+  - Machine-readable factory DTOs are guarded by explicit JSON tag reflection plus raw-key and round-trip tests in `internal/factory/types_test.go`.
+  - `make lint` does not run static analysis when `golangci-lint` is missing; it prints the install hint and exits successfully.
+---
