@@ -9,6 +9,7 @@
 - Factory PR/CI outcome artifacts are materialized from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata during `runPRStep` and record partial warning artifacts when outcome state is unavailable.
 - Sandbox artifact collection uses `factory.SandboxArtifactCopier` plus `factory.CollectSandboxArtifacts`; remote paths are copier inputs only, while persisted metadata keeps safe display paths and store-backed paths.
 - Sandbox factory runs collect remote artifacts during `recordFactoryRunArtifacts` when the persisted run record has `ExecutorModeSandbox`; tests should mutate the run record inside the fake pipeline and inject `sandboxCopier`/`sandboxRequests` through `factoryRunDeps`.
+- Read-only factory subcommands should use small injectable deps structs with `defaultStore func() (factory.Store, error)` so command tests can use isolated `factory.NewStore(t.TempDir())` roots.
 
 ---
 
@@ -77,4 +78,14 @@
   - Sandbox artifact collection is triggered from persisted run metadata, not from a separate command path; set `ExecutorModeSandbox` and `SandboxName` on the run record before finalization.
   - Keep sandbox provider behavior behind `factory.SandboxArtifactCopier` and inject fake request/copy dependencies in `cmd/factory_test.go`.
   - Optional missing sandbox artifacts should remain partial warning records so failed sandbox runs still expose available evidence.
+---
+## 2026-06-21 07:37:40 CST - US-008
+- Added `hal factory artifacts <run-id>` as a human-readable command that loads one stored factory run and lists artifact display paths, store-backed paths, summary metadata, and warning state.
+- Added command tests for successful artifact listing, missing run errors without output, empty artifact lists, and command metadata registration.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Checks run: `go test ./cmd -run 'TestFactoryCommandHelpMetadata|TestRunFactoryArtifacts|TestFactoryArtifactsCommandRegistered|TestCommandTreeHasCompleteMetadata'`, `make test`, `make vet`, `make lint`; `make lint` skipped because `golangci-lint` is not installed.
+- **Learnings for future iterations:**
+  - Read-only factory commands should mirror `list`/`status`: use an injectable deps struct for the store, return `factory run "<id>" not found` for missing records, and avoid writing output when the run is missing.
+  - Human artifact output should prefer the durable display `Path` and `StoredPath`; avoid showing `SourcePath` by default because it can be an absolute temp or workspace path.
+  - Summary metadata rendering should sort keys for deterministic command tests.
 ---

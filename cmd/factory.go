@@ -52,7 +52,8 @@ which is separate from per-project .hal runtime state.`,
   hal factory run --report .hal/reports/analysis.md --json
   hal factory list
   hal factory list --json
-  hal factory status <run-id> --json`,
+  hal factory status <run-id> --json
+  hal factory artifacts <run-id>`,
 }
 
 var factoryRunCmd = &cobra.Command{
@@ -102,6 +103,19 @@ JSON output includes the full run record and timeline events in append order.`,
 	RunE: runFactoryStatus,
 }
 
+var factoryArtifactsCmd = &cobra.Command{
+	Use:   "artifacts <run-id>",
+	Short: "List artifacts for a stored factory run",
+	Args:  exactArgsValidation(1),
+	Long: `List collected artifacts for one stored factory run from the global factory store.
+
+The output includes each artifact's display path, store-backed path when
+available, type, warning state, and summary metadata. Use this command when
+you need run evidence paths without opening the stored run JSON manually.`,
+	Example: `  hal factory artifacts run-20260620-001`,
+	RunE:    runFactoryArtifacts,
+}
+
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
@@ -111,6 +125,7 @@ func init() {
 	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
+	factoryCmd.AddCommand(factoryArtifactsCmd)
 	rootCmd.AddCommand(factoryCmd)
 }
 
@@ -127,6 +142,14 @@ type factoryStatusDeps struct {
 }
 
 var defaultFactoryStatusDeps = factoryStatusDeps{
+	defaultStore: factory.DefaultStore,
+}
+
+type factoryArtifactsDeps struct {
+	defaultStore func() (factory.Store, error)
+}
+
+var defaultFactoryArtifactsDeps = factoryArtifactsDeps{
 	defaultStore: factory.DefaultStore,
 }
 
@@ -1756,6 +1779,40 @@ func runFactoryStatusWithDeps(out io.Writer, runID string, jsonMode bool, deps f
 	return nil
 }
 
+func runFactoryArtifacts(cmd *cobra.Command, args []string) error {
+	out := io.Writer(os.Stdout)
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+
+	return runFactoryArtifactsWithDeps(out, args[0], defaultFactoryArtifactsDeps)
+}
+
+func runFactoryArtifactsWithDeps(out io.Writer, runID string, deps factoryArtifactsDeps) error {
+	if out == nil {
+		out = io.Discard
+	}
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+	record, err := store.LoadRun(runID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("factory run %q not found", runID)
+	}
+	if err != nil {
+		return fmt.Errorf("load factory run %q: %w", runID, err)
+	}
+
+	renderFactoryArtifactsTable(out, *record)
+	return nil
+}
+
 func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 	summaries := make([]FactoryRunSummary, 0, len(records))
 	for _, record := range records {
@@ -1868,6 +1925,75 @@ func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []
 		)
 	}
 	_ = w.Flush()
+}
+
+func renderFactoryArtifactsTable(out io.Writer, record factory.RunRecord) {
+	fmt.Fprintf(out, "Run ID: %s\n", record.RunID)
+	if len(record.Artifacts) == 0 {
+		fmt.Fprintf(out, "No artifacts collected for factory run %s.\n", record.RunID)
+		return
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tTYPE\tPATH\tSTORED PATH\tSUMMARY\tWARNINGS")
+	for _, artifact := range record.Artifacts {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			artifact.Name,
+			artifact.Type,
+			factoryArtifactDisplayPath(artifact),
+			artifact.StoredPath,
+			formatFactoryArtifactSummary(artifact.Summary),
+			formatFactoryArtifactWarnings(artifact),
+		)
+	}
+	_ = w.Flush()
+}
+
+func factoryArtifactDisplayPath(artifact factory.ArtifactReference) string {
+	if path := strings.TrimSpace(artifact.Path); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(artifact.StoredPath); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(artifact.URL); path != "" {
+		return path
+	}
+	return "-"
+}
+
+func formatFactoryArtifactSummary(summary map[string]any) string {
+	if len(summary) == 0 {
+		return "-"
+	}
+
+	keys := make([]string, 0, len(summary))
+	for key := range summary {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value, err := json.Marshal(summary[key])
+		if err != nil {
+			parts = append(parts, fmt.Sprintf("%s=%v", key, summary[key]))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", key, string(value)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatFactoryArtifactWarnings(artifact factory.ArtifactReference) string {
+	warnings := append([]string(nil), artifact.Warnings...)
+	if artifact.Partial && len(warnings) == 0 {
+		warnings = append(warnings, "partial")
+	}
+	if len(warnings) == 0 {
+		return "-"
+	}
+	return strings.Join(warnings, "; ")
 }
 
 func formatFactoryListTime(t time.Time) string {

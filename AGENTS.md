@@ -442,6 +442,7 @@
 - Factory CLI surfaces live in `cmd/factory.go`; keep command logic behind injectable deps so tests can use isolated `factory.Store` roots instead of global config state.
 - `hal factory list --json` uses `FactoryListContractVersion` (`factory-list-v1`) and emits `runs` as summaries from `Store.ListRuns`; omit full `artifacts` and timeline events from list output, using `artifactCount` for compact history inspection.
 - `hal factory status <run-id> --json` uses `FactoryStatusContractVersion` (`factory-status-v1`) and emits full `run` plus append-ordered `timeline`; load the run before the timeline so missing run IDs return an error without writing a JSON payload.
+- Read-only `hal factory` subcommands should keep command logic behind small deps structs with `defaultStore func() (factory.Store, error)`, so tests can inject `factory.NewStore(t.TempDir())` and avoid global config state.
 - Factory JSON contract changes should update exact top-level key locks in `cmd/machine_contracts_test.go`, docs/example sync in `cmd/contracts_doc_test.go`, and internal DTO round-trip tests in `internal/factory/types_test.go`.
 - Adding a new factory command page requires command metadata coverage plus `make docs-cli`/`make docs-check`, because generated `docs/cli/hal_factory*.md` files are part of CI drift checks.
 
