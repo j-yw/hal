@@ -1,0 +1,19 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory durable schema additions should preserve compatibility fields like `RunRecord.SandboxName` while adding richer optional objects; lock JSON field names and omission behavior in `internal/factory/types_test.go`.
+
+---
+
+## 2026-06-21 07:06 CST - US-001
+- Added optional sandbox metadata to factory run records, including sandbox identity, provider, lifecycle status, safe connection display fields, SSH/cleanup commands, and handoff text.
+- Preserved existing local factory run compatibility by keeping sandbox metadata optional and continuing to omit sandbox fields when absent.
+- Added serialization tests for sandbox metadata field names, safe connection fields, forbidden secret-like fields, round-trip behavior, and optional omission.
+- Files changed: `internal/factory/types.go`, `internal/factory/types_test.go`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test ./internal/factory ./cmd`, `make test`, `make vet`.
+- **Learnings for future iterations:**
+  - Factory durable schemas use explicit JSON tags on exported fields, enforced by `TestFactoryTypesHaveJSONTags`.
+  - Keep legacy summary fields such as `sandboxName` when adding richer metadata so existing records and consumers remain readable.
+  - Safe sandbox metadata belongs in `internal/factory` contract types and should not include tokens, private keys, credentials, API keys, or raw env values.
+---

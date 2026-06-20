@@ -58,12 +58,35 @@ type RunRecord struct {
 	BranchName   string              `json:"branchName"`
 	BaseBranch   string              `json:"baseBranch"`
 	SandboxName  string              `json:"sandboxName,omitempty"`
+	Sandbox      *SandboxMetadata    `json:"sandbox,omitempty"`
 	CurrentStep  string              `json:"currentStep"`
 	CreatedAt    time.Time           `json:"createdAt"`
 	UpdatedAt    time.Time           `json:"updatedAt"`
 	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
 	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
+}
+
+// SandboxMetadata captures redaction-safe remote execution details for a
+// sandbox-backed factory run.
+type SandboxMetadata struct {
+	Name           string                     `json:"name"`
+	Provider       string                     `json:"provider"`
+	Status         string                     `json:"status"`
+	Connection     *SandboxConnectionMetadata `json:"connection,omitempty"`
+	SSHCommand     string                     `json:"sshCommand,omitempty"`
+	CleanupCommand string                     `json:"cleanupCommand,omitempty"`
+	Handoff        string                     `json:"handoff,omitempty"`
+}
+
+// SandboxConnectionMetadata contains safe connection display fields. It must
+// not grow credentials, private keys, tokens, or raw environment values.
+type SandboxConnectionMetadata struct {
+	Address           string `json:"address,omitempty"`
+	PublicIP          string `json:"publicIp,omitempty"`
+	TailscaleIP       string `json:"tailscaleIp,omitempty"`
+	TailscaleHostname string `json:"tailscaleHostname,omitempty"`
+	TailscaleLockdown bool   `json:"tailscaleLockdown,omitempty"`
 }
 
 // SourceMetadata identifies the input that started a factory run.
