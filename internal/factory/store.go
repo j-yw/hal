@@ -168,6 +168,57 @@ func (s Store) LoadRun(runID string) (*RunRecord, error) {
 	return &record, nil
 }
 
+// AppendEvent durably appends an event to a run's timeline.
+func (s Store) AppendEvent(event *EventRecord) error {
+	if event == nil {
+		return fmt.Errorf("factory event record is required")
+	}
+
+	path, err := s.timelinePath(event.RunID)
+	if err != nil {
+		return err
+	}
+	if err := s.Ensure(); err != nil {
+		return err
+	}
+
+	events, err := s.loadEvents(event.RunID, path)
+	if err != nil {
+		return err
+	}
+	events = append(events, *event)
+
+	data, err := json.MarshalIndent(events, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory timeline %q: %w", event.RunID, err)
+	}
+	data = append(data, '\n')
+
+	tmpPath := path + storeTempFileExt
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return fmt.Errorf("write factory timeline %q: %w", event.RunID, err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod factory timeline %q: %w", event.RunID, err)
+	}
+	if err := saveStoreFile(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("save factory timeline %q: %w", event.RunID, err)
+	}
+
+	return nil
+}
+
+// LoadEvents loads a run's committed timeline events in append order.
+func (s Store) LoadEvents(runID string) ([]EventRecord, error) {
+	path, err := s.timelinePath(runID)
+	if err != nil {
+		return nil, err
+	}
+	return s.loadEvents(runID, path)
+}
+
 // ListRuns returns committed run records ordered newest-first by their latest
 // creation or update timestamp, with run ID as a stable tie-breaker.
 func (s Store) ListRuns() ([]RunRecord, error) {
@@ -248,6 +299,29 @@ func (s Store) runRecordPath(runID string) (string, error) {
 		return "", errStoreDirUnavailable
 	}
 
+	runID, err := validateRunID(runID)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(runsDir, runID+runRecordFileExt), nil
+}
+
+func (s Store) timelinePath(runID string) (string, error) {
+	timelinesDir := s.TimelinesDir()
+	if timelinesDir == "" {
+		return "", errStoreDirUnavailable
+	}
+
+	runID, err := validateRunID(runID)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(timelinesDir, runID+runRecordFileExt), nil
+}
+
+func validateRunID(runID string) (string, error) {
 	trimmedRunID := strings.TrimSpace(runID)
 	if trimmedRunID == "" {
 		return "", fmt.Errorf("factory run ID is required")
@@ -260,7 +334,24 @@ func (s Store) runRecordPath(runID string) (string, error) {
 		return "", fmt.Errorf("factory run ID %q is invalid", runID)
 	}
 
-	return filepath.Join(runsDir, runID+runRecordFileExt), nil
+	return runID, nil
+}
+
+func (s Store) loadEvents(runID, path string) ([]EventRecord, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read factory timeline %q: %w", runID, err)
+	}
+
+	var events []EventRecord
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, fmt.Errorf("parse factory timeline %q: %w", runID, err)
+	}
+
+	return events, nil
 }
 
 func runRecordListTimestamp(record RunRecord) time.Time {

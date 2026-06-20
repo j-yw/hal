@@ -6,6 +6,7 @@
 - Factory store paths live in `internal/factory`; the default root is `sandbox.GlobalDir()/factory` with `runs/` and `timelines/` directories created at `0700`, and read-only list operations treat missing directories as empty state.
 - Factory run records are persisted through `Store.SaveRun`/`Store.LoadRun` as `runs/<runID>.json`; writes use `0600` temp files plus rename, and missing loads must wrap `fs.ErrNotExist`.
 - Use `Store.ListRuns` for full factory run records ordered newest-first by latest created/updated timestamp with run ID as the stable tie-breaker; keep `ListRunIDs` for lexicographic ID-only listings.
+- Factory timelines are persisted through `Store.AppendEvent`/`Store.LoadEvents` as `timelines/<runID>.json`; append rewrites the JSON array through the same `0600` temp-file-plus-rename path and `LoadEvents` returns empty state for missing timelines.
 
 ---
 
@@ -51,4 +52,15 @@
   - `Store.ListRuns` is the full-record API for later factory list/status commands; `Store.ListRunIDs` remains an ID-only lexicographic helper.
   - Full run listing should only read committed `*.json` files under `factory/runs/` and should ignore directories, non-JSON files, and temp-like files such as `*.json.tmp`.
   - Read-only factory listing methods should not call `Ensure`, so missing store directories remain empty state without creating global config artifacts.
+---
+
+## 2026-06-20 23:48 CST - US-005
+- Implemented durable factory timeline appends with `Store.AppendEvent` and read-back with `Store.LoadEvents`, preserving append order across store instances.
+- Added focused tests for append/load persistence, committed timeline file permissions, temp-file cleanup, missing-timeline empty state, supported event types, and run ID validation.
+- Files changed: `internal/factory/store.go`, `internal/factory/store_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test ./internal/factory` passed; `go test ./...` passed; `go vet ./...` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - Use `Store.AppendEvent` and `Store.LoadEvents` as the factory timeline API instead of reading or writing timeline files directly.
+  - Factory timeline files live at `factory/timelines/<runID>.json` as ordered JSON arrays and use the same `0600` temp-file-plus-rename durability pattern as run records.
+  - Missing timelines intentionally load as empty event slices so future status/list command layers can display runs that have no events yet.
 ---

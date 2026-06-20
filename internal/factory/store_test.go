@@ -323,6 +323,119 @@ func TestSaveRunRejectsInvalidRunID(t *testing.T) {
 	}
 }
 
+func TestAppendEventAndLoadEventsRoundTripWithNewStore(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-events-001"
+	events := []EventRecord{
+		testEventRecord(runID, 1, EventTypeRunCreated),
+		testEventRecord(runID, 2, EventTypeStepStarted),
+		testEventRecord(runID, 3, EventTypeVerificationResult),
+	}
+
+	for i := range events {
+		if err := store.AppendEvent(&events[i]); err != nil {
+			t.Fatalf("AppendEvent(%d) unexpected error: %v", events[i].Sequence, err)
+		}
+	}
+
+	timelinePath := filepath.Join(store.TimelinesDir(), runID+runRecordFileExt)
+	info, err := os.Stat(timelinePath)
+	if err != nil {
+		t.Fatalf("expected committed timeline: %v", err)
+	}
+	if info.IsDir() {
+		t.Fatalf("timeline path should be a file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("timeline permissions = %o, want %o", info.Mode().Perm(), 0o600)
+	}
+	if _, err := os.Stat(timelinePath + storeTempFileExt); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("temp file should not remain after AppendEvent(), stat error = %v", err)
+	}
+
+	reloadedStore := NewStore(store.Root())
+	got, err := reloadedStore.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(got, events) {
+		t.Fatalf("LoadEvents() = %#v, want %#v", got, events)
+	}
+}
+
+func TestLoadEventsTreatsMissingTimelineAsEmpty(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	got, err := store.LoadEvents("missing-events")
+	if err != nil {
+		t.Fatalf("LoadEvents() unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("LoadEvents() = %v, want empty", got)
+	}
+	if _, err := os.Stat(store.Root()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadEvents() should not create store root, stat error = %v", err)
+	}
+}
+
+func TestAppendEventSupportsKnownEventTypes(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-events-002"
+	eventTypes := []string{
+		EventTypeRunCreated,
+		EventTypeStepStarted,
+		EventTypeStepEnded,
+		EventTypeCommandOutputSummary,
+		EventTypeVerificationResult,
+		EventTypeCIState,
+		EventTypeArtifactSync,
+		EventTypeFailureClassification,
+	}
+
+	for i, eventType := range eventTypes {
+		event := testEventRecord(runID, int64(i+1), eventType)
+		if err := store.AppendEvent(&event); err != nil {
+			t.Fatalf("AppendEvent(%q) unexpected error: %v", eventType, err)
+		}
+	}
+
+	got, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() unexpected error: %v", err)
+	}
+	if len(got) != len(eventTypes) {
+		t.Fatalf("LoadEvents() length = %d, want %d", len(got), len(eventTypes))
+	}
+	for i, eventType := range eventTypes {
+		if got[i].EventType != eventType {
+			t.Fatalf("event %d type = %q, want %q", i, got[i].EventType, eventType)
+		}
+		if got[i].Sequence != int64(i+1) {
+			t.Fatalf("event %d sequence = %d, want %d", i, got[i].Sequence, i+1)
+		}
+	}
+}
+
+func TestAppendEventRequiresStableRunID(t *testing.T) {
+	tests := []string{
+		"",
+		" run-events",
+		"../run-events",
+		`run\events`,
+	}
+
+	for _, runID := range tests {
+		t.Run(runID, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "factory"))
+			event := testEventRecord(runID, 1, EventTypeRunCreated)
+
+			if err := store.AppendEvent(&event); err == nil {
+				t.Fatalf("AppendEvent() expected invalid run ID error")
+			}
+		})
+	}
+}
+
 func assertFactoryDirExists(t *testing.T, path string) {
 	t.Helper()
 
@@ -332,6 +445,23 @@ func assertFactoryDirExists(t *testing.T, path string) {
 	}
 	if !info.IsDir() {
 		t.Fatalf("expected %q to be a directory", path)
+	}
+}
+
+func testEventRecord(runID string, sequence int64, eventType string) EventRecord {
+	timestamp := time.Date(2026, 6, 20, 15, 30, 0, 0, time.UTC).Add(time.Duration(sequence) * time.Minute)
+
+	return EventRecord{
+		Sequence:  sequence,
+		RunID:     runID,
+		EventType: eventType,
+		Timestamp: timestamp,
+		Message:   "factory event recorded",
+		Summary:   eventType,
+		Metadata: map[string]any{
+			"eventType": eventType,
+			"source":    "test",
+		},
 	}
 }
 
