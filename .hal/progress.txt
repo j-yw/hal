@@ -6,6 +6,7 @@
 - Bootstrap failure classification lives in `internal/factory/bootstrap_failure.go` with a separate bootstrap taxonomy (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) and sanitized messages that avoid raw command output.
 - Factory bootstrap command execution goes through `internal/factory.BootstrapCommandExecutor` and `RunBootstrapStep`; tests should inject fake executors and deterministic clocks rather than spawning git, Hal, or engine CLIs directly.
 - Repository checkout bootstrap goes through `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so clone/fetch/checkout command construction is tested deterministically without touching real repositories.
+- Run branch preparation stays in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests cover local retry, remote resume, and first-run branch creation without real git refs.
 
 ---
 
@@ -45,4 +46,13 @@
   - Treat `BootstrapRequest.WorkspaceDir` as the final repository path for bootstrap repository setup; clone commands run from its parent directory and checkout/fetch commands run inside it.
   - Existing repository setup should fetch `origin` and then checkout the requested base branch; missing repository setup should clone first and then checkout the same base branch.
   - Dry-run repository bootstrap records pending `BootstrapStepResult` entries with command summaries instead of requiring an executor.
+---
+
+## 2026-06-21 05:13 CST - US-005
+- Implemented idempotent run branch preparation in repository bootstrap, including local branch reuse, remote branch fetch/track checkout, and first-run branch creation from the requested base branch.
+- Files changed: `internal/factory/bootstrap_repository.go`, `internal/factory/bootstrap_repository_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Run branch setup should happen after base checkout so branch creation always has a deterministic base ref.
+  - Branch existence should be injected with `LocalBranchExists` and `RemoteBranchExists` in tests; the default path can probe via the executor boundary when a real executor exists.
+  - Remote branch resume fetches the run branch into `refs/remotes/origin/<branch>` before `git checkout --track origin/<branch>` so checkout does not depend on implicit fetch refspec behavior.
 ---

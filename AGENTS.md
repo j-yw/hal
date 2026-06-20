@@ -41,6 +41,7 @@
 
 - Factory bootstrap command execution belongs behind `internal/factory.BootstrapCommandExecutor`; use `RunBootstrapStep` with injected fake executors and deterministic clocks in tests instead of spawning git, Hal, or engine CLIs directly.
 - Repository checkout bootstrap belongs in `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so tests assert deterministic git clone/fetch/checkout commands without touching real repositories.
+- Run branch preparation also belongs in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests can cover local retry, remote resume, and first-run branch creation without real git refs.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
