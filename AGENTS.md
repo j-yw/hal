@@ -450,3 +450,4 @@
 ## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
 
 - Factory bootstrap request/result DTOs live in `internal/factory` alongside durable run/timeline records; keep them independent of command/runtime dependencies, and lock exported machine-readable fields with explicit JSON tags, raw-key assertions, and round-trip tests in `internal/factory/types_test.go`.
+- Bootstrap failure classification uses bootstrap-specific categories (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) in `internal/factory/bootstrap_failure.go`; keep this separate from generic factory run categories and avoid putting raw command output into timeline-ready failure messages.

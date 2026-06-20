@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory bootstrap request/result DTOs live in `internal/factory`; add explicit JSON tags and lock exported machine-readable fields with raw-key plus round-trip tests in `internal/factory/types_test.go`.
+- Bootstrap failure classification lives in `internal/factory/bootstrap_failure.go` with a separate bootstrap taxonomy (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) and sanitized messages that avoid raw command output.
 
 ---
 
@@ -13,4 +14,14 @@
   - Factory bootstrap contracts belong in `internal/factory` alongside durable run/timeline DTOs, with command/runtime behavior added later behind injectable dependencies.
   - Machine-readable factory DTOs are guarded by explicit JSON tag reflection plus raw-key and round-trip tests in `internal/factory/types_test.go`.
   - `make lint` does not run static analysis when `golangci-lint` is missing; it prints the install hint and exits successfully.
+---
+
+## 2026-06-21 04:45 CST - US-002
+- Implemented bootstrap failure classification constants and `ClassifyBootstrapFailure` for repo, auth, dependency, engine setup, and unknown outcomes with sanitized timeline-ready messages.
+- Files changed: `internal/factory/bootstrap_failure.go`, `internal/factory/bootstrap_failure_test.go`, `internal/factory/types_test.go`, `internal/ci/auth.go`, `internal/ci/auth_test.go`, `internal/ci/push.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Bootstrap failure categories are intentionally separate from factory run pipeline categories because remote workspace setup needs repo/auth/dependency/engine setup distinctions.
+  - Classification should prefer dependency and auth evidence before generic repository setup because git failures can carry executable-not-found or credential-specific signals.
+  - Failure messages returned for bootstrap timeline/result output should be controlled summaries, not raw command output, so later environment and secret redaction stories have a safer base.
+  - `make fmt` can surface existing gofmt alignment changes outside the story files; keep them if they are pure formatter output from the standard repo target.
 ---
