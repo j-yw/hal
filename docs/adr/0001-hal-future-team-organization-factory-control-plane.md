@@ -174,6 +174,63 @@ evaluation traces should remain hidden backend implementation details unless a
 future `docs/contracts/` revision explicitly adds a field, state value, action
 identifier, or diagnostic surface for them.
 
+## Shared Queue and Run Lifecycle
+
+The future shared control plane should model factory coordination as explicit
+queue items and runs. A queue item is created when authorized work is submitted
+for a project, validated against policy, and recorded with enough immutable
+intent to reproduce why the work exists. It may then move through pending,
+ready, claimed, running, blocked, completed, failed, cancelled, or expired
+states as future implementation PRDs define the exact state names. Completion
+should attach durable results and artifact references; failure should attach
+diagnostics, retry eligibility, and the actor or automation identity that made
+the terminal transition.
+
+A run is the execution attempt that works a queue item. Runs should be claimed
+through leases rather than by trusting a local process or worktree. A lease
+identifies the actor, project, queue item, run attempt, lease owner, expiration
+time, and any implementation-defined execution environment. Only the current
+lease holder should be allowed to append mutable run output, extend the lease,
+mark the run complete, mark the run failed, or release the claim, subject to the
+authorization boundary above.
+
+Heartbeat updates should be required for active leases. The control plane
+should record heartbeat time separately from terminal state transitions so it
+can distinguish a healthy long-running attempt from an abandoned one. Heartbeat
+cadence, grace periods, and maximum lease duration are policy decisions, but
+future implementations should make them explicit enough for operators to reason
+about stuck work without inspecting local `.hal/` files.
+
+Cancellation should be a first-class transition. An authorized user or policy
+may cancel a pending queue item before a run starts, request cancellation of an
+active run, or force a terminal cancelled state after the control plane has
+recorded that the lease holder did not complete cleanup in time. Cancellation
+should preserve audit records and partial artifacts rather than deleting the
+history that explains why work stopped.
+
+Stale lease detection should be handled by the control plane using lease
+expiration and missing heartbeat signals. Recovery may requeue the item, create
+a new run attempt, mark the run failed, or require manual operator action,
+depending on project policy and retry limits. Recovery should never require two
+agents to coordinate by editing the same local runtime files; the shared
+control plane owns the authoritative transition.
+
+Queue and run transitions should be concurrency-safe. Claiming work, extending
+leases, cancelling work, retrying failed attempts, and writing terminal results
+should use compare-and-set semantics, version checks, database transactions, or
+another future implementation mechanism that prevents two actors from
+successfully making conflicting transitions. Concurrent read operations may be
+broadly available to authorized users, but mutating operations should have a
+single accepted winner and a clear conflict response for losing callers.
+
+Transition requests should also be idempotent. Retried create, claim,
+heartbeat, cancel, complete, fail, and retry requests should either return the
+same accepted result for the same idempotency key or report the existing
+terminal state without duplicating queue items, run attempts, artifacts, audit
+entries, or repository side effects. Idempotency keys, attempt identifiers, and
+artifact references should be treated as backend implementation details unless
+a future CLI contract deliberately exposes them.
+
 ## Decision
 
 Use this ADR as the canonical architectural reference for the future shared

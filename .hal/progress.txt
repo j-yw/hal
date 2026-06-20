@@ -6,6 +6,7 @@
 - Machine-readable CLI compatibility should reference `docs/contracts/` as the canonical source; ADRs should separate stable JSON contract fields from hidden backend implementation details.
 - Future control-plane ADR sections should distinguish organization-level ownership from project-level membership, and should not present future domain terms as CLI JSON contract fields unless `docs/contracts/` is updated.
 - Future RBAC/control-plane ADR sections should name authorization as a shared control-plane responsibility while keeping permission evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
+- Future shared queue/run lifecycle ADR sections should document leases, heartbeats, cancellation, stale recovery, concurrency, and idempotency as architecture expectations without exposing backend attempt IDs, idempotency keys, or lease internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 
 ---
 
@@ -52,4 +53,13 @@
   - Future RBAC sections should describe permission expectations by operation class while avoiding specific role graphs unless a future implementation PRD defines them.
   - Authorization internals should remain hidden backend details and should not appear in CLI JSON contracts unless a future `docs/contracts/` revision explicitly adds them.
   - Documentation-only ADR stories continue to use `make test` and `make vet`; `golangci-lint` was unavailable in this environment, so `make lint` was skipped.
+---
+
+## 2026-06-20 23:40 CST - US-006
+- Added the shared queue and run lifecycle section to the factory control plane ADR, covering queue item lifecycle, run leases, heartbeat requirements, cancellation, stale lease recovery, concurrency, and idempotency expectations.
+- Files changed: `docs/adr/0001-hal-future-team-organization-factory-control-plane.md`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Shared lifecycle concepts should remain architecture expectations in the ADR until a future implementation PRD and `docs/contracts/` update make them runtime or CLI contract fields.
+  - Lease, heartbeat, and idempotency details are useful for future backend design, but should be described without binding the current CLI to backend attempt IDs or idempotency keys.
+  - Documentation-only ADR stories continue to use `make test` and `make vet`; `make lint` may be skipped when `golangci-lint` is unavailable.
 ---

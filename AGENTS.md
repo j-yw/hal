@@ -44,6 +44,7 @@
 - When ADRs discuss machine-readable CLI compatibility, cite `docs/contracts/` as the canonical source and distinguish stable JSON contract fields from hidden implementation details.
 - For future control-plane ADR sections, distinguish organization-level ownership from project-level membership, and do not present future domain terms as CLI JSON contract fields unless `docs/contracts/` is updated.
 - RBAC/authorization ADR sections should describe authorization as a control-plane responsibility while keeping role graphs, permission evaluation, and membership expansion out of CLI JSON contract details unless `docs/contracts/` is updated.
+- Shared queue/run lifecycle ADR sections should cover leases, heartbeats, cancellation, stale recovery, concurrency, and idempotency as architecture expectations; do not expose backend attempt IDs, idempotency keys, or lease internals as CLI JSON contract fields unless `docs/contracts/` is updated.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
