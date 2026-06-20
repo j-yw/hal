@@ -11,6 +11,7 @@
 - Optional verify checks keep their concrete per-check status (`fail`, `timeout`, or `missing`) and add `Warning` entries so the top-level status becomes `warn` instead of `fail`.
 - Verify shell timeout execution uses platform-specific `internal/verify/sysproc_*.go` helpers; set both `cmd.SysProcAttr` and `setupProcessCleanup(cmd)` so Unix timeouts kill shell child process groups.
 - Verify execution tests use `helperCommand`/`TestVerifyHelperProcess` in `internal/verify/run_test.go` to simulate shell behavior deterministically; extend helper subcommands instead of relying on platform-specific shell utilities.
+- Verify artifact capture writes non-empty stdout/stderr to `.hal/reports/verify/<check-id>-stdout.txt` and `<check-id>-stderr.txt`; `LoadConfig` sets `Config.ProjectRoot` so artifacts stay rooted at the project directory.
 
 ---
 
@@ -113,4 +114,17 @@
   - Optional verify checks do not translate failures into a separate check status; they retain `fail`, `timeout`, or `missing` and create entries in the top-level `warnings` array.
   - Missing command/workDir handling belongs in `internal/verify.runShellCheck` before shell execution so required checks can fail the gate and optional checks can warn through the same summary/status path.
   - Summary counts include both the concrete status bucket and `Warnings` for warning-producing optional checks.
+---
+
+## 2026-06-21 05:33 CST - US-010
+- Implemented verification artifact capture for shell checks by writing non-empty stdout and stderr buffers to deterministic files under `.hal/reports/verify/`.
+- Added per-check `stdoutArtifact`/`stderrArtifact` paths and top-level artifact references for captured output.
+- Added `Config.ProjectRoot` population in `LoadConfig` so verify execution can place artifacts relative to the project root even when checks run in subdirectories.
+- Added focused artifact tests that assert exact verify artifact paths and file contents.
+- Ran `go test -timeout=60s ./internal/verify` and `make fmt && make vet && make test && make lint` (lint target exited successfully while printing the existing `golangci-lint` install hint).
+- Files changed: `internal/verify/config.go`, `internal/verify/run.go`, `internal/verify/run_test.go`, `internal/verify/types.go`, `AGENTS.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - `verify.Run` needs a project root for filesystem artifacts; use `LoadConfig` or set `Config.ProjectRoot` in direct tests when exact `.hal/reports/verify` paths matter.
+  - Keep output artifact references relative to the project root in JSON while writing files through absolute project-root paths.
+  - Extend `TestVerifyHelperProcess` with deterministic subcommands when testing stdout/stderr capture behavior.
 ---

@@ -7,8 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
+	"unicode"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 type runDeps struct {
@@ -44,10 +50,15 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 		Warnings:      []Warning{},
 		Artifacts:     []ArtifactReference{},
 	}
+	artifactsDir := verifyArtifactsDir(resolveProjectRoot(cfg))
 
 	for _, check := range cfg.Checks {
-		checkResult := runShellCheck(ctx, check, deps)
+		checkResult, artifacts, err := runShellCheck(ctx, check, deps, artifactsDir)
+		if err != nil {
+			return nil, err
+		}
 		result.Checks = append(result.Checks, checkResult)
+		result.Artifacts = append(result.Artifacts, artifacts...)
 		applyCheckSummary(result, checkResult)
 		if warning, ok := warningForCheck(checkResult); ok {
 			result.Warnings = append(result.Warnings, warning)
@@ -61,7 +72,7 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 	return result, nil
 }
 
-func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps) CheckResult {
+func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifactsDir string) (CheckResult, []ArtifactReference, error) {
 	startedAt := deps.now()
 	result := baseCheckResult(check, startedAt)
 	if missingMessage, ok := missingShellCheckMessage(check); ok {
@@ -71,7 +82,7 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps) CheckRes
 		result.DurationMs = finishedAt.Sub(startedAt).Milliseconds()
 		result.ExitCode = -1
 		result.Message = missingMessage
-		return result
+		return result, nil, nil
 	}
 
 	timeout := time.Duration(check.TimeoutSeconds) * time.Second
@@ -105,7 +116,88 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps) CheckRes
 		}
 	}
 
-	return result
+	artifacts, err := writeCheckArtifacts(check.ID, stdout.Bytes(), stderr.Bytes(), artifactsDir)
+	if err != nil {
+		return CheckResult{}, nil, err
+	}
+	for _, artifact := range artifacts {
+		switch artifact.Kind {
+		case ArtifactKindStdout:
+			result.StdoutArtifact = artifact.Path
+		case ArtifactKindStderr:
+			result.StderrArtifact = artifact.Path
+		}
+	}
+
+	return result, artifacts, nil
+}
+
+func resolveProjectRoot(cfg Config) string {
+	if strings.TrimSpace(cfg.ProjectRoot) != "" {
+		return cfg.ProjectRoot
+	}
+	for _, check := range cfg.Checks {
+		if strings.TrimSpace(check.WorkDir) != "" {
+			return check.WorkDir
+		}
+	}
+	return "."
+}
+
+func verifyArtifactsDir(projectRoot string) string {
+	return filepath.Join(projectRoot, template.HalDir, "reports", "verify")
+}
+
+func writeCheckArtifacts(checkID string, stdout []byte, stderr []byte, artifactsDir string) ([]ArtifactReference, error) {
+	artifacts := make([]ArtifactReference, 0, 2)
+	if len(stdout) > 0 {
+		artifact, err := writeCheckArtifact(checkID, ArtifactKindStdout, stdout, artifactsDir)
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if len(stderr) > 0 {
+		artifact, err := writeCheckArtifact(checkID, ArtifactKindStderr, stderr, artifactsDir)
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts, nil
+}
+
+func writeCheckArtifact(checkID, kind string, data []byte, artifactsDir string) (ArtifactReference, error) {
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return ArtifactReference{}, fmt.Errorf("create verify artifacts directory: %w", err)
+	}
+
+	fileName := fmt.Sprintf("%s-%s.txt", safeArtifactID(checkID), kind)
+	artifactPath := filepath.Join(artifactsDir, fileName)
+	if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+		return ArtifactReference{}, fmt.Errorf("write verify artifact %s: %w", fileName, err)
+	}
+
+	return ArtifactReference{
+		CheckID: checkID,
+		Kind:    kind,
+		Path:    path.Join(template.HalDir, "reports", "verify", fileName),
+	}, nil
+}
+
+func safeArtifactID(checkID string) string {
+	var builder strings.Builder
+	for _, r := range checkID {
+		if r == '-' || r == '_' || r == '.' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(r)
+			continue
+		}
+		builder.WriteByte('_')
+	}
+	if builder.Len() == 0 {
+		return "check"
+	}
+	return builder.String()
 }
 
 func baseCheckResult(check ShellCheck, startedAt time.Time) CheckResult {

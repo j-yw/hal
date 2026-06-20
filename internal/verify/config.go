@@ -15,7 +15,8 @@ const DefaultTimeoutSeconds = 300
 
 // Config contains project verification checks from .hal/config.yaml.
 type Config struct {
-	Checks []ShellCheck `yaml:"checks"`
+	ProjectRoot string       `yaml:"-"`
+	Checks      []ShellCheck `yaml:"checks"`
 }
 
 // ShellCheck contains one configured shell verification check.
@@ -64,6 +65,7 @@ func LoadConfig(dir string) (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg := DefaultConfig()
+			cfg.ProjectRoot = projectRoot
 			return &cfg, nil
 		}
 		return nil, err
@@ -75,6 +77,7 @@ func LoadConfig(dir string) (*Config, error) {
 	}
 
 	cfg := DefaultConfig()
+	cfg.ProjectRoot = projectRoot
 	cfg.Checks = make([]ShellCheck, 0, len(raw.Verify.Checks))
 	for i, rawCheck := range raw.Verify.Checks {
 		check, err := normalizeShellCheck(rawCheck, projectRoot)

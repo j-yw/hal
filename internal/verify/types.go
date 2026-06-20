@@ -27,6 +27,12 @@ const (
 	AdapterShell = "shell"
 )
 
+// Artifact kind values.
+const (
+	ArtifactKindStdout = "stdout"
+	ArtifactKindStderr = "stderr"
+)
+
 // Result is the top-level verify-v1 machine-readable payload.
 type Result struct {
 	SchemaVersion string              `json:"schemaVersion"`
