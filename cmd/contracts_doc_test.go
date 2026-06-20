@@ -13,6 +13,7 @@ import (
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 // TestContractDocsExist verifies that contract documentation exists for
@@ -38,6 +39,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
+		{"verify-v1", "../docs/contracts/verify-v1.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -255,6 +257,49 @@ func TestContractDocsIncludeAutoV2Examples(t *testing.T) {
 	}
 	if !strings.Contains(content, "auto-v2-failure.json") {
 		t.Error("auto-v2.md should reference auto-v2-failure.json")
+	}
+}
+
+func TestContractDocsIncludeVerifyV1Fields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/verify-v1.md")
+	if err != nil {
+		t.Skipf("cannot read verify-v1.md: %v", err)
+	}
+	content := string(data)
+
+	requiredFields := []string{
+		"schemaVersion", "generatedAt", "status", "summary", "checks", "warnings", "artifacts",
+		"total", "passed", "failed", "timedOut", "missing", "skipped",
+		"id", "name", "adapter", "required", "command", "workDir", "timeoutSeconds",
+		"startedAt", "finishedAt", "durationMs", "exitCode", "stdoutArtifact", "stderrArtifact", "message",
+		"checkId", "kind", "path",
+	}
+	for _, field := range requiredFields {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("verify-v1.md missing field %q", field)
+		}
+	}
+
+	requiredValues := []string{
+		verify.SchemaVersion,
+		verify.StatusPass,
+		verify.StatusFail,
+		verify.StatusWarn,
+		verify.CheckStatusPass,
+		verify.CheckStatusFail,
+		verify.CheckStatusTimeout,
+		verify.CheckStatusMissing,
+		verify.CheckStatusSkipped,
+		verify.AdapterShell,
+	}
+	for _, value := range requiredValues {
+		if !strings.Contains(content, value) {
+			t.Errorf("verify-v1.md missing value %q", value)
+		}
+	}
+
+	if !strings.Contains(content, "Required check failures and timeouts produce a failing gate") {
+		t.Error("verify-v1.md missing required failure/timeout gate behavior")
 	}
 }
 
