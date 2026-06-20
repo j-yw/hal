@@ -23,6 +23,7 @@ func TestNoArgsCommandsRejectExtraArgsWithValidationCode(t *testing.T) {
 		{name: "archive list", cmd: archiveListCmd},
 		{name: "standards list", cmd: standardsListCmd},
 		{name: "standards discover", cmd: standardsDiscoverCmd},
+		{name: "verify", cmd: verifyCmd},
 		{name: "sandbox setup", cmd: sandboxSetupCmd},
 		{name: "sandbox create", cmd: sandboxCreateCmd},
 	}

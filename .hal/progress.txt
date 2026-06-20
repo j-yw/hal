@@ -12,6 +12,7 @@
 - Verify shell timeout execution uses platform-specific `internal/verify/sysproc_*.go` helpers; set both `cmd.SysProcAttr` and `setupProcessCleanup(cmd)` so Unix timeouts kill shell child process groups.
 - Verify execution tests use `helperCommand`/`TestVerifyHelperProcess` in `internal/verify/run_test.go` to simulate shell behavior deterministically; extend helper subcommands instead of relying on platform-specific shell utilities.
 - Verify artifact capture writes non-empty stdout/stderr to `.hal/reports/verify/<check-id>-stdout.txt` and `<check-id>-stderr.txt`; `LoadConfig` sets `Config.ProjectRoot` so artifacts stay rooted at the project directory.
+- `hal verify --json` emits the verify-v1 result to stdout before returning a typed non-zero exit for `status=fail`; keep the wrapped error nil so machine consumers get parseable JSON without extra error text.
 
 ---
 
@@ -127,4 +128,17 @@
   - `verify.Run` needs a project root for filesystem artifacts; use `LoadConfig` or set `Config.ProjectRoot` in direct tests when exact `.hal/reports/verify` paths matter.
   - Keep output artifact references relative to the project root in JSON while writing files through absolute project-root paths.
   - Extend `TestVerifyHelperProcess` with deterministic subcommands when testing stdout/stderr capture behavior.
+---
+
+## 2026-06-21 05:40 CST - US-011
+- Added the top-level `hal verify` command with a `--json` flag that loads `.hal/config.yaml` verification checks through `internal/verify.LoadConfig` and runs them through `internal/verify.Run`.
+- Implemented verify-v1 JSON output on stdout, zero exit behavior for `pass` and `warn`, and typed non-zero exit behavior for `fail` after writing parseable JSON.
+- Added human-readable verify summary output for non-JSON runs and registered the new command in root help, no-args validation coverage, and top-level command metadata coverage.
+- Added command tests for config loading, runner delegation, JSON stdout purity, `warn` exit zero, `fail` exit non-zero, config-error stdout silence, and `--json` flag presence.
+- Ran `go run . verify --json`, `go test -timeout=60s ./cmd -run 'TestRunVerify|TestVerifyCommand|TestNoArgsCommandsRejectExtraArgsWithValidationCode|TestCoreCommandsHaveCompleteMetadata|TestCommandTreeHasCompleteMetadata'`, `go test -timeout=120s ./cmd`, `go test -timeout=120s ./internal/verify`, `make fmt`, `make vet`, `GOFLAGS='-timeout=120s' make test`, and `make lint` (lint target returned successfully but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `cmd/verify.go`, `cmd/verify_test.go`, `cmd/root.go`, `cmd/args_test.go`, `cmd/docs_metadata_core_test.go`, `AGENTS.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Command-level verify behavior should stay thin: `cmd/verify.go` owns flag/output/exit behavior and delegates config/execution to `internal/verify`.
+  - For machine-readable gate commands that fail after producing a valid JSON result, return `ExitCodeExpectedNonZero` with a nil wrapped error to avoid polluting stderr while preserving process exit semantics.
+  - New top-level Cobra commands need `Use`, `Short`, `Long`, and `Example`, plus updates to `TestCoreCommandsHaveCompleteMetadata` when they become required command families.
 ---
