@@ -9,6 +9,7 @@
 - Existing sandbox reuse in `runFactorySandboxExecutorWithDeps` should persist `RunRecord.SandboxName` and `RunRecord.Sandbox` immediately after target resolution/start; no-name resolution should keep `sandbox.ResolveDefault` running-only error strings unless a later provisioning path intentionally handles them.
 - Sandbox provision/start failures should be persisted inside `runFactorySandboxExecutorWithDeps` with `RunStatusFailed`, `FailureCategoryPipeline`, and sandbox handoff metadata before returning the wrapped error to the outer factory runner.
 - Sandbox remote execution should carry a structured `factoryRunAutoRequest` from factory dispatch into `factorySandboxExecutorRequest`; build exact provider args with `factorySandboxRemoteAutoArgs` at the sandbox executor boundary and avoid adding env/config pass-through unless explicitly required.
+- Sandbox remote output timeline capture belongs at the sandbox executor boundary: tee provider exec output to the user-facing writer, split complete lines, sanitize with the sandbox redactor, and persist `command_output_summary` events tagged with `source=remote_sandbox`.
 
 ---
 
@@ -91,4 +92,15 @@
   - Use `factoryRunAutoRequestFromFactoryRequest` to keep local and sandbox auto request semantics aligned.
   - Build provider command args in `factorySandboxRemoteAutoArgs` so tests can assert the exact remote `hal auto` invocation.
   - Do not pass arbitrary environment or config values through sandbox factory exec unless a later story defines a redaction-safe contract for them.
+---
+## 2026-06-21 07:41 CST - US-008
+- Added a sandbox timeline writer that tees remote provider exec output to the caller, splits complete output lines, sanitizes persisted payloads with the sandbox redactor, and records each line as a `command_output_summary` timeline event.
+- Tagged remote output events with `source=remote_sandbox`, `stream=remote`, sandbox name, and provider metadata so factory status consumers can distinguish sandbox execution logs from local pipeline progress.
+- Added a fake-dependency test that writes split remote output containing a sandbox IP address and verifies the durable timeline events are line-based, tagged, and redacted before persistence.
+- Files changed: `cmd/factory_sandbox_executor.go`, `cmd/factory_sandbox_executor_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: focused `go test ./cmd -run 'TestRunFactorySandboxExecutorWithDeps|TestFactorySandboxRemoteAutoArgs'`, `make test`, and `make vet` passed.
+- **Learnings for future iterations:**
+  - Capture remote sandbox output at the executor writer boundary so provider exec implementations remain fakeable and user-facing output still streams normally.
+  - Flush partial remote output before appending terminal executor timeline events so event ordering and sequence numbers stay coherent.
+  - The sandbox executor can sanitize known sandbox addresses via `sandboxRedactor(false, nil, target)` without passing arbitrary env/config values into remote execution.
 ---
