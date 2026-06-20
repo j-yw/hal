@@ -53,6 +53,42 @@ func renderFactoryRunJSON(out io.Writer, resp FactoryRunResponse) error {
 	return nil
 }
 
+func renderFactoryRunSummary(out io.Writer, resp FactoryRunResponse) error {
+	resp = normalizeFactoryRunResponse(resp)
+	if _, err := fmt.Fprintf(out, "Run ID: %s\n", resp.RunID); err != nil {
+		return fmt.Errorf("write factory run summary: %w", err)
+	}
+	if _, err := fmt.Fprintf(out, "Status: %s\n", resp.Status); err != nil {
+		return fmt.Errorf("write factory run summary: %w", err)
+	}
+
+	if resp.Failure != nil {
+		if strings.TrimSpace(resp.Failure.ErrorMessage) != "" {
+			if _, err := fmt.Fprintf(out, "Error: %s\n", resp.Failure.ErrorMessage); err != nil {
+				return fmt.Errorf("write factory run summary: %w", err)
+			}
+		}
+		if strings.TrimSpace(resp.Failure.Classification) != "" {
+			if _, err := fmt.Fprintf(out, "Classification: %s\n", resp.Failure.Classification); err != nil {
+				return fmt.Errorf("write factory run summary: %w", err)
+			}
+		}
+		if command := factoryRunSuggestedCommand(resp); command != "" {
+			if _, err := fmt.Fprintf(out, "Suggested command: %s\n", command); err != nil {
+				return fmt.Errorf("write factory run summary: %w", err)
+			}
+		}
+		return nil
+	}
+
+	if resp.NextAction != nil && strings.TrimSpace(resp.NextAction.Command) != "" {
+		if _, err := fmt.Fprintf(out, "Next action: %s\n", resp.NextAction.Command); err != nil {
+			return fmt.Errorf("write factory run summary: %w", err)
+		}
+	}
+	return nil
+}
+
 func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecord) FactoryRunResponse {
 	return FactoryRunResponse{
 		ContractVersion: FactoryRunContractVersion,
@@ -114,6 +150,18 @@ func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {
 		resp.EventSummary.ByType = map[string]int{}
 	}
 	return resp
+}
+
+func factoryRunSuggestedCommand(resp FactoryRunResponse) string {
+	if resp.Failure != nil {
+		if command := strings.TrimSpace(resp.Failure.SuggestedCommand); command != "" {
+			return command
+		}
+	}
+	if resp.NextAction != nil {
+		return strings.TrimSpace(resp.NextAction.Command)
+	}
+	return ""
 }
 
 func newFactoryRunEventSummary(events []factory.EventRecord) FactoryRunEventSummary {

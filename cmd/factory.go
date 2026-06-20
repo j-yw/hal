@@ -322,10 +322,8 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		if len(recordErrs) > 0 {
 			return errors.Join(append([]error{err}, recordErrs...)...)
 		}
-		if req.JSON {
-			if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID); renderErr != nil {
-				return errors.Join(err, renderErr)
-			}
+		if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID, req.JSON); renderErr != nil {
+			return errors.Join(err, renderErr)
 		}
 		return err
 	}
@@ -342,10 +340,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
 		return err
 	}
-	if req.JSON {
-		return renderFactoryRunResult(out, store, completedRecord.RunID)
-	}
-	return nil
+	return renderFactoryRunResult(out, store, completedRecord.RunID, req.JSON)
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
@@ -1153,7 +1148,7 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	return nil
 }
 
-func renderFactoryRunResult(out io.Writer, store factory.Store, runID string) error {
+func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, jsonMode bool) error {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return fmt.Errorf("load factory run result %q: %w", runID, err)
@@ -1165,7 +1160,11 @@ func renderFactoryRunResult(out io.Writer, store factory.Store, runID string) er
 	if events == nil {
 		events = []factory.EventRecord{}
 	}
-	return renderFactoryRunJSON(out, newFactoryRunResponse(*record, events))
+	resp := newFactoryRunResponse(*record, events)
+	if jsonMode {
+		return renderFactoryRunJSON(out, resp)
+	}
+	return renderFactoryRunSummary(out, resp)
 }
 
 func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {

@@ -9,6 +9,7 @@
 - Factory run timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use the injected `RecordProgress` hook for progress events and keep completion/failure lifecycle events outside the wrapped `hal auto` implementation.
 - Factory run artifact references are collected in the `cmd/factory.go` wrapper after `factoryRunDeps.runPipeline` returns; explicit source paths and the factory store run-record path are always relevant, while optional `.hal` artifacts should be detected with template constants and skipped when absent.
 - Factory run final results should be rendered from the persisted `factory.RunRecord` plus `Store.LoadEvents` after terminal status/final timestamps are saved, so command output matches durable state.
+- Non-JSON `hal factory run` summaries should render from the same persisted `FactoryRunResponse` as JSON mode; failure summaries should be written before returning the original pipeline error so output is useful while exit behavior stays non-zero.
 - `hal factory run --json` failure paths should render the persisted `factory-run-v1` result after failure status/classification/timeline events are saved, then still return the original pipeline error so CLI exit behavior stays non-zero.
 - Factory run failure categories are centralized in `internal/factory/types.go`; classify pipeline errors in the command wrapper from explicit `ExitCodeError`, `step <name> failed:` auto-step messages, then conservative message fragments, defaulting to `unknown` when context is insufficient.
 
@@ -128,4 +129,16 @@
   - Render factory run JSON from the store after terminal persistence in both success and failure paths so stdout matches durable state.
   - Preserve the original pipeline error after rendering failure JSON; callers need the payload and a non-zero command result.
   - Table-driven command-helper tests can cover markdown and report entry flows with an injected `factory.NewStore(t.TempDir())` and no real `hal auto` invocation.
+---
+
+## 2026-06-21 02:59 CST - US-010
+- Implemented concise non-JSON `hal factory run` summaries for terminal success and failure by rendering from the persisted run result after durable state and timeline events are saved.
+- Added success and failure tests asserting human output includes run ID, final status, next action or suggested command, and failure error text while remaining non-JSON.
+- Files changed: `cmd/factory.go`, `cmd/factory_run_result.go`, `cmd/factory_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test -timeout=120s ./cmd -run 'Test(RunFactoryRunWithDepsRendersHumanSummaryForSuccess|RunFactoryRunWithDepsRendersHumanSummaryForFailure|RunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows|RunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows|RunFactoryRunWithDepsPersistsSuccessfulStatusAndResult|RunFactoryRunWithDepsPersistsFailedStatusAndDetails)'`, `perl -e 'alarm shift; exec @ARGV' 300 make test`, `perl -e 'alarm shift; exec @ARGV' 300 make vet`, `perl -e 'alarm shift; exec @ARGV' 300 make docs-check`, `git diff --check`.
+- Browser verification: skipped because this story only changes CLI output and command-layer tests.
+- **Learnings for future iterations:**
+  - Route both JSON and human `hal factory run` output through the saved `FactoryRunResponse` so terminal command output stays aligned with durable run records.
+  - In failure paths, render the human summary before returning the original pipeline error; this keeps local users informed while preserving the non-zero command result expected by callers.
+  - Keep human-output tests in `cmd/factory_test.go` beside the JSON result tests and use injected stores/pipeline stubs to avoid invoking real auto pipeline work.
 ---

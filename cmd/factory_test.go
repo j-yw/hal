@@ -17,6 +17,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func TestFactoryCommandHelpMetadata(t *testing.T) {
@@ -949,6 +950,126 @@ func TestRunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows(t *testi
 	}
 }
 
+func TestRunFactoryRunWithDepsRendersHumanSummaryForSuccess(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 2, 40, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-human-success", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"Run ID: run-human-success",
+		"Status: succeeded",
+		"Next action: hal factory status run-human-success --json",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("human output missing %q:\n%s", want, output)
+		}
+	}
+	if json.Valid(bytes.TrimSpace(buf.Bytes())) {
+		t.Fatalf("human output should not be JSON: %s", output)
+	}
+}
+
+func TestRunFactoryRunWithDepsRendersHumanSummaryForFailure(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 2, 50, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	pipelineErr := errors.New("step ci failed: workflow check failed")
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-human-failure", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return pipelineErr
+		},
+	})
+	if !errors.Is(err, pipelineErr) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline error", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"Run ID: run-human-failure",
+		"Status: failed",
+		"Error: step ci failed: workflow check failed",
+		"Suggested command: hal factory status run-human-failure --json",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("human output missing %q:\n%s", want, output)
+		}
+	}
+	if json.Valid(bytes.TrimSpace(buf.Bytes())) {
+		t.Fatalf("human output should not be JSON: %s", output)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -1249,7 +1370,170 @@ func TestRunFactoryRunPipelineWithDepsPassesReportEntryToAuto(t *testing.T) {
 	}
 }
 
+func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
+	chdirTemp(t)
+
+	beforeFlagContract := snapshotAutoCommandFlagContract(t)
+	restoreAutoPackageFlagDefaults(t)
+
+	autoDryRunFlag = true
+	autoResumeFlag = true
+	autoNoCIFlag = true
+	autoSkipPRFlag = true
+	autoNoReviewFlag = true
+	autoModeFlag = "strict"
+	autoReviewStreakFlag = 3
+	autoReviewMaxFlag = 15
+	autoReportFlag = "leaked-report.md"
+	autoEngineFlag = "claude"
+	autoBaseFlag = "leaked-base"
+	autoJSONFlag = true
+
+	poisonedFlags := snapshotAutoCommandFlags(t)
+	err := runAutoForFactoryRun(context.Background(), factoryRunAutoRequest{})
+	if err == nil {
+		t.Fatal("runAutoForFactoryRun() error = nil, want no-source error")
+	}
+	wantNoSource := "no auto source found (sourcePriority=report_first): looked for latest report in auto.reportsDir, then newest .hal/prd-*.md; provide 'hal auto <prd-path>' or '--report <path>'"
+	if err.Error() != wantNoSource {
+		t.Fatalf("runAutoForFactoryRun() error = %q, want %q", err.Error(), wantNoSource)
+	}
+
+	afterFlagContract := snapshotAutoCommandFlagContract(t)
+	if !reflect.DeepEqual(afterFlagContract, beforeFlagContract) {
+		t.Fatalf("factory auto wrapper mutated direct auto flag contract\nbefore: %#v\nafter: %#v", beforeFlagContract, afterFlagContract)
+	}
+	afterPoisonedFlags := snapshotAutoCommandFlags(t)
+	if !reflect.DeepEqual(afterPoisonedFlags, poisonedFlags) {
+		t.Fatalf("factory auto wrapper mutated package-bound auto flag values\nbefore: %#v\nafter: %#v", poisonedFlags, afterPoisonedFlags)
+	}
+
+	if err := autoCmd.Args(autoCmd, nil); err != nil {
+		t.Fatalf("auto args validator rejected zero args after factory wrapper: %v", err)
+	}
+	if err := autoCmd.Args(autoCmd, []string{"feature.md"}); err != nil {
+		t.Fatalf("auto args validator rejected one arg after factory wrapper: %v", err)
+	}
+	if err := autoCmd.Args(autoCmd, []string{"one.md", "two.md"}); err == nil {
+		t.Fatal("auto args validator accepted two args after factory wrapper")
+	}
+
+	jsonCmd, jsonOut := newAutoTestCommand(t)
+	if err := jsonCmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+	if err := runAuto(jsonCmd, nil); err != nil {
+		t.Fatalf("direct runAuto JSON returned error after factory wrapper: %v", err)
+	}
+	assertAutoJSONContractV2(t, jsonOut.Bytes())
+
+	reportPath := filepath.Join(".", "report.md")
+	if err := os.WriteFile(reportPath, []byte("# Report\n"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	textCmd, textOut := newAutoTestCommand(t)
+	if err := textCmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run flag: %v", err)
+	}
+	if err := textCmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report flag: %v", err)
+	}
+	if err := runAuto(textCmd, nil); err != nil {
+		t.Fatalf("direct runAuto text dry-run returned error after factory wrapper: %v", err)
+	}
+	textOutput := textOut.String()
+	if strings.Contains(textOutput, "factory") {
+		t.Fatalf("direct auto text output should not mention factory wrapper: %q", textOutput)
+	}
+	if !strings.Contains(textOutput, "auto pipeline") {
+		t.Fatalf("direct auto text output should keep auto pipeline header: %q", textOutput)
+	}
+	if json.Valid(bytes.TrimSpace(textOut.Bytes())) {
+		t.Fatalf("direct auto text output should not be JSON: %q", textOutput)
+	}
+}
+
 type testContextKey string
+
+type autoCommandFlagSnapshot struct {
+	Name       string
+	Value      string
+	DefValue   string
+	Changed    bool
+	Hidden     bool
+	Deprecated string
+}
+
+func snapshotAutoCommandFlags(t *testing.T) []autoCommandFlagSnapshot {
+	t.Helper()
+
+	var flags []autoCommandFlagSnapshot
+	autoCmd.LocalFlags().VisitAll(func(flag *pflag.Flag) {
+		flags = append(flags, autoCommandFlagSnapshot{
+			Name:       flag.Name,
+			Value:      flag.Value.String(),
+			DefValue:   flag.DefValue,
+			Changed:    flag.Changed,
+			Hidden:     flag.Hidden,
+			Deprecated: flag.Deprecated,
+		})
+	})
+	return flags
+}
+
+type autoCommandFlagContract struct {
+	Name       string
+	DefValue   string
+	Hidden     bool
+	Deprecated string
+}
+
+func snapshotAutoCommandFlagContract(t *testing.T) []autoCommandFlagContract {
+	t.Helper()
+
+	var flags []autoCommandFlagContract
+	autoCmd.LocalFlags().VisitAll(func(flag *pflag.Flag) {
+		flags = append(flags, autoCommandFlagContract{
+			Name:       flag.Name,
+			DefValue:   flag.DefValue,
+			Hidden:     flag.Hidden,
+			Deprecated: flag.Deprecated,
+		})
+	})
+	return flags
+}
+
+func restoreAutoPackageFlagDefaults(t *testing.T) {
+	t.Helper()
+
+	originalDryRun := autoDryRunFlag
+	originalResume := autoResumeFlag
+	originalNoCI := autoNoCIFlag
+	originalSkipPR := autoSkipPRFlag
+	originalNoReview := autoNoReviewFlag
+	originalMode := autoModeFlag
+	originalReviewStreak := autoReviewStreakFlag
+	originalReviewMax := autoReviewMaxFlag
+	originalReport := autoReportFlag
+	originalEngine := autoEngineFlag
+	originalBase := autoBaseFlag
+	originalJSON := autoJSONFlag
+
+	t.Cleanup(func() {
+		autoDryRunFlag = originalDryRun
+		autoResumeFlag = originalResume
+		autoNoCIFlag = originalNoCI
+		autoSkipPRFlag = originalSkipPR
+		autoNoReviewFlag = originalNoReview
+		autoModeFlag = originalMode
+		autoReviewStreakFlag = originalReviewStreak
+		autoReviewMaxFlag = originalReviewMax
+		autoReportFlag = originalReport
+		autoEngineFlag = originalEngine
+		autoBaseFlag = originalBase
+		autoJSONFlag = originalJSON
+	})
+}
 
 func TestRunFactoryListJSONEmptyState(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
