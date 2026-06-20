@@ -81,10 +81,18 @@ type SourceMetadata struct {
 
 // ArtifactReference references an artifact produced or consumed by a factory run.
 type ArtifactReference struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Path string `json:"path,omitempty"`
-	URL  string `json:"url,omitempty"`
+	ID         string         `json:"id,omitempty"`
+	Name       string         `json:"name"`
+	Type       string         `json:"type"`
+	SourcePath string         `json:"sourcePath,omitempty"`
+	StoredPath string         `json:"storedPath,omitempty"`
+	Path       string         `json:"path,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	SizeBytes  *int64         `json:"sizeBytes,omitempty"`
+	CreatedAt  *time.Time     `json:"createdAt,omitempty"`
+	Summary    map[string]any `json:"summary,omitempty"`
+	Warnings   []string       `json:"warnings,omitempty"`
+	Partial    bool           `json:"partial,omitempty"`
 }
 
 // VerificationRecord captures verification metadata associated with a run.

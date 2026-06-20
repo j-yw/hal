@@ -1,0 +1,17 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory `ArtifactReference` keeps `name` and `type` as required stable fields while richer artifact metadata is additive and optional; keep legacy `path` for current CLI compatibility and use `sourcePath`/`storedPath` for durable collection metadata.
+
+---
+
+## 2026-06-21 07:00:07 CST - US-001
+- Extended factory run artifact metadata with optional ID, source path, stored path, size, created timestamp, summary metadata, warnings, and partial-collection state while preserving existing `name`, `type`, `path`, and `url` fields.
+- Added focused factory type tests for enriched artifact JSON fields, round-trip compatibility, optional omission behavior, and legacy run records that omit `artifacts`.
+- Files changed: `internal/factory/types.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Factory run record schema changes should stay additive and optional unless a contract migration is explicitly planned.
+  - `ArtifactReference.Path` is still used by existing command output/tests for display and matching, so new persistence work should populate `storedPath` without removing or repurposing `path`.
+  - `internal/factory/types_test.go` is the right place to lock durable JSON tags and legacy decode compatibility for factory records.
+---
