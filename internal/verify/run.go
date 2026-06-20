@@ -69,6 +69,8 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps) CheckRes
 	shell, args := shellCommand(check.Command)
 	cmd := deps.commandContext(checkCtx, shell, args...)
 	cmd.Dir = check.WorkDir
+	cmd.SysProcAttr = newSysProcAttr()
+	setupProcessCleanup(cmd)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
