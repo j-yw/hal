@@ -7,6 +7,7 @@
 - Machine contract docs belong in `docs/contracts/` and should be registered in `cmd/contracts_doc_test.go`; add field/value assertions there when a doc must stay synchronized with code constants.
 - Contract example payloads live in `docs/contracts/examples/`; reference them from the contract doc and decode them in `cmd/contracts_doc_test.go` with `decodeStrictJSONExample` against the exported schema type.
 - For verify-v1 schema tests, assert exact marshaled JSON keys and include zero-valued fixtures so accidental `omitempty` or required-field omissions fail tests.
+- Verify shell execution lives in `internal/verify.Run`; it uses each configured `ShellCheck` command/workDir/timeout and aggregates `CheckResult` values into verify-v1 summary/status fields.
 
 ---
 
@@ -65,4 +66,15 @@
   - Keep verify command/config work in `internal/verify` so command output, config loading, and execution can share one package boundary.
   - Use pointer-backed raw YAML fields when a boolean defaults to true; otherwise omitted `required` and explicit `required: false` cannot be distinguished.
   - Validation errors for configured checks should include the indexed path, for example `verify.checks[0].command must not be empty`, so users can fix multi-check config quickly.
+---
+
+## 2026-06-21 05:13 CST - US-006
+- Implemented `verify.Run` to execute configured shell checks and return verify-v1 result data.
+- Added passing-shell execution coverage for multiple checks, top-level pass status, summary counts, check metadata, and configured working-directory behavior.
+- Ran `go test ./internal/verify`, `go test ./cmd -run Verify`, `make fmt`, `make vet`, `make test`, and `make lint` (lint target returned successfully but `golangci-lint` is not installed and printed the Makefile install hint).
+- Files changed: `internal/verify/run.go`, `internal/verify/run_test.go`, `AGENTS.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Keep verify execution in `internal/verify` so future `hal verify --json` command wiring can load config and delegate to the same package.
+  - Tests can invoke the current Go test binary through the shell to exercise real command execution without depending on platform-specific utilities.
+  - Passing shell checks should produce `status=pass`, `exitCode=0`, populated timing metadata, and no warning entries.
 ---
