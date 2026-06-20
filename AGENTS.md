@@ -43,6 +43,7 @@
 - Tooling verification bootstrap belongs in `internal/factory.BootstrapVerifyTooling`; configure Hal and engine checks with `BootstrapToolingCheck`, and use `InstallCommand` only with `BootstrapOptions.InstallMissingCLIs` so missing executables classify as `dependency` while failed setup commands classify as `engine_setup`.
 - Repository checkout bootstrap belongs in `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so tests assert deterministic git clone/fetch/checkout commands without touching real repositories.
 - Run branch preparation also belongs in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests can cover local retry, remote resume, and first-run branch creation without real git refs.
+- Hal template, standards, managed skill, and engine-link setup belongs in `internal/factory.BootstrapRefreshHal`; run `hal init`/`hal init --refresh-templates` and `hal links refresh` through the executor boundary instead of duplicating template or skill install logic.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 

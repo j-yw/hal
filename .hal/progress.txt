@@ -8,6 +8,7 @@
 - Tooling verification goes through `internal/factory.BootstrapVerifyTooling`; configure required Hal/engine checks with `BootstrapToolingCheck`, and only attach installer commands when `BootstrapOptions.InstallMissingCLIs` should allow install-and-recheck behavior.
 - Repository checkout bootstrap goes through `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so clone/fetch/checkout command construction is tested deterministically without touching real repositories.
 - Run branch preparation stays in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests cover local retry, remote resume, and first-run branch creation without real git refs.
+- Hal template, standards, managed skill, and engine-link setup goes through `internal/factory.BootstrapRefreshHal`; delegate to `hal init` or `hal init --refresh-templates` plus `hal links refresh` through the executor boundary instead of duplicating template or skill ownership logic.
 
 ---
 
@@ -65,4 +66,15 @@
   - Keep required CLI checks as structured `BootstrapToolingCheck` values so tests can assert command name, args, directory, and optional installer behavior without invoking real CLIs.
   - Missing executable errors should flow through `RunBootstrapStep` and `ClassifyBootstrapFailure` so they stay categorized as `dependency`; non-missing Hal/engine setup command failures should classify as `engine_setup`.
   - `make lint` still exits successfully with only an install hint when `golangci-lint` is unavailable; include that nuance when reporting checks.
+---
+
+## 2026-06-21 05:31 CST - US-007
+- Implemented factory Hal refresh bootstrap with deterministic `hal init` / `hal init --refresh-templates` and `hal links refresh` command construction through the existing executor boundary.
+- Added unit tests for setup command ordering, default create/preserve init behavior, dry-run planning, engine setup failure classification, missing Hal dependency classification, and workspace validation.
+- Files changed: `internal/factory/bootstrap_hal.go`, `internal/factory/bootstrap_hal_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Hal templates, standards, managed skills, and engine links should stay delegated to existing Hal commands rather than reimplemented in factory bootstrap code.
+  - `BootstrapOptions.RefreshHal` controls whether the setup command includes `--refresh-templates`; plain `hal init` remains the safe create/preserve path.
+  - Missing `hal` executable errors still classify as `dependency` because missing-dependency classification intentionally runs before engine setup classification.
+  - `make lint` exits successfully with an install hint when `golangci-lint` is missing in this environment; `make vet`, `make test`, and `make build` provided active verification.
 ---
