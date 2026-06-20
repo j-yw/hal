@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -349,6 +350,279 @@ func TestRunFactoryQueueListWithDepsHumanOutput(t *testing.T) {
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsJSONOutputNoWork(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	claimedAt := time.Date(2026, 6, 21, 17, 0, 0, 0, time.UTC)
+	claim := factory.QueueClaim{WorkerID: "worker-noop", PID: 5252, Hostname: "factory-host"}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+	if err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "claimed", "entry", "summary"})
+	if raw["contractVersion"] != FactoryQueueWorkContractVersion {
+		t.Fatalf("contractVersion = %v, want %q", raw["contractVersion"], FactoryQueueWorkContractVersion)
+	}
+	if raw["claimed"] != false {
+		t.Fatalf("claimed = %v, want false", raw["claimed"])
+	}
+	if raw["entry"] != nil {
+		t.Fatalf("entry = %#v, want nil", raw["entry"])
+	}
+
+	var resp FactoryQueueWorkResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v", err)
+	}
+	if resp.Summary != "no queued factory work" {
+		t.Fatalf("summary = %q, want no-work summary", resp.Summary)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 0, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-claim", PID: 5353, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-work", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-work-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+	if err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "claimed", "entry", "summary"})
+	if raw["claimed"] != true {
+		t.Fatalf("claimed = %v, want true", raw["claimed"])
+	}
+
+	var resp FactoryQueueWorkResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v", err)
+	}
+	if resp.Summary != "claimed queue entry queue-work-001" {
+		t.Fatalf("summary = %q, want claimed summary", resp.Summary)
+	}
+	if resp.Entry == nil {
+		t.Fatal("entry = nil, want claimed entry")
+	}
+	if resp.Entry.Status != factory.QueueStatusClaimed {
+		t.Fatalf("entry.status = %q, want %q", resp.Entry.Status, factory.QueueStatusClaimed)
+	}
+	if resp.Entry.ClaimedAt == nil || !resp.Entry.ClaimedAt.Equal(claimedAt) {
+		t.Fatalf("entry.claimedAt = %v, want %s", resp.Entry.ClaimedAt, claimedAt)
+	}
+	if resp.Entry.Claim == nil || *resp.Entry.Claim != claim {
+		t.Fatalf("entry.claim = %#v, want %#v", resp.Entry.Claim, claim)
+	}
+	if resp.Entry.AttemptCount != 1 {
+		t.Fatalf("entry.attemptCount = %d, want 1", resp.Entry.AttemptCount)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
+	}
+	if entries[0].Status != factory.QueueStatusClaimed {
+		t.Fatalf("queue status = %q, want %q", entries[0].Status, factory.QueueStatusClaimed)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusPending {
+		t.Fatalf("run status = %q, want %q", loaded.Status, factory.RunStatusPending)
+	}
+	if loaded.CurrentStep != factory.QueueStatusClaimed {
+		t.Fatalf("currentStep = %q, want %q", loaded.CurrentStep, factory.QueueStatusClaimed)
+	}
+	if !loaded.UpdatedAt.Equal(claimedAt) {
+		t.Fatalf("updatedAt = %s, want %s", loaded.UpdatedAt, claimedAt)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{factory.EventTypeCommandOutputSummary})
+	if events[0].Summary != "Factory run claimed" {
+		t.Fatalf("event summary = %q, want claim summary", events[0].Summary)
+	}
+	if events[0].Metadata["queueId"] != "queue-work-001" {
+		t.Fatalf("event queueId = %#v, want queue-work-001", events[0].Metadata["queueId"])
+	}
+	if events[0].Metadata["executorMode"] != factory.ExecutorModeLocal {
+		t.Fatalf("event executorMode = %#v, want local", events[0].Metadata["executorMode"])
+	}
+	if events[0].Metadata["status"] != factory.QueueStatusClaimed {
+		t.Fatalf("event status = %#v, want claimed", events[0].Metadata["status"])
+	}
+	if events[0].Metadata["attemptCount"] != float64(1) && events[0].Metadata["attemptCount"] != 1 {
+		t.Fatalf("event attemptCount = %#v, want 1", events[0].Metadata["attemptCount"])
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsClaimsFIFOEntry(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 19, 0, 0, 0, time.UTC)
+	claimedAt := base.Add(30 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-fifo", PID: 5454, Hostname: "factory-host"}
+	for _, runID := range []string{"run-fifo-old", "run-fifo-new"} {
+		record := testFactoryRunRecord(runID, base, base)
+		record.Status = factory.RunStatusPending
+		record.CurrentStep = factory.QueueStatusQueued
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun(%s) error: %v", runID, err)
+		}
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-fifo-new", "run-fifo-new", factory.QueueStatusQueued, base.Add(10*time.Minute)),
+		testFactoryQueueEntry("queue-fifo-old", "run-fifo-old", factory.QueueStatusQueued, base),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+	if err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryQueueWorkResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v\n%s", err, out.String())
+	}
+	if resp.Entry == nil || resp.Entry.QueueID != "queue-fifo-old" {
+		t.Fatalf("claimed entry = %#v, want oldest FIFO entry", resp.Entry)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	byQueueID := map[string]factory.QueueEntry{}
+	for _, entry := range entries {
+		byQueueID[entry.QueueID] = entry
+	}
+	if byQueueID["queue-fifo-old"].Status != factory.QueueStatusClaimed {
+		t.Fatalf("old entry status = %q, want claimed", byQueueID["queue-fifo-old"].Status)
+	}
+	if byQueueID["queue-fifo-new"].Status != factory.QueueStatusQueued {
+		t.Fatalf("new entry status = %q, want queued", byQueueID["queue-fifo-new"].Status)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsConcurrentClaimSafety(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 20, 0, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(10 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-concurrent", PID: 5555, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-concurrent-work", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-concurrent-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	type workResult struct {
+		err  error
+		resp FactoryQueueWorkResponse
+		raw  string
+	}
+
+	const workerCount = 8
+	start := make(chan struct{})
+	results := make(chan workResult, workerCount)
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			var out bytes.Buffer
+			err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+			result := workResult{err: err, raw: out.String()}
+			if err == nil {
+				result.err = json.Unmarshal(out.Bytes(), &result.resp)
+			}
+			results <- result
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	claimedCount := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("worker error: %v\nraw: %s", result.err, result.raw)
+		}
+		if result.resp.Claimed {
+			claimedCount++
+			if result.resp.Entry == nil || result.resp.Entry.QueueID != "queue-concurrent-001" {
+				t.Fatalf("claimed response entry = %#v, want queue-concurrent-001", result.resp.Entry)
+			}
+		} else if result.resp.Entry != nil {
+			t.Fatalf("noop response entry = %#v, want nil", result.resp.Entry)
+		}
+	}
+	if claimedCount != 1 {
+		t.Fatalf("claimed responses = %d, want 1", claimedCount)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
+	}
+	if entries[0].Status != factory.QueueStatusClaimed {
+		t.Fatalf("queue status = %q, want claimed", entries[0].Status)
+	}
+	if entries[0].AttemptCount != 1 {
+		t.Fatalf("queue attemptCount = %d, want 1", entries[0].AttemptCount)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(events), events)
+	}
+}
+
 func queueAddTestDeps(store factory.Store, now time.Time, queueID string) factoryQueueAddDeps {
 	return factoryQueueAddDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -360,6 +634,14 @@ func queueAddTestDeps(store factory.Store, now time.Time, queueID string) factor
 func queueListTestDeps(store factory.Store) factoryQueueListDeps {
 	return factoryQueueListDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
+	}
+}
+
+func queueWorkTestDeps(store factory.Store, now time.Time, claim factory.QueueClaim) factoryQueueWorkDeps {
+	return factoryQueueWorkDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		claim:        &claim,
 	}
 }
 

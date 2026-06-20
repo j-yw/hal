@@ -44,6 +44,7 @@
 - Queue command code should use the Store-level FIFO helpers (`EnqueueQueueEntry`, `ListQueue`, `ClaimNextQueueEntry`) and inject `QueueOperationOptions` in tests; FIFO order is by `CreatedAt` with `QueueID` as the stable tie-break.
 - Queue lifecycle transitions should use Store-level helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained history stay consistent.
 - Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
+- `hal factory queue work` claiming should record the run `CurrentStep` as `claimed` and append a queue claim timeline event after `Store.ClaimNextQueueEntry`; keep executor execution in the later worker path rather than duplicating direct run execution semantics.
 - Factory queue command definitions live in `cmd/factory_queue.go`; wire them from `cmd/factory.go`, update factory command metadata/link tests in `cmd/factory_test.go`, and regenerate `docs/cli` with `make docs-cli`.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)

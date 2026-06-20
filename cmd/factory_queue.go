@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +26,12 @@ type factoryQueueListDeps struct {
 	defaultStore func() (factory.Store, error)
 }
 
+type factoryQueueWorkDeps struct {
+	defaultStore func() (factory.Store, error)
+	now          func() time.Time
+	claim        *factory.QueueClaim
+}
+
 type factoryQueueAddRequest struct {
 	RunID        string
 	ExecutorMode string
@@ -37,6 +42,10 @@ type factoryQueueListRequest struct {
 	JSON bool
 }
 
+type factoryQueueWorkRequest struct {
+	JSON bool
+}
+
 var defaultFactoryQueueAddDeps = factoryQueueAddDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
@@ -44,6 +53,11 @@ var defaultFactoryQueueAddDeps = factoryQueueAddDeps{
 
 var defaultFactoryQueueListDeps = factoryQueueListDeps{
 	defaultStore: factory.DefaultStore,
+}
+
+var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
+	defaultStore: factory.DefaultStore,
+	now:          time.Now,
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -140,7 +154,17 @@ func runFactoryQueueList(cmd *cobra.Command, _ []string) error {
 }
 
 func runFactoryQueueWork(cmd *cobra.Command, _ []string) error {
-	return exitWithCode(cmd, ExitCodeExpectedNonZero, errors.New("hal factory queue work is not implemented yet"))
+	req, err := factoryQueueWorkRequestFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+
+	return runFactoryQueueWorkWithDeps(out, req, defaultFactoryQueueWorkDeps)
 }
 
 func validateFactoryQueueAddArgs(cmd *cobra.Command, args []string) error {
@@ -188,6 +212,19 @@ func factoryQueueListRequestFromCommand(cmd *cobra.Command) (factoryQueueListReq
 	}
 
 	return factoryQueueListRequest{JSON: jsonMode}, nil
+}
+
+func factoryQueueWorkRequestFromCommand(cmd *cobra.Command) (factoryQueueWorkRequest, error) {
+	jsonMode := factoryQueueWorkJSONFlag
+	if cmd != nil && cmd.Flags().Lookup("json") != nil {
+		value, err := cmd.Flags().GetBool("json")
+		if err != nil {
+			return factoryQueueWorkRequest{}, err
+		}
+		jsonMode = value
+	}
+
+	return factoryQueueWorkRequest{JSON: jsonMode}, nil
 }
 
 func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps factoryQueueAddDeps) error {
@@ -248,6 +285,40 @@ func runFactoryQueueListWithDeps(out io.Writer, req factoryQueueListRequest, dep
 	return renderFactoryQueueListResult(out, entries, req.JSON)
 }
 
+func runFactoryQueueWorkWithDeps(out io.Writer, req factoryQueueWorkRequest, deps factoryQueueWorkDeps) error {
+	if out == nil {
+		out = io.Discard
+	}
+	deps = normalizeFactoryQueueWorkDeps(deps)
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+
+	entry, err := store.ClaimNextQueueEntry(factory.QueueOperationOptions{
+		Now:   deps.now,
+		Claim: deps.claim,
+	})
+	if err != nil {
+		return fmt.Errorf("claim factory queue work: %w", err)
+	}
+	if entry != nil {
+		claimedAt := deps.now()
+		if entry.ClaimedAt != nil {
+			claimedAt = *entry.ClaimedAt
+		}
+		if err := recordFactoryRunClaimed(store, *entry, claimedAt); err != nil {
+			return err
+		}
+	}
+
+	return renderFactoryQueueWorkResult(out, entry, req.JSON)
+}
+
 func normalizeFactoryQueueAddDeps(deps factoryQueueAddDeps) factoryQueueAddDeps {
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryQueueAddDeps.defaultStore
@@ -261,6 +332,16 @@ func normalizeFactoryQueueAddDeps(deps factoryQueueAddDeps) factoryQueueAddDeps 
 func normalizeFactoryQueueListDeps(deps factoryQueueListDeps) factoryQueueListDeps {
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryQueueListDeps.defaultStore
+	}
+	return deps
+}
+
+func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDeps {
+	if deps.defaultStore == nil {
+		deps.defaultStore = defaultFactoryQueueWorkDeps.defaultStore
+	}
+	if deps.now == nil {
+		deps.now = defaultFactoryQueueWorkDeps.now
 	}
 	return deps
 }
@@ -285,6 +366,43 @@ func recordFactoryRunQueued(store factory.Store, entry factory.QueueEntry, now t
 			"executorMode": entry.ExecutorMode,
 			"status":       factory.QueueStatusQueued,
 		},
+	})
+}
+
+func recordFactoryRunClaimed(store factory.Store, entry factory.QueueEntry, now time.Time) error {
+	record, err := store.LoadRun(entry.RunID)
+	if err != nil {
+		return fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err)
+	}
+
+	record.CurrentStep = factory.QueueStatusClaimed
+	record.UpdatedAt = now.UTC()
+	if err := store.SaveRun(record); err != nil {
+		return fmt.Errorf("record claimed factory run %q: %w", entry.RunID, err)
+	}
+
+	metadata := map[string]any{
+		"queueId":      entry.QueueID,
+		"executorMode": entry.ExecutorMode,
+		"status":       factory.QueueStatusClaimed,
+		"attemptCount": entry.AttemptCount,
+	}
+	if entry.Claim != nil {
+		if entry.Claim.WorkerID != "" {
+			metadata["workerId"] = entry.Claim.WorkerID
+		}
+		if entry.Claim.PID != 0 {
+			metadata["pid"] = entry.Claim.PID
+		}
+		if entry.Claim.Hostname != "" {
+			metadata["hostname"] = entry.Claim.Hostname
+		}
+	}
+
+	return appendFactoryRunTimelineEvent(store, entry.RunID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeCommandOutputSummary,
+		Summary:   "Factory run claimed",
+		Metadata:  metadata,
 	})
 }
 
@@ -333,6 +451,26 @@ func renderFactoryQueueListResult(out io.Writer, entries []factory.QueueEntry, j
 	return nil
 }
 
+func renderFactoryQueueWorkResult(out io.Writer, entry *factory.QueueEntry, jsonMode bool) error {
+	resp := FactoryQueueWorkResponse{
+		ContractVersion: FactoryQueueWorkContractVersion,
+		Claimed:         entry != nil,
+		Entry:           entry,
+		Summary:         factoryQueueWorkSummary(entry),
+	}
+	if jsonMode {
+		data, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal factory queue work: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	fmt.Fprintln(out, resp.Summary)
+	return nil
+}
+
 func factoryQueueAddSummary(entry factory.QueueEntry) string {
 	return fmt.Sprintf("queued run %s", entry.RunID)
 }
@@ -343,4 +481,11 @@ func factoryQueueListSummary(entries []factory.QueueEntry) string {
 		return "1 queue entry"
 	}
 	return fmt.Sprintf("%d queue entries", count)
+}
+
+func factoryQueueWorkSummary(entry *factory.QueueEntry) string {
+	if entry == nil {
+		return "no queued factory work"
+	}
+	return fmt.Sprintf("claimed queue entry %s", entry.QueueID)
 }
