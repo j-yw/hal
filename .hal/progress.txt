@@ -14,6 +14,7 @@
 - Verify artifact capture writes non-empty stdout/stderr to `.hal/reports/verify/<check-id>-stdout.txt` and `<check-id>-stderr.txt`; `LoadConfig` sets `Config.ProjectRoot` so artifacts stay rooted at the project directory.
 - Factory run verification metadata uses `factory.VerificationRecord` with `internal/verify` summary and artifact reference types; keep `factory-status-v1` docs, examples, and doc-code sync tests updated with the run record shape.
 - `hal verify --json` emits the verify-v1 result to stdout before returning a typed non-zero exit for `status=fail`; keep the wrapped error nil so machine consumers get parseable JSON without extra error text.
+- CLI command documentation should be authored in Cobra `Long`/`Example`, locked with command help tests, and regenerated with `make docs-cli`; use `make docs-check` to verify `docs/cli/` has no drift.
 
 ---
 
@@ -154,4 +155,17 @@
   - Factory run record verification metadata should reuse `internal/verify` contract types rather than duplicating summary or artifact schemas.
   - Adding fields to the full factory run record affects `factory-status-v1`, so update the contract markdown, example JSON, and `cmd/contracts_doc_test.go` together.
   - `make docs-check` can reveal pre-existing generated CLI doc drift; run `make docs-cli` to refresh `docs/cli/` before rerunning the check.
+---
+
+## 2026-06-21 05:54 CST - US-013
+- Documented `hal verify --json` adoption paths in the command help, including a minimal `.hal/config.yaml` shell-check example, required/default behavior, optional warning behavior, and pass/warn/fail gate outcomes.
+- Added a focused command help test so the verify help keeps the configuration example and gate semantics.
+- Updated README documentation to link the verify-v1 contract, list `hal verify [--json]`, and explain verification configuration and outcomes.
+- Regenerated generated CLI docs so `docs/cli/hal_verify.md` includes the new verify command documentation.
+- Ran `go test -timeout=60s ./cmd -run 'TestVerifyCommandHelpDocumentsConfiguration|TestVerifyCommandExposesJSONFlag'`, `make docs-check`, `make vet`, `GOFLAGS='-timeout=120s' make test`, and `make lint` (lint target returned successfully with the existing `golangci-lint` install hint).
+- Files changed: `cmd/verify.go`, `cmd/verify_test.go`, `README.md`, `docs/cli/hal_verify.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Command docs for generated CLI pages should start in Cobra `Long`/`Example`; run `make docs-cli` after editing them.
+  - When adding user-facing command guidance, keep README command tables and machine contract links in sync with the generated CLI docs.
+  - A small help-text test is useful for locking required documentation phrases without brittle generated-doc snapshots.
 ---
