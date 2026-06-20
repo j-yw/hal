@@ -31,11 +31,19 @@ assets are read and written by the CLI on the local filesystem. These files are
 authoritative for the current workflow unless a future implementation PRD
 explicitly introduces a shared control-plane state source.
 
-Execution is scoped to the worktree where the command runs. A separate Git
-worktree has its own `.hal/` runtime directory, branch checkout, working tree
-changes, generated artifacts, and engine process context. Current commands do
-not coordinate state across sibling worktrees, other clones, other users, or
-organization-level project views.
+Factory workflow and run execution are scoped to the worktree where the command
+runs. A separate Git worktree has its own `.hal/` runtime directory, branch
+checkout, working tree changes, generated artifacts, and engine process
+context. Current factory workflow commands do not coordinate run state across
+sibling worktrees, other clones, other users, or organization-level project
+views.
+
+Sandbox management is an existing local-machine global exception to the
+worktree-local boundary: sandbox configuration and registry entries live under
+`$HAL_CONFIG_HOME`, `$XDG_CONFIG_HOME/hal`, or `$HOME/.config/hal`. That
+sandbox state may be shared by sibling worktrees on the same machine, but it is
+not the future organization control plane and does not provide shared project
+membership, queue, artifact, or run authority.
 
 The local artifact boundary includes markdown and JSON PRDs, progress logs,
 auto-state snapshots, generated reports under `.hal/reports/`, archived feature
@@ -58,7 +66,7 @@ choices, hosted service topology, queue implementation details, authorization
 internals, and run orchestration internals remain hidden from CLI consumers
 unless they are explicitly added to a documented contract.
 
-The stable contract areas are:
+Examples of current stable contract areas include:
 
 - `hal status --json` follows `docs/contracts/status-v1.md`. It exposes the
   workflow track, state, artifact presence, recommended next action, summary,
@@ -80,6 +88,10 @@ The stable contract areas are:
   iterations, stop reason, aggregate issue/fix totals, affected files, and
   per-iteration issue summaries. Summary reports under `.hal/reports/` remain
   workflow artifacts, not an authorization or backend implementation contract.
+
+This list is non-exhaustive. Every current and future formal JSON contract
+document under `docs/contracts/` remains part of the compatibility surface,
+including plan, CI, sandbox, status, doctor, continue, and auto contracts.
 
 Additive extensions are allowed when they follow the existing contract posture:
 new optional fields may be added, new optional health checks may be added, and
@@ -481,18 +493,3 @@ precedence, migration strategy, and explicit non-goals.
 - Current Hal runtime behavior remains unchanged by this document.
 - Any future hosted or networked control-plane behavior must be introduced by
   separate implementation work with its own tests and contract updates.
-
-## Topics To Define
-
-The following sections track this ADR's major subjects and may be expanded by
-subsequent stories:
-
-- Current local execution boundary
-- CLI machine contract boundary
-- Control-plane domain model
-- RBAC and authorization boundary
-- Shared queue and run lifecycle
-- Shared artifacts and audit logging
-- Policy inheritance and overrides
-- Migration strategy
-- Non-goal guardrails
