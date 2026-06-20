@@ -355,11 +355,18 @@ func TestRunFactoryQueueWorkWithDepsJSONOutputNoWork(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	claimedAt := time.Date(2026, 6, 21, 17, 0, 0, 0, time.UTC)
 	claim := factory.QueueClaim{WorkerID: "worker-noop", PID: 5252, Hostname: "factory-host"}
+	executorCalled := false
 
 	var out bytes.Buffer
-	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		executorCalled = true
+		return errors.New("executor should not run when no queue entry is claimed")
+	}))
 	if err != nil {
 		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	if executorCalled {
+		t.Fatal("executor was called for no-work queue response")
 	}
 
 	var raw map[string]any
