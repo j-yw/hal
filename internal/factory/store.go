@@ -158,7 +158,7 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 		return ArtifactReference{}, fmt.Errorf("artifact type is required")
 	}
 
-	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifact.Name, sourcePath)))
+	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifactFileBaseName(artifact), sourcePath)))
 	absoluteStoredPath, err := s.ResolveArtifactPath(runID, storedPath)
 	if err != nil {
 		return ArtifactReference{}, err
@@ -539,6 +539,13 @@ func artifactFileName(name, sourcePath string) string {
 		name += ext
 	}
 	return name
+}
+
+func artifactFileBaseName(artifact ArtifactReference) string {
+	if name := strings.TrimSpace(artifact.ID); name != "" {
+		return name
+	}
+	return artifact.Name
 }
 
 func sanitizeArtifactPathComponent(value string) string {

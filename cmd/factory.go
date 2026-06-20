@@ -473,7 +473,13 @@ func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req facto
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
 	}
 
-	record.Artifacts = collectFactoryRunArtifacts(store, dir, req, *record, snapshot)
+	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot); err != nil {
+		return factory.RunRecord{}, err
+	}
+	record, err = store.LoadRun(runID)
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("reload factory run artifacts: %w", err)
+	}
 	record.UpdatedAt = now.UTC()
 	if err := store.SaveRun(record); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("record factory artifacts: %w", err)
@@ -744,6 +750,50 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 	return collector.artifacts
 }
 
+func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot) error {
+	artifacts := collectFactoryRunArtifacts(store, dir, req, record, snapshot)
+	missingArtifacts := make([]factory.ArtifactReference, 0)
+	for _, artifact := range artifacts {
+		sourcePath := artifact.Path
+		if sourcePath == "" {
+			continue
+		}
+		absoluteSourcePath := sourcePath
+		if !filepath.IsAbs(absoluteSourcePath) {
+			absoluteSourcePath = filepath.Join(dir, sourcePath)
+		}
+		if factoryArtifactFileExists(absoluteSourcePath) {
+			artifact.ID = factoryArtifactID(artifact)
+			if _, err := store.SaveArtifactFile(record.RunID, artifact, absoluteSourcePath); err != nil {
+				return fmt.Errorf("store factory artifact %q from %s: %w", artifact.Name, artifact.Path, err)
+			}
+			continue
+		}
+
+		missing := artifact
+		missing.ID = factoryArtifactID(missing)
+		missing.Partial = true
+		missing.Warnings = append(missing.Warnings, fmt.Sprintf("optional artifact not found: %s", artifact.Path))
+		missing.Summary = mergeFactoryArtifactSummary(missing.Summary, map[string]any{
+			"collectionStatus": "missing",
+		})
+		missingArtifacts = append(missingArtifacts, missing)
+	}
+	if len(missingArtifacts) > 0 {
+		updatedRecord, err := store.LoadRun(record.RunID)
+		if err != nil {
+			return fmt.Errorf("load factory run for missing artifact warnings: %w", err)
+		}
+		for _, missing := range missingArtifacts {
+			updatedRecord.Artifacts = upsertFactoryRunArtifact(updatedRecord.Artifacts, missing)
+		}
+		if err := store.SaveRun(updatedRecord); err != nil {
+			return fmt.Errorf("record missing factory artifact warnings: %w", err)
+		}
+	}
+	return nil
+}
+
 type factoryArtifactCollector struct {
 	dir       string
 	seen      map[string]struct{}
@@ -896,8 +946,7 @@ func loadFactoryRunPipelineState(path string) (*compound.PipelineState, bool) {
 
 func collectFactoryRunReportArtifacts(dir string, startedAt time.Time) []factory.ArtifactReference {
 	reportsDir := filepath.Join(dir, template.HalDir, "reports")
-	entries, err := os.ReadDir(reportsDir)
-	if err != nil {
+	if _, err := os.Stat(reportsDir); err != nil {
 		return nil
 	}
 
@@ -906,26 +955,39 @@ func collectFactoryRunReportArtifacts(dir string, startedAt time.Time) []factory
 		path    string
 		modTime time.Time
 	}
-	reportFiles := make([]reportFile, 0, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || strings.HasPrefix(name, ".") {
-			continue
+	reportFiles := make([]reportFile, 0)
+	_ = filepath.WalkDir(reportsDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-		path := filepath.Join(template.HalDir, "reports", name)
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			if entry.IsDir() && path != reportsDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil || info.IsDir() {
-			continue
+			return nil
 		}
 		if !startedAt.IsZero() && info.ModTime().Before(startedAt) {
-			continue
+			return nil
+		}
+		relPath, err := filepath.Rel(dir, path)
+		if err != nil {
+			return nil
 		}
 		reportFiles = append(reportFiles, reportFile{
 			name:    name,
-			path:    path,
+			path:    relPath,
 			modTime: info.ModTime(),
 		})
-	}
+		return nil
+	})
 
 	sort.Slice(reportFiles, func(i, j int) bool {
 		if !reportFiles[i].modTime.Equal(reportFiles[j].modTime) {
@@ -1081,6 +1143,78 @@ func factoryArchiveOriginalCandidates(dir, path string) []string {
 		candidates = append(candidates, filepath.Join(template.HalDir, filepath.Base(path)))
 	}
 	return candidates
+}
+
+func factoryArtifactID(artifact factory.ArtifactReference) string {
+	if id := strings.TrimSpace(artifact.ID); id != "" {
+		return id
+	}
+	source := strings.TrimSpace(artifact.Path)
+	if source == "" {
+		source = artifact.Name
+	}
+	return sanitizeFactoryArtifactID(source)
+}
+
+func sanitizeFactoryArtifactID(value string) string {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "./")
+	value = strings.Trim(value, "/")
+	id := sanitizeFactoryArtifactPathComponent(value)
+	if id == "" {
+		return "artifact"
+	}
+	return id
+}
+
+func sanitizeFactoryArtifactPathComponent(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastHyphen := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' {
+			builder.WriteRune(r)
+			lastHyphen = false
+			continue
+		}
+		if !lastHyphen {
+			builder.WriteByte('-')
+			lastHyphen = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func mergeFactoryArtifactSummary(existing map[string]any, values map[string]any) map[string]any {
+	if len(existing) == 0 && len(values) == 0 {
+		return nil
+	}
+	merged := make(map[string]any, len(existing)+len(values))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range values {
+		merged[key] = value
+	}
+	return merged
+}
+
+func upsertFactoryRunArtifact(artifacts []factory.ArtifactReference, artifact factory.ArtifactReference) []factory.ArtifactReference {
+	for i := range artifacts {
+		if artifact.ID != "" && artifacts[i].ID == artifact.ID {
+			artifacts[i] = artifact
+			return artifacts
+		}
+		if artifact.Path != "" && artifacts[i].Path == artifact.Path {
+			artifacts[i] = artifact
+			return artifacts
+		}
+		if artifact.StoredPath != "" && artifacts[i].StoredPath == artifact.StoredPath {
+			artifacts[i] = artifact
+			return artifacts
+		}
+	}
+	return append(artifacts, artifact)
 }
 
 func factoryGeneratedReportArtifactName(path string) string {
