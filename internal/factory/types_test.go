@@ -223,7 +223,7 @@ func TestBootstrapResultJSONFields(t *testing.T) {
 		},
 		Failure: &BootstrapFailure{
 			Step:     "clone",
-			Category: "repo",
+			Category: BootstrapFailureCategoryRepo,
 			Message:  "repository clone failed",
 		},
 	}
