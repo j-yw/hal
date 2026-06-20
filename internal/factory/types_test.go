@@ -107,6 +107,8 @@ func TestEventTypeConstants(t *testing.T) {
 func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	types := []reflect.Type{
 		reflect.TypeOf(RunRecord{}),
+		reflect.TypeOf(SandboxMetadata{}),
+		reflect.TypeOf(SandboxConnectionMetadata{}),
 		reflect.TypeOf(SourceMetadata{}),
 		reflect.TypeOf(ArtifactReference{}),
 		reflect.TypeOf(FailureSummary{}),
@@ -356,6 +358,21 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 			BranchName:  "hal/factory-run-records",
 			BaseBranch:  "develop",
 			SandboxName: "factory-run",
+			Sandbox: &SandboxMetadata{
+				Name:     "factory-run",
+				Provider: "daytona",
+				Status:   "running",
+				Connection: &SandboxConnectionMetadata{
+					Address:           "100.64.0.10",
+					PublicIP:          "203.0.113.10",
+					TailscaleIP:       "100.64.0.10",
+					TailscaleHostname: "factory-run.tailnet.ts.net",
+					TailscaleLockdown: true,
+				},
+				SSHCommand:     "hal sandbox ssh factory-run",
+				CleanupCommand: "hal sandbox delete factory-run",
+				Handoff:        "Inspect the sandbox before cleanup.",
+			},
 			CurrentStep: "ci",
 			CreatedAt:   createdAt,
 			UpdatedAt:   updatedAt,
@@ -443,6 +460,21 @@ func TestRunRecordJSONFields(t *testing.T) {
 		BranchName:  "hal/factory-run-records",
 		BaseBranch:  "develop",
 		SandboxName: "factory-run",
+		Sandbox: &SandboxMetadata{
+			Name:     "factory-run",
+			Provider: "daytona",
+			Status:   "running",
+			Connection: &SandboxConnectionMetadata{
+				Address:           "100.64.0.10",
+				PublicIP:          "203.0.113.10",
+				TailscaleIP:       "100.64.0.10",
+				TailscaleHostname: "factory-run.tailnet.ts.net",
+				TailscaleLockdown: true,
+			},
+			SSHCommand:     "hal sandbox ssh factory-run",
+			CleanupCommand: "hal sandbox delete factory-run",
+			Handoff:        "Inspect the sandbox before cleanup.",
+		},
 		CurrentStep: "run",
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
@@ -489,6 +521,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"branchName",
 		"baseBranch",
 		"sandboxName",
+		"sandbox",
 		"currentStep",
 		"createdAt",
 		"updatedAt",
@@ -545,6 +578,33 @@ func TestRunRecordJSONFields(t *testing.T) {
 		}
 	}
 
+	sandbox, ok := raw["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("sandbox should be an object, got %T", raw["sandbox"])
+	}
+	for _, key := range []string{"name", "provider", "status", "connection", "sshCommand", "cleanupCommand", "handoff"} {
+		if _, ok := sandbox[key]; !ok {
+			t.Errorf("missing sandbox JSON field %q", key)
+		}
+	}
+	connection, ok := sandbox["connection"].(map[string]any)
+	if !ok {
+		t.Fatalf("sandbox.connection should be an object, got %T", sandbox["connection"])
+	}
+	for _, key := range []string{"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown"} {
+		if _, ok := connection[key]; !ok {
+			t.Errorf("missing sandbox connection JSON field %q", key)
+		}
+	}
+	for _, forbidden := range []string{"token", "privateKey", "credential", "env", "apiKey"} {
+		if _, ok := sandbox[forbidden]; ok {
+			t.Errorf("unsafe sandbox field %q should not be serialized", forbidden)
+		}
+		if _, ok := connection[forbidden]; ok {
+			t.Errorf("unsafe sandbox connection field %q should not be serialized", forbidden)
+		}
+	}
+
 	var decoded RunRecord
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
@@ -595,7 +655,7 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"sandboxName", "finishedAt", "artifacts", "failure"} {
+	for _, key := range []string{"sandboxName", "sandbox", "finishedAt", "artifacts", "failure"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional field %q in %s", key, string(data))
 		}
