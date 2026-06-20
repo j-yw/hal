@@ -43,6 +43,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `executorMode` | string | Factory executor mode that produced the run record |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
 | `artifacts` | array | Full artifact references associated with the run |
+| `verification` | object | Verification summary and artifact references recorded from `hal verify --json` |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
 
 ## Source Metadata
@@ -64,6 +65,35 @@ When `artifacts` is present, each entry may contain:
 | `type` | string | yes | Artifact category, such as `json`, `markdown`, `text`, or `url` |
 | `path` | string | no | Local path for file artifacts |
 | `url` | string | no | URL for remote artifacts |
+
+## Verification Record
+
+When `verification` is present, it contains metadata copied from the `verify-v1` result:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `summary` | object | yes | Aggregate verification counts |
+| `artifacts` | array | no | Verification artifact references emitted by `hal verify --json` |
+
+The `summary` object uses the `verify-v1` summary field names:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total` | integer | Total verification checks |
+| `passed` | integer | Checks with `pass` status |
+| `failed` | integer | Checks with `fail` status |
+| `timedOut` | integer | Checks with `timeout` status |
+| `missing` | integer | Checks with `missing` status |
+| `skipped` | integer | Checks with `skipped` status |
+| `warnings` | integer | Warning-producing optional checks |
+
+Each verification artifact reference uses the `verify-v1` artifact shape:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `checkId` | string | yes | Verification check identifier |
+| `kind` | string | yes | Artifact kind, such as `stdout` or `stderr` |
+| `path` | string | yes | Local path emitted by `hal verify --json` |
 
 ## Failure Summary
 

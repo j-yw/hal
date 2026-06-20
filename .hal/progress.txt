@@ -12,6 +12,7 @@
 - Verify shell timeout execution uses platform-specific `internal/verify/sysproc_*.go` helpers; set both `cmd.SysProcAttr` and `setupProcessCleanup(cmd)` so Unix timeouts kill shell child process groups.
 - Verify execution tests use `helperCommand`/`TestVerifyHelperProcess` in `internal/verify/run_test.go` to simulate shell behavior deterministically; extend helper subcommands instead of relying on platform-specific shell utilities.
 - Verify artifact capture writes non-empty stdout/stderr to `.hal/reports/verify/<check-id>-stdout.txt` and `<check-id>-stderr.txt`; `LoadConfig` sets `Config.ProjectRoot` so artifacts stay rooted at the project directory.
+- Factory run verification metadata uses `factory.VerificationRecord` with `internal/verify` summary and artifact reference types; keep `factory-status-v1` docs, examples, and doc-code sync tests updated with the run record shape.
 - `hal verify --json` emits the verify-v1 result to stdout before returning a typed non-zero exit for `status=fail`; keep the wrapped error nil so machine consumers get parseable JSON without extra error text.
 
 ---
@@ -141,4 +142,16 @@
   - Command-level verify behavior should stay thin: `cmd/verify.go` owns flag/output/exit behavior and delegates config/execution to `internal/verify`.
   - For machine-readable gate commands that fail after producing a valid JSON result, return `ExitCodeExpectedNonZero` with a nil wrapped error to avoid polluting stderr while preserving process exit semantics.
   - New top-level Cobra commands need `Use`, `Short`, `Long`, and `Example`, plus updates to `TestCoreCommandsHaveCompleteMetadata` when they become required command families.
+---
+
+## 2026-06-21 05:49 CST - US-012
+- Added durable factory run verification metadata via `factory.VerificationRecord`, reusing `verify.Summary` and `verify.ArtifactReference` so run records can carry verification counts and artifact references emitted by `hal verify --json`.
+- Updated factory run record schema tests to cover JSON tags, round trips, optional omission, verification summary counts, and verification artifact references.
+- Updated `factory-status-v1` contract docs, example payload, and doc-code sync tests for the new optional `verification` field; regenerated CLI docs to clear existing docs drift found by `make docs-check`.
+- Ran `go test ./internal/factory`, `go test ./cmd -run 'TestContractDocsIncludeFactoryFields|TestFactoryContractExamplesMatchCommandSchemas'`, `make fmt`, `make vet`, `make test`, `make lint`, `make docs-cli`, and `make docs-check`. `make lint` exited successfully while printing the existing `golangci-lint` install hint.
+- Files changed: `internal/factory/types.go`, `internal/factory/types_test.go`, `cmd/contracts_doc_test.go`, `docs/contracts/factory-status-v1.md`, `docs/contracts/examples/factory-status-v1.json`, `docs/cli/hal.md`, `docs/cli/hal_verify.md`, `AGENTS.md`, `.hal/prd.json`, and `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Factory run record verification metadata should reuse `internal/verify` contract types rather than duplicating summary or artifact schemas.
+  - Adding fields to the full factory run record affects `factory-status-v1`, so update the contract markdown, example JSON, and `cmd/contracts_doc_test.go` together.
+  - `make docs-check` can reveal pre-existing generated CLI doc drift; run `make docs-cli` to refresh `docs/cli/` before rerunning the check.
 ---
