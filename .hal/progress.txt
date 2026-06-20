@@ -128,3 +128,13 @@
   - `runFactoryRunWithDeps` reloads the sandbox executor's saved record when recording artifacts on failure, so executor-persisted sandbox metadata survives the outer terminal failure path.
   - Preserve sandbox SSH handoff commands across `markFactoryRunFailed`; the factory status command remains available as `nextAction`, while the failure suggestion should support immediate remote diagnosis.
 ---
+## 2026-06-21 07:55 CST - US-011
+- Updated generated CLI documentation for `hal factory run` so the sandbox-backed executor mode, `--sandbox` option, and sandbox example appear in `docs/cli`.
+- Added a generated-doc regression assertion that locks the sandbox help phrase, flag, and example in the factory run CLI reference.
+- Files changed: `cmd/factory_test.go`, `docs/cli/hal_factory.md`, `docs/cli/hal_factory_run.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `make docs-check`, focused `go test ./cmd -run 'TestFactoryCommandHelpMetadata|TestFactoryGeneratedCLIReferenceLinks'`, `make test`, and `make vet` passed.
+- Browser verification: skipped; this was a CLI documentation story with no frontend surface.
+- **Learnings for future iterations:**
+  - Regenerate `docs/cli` with `make docs-cli` after Cobra command metadata changes, then run `make docs-check` to verify checked-in docs are synchronized.
+  - Add generated CLI doc fragment assertions when a story depends on specific help text or examples appearing in `docs/cli`.
+---
