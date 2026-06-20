@@ -12,6 +12,7 @@
 - Bootstrap request environment values flow through `BootstrapStepDeps.Request`; use `RunBootstrapStep` so request env reaches the executor while returned command summaries and command results are sanitized.
 - Use `NewBootstrapSanitizer` or the `SanitizeBootstrapCommand*` helpers before recording bootstrap command/timeline data; sensitive env keys and their configured values must not appear in serialized records.
 - Record bootstrap step outcomes with `recordBootstrapStepResult` / `BootstrapTimelineEventFromStep` so `BootstrapResult.Steps` and `BootstrapResult.Timeline` stay aligned and timeline events include sanitized command summaries, output metadata, and failure category metadata.
+- High-level factory workspace bootstrap goes through `BootstrapWorkspace` with one `BootstrapDeps` value so repository checkout, tooling verification, Hal refresh, and final checks share executor, clock, branch probes, env injection, and first-failure stop behavior.
 
 ---
 
@@ -101,4 +102,15 @@
   - Bootstrap result callers should append steps through the shared recorder so step and timeline slices cannot drift.
   - Timeline event payloads derive their timestamp from the step finish time when available, falling back to the planned step start time for dry-run events.
   - Failure details belong in event message plus `failureCategory` metadata, while command output metadata is copied through the sanitizer before serialization.
+---
+
+## 2026-06-21 05:56 CST - US-010
+- Implemented high-level bootstrap orchestration with `BootstrapWorkspace`, composing repository checkout, branch preparation, tooling verification, Hal refresh, and environment-aware final checks behind shared injected dependencies.
+- Added unit tests for deterministic command order, successful timeline aggregation, idempotent retry against a mutable fake workspace model, request env reaching the final check, and stopping before later phases on the first classified failure.
+- Files changed: `internal/factory/bootstrap.go`, `internal/factory/bootstrap_test.go`, `AGENTS.md`, `internal/ci/auth.go`, `internal/ci/auth_test.go`, `internal/ci/push.go`, `.hal/prd.json`, `.hal/progress.txt`.
+- Checks run: `go test -timeout 60s ./internal/factory`, `make fmt`, `make vet`, `go test -timeout 120s ./...`, `make lint` (exited 0 with golangci-lint missing hint), `make build`, `make test`.
+- **Learnings for future iterations:**
+  - Use `BootstrapWorkspace` for complete remote workspace preparation instead of calling repository, tooling, and Hal setup functions manually from future executors.
+  - Nil `BootstrapDeps.FinalChecks` runs the default `hal doctor --json` final check; pass an explicit empty slice only when a caller intentionally wants no final checks.
+  - `make fmt` can still surface existing gofmt-only alignment in unrelated files such as `internal/ci`; keep it when it is pure formatter output from the standard target.
 ---

@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	githubTokenEnv                = "GITHUB_TOKEN"
-	ghTokenEnv                    = "GH_TOKEN"
-	gitHubTokenValidationTimeout  = 10 * time.Second
+	githubTokenEnv               = "GITHUB_TOKEN"
+	ghTokenEnv                   = "GH_TOKEN"
+	gitHubTokenValidationTimeout = 10 * time.Second
 )
 
 // ClientKind identifies which GitHub client path should be used.
