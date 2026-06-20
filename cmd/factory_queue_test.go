@@ -214,10 +214,162 @@ func TestRunFactoryQueueAddWithDepsRejectsInvalidExecutorMode(t *testing.T) {
 	}
 }
 
+func TestRunFactoryQueueListWithDepsJSONOutputEmptyQueue(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	var out bytes.Buffer
+	err := runFactoryQueueListWithDeps(&out, factoryQueueListRequest{JSON: true}, queueListTestDeps(store))
+	if err != nil {
+		t.Fatalf("runFactoryQueueListWithDeps() unexpected error: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "entries", "summary"})
+	if raw["contractVersion"] != FactoryQueueListContractVersion {
+		t.Fatalf("contractVersion = %v, want %q", raw["contractVersion"], FactoryQueueListContractVersion)
+	}
+
+	var resp FactoryQueueListResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v", err)
+	}
+	if len(resp.Entries) != 0 {
+		t.Fatalf("entries len = %d, want 0: %#v", len(resp.Entries), resp.Entries)
+	}
+	if resp.Summary != "0 queue entries" {
+		t.Fatalf("summary = %q, want empty queue summary", resp.Summary)
+	}
+}
+
+func TestRunFactoryQueueListWithDepsJSONOutputIncludesFIFOEntries(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	claimedAt := base.Add(5 * time.Minute)
+	completedAt := base.Add(15 * time.Minute)
+	entries := []factory.QueueEntry{
+		testFactoryQueueEntry("queue-queued-new", "run-new", factory.QueueStatusQueued, base.Add(10*time.Minute)),
+		testFactoryQueueEntry("queue-failed-old", "run-failed", factory.QueueStatusFailed, base.Add(-10*time.Minute)),
+		testFactoryQueueEntry("queue-claimed-tie-b", "run-claimed-b", factory.QueueStatusClaimed, base),
+		testFactoryQueueEntry("queue-queued-tie-a", "run-queued-a", factory.QueueStatusQueued, base),
+	}
+	entries[1].ClaimedAt = &claimedAt
+	entries[1].CompletedAt = &completedAt
+	entries[1].Claim = &factory.QueueClaim{WorkerID: "worker-list", PID: 4242, Hostname: "factory-host"}
+	entries[1].AttemptCount = 1
+	entries[1].LastError = "unit tests failed"
+	entries[2].ClaimedAt = &claimedAt
+	entries[2].Claim = &factory.QueueClaim{WorkerID: "worker-list", PID: 4243, Hostname: "factory-host"}
+	entries[2].AttemptCount = 1
+	if err := store.SaveQueue(entries); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueListWithDeps(&out, factoryQueueListRequest{JSON: true}, queueListTestDeps(store))
+	if err != nil {
+		t.Fatalf("runFactoryQueueListWithDeps() unexpected error: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "entries", "summary"})
+
+	rawEntries, ok := raw["entries"].([]any)
+	if !ok {
+		t.Fatalf("entries should be array, got %T", raw["entries"])
+	}
+	if len(rawEntries) != 4 {
+		t.Fatalf("entries len = %d, want 4", len(rawEntries))
+	}
+	var queuedEntry map[string]any
+	for _, rawEntry := range rawEntries {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok {
+			t.Fatalf("entry should be object, got %T", rawEntry)
+		}
+		if entry["queueId"] == "queue-queued-new" {
+			queuedEntry = entry
+			break
+		}
+	}
+	if queuedEntry == nil {
+		t.Fatalf("raw entries missing queue-queued-new: %#v", rawEntries)
+	}
+	requireExactKeys(t, queuedEntry, []string{"queueId", "runId", "executorMode", "status", "createdAt", "attemptCount"})
+
+	var resp FactoryQueueListResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v", err)
+	}
+	gotQueueIDs := []string{}
+	gotStatuses := map[string]bool{}
+	for _, entry := range resp.Entries {
+		gotQueueIDs = append(gotQueueIDs, entry.QueueID)
+		gotStatuses[entry.Status] = true
+	}
+	wantQueueIDs := []string{"queue-failed-old", "queue-claimed-tie-b", "queue-queued-tie-a", "queue-queued-new"}
+	if strings.Join(gotQueueIDs, ",") != strings.Join(wantQueueIDs, ",") {
+		t.Fatalf("queue IDs = %v, want FIFO %v", gotQueueIDs, wantQueueIDs)
+	}
+	for _, status := range []string{factory.QueueStatusQueued, factory.QueueStatusClaimed, factory.QueueStatusFailed} {
+		if !gotStatuses[status] {
+			t.Fatalf("entries missing status %q: %#v", status, resp.Entries)
+		}
+	}
+	if resp.Summary != "4 queue entries" {
+		t.Fatalf("summary = %q, want 4 queue entries", resp.Summary)
+	}
+}
+
+func TestRunFactoryQueueListWithDepsHumanOutput(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 16, 0, 0, 0, time.UTC)
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-human-001", "run-human", factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueListWithDeps(&out, factoryQueueListRequest{}, queueListTestDeps(store))
+	if err != nil {
+		t.Fatalf("runFactoryQueueListWithDeps() unexpected error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"1 queue entry", "queue-human-001\trun-human\tlocal\tqueued"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want fragment %q", got, want)
+		}
+	}
+}
+
 func queueAddTestDeps(store factory.Store, now time.Time, queueID string) factoryQueueAddDeps {
 	return factoryQueueAddDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		now:          func() time.Time { return now },
 		newQueueID:   func() (string, error) { return queueID, nil },
+	}
+}
+
+func queueListTestDeps(store factory.Store) factoryQueueListDeps {
+	return factoryQueueListDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	}
+}
+
+func testFactoryQueueEntry(queueID, runID, status string, createdAt time.Time) factory.QueueEntry {
+	return factory.QueueEntry{
+		QueueID:      queueID,
+		RunID:        runID,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Status:       status,
+		CreatedAt:    createdAt,
+		AttemptCount: 0,
 	}
 }

@@ -86,3 +86,13 @@
   - Browser verification skipped because this story only changes CLI/backend behavior.
   - Checks run: `go test -timeout=120s ./internal/factory`, `go test -timeout=120s ./cmd -run 'TestFactoryQueueAdd|TestRunFactoryQueueAdd|TestFactoryCommandHelpMetadata|TestCommandFamiliesHaveCompleteMetadata|TestCoreCommandsHaveCompleteMetadata'`, `make test`, `make vet`, `make docs-check`. `make lint` reported `golangci-lint` is not installed locally.
 ---
+## 2026-06-21 05:39:46 CST - US-008
+- Implemented `hal factory queue list` with `--json` support using the documented `factory-queue-list-v1` response shape and FIFO ordering from `Store.ListQueue`.
+- Added deterministic command tests for empty queue JSON, exact top-level JSON keys, queued/claimed/failed entry inclusion, FIFO ordering, and the human summary output path.
+- Files changed: `cmd/factory_queue.go`, `cmd/factory_queue_test.go`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Queue list command code should keep storage ordering delegated to `Store.ListQueue` and only handle request parsing plus response rendering in `cmd/factory_queue.go`.
+  - `FactoryQueueListResponse` should always emit an `entries` array, even when the queue file is missing and the durable store returns empty state.
+  - Browser verification skipped because this story only changes CLI/backend behavior.
+  - Checks run: `go test -timeout=120s ./cmd -run 'TestRunFactoryQueueList|TestFactoryQueue|TestFactoryCommandHelpMetadata|TestCommandFamiliesHaveCompleteMetadata|TestCoreCommandsHaveCompleteMetadata'`, `go test -timeout=120s ./...`, `go vet ./...`, `make docs-check`, `make lint` (reported `golangci-lint` is not installed locally).
+---
