@@ -173,6 +173,12 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if err != nil {
 		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
 	}
+	if err := remoteOutput.appendExecutorEvent(factory.EventTypeStepStarted, "Remote sandbox execution started", map[string]any{
+		"command": strings.Join(remoteArgs, " "),
+		"status":  factory.RunStatusRunning,
+	}); err != nil {
+		return fmt.Errorf("record remote sandbox start: %w", err)
+	}
 	runErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, remoteOutput)
 	flushErr := remoteOutput.Flush()
 	if runErr != nil {
@@ -184,18 +190,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if flushErr != nil {
 		return fmt.Errorf("record remote sandbox output: %w", flushErr)
 	}
-
-	return deps.appendEvent(store, &factory.EventRecord{
-		Sequence:  remoteOutput.NextSequence(),
-		RunID:     record.RunID,
-		EventType: factory.EventTypeStepStarted,
-		Timestamp: deps.now().UTC(),
-		Summary:   "Sandbox factory executor initialized",
-		Metadata: map[string]any{
-			"executorMode": factory.ExecutorModeSandbox,
-			"sandboxName":  target.Name,
-			"provider":     target.Provider,
-		},
+	return remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution completed", map[string]any{
+		"status": factory.RunStatusSucceeded,
 	})
 }
 
@@ -293,6 +289,17 @@ func (w *factorySandboxTimelineWriter) NextSequence() int64 {
 	return w.nextSequence
 }
 
+func (w *factorySandboxTimelineWriter) appendExecutorEvent(eventType, summary string, metadata map[string]any) error {
+	if w == nil || strings.TrimSpace(w.runID) == "" {
+		return nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.appendExecutorEventLocked(eventType, summary, metadata)
+}
+
 func (w *factorySandboxTimelineWriter) flushCompleteLinesLocked() error {
 	for {
 		idx := strings.IndexByte(w.pending, '\n')
@@ -330,6 +337,32 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 			"sandboxName": w.sandboxName,
 			"provider":    w.provider,
 		},
+	}
+	if err := w.deps.appendEvent(w.store, &event); err != nil {
+		return err
+	}
+	w.nextSequence++
+	return nil
+}
+
+func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summary string, metadata map[string]any) error {
+	eventMetadata := map[string]any{
+		"source":       "remote_sandbox",
+		"step":         "run",
+		"executorMode": factory.ExecutorModeSandbox,
+		"sandboxName":  w.sandboxName,
+		"provider":     w.provider,
+	}
+	for key, value := range metadata {
+		eventMetadata[key] = value
+	}
+	event := factory.EventRecord{
+		Sequence:  w.nextSequence,
+		RunID:     w.runID,
+		EventType: eventType,
+		Timestamp: w.deps.now().UTC(),
+		Summary:   summary,
+		Metadata:  eventMetadata,
 	}
 	if err := w.deps.appendEvent(w.store, &event); err != nil {
 		return err

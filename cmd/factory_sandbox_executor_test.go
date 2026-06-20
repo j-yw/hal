@@ -119,7 +119,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
 
-	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "now", "event"}
+	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "now", "event", "exec", "now", "event"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
@@ -150,8 +150,11 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if !reflect.DeepEqual(gotExecArgs, []string{"hal", "auto", ".hal/prd.md"}) {
 		t.Fatalf("exec args = %#v", gotExecArgs)
 	}
-	if appendedEvent.RunID != "run-sandbox" || appendedEvent.Metadata["executorMode"] != factory.ExecutorModeSandbox {
+	if appendedEvent.RunID != "run-sandbox" || appendedEvent.EventType != factory.EventTypeStepEnded || appendedEvent.Metadata["executorMode"] != factory.ExecutorModeSandbox {
 		t.Fatalf("appended event = %#v", appendedEvent)
+	}
+	if appendedEvent.Summary != "Remote sandbox execution completed" || appendedEvent.Metadata["source"] != "remote_sandbox" {
+		t.Fatalf("appended completion event = %#v", appendedEvent)
 	}
 }
 
@@ -242,10 +245,16 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if out.String() != "Step: run\nconnecting to 203.0.113.42\n" {
 		t.Fatalf("remote output writer = %q", out.String())
 	}
-	if len(events) != 3 {
-		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4: %#v", len(events), events)
 	}
-	firstLine, secondLine := events[0], events[1]
+	started, firstLine, secondLine, completed := events[0], events[1], events[2], events[3]
+	if started.EventType != factory.EventTypeStepStarted || started.Summary != "Remote sandbox execution started" {
+		t.Fatalf("start event = %#v", started)
+	}
+	if started.Metadata["source"] != "remote_sandbox" || started.Metadata["status"] != factory.RunStatusRunning {
+		t.Fatalf("start event metadata = %#v", started.Metadata)
+	}
 	if firstLine.EventType != factory.EventTypeCommandOutputSummary || secondLine.EventType != factory.EventTypeCommandOutputSummary {
 		t.Fatalf("remote event types = %q/%q, want command output summaries", firstLine.EventType, secondLine.EventType)
 	}
@@ -264,8 +273,11 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if secondLine.Metadata["sandboxName"] != "factory-remote" || secondLine.Metadata["provider"] != "daytona" {
 		t.Fatalf("second remote target metadata = %#v", secondLine.Metadata)
 	}
-	if events[2].EventType != factory.EventTypeStepStarted {
-		t.Fatalf("final event type = %q, want %q", events[2].EventType, factory.EventTypeStepStarted)
+	if completed.EventType != factory.EventTypeStepEnded || completed.Summary != "Remote sandbox execution completed" {
+		t.Fatalf("completion event = %#v", completed)
+	}
+	if completed.Metadata["source"] != "remote_sandbox" || completed.Metadata["status"] != factory.RunStatusSucceeded {
+		t.Fatalf("completion event metadata = %#v", completed.Metadata)
 	}
 }
 
