@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
@@ -293,13 +296,24 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		},
 	}
 	if err := deps.runPipeline(ctx, pipelineReq); err != nil {
-		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, deps.now(), err); eventErr != nil {
+		failedAt := deps.now()
+		if _, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, failedAt); artifactErr != nil {
+			if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, err); eventErr != nil {
+				return errors.Join(err, fmt.Errorf("record factory artifacts: %w", artifactErr), fmt.Errorf("record factory failure event: %w", eventErr))
+			}
+			return errors.Join(err, fmt.Errorf("record factory artifacts: %w", artifactErr))
+		}
+		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, err); eventErr != nil {
 			return errors.Join(err, fmt.Errorf("record factory failure event: %w", eventErr))
 		}
 		return err
 	}
 
-	return recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, deps.now())
+	completedAt := deps.now()
+	if _, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, completedAt); err != nil {
+		return err
+	}
+	return recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, completedAt)
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
@@ -376,6 +390,245 @@ func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now
 		return factory.RunRecord{}, fmt.Errorf("mark factory run in progress: %w", err)
 	}
 	return record, nil
+}
+
+func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req factoryRunRequest, now time.Time) (factory.RunRecord, error) {
+	record, err := store.LoadRun(runID)
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
+	}
+
+	record.Artifacts = collectFactoryRunArtifacts(store, dir, req, *record)
+	record.UpdatedAt = now.UTC()
+	if err := store.SaveRun(record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("record factory artifacts: %w", err)
+	}
+	return *record, nil
+}
+
+func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord) []factory.ArtifactReference {
+	collector := newFactoryArtifactCollector(dir)
+
+	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
+		collector.add(factory.ArtifactReference{
+			Name: "source-markdown",
+			Type: factoryArtifactTypeForPath(markdownPath),
+			Path: collector.displayPath(markdownPath),
+		})
+	}
+	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
+		collector.add(factory.ArtifactReference{
+			Name: "source-report",
+			Type: factoryArtifactTypeForPath(reportPath),
+			Path: collector.displayPath(reportPath),
+		})
+	}
+
+	halDir := filepath.Join(dir, template.HalDir)
+	collector.addExisting("canonical-prd", filepath.Join(template.HalDir, template.PRDFile))
+	collector.addExisting("auto-state", filepath.Join(template.HalDir, template.AutoStateFile))
+
+	if state, ok := loadFactoryRunPipelineState(filepath.Join(halDir, template.AutoStateFile)); ok {
+		if sourceMarkdown := strings.TrimSpace(state.SourceMarkdown); sourceMarkdown != "" {
+			collector.addExisting("pipeline-source-markdown", sourceMarkdown)
+		}
+		if reportPath := strings.TrimSpace(state.ReportPath); reportPath != "" {
+			collector.addExisting(factoryGeneratedReportArtifactName(reportPath), reportPath)
+		}
+	}
+
+	for _, artifact := range collectFactoryRunReportArtifacts(dir, record.CreatedAt) {
+		collector.add(artifact)
+	}
+
+	if recordPath := factoryRunRecordArtifactPath(store, record.RunID); recordPath != "" {
+		collector.add(factory.ArtifactReference{
+			Name: "factory-run-record",
+			Type: "json",
+			Path: recordPath,
+		})
+	}
+
+	return collector.artifacts
+}
+
+type factoryArtifactCollector struct {
+	dir       string
+	seen      map[string]struct{}
+	artifacts []factory.ArtifactReference
+}
+
+func newFactoryArtifactCollector(dir string) *factoryArtifactCollector {
+	return &factoryArtifactCollector{
+		dir:  dir,
+		seen: make(map[string]struct{}),
+	}
+}
+
+func (c *factoryArtifactCollector) addExisting(name, path string) {
+	if strings.TrimSpace(path) == "" || !factoryArtifactFileExists(c.resolvePath(path)) {
+		return
+	}
+	c.add(factory.ArtifactReference{
+		Name: name,
+		Type: factoryArtifactTypeForPath(path),
+		Path: c.displayPath(path),
+	})
+}
+
+func (c *factoryArtifactCollector) add(artifact factory.ArtifactReference) {
+	artifact.Name = strings.TrimSpace(artifact.Name)
+	artifact.Type = strings.TrimSpace(artifact.Type)
+	artifact.Path = strings.TrimSpace(artifact.Path)
+	artifact.URL = strings.TrimSpace(artifact.URL)
+	if artifact.Name == "" || artifact.Type == "" {
+		return
+	}
+
+	key := artifact.Name + "\x00" + artifact.Type + "\x00" + artifact.Path + "\x00" + artifact.URL
+	if artifact.Path != "" {
+		key = "path\x00" + filepath.Clean(artifact.Path)
+	}
+	if artifact.URL != "" {
+		key = "url\x00" + artifact.URL
+	}
+	if _, ok := c.seen[key]; ok {
+		return
+	}
+	c.seen[key] = struct{}{}
+	c.artifacts = append(c.artifacts, artifact)
+}
+
+func (c *factoryArtifactCollector) resolvePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(c.dir, path)
+}
+
+func (c *factoryArtifactCollector) displayPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		baseDir := c.dir
+		if baseDir == "" {
+			baseDir = "."
+		}
+		if absDir, err := filepath.Abs(baseDir); err == nil {
+			if rel, err := filepath.Rel(absDir, path); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".." {
+				return filepath.Clean(rel)
+			}
+		}
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(path)
+}
+
+func loadFactoryRunPipelineState(path string) (*compound.PipelineState, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var state compound.PipelineState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, false
+	}
+	return &state, true
+}
+
+func collectFactoryRunReportArtifacts(dir string, startedAt time.Time) []factory.ArtifactReference {
+	reportsDir := filepath.Join(dir, template.HalDir, "reports")
+	entries, err := os.ReadDir(reportsDir)
+	if err != nil {
+		return nil
+	}
+
+	type reportFile struct {
+		name    string
+		path    string
+		modTime time.Time
+	}
+	reportFiles := make([]reportFile, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasPrefix(name, ".") {
+			continue
+		}
+		path := filepath.Join(template.HalDir, "reports", name)
+		info, err := entry.Info()
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if !startedAt.IsZero() && info.ModTime().Before(startedAt) {
+			continue
+		}
+		reportFiles = append(reportFiles, reportFile{
+			name:    name,
+			path:    path,
+			modTime: info.ModTime(),
+		})
+	}
+
+	sort.Slice(reportFiles, func(i, j int) bool {
+		if !reportFiles[i].modTime.Equal(reportFiles[j].modTime) {
+			return reportFiles[i].modTime.Before(reportFiles[j].modTime)
+		}
+		return reportFiles[i].path < reportFiles[j].path
+	})
+
+	artifacts := make([]factory.ArtifactReference, 0, len(reportFiles))
+	for _, reportFile := range reportFiles {
+		artifacts = append(artifacts, factory.ArtifactReference{
+			Name: factoryGeneratedReportArtifactName(reportFile.name),
+			Type: factoryArtifactTypeForPath(reportFile.path),
+			Path: filepath.Clean(reportFile.path),
+		})
+	}
+	return artifacts
+}
+
+func factoryGeneratedReportArtifactName(path string) string {
+	name := strings.ToLower(filepath.Base(strings.TrimSpace(path)))
+	switch {
+	case strings.HasPrefix(name, "review-loop-"):
+		return "review-loop-report"
+	case strings.HasPrefix(name, "review-"):
+		return "review-report"
+	case strings.Contains(name, "ci"):
+		return "ci-artifact"
+	case strings.Contains(name, "pr"):
+		return "pr-artifact"
+	default:
+		return "generated-report"
+	}
+}
+
+func factoryArtifactTypeForPath(path string) string {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
+	case ".json":
+		return "json"
+	case ".md", ".markdown":
+		return "markdown"
+	case ".log", ".txt":
+		return "text"
+	default:
+		return "file"
+	}
+}
+
+func factoryArtifactFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func factoryRunRecordArtifactPath(store factory.Store, runID string) string {
+	if strings.TrimSpace(store.RunsDir()) == "" || strings.TrimSpace(runID) == "" {
+		return ""
+	}
+	return filepath.Join(store.RunsDir(), runID+".json")
 }
 
 func recordFactoryRunStarted(store factory.Store, record factory.RunRecord) error {

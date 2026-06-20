@@ -7,6 +7,7 @@
 - Factory run execution should stay dependency-injected at the command layer: create a pending `factory.RunRecord`, persist the running transition, then invoke the pipeline dependency so tests can use `factory.NewStore(t.TempDir())` without real engines or CLIs.
 - Factory-to-auto execution should test the handoff boundary, not the real pipeline: map markdown PRDs to auto positional args, report sources to auto `--report`, and propagate `--base` through an injected auto runner.
 - Factory run timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use the injected `RecordProgress` hook for progress events and keep completion/failure lifecycle events outside the wrapped `hal auto` implementation.
+- Factory run artifact references are collected in the `cmd/factory.go` wrapper after `factoryRunDeps.runPipeline` returns; explicit source paths and the factory store run-record path are always relevant, while optional `.hal` artifacts should be detected with template constants and skipped when absent.
 
 ---
 
@@ -73,4 +74,17 @@
   - Generate timeline sequence numbers by loading existing events and using max sequence + 1 so future progress hooks appended during pipeline execution can sit between lifecycle start and terminal events.
   - `factoryRunPipelineRequest.RecordProgress` is the command-layer extension point for progress events; production `runAuto` does not expose fine-grained progress callbacks yet.
   - Completion and failure events are lifecycle timeline records only in this story; terminal run status persistence remains scoped to later stories.
+---
+
+## 2026-06-21 01:35 CST - US-006
+- Recorded local factory run artifact references after wrapped pipeline execution for both success and failure paths.
+- Captured explicit markdown/report sources, canonical `.hal/prd.json`, `.hal/auto-state.json`, state-derived source/report paths, generated report files from `.hal/reports`, and the durable factory run-record path without failing when optional `.hal` artifacts are missing.
+- Added focused command tests for markdown success and report failure artifact flows, including generated report/log artifacts and factory store record references.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Quality checks: `go test -timeout=120s ./cmd -run 'Test(RunFactoryRunWithDepsRecordsMarkdownArtifacts|RunFactoryRunWithDepsRecordsReportArtifactsOnFailure|RunFactoryRunWithDepsRecordsTimelineEventsForSuccess|RunFactoryRunWithDepsRecordsTimelineEventsForFailure|RunFactoryRunWithDepsCreatesMarkdownRunRecordBeforePipeline|RunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline|RunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto|RunFactoryRunPipelineWithDepsPassesReportEntryToAuto)'`, `go test -timeout=180s ./cmd`, `go test -timeout=120s ./internal/factory`, `go test -timeout=300s ./...`, `perl -e 'alarm shift; exec @ARGV' 300 make vet`.
+- Browser verification: skipped because this story only changes CLI persistence behavior and unit-tested command behavior.
+- **Learnings for future iterations:**
+  - Artifact capture belongs in the command-layer factory wrapper after the injected pipeline returns, so `internal/factory.Store` remains a persistence primitive rather than a pipeline-artifact discovery layer.
+  - Preserve explicit run source paths even if later optional artifact discovery skips missing `.hal` files; failures should still leave enough durable context to inspect the attempted input.
+  - Use generated report file mtimes relative to the run creation time when sweeping `.hal/reports` so old reports are not attached to new factory runs.
 ---
