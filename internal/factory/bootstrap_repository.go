@@ -62,6 +62,7 @@ func BootstrapRepositoryCheckout(ctx context.Context, request BootstrapRequest, 
 	result := BootstrapResult{
 		RepoPath: repoPath,
 		Steps:    make([]BootstrapStepResult, 0, len(commands)),
+		Timeline: make([]BootstrapTimelineEvent, 0, len(commands)),
 	}
 
 	if err := runBootstrapRepositoryCommands(ctx, request, deps, &result, commands); err != nil {
@@ -88,12 +89,12 @@ func BootstrapRepositoryCheckout(ctx context.Context, request BootstrapRequest, 
 func runBootstrapRepositoryCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, result *BootstrapResult, commands []bootstrapRepositoryCommand) error {
 	for _, planned := range commands {
 		if request.Options.DryRun {
-			result.Steps = append(result.Steps, plannedBootstrapStep(deps, request, planned.stepName, planned.command))
+			recordBootstrapStepResult(result, request, plannedBootstrapStep(deps, request, planned.stepName, planned.command), BootstrapCommandResult{}, nil)
 			continue
 		}
 
-		step, _, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), planned.stepName, planned.command)
-		result.Steps = append(result.Steps, step)
+		step, commandResult, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), planned.stepName, planned.command)
+		recordBootstrapStepResult(result, request, step, commandResult, failure)
 		if err != nil {
 			result.Failure = failure
 			return err

@@ -52,11 +52,12 @@ func BootstrapVerifyTooling(ctx context.Context, request BootstrapRequest, deps 
 	result := BootstrapResult{
 		RepoPath: bootstrapToolingRepoPath(request.WorkspaceDir),
 		Steps:    make([]BootstrapStepResult, 0, len(plans)),
+		Timeline: make([]BootstrapTimelineEvent, 0, len(plans)),
 	}
 
 	for _, plan := range plans {
 		if request.Options.DryRun {
-			result.Steps = append(result.Steps, plannedBootstrapToolingStep(deps, request, plan.stepName, plan.check.Command))
+			recordBootstrapStepResult(&result, request, plannedBootstrapToolingStep(deps, request, plan.stepName, plan.check.Command), BootstrapCommandResult{}, nil)
 			continue
 		}
 
@@ -69,8 +70,8 @@ func BootstrapVerifyTooling(ctx context.Context, request BootstrapRequest, deps 
 }
 
 func runBootstrapToolingPlan(ctx context.Context, request BootstrapRequest, deps BootstrapToolingDeps, result *BootstrapResult, plan bootstrapToolingPlan) error {
-	step, _, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), plan.stepName, plan.check.Command)
-	result.Steps = append(result.Steps, step)
+	step, commandResult, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), plan.stepName, plan.check.Command)
+	recordBootstrapStepResult(result, request, step, commandResult, failure)
 	if err == nil {
 		return nil
 	}
@@ -80,15 +81,15 @@ func runBootstrapToolingPlan(ctx context.Context, request BootstrapRequest, deps
 		return err
 	}
 
-	installStep, _, installFailure, installErr := RunBootstrapStep(ctx, deps.stepDeps(request), plan.install, *plan.check.InstallCommand)
-	result.Steps = append(result.Steps, installStep)
+	installStep, installResult, installFailure, installErr := RunBootstrapStep(ctx, deps.stepDeps(request), plan.install, *plan.check.InstallCommand)
+	recordBootstrapStepResult(result, request, installStep, installResult, installFailure)
 	if installErr != nil {
 		result.Failure = installFailure
 		return installErr
 	}
 
-	recheckStep, _, recheckFailure, recheckErr := RunBootstrapStep(ctx, deps.stepDeps(request), plan.recheck, plan.check.Command)
-	result.Steps = append(result.Steps, recheckStep)
+	recheckStep, recheckResult, recheckFailure, recheckErr := RunBootstrapStep(ctx, deps.stepDeps(request), plan.recheck, plan.check.Command)
+	recordBootstrapStepResult(result, request, recheckStep, recheckResult, recheckFailure)
 	if recheckErr != nil {
 		result.Failure = recheckFailure
 		return recheckErr

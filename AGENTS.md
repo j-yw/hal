@@ -46,6 +46,7 @@
 - Hal template, standards, managed skill, and engine-link setup belongs in `internal/factory.BootstrapRefreshHal`; run `hal init`/`hal init --refresh-templates` and `hal links refresh` through the executor boundary instead of duplicating template or skill install logic.
 - Bootstrap request environment values belong on `BootstrapRequest.Env` and flow through `BootstrapStepDeps.Request`; call `RunBootstrapStep` so env injection, command-summary sanitization, and command-result sanitization stay centralized.
 - Bootstrap command/timeline persistence should use `NewBootstrapSanitizer` or `SanitizeBootstrapCommand*` helpers so sensitive env key names and configured secret values are redacted before serialization.
+- Bootstrap callers should record step outcomes through `recordBootstrapStepResult` / `BootstrapTimelineEventFromStep` so `BootstrapResult.Steps` and `BootstrapResult.Timeline` stay one-to-one with sanitized command summaries, output metadata, and failure category metadata.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 

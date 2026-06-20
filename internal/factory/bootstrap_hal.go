@@ -36,16 +36,17 @@ func BootstrapRefreshHal(ctx context.Context, request BootstrapRequest, deps Boo
 	result := BootstrapResult{
 		RepoPath: repoPath,
 		Steps:    make([]BootstrapStepResult, 0, len(commands)),
+		Timeline: make([]BootstrapTimelineEvent, 0, len(commands)),
 	}
 
 	for _, planned := range commands {
 		if request.Options.DryRun {
-			result.Steps = append(result.Steps, plannedBootstrapHalStep(deps, request, planned.stepName, planned.command))
+			recordBootstrapStepResult(&result, request, plannedBootstrapHalStep(deps, request, planned.stepName, planned.command), BootstrapCommandResult{}, nil)
 			continue
 		}
 
-		step, _, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), planned.stepName, planned.command)
-		result.Steps = append(result.Steps, step)
+		step, commandResult, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), planned.stepName, planned.command)
+		recordBootstrapStepResult(&result, request, step, commandResult, failure)
 		if err != nil {
 			result.Failure = failure
 			return result, err
