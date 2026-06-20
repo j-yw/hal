@@ -446,3 +446,8 @@
 - Factory run result payloads and non-JSON summaries should be built from the saved `factory.RunRecord` and `Store.LoadEvents` after terminal status is persisted, so `hal factory run` output reflects durable state rather than transient in-memory state.
 - On factory run failures, render the JSON or human result before returning the original pipeline error; this preserves actionable output while keeping non-zero CLI exit behavior.
 - Factory run failure categories are constants in `internal/factory/types.go`; classify wrapped pipeline errors in `cmd/factory.go` from explicit exit codes, canonical `step <name> failed:` auto errors, and conservative message fragments, defaulting to `unknown` when context is insufficient.
+
+## Patterns from hal/local-factory-queue-and-worker-commands (2026-06-21)
+
+- Factory queue JSON contracts use reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; queue command implementations should reuse these instead of redefining JSON shapes.
+- Queue contract work must update `docs/contracts/factory-queue-*.md`, `docs/contracts/examples/factory-queue-*.json`, `cmd/contracts_doc_test.go`, `cmd/machine_contracts_test.go`, and `internal/factory/types_test.go` together so field names, docs, and examples stay locked.
