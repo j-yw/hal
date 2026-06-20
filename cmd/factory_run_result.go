@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/factory"
 )
@@ -50,6 +51,49 @@ func renderFactoryRunJSON(out io.Writer, resp FactoryRunResponse) error {
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecord) FactoryRunResponse {
+	return FactoryRunResponse{
+		ContractVersion: FactoryRunContractVersion,
+		Version:         Version,
+		RunID:           record.RunID,
+		Status:          record.Status,
+		NextAction:      newFactoryRunNextAction(record),
+		Artifacts:       record.Artifacts,
+		EventSummary:    newFactoryRunEventSummary(events),
+		Failure:         newFactoryRunFailure(record),
+	}
+}
+
+func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
+	runID := strings.TrimSpace(record.RunID)
+	if runID == "" {
+		return nil
+	}
+	return &FactoryRunNextAction{
+		ID:          "inspect_factory_run",
+		Command:     fmt.Sprintf("hal factory status %s --json", runID),
+		Description: "Inspect the durable run record and timeline.",
+	}
+}
+
+func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
+	if record.Failure == nil {
+		return nil
+	}
+	classification := strings.TrimSpace(record.Failure.Category)
+	if classification == "" {
+		classification = "unknown"
+	}
+	failure := &FactoryRunFailure{
+		Classification: classification,
+		ErrorMessage:   record.Failure.Message,
+	}
+	if nextAction := newFactoryRunNextAction(record); nextAction != nil {
+		failure.SuggestedCommand = nextAction.Command
+	}
+	return failure
 }
 
 func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {

@@ -254,7 +254,9 @@ func runFactoryRun(cmd *cobra.Command, args []string) error {
 }
 
 func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, deps factoryRunDeps) error {
-	_ = out
+	if out == nil {
+		out = io.Discard
+	}
 	deps = normalizeFactoryRunDeps(deps)
 	if deps.defaultStore == nil {
 		return fmt.Errorf("factory store dependency is required")
@@ -310,10 +312,21 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 
 	completedAt := deps.now()
-	if _, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, completedAt); err != nil {
+	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, completedAt)
+	if err != nil {
 		return err
 	}
-	return recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, completedAt)
+	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
+	if err != nil {
+		return err
+	}
+	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
+		return err
+	}
+	if req.JSON {
+		return renderFactoryRunResult(out, store, completedRecord.RunID)
+	}
+	return nil
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
@@ -404,6 +417,19 @@ func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req facto
 		return factory.RunRecord{}, fmt.Errorf("record factory artifacts: %w", err)
 	}
 	return *record, nil
+}
+
+func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
+	finishedAt := now.UTC()
+	record.Status = factory.RunStatusSucceeded
+	record.CurrentStep = "done"
+	record.UpdatedAt = finishedAt
+	record.FinishedAt = &finishedAt
+	record.Failure = nil
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("mark factory run succeeded: %w", err)
+	}
+	return record, nil
 }
 
 func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord) []factory.ArtifactReference {
@@ -968,6 +994,21 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func renderFactoryRunResult(out io.Writer, store factory.Store, runID string) error {
+	record, err := store.LoadRun(runID)
+	if err != nil {
+		return fmt.Errorf("load factory run result %q: %w", runID, err)
+	}
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		return fmt.Errorf("load factory timeline result %q: %w", runID, err)
+	}
+	if events == nil {
+		events = []factory.EventRecord{}
+	}
+	return renderFactoryRunJSON(out, newFactoryRunResponse(*record, events))
 }
 
 func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {

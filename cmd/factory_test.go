@@ -603,6 +603,115 @@ func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunWithDepsPersistsSuccessfulStatusAndResult(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 0, 30, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	progressAt := createdAt.Add(2 * time.Minute)
+	completedAt := createdAt.Add(3 * time.Minute)
+	times := []time.Time{createdAt, startedAt, progressAt, completedAt}
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		JSON:         true,
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-success-terminal", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return req.RecordProgress(factoryRunProgressEvent{
+				Summary: "Auto run step completed",
+				Metadata: map[string]any{
+					"step":   "run",
+					"status": "completed",
+				},
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-success-terminal")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusSucceeded)
+	}
+	if record.CurrentStep != "done" {
+		t.Fatalf("currentStep = %q, want done", record.CurrentStep)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(completedAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, completedAt)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-success-terminal.json"))
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepEnded,
+	})
+
+	var resp FactoryRunResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Status != record.Status {
+		t.Fatalf("result status = %q, want durable status %q", resp.Status, record.Status)
+	}
+	if resp.NextAction == nil {
+		t.Fatal("nextAction should not be nil")
+	}
+	if resp.NextAction.Command != "hal factory status run-success-terminal --json" {
+		t.Fatalf("nextAction.command = %q", resp.NextAction.Command)
+	}
+	if resp.EventSummary.Total != len(events) {
+		t.Fatalf("eventSummary.total = %d, want %d", resp.EventSummary.Total, len(events))
+	}
+	if resp.EventSummary.ByType[factory.EventTypeStepEnded] != 1 {
+		t.Fatalf("eventSummary.byType[%q] = %d, want 1", factory.EventTypeStepEnded, resp.EventSummary.ByType[factory.EventTypeStepEnded])
+	}
+	if resp.EventSummary.LastSummary != "Local compound pipeline completed" {
+		t.Fatalf("eventSummary.lastSummary = %q", resp.EventSummary.LastSummary)
+	}
+	if resp.Failure != nil {
+		t.Fatalf("failure = %#v, want nil", resp.Failure)
+	}
+	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
+}
+
 func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
