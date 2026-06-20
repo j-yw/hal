@@ -158,6 +158,46 @@ func TestRunRequiredShellCheckFailure(t *testing.T) {
 	}
 }
 
+func TestRunCapturesShellCheckArtifacts(t *testing.T) {
+	projectRoot := t.TempDir()
+
+	result, err := Run(context.Background(), &Config{
+		ProjectRoot: projectRoot,
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "write-output", "unit stdout", "unit stderr"),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if len(result.Checks) != 1 {
+		t.Fatalf("Checks length = %d, want 1", len(result.Checks))
+	}
+	if len(result.Artifacts) != 2 {
+		t.Fatalf("Artifacts length = %d, want 2: %#v", len(result.Artifacts), result.Artifacts)
+	}
+
+	check := result.Checks[0]
+	if check.StdoutArtifact != ".hal/reports/verify/test-stdout.txt" {
+		t.Errorf("StdoutArtifact = %q, want .hal/reports/verify/test-stdout.txt", check.StdoutArtifact)
+	}
+	if check.StderrArtifact != ".hal/reports/verify/test-stderr.txt" {
+		t.Errorf("StderrArtifact = %q, want .hal/reports/verify/test-stderr.txt", check.StderrArtifact)
+	}
+
+	requireArtifact(t, result.Artifacts, "test", ArtifactKindStdout, ".hal/reports/verify/test-stdout.txt")
+	requireArtifact(t, result.Artifacts, "test", ArtifactKindStderr, ".hal/reports/verify/test-stderr.txt")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt"), "unit stdout")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stderr.txt"), "unit stderr")
+}
+
 func TestRunRequiredShellCheckTimeout(t *testing.T) {
 	projectRoot := t.TempDir()
 	marker := filepath.Join(projectRoot, "timeout-marker.txt")
@@ -451,6 +491,17 @@ func TestVerifyHelperProcess(t *testing.T) {
 				os.Exit(2)
 			}
 			os.Exit(0)
+		case "write-output":
+			if len(args) <= i+3 {
+				os.Exit(2)
+			}
+			if _, err := os.Stdout.Write([]byte(args[i+2])); err != nil {
+				os.Exit(2)
+			}
+			if _, err := os.Stderr.Write([]byte(args[i+3])); err != nil {
+				os.Exit(2)
+			}
+			os.Exit(0)
 		case "write-pwd":
 			if len(args) <= i+2 {
 				os.Exit(2)
@@ -492,4 +543,30 @@ func shellQuote(value string) string {
 
 func joinCommand(parts []string) string {
 	return strings.Join(parts, " ")
+}
+
+func requireArtifact(t *testing.T, artifacts []ArtifactReference, checkID, kind, wantPath string) {
+	t.Helper()
+
+	for _, artifact := range artifacts {
+		if artifact.CheckID == checkID && artifact.Kind == kind {
+			if artifact.Path != wantPath {
+				t.Fatalf("artifact %s path = %q, want %q", kind, artifact.Path, wantPath)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing %s artifact for check %s in %#v", kind, checkID, artifacts)
+}
+
+func requireFileContent(t *testing.T, path, want string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if got := string(data); got != want {
+		t.Fatalf("%s content = %q, want %q", path, got, want)
+	}
 }
