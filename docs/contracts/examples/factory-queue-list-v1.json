@@ -1,0 +1,30 @@
+{
+  "contractVersion": "factory-queue-list-v1",
+  "entries": [
+    {
+      "queueId": "queue-20260620-0001",
+      "runId": "run-20260620-002",
+      "executorMode": "local",
+      "status": "queued",
+      "createdAt": "2026-06-20T17:00:00Z",
+      "attemptCount": 0
+    },
+    {
+      "queueId": "queue-20260620-0002",
+      "runId": "run-20260620-003",
+      "executorMode": "local",
+      "status": "failed",
+      "createdAt": "2026-06-20T17:05:00Z",
+      "claimedAt": "2026-06-20T17:06:00Z",
+      "completedAt": "2026-06-20T17:20:00Z",
+      "claim": {
+        "workerId": "worker-local-1",
+        "pid": 4242,
+        "hostname": "factory-host"
+      },
+      "attemptCount": 1,
+      "lastError": "unit tests failed"
+    }
+  ],
+  "summary": "2 queue entries"
+}

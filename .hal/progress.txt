@@ -1,0 +1,17 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory queue JSON contracts are split between reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; keep docs/examples/tests aligned when implementing queue commands.
+
+---
+## 2026-06-21 04:50:06 CST - US-001
+- Implemented factory queue JSON contract definitions for queue entries and add/list/work command response DTOs.
+- Added docs for `factory-queue-entry-v1`, `factory-queue-add-v1`, `factory-queue-list-v1`, and `factory-queue-work-v1`, plus add/list/work-claimed/work-noop example payloads.
+- Added contract tests for queue entry JSON keys, queue response JSON keys, and strict docs/example schema sync.
+- Files changed: `internal/factory/types.go`, `internal/factory/types_test.go`, `cmd/factory_queue_contracts.go`, `cmd/machine_contracts_test.go`, `cmd/contracts_doc_test.go`, `docs/contracts/factory-queue-*.md`, `docs/contracts/examples/factory-queue-*.json`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Factory machine contracts are locked in three places: DTO JSON key tests, contract docs, and strict example decoding with `DisallowUnknownFields`.
+  - Queue command implementations should reuse `factory.QueueEntry` and the `FactoryQueue*Response` structs instead of defining separate response shapes.
+  - Focused checks run so far: `go test -timeout=120s ./internal/factory ./cmd`.
+---

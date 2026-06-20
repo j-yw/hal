@@ -17,6 +17,14 @@ const (
 	ExecutorModeLocal = "local"
 )
 
+// Queue status values.
+const (
+	QueueStatusQueued    = "queued"
+	QueueStatusClaimed   = "claimed"
+	QueueStatusSucceeded = "succeeded"
+	QueueStatusFailed    = "failed"
+)
+
 // Run source kind values.
 const (
 	SourceKindAutoDiscovery = "auto_discovery"
@@ -90,6 +98,27 @@ type FailureSummary struct {
 	Recoverable      bool   `json:"recoverable"`
 	SuggestedCommand string `json:"suggestedCommand,omitempty"`
 	ExitCode         int    `json:"exitCode,omitempty"`
+}
+
+// QueueEntry captures one durable factory queue item.
+type QueueEntry struct {
+	QueueID      string      `json:"queueId"`
+	RunID        string      `json:"runId"`
+	ExecutorMode string      `json:"executorMode"`
+	Status       string      `json:"status"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	ClaimedAt    *time.Time  `json:"claimedAt,omitempty"`
+	CompletedAt  *time.Time  `json:"completedAt,omitempty"`
+	Claim        *QueueClaim `json:"claim,omitempty"`
+	AttemptCount int         `json:"attemptCount"`
+	LastError    string      `json:"lastError,omitempty"`
+}
+
+// QueueClaim identifies the local worker process that claimed a queue entry.
+type QueueClaim struct {
+	WorkerID string `json:"workerId,omitempty"`
+	PID      int    `json:"pid,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // EventRecord captures one append-only timeline entry for a factory run.

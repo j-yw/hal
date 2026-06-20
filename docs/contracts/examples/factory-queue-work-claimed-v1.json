@@ -1,0 +1,19 @@
+{
+  "contractVersion": "factory-queue-work-v1",
+  "claimed": true,
+  "entry": {
+    "queueId": "queue-20260620-0001",
+    "runId": "run-20260620-002",
+    "executorMode": "local",
+    "status": "claimed",
+    "createdAt": "2026-06-20T17:00:00Z",
+    "claimedAt": "2026-06-20T17:02:00Z",
+    "claim": {
+      "workerId": "worker-local-1",
+      "pid": 4242,
+      "hostname": "factory-host"
+    },
+    "attemptCount": 1
+  },
+  "summary": "claimed queue entry queue-20260620-0001"
+}
