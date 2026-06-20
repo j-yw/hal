@@ -614,9 +614,101 @@ func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	requireFactoryArtifactPath(t, record.Artifacts, "factory/status-snapshot.json")
 	requireFactoryArtifactPath(t, record.Artifacts, "factory/doctor-snapshot.json")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-artifacts-markdown.json"))
+	prOutcome := requireFactoryArtifactPath(t, record.Artifacts, "factory/pr-outcome.json")
+	if !prOutcome.Partial || len(prOutcome.Warnings) == 0 {
+		t.Fatalf("PR outcome should record missing warning: %#v", prOutcome)
+	}
+	ciOutcome := requireFactoryArtifactPath(t, record.Artifacts, "factory/ci-outcome.json")
+	if !ciOutcome.Partial || len(ciOutcome.Warnings) == 0 {
+		t.Fatalf("CI outcome should record missing warning: %#v", ciOutcome)
+	}
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/review-20260621.md")
-	if got := len(record.Artifacts); got != 7 {
-		t.Fatalf("artifacts len = %d, want 7: %#v", got, record.Artifacts)
+	if got := len(record.Artifacts); got != 9 {
+		t.Fatalf("artifacts len = %d, want 9: %#v", got, record.Artifacts)
+	}
+}
+
+func TestRunFactoryRunWithDepsRecordsPROutcomeAndCIStatusArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 3, 30, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-outcome-artifacts", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			writeFile(t, halDir, "auto-state.json", `{
+  "step": "report",
+  "branchName": "hal/factory",
+  "sourceMarkdown": ".hal/prd-feature.md",
+  "ci": {
+    "status": "passed",
+    "prUrl": "https://github.com/acme/hal/pull/42",
+    "prNumber": 42,
+    "prTitle": "Factory artifacts",
+    "prHeadRef": "hal/factory",
+    "prBaseRef": "main",
+    "fixAttempts": 1,
+    "fixesApplied": 1
+  }
+}`)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-outcome-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	prArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/pr-outcome.json")
+	if prArtifact.Summary["pullRequestUrl"] != "https://github.com/acme/hal/pull/42" {
+		t.Fatalf("pr summary = %#v", prArtifact.Summary)
+	}
+	ciArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/ci-outcome.json")
+	if ciArtifact.Summary["status"] != "passed" {
+		t.Fatalf("ci summary = %#v", ciArtifact.Summary)
+	}
+
+	prData := readStoredFactoryArtifact(t, store, record.RunID, prArtifact)
+	if !strings.Contains(prData, `"pullRequestUrl": "https://github.com/acme/hal/pull/42"`) {
+		t.Fatalf("PR artifact data missing URL:\n%s", prData)
+	}
+	if strings.Contains(prData, "token") {
+		t.Fatalf("PR artifact should not contain secret-like raw data:\n%s", prData)
+	}
+	ciData := readStoredFactoryArtifact(t, store, record.RunID, ciArtifact)
+	if !strings.Contains(ciData, `"status": "passed"`) || !strings.Contains(ciData, `"fixAttempts": 1`) {
+		t.Fatalf("CI artifact data missing status/fix attempts:\n%s", ciData)
 	}
 }
 
@@ -2560,6 +2652,22 @@ func requireStoredFactoryArtifactPath(t *testing.T, store factory.Store, runID s
 		t.Fatalf("stored artifact %q should be under %q", storedPath, store.ArtifactsDir())
 	}
 	return artifact
+}
+
+func readStoredFactoryArtifact(t *testing.T, store factory.Store, runID string, artifact factory.ArtifactReference) string {
+	t.Helper()
+	if artifact.StoredPath == "" {
+		t.Fatalf("artifact %q StoredPath should be set", artifact.Path)
+	}
+	storedPath, err := store.ResolveArtifactPath(runID, artifact.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(%q) error: %v", artifact.StoredPath, err)
+	}
+	data, err := os.ReadFile(storedPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error: %v", storedPath, err)
+	}
+	return string(data)
 }
 
 func requireExactKeys(t *testing.T, got map[string]any, want []string) {

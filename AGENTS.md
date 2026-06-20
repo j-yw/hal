@@ -80,6 +80,7 @@
 - Artifact persistence must not write payloads into the project `.hal/` directory; tests should use temp store roots and assert project `.hal` remains free of artifact payload state.
 - Local factory artifact collection should preserve legacy display `path` values while also populating store-backed `sourcePath`/`storedPath`; use stable artifact IDs for deterministic filenames when multiple artifacts share a display name.
 - Factory status/doctor snapshots are generated from structured packages (`internal/status.Get`, `internal/doctor.Run`) via injectable `factoryRunDeps` hooks, then materialized as JSON artifacts and saved through `Store.SaveArtifactFile`.
+- PR/CI factory outcome artifacts are derived from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata there in `runPRStep`, and materialize stored JSON artifacts plus warning-only partial records when outcome state is unavailable.
 
 ## Patterns from compound/compound-pipeline-foundations (2026-02-05)
 

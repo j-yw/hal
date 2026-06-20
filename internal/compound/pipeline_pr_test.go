@@ -228,7 +228,7 @@ func TestRunPRStep_PushAndWaitPassing(t *testing.T) {
 		gotOpts = opts
 		return ci.PushResult{
 			Branch:      "compound/ci-flow",
-			PullRequest: ci.PullRequest{URL: "https://github.com/acme/repo/pull/42"},
+			PullRequest: ci.PullRequest{Number: 42, URL: "https://github.com/acme/repo/pull/42", Title: "Implement deterministic CI flow", HeadRef: "compound/ci-flow", BaseRef: "main"},
 		}, nil
 	}
 	pipeline.currentBranch = branchStub("compound/ci-flow")
@@ -263,6 +263,15 @@ func TestRunPRStep_PushAndWaitPassing(t *testing.T) {
 	}
 	if state.CI.Reason != "" {
 		t.Fatalf("state.CI.Reason = %q, want empty", state.CI.Reason)
+	}
+	if state.CI.PRURL != "https://github.com/acme/repo/pull/42" {
+		t.Fatalf("state.CI.PRURL = %q, want PR URL", state.CI.PRURL)
+	}
+	if state.CI.PRNumber != 42 {
+		t.Fatalf("state.CI.PRNumber = %d, want 42", state.CI.PRNumber)
+	}
+	if state.CI.PRHeadRef != "compound/ci-flow" || state.CI.PRBaseRef != "main" {
+		t.Fatalf("state.CI PR refs = %q/%q, want compound/ci-flow/main", state.CI.PRHeadRef, state.CI.PRBaseRef)
 	}
 
 	if gotOpts.BaseRef != "main" {
