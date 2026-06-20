@@ -123,6 +123,249 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 	}
 }
 
+func TestBootstrapRepositoryCheckoutCreatesMissingRunBranchFromBase(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "repository fetched"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+			{ExitCode: 0, OutputSummary: "run branch created"},
+		},
+	}
+
+	req := BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		RunBranch:     "hal/factory-remote-workspace-bootstrap",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 12, 0, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
+				t.Fatalf("local branch probe = (%q, %q)", repoPath, branch)
+			}
+			return false, nil
+		},
+		RemoteBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
+				t.Fatalf("remote branch probe = (%q, %q)", repoPath, branch)
+			}
+			return false, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if result.CheckedOutBranch != "hal/factory-remote-workspace-bootstrap" {
+		t.Fatalf("checked out branch = %q", result.CheckedOutBranch)
+	}
+
+	wantCalls := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"fetch", "--prune", "origin"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "main"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "-b", "hal/factory-remote-workspace-bootstrap", "main"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls, wantCalls) {
+		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
+	}
+
+	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepFetchRepository,
+		BootstrapStepCheckoutBase,
+		BootstrapStepCreateRunBranch,
+	})
+}
+
+func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "repository fetched"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+			{ExitCode: 0, OutputSummary: "run branch checked out"},
+		},
+	}
+
+	req := BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		RunBranch:     "hal/factory-remote-workspace-bootstrap",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 14, 0, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
+				t.Fatalf("local branch probe = (%q, %q)", repoPath, branch)
+			}
+			return true, nil
+		},
+		RemoteBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			t.Fatalf("remote branch probe should not run when local branch exists: (%q, %q)", repoPath, branch)
+			return false, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if result.CheckedOutBranch != "hal/factory-remote-workspace-bootstrap" {
+		t.Fatalf("checked out branch = %q", result.CheckedOutBranch)
+	}
+
+	wantCalls := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"fetch", "--prune", "origin"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "main"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "hal/factory-remote-workspace-bootstrap"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls, wantCalls) {
+		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
+	}
+
+	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepFetchRepository,
+		BootstrapStepCheckoutBase,
+		BootstrapStepCheckoutRun,
+	})
+}
+
+func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "repository fetched"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+			{ExitCode: 0, OutputSummary: "remote run branch fetched"},
+			{ExitCode: 0, OutputSummary: "remote run branch checked out"},
+		},
+	}
+
+	req := BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		RunBranch:     "hal/factory-remote-workspace-bootstrap",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 16, 0, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
+				t.Fatalf("local branch probe = (%q, %q)", repoPath, branch)
+			}
+			return false, nil
+		},
+		RemoteBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
+				t.Fatalf("remote branch probe = (%q, %q)", repoPath, branch)
+			}
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if result.CheckedOutBranch != "hal/factory-remote-workspace-bootstrap" {
+		t.Fatalf("checked out branch = %q", result.CheckedOutBranch)
+	}
+
+	wantCalls := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"fetch", "--prune", "origin"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "main"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"fetch", "origin", "hal/factory-remote-workspace-bootstrap:refs/remotes/origin/hal/factory-remote-workspace-bootstrap"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "--track", "origin/hal/factory-remote-workspace-bootstrap"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls, wantCalls) {
+		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
+	}
+
+	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepFetchRepository,
+		BootstrapStepCheckoutBase,
+		BootstrapStepFetchRunBranch,
+		BootstrapStepCheckoutRun,
+	})
+}
+
+func TestBootstrapBranchProbePropagatesExecutorErrorWithoutExitCode(t *testing.T) {
+	probeErr := errors.New("probe failed")
+	deps := BootstrapRepositoryDeps{
+		Executor: &fakeBootstrapExecutor{
+			errs: []error{probeErr},
+		},
+	}
+
+	exists, err := deps.probeBranch(context.Background(), BootstrapCommand{
+		Name: "git",
+		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/run"},
+		Dir:  "/workspace/hal",
+	}, 1)
+	if !errors.Is(err, probeErr) {
+		t.Fatalf("probeBranch() error = %v, want %v", err, probeErr)
+	}
+	if exists {
+		t.Fatal("probeBranch() exists = true, want false")
+	}
+}
+
 func TestBootstrapRepositoryCheckoutDryRunPlansCommandsWithoutExecutor(t *testing.T) {
 	req := BootstrapRequest{
 		RepositoryURL: "git@github.com:jywlabs/hal.git",
