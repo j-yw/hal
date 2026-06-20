@@ -1,0 +1,224 @@
+{
+  "project": "Hal Verify JSON",
+  "branchName": "hal/github-issue-11-for-resciencelab-hal-factory-add",
+  "description": "Add a first-class hal verify --json command that runs configured shell verification checks, emits a stable verify-v1 machine-readable contract, gates required failures, reports optional warnings, captures artifacts, and records verification metadata for factory runs.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Define verify-v1 result types",
+      "description": "As a maintainer, I want centralized verification result types so that command output, contract examples, and factory records share one stable data model.",
+      "acceptanceCriteria": [
+        "An internal verification package defines result types for schemaVersion, generatedAt, status, summary, checks, warnings, and artifacts.",
+        "Each check result type includes id, name, adapter, status, required, command, workDir, timeoutSeconds, startedAt, finishedAt, durationMs, exitCode, stdoutArtifact, stderrArtifact, and message JSON fields.",
+        "Top-level status values are represented as pass, fail, and warn.",
+        "Check status values are represented as pass, fail, timeout, missing, and skipped.",
+        "Result type JSON tags emit camelCase field names matching the verify-v1 contract.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Document verify-v1 contract",
+      "description": "As a factory integrator, I want a documented verification JSON contract so that automation can consume verification output without parsing human text.",
+      "acceptanceCriteria": [
+        "docs/contracts/verify-v1.md documents the top-level JSON fields schemaVersion, generatedAt, status, summary, checks, warnings, and artifacts.",
+        "The contract documents every per-check field emitted by shell-command checks.",
+        "The contract documents valid top-level statuses as pass, fail, and warn.",
+        "The contract documents valid check statuses as pass, fail, timeout, missing, and skipped.",
+        "The contract documents that required check failures and timeouts produce a failing gate.",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Add verify-v1 example payloads",
+      "description": "As a developer, I want checked-in example JSON payloads so that contract consumers can build against realistic outputs.",
+      "acceptanceCriteria": [
+        "At least one passing verify-v1 example payload is checked in.",
+        "At least one failing verify-v1 example payload is checked in.",
+        "At least one warning-only optional-check verify-v1 example payload is checked in.",
+        "Example payloads use the documented top-level field names exactly.",
+        "Example payloads use the documented per-check field names exactly.",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Lock verify JSON field contract in tests",
+      "description": "As a maintainer, I want tests that lock the verify-v1 field names so that future refactors do not silently break machine consumers.",
+      "acceptanceCriteria": [
+        "Tests assert the exact top-level JSON keys emitted by verification result serialization.",
+        "Tests assert the exact per-check JSON keys emitted for shell-command checks.",
+        "Tests verify marshal and unmarshal round-trip behavior for verification result types.",
+        "Tests fail when a documented required field is omitted from emitted JSON.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Add verification configuration model",
+      "description": "As a Hal user, I want to configure verification checks so that each project can define its own tests, lint, and typecheck commands.",
+      "acceptanceCriteria": [
+        "Verification config supports multiple shell checks.",
+        "Each shell check supports id, name, command, workDir, timeoutSeconds, and required.",
+        "The required field defaults to true when omitted.",
+        "The workDir field defaults to the project root when omitted.",
+        "Missing id, name, command, or invalid timeoutSeconds values produce actionable validation errors.",
+        "Optional checks are represented with required set to false.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Execute passing shell checks",
+      "description": "As a developer, I want configured shell checks to run successfully so that local verification can confirm the repo is ready for handoff.",
+      "acceptanceCriteria": [
+        "A configured shell command that exits 0 produces a check result with status pass.",
+        "When all required checks pass and no optional checks warn, the top-level result has status pass.",
+        "The result includes command, workDir, startedAt, finishedAt, and durationMs metadata.",
+        "Shell check execution uses the configured working directory.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Fail required shell checks",
+      "description": "As a factory run, I want required check failures to fail verification so that broken changes are blocked before PR or CI handoff.",
+      "acceptanceCriteria": [
+        "A required shell command that exits non-zero produces a check result with status fail.",
+        "The top-level result has status fail when any required check fails.",
+        "The check result includes the failing command exit code.",
+        "The summary counts include the failed required check.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Enforce shell check timeouts",
+      "description": "As a developer, I want verification checks to time out so that hung commands do not block factory runs indefinitely.",
+      "acceptanceCriteria": [
+        "A shell check exceeding timeoutSeconds is terminated.",
+        "A timed-out required check produces status timeout.",
+        "The top-level result has status fail when a required check times out.",
+        "A timeout result includes a message naming the configured timeout.",
+        "The summary counts include timed-out checks.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Warn for optional check problems",
+      "description": "As a maintainer, I want optional checks to report problems without failing the gate so that advisory checks can be introduced gradually.",
+      "acceptanceCriteria": [
+        "An optional check that exits non-zero produces a warning result without setting the top-level status to fail.",
+      "An optional check with a missing command or missing working directory produces status missing.",
+        "The top-level result has status warn when only optional checks fail, time out, or are missing.",
+        "Warning details are included in the warnings array.",
+        "The summary counts include warning-producing optional checks.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Capture verification artifacts",
+      "description": "As a factory operator, I want verification output artifacts referenced in the result so that failures can be inspected after the command exits.",
+      "acceptanceCriteria": [
+        "Shell-check stdout can be captured as an artifact reference.",
+        "Shell-check stderr can be captured as an artifact reference.",
+        "Artifact references are included in per-check stdoutArtifact and stderrArtifact fields when output is captured.",
+        "Artifact references are included in the top-level artifacts array.",
+      "For a check with id test, captured output artifacts are written to .hal/reports/verify/test-stdout.txt and .hal/reports/verify/test-stderr.txt so tests can assert exact paths.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Add hal verify --json command",
+      "description": "As a CLI user, I want a dedicated verify command so that I can run the same verification gate used by factory automation.",
+      "acceptanceCriteria": [
+        "hal verify --json loads configured verification checks and runs them.",
+        "hal verify --json emits only valid verify-v1 JSON on stdout.",
+        "Human-facing warnings or diagnostics are written somewhere other than JSON stdout.",
+        "The command exits 0 when the top-level result status is pass.",
+        "The command exits 0 when the top-level result status is warn.",
+        "The command exits non-zero when the top-level result status is fail.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Record verification in factory runs",
+      "description": "As a factory run, I want verification summaries and artifact references recorded as run events so that run history shows what was verified before handoff.",
+      "acceptanceCriteria": [
+        "Factory run records can include a verification summary with total, passed, failed, timedOut, skipped, and warning counts.",
+        "Factory run records can reference verification artifacts emitted by hal verify --json.",
+        "Verification recording does not add queue, trigger, sandbox, policy, secrets, or handoff implementation.",
+        "Tests verify that a factory run record can include verification summary and artifact references.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Add verify command documentation",
+      "description": "As a user, I want documentation for configuring and running verification so that projects can adopt the new gate without reading source code.",
+      "acceptanceCriteria": [
+        "CLI help documents hal verify --json.",
+        "Documentation includes a minimal shell-check configuration example.",
+        "Documentation explains required versus optional check behavior.",
+        "Documentation explains pass, warn, and fail gate outcomes.",
+      "Generated CLI docs include the hal verify command page and make docs-check passes.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
