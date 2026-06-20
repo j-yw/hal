@@ -139,10 +139,58 @@ func TestRunFactoryQueueAddWithDepsCreatesQueueEntryAndRecordsRunState(t *testin
 	}
 }
 
+func TestRunFactoryQueueAddWithDepsRejectsNonPendingRun(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+	}{
+		{name: "running", status: factory.RunStatusRunning},
+		{name: "succeeded", status: factory.RunStatusSucceeded},
+		{name: "failed", status: factory.RunStatusFailed},
+		{name: "canceled", status: factory.RunStatusCanceled},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+			createdAt := time.Date(2026, 6, 21, 12, 10, 0, 0, time.UTC)
+			record := testFactoryRunRecord("run-queue-add-"+tt.status, createdAt, createdAt)
+			record.Status = tt.status
+			record.CurrentStep = tt.status
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatalf("SaveRun() error: %v", err)
+			}
+
+			err := runFactoryQueueAddWithDeps(io.Discard, factoryQueueAddRequest{
+				RunID:        record.RunID,
+				ExecutorMode: factory.ExecutorModeLocal,
+			}, queueAddTestDeps(store, createdAt.Add(time.Minute), "queue-add-001"))
+			if err == nil {
+				t.Fatalf("runFactoryQueueAddWithDeps() error = nil, want non-pending run error")
+			}
+			want := `factory run "` + record.RunID + `" is "` + tt.status + `", want "pending"`
+			if err.Error() != want {
+				t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want %q", err.Error(), want)
+			}
+
+			entries, err := store.LoadQueue()
+			if err != nil {
+				t.Fatalf("LoadQueue() error: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+			}
+		})
+	}
+}
+
 func TestRunFactoryQueueAddWithDepsJSONOutput(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 13, 0, 0, 0, time.UTC)
 	record := testFactoryRunRecord("run-queue-add-json", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.RunStatusPending
 	if err := store.SaveRun(&record); err != nil {
 		t.Fatalf("SaveRun() error: %v", err)
 	}
@@ -674,6 +722,56 @@ func TestRunFactoryQueueWorkWithDepsConcurrentClaimSafety(t *testing.T) {
 	}
 	if len(events) != 3 {
 		t.Fatalf("events len = %d, want 3: %#v", len(events), events)
+	}
+}
+
+func TestExecuteClaimedFactoryQueueEntryMarksMissingRunFailed(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 20, 30, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	completedAt := claimedAt.Add(2 * time.Minute)
+	entry := testFactoryQueueEntry("queue-missing-run", "missing-run", factory.QueueStatusClaimed, createdAt)
+	entry.AttemptCount = 1
+	entry.ClaimedAt = &claimedAt
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	finalEntry, err := executeClaimedFactoryQueueEntry(context.Background(), store, entry, factoryQueueWorkDeps{
+		now: func() time.Time { return completedAt },
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called for missing run")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("executeClaimedFactoryQueueEntry() error = nil, want missing run error")
+	}
+	if !strings.Contains(err.Error(), `load claimed factory run "missing-run"`) {
+		t.Fatalf("executeClaimedFactoryQueueEntry() error = %q, want missing run context", err.Error())
+	}
+	if finalEntry.Status != factory.QueueStatusFailed {
+		t.Fatalf("finalEntry.status = %q, want %q", finalEntry.Status, factory.QueueStatusFailed)
+	}
+	if finalEntry.CompletedAt == nil || !finalEntry.CompletedAt.Equal(completedAt) {
+		t.Fatalf("finalEntry.completedAt = %v, want %s", finalEntry.CompletedAt, completedAt)
+	}
+	if !strings.Contains(finalEntry.LastError, `load claimed factory run "missing-run"`) {
+		t.Fatalf("finalEntry.lastError = %q, want missing run context", finalEntry.LastError)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
+	}
+	if entries[0].Status != factory.QueueStatusFailed {
+		t.Fatalf("queue status = %q, want failed", entries[0].Status)
+	}
+	if !strings.Contains(entries[0].LastError, `load claimed factory run "missing-run"`) {
+		t.Fatalf("queue lastError = %q, want missing run context", entries[0].LastError)
 	}
 }
 

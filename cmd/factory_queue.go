@@ -253,8 +253,12 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 	if err != nil {
 		return fmt.Errorf("open factory store: %w", err)
 	}
-	if _, err := store.LoadRun(req.RunID); err != nil {
+	record, err := store.LoadRun(req.RunID)
+	if err != nil {
 		return fmt.Errorf("load factory run %q: %w", strings.TrimSpace(req.RunID), err)
+	}
+	if record.Status != factory.RunStatusPending {
+		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
 	}
 
 	entry, err := store.EnqueueQueueEntry(req.RunID, executorMode, factory.QueueOperationOptions{
@@ -352,7 +356,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 
 	record, err := store.LoadRun(entry.RunID)
 	if err != nil {
-		return entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err)
+		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err), deps.now)
 	}
 	record.ExecutorMode = entry.ExecutorMode
 

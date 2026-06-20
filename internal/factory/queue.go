@@ -126,6 +126,9 @@ func (s Store) EnqueueQueueEntry(runID, executorMode string, opts QueueOperation
 	}
 
 	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+		if existing := activeQueueEntryForRun(entries, runID); existing != nil {
+			return nil, fmt.Errorf("factory run %q already has active queue entry %q", runID, existing.QueueID)
+		}
 		return append(entries, entry), nil
 	}); err != nil {
 		return QueueEntry{}, err
@@ -439,6 +442,19 @@ func oldestQueuedEntryIndex(entries []QueueEntry) int {
 		}
 	}
 	return oldest
+}
+
+func activeQueueEntryForRun(entries []QueueEntry, runID string) *QueueEntry {
+	for i := range entries {
+		if entries[i].RunID == runID && isActiveQueueStatus(entries[i].Status) {
+			return &entries[i]
+		}
+	}
+	return nil
+}
+
+func isActiveQueueStatus(status string) bool {
+	return status == QueueStatusQueued || status == QueueStatusClaimed
 }
 
 func queueEntryIndex(entries []QueueEntry, queueID string) int {

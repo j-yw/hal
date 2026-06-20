@@ -258,6 +258,79 @@ func TestEnqueueQueueEntryCreatesSingleQueuedEntryWithInjectedSources(t *testing
 	}
 }
 
+func TestEnqueueQueueEntryRejectsDuplicateActiveRunEntry(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+	}{
+		{name: "queued", status: QueueStatusQueued},
+		{name: "claimed", status: QueueStatusClaimed},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "factory"))
+			createdAt := time.Date(2026, 6, 21, 9, 30, 0, 0, time.UTC)
+			existing := testQueueEntryWithStatus("queue-existing", "run-duplicate", tt.status, createdAt)
+			if err := store.SaveQueue([]QueueEntry{existing}); err != nil {
+				t.Fatalf("SaveQueue() unexpected error: %v", err)
+			}
+
+			_, err := store.EnqueueQueueEntry("run-duplicate", ExecutorModeLocal, QueueOperationOptions{
+				Now: func() time.Time { return createdAt.Add(time.Minute) },
+				NewQueueID: func() (string, error) {
+					return "queue-new", nil
+				},
+			})
+			if err == nil {
+				t.Fatalf("EnqueueQueueEntry() error = nil, want duplicate active run error")
+			}
+			if want := `factory run "run-duplicate" already has active queue entry "queue-existing"`; err.Error() != want {
+				t.Fatalf("EnqueueQueueEntry() error = %q, want %q", err.Error(), want)
+			}
+
+			entries, err := store.LoadQueue()
+			if err != nil {
+				t.Fatalf("LoadQueue() unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(entries, []QueueEntry{existing}) {
+				t.Fatalf("LoadQueue() = %#v, want unchanged %#v", entries, []QueueEntry{existing})
+			}
+		})
+	}
+}
+
+func TestEnqueueQueueEntryAllowsRunAfterTerminalQueueEntry(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 9, 45, 0, 0, time.UTC)
+	existing := testQueueEntryWithStatus("queue-existing", "run-retry", QueueStatusFailed, createdAt)
+	if err := store.SaveQueue([]QueueEntry{existing}); err != nil {
+		t.Fatalf("SaveQueue() unexpected error: %v", err)
+	}
+
+	got, err := store.EnqueueQueueEntry("run-retry", ExecutorModeLocal, QueueOperationOptions{
+		Now: func() time.Time { return createdAt.Add(time.Minute) },
+		NewQueueID: func() (string, error) {
+			return "queue-new", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnqueueQueueEntry() unexpected error: %v", err)
+	}
+	if got.QueueID != "queue-new" {
+		t.Fatalf("EnqueueQueueEntry() queueID = %q, want queue-new", got.QueueID)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() unexpected error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("LoadQueue() entries len = %d, want 2: %#v", len(entries), entries)
+	}
+}
+
 func TestListQueueReturnsFIFOOrder(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
