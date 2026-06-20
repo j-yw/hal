@@ -9,6 +9,7 @@
 - Queue lifecycle transitions should go through Store helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained queue history stay consistent.
 - Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
 - Queue work should use `Store.ClaimNextQueueEntry`, record the run `CurrentStep` as `claimed` plus a claim timeline event in `cmd`, execute through the shared factory run lifecycle helper, then finalize queue state with `MarkQueueEntrySucceeded` or `MarkQueueEntryFailed`.
+- Queue worker command tests should inject `runPipeline`; no-work tests should use an executor that fails if called so the no-op path never reaches external execution.
 - Factory queue command registration lives in `cmd/factory_queue.go`; wire the command group from `cmd/factory.go`, update `cmd/factory_test.go` metadata/link checks, and run `make docs-cli` when changing CLI docs.
 
 ---
@@ -119,4 +120,13 @@
   - `factory-queue-work-v1` keeps the same top-level keys; when work is claimed, `entry.status` now reflects the terminal post-execution queue state (`succeeded` or `failed`).
   - Browser verification skipped because this story only changes CLI/backend behavior.
   - Checks run: `go test -timeout=120s ./cmd -run 'TestRunFactoryQueueWorkWithDeps|TestFactoryQueueContractExamples|TestMachineContractFields'`, `go test -timeout=120s ./cmd -run 'TestRunFactoryRunWithDeps|TestRunFactoryRunPipelineWithDeps'`, `make test`, `make vet`, `make docs-check`, `make lint` (reported `golangci-lint` is not installed locally).
+---
+## 2026-06-21 06:02:15 CST - US-011
+- Added deterministic queue worker coverage for the no-work path by injecting a `runPipeline` dependency that fails if invoked, proving empty queue processing does not reach executor code.
+- Verified the queue test matrix continues to cover temporary stores, injected timestamps/IDs/claims, buffered command output, worker success/failure/no-op cases, and no real Codex/GitHub/sandbox execution dependencies.
+- Files changed: `cmd/factory_queue_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Queue worker no-op tests should assert the executor dependency is not called, not just that the JSON response reports no claimed work.
+  - Browser verification skipped because this story only changes CLI/backend test coverage.
+  - Checks run: `go test -timeout=120s ./cmd -run TestRunFactoryQueueWorkWithDepsJSONOutputNoWork`, `go test -timeout=120s ./...`, `go vet ./...`, `make docs-check`, `make lint` (reported `golangci-lint` is not installed locally).
 ---

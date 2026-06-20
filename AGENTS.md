@@ -45,6 +45,7 @@
 - Queue lifecycle transitions should use Store-level helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained history stay consistent.
 - Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
 - `hal factory queue work` should claim via `Store.ClaimNextQueueEntry`, record the queue claim event in `cmd`, execute the run through the shared factory run lifecycle helper, and finalize the queue entry with `MarkQueueEntrySucceeded`/`MarkQueueEntryFailed`.
+- Queue worker command tests should inject `runPipeline`; no-work tests should fail if the executor is called so empty queue processing never depends on Codex, GitHub, sandbox providers, or other external execution.
 - Factory queue command definitions live in `cmd/factory_queue.go`; wire them from `cmd/factory.go`, update factory command metadata/link tests in `cmd/factory_test.go`, and regenerate `docs/cli` with `make docs-cli`.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
