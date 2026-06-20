@@ -74,6 +74,11 @@
 - GoReleaser v2 configs require version: 2, archives use formats (list), Homebrew uses homebrew_casks with repository, and target exclusions go under ignore.
 - GoReleaser CI checks need full tag history, so actions/checkout must use fetch-depth: 0.
 
+## Patterns from hal/factory-artifact-collection (2026-06-21)
+
+- Factory artifact payloads are stored under the global factory store `artifacts/<run-id>/`; use `factory.Store.SaveArtifactFile` for copying and metadata updates, and `factory.Store.ResolveArtifactPath` before reading stored paths.
+- Artifact persistence must not write payloads into the project `.hal/` directory; tests should use temp store roots and assert project `.hal` remains free of artifact payload state.
+
 ## Patterns from compound/compound-pipeline-foundations (2026-02-05)
 
 - LoadConfig in internal/compound/config.go uses rawAutoConfig with pointer fields (*string, *int) for YAML unmarshaling to distinguish missing keys (nil → use default) from explicit empty values (non-nil → pass through to Validate).

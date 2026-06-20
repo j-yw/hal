@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory `ArtifactReference` keeps `name` and `type` as required stable fields while richer artifact metadata is additive and optional; keep legacy `path` for current CLI compatibility and use `sourcePath`/`storedPath` for durable collection metadata.
+- Factory artifact payloads belong under the global factory store at `artifacts/<run-id>/`; use `Store.SaveArtifactFile` and `Store.ResolveArtifactPath` so writes stay scoped to the store and never create project `.hal` artifact state.
 
 ---
 
@@ -14,4 +15,13 @@
   - Factory run record schema changes should stay additive and optional unless a contract migration is explicitly planned.
   - `ArtifactReference.Path` is still used by existing command output/tests for display and matching, so new persistence work should populate `storedPath` without removing or repurposing `path`.
   - `internal/factory/types_test.go` is the right place to lock durable JSON tags and legacy decode compatibility for factory records.
+---
+## 2026-06-21 07:05:53 CST - US-002
+- Added factory store artifact persistence APIs with an `artifacts/` store directory, deterministic per-run stored paths, source file copying, run metadata upsert behavior, and scoped stored-path resolution.
+- Added focused store tests covering artifact writes under the global factory store, no project `.hal` artifact writes, metadata persistence on run records, upsert behavior, directory rejection, and path traversal guards.
+- Files changed: `internal/factory/store.go`, `internal/factory/store_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- **Learnings for future iterations:**
+  - Store-backed artifact files should be copied through `Store.SaveArtifactFile`, which fills `sourcePath`, `storedPath`, `sizeBytes`, and `createdAt` before saving the run record.
+  - Stored artifact paths are contract-relative slash paths under `artifacts/<run-id>/`; use `Store.ResolveArtifactPath` before reading them from disk.
+  - Project `.hal/` remains runtime state only for this feature; artifact payload persistence belongs in the global factory store.
 ---

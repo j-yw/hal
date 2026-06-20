@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -80,6 +81,9 @@ func TestDefaultStorePaths(t *testing.T) {
 	if store.TimelinesDir() != filepath.Join(root, timelinesDirName) {
 		t.Fatalf("TimelinesDir() = %q, want %q", store.TimelinesDir(), filepath.Join(root, timelinesDirName))
 	}
+	if store.ArtifactsDir() != filepath.Join(root, artifactsDirName) {
+		t.Fatalf("ArtifactsDir() = %q, want %q", store.ArtifactsDir(), filepath.Join(root, artifactsDirName))
+	}
 }
 
 func TestEnsureStoreDirCreatesRestrictiveDirectories(t *testing.T) {
@@ -97,6 +101,7 @@ func TestEnsureStoreDirCreatesRestrictiveDirectories(t *testing.T) {
 		filepath.Join(global, factoryStoreDirName),
 		filepath.Join(global, factoryStoreDirName, runsDirName),
 		filepath.Join(global, factoryStoreDirName, timelinesDirName),
+		filepath.Join(global, factoryStoreDirName, artifactsDirName),
 	} {
 		assertFactoryDirExists(t, path)
 		if runtime.GOOS != "windows" {
@@ -316,6 +321,164 @@ func TestSaveRunUpdatesExistingRunRecord(t *testing.T) {
 	}
 	if !loaded.UpdatedAt.Equal(record.UpdatedAt) {
 		t.Fatalf("loaded updatedAt = %s, want %s", loaded.UpdatedAt, record.UpdatedAt)
+	}
+}
+
+func TestSaveArtifactFileCopiesUnderFactoryStoreAndUpdatesRun(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(filepath.Join(root, "factory"))
+	projectDir := filepath.Join(root, "project")
+	halDir := filepath.Join(projectDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o700); err != nil {
+		t.Fatalf("mkdir project .hal: %v", err)
+	}
+	sourcePath := filepath.Join(projectDir, "report.json")
+	sourceData := []byte(`{"ok":true}` + "\n")
+	if err := os.WriteFile(sourcePath, sourceData, 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-artifacts-001")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	got, err := store.SaveArtifactFile(record.RunID, ArtifactReference{
+		ID:      "report-json",
+		Name:    "Report JSON",
+		Type:    "json",
+		Summary: map[string]any{"kind": "report"},
+	}, sourcePath)
+	if err != nil {
+		t.Fatalf("SaveArtifactFile() unexpected error: %v", err)
+	}
+
+	wantStoredPath := "artifacts/run-artifacts-001/report-json.json"
+	if got.StoredPath != wantStoredPath {
+		t.Fatalf("StoredPath = %q, want %q", got.StoredPath, wantStoredPath)
+	}
+	if got.SourcePath != sourcePath {
+		t.Fatalf("SourcePath = %q, want %q", got.SourcePath, sourcePath)
+	}
+	if got.SizeBytes == nil || *got.SizeBytes != int64(len(sourceData)) {
+		t.Fatalf("SizeBytes = %v, want %d", got.SizeBytes, len(sourceData))
+	}
+	if got.CreatedAt == nil {
+		t.Fatalf("CreatedAt should be populated")
+	}
+
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(absoluteStoredPath, store.Root()+string(filepath.Separator)) {
+		t.Fatalf("resolved artifact path %q should be under store root %q", absoluteStoredPath, store.Root())
+	}
+	storedData, err := os.ReadFile(absoluteStoredPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	if !reflect.DeepEqual(storedData, sourceData) {
+		t.Fatalf("stored artifact = %q, want %q", storedData, sourceData)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(absoluteStoredPath)
+		if err != nil {
+			t.Fatalf("stat stored artifact: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("stored artifact permissions = %o, want %o", info.Mode().Perm(), 0o600)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(halDir, artifactsDirName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("SaveArtifactFile() should not create project .hal artifacts, stat error = %v", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	if len(loaded.Artifacts) != 1 {
+		t.Fatalf("loaded artifacts length = %d, want 1", len(loaded.Artifacts))
+	}
+	if loaded.Artifacts[0].StoredPath != wantStoredPath {
+		t.Fatalf("loaded artifact StoredPath = %q, want %q", loaded.Artifacts[0].StoredPath, wantStoredPath)
+	}
+	if loaded.Artifacts[0].Summary["kind"] != "report" {
+		t.Fatalf("loaded artifact summary = %#v, want report kind", loaded.Artifacts[0].Summary)
+	}
+}
+
+func TestSaveArtifactFileUpsertsMetadataByStoredPath(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-artifacts-upsert")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "artifact.txt")
+	if err := os.WriteFile(sourcePath, []byte("first\n"), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	for _, summary := range []string{"first", "second"} {
+		if _, err := store.SaveArtifactFile(record.RunID, ArtifactReference{
+			Name:    "artifact",
+			Type:    "text",
+			Summary: map[string]any{"revision": summary},
+		}, sourcePath); err != nil {
+			t.Fatalf("SaveArtifactFile(%q) unexpected error: %v", summary, err)
+		}
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	if len(loaded.Artifacts) != 1 {
+		t.Fatalf("loaded artifacts length = %d, want 1", len(loaded.Artifacts))
+	}
+	if loaded.Artifacts[0].Summary["revision"] != "second" {
+		t.Fatalf("loaded artifact summary = %#v, want second revision", loaded.Artifacts[0].Summary)
+	}
+}
+
+func TestResolveArtifactPathRejectsPathsOutsideRun(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	tests := []string{
+		"",
+		"artifacts/run-other/output.json",
+		"artifacts/run-artifacts",
+		"artifacts/run-artifacts/../run-other/output.json",
+		"/tmp/output.json",
+		`artifacts\run-artifacts\output.json`,
+	}
+
+	for _, storedPath := range tests {
+		t.Run(storedPath, func(t *testing.T) {
+			if _, err := store.ResolveArtifactPath("run-artifacts", storedPath); err == nil {
+				t.Fatalf("ResolveArtifactPath(%q) expected error", storedPath)
+			}
+		})
+	}
+}
+
+func TestSaveArtifactFileRejectsDirectories(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-artifacts-dir")
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	sourceDir := filepath.Join(t.TempDir(), "artifact-dir")
+	if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+
+	_, err := store.SaveArtifactFile(record.RunID, ArtifactReference{Name: "artifact-dir", Type: "directory"}, sourceDir)
+	if err == nil {
+		t.Fatalf("SaveArtifactFile() expected directory source error")
 	}
 }
 

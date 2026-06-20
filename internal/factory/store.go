@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ const (
 	factoryStoreDirName = "factory"
 	runsDirName         = "runs"
 	timelinesDirName    = "timelines"
+	artifactsDirName    = "artifacts"
 	runRecordFileExt    = ".json"
 	storeTempFileExt    = ".tmp"
 	storeBackupFileExt  = ".bak"
@@ -85,6 +87,14 @@ func (s Store) TimelinesDir() string {
 	return filepath.Join(s.root, timelinesDirName)
 }
 
+// ArtifactsDir returns the directory containing stored artifact payloads.
+func (s Store) ArtifactsDir() string {
+	if s.root == "" {
+		return ""
+	}
+	return filepath.Join(s.root, artifactsDirName)
+}
+
 // Ensure creates the store root and known subdirectories using restrictive
 // permissions consistent with the global sandbox registry.
 func (s Store) Ensure() error {
@@ -99,6 +109,7 @@ func (s Store) Ensure() error {
 		{name: "factory store", path: s.root},
 		{name: "factory runs", path: s.RunsDir()},
 		{name: "factory timelines", path: s.TimelinesDir()},
+		{name: "factory artifacts", path: s.ArtifactsDir()},
 	}
 
 	for _, dir := range dirs {
@@ -107,6 +118,98 @@ func (s Store) Ensure() error {
 		}
 	}
 	return nil
+}
+
+// SaveArtifactFile copies a source file into this store and records the stored
+// artifact metadata on the run record. The stored path is deterministic and
+// scoped under artifacts/<run-id>/.
+func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, sourcePath string) (ArtifactReference, error) {
+	runID, err := validateRunID(runID)
+	if err != nil {
+		return ArtifactReference{}, err
+	}
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return ArtifactReference{}, fmt.Errorf("artifact source path is required")
+	}
+
+	record, err := s.LoadRun(runID)
+	if err != nil {
+		return ArtifactReference{}, err
+	}
+	if err := s.Ensure(); err != nil {
+		return ArtifactReference{}, err
+	}
+
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return ArtifactReference{}, fmt.Errorf("stat artifact source %q: %w", sourcePath, err)
+	}
+	if info.IsDir() {
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is a directory", sourcePath)
+	}
+
+	artifact.Name = strings.TrimSpace(artifact.Name)
+	artifact.Type = strings.TrimSpace(artifact.Type)
+	if artifact.Name == "" {
+		return ArtifactReference{}, fmt.Errorf("artifact name is required")
+	}
+	if artifact.Type == "" {
+		return ArtifactReference{}, fmt.Errorf("artifact type is required")
+	}
+
+	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifact.Name, sourcePath)))
+	absoluteStoredPath, err := s.ResolveArtifactPath(runID, storedPath)
+	if err != nil {
+		return ArtifactReference{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(absoluteStoredPath), 0o700); err != nil {
+		return ArtifactReference{}, fmt.Errorf("create factory artifact dir: %w", err)
+	}
+	if err := copyStoreFile(sourcePath, absoluteStoredPath, 0o600); err != nil {
+		return ArtifactReference{}, fmt.Errorf("write factory artifact %q: %w", artifact.Name, err)
+	}
+
+	size := info.Size()
+	createdAt := info.ModTime().UTC()
+	artifact.SourcePath = sourcePath
+	artifact.StoredPath = storedPath
+	artifact.SizeBytes = &size
+	artifact.CreatedAt = &createdAt
+
+	record.Artifacts = upsertArtifact(record.Artifacts, artifact)
+	if err := s.SaveRun(record); err != nil {
+		return ArtifactReference{}, fmt.Errorf("save factory artifact metadata %q: %w", artifact.Name, err)
+	}
+
+	return artifact, nil
+}
+
+// ResolveArtifactPath resolves a stored artifact path to an absolute local path
+// and rejects paths outside artifacts/<run-id>/.
+func (s Store) ResolveArtifactPath(runID, storedPath string) (string, error) {
+	if strings.TrimSpace(s.root) == "" {
+		return "", errStoreDirUnavailable
+	}
+	runID, err := validateRunID(runID)
+	if err != nil {
+		return "", err
+	}
+	storedPath = strings.TrimSpace(storedPath)
+	if storedPath == "" {
+		return "", fmt.Errorf("factory artifact stored path is required")
+	}
+	if filepath.IsAbs(storedPath) || strings.ContainsAny(storedPath, `\`) {
+		return "", fmt.Errorf("factory artifact stored path %q is invalid", storedPath)
+	}
+
+	cleanStoredPath := filepath.Clean(filepath.FromSlash(storedPath))
+	runPrefix := filepath.Join(artifactsDirName, runID)
+	if cleanStoredPath == "." || cleanStoredPath == runPrefix || !strings.HasPrefix(cleanStoredPath, runPrefix+string(filepath.Separator)) {
+		return "", fmt.Errorf("factory artifact stored path %q is outside run %q", storedPath, runID)
+	}
+
+	return filepath.Join(s.root, cleanStoredPath), nil
 }
 
 // SaveRun persists a factory run record by its stable run ID.
@@ -392,6 +495,82 @@ func saveStoreFile(tmpPath, path string) error {
 
 func isStoreRenameNoReplaceError(err error) bool {
 	return errors.Is(err, fs.ErrExist) || os.IsExist(err)
+}
+
+func copyStoreFile(sourcePath, destPath string, mode fs.FileMode) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	tmpPath := destPath + storeTempFileExt
+	dest, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(dest, source); err != nil {
+		_ = dest.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := dest.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := saveStoreFile(tmpPath, destPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func artifactFileName(name, sourcePath string) string {
+	name = strings.Trim(sanitizeArtifactPathComponent(name), ".")
+	if name == "" {
+		name = "artifact"
+	}
+	ext := filepath.Ext(sourcePath)
+	if ext != "" && filepath.Ext(name) == "" {
+		name += ext
+	}
+	return name
+}
+
+func sanitizeArtifactPathComponent(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastHyphen := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' {
+			builder.WriteRune(r)
+			lastHyphen = false
+			continue
+		}
+		if !lastHyphen {
+			builder.WriteByte('-')
+			lastHyphen = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func upsertArtifact(artifacts []ArtifactReference, artifact ArtifactReference) []ArtifactReference {
+	for i := range artifacts {
+		if artifact.ID != "" && artifacts[i].ID == artifact.ID {
+			artifacts[i] = artifact
+			return artifacts
+		}
+		if artifact.StoredPath != "" && artifacts[i].StoredPath == artifact.StoredPath {
+			artifacts[i] = artifact
+			return artifacts
+		}
+	}
+	return append(artifacts, artifact)
 }
 
 func defaultStoreRoot() (string, error) {
