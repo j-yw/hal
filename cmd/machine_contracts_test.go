@@ -11,6 +11,7 @@ import (
 	"time"
 
 	ci "github.com/jywlabs/hal/internal/ci"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/status"
@@ -409,6 +410,99 @@ func TestMachineContractFields_CICommandOutputs(t *testing.T) {
 		requireFields(t, "ci merge", raw, []string{"contractVersion", "prNumber", "strategy", "dryRun", "merged", "mergeCommitSha", "branchDeleted", "deleteWarning", "summary"})
 		if raw["contractVersion"] != ci.MergeContractVersion {
 			t.Fatalf("ci merge contractVersion = %v, want %q", raw["contractVersion"], ci.MergeContractVersion)
+		}
+	})
+}
+
+func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
+	parseJSON := func(t *testing.T, data []byte) map[string]interface{} {
+		t.Helper()
+		var raw map[string]interface{}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("JSON parse error: %v\n%s", err, string(data))
+		}
+		return raw
+	}
+
+	base := time.Date(2026, 6, 20, 18, 0, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:       "run-contract",
+		Status:      factory.RunStatusFailed,
+		Source:      factory.SourceMetadata{Kind: "markdown", Path: ".hal/prd-factory.md", Title: "Factory"},
+		RepoPath:    "/workspace/hal",
+		RepoRemote:  "git@github.com:jywlabs/hal.git",
+		BranchName:  "hal/factory",
+		BaseBranch:  "develop",
+		SandboxName: "factory-contract",
+		CurrentStep: "ci",
+		CreatedAt:   base,
+		UpdatedAt:   base.Add(10 * time.Minute),
+		Artifacts: []factory.ArtifactReference{
+			{Name: "report", Type: "markdown", Path: ".hal/reports/factory.md"},
+		},
+		Failure: &factory.FailureSummary{
+			Step:        "ci",
+			Category:    "test",
+			Message:     "unit tests failed",
+			Recoverable: true,
+			ExitCode:    1,
+		},
+	}
+	events := []factory.EventRecord{
+		{
+			Sequence:  1,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeRunCreated,
+			Timestamp: base,
+			Summary:   "created",
+		},
+	}
+
+	t.Run("factory list top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryListWithDeps(&buf, true, factoryListDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryListWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runs"})
+		if raw["contractVersion"] != FactoryListContractVersion {
+			t.Fatalf("factory list contractVersion = %v, want %q", raw["contractVersion"], FactoryListContractVersion)
+		}
+	})
+
+	t.Run("factory status top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+		for _, event := range events {
+			event := event
+			if err := store.AppendEvent(&event); err != nil {
+				t.Fatalf("AppendEvent() error: %v", err)
+			}
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryStatusWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "run", "timeline"})
+		if raw["contractVersion"] != FactoryStatusContractVersion {
+			t.Fatalf("factory status contractVersion = %v, want %q", raw["contractVersion"], FactoryStatusContractVersion)
 		}
 	})
 }

@@ -11,6 +11,7 @@
 - Factory command surfaces live in `cmd/factory.go`; `hal factory list --json` should emit `factory-list-v1` with `runs` summaries from `Store.ListRuns`, omit full artifacts/timelines, and regenerate `docs/cli/hal_factory*.md` with `make docs-cli`.
 - `hal factory status <run-id> --json` should emit `factory-status-v1` with a full `run` and append-ordered `timeline`; missing run IDs must return before writing any JSON payload.
 - Factory contract docs are split by JSON surface: `factory-list-v1.md`, `factory-status-v1.md`, and `factory-timeline-v1.md`; example payloads live in `docs/contracts/examples/` and should mirror `cmd/factory.go` response DTOs plus `internal/factory` JSON tags.
+- Factory JSON contract locks span `cmd/machine_contracts_test.go` for exact top-level keys, `cmd/contracts_doc_test.go` for docs/examples schema sync, and `internal/factory/types_test.go` for DTO round trips.
 
 ---
 
@@ -114,4 +115,16 @@
   - Treat the timeline contract as the event surface embedded in `factory-status-v1` unless a standalone timeline command is added.
   - Keep factory contract examples aligned with `cmd/factory.go` response structs and `internal/factory` JSON tags, including `omitempty` behavior.
   - Contract docs should explicitly call out no-payload error cases, because command handlers intentionally fail before rendering JSON for missing run IDs.
+---
+
+## 2026-06-21 00:20 CST - US-010
+- Added factory machine-contract tests that assert exact top-level JSON keys for `hal factory list --json` and `hal factory status <run-id> --json`.
+- Added docs/code sync coverage for factory contract docs and examples, including strict decoding of example JSON payloads against the command response schemas.
+- Added explicit JSON round-trip tests for factory run records, failure summaries, artifact references, and timeline events.
+- Files changed: `cmd/machine_contracts_test.go`, `cmd/contracts_doc_test.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`
+- Quality checks: `go test -timeout=120s ./cmd` passed; `go test -timeout=120s ./internal/factory` passed; `go test -timeout=120s ./...` passed; `perl -e 'alarm shift; exec @ARGV' 180 go vet ./...` passed; `perl -e 'alarm shift; exec @ARGV' 180 make docs-check` passed; `golangci-lint` not installed, so lint was skipped.
+- **Learnings for future iterations:**
+  - Factory command contract keys should be locked in `cmd/machine_contracts_test.go` even when command-specific tests already cover behavior.
+  - Use strict JSON decoding with `DisallowUnknownFields` for contract examples so docs fixtures cannot drift ahead of the command response structs.
+  - Keep factory persisted DTO round-trip tests in `internal/factory/types_test.go` alongside the JSON tag/key assertions.
 ---

@@ -80,6 +80,91 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	}
 }
 
+func TestFactoryContractTypeRoundTrips(t *testing.T) {
+	createdAt := time.Date(2026, 6, 20, 11, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(10 * time.Minute)
+	finishedAt := createdAt.Add(20 * time.Minute)
+
+	t.Run("run record", func(t *testing.T) {
+		original := RunRecord{
+			RunID:  "01975515-52ad-7f20-8f10-b35c07051b9f",
+			Status: RunStatusFailed,
+			Source: SourceMetadata{
+				Kind:       "markdown",
+				Path:       ".hal/prd-factory.md",
+				ReportPath: ".hal/reports/factory.md",
+				Title:      "Factory run records",
+			},
+			RepoPath:    "/work/hal",
+			RepoRemote:  "git@github.com:jywlabs/hal.git",
+			BranchName:  "hal/factory-run-records",
+			BaseBranch:  "develop",
+			SandboxName: "factory-run",
+			CurrentStep: "ci",
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+			FinishedAt:  &finishedAt,
+			Artifacts: []ArtifactReference{
+				{Name: "prd", Type: "json", Path: ".hal/prd.json"},
+				{Name: "pull_request", Type: "url", URL: "https://github.com/jywlabs/hal/pull/123"},
+			},
+			Failure: &FailureSummary{
+				Step:        "ci",
+				Category:    "test",
+				Message:     "unit tests failed",
+				Recoverable: true,
+				ExitCode:    1,
+			},
+		}
+
+		var decoded RunRecord
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("failure summary", func(t *testing.T) {
+		original := FailureSummary{
+			Step:        "review",
+			Category:    "validation",
+			Message:     "review found valid issues",
+			Recoverable: true,
+			ExitCode:    2,
+		}
+
+		var decoded FailureSummary
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("artifact reference", func(t *testing.T) {
+		original := ArtifactReference{
+			Name: "pull_request",
+			Type: "url",
+			Path: ".hal/reports/pr.md",
+			URL:  "https://github.com/jywlabs/hal/pull/123",
+		}
+
+		var decoded ArtifactReference
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("timeline event", func(t *testing.T) {
+		original := EventRecord{
+			Sequence:  42,
+			RunID:     "01975515-52ad-7f20-8f10-b35c07051b9f",
+			EventType: EventTypeVerificationResult,
+			Timestamp: updatedAt,
+			Message:   "Browser verification skipped",
+			Summary:   "No dev server was running",
+			Metadata: map[string]any{
+				"check": "browser",
+				"ok":    false,
+			},
+		}
+
+		var decoded EventRecord
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+}
+
 func TestRunRecordJSONFields(t *testing.T) {
 	createdAt := time.Date(2026, 6, 20, 9, 30, 0, 0, time.UTC)
 	updatedAt := createdAt.Add(10 * time.Minute)
@@ -205,6 +290,21 @@ func TestRunRecordJSONFields(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decoded, original) {
 		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
+	t.Helper()
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := json.Unmarshal(data, decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(*decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", *decoded, original)
 	}
 }
 

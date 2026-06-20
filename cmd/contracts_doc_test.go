@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/doctor"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -31,6 +34,9 @@ func TestContractDocsExist(t *testing.T) {
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
 		{"ci-fix-v1", "../docs/contracts/ci-fix-v1.md"},
 		{"ci-merge-v1", "../docs/contracts/ci-merge-v1.md"},
+		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
+		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
+		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -330,4 +336,143 @@ func TestContractDocsIncludeCIFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestContractDocsIncludeFactoryFields(t *testing.T) {
+	docs := []struct {
+		name           string
+		path           string
+		contractValue  string
+		requiredFields []string
+		requiredValues []string
+	}{
+		{
+			name:          "factory-list-v1",
+			path:          "../docs/contracts/factory-list-v1.md",
+			contractValue: FactoryListContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runs", "runId", "status", "source", "repoPath", "repoRemote",
+				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
+				"finishedAt", "artifactCount", "failure",
+			},
+			requiredValues: []string{
+				factory.RunStatusPending,
+				factory.RunStatusRunning,
+				factory.RunStatusSucceeded,
+				factory.RunStatusFailed,
+				factory.RunStatusCanceled,
+			},
+		},
+		{
+			name:          "factory-status-v1",
+			path:          "../docs/contracts/factory-status-v1.md",
+			contractValue: FactoryStatusContractVersion,
+			requiredFields: []string{
+				"contractVersion", "run", "timeline", "runId", "status", "source", "repoPath", "repoRemote",
+				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
+				"finishedAt", "artifacts", "failure",
+			},
+			requiredValues: []string{
+				factory.RunStatusPending,
+				factory.RunStatusRunning,
+				factory.RunStatusSucceeded,
+				factory.RunStatusFailed,
+				factory.RunStatusCanceled,
+			},
+		},
+		{
+			name:          "factory-timeline-v1",
+			path:          "../docs/contracts/factory-timeline-v1.md",
+			contractValue: "factory-status-v1",
+			requiredFields: []string{
+				"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata",
+			},
+			requiredValues: []string{
+				factory.EventTypeRunCreated,
+				factory.EventTypeStepStarted,
+				factory.EventTypeStepEnded,
+				factory.EventTypeCommandOutputSummary,
+				factory.EventTypeVerificationResult,
+				factory.EventTypeCIState,
+				factory.EventTypeArtifactSync,
+				factory.EventTypeFailureClassification,
+			},
+		},
+	}
+
+	for _, doc := range docs {
+		t.Run(doc.name, func(t *testing.T) {
+			data, err := os.ReadFile(doc.path)
+			if err != nil {
+				t.Fatalf("cannot read %s: %v", doc.path, err)
+			}
+			content := string(data)
+
+			if !strings.Contains(content, doc.contractValue) {
+				t.Errorf("%s missing contract value %q", doc.name, doc.contractValue)
+			}
+			for _, field := range doc.requiredFields {
+				if !strings.Contains(content, "`"+field+"`") {
+					t.Errorf("%s missing field %q", doc.name, field)
+				}
+			}
+			for _, value := range doc.requiredValues {
+				if !strings.Contains(content, value) {
+					t.Errorf("%s missing value %q", doc.name, value)
+				}
+			}
+		})
+	}
+}
+
+func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
+	t.Run("factory list example", func(t *testing.T) {
+		var resp FactoryListResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-list-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runs"})
+		if resp.ContractVersion != FactoryListContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryListContractVersion)
+		}
+		if len(resp.Runs) == 0 {
+			t.Fatal("factory list example should include at least one run")
+		}
+	})
+
+	t.Run("factory status example", func(t *testing.T) {
+		var resp FactoryStatusResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-status-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "run", "timeline"})
+		if resp.ContractVersion != FactoryStatusContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryStatusContractVersion)
+		}
+		if resp.Run.RunID == "" {
+			t.Fatal("factory status example should include a run ID")
+		}
+		if len(resp.Timeline) == 0 {
+			t.Fatal("factory status example should include timeline events")
+		}
+	})
+}
+
+func decodeStrictJSONExample(t *testing.T, path string, out any) map[string]interface{} {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", path, err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		t.Fatalf("decode %s against command schema: %v", path, err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parse %s as JSON object: %v", path, err)
+	}
+	return raw
 }
