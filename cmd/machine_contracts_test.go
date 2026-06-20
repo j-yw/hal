@@ -611,6 +611,47 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		requireExactKeys(t, claim, []string{"workerId", "pid", "hostname"})
 	})
 
+	t.Run("factory trigger result keys", func(t *testing.T) {
+		triggerRun := record
+		triggerRun.Status = factory.RunStatusPending
+		triggerRun.CurrentStep = factory.QueueStatusQueued
+		data, err := json.Marshal(FactoryTriggerResponse{
+			ContractVersion: FactoryTriggerContractVersion,
+			RunID:           triggerRun.RunID,
+			Run:             triggerRun,
+			Entry:           queueEntry,
+			Summary:         "queued triggered run run-contract as queue-contract-001",
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal factory trigger response: %v", err)
+		}
+
+		raw := parseJSON(t, data)
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "run", "entry", "summary"})
+		if raw["contractVersion"] != FactoryTriggerContractVersion {
+			t.Fatalf("factory trigger contractVersion = %v, want %q", raw["contractVersion"], FactoryTriggerContractVersion)
+		}
+
+		run, ok := raw["run"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("run should be object, got %T", raw["run"])
+		}
+		requireExactKeys(t, run, []string{
+			"runId", "status", "executorMode", "source", "repoPath", "repoRemote",
+			"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt",
+			"updatedAt", "artifacts", "failure",
+		})
+
+		entry, ok := raw["entry"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("entry should be object, got %T", raw["entry"])
+		}
+		requireExactKeys(t, entry, []string{
+			"queueId", "runId", "executorMode", "status", "createdAt", "claimedAt",
+			"completedAt", "claim", "attemptCount", "lastError",
+		})
+	})
+
 	t.Run("factory queue list result keys", func(t *testing.T) {
 		data, err := json.Marshal(FactoryQueueListResponse{
 			ContractVersion: FactoryQueueListContractVersion,

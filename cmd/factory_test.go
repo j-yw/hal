@@ -43,6 +43,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory list",
 				"hal factory list --json",
 				"hal factory status <run-id> --json",
+				"hal factory trigger --repo . --prd .hal/prd-feature.md --json",
 				"hal factory queue list --json",
 			},
 		},
@@ -91,6 +92,24 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			requiredExampleLines: []string{
 				"hal factory status run-20260620-001",
 				"hal factory status run-20260620-001 --json",
+			},
+		},
+		{
+			name: "factory trigger command",
+			cmd:  factoryTriggerCmd,
+			requiredLongPhrases: []string{
+				"external trigger context",
+				"--prd <path>",
+				"--report <path>",
+				"--discover-report",
+				"--repo <path>",
+				"durable factory queue",
+				"hal factory queue work",
+			},
+			requiredExampleLines: []string{
+				"hal factory trigger --repo . --prd .hal/prd-feature.md",
+				"hal factory trigger --repo /work/hal --report .hal/reports/analysis.md --json",
+				"hal factory trigger --repo /work/hal --discover-report --json",
 			},
 		},
 		{
