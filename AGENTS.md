@@ -5,7 +5,6 @@
 - `internal/`: core packages (`archive/`, `doctor/`, `engine/`, `loop/`, `prd/`, `skills/`, `status/`, `template/`).
 - `main.go`: CLI entrypoint wiring.
 - `agent-os/`: product/roadmap documentation.
-- `docs/adr/`: architecture decision records using numbered lowercase slug filenames.
 - `docs/contracts/`: versioned machine contract documentation (status-v1, doctor-v1, continue-v1).
 - `.hal/`: runtime config created by `hal init` (`config.yaml`, `prd.json`, `progress.txt`, `prompt.md`, `skills/`, `archive/`, `reports/`).
 
@@ -37,18 +36,6 @@
 - Include PRD story IDs when applicable (e.g., `feat: US-008 - ...`).
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
-
-## Documentation Guidelines
-- ADRs live under `docs/adr/` with numbered lowercase slug filenames (for example `0001-topic.md`).
-- ADRs should include explicit `Status`, related issue, and scope sections; documentation-only ADRs must state that runtime behavior and machine-readable CLI contracts are unchanged.
-- When ADRs discuss machine-readable CLI compatibility, cite `docs/contracts/` as the canonical source and distinguish stable JSON contract fields from hidden implementation details.
-- For future control-plane ADR sections, distinguish organization-level ownership from project-level membership, and do not present future domain terms as CLI JSON contract fields unless `docs/contracts/` is updated.
-- RBAC/authorization ADR sections should describe authorization as a control-plane responsibility while keeping role graphs, permission evaluation, and membership expansion out of CLI JSON contract details unless `docs/contracts/` is updated.
-- Shared queue/run lifecycle ADR sections should cover leases, heartbeats, cancellation, stale recovery, concurrency, and idempotency as architecture expectations; do not expose backend attempt IDs, idempotency keys, or lease internals as CLI JSON contract fields unless `docs/contracts/` is updated.
-- Shared artifact/audit ADR sections should cover PRDs, reports, logs, review results, run output, audit decisions, state transitions, and data ownership/access expectations without exposing storage keys, backend identifiers, role graphs, or permission evaluation internals as CLI JSON contract fields unless `docs/contracts/` is updated.
-- Future policy inheritance ADR sections should define precedence from built-in defaults through organization, project, run, and local overrides while keeping policy evaluation internals out of CLI JSON contracts unless `docs/contracts/` is updated.
-- Future migration strategy ADR sections should phase local `.hal/` state toward shared control-plane authority through shadowing, artifact mirroring, opt-in shared queues, and opt-in shared run coordination; preserve current local CLI behavior early and list compatibility gates/open questions before introducing hosted or networked behavior.
-- Documentation-only control-plane ADR non-goals should explicitly rule out hosted services, server/API/database/auth/networked queue implementations, runtime behavior changes, CLI JSON contract changes, new local control-plane state files, and manual edits to Hal-owned runtime files as an implementation mechanism.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
