@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -356,7 +357,7 @@ func TestRunFactoryQueueWorkWithDepsJSONOutputNoWork(t *testing.T) {
 	claim := factory.QueueClaim{WorkerID: "worker-noop", PID: 5252, Hostname: "factory-host"}
 
 	var out bytes.Buffer
-	err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
 	if err != nil {
 		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
 	}
@@ -385,7 +386,7 @@ func TestRunFactoryQueueWorkWithDepsJSONOutputNoWork(t *testing.T) {
 	}
 }
 
-func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.T) {
+func TestRunFactoryQueueWorkWithDepsExecutesOneEntryAndRecordsRunState(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 18, 0, 0, 0, time.UTC)
 	claimedAt := createdAt.Add(5 * time.Minute)
@@ -393,6 +394,8 @@ func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.
 	record := testFactoryRunRecord("run-queue-work", createdAt, createdAt)
 	record.Status = factory.RunStatusPending
 	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-work.md"}
+	record.BaseBranch = "main"
 	if err := store.SaveRun(&record); err != nil {
 		t.Fatalf("SaveRun() error: %v", err)
 	}
@@ -402,8 +405,17 @@ func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.
 		t.Fatalf("SaveQueue() error: %v", err)
 	}
 
+	var gotPipelineReq factoryRunPipelineRequest
 	var out bytes.Buffer
-	err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(ctx context.Context, req factoryRunPipelineRequest) error {
+		gotPipelineReq = req
+		return req.RecordProgress(factoryRunProgressEvent{
+			Summary: "Queue worker progress",
+			Metadata: map[string]any{
+				"queueId": "queue-work-001",
+			},
+		})
+	}))
 	if err != nil {
 		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
 	}
@@ -421,23 +433,44 @@ func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.
 	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
 		t.Fatalf("json.Unmarshal typed response error: %v", err)
 	}
-	if resp.Summary != "claimed queue entry queue-work-001" {
-		t.Fatalf("summary = %q, want claimed summary", resp.Summary)
+	if resp.Summary != "completed queue entry queue-work-001" {
+		t.Fatalf("summary = %q, want completed summary", resp.Summary)
 	}
 	if resp.Entry == nil {
-		t.Fatal("entry = nil, want claimed entry")
+		t.Fatal("entry = nil, want completed entry")
 	}
-	if resp.Entry.Status != factory.QueueStatusClaimed {
-		t.Fatalf("entry.status = %q, want %q", resp.Entry.Status, factory.QueueStatusClaimed)
+	if resp.Entry.Status != factory.QueueStatusSucceeded {
+		t.Fatalf("entry.status = %q, want %q", resp.Entry.Status, factory.QueueStatusSucceeded)
 	}
 	if resp.Entry.ClaimedAt == nil || !resp.Entry.ClaimedAt.Equal(claimedAt) {
 		t.Fatalf("entry.claimedAt = %v, want %s", resp.Entry.ClaimedAt, claimedAt)
+	}
+	if resp.Entry.CompletedAt == nil || !resp.Entry.CompletedAt.Equal(claimedAt) {
+		t.Fatalf("entry.completedAt = %v, want %s", resp.Entry.CompletedAt, claimedAt)
 	}
 	if resp.Entry.Claim == nil || *resp.Entry.Claim != claim {
 		t.Fatalf("entry.claim = %#v, want %#v", resp.Entry.Claim, claim)
 	}
 	if resp.Entry.AttemptCount != 1 {
 		t.Fatalf("entry.attemptCount = %d, want 1", resp.Entry.AttemptCount)
+	}
+	if gotPipelineReq.RunID != record.RunID {
+		t.Fatalf("pipeline runID = %q, want %q", gotPipelineReq.RunID, record.RunID)
+	}
+	if gotPipelineReq.Request.MarkdownPath != ".hal/prd-queue-work.md" {
+		t.Fatalf("pipeline markdown path = %q, want source markdown", gotPipelineReq.Request.MarkdownPath)
+	}
+	if gotPipelineReq.Request.BaseBranch != "main" {
+		t.Fatalf("pipeline base branch = %q, want main", gotPipelineReq.Request.BaseBranch)
+	}
+	if gotPipelineReq.Record.Status != factory.RunStatusRunning {
+		t.Fatalf("pipeline record status = %q, want running", gotPipelineReq.Record.Status)
+	}
+	if gotPipelineReq.Record.CurrentStep != "run" {
+		t.Fatalf("pipeline record currentStep = %q, want run", gotPipelineReq.Record.CurrentStep)
+	}
+	if gotPipelineReq.Store.QueuePath() != store.QueuePath() {
+		t.Fatalf("pipeline store queue path = %q, want %q", gotPipelineReq.Store.QueuePath(), store.QueuePath())
 	}
 
 	entries, err := store.LoadQueue()
@@ -447,19 +480,22 @@ func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.
 	if len(entries) != 1 {
 		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
 	}
-	if entries[0].Status != factory.QueueStatusClaimed {
-		t.Fatalf("queue status = %q, want %q", entries[0].Status, factory.QueueStatusClaimed)
+	if entries[0].Status != factory.QueueStatusSucceeded {
+		t.Fatalf("queue status = %q, want %q", entries[0].Status, factory.QueueStatusSucceeded)
 	}
 
 	loaded, err := store.LoadRun(record.RunID)
 	if err != nil {
 		t.Fatalf("LoadRun() error: %v", err)
 	}
-	if loaded.Status != factory.RunStatusPending {
-		t.Fatalf("run status = %q, want %q", loaded.Status, factory.RunStatusPending)
+	if loaded.Status != factory.RunStatusSucceeded {
+		t.Fatalf("run status = %q, want %q", loaded.Status, factory.RunStatusSucceeded)
 	}
-	if loaded.CurrentStep != factory.QueueStatusClaimed {
-		t.Fatalf("currentStep = %q, want %q", loaded.CurrentStep, factory.QueueStatusClaimed)
+	if loaded.CurrentStep != "done" {
+		t.Fatalf("currentStep = %q, want done", loaded.CurrentStep)
+	}
+	if loaded.FinishedAt == nil || !loaded.FinishedAt.Equal(claimedAt) {
+		t.Fatalf("finishedAt = %v, want %s", loaded.FinishedAt, claimedAt)
 	}
 	if !loaded.UpdatedAt.Equal(claimedAt) {
 		t.Fatalf("updatedAt = %s, want %s", loaded.UpdatedAt, claimedAt)
@@ -469,7 +505,12 @@ func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.
 	if err != nil {
 		t.Fatalf("LoadEvents() error: %v", err)
 	}
-	assertFactoryEventTypes(t, events, []string{factory.EventTypeCommandOutputSummary})
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepStarted,
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepEnded,
+	})
 	if events[0].Summary != "Factory run claimed" {
 		t.Fatalf("event summary = %q, want claim summary", events[0].Summary)
 	}
@@ -484,6 +525,12 @@ func TestRunFactoryQueueWorkWithDepsClaimsOneEntryAndRecordsRunState(t *testing.
 	}
 	if events[0].Metadata["attemptCount"] != float64(1) && events[0].Metadata["attemptCount"] != 1 {
 		t.Fatalf("event attemptCount = %#v, want 1", events[0].Metadata["attemptCount"])
+	}
+	if events[2].Summary != "Queue worker progress" {
+		t.Fatalf("progress event summary = %q, want worker progress", events[2].Summary)
+	}
+	if events[3].Summary != "Local compound pipeline completed" {
+		t.Fatalf("final event summary = %q, want pipeline completed", events[3].Summary)
 	}
 }
 
@@ -508,7 +555,7 @@ func TestRunFactoryQueueWorkWithDepsClaimsFIFOEntry(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
 	if err != nil {
 		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
 	}
@@ -529,8 +576,8 @@ func TestRunFactoryQueueWorkWithDepsClaimsFIFOEntry(t *testing.T) {
 	for _, entry := range entries {
 		byQueueID[entry.QueueID] = entry
 	}
-	if byQueueID["queue-fifo-old"].Status != factory.QueueStatusClaimed {
-		t.Fatalf("old entry status = %q, want claimed", byQueueID["queue-fifo-old"].Status)
+	if byQueueID["queue-fifo-old"].Status != factory.QueueStatusSucceeded {
+		t.Fatalf("old entry status = %q, want succeeded", byQueueID["queue-fifo-old"].Status)
 	}
 	if byQueueID["queue-fifo-new"].Status != factory.QueueStatusQueued {
 		t.Fatalf("new entry status = %q, want queued", byQueueID["queue-fifo-new"].Status)
@@ -570,7 +617,7 @@ func TestRunFactoryQueueWorkWithDepsConcurrentClaimSafety(t *testing.T) {
 			defer wg.Done()
 			<-start
 			var out bytes.Buffer
-			err := runFactoryQueueWorkWithDeps(&out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
+			err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDeps(store, claimedAt, claim))
 			result := workResult{err: err, raw: out.String()}
 			if err == nil {
 				result.err = json.Unmarshal(out.Bytes(), &result.resp)
@@ -607,8 +654,8 @@ func TestRunFactoryQueueWorkWithDepsConcurrentClaimSafety(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
 	}
-	if entries[0].Status != factory.QueueStatusClaimed {
-		t.Fatalf("queue status = %q, want claimed", entries[0].Status)
+	if entries[0].Status != factory.QueueStatusSucceeded {
+		t.Fatalf("queue status = %q, want succeeded", entries[0].Status)
 	}
 	if entries[0].AttemptCount != 1 {
 		t.Fatalf("queue attemptCount = %d, want 1", entries[0].AttemptCount)
@@ -618,8 +665,103 @@ func TestRunFactoryQueueWorkWithDepsConcurrentClaimSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadEvents() error: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("events len = %d, want 1: %#v", len(events), events)
+	if len(events) != 3 {
+		t.Fatalf("events len = %d, want 3: %#v", len(events), events)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsRecordsExecutorFailure(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 21, 0, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(10 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-failure", PID: 5656, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-failed-work", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-failure-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	pipelineErr := errors.New("executor failed during run")
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		return pipelineErr
+	}))
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want executor failure")
+	}
+	if !strings.Contains(err.Error(), pipelineErr.Error()) {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want executor failure", err.Error())
+	}
+
+	var resp FactoryQueueWorkResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v\n%s", err, out.String())
+	}
+	if !resp.Claimed {
+		t.Fatal("claimed = false, want true for failed claimed work")
+	}
+	if resp.Summary != "failed queue entry queue-failure-001" {
+		t.Fatalf("summary = %q, want failed queue summary", resp.Summary)
+	}
+	if resp.Entry == nil {
+		t.Fatal("entry = nil, want failed entry")
+	}
+	if resp.Entry.Status != factory.QueueStatusFailed {
+		t.Fatalf("entry.status = %q, want %q", resp.Entry.Status, factory.QueueStatusFailed)
+	}
+	if resp.Entry.CompletedAt == nil || !resp.Entry.CompletedAt.Equal(claimedAt) {
+		t.Fatalf("entry.completedAt = %v, want %s", resp.Entry.CompletedAt, claimedAt)
+	}
+	if resp.Entry.LastError != pipelineErr.Error() {
+		t.Fatalf("entry.lastError = %q, want %q", resp.Entry.LastError, pipelineErr.Error())
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
+	}
+	if entries[0].Status != factory.QueueStatusFailed {
+		t.Fatalf("queue status = %q, want failed", entries[0].Status)
+	}
+	if entries[0].LastError != pipelineErr.Error() {
+		t.Fatalf("queue lastError = %q, want %q", entries[0].LastError, pipelineErr.Error())
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", loaded.Status)
+	}
+	if loaded.Failure == nil {
+		t.Fatal("run failure = nil, want failure summary")
+	}
+	if loaded.Failure.Message != pipelineErr.Error() {
+		t.Fatalf("run failure message = %q, want %q", loaded.Failure.Message, pipelineErr.Error())
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	if events[2].Summary != "Local compound pipeline failed" {
+		t.Fatalf("failure event summary = %q, want pipeline failed", events[2].Summary)
 	}
 }
 
@@ -638,10 +780,17 @@ func queueListTestDeps(store factory.Store) factoryQueueListDeps {
 }
 
 func queueWorkTestDeps(store factory.Store, now time.Time, claim factory.QueueClaim) factoryQueueWorkDeps {
+	return queueWorkTestDepsWithExecutor(store, now, claim, func(context.Context, factoryRunPipelineRequest) error {
+		return nil
+	})
+}
+
+func queueWorkTestDepsWithExecutor(store factory.Store, now time.Time, claim factory.QueueClaim, runPipeline func(context.Context, factoryRunPipelineRequest) error) factoryQueueWorkDeps {
 	return factoryQueueWorkDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		now:          func() time.Time { return now },
 		claim:        &claim,
+		runPipeline:  runPipeline,
 	}
 }
 

@@ -188,6 +188,16 @@ type factoryRunPipelineDeps struct {
 	runAuto func(context.Context, factoryRunAutoRequest) error
 }
 
+type factoryRunExecutionDeps struct {
+	now         func() time.Time
+	runPipeline func(context.Context, factoryRunPipelineRequest) error
+}
+
+type factoryRunExecutionResult struct {
+	Record factory.RunRecord
+	Render bool
+}
+
 // FactoryListResponse is the machine-readable JSON output for hal factory list --json.
 type FactoryListResponse struct {
 	ContractVersion string              `json:"contractVersion"`
@@ -285,12 +295,33 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		return err
 	}
 
+	result, execErr := executeFactoryRun(ctx, dir, req, store, record, factoryRunExecutionDeps{
+		now:         deps.now,
+		runPipeline: deps.runPipeline,
+	})
+	if result.Render {
+		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
+			if execErr != nil {
+				return errors.Join(execErr, renderErr)
+			}
+			return renderErr
+		}
+	}
+	return execErr
+}
+
+func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, store factory.Store, record factory.RunRecord, deps factoryRunExecutionDeps) (factoryRunExecutionResult, error) {
+	deps = normalizeFactoryRunExecutionDeps(deps)
+	if deps.runPipeline == nil {
+		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
+	}
+
 	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
 	if err != nil {
-		return err
+		return factoryRunExecutionResult{Record: record}, err
 	}
 	if err := recordFactoryRunPipelineStarted(store, runningRecord); err != nil {
-		return err
+		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
 
 	pipelineReq := factoryRunPipelineRequest{
@@ -331,12 +362,9 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 			}
 		}
 		if len(recordErrs) > 0 {
-			return errors.Join(append([]error{err}, recordErrs...)...)
+			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
 		}
-		if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID, req.JSON); renderErr != nil {
-			return errors.Join(err, renderErr)
-		}
-		return err
+		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
 
 	completedAt := deps.now()
@@ -345,16 +373,26 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt)
 	if err != nil {
-		return err
+		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
 	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
 	if err != nil {
-		return err
+		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
 	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
-		return err
+		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
-	return renderFactoryRunResult(out, store, completedRecord.RunID, req.JSON)
+	return factoryRunExecutionResult{Record: completedRecord, Render: true}, nil
+}
+
+func normalizeFactoryRunExecutionDeps(deps factoryRunExecutionDeps) factoryRunExecutionDeps {
+	if deps.now == nil {
+		deps.now = defaultFactoryRunDeps.now
+	}
+	if deps.runPipeline == nil {
+		deps.runPipeline = defaultFactoryRunDeps.runPipeline
+	}
+	return deps
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {

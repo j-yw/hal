@@ -44,7 +44,7 @@
 - Queue command code should use the Store-level FIFO helpers (`EnqueueQueueEntry`, `ListQueue`, `ClaimNextQueueEntry`) and inject `QueueOperationOptions` in tests; FIFO order is by `CreatedAt` with `QueueID` as the stable tie-break.
 - Queue lifecycle transitions should use Store-level helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained history stay consistent.
 - Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
-- `hal factory queue work` claiming should record the run `CurrentStep` as `claimed` and append a queue claim timeline event after `Store.ClaimNextQueueEntry`; keep executor execution in the later worker path rather than duplicating direct run execution semantics.
+- `hal factory queue work` should claim via `Store.ClaimNextQueueEntry`, record the queue claim event in `cmd`, execute the run through the shared factory run lifecycle helper, and finalize the queue entry with `MarkQueueEntrySucceeded`/`MarkQueueEntryFailed`.
 - Factory queue command definitions live in `cmd/factory_queue.go`; wire them from `cmd/factory.go`, update factory command metadata/link tests in `cmd/factory_test.go`, and regenerate `docs/cli` with `make docs-cli`.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
@@ -461,3 +461,4 @@
 
 - Factory queue JSON contracts use reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; queue command implementations should reuse these instead of redefining JSON shapes.
 - Queue contract work must update `docs/contracts/factory-queue-*.md`, `docs/contracts/examples/factory-queue-*.json`, `cmd/contracts_doc_test.go`, `cmd/machine_contracts_test.go`, and `internal/factory/types_test.go` together so field names, docs, and examples stay locked.
+- Queue worker execution should keep queue-specific state in `cmd/factory_queue.go` and run lifecycle state in the shared factory execution path in `cmd/factory.go`; tests should inject `factoryQueueWorkDeps.runPipeline` rather than invoking real `hal auto`.

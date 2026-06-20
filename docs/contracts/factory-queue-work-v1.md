@@ -4,7 +4,7 @@
 **Contract Version:** `factory-queue-work-v1`
 **Stability:** Stable. New optional fields may be added with `omitempty`; existing fields will not be removed or renamed.
 
-`hal factory queue work --json` claims at most one queued entry for local execution and reports whether work was claimed.
+`hal factory queue work --json` claims at most one queued entry for local execution, runs it through the factory executor, and reports whether work was claimed.
 
 This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.json`, or `.hal/progress.txt` contracts.
 
@@ -14,14 +14,14 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 |-------|------|-------------|
 | `contractVersion` | string | Always `"factory-queue-work-v1"` for this contract |
 | `claimed` | boolean | Whether this invocation claimed one queue entry |
-| `entry` | object or null | Claimed queue entry using `factory-queue-entry-v1`, or `null` when no work is available |
+| `entry` | object or null | Queue entry using `factory-queue-entry-v1`, or `null` when no work is available |
 | `summary` | string | Short human-readable summary of the work result |
 
-`entry` is always present. It is an object when `claimed` is `true` and `null` when `claimed` is `false`.
+`entry` is always present. It is an object when `claimed` is `true` and `null` when `claimed` is `false`. For claimed work, `entry.status` reflects the state after this invocation finishes.
 
 ## Claimed Work
 
-When work is claimed, the entry status is `claimed`, `claimedAt` is set, and `claim` identifies the local worker process. The claimed entry uses the reusable queue entry contract documented in `docs/contracts/factory-queue-entry-v1.md`.
+When work is claimed, `claimedAt` is set and `claim` identifies the local worker process. Successful execution returns the entry with `status: "succeeded"` and `completedAt` set. Failed execution returns the entry with `status: "failed"`, `completedAt` set, and `lastError` populated. The entry uses the reusable queue entry contract documented in `docs/contracts/factory-queue-entry-v1.md`.
 
 ## No Work
 
