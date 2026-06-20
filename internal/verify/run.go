@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -61,11 +62,22 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 }
 
 func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps) CheckResult {
+	startedAt := deps.now()
+	result := baseCheckResult(check, startedAt)
+	if missingMessage, ok := missingShellCheckMessage(check); ok {
+		finishedAt := deps.now()
+		result.Status = CheckStatusMissing
+		result.FinishedAt = finishedAt
+		result.DurationMs = finishedAt.Sub(startedAt).Milliseconds()
+		result.ExitCode = -1
+		result.Message = missingMessage
+		return result
+	}
+
 	timeout := time.Duration(check.TimeoutSeconds) * time.Second
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	startedAt := deps.now()
 	shell, args := shellCommand(check.Command)
 	cmd := deps.commandContext(checkCtx, shell, args...)
 	cmd.Dir = check.WorkDir
@@ -80,23 +92,8 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps) CheckRes
 	err := cmd.Run()
 	finishedAt := deps.now()
 
-	result := CheckResult{
-		ID:             check.ID,
-		Name:           check.Name,
-		Adapter:        AdapterShell,
-		Status:         CheckStatusPass,
-		Required:       check.Required,
-		Command:        check.Command,
-		WorkDir:        check.WorkDir,
-		TimeoutSeconds: check.TimeoutSeconds,
-		StartedAt:      startedAt,
-		FinishedAt:     finishedAt,
-		DurationMs:     finishedAt.Sub(startedAt).Milliseconds(),
-		ExitCode:       0,
-		StdoutArtifact: "",
-		StderrArtifact: "",
-		Message:        "check passed",
-	}
+	result.FinishedAt = finishedAt
+	result.DurationMs = finishedAt.Sub(startedAt).Milliseconds()
 
 	if err != nil {
 		result.Status = CheckStatusFail
@@ -109,6 +106,46 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps) CheckRes
 	}
 
 	return result
+}
+
+func baseCheckResult(check ShellCheck, startedAt time.Time) CheckResult {
+	return CheckResult{
+		ID:             check.ID,
+		Name:           check.Name,
+		Adapter:        AdapterShell,
+		Status:         CheckStatusPass,
+		Required:       check.Required,
+		Command:        check.Command,
+		WorkDir:        check.WorkDir,
+		TimeoutSeconds: check.TimeoutSeconds,
+		StartedAt:      startedAt,
+		FinishedAt:     startedAt,
+		DurationMs:     0,
+		ExitCode:       0,
+		StdoutArtifact: "",
+		StderrArtifact: "",
+		Message:        "check passed",
+	}
+}
+
+func missingShellCheckMessage(check ShellCheck) (string, bool) {
+	if check.Command == "" {
+		return "check command is missing", true
+	}
+	if check.WorkDir == "" {
+		return "check working directory is missing", true
+	}
+	info, err := os.Stat(check.WorkDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Sprintf("check working directory is missing: %s", check.WorkDir), true
+		}
+		return fmt.Sprintf("check working directory is unavailable: %v", err), true
+	}
+	if !info.IsDir() {
+		return fmt.Sprintf("check working directory is not a directory: %s", check.WorkDir), true
+	}
+	return "", false
 }
 
 func shellCommand(command string) (string, []string) {
