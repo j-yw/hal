@@ -101,6 +101,63 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	}
 }
 
+func TestRunFactoryTriggerWithDepsMarksRunFailedWhenEnqueueFails(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	if err := os.MkdirAll(filepath.Dir(store.QueuePath()), 0o755); err != nil {
+		t.Fatalf("mkdir queue dir: %v", err)
+	}
+	if err := os.WriteFile(store.QueuePath(), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write corrupt queue: %v", err)
+	}
+	now := time.Date(2026, 6, 21, 22, 5, 0, 0, time.UTC)
+
+	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeLocal,
+	}, factoryTriggerTestDeps(store, now, "run-trigger-enqueue-failure", "queue-trigger-enqueue-failure"))
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want enqueue failure")
+	}
+	if !strings.Contains(err.Error(), `enqueue triggered factory run "run-trigger-enqueue-failure"`) {
+		t.Fatalf("runFactoryTriggerWithDeps() error = %q, want enqueue failure", err.Error())
+	}
+
+	record, loadErr := store.LoadRun("run-trigger-enqueue-failure")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", record.Status)
+	}
+	if record.CurrentStep != factory.QueueStatusQueued {
+		t.Fatalf("currentStep = %q, want queued failure step", record.CurrentStep)
+	}
+	if record.Failure == nil || !strings.Contains(record.Failure.Message, `enqueue triggered factory run "run-trigger-enqueue-failure"`) {
+		t.Fatalf("failure = %#v, want enqueue failure message", record.Failure)
+	}
+
+	events, loadEventsErr := store.LoadEvents("run-trigger-enqueue-failure")
+	if loadEventsErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadEventsErr)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeFailureClassification,
+	})
+	if events[1].Summary != "Factory run enqueue failed" {
+		t.Fatalf("enqueue failure event summary = %q", events[1].Summary)
+	}
+}
+
 func TestRunFactoryTriggerWithDepsCreatesReportRun(t *testing.T) {
 	repoDir := t.TempDir()
 	reportsDir := filepath.Join(repoDir, ".hal", "reports")
