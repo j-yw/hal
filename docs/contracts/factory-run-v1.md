@@ -28,20 +28,45 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 array. `eventSummary` is always present.
 
 Sandbox-backed runs do not duplicate full sandbox metadata in this compact
-result surface. Consumers that need the sandbox name, provider, lifecycle
-status, safe connection display fields, SSH command, cleanup command, or
-diagnostic handoff should follow `nextAction.command` and read the durable
-`factory-status-v1` run record.
+result surface. Consumers that need provider details, lifecycle status, safe
+connection display fields, SSH command, cleanup command, or diagnostic handoff
+should follow `nextAction.command` and read the durable `factory-status-v1` run
+record.
 
 ## Next Action
 
-When `nextAction` is not null:
+When `nextAction` is not null, it uses the shared factory next-action model.
+Completed runs may omit `nextAction` or use `type: "completed"` for
+non-invasive inspection guidance.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | Stable action identifier |
+| `type` | string | Action type, such as `inspect`, `takeover`, `continue`, or `completed` |
 | `command` | string | Suggested command |
 | `description` | string | Human-readable guidance |
+| `runId` | string | Factory run identifier when the action targets a run |
+| `sandboxName` | string | Sandbox name when a sandbox-backed run has one |
+| `repoPath` | string | Repository path recorded for the run |
+| `branchName` | string | Branch associated with the run |
+| `pullRequestUrl` | string | Pull request URL when a safe URL is available |
+| `currentStep` | string | Current or terminal run step |
+| `failureReason` | string | Failure reason when the action is tied to a failed run |
+| `artifactLocations` | array | Safe artifact locations relevant to the action |
+| `logLocations` | array | Safe log locations relevant to the action |
+
+`nextAction` must not include sandbox connection addresses, raw IP addresses,
+SSH hosts, credentials, tokens, or other network endpoint values. It may include
+safe local Hal commands, store-relative artifact paths, and HTTPS pull request
+URLs whose host is not a raw IP address.
+
+Each `artifactLocations` or `logLocations` entry may contain:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Human-readable or stable location label |
+| `path` | string | Display path when available |
+| `storedPath` | string | Store-relative persisted artifact path when available |
 
 ## Artifact Reference
 

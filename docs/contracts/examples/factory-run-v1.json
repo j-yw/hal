@@ -5,8 +5,35 @@
   "status": "failed",
   "nextAction": {
     "id": "inspect_factory_run",
+    "type": "inspect",
     "command": "hal factory status run-20260620-002 --json",
-    "description": "Inspect the durable run record and timeline."
+    "description": "Inspect the durable run record and timeline.",
+    "runId": "run-20260620-002",
+    "sandboxName": "factory-handoff",
+    "repoPath": "/workspace/hal",
+    "branchName": "hal/factory-run-records",
+    "pullRequestUrl": "https://github.com/jywlabs/hal/pull/42",
+    "currentStep": "ci",
+    "failureReason": "unit tests failed",
+    "artifactLocations": [
+      {
+        "name": "run-record",
+        "path": "factory/runs/run-20260620-002.json",
+        "storedPath": "artifacts/run-20260620-002/factory-runs-run-20260620-002.json"
+      },
+      {
+        "name": "prd",
+        "path": ".hal/prd.json",
+        "storedPath": "artifacts/run-20260620-002/hal-prd.json"
+      }
+    ],
+    "logLocations": [
+      {
+        "name": "ci-log",
+        "path": ".hal/reports/ci-output.log",
+        "storedPath": "artifacts/run-20260620-002/hal-reports-ci-output.log"
+      }
+    ]
   },
   "artifacts": [
     {
@@ -39,6 +66,15 @@
       "summary": {
         "collectionStatus": "stored"
       }
+    },
+    {
+      "id": "hal-reports-ci-output.log",
+      "name": "ci-log",
+      "type": "text",
+      "path": ".hal/reports/ci-output.log",
+      "storedPath": "artifacts/run-20260620-002/hal-reports-ci-output.log",
+      "sizeBytes": 1024,
+      "createdAt": "2026-06-20T12:01:00Z"
     }
   ],
   "eventSummary": {

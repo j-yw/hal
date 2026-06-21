@@ -429,7 +429,9 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			contractValue: FactoryRunContractVersion,
 			requiredFields: []string{
 				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
-				"eventSummary", "failure", "id", "command", "description", "total", "byType",
+				"eventSummary", "failure", "id", "command", "description", "artifactLocations",
+				"logLocations", "sandboxName", "repoPath", "branchName", "pullRequestUrl",
+				"currentStep", "failureReason", "total", "byType",
 				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
 				"name", "type", "sourcePath", "path", "storedPath", "url", "sizeBytes", "createdAt", "partial",
 			},
@@ -483,6 +485,9 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
+				"handoffRequired", "nextAction", "inspectCommand", "resumeCommand", "artifactLocations",
+				"logLocations", "type", "command", "description", "runId", "pullRequestUrl",
+				"failureReason", "storedPath",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -722,6 +727,12 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if len(resp.Run.Verification.Artifacts) == 0 {
 			t.Fatal("factory status example should include verification artifact references")
+		}
+		if resp.Run.Handoff == nil {
+			t.Fatal("factory status example should include handoff metadata")
+		}
+		if resp.Run.Handoff.NextAction == nil {
+			t.Fatal("factory status example should include handoff nextAction metadata")
 		}
 	})
 

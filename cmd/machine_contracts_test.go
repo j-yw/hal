@@ -570,6 +570,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			Status:          record.Status,
 			NextAction: &FactoryRunNextAction{
 				ID:          "inspect_factory_run",
+				Type:        factory.NextActionTypeInspect,
 				Command:     "hal factory status run-contract --json",
 				Description: "Inspect the durable run record and timeline.",
 			},
@@ -595,7 +596,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		if !ok {
 			t.Fatalf("nextAction should be object, got %T", raw["nextAction"])
 		}
-		for _, field := range []string{"id", "command", "description"} {
+		for _, field := range []string{"id", "type", "command", "description"} {
 			if _, ok := nextAction[field].(string); !ok {
 				t.Fatalf("nextAction.%s should be a string", field)
 			}

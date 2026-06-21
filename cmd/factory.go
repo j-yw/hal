@@ -43,6 +43,7 @@ var factoryRunReportFlag string
 var factoryRunBaseFlag string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
+var factoryOpenExecFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -58,6 +59,7 @@ pending local factory work in the same global store.`,
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory open <run-id>
   hal factory artifacts <run-id>
   hal factory trigger --repo . --prd .hal/prd-feature.md --json
   hal factory queue list --json`,
@@ -135,11 +137,13 @@ func init() {
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
 	factoryArtifactsCmd.Flags().BoolVar(&factoryArtifactsJSONFlag, "json", false, "Output machine-readable JSON (factory-artifacts-v1 contract)")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenExecFlag, "exec", false, "Execute the suggested inspection or resume command")
 	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
+	factoryCmd.AddCommand(factoryOpenCmd)
 	factoryCmd.AddCommand(factoryArtifactsCmd)
 	factoryCmd.AddCommand(factoryTriggerCmd)
 	factoryCmd.AddCommand(factoryQueueCmd)
@@ -312,6 +316,7 @@ type FactoryStatusRun struct {
 	Artifacts    []FactoryArtifactSummary    `json:"artifacts,omitempty"`
 	Verification *factory.VerificationRecord `json:"verification,omitempty"`
 	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
+	Handoff      *factory.HandoffSummary     `json:"handoff,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -2351,11 +2356,12 @@ func runFactoryStatusWithDeps(out io.Writer, runID string, jsonMode bool, deps f
 		events = []factory.EventRecord{}
 	}
 
+	handoff := factory.NewHandoffSummary(store, *record)
 	if jsonMode {
-		return renderFactoryStatusJSON(out, *record, events)
+		return renderFactoryStatusJSON(out, *record, events, &handoff)
 	}
 
-	renderFactoryStatusTable(out, *record, events)
+	renderFactoryStatusTable(out, *record, events, &handoff)
 	return nil
 }
 
@@ -2422,10 +2428,10 @@ func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 	return nil
 }
 
-func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord) error {
+func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) error {
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
-		Run:             newFactoryStatusRun(record),
+		Run:             newFactoryStatusRun(record, handoff),
 		Timeline:        events,
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
@@ -2436,7 +2442,7 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	return nil
 }
 
-func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
+func newFactoryStatusRun(record factory.RunRecord, handoff *factory.HandoffSummary) FactoryStatusRun {
 	return FactoryStatusRun{
 		RunID:        record.RunID,
 		Status:       record.Status,
@@ -2455,6 +2461,7 @@ func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
 		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
 		Verification: record.Verification,
 		Failure:      record.Failure,
+		Handoff:      handoff,
 	}
 }
 
@@ -2617,12 +2624,13 @@ func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
 	_ = w.Flush()
 }
 
-func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord) {
+func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) {
 	fmt.Fprintf(out, "Run ID: %s\n", record.RunID)
 	fmt.Fprintf(out, "Status: %s\n", record.Status)
 	fmt.Fprintf(out, "Branch: %s\n", record.BranchName)
 	fmt.Fprintf(out, "Step: %s\n", record.CurrentStep)
 	fmt.Fprintf(out, "Updated: %s\n", formatFactoryListTime(record.UpdatedAt))
+	renderFactoryHandoffDetails(out, handoff)
 	fmt.Fprintf(out, "Timeline events: %d\n", len(events))
 	if len(events) == 0 {
 		return
