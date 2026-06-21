@@ -845,7 +845,13 @@ func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatalf("MkdirAll(reportsDir) error: %v", err)
 	}
+	factoryDir := filepath.Join(dir, "factory")
+	if err := os.MkdirAll(factoryDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(factoryDir) error: %v", err)
+	}
 	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+	writeFile(t, factoryDir, "pr-outcome.json", `{"unrelated":"pr"}`+"\n")
+	writeFile(t, factoryDir, "ci-outcome.json", `{"unrelated":"ci"}`+"\n")
 
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
@@ -896,11 +902,11 @@ func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	requireFactoryArtifactPath(t, record.Artifacts, "factory/doctor-snapshot.json")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-artifacts-markdown.json"))
 	prOutcome := requireFactoryArtifactPath(t, record.Artifacts, "factory/pr-outcome.json")
-	if !prOutcome.Partial || len(prOutcome.Warnings) == 0 {
+	if !prOutcome.Partial || prOutcome.StoredPath != "" || len(prOutcome.Warnings) == 0 {
 		t.Fatalf("PR outcome should record missing warning: %#v", prOutcome)
 	}
 	ciOutcome := requireFactoryArtifactPath(t, record.Artifacts, "factory/ci-outcome.json")
-	if !ciOutcome.Partial || len(ciOutcome.Warnings) == 0 {
+	if !ciOutcome.Partial || ciOutcome.StoredPath != "" || len(ciOutcome.Warnings) == 0 {
 		t.Fatalf("CI outcome should record missing warning: %#v", ciOutcome)
 	}
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/review-20260621.md")

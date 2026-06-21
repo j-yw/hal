@@ -1267,6 +1267,11 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 	artifacts := collectFactoryRunArtifacts(store, dir, req, record, snapshot, snapshots)
 	missingArtifacts := make([]factory.ArtifactReference, 0)
 	for _, artifact := range artifacts {
+		if artifact.Partial && artifact.SourcePath == "" {
+			artifact.ID = factoryArtifactID(artifact)
+			missingArtifacts = append(missingArtifacts, artifact)
+			continue
+		}
 		sourcePath := artifact.Path
 		if artifact.SourcePath != "" {
 			sourcePath = artifact.SourcePath
