@@ -31,6 +31,7 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 		"resolveProvider": deps.resolveProvider,
 		"runProviderExec": deps.runProviderExec,
 		"bootstrap":       deps.bootstrap,
+		"cleanupSandbox":  deps.cleanupSandbox,
 		"saveRun":         deps.saveRun,
 		"appendEvent":     deps.appendEvent,
 	}
@@ -80,6 +81,123 @@ func TestFactorySandboxConnectionMetadataFromStatePrefersTailscaleAddress(t *tes
 			}
 			if got.PublicIP != tt.wantPublic {
 				t.Fatalf("PublicIP = %q, want %q", got.PublicIP, tt.wantPublic)
+			}
+		})
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		behavior    string
+		execErr     error
+		wantCleanup bool
+		wantErr     bool
+	}{
+		{
+			name:     "preserve leaves successful sandbox available",
+			behavior: factory.CleanupBehaviorPreserve,
+		},
+		{
+			name:        "on success cleans up successful sandbox",
+			behavior:    factory.CleanupBehaviorOnSuccess,
+			wantCleanup: true,
+		},
+		{
+			name:        "on success preserves failed sandbox",
+			behavior:    factory.CleanupBehaviorOnSuccess,
+			execErr:     fmt.Errorf("remote failed"),
+			wantCleanup: false,
+			wantErr:     true,
+		},
+		{
+			name:        "always cleans up successful sandbox",
+			behavior:    factory.CleanupBehaviorAlways,
+			wantCleanup: true,
+		},
+		{
+			name:        "always cleans up failed sandbox",
+			behavior:    factory.CleanupBehaviorAlways,
+			execErr:     fmt.Errorf("remote failed"),
+			wantCleanup: true,
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := factory.NewStore(t.TempDir())
+			projectDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0755); err != nil {
+				t.Fatalf("MkdirAll() error: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(projectDir, ".hal", "prd.md"), []byte("# PRD\n"), 0644); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+			policy := factory.DefaultFactoryPolicy()
+			policy.CleanupBehavior = tt.behavior
+			target := &sandbox.SandboxState{
+				Name:     "factory-dev",
+				Provider: "daytona",
+				Status:   sandbox.StatusRunning,
+				IP:       "127.0.0.1",
+			}
+
+			var execCalls int
+			var cleanupCalls int
+			err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+				ProjectDir:  projectDir,
+				SandboxName: "factory-dev",
+				RunRecord: factory.RunRecord{
+					RunID:      "run-sandbox",
+					RepoRemote: "git@github.com:example/repo.git",
+					Policy:     &policy,
+				},
+				RemoteAuto:   factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
+				RemoteOutput: io.Discard,
+			}, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) {
+					return store, nil
+				},
+				now: func() time.Time {
+					return time.Date(2026, 6, 21, 9, 30, 0, 0, time.UTC)
+				},
+				loadSandbox: func(string) (*sandbox.SandboxState, error) {
+					return target, nil
+				},
+				resolveProvider: func(string) (sandbox.Provider, error) {
+					return fakeFactorySandboxProvider{}, nil
+				},
+				runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+					execCalls++
+					if execCalls == 2 {
+						return tt.execErr
+					}
+					return nil
+				},
+				cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+					cleanupCalls++
+					if req.Target == nil || req.Target.Name != "factory-dev" {
+						t.Fatalf("cleanup target = %#v, want factory-dev", req.Target)
+					}
+					if req.Provider == nil {
+						t.Fatalf("cleanup provider = nil")
+					}
+					return nil
+				},
+			})
+			if tt.wantErr && err == nil {
+				t.Fatalf("runFactorySandboxExecutorWithDeps() error = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+			}
+			wantCleanupCalls := 0
+			if tt.wantCleanup {
+				wantCleanupCalls = 1
+			}
+			if cleanupCalls != wantCleanupCalls {
+				t.Fatalf("cleanup calls = %d, want %d", cleanupCalls, wantCleanupCalls)
 			}
 		})
 	}

@@ -27,6 +27,12 @@ type factorySandboxProvisionRequest struct {
 	Out        io.Writer
 }
 
+type factorySandboxCleanupRequest struct {
+	Target   *sandbox.SandboxState
+	Provider sandbox.Provider
+	Out      io.Writer
+}
+
 type factorySandboxExecutorRequest struct {
 	ProjectDir   string
 	SandboxName  string
@@ -45,6 +51,7 @@ type factorySandboxExecutorDeps struct {
 	resolveProvider func(string) (sandbox.Provider, error)
 	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	bootstrap       func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	cleanupSandbox  func(context.Context, factorySandboxCleanupRequest) error
 	saveRun         func(factory.Store, *factory.RunRecord) error
 	appendEvent     func(factory.Store, *factory.EventRecord) error
 }
@@ -61,6 +68,7 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	},
 	runProviderExec: runFactorySandboxProviderExec,
 	bootstrap:       factory.BootstrapWorkspace,
+	cleanupSandbox:  cleanupFactorySandbox,
 	saveRun:         saveFactorySandboxRunRecord,
 	appendEvent:     appendFactorySandboxTimelineEvent,
 }
@@ -96,6 +104,9 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultFactorySandboxExecutorDeps.bootstrap
+	}
+	if deps.cleanupSandbox == nil {
+		deps.cleanupSandbox = defaultFactorySandboxExecutorDeps.cleanupSandbox
 	}
 	if deps.saveRun == nil {
 		deps.saveRun = defaultFactorySandboxExecutorDeps.saveRun
@@ -245,6 +256,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if flushErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
 		}
+		if cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, target, provider, req.RemoteOutput, factorySandboxCleanupBehavior(record), false); cleanupErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr))
+		}
 		sanitizedErr := factorySandboxSanitizedError(target, runErr)
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", fmt.Errorf("%s", sanitizedErr))
 		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
@@ -252,8 +266,45 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if flushErr != nil {
 		return fmt.Errorf("record remote sandbox output: %w", flushErr)
 	}
-	return remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution completed", map[string]any{
+	if err := remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution completed", map[string]any{
 		"status": factory.RunStatusSucceeded,
+	}); err != nil {
+		return err
+	}
+	if err := cleanupFactorySandboxAfterRun(ctx, deps, target, provider, req.RemoteOutput, factorySandboxCleanupBehavior(record), true); err != nil {
+		return fmt.Errorf("cleanup factory sandbox: %w", err)
+	}
+	return nil
+}
+
+func factorySandboxCleanupBehavior(record factory.RunRecord) string {
+	if record.Policy == nil {
+		return factory.CleanupBehaviorPreserve
+	}
+	switch strings.TrimSpace(record.Policy.CleanupBehavior) {
+	case factory.CleanupBehaviorOnSuccess:
+		return factory.CleanupBehaviorOnSuccess
+	case factory.CleanupBehaviorAlways:
+		return factory.CleanupBehaviorAlways
+	default:
+		return factory.CleanupBehaviorPreserve
+	}
+}
+
+func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecutorDeps, target *sandbox.SandboxState, provider sandbox.Provider, out io.Writer, behavior string, succeeded bool) error {
+	switch behavior {
+	case factory.CleanupBehaviorAlways:
+	case factory.CleanupBehaviorOnSuccess:
+		if !succeeded {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+		Target:   target,
+		Provider: provider,
+		Out:      out,
 	})
 }
 
@@ -933,6 +984,17 @@ func startFactorySandbox(ctx context.Context, instance *sandbox.SandboxState, ou
 		return nil, err
 	}
 	return &updated, nil
+}
+
+func cleanupFactorySandbox(ctx context.Context, req factorySandboxCleanupRequest) error {
+	_ = ctx
+	if req.Target == nil || strings.TrimSpace(req.Target.Name) == "" {
+		return nil
+	}
+	if req.Provider == nil {
+		return fmt.Errorf("sandbox cleanup provider is required")
+	}
+	return runSandboxDeleteWithDeps([]string{req.Target.Name}, false, true, "", nil, req.Out, req.Provider)
 }
 
 func runFactorySandboxProviderExec(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {

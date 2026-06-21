@@ -40,6 +40,8 @@ These fields use `omitempty` and are only present when the value is non-zero.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `policy` | object | Factory policy snapshot applied to the run |
+| `policyDecisions` | array | Policy decisions recorded from the run timeline |
 | `sandboxName` | string | Sandbox name used for the run |
 | `sandbox` | object | Redaction-safe sandbox execution metadata for sandbox-backed runs |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
@@ -49,6 +51,31 @@ These fields use `omitempty` and are only present when the value is non-zero.
 
 `sandboxName` is retained as a compatibility summary field. New consumers
 should read `sandbox.name` when the `sandbox` object is present.
+
+## Policy Metadata
+
+When `policy` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sandboxRequired` | boolean | yes | Whether factory runs must use sandbox executor mode |
+| `allowedEngines` | array | yes | Engine identifiers allowed for the run, such as `claude`, `codex`, or `pi` |
+| `maxRunAttempts` | number | yes | Maximum run attempts; `0` means uncapped |
+| `maxReviewFixAttempts` | number | yes | Maximum review autofix attempts; `0` means uncapped |
+| `maxCiFixAttempts` | number | yes | Maximum CI autofix attempts; `0` means uncapped |
+| `verificationRequired` | boolean | yes | Whether verification failures block successful completion |
+| `prCreationAllowed` | boolean | yes | Whether pull request creation is allowed |
+| `mergeAllowed` | boolean | yes | Whether merge automation is allowed |
+| `cleanupBehavior` | string | yes | Sandbox cleanup policy: `preserve`, `on_success`, or `always` |
+
+When `policyDecisions` is present, each entry contains:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `policyField` | string | yes | Policy field that produced the decision |
+| `decision` | string | yes | Decision value: `allowed_execution`, `rejected_execution`, `passed_gate`, or `blocked_gate` |
+| `outcome` | string | yes | Outcome value: `allowed`, `rejected`, `passed`, or `blocked` |
+| `reason` | string | yes | Safe human-readable reason for the decision |
 
 ## Sandbox Metadata
 
