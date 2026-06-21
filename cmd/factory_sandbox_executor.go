@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -141,7 +142,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				ProjectDir: req.ProjectDir,
 				Name:       name,
 				BranchName: record.BranchName,
-				Repo:       record.RepoRemote,
+				Repo:       factorySandboxProvisionRepoLabel(record),
 				Out:        req.RemoteOutput,
 			})
 			if err != nil {
@@ -166,7 +167,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 					ProjectDir: req.ProjectDir,
 					Name:       name,
 					BranchName: record.BranchName,
-					Repo:       record.RepoRemote,
+					Repo:       factorySandboxProvisionRepoLabel(record),
 					Out:        req.RemoteOutput,
 				})
 				if err != nil {
@@ -203,16 +204,19 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record); ok {
+		connectInfo := sandbox.ConnectInfoFromState(target)
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
 				provider:        provider,
-				connectInfo:     sandbox.ConnectInfoFromState(target),
+				connectInfo:     connectInfo,
 				runProviderExec: deps.runProviderExec,
 				// Bootstrap timelines are persisted from sanitized BootstrapResult
 				// events; stream raw command output only to the caller-facing writer.
 				out: req.RemoteOutput,
 			},
-			Now: deps.now,
+			RepoExists:    factorySandboxRemoteRepoExistsFunc(ctx, provider, connectInfo, deps.runProviderExec),
+			RepoRemoteURL: factorySandboxRemoteRepoURLFunc(ctx, provider, connectInfo, deps.runProviderExec),
+			Now:           deps.now,
 		})
 		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult); appendErr != nil {
 			return fmt.Errorf("record sandbox bootstrap timeline: %w", appendErr)
@@ -513,6 +517,66 @@ func factorySandboxBootstrapRequest(record factory.RunRecord) (factory.Bootstrap
 	}, true
 }
 
+func factorySandboxRemoteRepoExistsFunc(ctx context.Context, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, runExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error) func(string) (bool, error) {
+	return func(path string) (bool, error) {
+		path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+		if path == "." || path == "" {
+			return false, fmt.Errorf("repository path is required")
+		}
+		script := "p=" + shellQuote(path) + "; " +
+			"if [ ! -e \"$p\" ]; then printf missing; " +
+			"elif [ ! -d \"$p\" ]; then printf not_dir; " +
+			"elif [ -e \"$p/.git\" ]; then printf git; " +
+			"elif [ -z \"$(ls -A \"$p\" 2>/dev/null)\" ]; then printf empty; " +
+			"else printf non_git_non_empty; fi"
+		output, err := factorySandboxRunRemoteProbe(ctx, provider, connectInfo, runExec, []string{"sh", "-lc", script})
+		if err != nil {
+			return false, fmt.Errorf("probe sandbox repository path %q: %w", path, err)
+		}
+		switch strings.TrimSpace(output) {
+		case "missing", "empty":
+			return false, nil
+		case "git":
+			return true, nil
+		case "not_dir":
+			return false, fmt.Errorf("repository path exists but is not a directory")
+		case "non_git_non_empty":
+			return false, fmt.Errorf("repository path exists but is not a git checkout and is not empty")
+		default:
+			return false, fmt.Errorf("unexpected sandbox repository probe output %q", strings.TrimSpace(output))
+		}
+	}
+}
+
+func factorySandboxRemoteRepoURLFunc(ctx context.Context, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, runExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error) func(string) (string, error) {
+	return func(path string) (string, error) {
+		path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+		if path == "." || path == "" {
+			return "", fmt.Errorf("repository path is required")
+		}
+		output, err := factorySandboxRunRemoteProbe(ctx, provider, connectInfo, runExec, []string{"git", "-C", path, "remote", "get-url", "origin"})
+		if err != nil {
+			return "", err
+		}
+		remote := strings.TrimSpace(output)
+		if remote == "" {
+			return "", fmt.Errorf("repository origin remote is not configured")
+		}
+		return remote, nil
+	}
+}
+
+func factorySandboxRunRemoteProbe(ctx context.Context, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, runExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error, args []string) (string, error) {
+	if runExec == nil {
+		return "", fmt.Errorf("sandbox exec dependency is required")
+	}
+	var output bytes.Buffer
+	if err := runExec(ctx, provider, connectInfo, args, &output); err != nil {
+		return strings.TrimSpace(output.String()), err
+	}
+	return strings.TrimSpace(output.String()), nil
+}
+
 func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, result factory.BootstrapResult) error {
 	if record == nil || strings.TrimSpace(record.RunID) == "" || len(result.Timeline) == 0 {
 		return nil
@@ -733,6 +797,35 @@ func factorySandboxProvisionName(record factory.RunRecord) string {
 		return name
 	}
 	return sandbox.SandboxNameFromBranch(record.BranchName)
+}
+
+func factorySandboxProvisionRepoLabel(record factory.RunRecord) string {
+	return credentialStrippedRepoLabel(record.RepoRemote)
+}
+
+func credentialStrippedRepoLabel(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		path := strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/")
+		if path == "" {
+			return parsed.Host
+		}
+		return parsed.Host + "/" + path
+	}
+	if hostAndPath := strings.SplitN(remote, ":", 2); len(hostAndPath) == 2 && !strings.Contains(hostAndPath[0], "/") {
+		host := hostAndPath[0]
+		if idx := strings.LastIndex(host, "@"); idx >= 0 {
+			host = host[idx+1:]
+		}
+		path := strings.Trim(strings.TrimSuffix(hostAndPath[1], ".git"), "/")
+		if host != "" && path != "" {
+			return host + "/" + path
+		}
+	}
+	return repositoryNameFromRemote(remote)
 }
 
 func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error) error {

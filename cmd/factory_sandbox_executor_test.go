@@ -303,6 +303,81 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceWithRemoteRepositoryProbes(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+
+	var execArgs [][]string
+	bootstrapCalled := false
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-bootstrap-remote-probes",
+			RepoRemote: "git@github.com:example/repo.git",
+			BaseBranch: "main",
+			BranchName: "hal/feature",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		bootstrap: func(ctx context.Context, req factory.BootstrapRequest, deps factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			bootstrapCalled = true
+			if deps.RepoExists == nil || deps.RepoRemoteURL == nil {
+				t.Fatalf("bootstrap repository probes were not injected")
+			}
+			exists, err := deps.RepoExists(req.WorkspaceDir)
+			if err != nil {
+				t.Fatalf("RepoExists() error: %v", err)
+			}
+			if !exists {
+				t.Fatalf("RepoExists() = false, want true")
+			}
+			remote, err := deps.RepoRemoteURL(req.WorkspaceDir)
+			if err != nil {
+				t.Fatalf("RepoRemoteURL() error: %v", err)
+			}
+			if remote != req.RepositoryURL {
+				t.Fatalf("RepoRemoteURL() = %q, want %q", remote, req.RepositoryURL)
+			}
+			return factory.BootstrapResult{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			execArgs = append(execArgs, append([]string(nil), args...))
+			switch {
+			case len(args) == 3 && args[0] == "sh" && args[1] == "-lc" && strings.Contains(args[2], "non_git_non_empty"):
+				_, err := io.WriteString(out, "git")
+				return err
+			case len(args) == 6 && reflect.DeepEqual(args, []string{"git", "-C", "/workspace/repo", "remote", "get-url", "origin"}):
+				_, err := io.WriteString(out, "git@github.com:example/repo.git\n")
+				return err
+			default:
+				return nil
+			}
+		},
+		saveRun:     func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if !bootstrapCalled {
+		t.Fatalf("bootstrap was not called")
+	}
+	if len(execArgs) != 3 {
+		t.Fatalf("exec calls = %d, want repo exists probe, remote URL probe, remote execution: %#v", len(execArgs), execArgs)
+	}
+	if !strings.Contains(execArgs[0][2], "p='/workspace/repo'") {
+		t.Fatalf("repo exists probe args = %#v", execArgs[0])
+	}
+	if !reflect.DeepEqual(execArgs[1], []string{"git", "-C", "/workspace/repo", "remote", "get-url", "origin"}) {
+		t.Fatalf("repo remote probe args = %#v", execArgs[1])
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStreamingOutput(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
@@ -575,6 +650,47 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 	}
 }
 
+func TestFactorySandboxProvisionRepoLabelStripsCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{
+			name:   "credentialed https remote",
+			remote: "https://token:secret@github.com/example/repo.git",
+			want:   "github.com/example/repo",
+		},
+		{
+			name:   "ssh scp remote",
+			remote: "git@github.com:example/repo.git",
+			want:   "github.com/example/repo",
+		},
+		{
+			name:   "ssh url remote",
+			remote: "ssh://git@github.com/example/repo.git",
+			want:   "github.com/example/repo",
+		},
+		{
+			name:   "fallback repository name",
+			remote: "not-a-url/repo.git",
+			want:   "repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := factorySandboxProvisionRepoLabel(factory.RunRecord{RepoRemote: tt.remote})
+			if got != tt.want {
+				t.Fatalf("factorySandboxProvisionRepoLabel() = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(got, "token") || strings.Contains(got, "secret") {
+				t.Fatalf("factorySandboxProvisionRepoLabel() leaked credentials: %q", got)
+			}
+		})
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 45, 0, 0, time.UTC)
 	var savedRecords []factory.RunRecord
@@ -781,7 +897,7 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if provisionReq.ProjectDir != "/repo" || provisionReq.Name != "factory-new" || provisionReq.Repo != "git@github.com:example/repo.git" {
+	if provisionReq.ProjectDir != "/repo" || provisionReq.Name != "factory-new" || provisionReq.Repo != "github.com/example/repo" {
 		t.Fatalf("provision request = %#v", provisionReq)
 	}
 	if provisionReq.BranchName != "" {
@@ -927,7 +1043,7 @@ func TestRunFactorySandboxExecutorWithDepsProvisionsWhenDefaultResolutionHasNoUs
 	if !loadCalled {
 		t.Fatalf("loadSandbox was not called for derived sandbox name")
 	}
-	if provisionReq.Name != "hal-feature" || provisionReq.BranchName != "hal/feature" || provisionReq.ProjectDir != "/repo" || provisionReq.Repo != "git@github.com:example/repo.git" {
+	if provisionReq.Name != "hal-feature" || provisionReq.BranchName != "hal/feature" || provisionReq.ProjectDir != "/repo" || provisionReq.Repo != "github.com/example/repo" {
 		t.Fatalf("provision request = %#v", provisionReq)
 	}
 	if len(savedRecords) < 2 || savedRecords[1].SandboxName != "hal-feature" {
