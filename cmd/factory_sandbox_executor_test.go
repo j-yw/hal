@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -464,6 +465,130 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromBootstrapTim
 	}
 	if command, ok := bootstrapEvent.Metadata["command"].(string); !ok || !strings.Contains(command, factory.RunSecretRedactionPlaceholder) {
 		t.Fatalf("bootstrap event command missing redaction marker: %#v", bootstrapEvent.Metadata["command"])
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnvironment(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 20, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	requiredSecret := "ghp_bootstrap_env_secret_12345"
+	optionalSecret := "npm_bootstrap_env_secret_67890"
+
+	var execArgs [][]string
+	var bootstrapReq factory.BootstrapRequest
+	var bootstrapStep factory.BootstrapStepResult
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-bootstrap-env",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+			BaseBranch: "main",
+			BranchName: "hal/feature",
+			Secrets: []factory.RunSecretMetadata{{
+				Name:     "GITHUB_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: true,
+				Present:  true,
+			}, {
+				Name:     "OPTIONAL_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: false,
+				Present:  true,
+			}},
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    requiredSecret,
+		}, {
+			Name:     "OPTIONAL_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: false,
+			Value:    optionalSecret,
+		}},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		bootstrap: func(ctx context.Context, req factory.BootstrapRequest, deps factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			bootstrapReq = req
+			step, commandResult, failure, runErr := factory.RunBootstrapStep(ctx, factory.BootstrapStepDeps{
+				Executor: deps.Executor,
+				Now:      func() time.Time { return now },
+				Request:  req,
+			}, "secret_bootstrap", factory.BootstrapCommand{
+				Name: "hal",
+				Args: []string{"init"},
+			})
+			bootstrapStep = step
+			return factory.BootstrapResult{
+				Timeline: []factory.BootstrapTimelineEvent{
+					factory.BootstrapTimelineEventFromStep(req, step, commandResult, failure),
+				},
+			}, runErr
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ io.Writer) error {
+			execArgs = append(execArgs, append([]string(nil), args...))
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(bootstrapReq.RequiredEnvKeys, []string{"GITHUB_TOKEN"}) {
+		t.Fatalf("required env keys = %#v, want GITHUB_TOKEN", bootstrapReq.RequiredEnvKeys)
+	}
+	if bootstrapReq.Env["GITHUB_TOKEN"] != requiredSecret || bootstrapReq.Env["OPTIONAL_TOKEN"] != optionalSecret {
+		t.Fatalf("bootstrap env = %#v, want resolved secrets", bootstrapReq.Env)
+	}
+	if len(execArgs) != 2 {
+		t.Fatalf("exec calls = %d, want bootstrap and remote execution: %#v", len(execArgs), execArgs)
+	}
+	containsArg := func(args []string, want string) bool {
+		for _, arg := range args {
+			if arg == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !containsArg(execArgs[0], "GITHUB_TOKEN="+requiredSecret) || !containsArg(execArgs[0], "OPTIONAL_TOKEN="+optionalSecret) {
+		t.Fatalf("bootstrap exec args did not receive resolved secret env: %#v", execArgs[0])
+	}
+	if strings.Contains(bootstrapStep.CommandSummary, requiredSecret) || strings.Contains(bootstrapStep.CommandSummary, "GITHUB_TOKEN") {
+		t.Fatalf("bootstrap command summary leaked secret data: %q", bootstrapStep.CommandSummary)
+	}
+
+	storedRun, loadErr := store.LoadRun("run-bootstrap-env")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	runData, err := json.Marshal(storedRun)
+	if err != nil {
+		t.Fatalf("json.Marshal(run) error: %v", err)
+	}
+	if strings.Contains(string(runData), requiredSecret) || strings.Contains(string(runData), optionalSecret) {
+		t.Fatalf("stored run leaked secret values: %s", string(runData))
+	}
+	events, loadErr := store.LoadEvents("run-bootstrap-env")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	eventData, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	if strings.Contains(string(eventData), requiredSecret) || strings.Contains(string(eventData), optionalSecret) {
+		t.Fatalf("stored events leaked secret values: %s", string(eventData))
 	}
 }
 

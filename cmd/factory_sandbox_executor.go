@@ -504,15 +504,52 @@ func factorySandboxBootstrapRequest(record factory.RunRecord, secrets []factory.
 		return factory.BootstrapRequest{}, false
 	}
 	request := factory.BootstrapRequest{
-		RepositoryURL: repoRemote,
-		BaseBranch:    baseBranch,
-		RunBranch:     strings.TrimSpace(record.BranchName),
-		WorkspaceDir:  workspaceDir,
+		RepositoryURL:   repoRemote,
+		BaseBranch:      baseBranch,
+		RunBranch:       strings.TrimSpace(record.BranchName),
+		WorkspaceDir:    workspaceDir,
+		RequiredEnvKeys: factorySandboxBootstrapRequiredEnvKeys(record.Secrets),
+		Env:             factorySandboxBootstrapSecretEnv(secrets),
 		Options: factory.BootstrapOptions{
 			RefreshHal: true,
 		},
 	}
 	return factory.BootstrapRequestWithResolvedSecrets(request, secrets), true
+}
+
+func factorySandboxBootstrapRequiredEnvKeys(secrets []factory.RunSecretMetadata) []string {
+	keys := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		if !secret.Required || strings.TrimSpace(secret.Source) != factory.RunSecretSourceEnv {
+			continue
+		}
+		if name := strings.TrimSpace(secret.Name); name != "" {
+			keys = append(keys, name)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func factorySandboxBootstrapSecretEnv(secrets []factory.ResolvedRunSecret) map[string]string {
+	env := make(map[string]string, len(secrets))
+	for _, secret := range secrets {
+		if strings.TrimSpace(secret.Source) != factory.RunSecretSourceEnv {
+			continue
+		}
+		name := strings.TrimSpace(secret.Name)
+		if name == "" || strings.TrimSpace(secret.Value) == "" {
+			continue
+		}
+		env[name] = secret.Value
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, result factory.BootstrapResult) error {
