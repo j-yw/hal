@@ -440,10 +440,12 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return err
 	}
-	if err := createFactoryRunRecord(store, record); err != nil {
+	initialRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
+	safeInitialRecord := initialRedactor.RedactRunRecord(record)
+	if err := createFactoryRunRecord(store, safeInitialRecord); err != nil {
 		return err
 	}
-	if err := recordFactoryRunStarted(store, record); err != nil {
+	if err := recordFactoryRunStarted(store, safeInitialRecord); err != nil {
 		return err
 	}
 
@@ -467,14 +469,14 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if deps.runPipeline == nil {
 		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
 	}
-	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
-		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), factory.RunSecretRedactor{})
-	}
 
 	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if err != nil {
 		return failFactoryRunSetup(store, record, deps.now(), err, redactor)
+	}
+	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
+		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), redactor)
 	}
 
 	runningRecord, err := markFactoryRunInProgressWithRedactor(store, record, deps.now(), redactor)

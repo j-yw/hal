@@ -34,6 +34,7 @@ type factoryTriggerDeps struct {
 	now                  func() time.Time
 	currentBranch        func(string) (string, error)
 	repoRemote           func(string) (string, error)
+	lookupEnv            func(string) (string, bool)
 	loadConfig           func(string) (*compound.AutoConfig, error)
 	discoverLatestReport func(string, string) (string, bool, error)
 }
@@ -66,6 +67,7 @@ var defaultFactoryTriggerDeps = factoryTriggerDeps{
 	now:                  time.Now,
 	currentBranch:        compound.CurrentBranchOptionalInDir,
 	repoRemote:           readGitRemoteOptionalInDir,
+	lookupEnv:            os.LookupEnv,
 	loadConfig:           compound.LoadConfig,
 	discoverLatestReport: discoverLatestReportCandidate,
 }
@@ -251,11 +253,13 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		return err
 	}
 	record.ExecutorMode = executorMode
+	triggerRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
+	safeRecord := triggerRedactor.RedactRunRecord(record)
 
-	if err := createFactoryRunRecord(store, record); err != nil {
+	if err := createFactoryRunRecord(store, safeRecord); err != nil {
 		return err
 	}
-	if err := recordFactoryRunTriggered(store, record, factoryTriggerKind(req)); err != nil {
+	if err := recordFactoryRunTriggered(store, safeRecord, factoryTriggerKind(req)); err != nil {
 		return err
 	}
 
@@ -267,7 +271,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	})
 	if err != nil {
 		enqueueErr := fmt.Errorf("enqueue triggered factory run %q: %w", record.RunID, err)
-		if failErr := markTriggeredFactoryRunEnqueueFailed(store, record, enqueueErr, deps.now()); failErr != nil {
+		if failErr := markTriggeredFactoryRunEnqueueFailed(store, safeRecord, enqueueErr, deps.now()); failErr != nil {
 			return errors.Join(enqueueErr, fmt.Errorf("mark triggered factory run failed after enqueue failure: %w", failErr))
 		}
 		return enqueueErr
@@ -336,6 +340,9 @@ func normalizeFactoryTriggerDeps(deps factoryTriggerDeps) factoryTriggerDeps {
 	if deps.repoRemote == nil {
 		deps.repoRemote = defaultFactoryTriggerDeps.repoRemote
 	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = defaultFactoryTriggerDeps.lookupEnv
+	}
 	if deps.loadConfig == nil {
 		deps.loadConfig = defaultFactoryTriggerDeps.loadConfig
 	}
@@ -343,6 +350,34 @@ func normalizeFactoryTriggerDeps(deps factoryTriggerDeps) factoryTriggerDeps {
 		deps.discoverLatestReport = defaultFactoryTriggerDeps.discoverLatestReport
 	}
 	return deps
+}
+
+func resolveFactoryRunRedactionSecrets(inputs []factory.RunSecretInput, lookup func(string) (string, bool)) []factory.ResolvedRunSecret {
+	if len(inputs) == 0 || lookup == nil {
+		return nil
+	}
+	resolved := make([]factory.ResolvedRunSecret, 0, len(inputs))
+	for _, input := range inputs {
+		secret := factory.RunSecretInput{
+			Name:     strings.TrimSpace(input.Name),
+			Source:   strings.TrimSpace(input.Source),
+			Required: input.Required,
+		}
+		if secret.Name == "" || secret.Source != factory.RunSecretSourceEnv {
+			continue
+		}
+		value, ok := lookup(secret.Name)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		resolved = append(resolved, factory.ResolvedRunSecret{
+			Name:     secret.Name,
+			Source:   secret.Source,
+			Required: secret.Required,
+			Value:    value,
+		})
+	}
+	return resolved
 }
 
 func resolveFactoryTriggerRepoPath(repoPath string) (string, error) {

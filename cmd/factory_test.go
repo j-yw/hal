@@ -638,6 +638,65 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 	}
 }
 
+func TestRunFactoryRunWithDepsRedactsSecretRemoteWhenSandboxBaseMissing(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 10, 50, 0, 0, time.UTC)
+	secretValue := "ghp_base_guard_secret_12345"
+
+	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-missing-base-secret", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "https://x:" + secretValue + "@github.com/jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name != "GITHUB_TOKEN" {
+				t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+			}
+			return secretValue, true
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called when sandbox base is missing")
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not be called when sandbox base is missing")
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "--base is required when --sandbox is set") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want missing base error", err)
+	}
+
+	record, loadErr := store.LoadRun("run-missing-base-secret")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	data, marshalErr := json.Marshal(record)
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal(run record) error: %v", marshalErr)
+	}
+	if strings.Contains(string(data), secretValue) {
+		t.Fatalf("run record JSON leaked secret value: %s", string(data))
+	}
+	if record.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+		t.Fatalf("repo remote = %q, want redacted secret value", record.RepoRemote)
+	}
+}
+
 func TestFactoryRunRecordCreateAndInProgressTransition(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 20, 19, 0, 0, 0, time.UTC)

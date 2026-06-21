@@ -142,25 +142,51 @@ func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *te
 
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	now := time.Date(2026, 6, 21, 22, 2, 0, 0, time.UTC)
+	secretValue := "ghp_trigger_secret_12345"
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-secret", "queue-trigger-secret")
+	deps.repoRemote = func(string) (string, error) {
+		return "https://x:" + secretValue + "@github.com/ReScienceLab/hal.git", nil
+	}
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name != "GITHUB_TOKEN" {
+			t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+		}
+		return secretValue, true
+	}
 
-	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
 		RepoPath:     repoDir,
 		MarkdownPath: ".hal/prd-feature.md",
 		BaseBranch:   "main",
 		ExecutorMode: factory.ExecutorModeSandbox,
+		JSON:         true,
 		Secrets: []factory.RunSecretInput{{
 			Name:     "GITHUB_TOKEN",
 			Source:   factory.RunSecretSourceEnv,
 			Required: true,
 		}},
-	}, factoryTriggerTestDeps(store, now, "run-trigger-secret", "queue-trigger-secret"))
+	}, deps)
 	if err != nil {
 		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), secretValue) {
+		t.Fatalf("trigger JSON leaked secret value: %s", out.String())
+	}
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	if resp.Run.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
+		t.Fatalf("response repo remote = %q, want redacted secret value", resp.Run.RepoRemote)
 	}
 
 	record, err := store.LoadRun("run-trigger-secret")
 	if err != nil {
 		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
+		t.Fatalf("stored repo remote = %q, want redacted secret value", record.RepoRemote)
 	}
 	wantMetadata := []factory.RunSecretMetadata{{
 		Name:     "GITHUB_TOKEN",
@@ -454,6 +480,9 @@ func factoryTriggerTestDeps(store factory.Store, now time.Time, runID, queueID s
 		},
 		repoRemote: func(string) (string, error) {
 			return "git@github.com:ReScienceLab/hal.git", nil
+		},
+		lookupEnv: func(string) (string, bool) {
+			return "", false
 		},
 		loadConfig: func(string) (*compound.AutoConfig, error) {
 			cfg := compound.DefaultAutoConfig()
