@@ -447,6 +447,7 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 			RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
 			Status:       RunStatusFailed,
 			ExecutorMode: ExecutorModeLocal,
+			Engine:       PolicyEngineCodex,
 			Source: SourceMetadata{
 				Kind:       SourceKindMarkdown,
 				Path:       ".hal/prd-factory.md",
@@ -619,6 +620,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
 		Status:       RunStatusFailed,
 		ExecutorMode: ExecutorModeLocal,
+		Engine:       PolicyEngineCodex,
 		Source: SourceMetadata{
 			Kind:       SourceKindMarkdown,
 			Path:       ".hal/prd-factory.md",
@@ -710,6 +712,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"runId",
 		"status",
 		"executorMode",
+		"engine",
 		"source",
 		"repoPath",
 		"repoRemote",
@@ -1032,7 +1035,7 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "failure"} {
+	for _, key := range []string{"engine", "sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "failure"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional field %q in %s", key, string(data))
 		}

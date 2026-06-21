@@ -384,6 +384,9 @@ func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testi
 			if req.Engine != factory.PolicyEngineClaude {
 				t.Fatalf("pipeline engine = %q, want %q", req.Engine, factory.PolicyEngineClaude)
 			}
+			if req.Record.Engine != factory.PolicyEngineClaude {
+				t.Fatalf("record engine = %q, want %q", req.Record.Engine, factory.PolicyEngineClaude)
+			}
 			return nil
 		},
 		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
@@ -396,6 +399,13 @@ func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testi
 	}
 	if !localCalled {
 		t.Fatal("local pipeline was not called")
+	}
+	record, err := store.LoadRun("run-local-default")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Engine != factory.PolicyEngineClaude {
+		t.Fatalf("stored engine = %q, want %q", record.Engine, factory.PolicyEngineClaude)
 	}
 }
 

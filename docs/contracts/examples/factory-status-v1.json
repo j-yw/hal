@@ -4,6 +4,7 @@
     "runId": "run-20260620-002",
     "status": "failed",
     "executorMode": "sandbox",
+    "engine": "codex",
     "source": {
       "kind": "markdown",
       "path": ".hal/prd-factory.md",

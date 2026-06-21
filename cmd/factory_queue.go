@@ -386,12 +386,22 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		record = &persistedRecord
 		policy = factoryPolicySnapshotFromRecord(record)
 	}
-	engineName, err := resolveFactoryRunEngine(runDir, factoryRunDeps{
-		loadEngine: deps.loadEngine,
-	})
-	if err != nil {
-		runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
-		return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+	engineName := factoryRunEngineSnapshotFromRecord(record)
+	if engineName == "" {
+		var err error
+		engineName, err = resolveFactoryRunEngine(runDir, factoryRunDeps{
+			loadEngine: deps.loadEngine,
+		})
+		if err != nil {
+			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+		}
+		persistedRecord, err := persistFactoryRunEngineSnapshot(store, *record, engineName)
+		if err != nil {
+			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+		}
+		record = &persistedRecord
 	}
 	if err := enforceFactoryRunCreationPolicy(store, *record, io.Discard, false, factoryRunDeps{
 		now: deps.now,

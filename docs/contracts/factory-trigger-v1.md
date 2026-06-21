@@ -31,6 +31,7 @@ Important fields for trigger consumers:
 | `runId` | string | Created factory run ID; matches the top-level `runId` |
 | `status` | string | Initially `pending` |
 | `executorMode` | string | Executor mode for the queued worker, currently `local` |
+| `engine` | string | Engine snapshot resolved at enqueue time |
 | `source` | object | Trigger source metadata |
 | `repoPath` | string | Repository path captured from `--repo` |
 | `repoRemote` | string | Optional `origin` remote for the repository |

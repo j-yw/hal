@@ -314,6 +314,7 @@ type FactoryStatusRun struct {
 	RunID           string                           `json:"runId"`
 	Status          string                           `json:"status"`
 	ExecutorMode    string                           `json:"executorMode"`
+	Engine          string                           `json:"engine,omitempty"`
 	Source          factory.SourceMetadata           `json:"source"`
 	RepoPath        string                           `json:"repoPath"`
 	RepoRemote      string                           `json:"repoRemote"`
@@ -461,6 +462,10 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
 	engineName, err := resolveFactoryRunEngine(dir, deps)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	record, err = persistFactoryRunEngineSnapshot(store, record, engineName)
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
@@ -822,6 +827,14 @@ func factoryPolicySnapshotFromRecord(record *factory.RunRecord) *factory.Factory
 	return &snapshot
 }
 
+func persistFactoryRunEngineSnapshot(store factory.Store, record factory.RunRecord, engineName string) (factory.RunRecord, error) {
+	record.Engine = normalizeFactoryRunEngineName(engineName)
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("persist factory engine snapshot: %w", err)
+	}
+	return record, nil
+}
+
 func resolveFactoryRunEngine(dir string, deps factoryRunDeps) (string, error) {
 	if deps.loadEngine == nil {
 		deps.loadEngine = defaultFactoryRunDeps.loadEngine
@@ -835,6 +848,13 @@ func resolveFactoryRunEngine(dir string, deps factoryRunDeps) (string, error) {
 
 func normalizeFactoryRunEngineName(engineName string) string {
 	return strings.ToLower(strings.TrimSpace(engineName))
+}
+
+func factoryRunEngineSnapshotFromRecord(record *factory.RunRecord) string {
+	if record == nil {
+		return ""
+	}
+	return normalizeFactoryRunEngineName(record.Engine)
 }
 
 func enforceFactoryRunCreationPolicy(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) error {
@@ -2900,6 +2920,7 @@ func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord)
 		RunID:           record.RunID,
 		Status:          record.Status,
 		ExecutorMode:    record.ExecutorMode,
+		Engine:          record.Engine,
 		Source:          record.Source,
 		RepoPath:        record.RepoPath,
 		RepoRemote:      record.RepoRemote,

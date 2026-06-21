@@ -76,6 +76,9 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	if resp.Run.Policy == nil {
 		t.Fatal("run policy snapshot = nil, want trigger-time policy snapshot")
 	}
+	if resp.Run.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("run engine = %q, want %q", resp.Run.Engine, factory.PolicyEngineCodex)
+	}
 	if got, want := strings.Join(resp.Run.Policy.AllowedEngines, ","), strings.Join(factory.SupportedPolicyEngines(), ","); got != want {
 		t.Fatalf("policy.allowedEngines = %q, want %q", got, want)
 	}
@@ -220,6 +223,9 @@ func TestRunFactoryTriggerWithDepsRejectsDisallowedEngineBeforeEnqueue(t *testin
 	}
 	if record.Policy == nil || strings.Join(record.Policy.AllowedEngines, ",") != factory.PolicyEngineClaude {
 		t.Fatalf("policy snapshot = %#v, want claude-only snapshot", record.Policy)
+	}
+	if record.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("engine snapshot = %q, want %q", record.Engine, factory.PolicyEngineCodex)
 	}
 
 	events, err := store.LoadEvents("run-trigger-policy-engine")

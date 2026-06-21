@@ -109,6 +109,7 @@ type RunRecord struct {
 	RunID        string              `json:"runId"`
 	Status       string              `json:"status"`
 	ExecutorMode string              `json:"executorMode"`
+	Engine       string              `json:"engine,omitempty"`
 	Source       SourceMetadata      `json:"source"`
 	RepoPath     string              `json:"repoPath"`
 	RepoRemote   string              `json:"repoRemote"`

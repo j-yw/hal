@@ -259,6 +259,10 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
+	record, err = persistFactoryRunEngineSnapshot(store, record, engineName)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
 	if err := enforceFactoryRunCreationPolicy(store, record, out, req.JSON, factoryRunDeps{
 		now: deps.now,
 	}, policy, engineName); err != nil {

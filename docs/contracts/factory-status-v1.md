@@ -40,6 +40,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `engine` | string | Engine snapshot resolved at factory run creation time, such as `codex`, `claude`, or `pi` |
 | `policy` | object | Factory policy snapshot applied to the run |
 | `policyDecisions` | array | Policy decisions recorded from the run timeline |
 | `sandboxName` | string | Sandbox name used for the run |

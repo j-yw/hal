@@ -730,6 +730,7 @@ func TestRunFactoryQueueWorkWithDepsUsesStoredPolicySnapshot(t *testing.T) {
 	record.Status = factory.RunStatusPending
 	record.CurrentStep = factory.QueueStatusQueued
 	record.Policy = &policySnapshot
+	record.Engine = factory.PolicyEngineCodex
 	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-policy-snapshot.md"}
 	if err := store.SaveRun(&record); err != nil {
 		t.Fatalf("SaveRun() error: %v", err)
@@ -750,7 +751,8 @@ func TestRunFactoryQueueWorkWithDepsUsesStoredPolicySnapshot(t *testing.T) {
 		return nil, nil
 	}
 	deps.loadEngine = func(string) (string, error) {
-		return factory.PolicyEngineCodex, nil
+		t.Fatal("loadEngine should not be called when run record already has an engine snapshot")
+		return "", nil
 	}
 
 	var out bytes.Buffer
@@ -759,6 +761,9 @@ func TestRunFactoryQueueWorkWithDepsUsesStoredPolicySnapshot(t *testing.T) {
 	}
 	if gotPipelineReq.AttemptPolicy.MaxRunAttempts != 3 {
 		t.Fatalf("pipeline max run attempts = %d, want snapshot value 3", gotPipelineReq.AttemptPolicy.MaxRunAttempts)
+	}
+	if gotPipelineReq.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("pipeline engine = %q, want stored snapshot %q", gotPipelineReq.Engine, factory.PolicyEngineCodex)
 	}
 	if gotPipelineReq.Record.Policy == nil || gotPipelineReq.Record.Policy.MaxRunAttempts != 3 {
 		t.Fatalf("pipeline record policy = %#v, want stored snapshot", gotPipelineReq.Record.Policy)
@@ -770,6 +775,9 @@ func TestRunFactoryQueueWorkWithDepsUsesStoredPolicySnapshot(t *testing.T) {
 	}
 	if loaded.Policy == nil || loaded.Policy.MaxRunAttempts != 3 {
 		t.Fatalf("loaded policy = %#v, want stored snapshot", loaded.Policy)
+	}
+	if loaded.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("loaded engine = %q, want stored snapshot %q", loaded.Engine, factory.PolicyEngineCodex)
 	}
 }
 

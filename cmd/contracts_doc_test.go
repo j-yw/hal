@@ -477,7 +477,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			path:          "../docs/contracts/factory-status-v1.md",
 			contractValue: FactoryStatusContractVersion,
 			requiredFields: []string{
-				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
+				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "engine", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "policy", "policyDecisions", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
 				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
@@ -556,7 +556,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			contractValue: FactoryTriggerContractVersion,
 			requiredFields: []string{
 				"contractVersion", "runId", "run", "entry", "summary",
-				"repoPath", "source", "queueId", "executorMode", "factory-queue-entry-v1",
+				"repoPath", "source", "queueId", "executorMode", "engine", "factory-queue-entry-v1",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
