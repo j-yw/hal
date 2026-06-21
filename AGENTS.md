@@ -42,6 +42,7 @@
 - Factory policy defaults live in `internal/factory.FactoryPolicy`; use `DefaultFactoryPolicy` and `Validate`, where zero attempt limits mean no policy cap, enum values normalize to lowercase, and validation errors use `factory.policy.<field>` paths.
 - Factory policy config loading lives in `internal/factory.LoadPolicyConfig`; merge pointer-backed `factory.policy` YAML fields over `DefaultFactoryPolicy` so explicit false, zero, and empty values are preserved without coupling direct `hal auto` config loading to factory policy validation.
 - When adding durable factory policy fields, include explicit JSON/YAML tags and add the type or field coverage to `internal/factory/types_test.go` so machine-readable contracts stay locked.
+- Policy decision timeline events use `factory.EventTypePolicyDecision` plus `factory.PolicyDecisionMetadata`; append them through `recordFactoryPolicyDecision` so sequence assignment stays with existing factory timeline helpers and metadata remains limited to `policyField`, `decision`, `outcome`, and `reason`.
 
 ## Patterns from local-factory-queue-storage (2026-06-21)
 

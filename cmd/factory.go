@@ -2092,6 +2092,30 @@ func recordFactoryRunFailureClassified(store factory.Store, runID string, now ti
 	})
 }
 
+func recordFactoryPolicyDecision(store factory.Store, runID string, now time.Time, decision factory.PolicyDecisionMetadata) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypePolicyDecision,
+		Summary:   factoryPolicyDecisionSummary(decision),
+		Metadata:  decision.EventMetadata(),
+	})
+}
+
+func factoryPolicyDecisionSummary(decision factory.PolicyDecisionMetadata) string {
+	decisionName := strings.TrimSpace(decision.Decision)
+	outcome := strings.TrimSpace(decision.Outcome)
+
+	switch {
+	case decisionName != "" && outcome != "":
+		return fmt.Sprintf("Policy decision %s: %s", decisionName, outcome)
+	case decisionName != "":
+		return "Policy decision " + decisionName
+	case outcome != "":
+		return "Policy decision: " + outcome
+	default:
+		return "Policy decision recorded"
+	}
+}
+
 func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent) error {
 	events, err := store.LoadEvents(runID)
 	if err != nil {

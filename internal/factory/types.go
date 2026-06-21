@@ -85,6 +85,23 @@ const (
 	EventTypeCIState               = "ci_state"
 	EventTypeArtifactSync          = "artifact_sync"
 	EventTypeFailureClassification = "failure_classification"
+	EventTypePolicyDecision        = "policy_decision"
+)
+
+// Policy decision values recorded in policy decision timeline events.
+const (
+	PolicyDecisionAllowedExecution  = "allowed_execution"
+	PolicyDecisionRejectedExecution = "rejected_execution"
+	PolicyDecisionPassedGate        = "passed_gate"
+	PolicyDecisionBlockedGate       = "blocked_gate"
+)
+
+// Policy decision outcome values recorded in policy decision timeline events.
+const (
+	PolicyOutcomeAllowed  = "allowed"
+	PolicyOutcomeRejected = "rejected"
+	PolicyOutcomePassed   = "passed"
+	PolicyOutcomeBlocked  = "blocked"
 )
 
 // RunRecord captures persisted state for one factory run.
@@ -200,4 +217,24 @@ type EventRecord struct {
 	Message   string         `json:"message,omitempty"`
 	Summary   string         `json:"summary,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// PolicyDecisionMetadata is the safe, whitelisted metadata shape for policy
+// decision timeline events. It must not grow raw config values, environment
+// values, source paths, provider internals, or credentials.
+type PolicyDecisionMetadata struct {
+	PolicyField string `json:"policyField"`
+	Decision    string `json:"decision"`
+	Outcome     string `json:"outcome"`
+	Reason      string `json:"reason"`
+}
+
+// EventMetadata returns the map representation stored in EventRecord.Metadata.
+func (m PolicyDecisionMetadata) EventMetadata() map[string]any {
+	return map[string]any{
+		"policyField": strings.TrimSpace(m.PolicyField),
+		"decision":    strings.TrimSpace(m.Decision),
+		"outcome":     strings.TrimSpace(m.Outcome),
+		"reason":      strings.TrimSpace(m.Reason),
+	}
 }

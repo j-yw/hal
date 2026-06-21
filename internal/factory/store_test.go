@@ -651,6 +651,7 @@ func TestAppendEventSupportsKnownEventTypes(t *testing.T) {
 		EventTypeCIState,
 		EventTypeArtifactSync,
 		EventTypeFailureClassification,
+		EventTypePolicyDecision,
 	}
 
 	for i, eventType := range eventTypes {

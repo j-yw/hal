@@ -4,6 +4,7 @@
 
 - Factory policy defaults live in `internal/factory.FactoryPolicy`; use `DefaultFactoryPolicy` and `Validate`, where zero attempt limits mean no policy cap, enum values normalize to lowercase, and validation errors use `factory.policy.<field>` paths.
 - Factory policy config loading lives in `internal/factory.LoadPolicyConfig`; merge pointer-backed `factory.policy` YAML fields over `DefaultFactoryPolicy` so explicit false, zero, and empty values are preserved without coupling direct `hal auto` config loading to factory policy validation.
+- Policy decision timeline events use `factory.EventTypePolicyDecision` plus `factory.PolicyDecisionMetadata`; append them through `recordFactoryPolicyDecision` so sequence assignment stays with existing factory timeline helpers and metadata remains limited to `policyField`, `decision`, `outcome`, and `reason`.
 
 ---
 
@@ -28,4 +29,15 @@
   - Keep factory-only policy configuration in `internal/factory` so direct `hal auto` config loading remains unaffected until factory command code explicitly opts into policy enforcement.
   - Use pointer-backed raw YAML fields for policy config booleans, integers, strings, and slices so explicit `false`, `0`, `""`, and `[]` can be distinguished from omitted fields.
   - Copy configured slices with `make`/`copy` rather than `append([]T(nil), values...)` when tests need to preserve an explicit empty slice instead of collapsing it to nil.
+---
+
+## 2026-06-21 09:15 CST - US-003
+- Implemented structured factory policy decision timeline support with a new `policy_decision` event type, decision/outcome constants for allowed execution, rejected execution, passed gates, and blocked gates, and a safe `PolicyDecisionMetadata` shape.
+- Added command-layer recording through the existing factory timeline append helper so policy decision events get deterministic sequence numbers alongside other run events.
+- Added tests for policy decision event type support, metadata JSON field shape, safe metadata keys, and one allowed plus one blocked policy decision timeline event.
+- Files changed: `internal/factory/types.go`, `internal/factory/types_test.go`, `internal/factory/store_test.go`, `cmd/factory.go`, `cmd/factory_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: `go test -timeout 60s ./internal/factory`, `go test -timeout 120s ./cmd`, `make vet`, `make test`, `make lint` (advisory: `golangci-lint` is not installed; Makefile exited 0).
+- **Learnings for future iterations:**
+  - Policy decision events should be appended through `recordFactoryPolicyDecision` rather than hand-building timeline metadata so all policy gates share the same event type, sequence behavior, and safe metadata keys.
+  - Durable policy decision fields belong in `internal/factory` with JSON tag coverage in `internal/factory/types_test.go`; command tests should assert append order and exact metadata keys for timeline events.
 ---

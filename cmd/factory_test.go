@@ -768,6 +768,66 @@ func TestRunFactoryRunWithDepsRecordsTimelineEventsForFailure(t *testing.T) {
 	}
 }
 
+func TestRecordFactoryPolicyDecisionRecordsAllowedAndBlockedEvents(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-policy-decisions"
+	createdAt := time.Date(2026, 6, 21, 9, 15, 0, 0, time.UTC)
+	allowedAt := createdAt.Add(1 * time.Minute)
+	blockedAt := createdAt.Add(2 * time.Minute)
+
+	if err := appendFactoryRunTimelineEvent(store, runID, createdAt, factoryTimelineEvent{
+		EventType: factory.EventTypeRunCreated,
+		Summary:   "Factory run started",
+	}); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEvent() unexpected error: %v", err)
+	}
+
+	allowed := factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.allowedEngines",
+		Decision:    factory.PolicyDecisionAllowedExecution,
+		Outcome:     factory.PolicyOutcomeAllowed,
+		Reason:      "requested engine codex is allowed",
+	}
+	if err := recordFactoryPolicyDecision(store, runID, allowedAt, allowed); err != nil {
+		t.Fatalf("recordFactoryPolicyDecision(allowed) unexpected error: %v", err)
+	}
+
+	blocked := factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.verificationRequired",
+		Decision:    factory.PolicyDecisionBlockedGate,
+		Outcome:     factory.PolicyOutcomeBlocked,
+		Reason:      "latest verification result failed",
+	}
+	if err := recordFactoryPolicyDecision(store, runID, blockedAt, blocked); err != nil {
+		t.Fatalf("recordFactoryPolicyDecision(blocked) unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypePolicyDecision,
+		factory.EventTypePolicyDecision,
+	})
+	assertFactoryEventSequences(t, events)
+	if !events[1].Timestamp.Equal(allowedAt) {
+		t.Fatalf("allowed event timestamp = %s, want %s", events[1].Timestamp, allowedAt)
+	}
+	if !events[2].Timestamp.Equal(blockedAt) {
+		t.Fatalf("blocked event timestamp = %s, want %s", events[2].Timestamp, blockedAt)
+	}
+	if events[1].Summary != "Policy decision allowed_execution: allowed" {
+		t.Fatalf("allowed summary = %q", events[1].Summary)
+	}
+	if events[2].Summary != "Policy decision blocked_gate: blocked" {
+		t.Fatalf("blocked summary = %q", events[2].Summary)
+	}
+	assertPolicyDecisionMetadata(t, events[1].Metadata, allowed)
+	assertPolicyDecisionMetadata(t, events[2].Metadata, blocked)
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -4012,6 +4072,29 @@ func assertFactoryEventSequences(t *testing.T, events []factory.EventRecord) {
 		want := int64(i + 1)
 		if event.Sequence != want {
 			t.Fatalf("event %d sequence = %d, want %d", i, event.Sequence, want)
+		}
+	}
+}
+
+func assertPolicyDecisionMetadata(t *testing.T, got map[string]any, want factory.PolicyDecisionMetadata) {
+	t.Helper()
+
+	requireExactKeys(t, got, []string{"policyField", "decision", "outcome", "reason"})
+	if got["policyField"] != want.PolicyField {
+		t.Fatalf("policyField = %#v, want %q", got["policyField"], want.PolicyField)
+	}
+	if got["decision"] != want.Decision {
+		t.Fatalf("decision = %#v, want %q", got["decision"], want.Decision)
+	}
+	if got["outcome"] != want.Outcome {
+		t.Fatalf("outcome = %#v, want %q", got["outcome"], want.Outcome)
+	}
+	if got["reason"] != want.Reason {
+		t.Fatalf("reason = %#v, want %q", got["reason"], want.Reason)
+	}
+	for _, forbidden := range []string{"token", "secret", "credential", "env", "sourcePath", "provider", "apiKey"} {
+		if _, ok := got[forbidden]; ok {
+			t.Fatalf("policy decision metadata should not include unsafe field %q: %#v", forbidden, got)
 		}
 	}
 }
