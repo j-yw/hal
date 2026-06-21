@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -246,7 +247,11 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		return recordFactoryRunQueued(store, entry, entry.CreatedAt)
 	})
 	if err != nil {
-		return fmt.Errorf("enqueue triggered factory run %q: %w", record.RunID, err)
+		enqueueErr := fmt.Errorf("enqueue triggered factory run %q: %w", record.RunID, err)
+		if failErr := markTriggeredFactoryRunEnqueueFailed(store, record, enqueueErr, deps.now()); failErr != nil {
+			return errors.Join(enqueueErr, fmt.Errorf("mark triggered factory run failed after enqueue failure: %w", failErr))
+		}
+		return enqueueErr
 	}
 
 	queuedRecord, err := store.LoadRun(record.RunID)
@@ -425,6 +430,31 @@ func recordFactoryRunTriggered(store factory.Store, record factory.RunRecord, tr
 			"status":       record.Status,
 		},
 	})
+}
+
+func markTriggeredFactoryRunEnqueueFailed(store factory.Store, record factory.RunRecord, enqueueErr error, now time.Time) error {
+	record.CurrentStep = factory.QueueStatusQueued
+	failedRecord, err := markFactoryRunFailed(store, record, now, enqueueErr)
+	if err != nil {
+		return err
+	}
+
+	if err := appendFactoryRunTimelineEvent(store, failedRecord.RunID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeCommandOutputSummary,
+		Summary:   "Factory run enqueue failed",
+		Metadata: map[string]any{
+			"status": factory.RunStatusFailed,
+			"error":  strings.TrimSpace(enqueueErr.Error()),
+		},
+	}); err != nil {
+		return err
+	}
+	if failedRecord.Failure != nil {
+		if err := recordFactoryRunFailureClassified(store, failedRecord.RunID, now, *failedRecord.Failure); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func renderFactoryTriggerResult(out io.Writer, record factory.RunRecord, entry factory.QueueEntry, jsonMode bool) error {
