@@ -2647,6 +2647,14 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	}
 	ctx = contextWithAutoFactoryAttemptPolicy(ctx, req.AttemptPolicy)
 
+	cmd, err := factoryRunAutoCommand(ctx, req)
+	if err != nil {
+		return err
+	}
+	return runAuto(cmd, req.Args)
+}
+
+func factoryRunAutoCommand(ctx context.Context, req factoryRunAutoRequest) (*cobra.Command, error) {
 	cmd := &cobra.Command{Use: "auto"}
 	cmd.SetContext(ctx)
 	cmd.SetOut(io.Discard)
@@ -2660,11 +2668,17 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	cmd.Flags().Int("review-streak", 0, "")
 	cmd.Flags().Int("review-max", 0, "")
 	cmd.Flags().String("report", strings.TrimSpace(req.ReportPath), "")
-	cmd.Flags().String("engine", factoryRunAutoEngine(req.Engine), "")
+	engineName := factoryRunAutoEngine(req.Engine)
+	cmd.Flags().String("engine", engineName, "")
+	if strings.TrimSpace(req.Engine) != "" {
+		if err := cmd.Flags().Set("engine", engineName); err != nil {
+			return nil, err
+		}
+	}
 	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
 	cmd.Flags().Bool("json", false, "")
 
-	return runAuto(cmd, req.Args)
+	return cmd, nil
 }
 
 func factoryRunAutoEngine(engineName string) string {

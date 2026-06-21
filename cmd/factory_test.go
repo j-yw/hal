@@ -3837,6 +3837,44 @@ func TestRunFactoryRunPipelineWithDepsPassesReportEntryToAuto(t *testing.T) {
 	}
 }
 
+func TestFactoryRunAutoCommandMarksProvidedEngineExplicit(t *testing.T) {
+	cmd, err := factoryRunAutoCommand(context.Background(), factoryRunAutoRequest{
+		Engine: " claude ",
+	})
+	if err != nil {
+		t.Fatalf("factoryRunAutoCommand() unexpected error: %v", err)
+	}
+
+	value, err := cmd.Flags().GetString("engine")
+	if err != nil {
+		t.Fatalf("engine flag lookup failed: %v", err)
+	}
+	if value != factory.PolicyEngineClaude {
+		t.Fatalf("engine flag = %q, want %q", value, factory.PolicyEngineClaude)
+	}
+	if !cmd.Flags().Changed("engine") {
+		t.Fatal("engine flag should be marked changed when factory supplies an engine snapshot")
+	}
+}
+
+func TestFactoryRunAutoCommandKeepsEmptyEngineImplicit(t *testing.T) {
+	cmd, err := factoryRunAutoCommand(context.Background(), factoryRunAutoRequest{})
+	if err != nil {
+		t.Fatalf("factoryRunAutoCommand() unexpected error: %v", err)
+	}
+
+	value, err := cmd.Flags().GetString("engine")
+	if err != nil {
+		t.Fatalf("engine flag lookup failed: %v", err)
+	}
+	if value != factory.PolicyEngineCodex {
+		t.Fatalf("engine flag = %q, want %q", value, factory.PolicyEngineCodex)
+	}
+	if cmd.Flags().Changed("engine") {
+		t.Fatal("engine flag should remain unchanged when factory has no engine snapshot")
+	}
+}
+
 func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	chdirTemp(t)
 
