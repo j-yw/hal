@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -83,24 +84,51 @@ func (r RunSecretRedactor) redactArtifactValue(value any) any {
 	switch v := value.(type) {
 	case string:
 		return r.RedactString(v)
-	case []string:
-		return r.redactStringSlice(v)
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = r.redactArtifactValue(item)
-		}
-		return out
-	case map[string]string:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			out[r.RedactString(key)] = r.RedactString(item)
-		}
-		return out
 	case map[string]any:
 		return r.redactArtifactSummary(v)
 	default:
-		return value
+		return r.redactArtifactReflectValue(reflect.ValueOf(value))
+	}
+}
+
+func (r RunSecretRedactor) redactArtifactReflectValue(value reflect.Value) any {
+	if !value.IsValid() {
+		return nil
+	}
+
+	switch value.Kind() {
+	case reflect.Interface, reflect.Pointer:
+		if value.IsNil() {
+			return nil
+		}
+		return r.redactArtifactReflectValue(value.Elem())
+	case reflect.String:
+		return r.RedactString(value.String())
+	case reflect.Array, reflect.Slice:
+		if value.Kind() == reflect.Slice && value.IsNil() {
+			return nil
+		}
+		out := make([]any, value.Len())
+		for i := 0; i < value.Len(); i++ {
+			out[i] = r.redactArtifactReflectValue(value.Index(i))
+		}
+		return out
+	case reflect.Map:
+		if value.IsNil() {
+			return nil
+		}
+		out := make(map[string]any, value.Len())
+		iter := value.MapRange()
+		for iter.Next() {
+			key := iter.Key()
+			if key.Kind() != reflect.String {
+				continue
+			}
+			out[r.RedactString(key.String())] = r.redactArtifactReflectValue(iter.Value())
+		}
+		return out
+	default:
+		return value.Interface()
 	}
 }
 

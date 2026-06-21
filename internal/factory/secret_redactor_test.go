@@ -76,3 +76,44 @@ func TestRunSecretRedactorRedactsMultilineValueFragments(t *testing.T) {
 		t.Fatalf("RedactString() = %q, want %q", got, want)
 	}
 }
+
+func TestRunSecretRedactorRedactsArtifactSummaryTypedCollections(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Value: "ghp_factory_secret_value_123"},
+	})
+
+	got := redactor.RedactArtifactReference(ArtifactReference{
+		Name: "artifact",
+		Type: "json",
+		Summary: map[string]any{
+			"typed_maps": []map[string]string{
+				{"token": "ghp_factory_secret_value_123"},
+			},
+			"map_to_slice": map[string][]string{
+				"values": {"prefix ghp_factory_secret_value_123"},
+			},
+			"typed_any_maps": []map[string]any{
+				{"nested": []string{"ghp_factory_secret_value_123"}},
+			},
+		},
+	})
+
+	typedMaps := got.Summary["typed_maps"].([]any)
+	firstTypedMap := typedMaps[0].(map[string]any)
+	if firstTypedMap["token"] != RunSecretRedactionPlaceholder {
+		t.Fatalf("typed map value = %q, want redacted", firstTypedMap["token"])
+	}
+
+	mapToSlice := got.Summary["map_to_slice"].(map[string]any)
+	values := mapToSlice["values"].([]any)
+	if values[0] != "prefix "+RunSecretRedactionPlaceholder {
+		t.Fatalf("map slice value = %q, want redacted", values[0])
+	}
+
+	typedAnyMaps := got.Summary["typed_any_maps"].([]any)
+	firstAnyMap := typedAnyMaps[0].(map[string]any)
+	nestedValues := firstAnyMap["nested"].([]any)
+	if nestedValues[0] != RunSecretRedactionPlaceholder {
+		t.Fatalf("nested value = %q, want redacted", nestedValues[0])
+	}
+}
