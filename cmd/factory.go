@@ -161,9 +161,10 @@ type factoryRunRequest struct {
 }
 
 type factoryRunAutoRequest struct {
-	Args       []string
-	ReportPath string
-	BaseBranch string
+	Args           []string
+	ReportPath     string
+	BaseBranch     string
+	RecordProgress func(factoryRunProgressEvent) error
 }
 
 type factoryRunProgressEvent struct {
@@ -297,11 +298,17 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
 		},
 	}
+	artifactSnapshot := snapshotFactoryRunArtifacts(dir)
 	if err := deps.runPipeline(ctx, pipelineReq); err != nil {
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, failedAt); artifactErr != nil {
+		if refreshedRecord, branchErr := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, failedAt); branchErr != nil {
+			recordErrs = append(recordErrs, branchErr)
+		} else {
+			failedRecord = refreshedRecord
+		}
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
@@ -329,7 +336,10 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 
 	completedAt := deps.now()
-	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, completedAt)
+	if _, err := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, completedAt); err != nil {
+		return err
+	}
+	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt)
 	if err != nil {
 		return err
 	}
@@ -382,6 +392,10 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("resolve current branch: %w", err)
 	}
+	baseBranch := strings.TrimSpace(req.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = strings.TrimSpace(branchName)
+	}
 	repoRemote, err := deps.repoRemote(dir)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("resolve repository remote: %w", err)
@@ -395,7 +409,7 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		RepoPath:     repoPath,
 		RepoRemote:   repoRemote,
 		BranchName:   branchName,
-		BaseBranch:   strings.TrimSpace(req.BaseBranch),
+		BaseBranch:   baseBranch,
 		CurrentStep:  factory.RunStatusPending,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -419,16 +433,38 @@ func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now
 	return record, nil
 }
 
-func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req factoryRunRequest, now time.Time) (factory.RunRecord, error) {
+func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
 	}
 
-	record.Artifacts = collectFactoryRunArtifacts(store, dir, req, *record)
+	record.Artifacts = collectFactoryRunArtifacts(store, dir, req, *record, snapshot)
 	record.UpdatedAt = now.UTC()
 	if err := store.SaveRun(record); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("record factory artifacts: %w", err)
+	}
+	return *record, nil
+}
+
+func refreshFactoryRunBranch(store factory.Store, runID, dir string, deps factoryRunDeps, now time.Time) (factory.RunRecord, error) {
+	record, err := store.LoadRun(runID)
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("load factory run for branch refresh: %w", err)
+	}
+	branchName, err := deps.currentBranch(dir)
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("refresh factory run branch: %w", err)
+	}
+	branchName = strings.TrimSpace(branchName)
+	if branchName == "" || branchName == strings.TrimSpace(record.BranchName) {
+		return *record, nil
+	}
+
+	record.BranchName = branchName
+	record.UpdatedAt = now.UTC()
+	if err := store.SaveRun(record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("refresh factory run branch: %w", err)
 	}
 	return *record, nil
 }
@@ -564,38 +600,50 @@ func factoryFailureMessageContains(message string, fragments ...string) bool {
 	return false
 }
 
-func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord) []factory.ArtifactReference {
+func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot) []factory.ArtifactReference {
 	collector := newFactoryArtifactCollector(dir)
+	archived := collectFactoryRunArchivedArtifacts(dir, record.CreatedAt)
 
 	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
-		collector.add(factory.ArtifactReference{
-			Name: "source-markdown",
-			Type: factoryArtifactTypeForPath(markdownPath),
-			Path: collector.displayPath(markdownPath),
-		})
+		collector.addExistingOrArchived("source-markdown", markdownPath, archived)
 	}
 	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
-		collector.add(factory.ArtifactReference{
-			Name: "source-report",
-			Type: factoryArtifactTypeForPath(reportPath),
-			Path: collector.displayPath(reportPath),
-		})
+		collector.addExistingOrArchived("source-report", reportPath, archived)
 	}
 
 	halDir := filepath.Join(dir, template.HalDir)
-	collector.addExisting("canonical-prd", filepath.Join(template.HalDir, template.PRDFile))
-	collector.addExisting("auto-state", filepath.Join(template.HalDir, template.AutoStateFile))
+	canonicalPRDPath := filepath.Join(template.HalDir, template.PRDFile)
+	autoStatePath := filepath.Join(template.HalDir, template.AutoStateFile)
+	if !collector.addGenerated("canonical-prd", canonicalPRDPath, snapshot) {
+		collector.addArchived("canonical-prd", canonicalPRDPath, archived)
+	}
+	if !collector.addGenerated("auto-state", autoStatePath, snapshot) {
+		collector.addArchived("auto-state", autoStatePath, archived)
+	}
 
-	if state, ok := loadFactoryRunPipelineState(filepath.Join(halDir, template.AutoStateFile)); ok {
+	if factoryArtifactChangedSinceSnapshot(dir, autoStatePath, snapshot) {
+		if state, ok := loadFactoryRunPipelineState(filepath.Join(halDir, template.AutoStateFile)); ok {
+			if sourceMarkdown := strings.TrimSpace(state.SourceMarkdown); sourceMarkdown != "" {
+				collector.addExistingOrArchived("pipeline-source-markdown", sourceMarkdown, archived)
+			}
+			if reportPath := strings.TrimSpace(state.ReportPath); reportPath != "" {
+				collector.addExistingOrArchived(factoryGeneratedReportArtifactName(reportPath), reportPath, archived)
+			}
+		}
+	}
+	for _, state := range archived.pipelineStates {
 		if sourceMarkdown := strings.TrimSpace(state.SourceMarkdown); sourceMarkdown != "" {
-			collector.addExisting("pipeline-source-markdown", sourceMarkdown)
+			collector.addExistingOrArchived("pipeline-source-markdown", sourceMarkdown, archived)
 		}
 		if reportPath := strings.TrimSpace(state.ReportPath); reportPath != "" {
-			collector.addExisting(factoryGeneratedReportArtifactName(reportPath), reportPath)
+			collector.addExistingOrArchived(factoryGeneratedReportArtifactName(reportPath), reportPath, archived)
 		}
 	}
 
 	for _, artifact := range collectFactoryRunReportArtifacts(dir, record.CreatedAt) {
+		collector.add(artifact)
+	}
+	for _, artifact := range archived.reportArtifacts {
 		collector.add(artifact)
 	}
 
@@ -616,6 +664,41 @@ type factoryArtifactCollector struct {
 	artifacts []factory.ArtifactReference
 }
 
+type factoryArtifactSnapshot map[string]factoryArtifactFileSnapshot
+
+type factoryArtifactFileSnapshot struct {
+	exists  bool
+	size    int64
+	modTime time.Time
+	content []byte
+}
+
+func snapshotFactoryRunArtifacts(dir string) factoryArtifactSnapshot {
+	paths := []string{
+		filepath.Join(template.HalDir, template.PRDFile),
+		filepath.Join(template.HalDir, template.AutoStateFile),
+	}
+	snapshot := make(factoryArtifactSnapshot, len(paths))
+	for _, path := range paths {
+		snapshot[factoryArtifactSnapshotKey(path)] = snapshotFactoryArtifactFile(filepath.Join(dir, path))
+	}
+	return snapshot
+}
+
+func snapshotFactoryArtifactFile(path string) factoryArtifactFileSnapshot {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return factoryArtifactFileSnapshot{}
+	}
+	content, _ := os.ReadFile(path)
+	return factoryArtifactFileSnapshot{
+		exists:  true,
+		size:    info.Size(),
+		modTime: info.ModTime(),
+		content: content,
+	}
+}
+
 func newFactoryArtifactCollector(dir string) *factoryArtifactCollector {
 	return &factoryArtifactCollector{
 		dir:  dir,
@@ -623,15 +706,43 @@ func newFactoryArtifactCollector(dir string) *factoryArtifactCollector {
 	}
 }
 
-func (c *factoryArtifactCollector) addExisting(name, path string) {
+func (c *factoryArtifactCollector) addExisting(name, path string) bool {
 	if strings.TrimSpace(path) == "" || !factoryArtifactFileExists(c.resolvePath(path)) {
-		return
+		return false
 	}
 	c.add(factory.ArtifactReference{
 		Name: name,
 		Type: factoryArtifactTypeForPath(path),
 		Path: c.displayPath(path),
 	})
+	return true
+}
+
+func (c *factoryArtifactCollector) addExistingOrArchived(name, path string, archived factoryArchivedArtifacts) bool {
+	if c.addExisting(name, path) {
+		return true
+	}
+	return c.addArchived(name, path, archived)
+}
+
+func (c *factoryArtifactCollector) addArchived(name, path string, archived factoryArchivedArtifacts) bool {
+	archivedPath := archived.find(path)
+	if archivedPath == "" {
+		return false
+	}
+	return c.addExisting(name, archivedPath)
+}
+
+func (c *factoryArtifactCollector) addGenerated(name, path string, snapshot factoryArtifactSnapshot) bool {
+	if !factoryArtifactChangedSinceSnapshot(c.dir, path, snapshot) {
+		return false
+	}
+	c.add(factory.ArtifactReference{
+		Name: name,
+		Type: factoryArtifactTypeForPath(path),
+		Path: c.displayPath(path),
+	})
+	return true
 }
 
 func (c *factoryArtifactCollector) add(artifact factory.ArtifactReference) {
@@ -748,6 +859,144 @@ func collectFactoryRunReportArtifacts(dir string, startedAt time.Time) []factory
 	return artifacts
 }
 
+type factoryArchivedArtifacts struct {
+	dir             string
+	byOriginal      map[string]string
+	pipelineStates  []compound.PipelineState
+	reportArtifacts []factory.ArtifactReference
+}
+
+func collectFactoryRunArchivedArtifacts(dir string, startedAt time.Time) factoryArchivedArtifacts {
+	archived := factoryArchivedArtifacts{dir: dir, byOriginal: make(map[string]string)}
+	archiveRoot := filepath.Join(dir, template.HalDir, "archive")
+	entries, err := os.ReadDir(archiveRoot)
+	if err != nil {
+		return archived
+	}
+
+	type archiveDir struct {
+		name    string
+		modTime time.Time
+	}
+	dirs := make([]archiveDir, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if !startedAt.IsZero() && info.ModTime().Before(startedAt) {
+			continue
+		}
+		dirs = append(dirs, archiveDir{name: entry.Name(), modTime: info.ModTime()})
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		if !dirs[i].modTime.Equal(dirs[j].modTime) {
+			return dirs[i].modTime.After(dirs[j].modTime)
+		}
+		return dirs[i].name > dirs[j].name
+	})
+
+	for _, dirEntry := range dirs {
+		archiveDirPath := filepath.Join(archiveRoot, dirEntry.name)
+		archiveRel := filepath.Join(template.HalDir, "archive", dirEntry.name)
+		archived.addFile(filepath.Join(template.HalDir, template.PRDFile), filepath.Join(archiveRel, template.PRDFile), filepath.Join(archiveDirPath, template.PRDFile))
+		if archived.addFile(filepath.Join(template.HalDir, template.AutoStateFile), filepath.Join(archiveRel, template.AutoStateFile), filepath.Join(archiveDirPath, template.AutoStateFile)) {
+			if state, ok := loadFactoryRunPipelineState(filepath.Join(archiveDirPath, template.AutoStateFile)); ok {
+				archived.pipelineStates = append(archived.pipelineStates, *state)
+			}
+		}
+
+		prdMarkdownPaths, _ := filepath.Glob(filepath.Join(archiveDirPath, "prd-*.md"))
+		sort.Strings(prdMarkdownPaths)
+		for _, path := range prdMarkdownPaths {
+			base := filepath.Base(path)
+			archived.addFile(filepath.Join(template.HalDir, base), filepath.Join(archiveRel, base), path)
+		}
+
+		reportsDir := filepath.Join(archiveDirPath, "reports")
+		reportEntries, err := os.ReadDir(reportsDir)
+		if err != nil {
+			continue
+		}
+		for _, reportEntry := range reportEntries {
+			name := reportEntry.Name()
+			if reportEntry.IsDir() || strings.HasPrefix(name, ".") {
+				continue
+			}
+			info, err := reportEntry.Info()
+			if err != nil || info.IsDir() {
+				continue
+			}
+			original := filepath.Join(template.HalDir, "reports", name)
+			archivedPath := filepath.Join(archiveRel, "reports", name)
+			if archived.addFile(original, archivedPath, filepath.Join(reportsDir, name)) {
+				archived.reportArtifacts = append(archived.reportArtifacts, factory.ArtifactReference{
+					Name: factoryGeneratedReportArtifactName(name),
+					Type: factoryArtifactTypeForPath(archivedPath),
+					Path: filepath.Clean(archivedPath),
+				})
+			}
+		}
+	}
+
+	return archived
+}
+
+func (a *factoryArchivedArtifacts) addFile(originalPath, archivedPath, absolutePath string) bool {
+	if strings.TrimSpace(originalPath) == "" || strings.TrimSpace(archivedPath) == "" || !factoryArtifactFileExists(absolutePath) {
+		return false
+	}
+	if a.byOriginal == nil {
+		a.byOriginal = make(map[string]string)
+	}
+	originalPath = filepath.Clean(originalPath)
+	archivedPath = filepath.Clean(archivedPath)
+	if _, ok := a.byOriginal[originalPath]; !ok {
+		a.byOriginal[originalPath] = archivedPath
+	}
+	return true
+}
+
+func (a factoryArchivedArtifacts) find(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || len(a.byOriginal) == 0 {
+		return ""
+	}
+	for _, candidate := range factoryArchiveOriginalCandidates(a.dir, path) {
+		if archivedPath := a.byOriginal[candidate]; archivedPath != "" {
+			return archivedPath
+		}
+	}
+	return ""
+}
+
+func factoryArchiveOriginalCandidates(dir, path string) []string {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "." {
+		return nil
+	}
+	candidates := []string{path}
+	if filepath.IsAbs(path) {
+		baseDir := dir
+		if baseDir == "" {
+			baseDir = "."
+		}
+		if absDir, err := filepath.Abs(baseDir); err == nil {
+			baseDir = absDir
+		}
+		if rel, err := filepath.Rel(baseDir, path); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".." {
+			candidates = append(candidates, filepath.Clean(rel))
+		}
+	}
+	if strings.HasPrefix(path, template.HalDir+string(os.PathSeparator)) {
+		candidates = append(candidates, filepath.Join(template.HalDir, filepath.Base(path)))
+	}
+	return candidates
+}
+
 func factoryGeneratedReportArtifactName(path string) string {
 	name := strings.ToLower(filepath.Base(strings.TrimSpace(path)))
 	switch {
@@ -780,6 +1029,40 @@ func factoryArtifactTypeForPath(path string) string {
 func factoryArtifactFileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func factoryArtifactChangedSinceSnapshot(dir, path string, snapshot factoryArtifactSnapshot) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || !factoryArtifactFileExists(resolveFactoryArtifactPath(dir, path)) {
+		return false
+	}
+	if snapshot == nil {
+		return true
+	}
+	before, ok := snapshot[factoryArtifactSnapshotKey(path)]
+	if !ok || !before.exists {
+		return true
+	}
+	after := snapshotFactoryArtifactFile(resolveFactoryArtifactPath(dir, path))
+	if !after.exists {
+		return false
+	}
+	if before.size != after.size || !before.modTime.Equal(after.modTime) {
+		return true
+	}
+	return !bytes.Equal(before.content, after.content)
+}
+
+func resolveFactoryArtifactPath(dir, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(dir, path)
+}
+
+func factoryArtifactSnapshotKey(path string) string {
+	return filepath.Clean(strings.TrimSpace(path))
 }
 
 func factoryRunRecordArtifactPath(store factory.Store, runID string) string {
@@ -929,9 +1212,15 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 		return fmt.Errorf("factory run auto dependency is required")
 	}
 
+	baseBranch := strings.TrimSpace(req.Request.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = strings.TrimSpace(req.Record.BaseBranch)
+	}
+
 	autoReq := factoryRunAutoRequest{
-		ReportPath: strings.TrimSpace(req.Request.ReportPath),
-		BaseBranch: strings.TrimSpace(req.Request.BaseBranch),
+		ReportPath:     strings.TrimSpace(req.Request.ReportPath),
+		BaseBranch:     baseBranch,
+		RecordProgress: req.RecordProgress,
 	}
 	if markdownPath := strings.TrimSpace(req.Request.MarkdownPath); markdownPath != "" {
 		autoReq.Args = []string{markdownPath}
@@ -945,9 +1234,16 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 		ctx = context.Background()
 	}
 
+	out := io.Writer(io.Discard)
+	var progressWriter *factoryRunProgressWriter
+	if req.RecordProgress != nil {
+		progressWriter = &factoryRunProgressWriter{record: req.RecordProgress}
+		out = progressWriter
+	}
+
 	cmd := &cobra.Command{Use: "auto"}
 	cmd.SetContext(ctx)
-	cmd.SetOut(io.Discard)
+	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().Bool("resume", false, "")
@@ -962,7 +1258,78 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
 	cmd.Flags().Bool("json", false, "")
 
-	return runAuto(cmd, req.Args)
+	err := runAuto(cmd, req.Args)
+	if progressWriter != nil {
+		if flushErr := progressWriter.Flush(); flushErr != nil {
+			return errors.Join(err, flushErr)
+		}
+	}
+	return err
+}
+
+type factoryRunProgressWriter struct {
+	record   func(factoryRunProgressEvent) error
+	pending  string
+	lastStep string
+	err      error
+}
+
+func (w *factoryRunProgressWriter) Write(p []byte) (int, error) {
+	if w == nil || w.record == nil {
+		return len(p), nil
+	}
+	w.pending += string(p)
+	for {
+		idx := strings.IndexByte(w.pending, '\n')
+		if idx < 0 {
+			break
+		}
+		line := w.pending[:idx]
+		w.pending = w.pending[idx+1:]
+		w.handleLine(line)
+	}
+	return len(p), nil
+}
+
+func (w *factoryRunProgressWriter) Flush() error {
+	if w == nil {
+		return nil
+	}
+	if strings.TrimSpace(w.pending) != "" {
+		w.handleLine(w.pending)
+	}
+	w.pending = ""
+	return w.err
+}
+
+func (w *factoryRunProgressWriter) handleLine(line string) {
+	if w.err != nil {
+		return
+	}
+	step, ok := factoryRunProgressStepFromLine(line)
+	if !ok || step == w.lastStep {
+		return
+	}
+	w.lastStep = step
+	w.err = w.record(factoryRunProgressEvent{
+		Summary: fmt.Sprintf("Auto %s step started", step),
+		Metadata: map[string]any{
+			"step":   step,
+			"status": "started",
+		},
+	})
+}
+
+func factoryRunProgressStepFromLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "Step:") {
+		return "", false
+	}
+	step := strings.TrimSpace(strings.TrimPrefix(line, "Step:"))
+	if autoStepIndex(step) < 0 {
+		return "", false
+	}
+	return step, true
 }
 
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {

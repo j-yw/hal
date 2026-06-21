@@ -24,7 +24,6 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 |-------|------|-------------|
 | `runId` | string | Stable factory run identifier |
 | `status` | string | Run lifecycle status; see status values below |
-| `executorMode` | string | Factory executor mode that produced the run record |
 | `source` | object | Input source metadata for the run |
 | `repoPath` | string | Repository path recorded for the run |
 | `repoRemote` | string | Repository remote recorded for the run |
@@ -41,6 +40,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | Field | Type | Description |
 |-------|------|-------------|
 | `sandboxName` | string | Sandbox name used for the run |
+| `executorMode` | string | Factory executor mode that produced the run record |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
 | `artifacts` | array | Full artifact references associated with the run |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |

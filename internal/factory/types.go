@@ -51,7 +51,7 @@ const (
 type RunRecord struct {
 	RunID        string              `json:"runId"`
 	Status       string              `json:"status"`
-	ExecutorMode string              `json:"executorMode"`
+	ExecutorMode string              `json:"executorMode,omitempty"`
 	Source       SourceMetadata      `json:"source"`
 	RepoPath     string              `json:"repoPath"`
 	RepoRemote   string              `json:"repoRemote"`

@@ -379,6 +379,9 @@ func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T)
 				Path:       ".hal/reports/analysis.md",
 				ReportPath: ".hal/reports/analysis.md",
 			})
+			if loaded.BaseBranch != "hal/factory" {
+				t.Fatalf("baseBranch = %q, want hal/factory", loaded.BaseBranch)
+			}
 			return nil
 		},
 	})
@@ -387,6 +390,62 @@ func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T)
 	}
 	if !pipelineCalled {
 		t.Fatal("pipeline dependency was not invoked")
+	}
+}
+
+func TestRunFactoryRunWithDepsRefreshesBranchAfterPipeline(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 20, 21, 30, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	branchName := "hal/factory"
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-final-branch", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return branchName, nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			branchName = "hal/generated-feature"
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-final-branch")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.BranchName != "hal/generated-feature" {
+		t.Fatalf("branchName = %q, want hal/generated-feature", record.BranchName)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusSucceeded)
 	}
 }
 
@@ -613,6 +672,153 @@ func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	if got := len(record.Artifacts); got != 5 {
 		t.Fatalf("artifacts len = %d, want 5: %#v", got, record.Artifacts)
 	}
+}
+
+func TestRunFactoryRunWithDepsRecordsArchivedArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	reportsDir := filepath.Join(halDir, "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	archiveRel := filepath.Join(".hal", "archive", "2026-06-21-factory")
+	archiveDir := filepath.Join(dir, archiveRel)
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-archived-artifacts", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			writeFile(t, halDir, "auto-state.json", `{"step":"archive","sourceMarkdown":".hal/prd-feature.md","reportPath":".hal/reports/review-latest.md"}`)
+			writeFile(t, reportsDir, "review-latest.md", "# Latest review\n")
+			writeFile(t, reportsDir, "review-older.md", "# Older review\n")
+
+			if err := os.MkdirAll(filepath.Join(archiveDir, "reports"), 0755); err != nil {
+				t.Fatalf("MkdirAll(archive reports) error: %v", err)
+			}
+			for _, name := range []string{"prd.json", "auto-state.json", "prd-feature.md"} {
+				if err := os.Rename(filepath.Join(halDir, name), filepath.Join(archiveDir, name)); err != nil {
+					t.Fatalf("Rename(%s) error: %v", name, err)
+				}
+			}
+			if err := os.Rename(filepath.Join(reportsDir, "review-older.md"), filepath.Join(archiveDir, "reports", "review-older.md")); err != nil {
+				t.Fatalf("Rename(review-older.md) error: %v", err)
+			}
+			if err := os.Chtimes(filepath.Join(reportsDir, "review-latest.md"), completedAt, completedAt); err != nil {
+				t.Fatalf("Chtimes(review-latest.md) error: %v", err)
+			}
+			if err := os.Chtimes(archiveDir, completedAt, completedAt); err != nil {
+				t.Fatalf("Chtimes(archiveDir) error: %v", err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-archived-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/auto-state.json")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-older.md")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd-feature.md"))
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd.json"))
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "auto-state.json"))
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "reports", "review-older.md"))
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-latest.md")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-archived-artifacts.json"))
+}
+
+func TestRunFactoryRunWithDepsExcludesUnchangedGeneratedStateArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	reportsDir := filepath.Join(halDir, "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+	writeFile(t, halDir, "prd.json", `{"project":"stale"}`)
+	writeFile(t, halDir, "auto-state.json", `{"step":"report","sourceMarkdown":".hal/stale.md","reportPath":".hal/reports/stale.md"}`)
+	writeFile(t, halDir, "stale.md", "# Stale\n")
+	writeFile(t, reportsDir, "stale.md", "# Stale report\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	staleAt := createdAt.Add(-1 * time.Hour)
+	if err := os.Chtimes(filepath.Join(reportsDir, "stale.md"), staleAt, staleAt); err != nil {
+		t.Fatalf("Chtimes(stale report) error: %v", err)
+	}
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	pipelineErr := errors.New("pipeline failed before generating state")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-stale-artifacts", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			return pipelineErr
+		},
+	})
+	if !errors.Is(err, pipelineErr) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline error", err)
+	}
+
+	record, err := store.LoadRun("run-stale-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/auto-state.json")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/stale.md")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/reports/stale.md")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-stale-artifacts.json"))
 }
 
 func TestRunFactoryRunWithDepsPersistsSuccessfulStatusAndResult(t *testing.T) {
@@ -1370,6 +1576,94 @@ func TestRunFactoryRunPipelineWithDepsPassesReportEntryToAuto(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsUsesRecordBaseBranchFallback(t *testing.T) {
+	var got factoryRunAutoRequest
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		Request: factoryRunRequest{},
+		Record: factory.RunRecord{
+			BaseBranch: " hal/factory ",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(_ context.Context, req factoryRunAutoRequest) error {
+			got = req
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	want := factoryRunAutoRequest{
+		BaseBranch: "hal/factory",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("auto request = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsPassesProgressRecorderToAuto(t *testing.T) {
+	var got []factoryRunProgressEvent
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RecordProgress: func(event factoryRunProgressEvent) error {
+			got = append(got, event)
+			return nil
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(_ context.Context, req factoryRunAutoRequest) error {
+			if req.RecordProgress == nil {
+				t.Fatal("RecordProgress was not passed to auto dependency")
+			}
+			return req.RecordProgress(factoryRunProgressEvent{
+				Summary: "Auto validate step started",
+				Metadata: map[string]any{
+					"step":   "validate",
+					"status": "started",
+				},
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("progress events = %#v, want 1 event", got)
+	}
+	if got[0].Summary != "Auto validate step started" {
+		t.Fatalf("progress summary = %q", got[0].Summary)
+	}
+	if got[0].Metadata["step"] != "validate" {
+		t.Fatalf("progress metadata = %#v", got[0].Metadata)
+	}
+}
+
+func TestFactoryRunProgressWriterRecordsStepLines(t *testing.T) {
+	var got []factoryRunProgressEvent
+	writer := &factoryRunProgressWriter{
+		record: func(event factoryRunProgressEvent) error {
+			got = append(got, event)
+			return nil
+		},
+	}
+
+	if _, err := writer.Write([]byte("   Step: validate\n   Step: validate\n   Step: run\n")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush() error: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("progress events = %#v, want 2 events", got)
+	}
+	if got[0].Summary != "Auto validate step started" || got[0].Metadata["step"] != "validate" {
+		t.Fatalf("first progress event = %#v", got[0])
+	}
+	if got[1].Summary != "Auto run step started" || got[1].Metadata["step"] != "run" {
+		t.Fatalf("second progress event = %#v", got[1])
+	}
+}
+
 func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	chdirTemp(t)
 
@@ -2029,6 +2323,15 @@ func requireFactoryArtifactPath(t *testing.T, artifacts []factory.ArtifactRefere
 	}
 	t.Fatalf("artifact path %q missing from %#v", wantPath, artifacts)
 	return factory.ArtifactReference{}
+}
+
+func requireNoFactoryArtifactPath(t *testing.T, artifacts []factory.ArtifactReference, wantPath string) {
+	t.Helper()
+	for _, artifact := range artifacts {
+		if artifact.Path == wantPath {
+			t.Fatalf("artifact path %q should not be present in %#v", wantPath, artifacts)
+		}
+	}
 }
 
 func requireExactKeys(t *testing.T, got map[string]any, want []string) {
