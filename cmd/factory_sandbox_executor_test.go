@@ -784,6 +784,7 @@ func TestRunFactorySandboxExecutorWithDepsProvisionsWhenDefaultResolutionHasNoUs
 
 	var provisionReq factorySandboxProvisionRequest
 	var savedRecords []factory.RunRecord
+	loadCalled := false
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		ProjectDir: "/repo",
@@ -794,9 +795,12 @@ func TestRunFactorySandboxExecutorWithDepsProvisionsWhenDefaultResolutionHasNoUs
 		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
-		loadSandbox: func(string) (*sandbox.SandboxState, error) {
-			t.Fatalf("loadSandbox should not be called without explicit sandbox target")
-			return nil, nil
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			loadCalled = true
+			if name != "hal-feature" {
+				t.Fatalf("loadSandbox name = %q, want hal-feature", name)
+			}
+			return nil, errFactorySandboxNotExist
 		},
 		resolveDefault: func(filter func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
 			if !filter(&sandbox.SandboxState{Status: sandbox.StatusRunning}) {
@@ -824,11 +828,72 @@ func TestRunFactorySandboxExecutorWithDepsProvisionsWhenDefaultResolutionHasNoUs
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
+	if !loadCalled {
+		t.Fatalf("loadSandbox was not called for derived sandbox name")
+	}
 	if provisionReq.Name != "hal-feature" || provisionReq.BranchName != "hal/feature" || provisionReq.ProjectDir != "/repo" || provisionReq.Repo != "git@github.com:example/repo.git" {
 		t.Fatalf("provision request = %#v", provisionReq)
 	}
 	if len(savedRecords) < 2 || savedRecords[1].SandboxName != "hal-feature" {
 		t.Fatalf("saved records = %#v", savedRecords)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsStartsStoppedDerivedDefaultBeforeProvisioning(t *testing.T) {
+	stopped := &sandbox.SandboxState{
+		Name:     "hal-feature",
+		Provider: "daytona",
+		Status:   sandbox.StatusStopped,
+	}
+	started := *stopped
+	started.Status = sandbox.StatusRunning
+	provisionCalled := false
+	startCalled := false
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir: "/repo",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-stopped-default",
+			BranchName: "hal/feature",
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return nil, "", errNoFactorySandbox
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "hal-feature" {
+				t.Fatalf("loadSandbox name = %q, want hal-feature", name)
+			}
+			return stopped, nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+		startSandbox: func(_ context.Context, target *sandbox.SandboxState, _ io.Writer) (*sandbox.SandboxState, error) {
+			startCalled = true
+			if target != stopped {
+				t.Fatalf("start target = %#v, want stopped sandbox", target)
+			}
+			return &started, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		saveRun:     func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if provisionCalled {
+		t.Fatalf("provision should not be called when derived stopped sandbox exists")
+	}
+	if !startCalled {
+		t.Fatalf("startSandbox was not called for stopped default sandbox")
 	}
 }
 

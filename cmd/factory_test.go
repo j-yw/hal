@@ -1263,7 +1263,7 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 			if err := store.SaveRun(&record); err != nil {
 				return err
 			}
-			return factorySandboxTestError("execute factory sandbox command: remote pipeline failed")
+			return factorySandboxTestError("execute factory sandbox command: remote pipeline failed token=secret-token")
 		},
 	})
 	if err == nil {
@@ -1277,8 +1277,20 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 	if record.Failure == nil {
 		t.Fatalf("failure summary = nil")
 	}
+	if record.Failure.Message != "remote pipeline failed" {
+		t.Fatalf("failure message = %q, want sanitized sandbox message", record.Failure.Message)
+	}
 	if record.Failure.SuggestedCommand != "hal sandbox ssh factory-remote" {
 		t.Fatalf("suggested command = %q", record.Failure.SuggestedCommand)
+	}
+	events, loadEventsErr := store.LoadEvents("run-sandbox-failure")
+	if loadEventsErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadEventsErr)
+	}
+	for _, event := range events {
+		if errorText, ok := event.Metadata["error"].(string); ok && strings.Contains(errorText, "secret-token") {
+			t.Fatalf("event leaked raw sandbox error: %#v", event)
+		}
 	}
 	if !strings.Contains(buf.String(), "Suggested command: hal sandbox ssh factory-remote") {
 		t.Fatalf("output = %q, want sandbox ssh handoff", buf.String())
