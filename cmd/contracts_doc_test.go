@@ -480,7 +480,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
-				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
+				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand", "secrets", "present",
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
 			},

@@ -314,6 +314,7 @@ type FactoryStatusRun struct {
 	CreatedAt    time.Time                   `json:"createdAt"`
 	UpdatedAt    time.Time                   `json:"updatedAt"`
 	FinishedAt   *time.Time                  `json:"finishedAt,omitempty"`
+	Secrets      []factory.RunSecretMetadata `json:"secrets,omitempty"`
 	Artifacts    []FactoryArtifactSummary    `json:"artifacts,omitempty"`
 	Verification *factory.VerificationRecord `json:"verification,omitempty"`
 	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
@@ -2622,6 +2623,7 @@ func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
 		CreatedAt:    record.CreatedAt,
 		UpdatedAt:    record.UpdatedAt,
 		FinishedAt:   record.FinishedAt,
+		Secrets:      record.Secrets,
 		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
 		Verification: record.Verification,
 		Failure:      record.Failure,
