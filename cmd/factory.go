@@ -262,8 +262,29 @@ type FactoryListResponse struct {
 // FactoryStatusResponse is the machine-readable JSON output for hal factory status --json.
 type FactoryStatusResponse struct {
 	ContractVersion string                `json:"contractVersion"`
-	Run             factory.RunRecord     `json:"run"`
+	Run             FactoryStatusRun      `json:"run"`
 	Timeline        []factory.EventRecord `json:"timeline"`
+}
+
+// FactoryStatusRun is the safe run surface for hal factory status --json. It
+// mirrors factory.RunRecord but uses sanitized artifact summaries.
+type FactoryStatusRun struct {
+	RunID        string                      `json:"runId"`
+	Status       string                      `json:"status"`
+	ExecutorMode string                      `json:"executorMode"`
+	Source       factory.SourceMetadata      `json:"source"`
+	RepoPath     string                      `json:"repoPath"`
+	RepoRemote   string                      `json:"repoRemote"`
+	BranchName   string                      `json:"branchName"`
+	BaseBranch   string                      `json:"baseBranch"`
+	SandboxName  string                      `json:"sandboxName,omitempty"`
+	CurrentStep  string                      `json:"currentStep"`
+	CreatedAt    time.Time                   `json:"createdAt"`
+	UpdatedAt    time.Time                   `json:"updatedAt"`
+	FinishedAt   *time.Time                  `json:"finishedAt,omitempty"`
+	Artifacts    []FactoryArtifactSummary    `json:"artifacts,omitempty"`
+	Verification *factory.VerificationRecord `json:"verification,omitempty"`
+	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -668,6 +689,14 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	if err := store.SaveRun(&record); err != nil {
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
+	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts); err != nil {
+		return factory.RunRecord{}, finishedAt, err
+	}
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return factory.RunRecord{}, finishedAt, fmt.Errorf("reload factory run verification artifacts: %w", err)
+	}
+	record = *updatedRecord
 	if err := recordFactoryRunVerificationResult(store, record.RunID, finishedAt, *result); err != nil {
 		return record, finishedAt, fmt.Errorf("record factory verification event: %w", err)
 	}
@@ -1147,6 +1176,43 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		}
 		if err := store.SaveRun(updatedRecord); err != nil {
 			return fmt.Errorf("record missing factory artifact warnings: %w", err)
+		}
+	}
+	return nil
+}
+
+func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference) error {
+	for _, artifact := range artifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			continue
+		}
+		sourcePath := path
+		if !filepath.IsAbs(sourcePath) {
+			sourcePath = filepath.Join(dir, sourcePath)
+		}
+		if !factoryArtifactFileExists(sourcePath) {
+			continue
+		}
+		nameParts := []string{"verification"}
+		if checkID := strings.TrimSpace(artifact.CheckID); checkID != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(checkID))
+		}
+		if kind := strings.TrimSpace(artifact.Kind); kind != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(kind))
+		}
+		ref := factory.ArtifactReference{
+			Name: strings.Join(nameParts, "-"),
+			Type: factoryArtifactTypeForPath(path),
+			Path: filepath.Clean(path),
+			Summary: map[string]any{
+				"checkId": artifact.CheckID,
+				"kind":    artifact.Kind,
+			},
+		}
+		ref.ID = factoryArtifactID(ref)
+		if _, err := store.SaveArtifactFile(runID, ref, sourcePath); err != nil {
+			return fmt.Errorf("store factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
 		}
 	}
 	return nil
@@ -2270,7 +2336,7 @@ func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord) error {
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
-		Run:             record,
+		Run:             newFactoryStatusRun(record),
 		Timeline:        events,
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
@@ -2279,6 +2345,27 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
+	return FactoryStatusRun{
+		RunID:        record.RunID,
+		Status:       record.Status,
+		ExecutorMode: record.ExecutorMode,
+		Source:       record.Source,
+		RepoPath:     record.RepoPath,
+		RepoRemote:   record.RepoRemote,
+		BranchName:   record.BranchName,
+		BaseBranch:   record.BaseBranch,
+		SandboxName:  record.SandboxName,
+		CurrentStep:  record.CurrentStep,
+		CreatedAt:    record.CreatedAt,
+		UpdatedAt:    record.UpdatedAt,
+		FinishedAt:   record.FinishedAt,
+		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
+		Verification: record.Verification,
+		Failure:      record.Failure,
+	}
 }
 
 func renderFactoryArtifactsJSON(out io.Writer, record factory.RunRecord) error {
@@ -2292,27 +2379,12 @@ func renderFactoryArtifactsJSON(out io.Writer, record factory.RunRecord) error {
 }
 
 func newFactoryArtifactsResponse(record factory.RunRecord) FactoryArtifactsResponse {
-	artifacts := make([]FactoryArtifactSummary, 0, len(record.Artifacts))
+	artifacts := newFactoryArtifactSummaries(record.Artifacts)
 	warningSet := map[string]bool{}
 	partialCount := 0
 	warningCount := 0
 
-	for _, artifact := range record.Artifacts {
-		entry := FactoryArtifactSummary{
-			ID:         strings.TrimSpace(artifact.ID),
-			Name:       strings.TrimSpace(artifact.Name),
-			Type:       strings.TrimSpace(artifact.Type),
-			Path:       strings.TrimSpace(artifact.Path),
-			StoredPath: strings.TrimSpace(artifact.StoredPath),
-			SizeBytes:  artifact.SizeBytes,
-			CreatedAt:  artifact.CreatedAt,
-			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
-			Warnings:   sanitizeFactoryArtifactWarnings(artifact.Warnings),
-			Partial:    artifact.Partial,
-		}
-		if entry.Path == "" && entry.StoredPath == "" && artifact.URL != "" {
-			entry.Path = "[redacted]"
-		}
+	for _, entry := range artifacts {
 		if entry.Partial {
 			partialCount++
 		}
@@ -2322,7 +2394,6 @@ func newFactoryArtifactsResponse(record factory.RunRecord) FactoryArtifactsRespo
 				warningSet[warning] = true
 			}
 		}
-		artifacts = append(artifacts, entry)
 	}
 
 	warnings := make([]string, 0, len(warningSet))
@@ -2342,6 +2413,29 @@ func newFactoryArtifactsResponse(record factory.RunRecord) FactoryArtifactsRespo
 			Warnings: warningCount,
 		},
 	}
+}
+
+func newFactoryArtifactSummaries(artifacts []factory.ArtifactReference) []FactoryArtifactSummary {
+	summaries := make([]FactoryArtifactSummary, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		entry := FactoryArtifactSummary{
+			ID:         strings.TrimSpace(artifact.ID),
+			Name:       strings.TrimSpace(artifact.Name),
+			Type:       strings.TrimSpace(artifact.Type),
+			Path:       strings.TrimSpace(artifact.Path),
+			StoredPath: strings.TrimSpace(artifact.StoredPath),
+			SizeBytes:  artifact.SizeBytes,
+			CreatedAt:  artifact.CreatedAt,
+			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
+			Warnings:   sanitizeFactoryArtifactWarnings(artifact.Warnings),
+			Partial:    artifact.Partial,
+		}
+		if entry.Path == "" && entry.StoredPath == "" && artifact.URL != "" {
+			entry.Path = "[redacted]"
+		}
+		summaries = append(summaries, entry)
+	}
+	return summaries
 }
 
 func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, jsonMode bool) error {

@@ -197,6 +197,60 @@ func TestCollectSandboxArtifactsFailsRequiredCopyErrors(t *testing.T) {
 	}
 }
 
+func TestCollectSandboxArtifactsSanitizesSavedArtifactBeforeLaterFailure(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-sandbox-later-copy-error")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	copyErr := errors.New("permission denied")
+
+	_, err := CollectSandboxArtifacts(context.Background(), store, record.RunID, &fakeSandboxArtifactCopier{
+		files: map[string]string{
+			"/workspace/.hal/reports/factory.log": "factory log\n",
+		},
+		fileErrs: map[string]error{
+			"/workspace/.hal/reports/later.log": copyErr,
+		},
+	}, []SandboxArtifactRequest{
+		{
+			ID:         "factory-log",
+			Name:       "factory-log",
+			Type:       "text",
+			RemotePath: "/workspace/.hal/reports/factory.log",
+			Path:       ".hal/reports/factory.log",
+		},
+		{
+			ID:         "later-log",
+			Name:       "later-log",
+			Type:       "text",
+			RemotePath: "/workspace/.hal/reports/later.log",
+			Path:       ".hal/reports/later.log",
+		},
+	})
+	if !errors.Is(err, copyErr) {
+		t.Fatalf("CollectSandboxArtifacts() error = %v, want wrapped copy error", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	artifact := requireArtifactPath(t, loaded.Artifacts, ".hal/reports/factory.log")
+	if artifact.SourcePath != "" {
+		t.Fatalf("sandbox artifact SourcePath = %q, want empty after later failure", artifact.SourcePath)
+	}
+
+	encoded, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatalf("Marshal(run) error: %v", err)
+	}
+	if strings.Contains(string(encoded), "hal-factory-sandbox-artifacts-") {
+		t.Fatalf("run metadata should not expose temp sandbox paths after later failure: %s", encoded)
+	}
+}
+
 type copyCall struct {
 	remotePath string
 }

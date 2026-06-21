@@ -555,7 +555,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 				Command:     "hal factory status run-contract --json",
 				Description: "Inspect the durable run record and timeline.",
 			},
-			Artifacts:    record.Artifacts,
+			Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
 			EventSummary: newFactoryRunEventSummary(events),
 			Failure: &FactoryRunFailure{
 				Classification:   "ci",

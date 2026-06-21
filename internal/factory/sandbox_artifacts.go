@@ -132,11 +132,10 @@ func collectSandboxArtifact(ctx context.Context, store Store, runID string, copi
 		Path:    request.Path,
 		Summary: request.Summary,
 	}
-	stored, err := store.SaveArtifactFile(runID, artifact, localPath)
+	stored, err := saveSandboxArtifactFile(store, runID, artifact, localPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("store sandbox artifact %q: %w", request.Name, err)
 	}
-	stored.SourcePath = ""
 	return []ArtifactReference{stored}, nil, nil
 }
 
@@ -169,11 +168,10 @@ func storeSandboxArtifactDir(store Store, runID string, request SandboxArtifactR
 			Path:    displayPath,
 			Summary: request.Summary,
 		}
-		saved, err := store.SaveArtifactFile(runID, artifact, filePath)
+		saved, err := saveSandboxArtifactFile(store, runID, artifact, filePath)
 		if err != nil {
 			return fmt.Errorf("store sandbox artifact %q: %w", artifact.Name, err)
 		}
-		saved.SourcePath = ""
 		stored = append(stored, saved)
 		return nil
 	})
@@ -181,6 +179,25 @@ func storeSandboxArtifactDir(store Store, runID string, request SandboxArtifactR
 		return nil, nil, err
 	}
 	return stored, nil, nil
+}
+
+func saveSandboxArtifactFile(store Store, runID string, artifact ArtifactReference, sourcePath string) (ArtifactReference, error) {
+	stored, err := store.SaveArtifactFile(runID, artifact, sourcePath)
+	if err != nil {
+		return ArtifactReference{}, err
+	}
+	stored.SourcePath = ""
+
+	record, err := store.LoadRun(runID)
+	if err != nil {
+		return ArtifactReference{}, fmt.Errorf("load factory run for sandbox artifact metadata: %w", err)
+	}
+	record.Artifacts = upsertArtifact(record.Artifacts, stored)
+	if err := store.SaveRun(record); err != nil {
+		return ArtifactReference{}, fmt.Errorf("record sandbox artifact metadata: %w", err)
+	}
+
+	return stored, nil
 }
 
 func missingSandboxArtifact(request SandboxArtifactRequest) ArtifactReference {

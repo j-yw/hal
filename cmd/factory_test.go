@@ -1520,8 +1520,8 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulStatusAndResult(t *testing.T) {
 	if resp.Failure != nil {
 		t.Fatalf("failure = %#v, want nil", resp.Failure)
 	}
-	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd-feature.md")
-	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
+	requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
 }
 
 func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
@@ -1589,6 +1589,11 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 			if !record.UpdatedAt.Equal(verifyingAt) {
 				t.Fatalf("updatedAt during verification = %s, want %s", record.UpdatedAt, verifyingAt)
 			}
+			verifyDir := filepath.Join(halDir, "reports", "verify")
+			if err := os.MkdirAll(verifyDir, 0755); err != nil {
+				t.Fatalf("MkdirAll(verifyDir) error: %v", err)
+			}
+			writeFile(t, verifyDir, "test-stdout.txt", "verification stdout\n")
 			return &verify.Result{
 				Status: verify.StatusPass,
 				Summary: verify.Summary{
@@ -1620,6 +1625,13 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	}
 	if record.Verification.Artifacts[0].Path != ".hal/reports/verify/test-stdout.txt" {
 		t.Fatalf("verification artifact path = %q", record.Verification.Artifacts[0].Path)
+	}
+	verificationArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/test-stdout.txt")
+	if verificationArtifact.Summary["checkId"] != "test" || verificationArtifact.Summary["kind"] != verify.ArtifactKindStdout {
+		t.Fatalf("verification artifact summary = %#v", verificationArtifact.Summary)
+	}
+	if got := readStoredFactoryArtifact(t, store, record.RunID, verificationArtifact); got != "verification stdout\n" {
+		t.Fatalf("stored verification artifact = %q", got)
 	}
 	if record.FinishedAt == nil || !record.FinishedAt.Equal(verifiedAt) {
 		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, verifiedAt)
@@ -1870,9 +1882,9 @@ func TestRunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows(t *testing.T) {
 			if resp.Failure != nil {
 				t.Fatalf("failure = %#v, want nil", resp.Failure)
 			}
-			requireFactoryArtifactPath(t, resp.Artifacts, tt.sourcePath)
-			requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
-			requireFactoryArtifactPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.sourcePath)
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
 		})
 	}
 }
@@ -1988,9 +2000,9 @@ func TestRunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows(t *testi
 			if resp.EventSummary.LastEventType != factory.EventTypeFailureClassification {
 				t.Fatalf("eventSummary.lastEventType = %q", resp.EventSummary.LastEventType)
 			}
-			requireFactoryArtifactPath(t, resp.Artifacts, tt.sourcePath)
-			requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
-			requireFactoryArtifactPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.sourcePath)
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
 		})
 	}
 }
@@ -2812,8 +2824,14 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 			Command:     "hal factory status run-json-contract --json",
 			Description: "Inspect the durable run record and timeline.",
 		},
-		Artifacts: []factory.ArtifactReference{
-			{Name: "run-record", Type: "json", Path: "factory/runs/run-json-contract.json"},
+		Artifacts: []FactoryArtifactSummary{
+			{
+				ID:         "factory-runs-run-json-contract.json",
+				Name:       "run-record",
+				Type:       "json",
+				Path:       "factory/runs/run-json-contract.json",
+				StoredPath: "artifacts/run-json-contract/factory-runs-run-json-contract.json",
+			},
 		},
 		EventSummary: newFactoryRunEventSummary(events),
 		Failure: &FactoryRunFailure{
@@ -2865,7 +2883,13 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("artifacts[0] should be an object, got %T", artifacts[0])
 	}
-	requireFactoryFields(t, "factory run artifact", firstArtifact, []string{"name", "type", "path"})
+	requireFactoryFields(t, "factory run artifact", firstArtifact, []string{"id", "name", "type", "path", "storedPath"})
+	if _, ok := firstArtifact["sourcePath"]; ok {
+		t.Fatalf("factory run artifact should not expose sourcePath: %#v", firstArtifact)
+	}
+	if _, ok := firstArtifact["url"]; ok {
+		t.Fatalf("factory run artifact should not expose url: %#v", firstArtifact)
+	}
 
 	eventSummary, ok := raw["eventSummary"].(map[string]any)
 	if !ok {
@@ -2902,7 +2926,17 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	record.SandboxName = "factory-status"
 	record.FinishedAt = &finishedAt
 	record.Artifacts = []factory.ArtifactReference{
-		{Name: "report", Type: "markdown", Path: ".hal/reports/run-status.md"},
+		{
+			Name:       "report",
+			Type:       "markdown",
+			SourcePath: "/tmp/workspace/.hal/reports/run-status.md",
+			Path:       ".hal/reports/run-status.md",
+		},
+		{
+			Name: "pr",
+			Type: "url",
+			URL:  "http://192.0.2.42/pull/1",
+		},
 	}
 	record.Failure = &factory.FailureSummary{
 		Step:     "review",
@@ -2956,8 +2990,8 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	if resp.Run.RunID != record.RunID {
 		t.Fatalf("run.runId = %q, want %q", resp.Run.RunID, record.RunID)
 	}
-	if len(resp.Run.Artifacts) != 1 {
-		t.Fatalf("run.artifacts len = %d, want 1", len(resp.Run.Artifacts))
+	if len(resp.Run.Artifacts) != 2 {
+		t.Fatalf("run.artifacts len = %d, want 2", len(resp.Run.Artifacts))
 	}
 	gotSequence := make([]int64, 0, len(resp.Timeline))
 	for _, event := range resp.Timeline {
@@ -2982,6 +3016,27 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
 		"finishedAt", "artifacts", "failure",
 	})
+	artifacts, ok := run["artifacts"].([]any)
+	if !ok || len(artifacts) != 2 {
+		t.Fatalf("run.artifacts should be an array of 2, got %T len %d", run["artifacts"], len(resp.Run.Artifacts))
+	}
+	firstArtifact, ok := artifacts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first artifact should be an object, got %T", artifacts[0])
+	}
+	if _, ok := firstArtifact["sourcePath"]; ok {
+		t.Fatalf("status artifact should not expose sourcePath: %#v", firstArtifact)
+	}
+	secondArtifact, ok := artifacts[1].(map[string]any)
+	if !ok {
+		t.Fatalf("second artifact should be an object, got %T", artifacts[1])
+	}
+	if _, ok := secondArtifact["url"]; ok {
+		t.Fatalf("status artifact should not expose url: %#v", secondArtifact)
+	}
+	if secondArtifact["path"] != "[redacted]" {
+		t.Fatalf("url-only status artifact path = %v, want [redacted]", secondArtifact["path"])
+	}
 	timeline, ok := raw["timeline"].([]any)
 	if !ok || len(timeline) != 2 {
 		t.Fatalf("timeline should be an array of 2, got %T len %d", raw["timeline"], len(resp.Timeline))
@@ -3432,6 +3487,17 @@ func requireNoFactoryArtifactPath(t *testing.T, artifacts []factory.ArtifactRefe
 			t.Fatalf("artifact path %q should not be present in %#v", wantPath, artifacts)
 		}
 	}
+}
+
+func requireFactoryArtifactSummaryPath(t *testing.T, artifacts []FactoryArtifactSummary, wantPath string) FactoryArtifactSummary {
+	t.Helper()
+	for _, artifact := range artifacts {
+		if artifact.Path == wantPath {
+			return artifact
+		}
+	}
+	t.Fatalf("artifact path %q missing from %#v", wantPath, artifacts)
+	return FactoryArtifactSummary{}
 }
 
 func requireStoredFactoryArtifactPath(t *testing.T, store factory.Store, runID string, artifacts []factory.ArtifactReference, wantPath string) factory.ArtifactReference {

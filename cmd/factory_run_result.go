@@ -11,14 +11,14 @@ import (
 
 // FactoryRunResponse is the machine-readable JSON output for hal factory run --json.
 type FactoryRunResponse struct {
-	ContractVersion string                      `json:"contractVersion"`
-	Version         string                      `json:"version"`
-	RunID           string                      `json:"runId"`
-	Status          string                      `json:"status"`
-	NextAction      *FactoryRunNextAction       `json:"nextAction"`
-	Artifacts       []factory.ArtifactReference `json:"artifacts"`
-	EventSummary    FactoryRunEventSummary      `json:"eventSummary"`
-	Failure         *FactoryRunFailure          `json:"failure"`
+	ContractVersion string                   `json:"contractVersion"`
+	Version         string                   `json:"version"`
+	RunID           string                   `json:"runId"`
+	Status          string                   `json:"status"`
+	NextAction      *FactoryRunNextAction    `json:"nextAction"`
+	Artifacts       []FactoryArtifactSummary `json:"artifacts"`
+	EventSummary    FactoryRunEventSummary   `json:"eventSummary"`
+	Failure         *FactoryRunFailure       `json:"failure"`
 }
 
 // FactoryRunNextAction suggests what to do after a local factory run.
@@ -96,7 +96,7 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		RunID:           record.RunID,
 		Status:          record.Status,
 		NextAction:      newFactoryRunNextAction(record),
-		Artifacts:       record.Artifacts,
+		Artifacts:       newFactoryArtifactSummaries(record.Artifacts),
 		EventSummary:    newFactoryRunEventSummary(events),
 		Failure:         newFactoryRunFailure(record),
 	}
@@ -144,7 +144,7 @@ func factoryRunInspectCommand(runID string) string {
 
 func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {
 	if resp.Artifacts == nil {
-		resp.Artifacts = []factory.ArtifactReference{}
+		resp.Artifacts = []FactoryArtifactSummary{}
 	}
 	if resp.EventSummary.ByType == nil {
 		resp.EventSummary.ByType = map[string]int{}
