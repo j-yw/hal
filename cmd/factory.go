@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1545,7 +1546,11 @@ func factoryArtifactID(artifact factory.ArtifactReference) string {
 	if source == "" {
 		source = artifact.Name
 	}
-	return sanitizeFactoryArtifactID(source)
+	id := sanitizeFactoryArtifactID(source)
+	if strings.TrimSpace(artifact.Path) == "" {
+		return id
+	}
+	return appendFactoryArtifactIDHash(id, source)
 }
 
 func sanitizeFactoryArtifactID(value string) string {
@@ -1575,6 +1580,19 @@ func sanitizeFactoryArtifactPathComponent(value string) string {
 		}
 	}
 	return strings.Trim(builder.String(), "-")
+}
+
+func appendFactoryArtifactIDHash(id, source string) string {
+	source = filepath.ToSlash(strings.TrimSpace(source))
+	source = strings.TrimPrefix(source, "./")
+	source = strings.Trim(source, "/")
+	sum := sha256.Sum256([]byte(source))
+	hash := fmt.Sprintf("%x", sum[:6])
+	ext := filepath.Ext(id)
+	if ext != "" && len(id) > len(ext) {
+		return strings.TrimSuffix(id, ext) + "-" + hash + ext
+	}
+	return id + "-" + hash
 }
 
 func mergeFactoryArtifactSummary(existing map[string]any, values map[string]any) map[string]any {

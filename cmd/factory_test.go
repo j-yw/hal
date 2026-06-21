@@ -1032,8 +1032,12 @@ func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *te
 	halDir := filepath.Join(dir, ".hal")
 	reportsDir := filepath.Join(halDir, "reports")
 	verifyDir := filepath.Join(reportsDir, "verify")
+	collisionDir := filepath.Join(reportsDir, "test")
 	if err := os.MkdirAll(verifyDir, 0755); err != nil {
 		t.Fatalf("MkdirAll(verifyDir) error: %v", err)
+	}
+	if err := os.MkdirAll(collisionDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(collisionDir) error: %v", err)
 	}
 	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
 
@@ -1070,11 +1074,15 @@ func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *te
 			writeFile(t, reportsDir, "factory.log", "pipeline log\n")
 			writeFile(t, reportsDir, "auto-result.json", `{"status":"ok"}`)
 			writeFile(t, verifyDir, "test-stdout.txt", "verification stdout\n")
+			writeFile(t, reportsDir, "test-stdout.txt", "flat stdout\n")
+			writeFile(t, collisionDir, "stdout.txt", "nested stdout\n")
 			for _, path := range []string{
 				filepath.Join(reportsDir, "review-20260621.md"),
 				filepath.Join(reportsDir, "factory.log"),
 				filepath.Join(reportsDir, "auto-result.json"),
 				filepath.Join(verifyDir, "test-stdout.txt"),
+				filepath.Join(reportsDir, "test-stdout.txt"),
+				filepath.Join(collisionDir, "stdout.txt"),
 			} {
 				if err := os.Chtimes(path, completedAt, completedAt); err != nil {
 					t.Fatalf("Chtimes(%q) error: %v", path, err)
@@ -1096,6 +1104,8 @@ func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *te
 		".hal/reports/factory.log",
 		".hal/reports/auto-result.json",
 		".hal/reports/verify/test-stdout.txt",
+		".hal/reports/test-stdout.txt",
+		".hal/reports/test/stdout.txt",
 	} {
 		artifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, wantPath)
 		if artifact.SourcePath == "" {
@@ -1104,6 +1114,17 @@ func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *te
 		if artifact.SizeBytes == nil || *artifact.SizeBytes == 0 {
 			t.Fatalf("artifact %q SizeBytes = %v, want non-zero", wantPath, artifact.SizeBytes)
 		}
+	}
+	flatArtifact := requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/test-stdout.txt")
+	nestedArtifact := requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/test/stdout.txt")
+	if flatArtifact.ID == nestedArtifact.ID {
+		t.Fatalf("colliding report artifact IDs = %q", flatArtifact.ID)
+	}
+	if got := readStoredFactoryArtifact(t, store, record.RunID, flatArtifact); got != "flat stdout\n" {
+		t.Fatalf("flat report payload = %q, want flat stdout", got)
+	}
+	if got := readStoredFactoryArtifact(t, store, record.RunID, nestedArtifact); got != "nested stdout\n" {
+		t.Fatalf("nested report payload = %q, want nested stdout", got)
 	}
 	if _, err := os.Stat(filepath.Join(halDir, "artifacts")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("artifact collection should not create project .hal artifacts, stat error = %v", err)
