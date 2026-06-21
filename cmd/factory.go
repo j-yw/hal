@@ -330,7 +330,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if refreshedRecord, branchErr := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, failedAt); branchErr != nil {
+		if refreshedRecord, branchErr := refreshFactoryRunBranchForMode(store, runningRecord.RunID, dir, req, deps, failedAt); branchErr != nil {
 			recordErrs = append(recordErrs, branchErr)
 		} else {
 			failedRecord = refreshedRecord
@@ -367,7 +367,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 
 	completedAt := deps.now()
-	if _, err := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, completedAt); err != nil {
+	if _, err := refreshFactoryRunBranchForMode(store, runningRecord.RunID, dir, req, deps, completedAt); err != nil {
 		return err
 	}
 	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt)
@@ -508,6 +508,17 @@ func refreshFactoryRunBranch(store factory.Store, runID, dir string, deps factor
 		return factory.RunRecord{}, fmt.Errorf("refresh factory run branch: %w", err)
 	}
 	return *record, nil
+}
+
+func refreshFactoryRunBranchForMode(store factory.Store, runID, dir string, req factoryRunRequest, deps factoryRunDeps, now time.Time) (factory.RunRecord, error) {
+	if req.Sandbox {
+		record, err := store.LoadRun(runID)
+		if err != nil {
+			return factory.RunRecord{}, fmt.Errorf("load factory run for branch refresh: %w", err)
+		}
+		return *record, nil
+	}
+	return refreshFactoryRunBranch(store, runID, dir, deps, now)
 }
 
 func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {

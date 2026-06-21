@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -69,6 +70,8 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
 
 const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
+
+var factorySandboxURLUserinfoPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	if deps.defaultStore == nil {
@@ -225,8 +228,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return fmt.Errorf("sync sandbox timeline sequence: %w", syncErr)
 		}
 		if bootstrapErr != nil {
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr)
-			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, bootstrapErr)
+			sanitizedErr := factorySandboxSanitizedBootstrapError(bootstrapReq, target, bootstrapErr)
+			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", sanitizedErr)
+			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, sanitizedErr)
 		}
 	}
 
@@ -255,6 +259,10 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 	if flushErr != nil {
 		return fmt.Errorf("record remote sandbox output: %w", flushErr)
+	}
+	if err := recordFactorySandboxRemoteBranch(ctx, store, deps, &record, provider, target); err != nil {
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "refresh_branch", err)
+		return factorySandboxRecordedError("record factory sandbox branch", target, err)
 	}
 	return remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution completed", map[string]any{
 		"status": factory.RunStatusSucceeded,
@@ -575,6 +583,40 @@ func factorySandboxRunRemoteProbe(ctx context.Context, provider sandbox.Provider
 		return strings.TrimSpace(output.String()), err
 	}
 	return strings.TrimSpace(output.String()), nil
+}
+
+func factorySandboxSanitizedBootstrapError(request factory.BootstrapRequest, target *sandbox.SandboxState, err error) error {
+	if err == nil {
+		return nil
+	}
+	message := factorySandboxSanitizedError(target, err)
+	message = factory.NewBootstrapSanitizer(request).SanitizeString(message)
+	message = factorySandboxURLUserinfoPattern.ReplaceAllString(message, "${1}[REDACTED]@")
+	return errors.New(message)
+}
+
+func recordFactorySandboxRemoteBranch(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, provider sandbox.Provider, target *sandbox.SandboxState) error {
+	if record == nil {
+		return nil
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(*record)
+	if workspaceDir == "" {
+		return nil
+	}
+	branchName, err := factorySandboxRunRemoteProbe(ctx, provider, sandbox.ConnectInfoFromState(target), deps.runProviderExec, []string{"git", "-C", workspaceDir, "branch", "--show-current"})
+	if err != nil {
+		return fmt.Errorf("read remote branch: %w", err)
+	}
+	branchName = strings.TrimSpace(branchName)
+	if branchName == "" || branchName == strings.TrimSpace(record.BranchName) {
+		return nil
+	}
+	record.BranchName = branchName
+	record.UpdatedAt = deps.now().UTC()
+	if err := deps.saveRun(store, record); err != nil {
+		return fmt.Errorf("save remote branch: %w", err)
+	}
+	return nil
 }
 
 func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, result factory.BootstrapResult) error {

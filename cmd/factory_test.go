@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1200,6 +1201,59 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	output := buf.String()
 	if !strings.Contains(output, "remote ok") || !strings.Contains(output, "Status: succeeded") {
 		t.Fatalf("output = %q, want remote output and success summary", output)
+	}
+}
+
+func TestRunFactoryRunWithDepsPreservesSandboxRecordedBranchOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	currentBranchCalls := 0
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-remote-branch", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 14, 0, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			currentBranchCalls++
+			if currentBranchCalls > 1 {
+				return "", fmt.Errorf("local branch refresh should be skipped for sandbox runs")
+			}
+			return "hal/local-base", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.BranchName = "hal/remote-feature"
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if currentBranchCalls != 1 {
+		t.Fatalf("currentBranch calls = %d, want only initial run record resolution", currentBranchCalls)
+	}
+	record, err := store.LoadRun("run-sandbox-remote-branch")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.BranchName != "hal/remote-feature" {
+		t.Fatalf("branchName = %q, want sandbox-recorded branch", record.BranchName)
 	}
 }
 
