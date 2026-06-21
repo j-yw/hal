@@ -1170,6 +1170,13 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 		if atReviewFixLimit {
 			result, err = runReviewValidationWithDisplay(ctx, p.engine, p.display, baseBranch)
 		} else {
+			if opts.MaxReviewFixAttempts > 0 {
+				state.Review.FixAttempts++
+				state.Step = StepReview
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("failed to reserve review fix attempt: %w", saveErr)
+				}
+			}
 			result, err = runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, 1)
 		}
 		if err != nil {
@@ -1194,7 +1201,11 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 			return limitErr
 		}
 		if countsAsFixAttempt {
-			state.Review.FixAttempts++
+			if opts.MaxReviewFixAttempts <= 0 {
+				state.Review.FixAttempts++
+			}
+		} else if opts.MaxReviewFixAttempts > 0 && !atReviewFixLimit {
+			state.Review.FixAttempts = fixAttemptsBeforeCycle
 		}
 		if iteration.FixesApplied > 0 {
 			fixesAppliedDuringReview = true
@@ -1559,6 +1570,12 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 			}
 
 			p.display.ShowInfo("   Fix attempt %d/%d...\n", attempt, maxFixAttempts)
+			state.CI.FixAttempts = attempt
+			p.recordCIState(state.CI)
+			state.Step = StepCI
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to reserve CI fix attempt %d: %w", attempt, saveErr)
+			}
 
 			fixResult, fixErr := p.fixWithEngineInDir(ctx, status, ci.FixOptions{
 				Engine:      p.engine,
@@ -1566,7 +1583,6 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 				Attempt:     attempt,
 				MaxAttempts: maxFixAttempts,
 			})
-			state.CI.FixAttempts = attempt
 
 			if fixErr != nil {
 				p.display.ShowInfo("   Fix attempt %d failed: %v\n", attempt, fixErr)

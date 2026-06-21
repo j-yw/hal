@@ -450,6 +450,41 @@ func TestRunPRStep_FailingThenFixedToPassing(t *testing.T) {
 	}
 }
 
+func TestRunPRStep_ReservesCIFixAttemptBeforeEngineFix(t *testing.T) {
+	stubCIWaitFailThenPass(t)
+
+	pipeline, _ := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	origFix := fixWithEngineInDirFn
+	fixWithEngineInDirFn = func(_ context.Context, _ string, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+		saved := pipeline.loadState()
+		if saved == nil || saved.CI == nil || saved.CI.FixAttempts != opts.Attempt {
+			t.Fatalf("saved CI fix attempts before engine fix = %+v, want attempt %d", saved, opts.Attempt)
+		}
+		return ci.FixResult{
+			Applied:      true,
+			Attempt:      opts.Attempt,
+			FilesChanged: []string{"main.go"},
+			Pushed:       true,
+		}, nil
+	}
+	t.Cleanup(func() {
+		fixWithEngineInDirFn = origFix
+	})
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+	}
+
+	if err := pipeline.runPRStep(context.Background(), state, RunOptions{MaxCIFixAttempts: 1}); err != nil {
+		t.Fatalf("runPRStep: %v", err)
+	}
+}
+
 func TestRunPRStep_FailingThenPendingStopsAtCI(t *testing.T) {
 	stubCIWaitFailThenPending(t)
 	stubCIFixSuccess(t)

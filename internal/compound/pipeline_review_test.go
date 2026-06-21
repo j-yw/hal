@@ -660,6 +660,10 @@ func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
 		if calls == 2 {
 			return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 2, ValidIssues: 0, FixesApplied: 0}}}, nil
 		}
+		saved := pipeline.loadState()
+		if saved == nil || saved.Review == nil || saved.Review.FixAttempts != 1 {
+			t.Fatalf("saved review fix attempts before mutating review = %+v, want 1", saved)
+		}
 		return &ReviewLoopResult{
 			Iterations: []ReviewLoopIteration{{
 				Iteration:    1,

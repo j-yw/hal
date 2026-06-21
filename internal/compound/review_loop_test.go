@@ -230,7 +230,7 @@ func TestRunReviewValidationSkipsFixPromptWhenClean(t *testing.T) {
 	}
 }
 
-func TestRunReviewValidationReportsFindingsWithoutFixes(t *testing.T) {
+func TestRunReviewValidationValidatesFindingsWithoutFixes(t *testing.T) {
 	start := time.Date(2026, 2, 15, 10, 30, 0, 0, time.UTC)
 	end := start.Add(2 * time.Second)
 	times := []time.Time{start, end}
@@ -252,21 +252,37 @@ func TestRunReviewValidationReportsFindingsWithoutFixes(t *testing.T) {
 		},
 		prompt: func(ctx context.Context, prompt string) (string, error) {
 			promptCalls++
-			if promptCalls > 1 {
-				t.Fatalf("prompt called %d times, want review-only prompt", promptCalls)
+			switch promptCalls {
+			case 1:
+				return `{
+					"summary": "one candidate",
+					"issues": [{
+						"id": "ISSUE-001",
+						"title": "Still failing",
+						"severity": "medium",
+						"file": "cmd/review.go",
+						"line": 42,
+						"rationale": "The issue remains",
+						"suggestedFix": "Fix it later"
+					}]
+				}`, nil
+			case 2:
+				if !strings.Contains(prompt, "Validate each issue without applying fixes") {
+					t.Fatalf("validation prompt = %q, want non-mutating validation guidance", prompt)
+				}
+				return `{
+					"summary": "candidate is stale",
+					"issues": [{
+						"id": "ISSUE-001",
+						"valid": false,
+						"reason": "The candidate no longer reproduces",
+						"fixed": false
+					}]
+				}`, nil
+			default:
+				t.Fatalf("prompt called %d times, want review plus validation", promptCalls)
+				return "", nil
 			}
-			return `{
-				"summary": "one candidate",
-				"issues": [{
-					"id": "ISSUE-001",
-					"title": "Still failing",
-					"severity": "medium",
-					"file": "cmd/review.go",
-					"line": 42,
-					"rationale": "The issue remains",
-					"suggestedFix": "Fix it later"
-				}]
-			}`, nil
 		},
 	}
 
@@ -274,14 +290,20 @@ func TestRunReviewValidationReportsFindingsWithoutFixes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runReviewValidation() unexpected error: %v", err)
 	}
-	if result.Totals.IssuesFound != 1 || result.Totals.ValidIssues != 1 || result.Totals.FixesApplied != 0 {
-		t.Fatalf("totals = %+v, want one finding and no fixes", result.Totals)
+	if promptCalls != 2 {
+		t.Fatalf("prompt calls = %d, want review plus validation", promptCalls)
+	}
+	if result.Totals.IssuesFound != 1 || result.Totals.ValidIssues != 0 || result.Totals.InvalidIssues != 1 || result.Totals.FixesApplied != 0 {
+		t.Fatalf("totals = %+v, want one invalid finding and no fixes", result.Totals)
 	}
 	if len(result.Iterations) != 1 || len(result.Iterations[0].Issues) != 1 {
 		t.Fatalf("iterations = %+v, want one issue detail", result.Iterations)
 	}
-	if result.Iterations[0].Issues[0].Fixed {
-		t.Fatal("validation issue should not be marked fixed")
+	if result.Iterations[0].Status != "validated" {
+		t.Fatalf("iteration status = %q, want validated", result.Iterations[0].Status)
+	}
+	if result.Iterations[0].Issues[0].Valid || result.Iterations[0].Issues[0].Fixed {
+		t.Fatal("validation issue should be invalid and not fixed")
 	}
 }
 
