@@ -28,12 +28,16 @@ type bootstrapHalCommand struct {
 // existing Hal CLI ownership paths.
 func BootstrapRefreshHal(ctx context.Context, request BootstrapRequest, deps BootstrapHalDeps) (BootstrapResult, error) {
 	repoPath, err := normalizeBootstrapRepoPath(request.WorkspaceDir)
+	result := BootstrapResult{
+		RepoPath: repoPath,
+	}
 	if err != nil {
-		return BootstrapResult{}, err
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
 	}
 
 	commands := bootstrapHalCommands(request, repoPath)
-	result := BootstrapResult{
+	result = BootstrapResult{
 		RepoPath: repoPath,
 		Steps:    make([]BootstrapStepResult, 0, len(commands)),
 		Timeline: make([]BootstrapTimelineEvent, 0, len(commands)),

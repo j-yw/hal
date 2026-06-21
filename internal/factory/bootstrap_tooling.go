@@ -54,7 +54,8 @@ func BootstrapVerifyTooling(ctx context.Context, request BootstrapRequest, deps 
 
 	plans, err := bootstrapToolingPlans(request, deps)
 	if err != nil {
-		return BootstrapResult{}, err
+		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		return result, err
 	}
 
 	result = BootstrapResult{

@@ -39,6 +39,7 @@ type BootstrapRepositoryDeps struct {
 	Executor           BootstrapCommandExecutor
 	Now                func() time.Time
 	RepoExists         func(path string) (bool, error)
+	RepoRemoteURL      func(path string) (string, error)
 	LocalBranchExists  BootstrapBranchExistsFunc
 	RemoteBranchExists BootstrapBranchExistsFunc
 }
@@ -82,7 +83,11 @@ func BootstrapRepositoryCheckout(ctx context.Context, request BootstrapRequest, 
 
 	commands, err := bootstrapRepositoryCommands(request, deps, repoPath)
 	if err != nil {
-		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		if isBootstrapRepositoryRequestValidationError(err) {
+			recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
+		} else {
+			recordBootstrapRepositoryStateFailure(&result, request, deps.now, err)
+		}
 		return result, err
 	}
 
@@ -140,6 +145,25 @@ func recordBootstrapBranchProbeFailure(result *BootstrapResult, request Bootstra
 	recordBootstrapStepResult(result, request, step, BootstrapCommandResult{}, &failure)
 }
 
+func isBootstrapRepositoryRequestValidationError(err error) bool {
+	return errors.Is(err, errBootstrapBaseBranchRequired) || errors.Is(err, errBootstrapRepositoryURLRequired)
+}
+
+func recordBootstrapRepositoryStateFailure(result *BootstrapResult, request BootstrapRequest, nowFn func() time.Time, err error) {
+	now := bootstrapNow(nowFn)
+	startedAt := now()
+	finishedAt := now()
+	step := BootstrapStepResult{
+		Name:       BootstrapStepCloneRepository,
+		Status:     RunStatusFailed,
+		StartedAt:  startedAt,
+		FinishedAt: &finishedAt,
+	}
+	failure := ClassifyBootstrapFailure(step.Name, "", "", err)
+	result.Failure = &failure
+	recordBootstrapStepResult(result, request, step, BootstrapCommandResult{}, &failure)
+}
+
 func runBootstrapRepositoryCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, result *BootstrapResult, commands []bootstrapRepositoryCommand) error {
 	for _, planned := range commands {
 		if request.Options.DryRun {
@@ -168,6 +192,11 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	exists, err := deps.repoExists(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("check repository path %q: %w", repoPath, err)
+	}
+	if exists {
+		if err := deps.validateExistingRepoRemote(repoPath, repositoryURL); err != nil {
+			return nil, err
+		}
 	}
 
 	commands := make([]bootstrapRepositoryCommand, 0, 2)
@@ -211,6 +240,124 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	})
 
 	return commands, nil
+}
+
+func (d BootstrapRepositoryDeps) validateExistingRepoRemote(repoPath string, repositoryURL string) error {
+	repositoryURL = strings.TrimSpace(repositoryURL)
+	if repositoryURL == "" {
+		return nil
+	}
+
+	actual, err := d.repoRemoteURL(repoPath)
+	if err != nil {
+		return fmt.Errorf("verify repository origin remote: %w", err)
+	}
+	actual = strings.TrimSpace(actual)
+	if actual == "" {
+		return fmt.Errorf("repository origin remote is empty; expected %q", repositoryURL)
+	}
+	if actual != repositoryURL {
+		return fmt.Errorf("repository origin remote %q does not match requested URL %q", actual, repositoryURL)
+	}
+	return nil
+}
+
+func (d BootstrapRepositoryDeps) repoRemoteURL(path string) (string, error) {
+	if d.RepoRemoteURL != nil {
+		return d.RepoRemoteURL(path)
+	}
+	return bootstrapRepositoryRemoteURL(path)
+}
+
+func bootstrapRepositoryRemoteURL(path string) (string, error) {
+	configPath, err := bootstrapGitConfigPath(path)
+	if err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", err
+	}
+	return parseBootstrapOriginRemoteURL(string(content))
+}
+
+func bootstrapGitConfigPath(path string) (string, error) {
+	gitPath := filepath.Join(path, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return filepath.Join(gitPath, "config"), nil
+	}
+
+	content, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(string(content))
+	const gitdirPrefix = "gitdir:"
+	if !strings.HasPrefix(strings.ToLower(line), gitdirPrefix) {
+		return "", fmt.Errorf("unsupported .git file format")
+	}
+	gitDir := strings.TrimSpace(line[len(gitdirPrefix):])
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(path, gitDir)
+	}
+
+	commonDir, err := bootstrapGitCommonDir(gitDir)
+	if err != nil {
+		return "", err
+	}
+	if commonDir != "" {
+		return filepath.Join(commonDir, "config"), nil
+	}
+	return filepath.Join(gitDir, "config"), nil
+}
+
+func bootstrapGitCommonDir(gitDir string) (string, error) {
+	content, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	commonDir := strings.TrimSpace(string(content))
+	if commonDir == "" {
+		return "", fmt.Errorf("empty git commondir")
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(gitDir, commonDir)
+	}
+	return filepath.Clean(commonDir), nil
+}
+
+func parseBootstrapOriginRemoteURL(config string) (string, error) {
+	inOrigin := false
+	for _, rawLine := range strings.Split(config, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			inOrigin = line == `[remote "origin"]`
+			continue
+		}
+		if !inOrigin {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "url" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			break
+		}
+		return value, nil
+	}
+	return "", fmt.Errorf("repository origin remote is not configured")
 }
 
 func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, result *BootstrapResult, repoPath string) ([]bootstrapRepositoryCommand, error) {

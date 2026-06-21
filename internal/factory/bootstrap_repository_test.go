@@ -95,6 +95,7 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
+		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 	})
 	if err != nil {
 		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
@@ -123,6 +124,146 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 		if call.Args[0] == "clone" {
 			t.Fatalf("existing repository should not be recloned: %#v", executor.calls)
 		}
+	}
+}
+
+func TestBootstrapRepositoryCheckoutRejectsExistingRepoWithUnexpectedRemote(t *testing.T) {
+	req := BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Now: incrementingClock(t, time.Date(2026, 6, 21, 5, 10, 30, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		RepoRemoteURL: func(path string) (string, error) {
+			if path != "/workspace/hal" {
+				t.Fatalf("repo remote path = %q, want /workspace/hal", path)
+			}
+			return "git@github.com:other/project.git", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("BootstrapRepositoryCheckout() error = nil, want remote mismatch")
+	}
+	if !strings.Contains(err.Error(), "does not match requested URL") {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if result.Failure == nil {
+		t.Fatal("failure = nil, want classified repository failure")
+	}
+	if result.Failure.Category != BootstrapFailureCategoryRepo {
+		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryRepo)
+	}
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCloneRepository})
+}
+
+func TestBootstrapRepositoryCheckoutValidatesInjectedExistingRepoRemoteFromGitConfig(t *testing.T) {
+	workspaceDir := filepath.Join(t.TempDir(), "hal")
+	gitDir := filepath.Join(workspaceDir, ".git")
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	config := `[remote "origin"]
+	url = git@github.com:other/project.git
+`
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(config), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	executor := &fakeBootstrapExecutor{}
+	req := BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		WorkspaceDir:  workspaceDir,
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 10, 45, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == workspaceDir, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("BootstrapRepositoryCheckout() error = nil, want remote mismatch")
+	}
+	if !strings.Contains(err.Error(), "does not match requested URL") {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("executor calls = %#v, want none", executor.calls)
+	}
+	if result.Failure == nil || result.Failure.Category != BootstrapFailureCategoryRepo {
+		t.Fatalf("failure = %#v, want repository failure", result.Failure)
+	}
+}
+
+func TestBootstrapRepositoryCheckoutValidatesLinkedWorktreeRemoteFromCommonGitConfig(t *testing.T) {
+	root := t.TempDir()
+	workspaceDir := filepath.Join(root, "worktree")
+	commonGitDir := filepath.Join(root, "main", ".git")
+	worktreeGitDir := filepath.Join(commonGitDir, "worktrees", "feature")
+	if err := os.MkdirAll(worktreeGitDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceDir, ".git"), []byte("gitdir: "+worktreeGitDir+"\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(.git) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../..\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(commondir) error = %v", err)
+	}
+	config := `[remote "origin"]
+	url = git@github.com:jywlabs/hal.git
+`
+	if err := os.WriteFile(filepath.Join(commonGitDir, "config"), []byte(config), 0644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "repository fetched"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+		},
+	}
+	req := BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		WorkspaceDir:  workspaceDir,
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 10, 50, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == workspaceDir, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if result.Failure != nil {
+		t.Fatalf("failure = %#v, want nil", result.Failure)
+	}
+	wantCalls := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"fetch", "--prune", "origin"},
+			Dir:  workspaceDir,
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "-B", "main", "origin/main"},
+			Dir:  workspaceDir,
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls, wantCalls) {
+		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
 	}
 }
 
@@ -186,12 +327,25 @@ func TestBootstrapRepositoryCheckoutRejectsNonEmptyNonGitDirectory(t *testing.T)
 		BaseBranch:    "main",
 		WorkspaceDir:  workspaceDir,
 	}
-	_, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{})
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{})
 	if err == nil {
 		t.Fatal("BootstrapRepositoryCheckout() error = nil, want non-git directory error")
 	}
 	if !strings.Contains(err.Error(), "repository path exists but is not a git checkout and is not empty") {
 		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if result.Failure == nil {
+		t.Fatal("failure = nil, want classified repository failure")
+	}
+	if result.Failure.Category != BootstrapFailureCategoryRepo {
+		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryRepo)
+	}
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCloneRepository})
+	if len(result.Timeline) != 1 {
+		t.Fatalf("timeline events = %d, want 1", len(result.Timeline))
+	}
+	if result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey] != BootstrapFailureCategoryRepo {
+		t.Fatalf("timeline failure category = %q, want %q", result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey], BootstrapFailureCategoryRepo)
 	}
 }
 
@@ -216,6 +370,7 @@ func TestBootstrapRepositoryCheckoutCreatesMissingRunBranchFromBase(t *testing.T
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
+		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
 			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
 				t.Fatalf("local branch probe = (%q, %q)", repoPath, branch)
@@ -288,6 +443,7 @@ func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
+		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
 			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
 				t.Fatalf("local branch probe = (%q, %q)", repoPath, branch)
@@ -359,6 +515,7 @@ func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
+		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
 			if repoPath != "/workspace/hal" || branch != "hal/factory-remote-workspace-bootstrap" {
 				t.Fatalf("local branch probe = (%q, %q)", repoPath, branch)
@@ -441,6 +598,7 @@ func TestBootstrapRepositoryCheckoutRecordsDefaultRunBranchProbeSteps(t *testing
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
+		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 	})
 	if err != nil {
 		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
@@ -580,6 +738,37 @@ func TestBootstrapRepositoryCheckoutDryRunPlansCommandsWithoutExecutor(t *testin
 	}
 }
 
+func TestBootstrapRepositoryCheckoutRedactsRepositoryURLCredentialsInDryRun(t *testing.T) {
+	repositoryURL := "https://oauth2:ghp_repository_url_secret_value@github.com/jywlabs/hal.git"
+	req := BootstrapRequest{
+		RepositoryURL: repositoryURL,
+		BaseBranch:    "develop",
+		WorkspaceDir:  "/workspace/hal",
+		Options: BootstrapOptions{
+			DryRun: true,
+		},
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Now: incrementingClock(t, time.Date(2026, 6, 21, 5, 21, 0, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return false, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+
+	summary := result.Steps[0].CommandSummary
+	for _, leaked := range []string{"oauth2", "ghp_repository_url_secret_value"} {
+		if strings.Contains(summary, leaked) {
+			t.Fatalf("command summary leaked repository URL credentials: %q", summary)
+		}
+	}
+	if !strings.Contains(summary, bootstrapRedactedValue) {
+		t.Fatalf("command summary did not redact credentials: %q", summary)
+	}
+}
+
 func TestBootstrapRepositoryCheckoutClassifiesRepositoryFailure(t *testing.T) {
 	executorErr := errors.New("exit status 128")
 	executor := &fakeBootstrapExecutor{
@@ -676,6 +865,7 @@ func TestBootstrapRepositoryCheckoutClassifiesRunBranchProbeFailure(t *testing.T
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
+		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
 			return false, probeErr
 		},
@@ -724,5 +914,11 @@ func incrementingClock(t *testing.T, start time.Time) func() time.Time {
 		current := next
 		next = next.Add(time.Second)
 		return current
+	}
+}
+
+func bootstrapRepoRemoteURL(remote string) func(path string) (string, error) {
+	return func(string) (string, error) {
+		return remote, nil
 	}
 }

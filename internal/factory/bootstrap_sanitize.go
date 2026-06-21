@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -47,10 +48,30 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 	for _, key := range request.RequiredEnvKeys {
 		addKey(key)
 	}
+	addURLCredentialRedactionTokens(valueSet, request.RepositoryURL)
 
 	return BootstrapSanitizer{
 		secretValues: sortedRedactionTokens(valueSet),
 		envKeys:      sortedRedactionTokens(keySet),
+	}
+}
+
+func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.User == nil {
+		return
+	}
+
+	if userinfo := parsed.User.String(); userinfo != "" {
+		valueSet[userinfo] = struct{}{}
+	}
+	if password, ok := parsed.User.Password(); ok && password != "" {
+		valueSet[password] = struct{}{}
 	}
 }
 
@@ -169,7 +190,7 @@ func isSensitiveBootstrapEnvKey(key string) bool {
 	})
 	for _, part := range parts {
 		switch part {
-		case "AUTH", "CREDENTIAL", "CREDENTIALS", "KEY", "PASS", "PASSWD", "PASSWORD", "PRIVATE", "SECRET", "TOKEN":
+		case "AUTH", "CREDENTIAL", "CREDENTIALS", "KEY", "PASS", "PASSWD", "PASSWORD", "PAT", "PRIVATE", "SECRET", "TOKEN":
 			return true
 		}
 	}

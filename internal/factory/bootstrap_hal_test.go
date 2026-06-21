@@ -185,8 +185,23 @@ func TestBootstrapRefreshHalClassifiesMissingHalAsDependency(t *testing.T) {
 }
 
 func TestBootstrapRefreshHalRequiresWorkspaceDir(t *testing.T) {
-	_, err := BootstrapRefreshHal(context.Background(), BootstrapRequest{}, BootstrapHalDeps{})
+	result, err := BootstrapRefreshHal(context.Background(), BootstrapRequest{}, BootstrapHalDeps{
+		Now: incrementingClock(t, time.Date(2026, 6, 21, 7, 50, 0, 0, time.UTC)),
+	})
 	if !errors.Is(err, errBootstrapWorkspaceDirRequired) {
 		t.Fatalf("BootstrapRefreshHal() error = %v, want %v", err, errBootstrapWorkspaceDirRequired)
+	}
+	if result.Failure == nil {
+		t.Fatal("failure = nil, want validation failure")
+	}
+	if result.Failure.Category != BootstrapFailureCategoryValidation {
+		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryValidation)
+	}
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepValidateRequest})
+	if len(result.Timeline) != 1 {
+		t.Fatalf("timeline events = %d, want 1", len(result.Timeline))
+	}
+	if result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey] != BootstrapFailureCategoryValidation {
+		t.Fatalf("timeline failure category = %q, want %q", result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey], BootstrapFailureCategoryValidation)
 	}
 }

@@ -191,10 +191,10 @@ func TestRunBootstrapStepInjectsRequestEnvironmentAndSanitizesResult(t *testing.
 func TestBootstrapSanitizersRedactTimelineAndCommandRecords(t *testing.T) {
 	secret := "github_pat_fixture_secret_value_67890"
 	request := BootstrapRequest{
-		RequiredEnvKeys: []string{"GITHUB_TOKEN"},
+		RequiredEnvKeys: []string{"GITHUB_PAT"},
 		Env: map[string]string{
-			"GITHUB_TOKEN": secret,
-			"HAL_ENGINE":   "codex",
+			"GITHUB_PAT": secret,
+			"HAL_ENGINE": "codex",
 		},
 	}
 
@@ -203,8 +203,8 @@ func TestBootstrapSanitizersRedactTimelineAndCommandRecords(t *testing.T) {
 		Args: []string{"clone", "https://" + secret + "@github.com/jywlabs/hal.git"},
 		Dir:  "/workspace/hal",
 		Env: map[string]string{
-			"GITHUB_TOKEN": secret,
-			"HAL_ENGINE":   "codex",
+			"GITHUB_PAT": secret,
+			"HAL_ENGINE": "codex",
 		},
 	})
 	commandData, err := json.Marshal(command)
@@ -217,12 +217,12 @@ func TestBootstrapSanitizersRedactTimelineAndCommandRecords(t *testing.T) {
 		Timestamp:      time.Date(2026, 6, 21, 8, 10, 0, 0, time.UTC),
 		Step:           "clone_repository",
 		Status:         RunStatusFailed,
-		Message:        "GITHUB_TOKEN failed authentication",
+		Message:        "GITHUB_PAT failed authentication",
 		CommandSummary: "git clone https://" + secret + "@github.com/jywlabs/hal.git",
 		OutputSummary:  "remote rejected " + secret,
 		Metadata: map[string]string{
-			"GITHUB_TOKEN": secret,
-			"engine":       "codex",
+			"GITHUB_PAT": secret,
+			"engine":     "codex",
 		},
 	})
 	eventData, err := json.Marshal(event)
