@@ -36,4 +36,3 @@ hal prd audit [flags]
 ### SEE ALSO
 
 * [hal prd](hal_prd.md)	 - Manage PRD files
-

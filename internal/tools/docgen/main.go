@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,14 +107,40 @@ func generateMarkdown(root *cobra.Command, outDir string, includeFrontmatter boo
 		if err := doc.GenMarkdownTreeCustom(root, outDir, filePrepender, linkHandler); err != nil {
 			return fmt.Errorf("failed to generate markdown docs: %w", err)
 		}
-		return nil
+		return normalizeMarkdownFiles(outDir)
 	}
 
 	if err := doc.GenMarkdownTree(root, outDir); err != nil {
 		return fmt.Errorf("failed to generate markdown docs: %w", err)
 	}
 
-	return nil
+	return normalizeMarkdownFiles(outDir)
+}
+
+func normalizeMarkdownFiles(outDir string) error {
+	return filepath.WalkDir(outDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read generated markdown %q: %w", path, err)
+		}
+
+		content := strings.TrimRight(string(data), "\n") + "\n"
+		if content == string(data) {
+			return nil
+		}
+
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("failed to normalize generated markdown %q: %w", path, err)
+		}
+		return nil
+	})
 }
 
 func generateMan(root *cobra.Command, outDir string) error {

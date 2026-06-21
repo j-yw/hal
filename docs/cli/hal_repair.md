@@ -42,4 +42,3 @@ hal repair [flags]
 ### SEE ALSO
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
-

@@ -92,4 +92,3 @@ hal auto [prd-path] [flags]
 ### SEE ALSO
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
-

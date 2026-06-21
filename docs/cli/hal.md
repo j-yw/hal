@@ -96,4 +96,3 @@ Quick start:
 * [hal validate](hal_validate.md)	 - Validate a PRD using AI
 * [hal verify](hal_verify.md)	 - Run configured verification checks
 * [hal version](hal_version.md)	 - Show version info
-

@@ -32,4 +32,3 @@ hal standards list [flags]
 ### SEE ALSO
 
 * [hal standards](hal_standards.md)	 - Manage project standards
-
