@@ -1066,6 +1066,14 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		if saveErr := p.saveState(state); saveErr != nil {
 			return fmt.Errorf("run gate blocked: PRD completion incomplete (also failed to save run telemetry: %v)", saveErr)
 		}
+		if opts.MaxRunAttempts > 0 && totalRunIterations >= opts.MaxRunAttempts {
+			return &PolicyLimitError{
+				PolicyField: "factory.policy.maxRunAttempts",
+				Step:        StepRun,
+				Attempts:    totalRunIterations,
+				Limit:       opts.MaxRunAttempts,
+			}
+		}
 		if result.TotalStories > 0 {
 			return fmt.Errorf("run gate blocked: PRD completion incomplete (%d/%d complete); rerun `hal auto --resume` to continue remaining tasks", result.CompletedStories, result.TotalStories)
 		}
@@ -1514,7 +1522,11 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		maxFixAttempts := ciFixMaxAttemptsForRun(opts)
 		p.display.ShowInfo("   CI checks failing; attempting auto-fix (up to %d attempts)\n", maxFixAttempts)
 
-		for attempt := state.CI.FixAttempts + 1; attempt <= maxFixAttempts; attempt++ {
+		firstFixAttempt := 1
+		if opts.MaxCIFixAttempts > 0 {
+			firstFixAttempt = state.CI.FixAttempts + 1
+		}
+		for attempt := firstFixAttempt; attempt <= maxFixAttempts; attempt++ {
 			if opts.MaxCIFixAttempts > 0 && state.CI.FixAttempts >= opts.MaxCIFixAttempts {
 				state.CI.Status = "policy_blocked"
 				state.CI.Reason = "max_ci_fix_attempts"

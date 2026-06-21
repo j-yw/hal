@@ -36,6 +36,7 @@ type factoryQueueWorkDeps struct {
 	loadPolicy   func(string) (*factory.FactoryPolicy, error)
 	loadEngine   func(string) (string, error)
 	runPipeline  func(context.Context, factoryRunPipelineRequest) error
+	runSandbox   func(context.Context, factorySandboxExecutorRequest) error
 }
 
 type factoryQueueAddRequest struct {
@@ -67,6 +68,7 @@ var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
 	loadPolicy:   factory.LoadPolicyConfig,
 	loadEngine:   compound.LoadDefaultEngine,
 	runPipeline:  runFactoryRunPipeline,
+	runSandbox:   defaultFactoryRunDeps.runSandbox,
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -390,6 +392,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	_, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, factoryRunDeps{
 		now:         deps.now,
 		runPipeline: deps.runPipeline,
+		runSandbox:  deps.runSandbox,
 	}, policy)
 	if execErr != nil {
 		return failClaimedFactoryQueueEntry(store, entry, execErr, deps.now)
@@ -420,6 +423,7 @@ func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry,
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {
 	req := factoryRunRequest{
 		BaseBranch: strings.TrimSpace(record.BaseBranch),
+		Sandbox:    strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox,
 	}
 	switch record.Source.Kind {
 	case factory.SourceKindMarkdown:
@@ -472,6 +476,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline
+	}
+	if deps.runSandbox == nil {
+		deps.runSandbox = defaultFactoryQueueWorkDeps.runSandbox
 	}
 	return deps
 }

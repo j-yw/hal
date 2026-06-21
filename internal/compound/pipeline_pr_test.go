@@ -530,6 +530,49 @@ func TestRunPRStep_FailingExhaustsFixAttempts(t *testing.T) {
 	}
 }
 
+func TestRunPRStep_DefaultCIFixAttemptsDoNotCarryAcrossResume(t *testing.T) {
+	stubCIWaitAlwaysFailing(t)
+
+	fixCalls := 0
+	origFix := fixWithEngineInDirFn
+	fixWithEngineInDirFn = func(_ context.Context, _ string, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+		fixCalls++
+		return ci.FixResult{
+			Applied:      true,
+			Attempt:      opts.Attempt,
+			FilesChanged: []string{"main.go"},
+			Pushed:       true,
+		}, nil
+	}
+	t.Cleanup(func() {
+		fixWithEngineInDirFn = origFix
+	})
+
+	pipeline, _ := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+		CI: &CIState{
+			FixAttempts: maxCIFixAttempts,
+		},
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected CI gate error after exhausting fix attempts")
+	}
+	if fixCalls != maxCIFixAttempts {
+		t.Fatalf("fix calls = %d, want default per-invocation attempts %d", fixCalls, maxCIFixAttempts)
+	}
+	if state.CI.FixesApplied != maxCIFixAttempts {
+		t.Fatalf("state.CI.FixesApplied = %d, want %d", state.CI.FixesApplied, maxCIFixAttempts)
+	}
+}
+
 func TestRunPRStep_MaxCIFixAttemptsBlocksBeforeNextFix(t *testing.T) {
 	stubCIWaitAlwaysFailing(t)
 

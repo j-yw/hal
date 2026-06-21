@@ -42,8 +42,12 @@ func TestRunLoopStep_MaxRunAttemptsCapsLoopIterations(t *testing.T) {
 	})
 
 	err := pipeline.runLoopStep(context.Background(), state, RunOptions{MaxRunAttempts: 2})
-	if err == nil {
-		t.Fatal("expected incomplete run gate error")
+	var limitErr *PolicyLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("runLoopStep() error = %v, want PolicyLimitError after consuming final attempt", err)
+	}
+	if limitErr.PolicyField != "factory.policy.maxRunAttempts" || limitErr.Step != StepRun || limitErr.Attempts != 2 || limitErr.Limit != 2 {
+		t.Fatalf("limit error = %+v, want consumed maxRunAttempts run limit", limitErr)
 	}
 	if gotLoopConfig.MaxIterations != 2 {
 		t.Fatalf("loop max iterations = %d, want policy cap 2", gotLoopConfig.MaxIterations)

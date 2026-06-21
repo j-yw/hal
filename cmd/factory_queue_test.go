@@ -589,6 +589,58 @@ func TestRunFactoryQueueWorkWithDepsExecutesOneEntryAndRecordsRunState(t *testin
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 15, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox", PID: 5357, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-sandbox", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = "main"
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-001", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline should not be called for sandbox queue entries")
+		return nil
+	})
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+	deps.loadEngine = func(string) (string, error) {
+		return factory.PolicyEngineCodex, nil
+	}
+	var gotSandboxReq factorySandboxExecutorRequest
+	deps.runSandbox = func(_ context.Context, req factorySandboxExecutorRequest) error {
+		gotSandboxReq = req
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	if gotSandboxReq.RunRecord.RunID != record.RunID {
+		t.Fatalf("sandbox runID = %q, want %q", gotSandboxReq.RunRecord.RunID, record.RunID)
+	}
+	if gotSandboxReq.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("sandbox executorMode = %q, want %q", gotSandboxReq.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	if len(gotSandboxReq.RemoteAuto.Args) != 1 || gotSandboxReq.RemoteAuto.Args[0] != ".hal/prd-queue-sandbox.md" {
+		t.Fatalf("sandbox args = %#v, want queued markdown source", gotSandboxReq.RemoteAuto.Args)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsRejectsCreationPolicyBeforeExecution(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 18, 30, 0, 0, time.UTC)
@@ -1024,6 +1076,9 @@ func queueWorkTestDepsWithExecutor(store factory.Store, now time.Time, claim fac
 		now:          func() time.Time { return now },
 		claim:        &claim,
 		runPipeline:  runPipeline,
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			return nil
+		},
 	}
 }
 
