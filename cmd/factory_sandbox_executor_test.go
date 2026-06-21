@@ -962,7 +962,10 @@ func TestRunFactorySandboxExecutorWithDepsReturnsAmbiguousDefaultResolutionError
 	provisionCalled := false
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
-		RunRecord: factory.RunRecord{RunID: "run-ambiguous-default"},
+		RunRecord: factory.RunRecord{
+			RunID:      "run-ambiguous-default",
+			RepoRemote: "git@github.com:example/repo.git",
+		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
 		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
