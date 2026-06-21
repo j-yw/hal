@@ -141,6 +141,7 @@ type factoryRunDeps struct {
 
 type factoryRunPipelineRequest struct {
 	RunID          string
+	WorkDir        string
 	Request        factoryRunRequest
 	Record         factory.RunRecord
 	Store          factory.Store
@@ -166,6 +167,7 @@ type factoryRunRequest struct {
 
 type factoryRunAutoRequest struct {
 	Args           []string
+	WorkDir        string
 	ReportPath     string
 	BaseBranch     string
 	RecordProgress func(factoryRunProgressEvent) error
@@ -189,8 +191,9 @@ type factoryRunPipelineDeps struct {
 }
 
 type factoryRunExecutionDeps struct {
-	now         func() time.Time
-	runPipeline func(context.Context, factoryRunPipelineRequest) error
+	now           func() time.Time
+	currentBranch func(string) (string, error)
+	runPipeline   func(context.Context, factoryRunPipelineRequest) error
 }
 
 type factoryRunExecutionResult struct {
@@ -296,8 +299,9 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 
 	result, execErr := executeFactoryRun(ctx, dir, req, store, record, factoryRunExecutionDeps{
-		now:         deps.now,
-		runPipeline: deps.runPipeline,
+		now:           deps.now,
+		currentBranch: deps.currentBranch,
+		runPipeline:   deps.runPipeline,
 	})
 	if result.Render {
 		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
@@ -326,6 +330,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, s
 
 	pipelineReq := factoryRunPipelineRequest{
 		RunID:   runningRecord.RunID,
+		WorkDir: dir,
 		Request: req,
 		Record:  runningRecord,
 		Store:   store,
@@ -338,7 +343,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, s
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if refreshedRecord, branchErr := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, failedAt); branchErr != nil {
+		if refreshedRecord, branchErr := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps.currentBranch, failedAt); branchErr != nil {
 			recordErrs = append(recordErrs, branchErr)
 		} else {
 			failedRecord = refreshedRecord
@@ -368,8 +373,8 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, s
 	}
 
 	completedAt := deps.now()
-	if _, err := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, completedAt); err != nil {
-		return err
+	if _, err := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps.currentBranch, completedAt); err != nil {
+		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
 	completedRecord, err := recordFactoryRunArtifacts(store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt)
 	if err != nil {
@@ -388,6 +393,9 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, s
 func normalizeFactoryRunExecutionDeps(deps factoryRunExecutionDeps) factoryRunExecutionDeps {
 	if deps.now == nil {
 		deps.now = defaultFactoryRunDeps.now
+	}
+	if deps.currentBranch == nil {
+		deps.currentBranch = defaultFactoryRunDeps.currentBranch
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryRunDeps.runPipeline
@@ -427,6 +435,10 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 	}
 	now := deps.now().UTC()
 	repoPath, err := deps.workingDir()
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("resolve repository path: %w", err)
+	}
+	repoPath, err = filepath.Abs(strings.TrimSpace(repoPath))
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("resolve repository path: %w", err)
 	}
@@ -489,12 +501,15 @@ func recordFactoryRunArtifacts(store factory.Store, runID, dir string, req facto
 	return *record, nil
 }
 
-func refreshFactoryRunBranch(store factory.Store, runID, dir string, deps factoryRunDeps, now time.Time) (factory.RunRecord, error) {
+func refreshFactoryRunBranch(store factory.Store, runID, dir string, currentBranch func(string) (string, error), now time.Time) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for branch refresh: %w", err)
 	}
-	branchName, err := deps.currentBranch(dir)
+	if currentBranch == nil {
+		currentBranch = defaultFactoryRunDeps.currentBranch
+	}
+	branchName, err := currentBranch(dir)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("refresh factory run branch: %w", err)
 	}
@@ -1267,6 +1282,10 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	if markdownPath := strings.TrimSpace(req.Request.MarkdownPath); markdownPath != "" {
 		autoReq.Args = []string{markdownPath}
 	}
+	autoReq.WorkDir = strings.TrimSpace(req.WorkDir)
+	if autoReq.WorkDir == "" {
+		autoReq.WorkDir = strings.TrimSpace(req.Record.RepoPath)
+	}
 
 	return deps.runAuto(ctx, autoReq)
 }
@@ -1300,13 +1319,39 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
 	cmd.Flags().Bool("json", false, "")
 
-	err := runAuto(cmd, req.Args)
+	err := runInFactoryRunDir(req.WorkDir, func() error {
+		return runAuto(cmd, req.Args)
+	})
 	if progressWriter != nil {
 		if flushErr := progressWriter.Flush(); flushErr != nil {
 			return errors.Join(err, flushErr)
 		}
 	}
 	return err
+}
+
+func runInFactoryRunDir(dir string, fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fn()
+	}
+
+	previousDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		return fmt.Errorf("change to factory run directory %q: %w", dir, err)
+	}
+
+	runErr := fn()
+	if restoreErr := os.Chdir(previousDir); restoreErr != nil {
+		return errors.Join(runErr, fmt.Errorf("restore working directory %q: %w", previousDir, restoreErr))
+	}
+	return runErr
 }
 
 type factoryRunProgressWriter struct {

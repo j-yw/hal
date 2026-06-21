@@ -453,6 +453,31 @@ func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T)
 	}
 }
 
+func TestNewFactoryRunRecordStoresAbsoluteRepoPath(t *testing.T) {
+	wantRepoPath, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatalf("filepath.Abs() error: %v", err)
+	}
+
+	record, err := newFactoryRunRecord(".", factoryRunRequest{}, factoryRunDeps{
+		newRunID:   func() (string, error) { return "run-absolute-repo", nil },
+		now:        func() time.Time { return time.Date(2026, 6, 21, 22, 0, 0, 0, time.UTC) },
+		workingDir: func() (string, error) { return ".", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("newFactoryRunRecord() unexpected error: %v", err)
+	}
+	if record.RepoPath != wantRepoPath {
+		t.Fatalf("repoPath = %q, want %q", record.RepoPath, wantRepoPath)
+	}
+}
+
 func TestRunFactoryRunWithDepsRefreshesBranchAfterPipeline(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -1661,6 +1686,28 @@ func TestRunFactoryRunPipelineWithDepsUsesRecordBaseBranchFallback(t *testing.T)
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsPassesWorkDirToAuto(t *testing.T) {
+	var got factoryRunAutoRequest
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		WorkDir: " /workspace/hal ",
+		Record: factory.RunRecord{
+			RepoPath: "/fallback/repo",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(_ context.Context, req factoryRunAutoRequest) error {
+			got = req
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	if got.WorkDir != "/workspace/hal" {
+		t.Fatalf("auto workDir = %q, want /workspace/hal", got.WorkDir)
+	}
+}
+
 func TestRunFactoryRunPipelineWithDepsPassesProgressRecorderToAuto(t *testing.T) {
 	var got []factoryRunProgressEvent
 
@@ -1804,6 +1851,50 @@ func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	}
 	if json.Valid(bytes.TrimSpace(textOut.Bytes())) {
 		t.Fatalf("direct auto text output should not be JSON: %q", textOutput)
+	}
+}
+
+func TestRunInFactoryRunDirChangesAndRestores(t *testing.T) {
+	startDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error: %v", err)
+	}
+	targetDir := t.TempDir()
+	sentinel := errors.New("sentinel")
+	var duringDir string
+
+	err = runInFactoryRunDir(targetDir, func() error {
+		var err error
+		duringDir, err = os.Getwd()
+		if err != nil {
+			t.Fatalf("Getwd() during run error: %v", err)
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("runInFactoryRunDir() error = %v, want sentinel", err)
+	}
+	assertSameDir(t, duringDir, targetDir)
+
+	restoredDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() after run error: %v", err)
+	}
+	assertSameDir(t, restoredDir, startDir)
+}
+
+func assertSameDir(t *testing.T, got, want string) {
+	t.Helper()
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat got dir %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat want dir %q: %v", want, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("dir = %q, want %q", got, want)
 	}
 }
 
