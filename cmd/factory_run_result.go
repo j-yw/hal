@@ -5,20 +5,21 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
 )
 
 // FactoryRunResponse is the machine-readable JSON output for hal factory run --json.
 type FactoryRunResponse struct {
-	ContractVersion string                   `json:"contractVersion"`
-	Version         string                   `json:"version"`
-	RunID           string                   `json:"runId"`
-	Status          string                   `json:"status"`
-	NextAction      *FactoryRunNextAction    `json:"nextAction"`
-	Artifacts       []FactoryArtifactSummary `json:"artifacts"`
-	EventSummary    FactoryRunEventSummary   `json:"eventSummary"`
-	Failure         *FactoryRunFailure       `json:"failure"`
+	ContractVersion string                        `json:"contractVersion"`
+	Version         string                        `json:"version"`
+	RunID           string                        `json:"runId"`
+	Status          string                        `json:"status"`
+	NextAction      *FactoryRunNextAction         `json:"nextAction"`
+	Artifacts       []FactoryRunArtifactReference `json:"artifacts"`
+	EventSummary    FactoryRunEventSummary        `json:"eventSummary"`
+	Failure         *FactoryRunFailure            `json:"failure"`
 }
 
 // FactoryRunNextAction suggests what to do after a local factory run.
@@ -41,6 +42,23 @@ type FactoryRunFailure struct {
 	Classification   string `json:"classification"`
 	ErrorMessage     string `json:"errorMessage"`
 	SuggestedCommand string `json:"suggestedCommand,omitempty"`
+}
+
+// FactoryRunArtifactReference preserves the factory-run-v1 artifact shape while
+// avoiding raw workspace-local absolute paths.
+type FactoryRunArtifactReference struct {
+	ID         string         `json:"id,omitempty"`
+	Name       string         `json:"name"`
+	Type       string         `json:"type"`
+	SourcePath string         `json:"sourcePath,omitempty"`
+	StoredPath string         `json:"storedPath,omitempty"`
+	Path       string         `json:"path,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	SizeBytes  *int64         `json:"sizeBytes,omitempty"`
+	CreatedAt  *time.Time     `json:"createdAt,omitempty"`
+	Summary    map[string]any `json:"summary,omitempty"`
+	Warnings   []string       `json:"warnings,omitempty"`
+	Partial    bool           `json:"partial,omitempty"`
 }
 
 func renderFactoryRunJSON(out io.Writer, resp FactoryRunResponse) error {
@@ -96,10 +114,31 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		RunID:           record.RunID,
 		Status:          record.Status,
 		NextAction:      newFactoryRunNextAction(record),
-		Artifacts:       newFactoryArtifactSummaries(record.Artifacts),
+		Artifacts:       newFactoryRunArtifactReferences(record.Artifacts),
 		EventSummary:    newFactoryRunEventSummary(events),
 		Failure:         newFactoryRunFailure(record),
 	}
+}
+
+func newFactoryRunArtifactReferences(artifacts []factory.ArtifactReference) []FactoryRunArtifactReference {
+	refs := make([]FactoryRunArtifactReference, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		refs = append(refs, FactoryRunArtifactReference{
+			ID:         strings.TrimSpace(artifact.ID),
+			Name:       strings.TrimSpace(artifact.Name),
+			Type:       strings.TrimSpace(artifact.Type),
+			SourcePath: sanitizeFactoryArtifactPath(artifact.SourcePath),
+			StoredPath: strings.TrimSpace(artifact.StoredPath),
+			Path:       sanitizeFactoryArtifactPath(artifact.Path),
+			URL:        safeFactoryPRURL(artifact.URL),
+			SizeBytes:  artifact.SizeBytes,
+			CreatedAt:  artifact.CreatedAt,
+			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
+			Warnings:   sanitizeFactoryArtifactWarnings(artifact.Warnings),
+			Partial:    artifact.Partial,
+		})
+	}
+	return refs
 }
 
 func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
@@ -144,7 +183,7 @@ func factoryRunInspectCommand(runID string) string {
 
 func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {
 	if resp.Artifacts == nil {
-		resp.Artifacts = []FactoryArtifactSummary{}
+		resp.Artifacts = []FactoryRunArtifactReference{}
 	}
 	if resp.EventSummary.ByType == nil {
 		resp.EventSummary.ByType = map[string]int{}

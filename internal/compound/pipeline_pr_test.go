@@ -324,6 +324,50 @@ func TestRunPRStep_FallbackTitle(t *testing.T) {
 	}
 }
 
+func TestRunPRStep_PersistsPRMetadataBeforeWaitingForCI(t *testing.T) {
+	pipeline, _ := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = func(_ context.Context, _ ci.PushOptions) (ci.PushResult, error) {
+		return ci.PushResult{
+			Branch: "compound/ci-flow",
+			PullRequest: ci.PullRequest{
+				Number:   42,
+				URL:      "https://github.com/acme/repo/pull/42",
+				Title:    "Implement deterministic CI flow",
+				HeadRef:  "compound/ci-flow",
+				BaseRef:  "main",
+				Existing: true,
+			},
+		}, nil
+	}
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	orig := waitForChecksInDirFn
+	waitForChecksInDirFn = func(_ context.Context, _ string, _ ci.WaitOptions) (ci.StatusResult, error) {
+		saved := pipeline.loadState()
+		if saved == nil || saved.CI == nil {
+			t.Fatalf("PR metadata was not saved before waiting for CI: %#v", saved)
+		}
+		if saved.CI.PRURL != "https://github.com/acme/repo/pull/42" || saved.CI.PRNumber != 42 {
+			t.Fatalf("saved PR metadata = %+v, want PR URL and number before wait", saved.CI)
+		}
+		if saved.CI.PRHeadRef != "compound/ci-flow" || saved.CI.PRBaseRef != "main" || !saved.CI.PRReused {
+			t.Fatalf("saved PR refs = %+v, want complete PR metadata before wait", saved.CI)
+		}
+		return ci.StatusResult{Status: ci.StatusPassing, ChecksDiscovered: true}, nil
+	}
+	t.Cleanup(func() { waitForChecksInDirFn = orig })
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+	}
+
+	if err := pipeline.runPRStep(context.Background(), state, RunOptions{}); err != nil {
+		t.Fatalf("runPRStep: %v", err)
+	}
+}
+
 func TestRunPRStep_WaitNoChecks_StopsAtCI(t *testing.T) {
 	stubCIWaitNoChecks(t)
 

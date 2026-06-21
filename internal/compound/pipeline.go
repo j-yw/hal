@@ -1419,6 +1419,10 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	state.CI.PRHeadRef = strings.TrimSpace(pushResult.PullRequest.HeadRef)
 	state.CI.PRBaseRef = strings.TrimSpace(pushResult.PullRequest.BaseRef)
 	state.CI.PRReused = pushResult.PullRequest.Existing
+	p.recordCIState(state.CI)
+	if saveErr := p.saveState(state); saveErr != nil {
+		return fmt.Errorf("failed to save PR metadata before waiting for CI checks: %w", saveErr)
+	}
 
 	// 2. Wait for CI checks.
 	p.display.ShowInfo("   Waiting for CI checks...\n")

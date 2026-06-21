@@ -14,6 +14,7 @@
       "name": "run-record",
       "type": "json",
       "path": "factory/runs/run-20260620-002.json",
+      "url": "https://github.com/acme/hal/actions/runs/123",
       "storedPath": "artifacts/run-20260620-002/factory-runs-run-20260620-002.json",
       "sizeBytes": 2048,
       "createdAt": "2026-06-20T12:04:00Z"

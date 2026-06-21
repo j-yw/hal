@@ -1634,8 +1634,8 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulStatusAndResult(t *testing.T) {
 	if resp.Failure != nil {
 		t.Fatalf("failure = %#v, want nil", resp.Failure)
 	}
-	requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd-feature.md")
-	requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
+	requireFactoryRunArtifactPath(t, resp.Artifacts, ".hal/prd-feature.md")
+	requireFactoryRunArtifactPath(t, resp.Artifacts, ".hal/prd.json")
 }
 
 func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
@@ -2260,9 +2260,9 @@ func TestRunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows(t *testing.T) {
 			if resp.Failure != nil {
 				t.Fatalf("failure = %#v, want nil", resp.Failure)
 			}
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.sourcePath)
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.runID+".json")
+			requireFactoryRunArtifactPath(t, resp.Artifacts, tt.sourcePath)
+			requireFactoryRunArtifactPath(t, resp.Artifacts, ".hal/prd.json")
+			requireFactoryRunArtifactPath(t, resp.Artifacts, tt.runID+".json")
 		})
 	}
 }
@@ -2378,9 +2378,9 @@ func TestRunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows(t *testi
 			if resp.EventSummary.LastEventType != factory.EventTypeFailureClassification {
 				t.Fatalf("eventSummary.lastEventType = %q", resp.EventSummary.LastEventType)
 			}
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.sourcePath)
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.runID+".json")
+			requireFactoryRunArtifactPath(t, resp.Artifacts, tt.sourcePath)
+			requireFactoryRunArtifactPath(t, resp.Artifacts, ".hal/prd.json")
+			requireFactoryRunArtifactPath(t, resp.Artifacts, tt.runID+".json")
 		})
 	}
 }
@@ -3114,13 +3114,15 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 			Command:     "hal factory status run-json-contract --json",
 			Description: "Inspect the durable run record and timeline.",
 		},
-		Artifacts: []FactoryArtifactSummary{
+		Artifacts: []FactoryRunArtifactReference{
 			{
 				ID:         "factory-runs-run-json-contract.json",
 				Name:       "run-record",
 				Type:       "json",
+				SourcePath: "run-json-contract.json",
 				Path:       "factory/runs/run-json-contract.json",
 				StoredPath: "artifacts/run-json-contract/factory-runs-run-json-contract.json",
+				URL:        "https://github.com/acme/repo/actions/runs/123",
 			},
 		},
 		EventSummary: newFactoryRunEventSummary(events),
@@ -3173,12 +3175,9 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("artifacts[0] should be an object, got %T", artifacts[0])
 	}
-	requireFactoryFields(t, "factory run artifact", firstArtifact, []string{"id", "name", "type", "path", "storedPath"})
-	if _, ok := firstArtifact["sourcePath"]; ok {
-		t.Fatalf("factory run artifact should not expose sourcePath: %#v", firstArtifact)
-	}
-	if _, ok := firstArtifact["url"]; ok {
-		t.Fatalf("factory run artifact should not expose url: %#v", firstArtifact)
+	requireFactoryFields(t, "factory run artifact", firstArtifact, []string{"id", "name", "type", "sourcePath", "path", "storedPath", "url"})
+	if firstArtifact["url"] != "https://github.com/acme/repo/actions/runs/123" {
+		t.Fatalf("factory run artifact url = %v, want preserved URL", firstArtifact["url"])
 	}
 
 	eventSummary, ok := raw["eventSummary"].(map[string]any)
@@ -3850,6 +3849,17 @@ func requireFactoryArtifactSummaryPath(t *testing.T, artifacts []FactoryArtifact
 	}
 	t.Fatalf("artifact path %q missing from %#v", wantPath, artifacts)
 	return FactoryArtifactSummary{}
+}
+
+func requireFactoryRunArtifactPath(t *testing.T, artifacts []FactoryRunArtifactReference, wantPath string) FactoryRunArtifactReference {
+	t.Helper()
+	for _, artifact := range artifacts {
+		if artifact.Path == wantPath {
+			return artifact
+		}
+	}
+	t.Fatalf("missing factory run artifact path %q in %#v", wantPath, artifacts)
+	return FactoryRunArtifactReference{}
 }
 
 func requireStoredFactoryArtifactPath(t *testing.T, store factory.Store, runID string, artifacts []factory.ArtifactReference, wantPath string) factory.ArtifactReference {

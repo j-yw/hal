@@ -20,7 +20,7 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 | `runId` | string | Stable factory run identifier |
 | `status` | string | Final or current run lifecycle status; see status values below |
 | `nextAction` | object or null | Recommended follow-up action |
-| `artifacts` | array | Sanitized artifact summaries captured for this run |
+| `artifacts` | array | Artifact references captured for this run |
 | `eventSummary` | object | Summary of timeline events recorded for this run |
 | `failure` | object or null | Failure details when the run failed |
 
@@ -43,7 +43,7 @@ When `nextAction` is not null:
 | `command` | string | Suggested command |
 | `description` | string | Human-readable guidance |
 
-## Artifact Summary
+## Artifact Reference
 
 Each `artifacts` entry may contain:
 
@@ -52,17 +52,15 @@ Each `artifacts` entry may contain:
 | `id` | string | no | Stable artifact identifier |
 | `name` | string | yes | Stable artifact label |
 | `type` | string | yes | Artifact category, such as `json`, `markdown`, `text`, or `url` |
+| `sourcePath` | string | no | Sanitized source path used when collecting a local artifact |
 | `path` | string | no | Local path for file artifacts |
 | `storedPath` | string | no | Store-relative path for persisted artifact payloads |
+| `url` | string | no | URL for remote artifacts |
 | `sizeBytes` | integer | no | Size of the persisted payload in bytes |
 | `createdAt` | string | no | Artifact payload timestamp in RFC3339 format |
 | `summary` | object | no | Sanitized artifact-specific metadata |
 | `warnings` | array | no | Sanitized warnings about artifact collection |
 | `partial` | boolean | no | True when the artifact record is incomplete |
-
-Raw `sourcePath` and `url` fields from stored run records are intentionally
-omitted from this JSON surface. If an artifact only has a remote URL and no
-display or stored path, `path` is emitted as `"[redacted]"`.
 
 ## Event Summary
 

@@ -431,7 +431,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
 				"eventSummary", "failure", "id", "command", "description", "total", "byType",
 				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
-				"name", "type", "path", "storedPath", "sizeBytes", "createdAt", "partial",
+				"name", "type", "sourcePath", "path", "storedPath", "url", "sizeBytes", "createdAt", "partial",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
