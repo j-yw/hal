@@ -271,7 +271,7 @@ type FactoryStatusResponse struct {
 type FactoryStatusRun struct {
 	RunID        string                      `json:"runId"`
 	Status       string                      `json:"status"`
-	ExecutorMode string                      `json:"executorMode"`
+	ExecutorMode string                      `json:"executorMode,omitempty"`
 	Source       factory.SourceMetadata      `json:"source"`
 	RepoPath     string                      `json:"repoPath"`
 	RepoRemote   string                      `json:"repoRemote"`
@@ -622,7 +622,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	if err != nil {
 		return factory.RunRecord{}, err
 	}
-	outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir)
+	outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir, record.CreatedAt)
 	if outcomeCleanup != nil {
 		defer outcomeCleanup()
 	}
@@ -821,9 +821,9 @@ func materializeFactorySnapshotArtifacts(dir string, deps factoryRunDeps) ([]fac
 	return artifacts, cleanup, nil
 }
 
-func materializeFactoryOutcomeArtifacts(dir string) ([]factory.ArtifactReference, func(), error) {
-	state, ok := loadFactoryRunPipelineState(filepath.Join(dir, template.HalDir, template.AutoStateFile))
-	if !ok || state == nil || state.CI == nil {
+func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time) ([]factory.ArtifactReference, func(), error) {
+	state := factoryOutcomePipelineState(dir, startedAt)
+	if state == nil || state.CI == nil {
 		return []factory.ArtifactReference{
 			missingFactoryOutcomeArtifact("pr-outcome", "factory/pr-outcome.json", "PR outcome data was unavailable"),
 			missingFactoryOutcomeArtifact("ci-outcome", "factory/ci-outcome.json", "CI outcome data was unavailable"),
@@ -883,6 +883,33 @@ func materializeFactoryOutcomeArtifacts(dir string) ([]factory.ArtifactReference
 	}
 
 	return artifacts, cleanup, nil
+}
+
+func factoryOutcomePipelineState(dir string, startedAt time.Time) *compound.PipelineState {
+	liveState, ok := loadFactoryRunPipelineState(filepath.Join(dir, template.HalDir, template.AutoStateFile))
+	if ok && factoryPipelineStateHasOutcomeData(liveState) {
+		return liveState
+	}
+
+	archived := collectFactoryRunArchivedArtifacts(dir, startedAt)
+	for i := range archived.pipelineStates {
+		state := &archived.pipelineStates[i]
+		if factoryPipelineStateHasOutcomeData(state) {
+			return state
+		}
+	}
+
+	if ok {
+		return liveState
+	}
+	return nil
+}
+
+func factoryPipelineStateHasOutcomeData(state *compound.PipelineState) bool {
+	if state == nil || state.CI == nil {
+		return false
+	}
+	return safeFactoryPRURL(state.CI.PRURL) != "" || strings.TrimSpace(state.CI.Status) != ""
 }
 
 func materializeFactoryJSONArtifact(name, displayPath string, payload any, summary map[string]any) (factory.ArtifactReference, string, error) {

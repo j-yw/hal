@@ -826,7 +826,20 @@ func TestRunFactoryRunWithDepsRecordsArchivedArtifacts(t *testing.T) {
 		},
 		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
-			writeFile(t, halDir, "auto-state.json", `{"step":"archive","sourceMarkdown":".hal/prd-feature.md","reportPath":".hal/reports/review-latest.md"}`)
+			writeFile(t, halDir, "auto-state.json", `{
+  "step": "archive",
+  "branchName": "hal/factory",
+  "sourceMarkdown": ".hal/prd-feature.md",
+  "reportPath": ".hal/reports/review-latest.md",
+  "ci": {
+    "status": "passed",
+    "prUrl": "https://github.com/acme/hal/pull/84",
+    "prNumber": 84,
+    "prTitle": "Archived factory artifacts",
+    "prHeadRef": "hal/factory",
+    "prBaseRef": "main"
+  }
+}`)
 			writeFile(t, reportsDir, "review-latest.md", "# Latest review\n")
 			writeFile(t, reportsDir, "review-older.md", "# Older review\n")
 
@@ -868,6 +881,14 @@ func TestRunFactoryRunWithDepsRecordsArchivedArtifacts(t *testing.T) {
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "reports", "review-older.md"))
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-latest.md")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-archived-artifacts.json"))
+	prArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/pr-outcome.json")
+	if prArtifact.Summary["pullRequestUrl"] != "https://github.com/acme/hal/pull/84" {
+		t.Fatalf("archived pr summary = %#v", prArtifact.Summary)
+	}
+	ciArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/ci-outcome.json")
+	if ciArtifact.Summary["status"] != "passed" {
+		t.Fatalf("archived ci summary = %#v", ciArtifact.Summary)
+	}
 }
 
 func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *testing.T) {
