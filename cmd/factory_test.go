@@ -2506,8 +2506,8 @@ func TestRunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows(t *testi
 			if resp.Failure == nil {
 				t.Fatal("failure should be emitted")
 			}
-			if resp.Failure.Classification != factory.FailureCategoryCI {
-				t.Fatalf("failure.classification = %q, want %q", resp.Failure.Classification, factory.FailureCategoryCI)
+			if resp.Failure.Classification != "ci" {
+				t.Fatalf("failure.classification = %q, want %q", resp.Failure.Classification, "ci")
 			}
 			if resp.Failure.ErrorMessage != pipelineErr.Error() {
 				t.Fatalf("failure.errorMessage = %q, want %q", resp.Failure.ErrorMessage, pipelineErr.Error())
@@ -2889,13 +2889,29 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 }
 
 func TestNewFactoryRunFailureNormalizesClassification(t *testing.T) {
-	for _, category := range factory.SupportedFailureCategories() {
-		category := category
-		t.Run(category, func(t *testing.T) {
+	tests := []struct {
+		category string
+		want     string
+	}{
+		{category: factory.FailureCategorySetup, want: "git"},
+		{category: factory.FailureCategoryEngine, want: "engine"},
+		{category: factory.FailureCategoryPRD, want: "validation"},
+		{category: factory.FailureCategoryRun, want: "pipeline"},
+		{category: factory.FailureCategoryReview, want: "pipeline"},
+		{category: factory.FailureCategoryVerification, want: "validation"},
+		{category: factory.FailureCategoryCI, want: "ci"},
+		{category: factory.FailureCategorySandbox, want: "pipeline"},
+		{category: factory.FailureCategoryQueue, want: "pipeline"},
+		{category: factory.FailureCategoryUnknown, want: factory.FailureCategoryUnknown},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.category, func(t *testing.T) {
 			record := factory.RunRecord{
 				RunID: "run-normalize-category",
 				Failure: &factory.FailureSummary{
-					Category: category,
+					Category: tt.category,
 					Message:  "failed",
 				},
 			}
@@ -2904,21 +2920,21 @@ func TestNewFactoryRunFailureNormalizesClassification(t *testing.T) {
 			if failure == nil {
 				t.Fatal("newFactoryRunFailure() = nil, want failure")
 			}
-			if failure.Classification != category {
-				t.Fatalf("classification = %q, want %q", failure.Classification, category)
+			if failure.Classification != tt.want {
+				t.Fatalf("classification = %q, want %q", failure.Classification, tt.want)
 			}
 		})
 	}
 
-	tests := []struct {
+	invalidTests := []struct {
 		name     string
 		category string
 	}{
 		{name: "empty", category: ""},
-		{name: "invalid", category: "validation"},
+		{name: "invalid", category: "database"},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range invalidTests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			record := factory.RunRecord{

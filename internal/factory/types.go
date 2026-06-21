@@ -109,6 +109,27 @@ func NormalizeFailureCategory(category string) string {
 	return FailureCategoryUnknown
 }
 
+// NormalizeFailureCategoryForContractV1 maps detailed failure categories onto
+// the legacy factory v1 contract category set.
+func NormalizeFailureCategoryForContractV1(category string) string {
+	switch strings.TrimSpace(category) {
+	case FailureCategoryPRD, FailureCategoryVerification, "validation":
+		return "validation"
+	case FailureCategoryRun, FailureCategoryReview, FailureCategorySandbox, FailureCategoryQueue, "pipeline":
+		return "pipeline"
+	case FailureCategoryEngine:
+		return "engine"
+	case FailureCategorySetup, "git":
+		return "git"
+	case FailureCategoryCI, "ci":
+		return "ci"
+	case FailureCategoryUnknown:
+		return FailureCategoryUnknown
+	default:
+		return FailureCategoryUnknown
+	}
+}
+
 // Timeline event type values.
 const (
 	EventTypeRunCreated            = "run_created"
@@ -405,13 +426,14 @@ func DeriveRunTelemetry(record RunRecord, events []EventRecord) *RunTelemetry {
 		}
 	}
 
+	if telemetry != nil && strings.TrimSpace(telemetry.FailureCategory) != "" {
+		telemetry.FailureCategory = NormalizeFailureCategoryForContractV1(telemetry.FailureCategory)
+	}
 	if record.Failure != nil {
 		if telemetry == nil {
 			telemetry = &RunTelemetry{}
 		}
-		if strings.TrimSpace(telemetry.FailureCategory) == "" {
-			telemetry.FailureCategory = NormalizeFailureCategory(record.Failure.Category)
-		}
+		telemetry.FailureCategory = NormalizeFailureCategoryForContractV1(record.Failure.Category)
 	}
 
 	return telemetry

@@ -105,11 +105,11 @@
       "ciOutcome": "failing",
       "verificationOutcome": "fail",
       "artifactCount": 3,
-      "failureCategory": "CI"
+      "failureCategory": "ci"
     },
     "failure": {
       "step": "ci",
-      "category": "CI",
+      "category": "ci",
       "message": "unit tests failed",
       "recoverable": true,
       "suggestedCommand": "hal factory status run-20260620-002 --json",
@@ -180,7 +180,7 @@
       "timestamp": "2026-06-20T16:32:00Z",
       "summary": "Failure classified",
       "metadata": {
-        "category": "CI",
+        "category": "ci",
         "recoverable": true,
         "suggestedCommand": "hal factory status run-20260620-002 --json"
       }

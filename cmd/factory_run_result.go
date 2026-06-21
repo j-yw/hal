@@ -159,7 +159,7 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 	if record.Failure == nil {
 		return nil
 	}
-	classification := factory.NormalizeFailureCategory(record.Failure.Category)
+	classification := factory.NormalizeFailureCategoryForContractV1(record.Failure.Category)
 	failure := &FactoryRunFailure{
 		Classification: classification,
 		ErrorMessage:   record.Failure.Message,

@@ -416,6 +416,14 @@ func TestContractDocsIncludeCIFields(t *testing.T) {
 }
 
 func TestContractDocsIncludeFactoryFields(t *testing.T) {
+	factoryV1FailureCategories := []string{
+		"validation",
+		"pipeline",
+		"engine",
+		"git",
+		"ci",
+		factory.FailureCategoryUnknown,
+	}
 	docs := []struct {
 		name           string
 		path           string
@@ -433,7 +441,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
 				"name", "type", "sourcePath", "path", "storedPath", "url", "sizeBytes", "createdAt", "partial",
 			},
-			requiredValues: []string{
+			requiredValues: append([]string{
 				factory.RunStatusPending,
 				factory.RunStatusRunning,
 				factory.RunStatusSucceeded,
@@ -441,17 +449,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.RunStatusCanceled,
 				factory.EventTypeRunCreated,
 				factory.EventTypeFailureClassification,
-				factory.FailureCategorySetup,
-				factory.FailureCategoryEngine,
-				factory.FailureCategoryPRD,
-				factory.FailureCategoryRun,
-				factory.FailureCategoryReview,
-				factory.FailureCategoryVerification,
-				factory.FailureCategoryCI,
-				factory.FailureCategorySandbox,
-				factory.FailureCategoryQueue,
-				factory.FailureCategoryUnknown,
-			},
+			}, factoryV1FailureCategories...),
 		},
 		{
 			name:          "factory-list-v1",
@@ -462,23 +460,13 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifactCount", "failure", "suggestedCommand",
 			},
-			requiredValues: []string{
+			requiredValues: append([]string{
 				factory.RunStatusPending,
 				factory.RunStatusRunning,
 				factory.RunStatusSucceeded,
 				factory.RunStatusFailed,
 				factory.RunStatusCanceled,
-				factory.FailureCategorySetup,
-				factory.FailureCategoryEngine,
-				factory.FailureCategoryPRD,
-				factory.FailureCategoryRun,
-				factory.FailureCategoryReview,
-				factory.FailureCategoryVerification,
-				factory.FailureCategoryCI,
-				factory.FailureCategorySandbox,
-				factory.FailureCategoryQueue,
-				factory.FailureCategoryUnknown,
-			},
+			}, factoryV1FailureCategories...),
 		},
 		{
 			name:          "factory-status-v1",
@@ -492,26 +480,16 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
 			},
-			requiredValues: []string{
+			requiredValues: append([]string{
 				factory.RunStatusPending,
 				factory.RunStatusRunning,
 				factory.RunStatusSucceeded,
 				factory.RunStatusFailed,
 				factory.RunStatusCanceled,
-				factory.FailureCategorySetup,
-				factory.FailureCategoryEngine,
-				factory.FailureCategoryPRD,
-				factory.FailureCategoryRun,
-				factory.FailureCategoryReview,
-				factory.FailureCategoryVerification,
-				factory.FailureCategoryCI,
-				factory.FailureCategorySandbox,
-				factory.FailureCategoryQueue,
-				factory.FailureCategoryUnknown,
 				verify.ArtifactKindStdout,
 				verify.ArtifactKindStderr,
 				"sandbox",
-			},
+			}, factoryV1FailureCategories...),
 		},
 		{
 			name:          "factory-artifacts-v1",

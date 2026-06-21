@@ -381,12 +381,15 @@ func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry,
 	if cause == nil {
 		cause = fmt.Errorf("factory queue work failed")
 	}
-	_ = markFactoryQueueRunFailed(store, entry, cause, now)
+	runErr := markFactoryQueueRunFailed(store, entry, cause, now)
 	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, cause.Error(), factory.QueueOperationOptions{
 		Now: now,
 	})
 	if markErr != nil {
-		return entry, errors.Join(cause, markErr)
+		return entry, errors.Join(cause, runErr, markErr)
+	}
+	if runErr != nil {
+		return failedEntry, errors.Join(cause, runErr)
 	}
 	return failedEntry, cause
 }
@@ -397,7 +400,7 @@ func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, ca
 	}
 	record, err := store.LoadRun(entry.RunID)
 	if err != nil {
-		return nil
+		return fmt.Errorf("load factory queue run %q for failure marking: %w", entry.RunID, err)
 	}
 	if record.Status == factory.RunStatusFailed && record.Failure != nil {
 		return nil

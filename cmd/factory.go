@@ -2684,7 +2684,7 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
 		Run:             newFactoryStatusRun(record, events),
-		Timeline:        events,
+		Timeline:        normalizeFactoryTimelineEventsForContractV1(events),
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
@@ -2876,8 +2876,32 @@ func normalizedFactoryFailureSummary(failure *factory.FailureSummary) *factory.F
 		return nil
 	}
 	normalizedFailure := *failure
-	normalizedFailure.Category = factory.NormalizeFailureCategory(normalizedFailure.Category)
+	normalizedFailure.Category = factory.NormalizeFailureCategoryForContractV1(normalizedFailure.Category)
 	return &normalizedFailure
+}
+
+func normalizeFactoryTimelineEventsForContractV1(events []factory.EventRecord) []factory.EventRecord {
+	if len(events) == 0 {
+		return events
+	}
+	normalized := make([]factory.EventRecord, len(events))
+	copy(normalized, events)
+	for i, event := range normalized {
+		if event.EventType != factory.EventTypeFailureClassification || event.Metadata == nil {
+			continue
+		}
+		category, ok := event.Metadata["category"].(string)
+		if !ok {
+			continue
+		}
+		metadata := make(map[string]any, len(event.Metadata))
+		for key, value := range event.Metadata {
+			metadata[key] = value
+		}
+		metadata["category"] = factory.NormalizeFailureCategoryForContractV1(category)
+		normalized[i].Metadata = metadata
+	}
+	return normalized
 }
 
 func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {

@@ -252,6 +252,34 @@ func TestEventTypeConstants(t *testing.T) {
 	}
 }
 
+func TestNormalizeFailureCategoryForContractV1(t *testing.T) {
+	tests := []struct {
+		name     string
+		category string
+		want     string
+	}{
+		{name: "prd", category: FailureCategoryPRD, want: "validation"},
+		{name: "verification", category: FailureCategoryVerification, want: "validation"},
+		{name: "run", category: FailureCategoryRun, want: "pipeline"},
+		{name: "review", category: FailureCategoryReview, want: "pipeline"},
+		{name: "sandbox", category: FailureCategorySandbox, want: "pipeline"},
+		{name: "queue", category: FailureCategoryQueue, want: "pipeline"},
+		{name: "setup", category: FailureCategorySetup, want: "git"},
+		{name: "ci", category: FailureCategoryCI, want: "ci"},
+		{name: "legacy ci", category: "ci", want: "ci"},
+		{name: "unknown", category: "unsupported", want: FailureCategoryUnknown},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeFailureCategoryForContractV1(tt.category); got != tt.want {
+				t.Fatalf("NormalizeFailureCategoryForContractV1(%q) = %q, want %q", tt.category, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSupportedRunDurationSteps(t *testing.T) {
 	want := []string{
 		RunDurationStepSetup,
@@ -487,6 +515,35 @@ func TestDeriveRunTelemetryPreservesExplicitTimingData(t *testing.T) {
 	}
 	if got == record.Telemetry {
 		t.Fatal("DeriveRunTelemetry() returned original telemetry pointer, want copy")
+	}
+}
+
+func TestDeriveRunTelemetryNormalizesFailureCategory(t *testing.T) {
+	record := RunRecord{
+		RunID: "run-failed-telemetry-category",
+		Telemetry: &RunTelemetry{
+			FailureCategory: "database",
+		},
+		Failure: &FailureSummary{
+			Category: FailureCategoryCI,
+		},
+	}
+
+	got := DeriveRunTelemetry(record, nil)
+	if got == nil {
+		t.Fatal("DeriveRunTelemetry() = nil, want telemetry")
+	}
+	if got.FailureCategory != "ci" {
+		t.Fatalf("failureCategory = %q, want %q", got.FailureCategory, "ci")
+	}
+
+	record.Failure = nil
+	got = DeriveRunTelemetry(record, nil)
+	if got == nil {
+		t.Fatal("DeriveRunTelemetry() = nil, want telemetry")
+	}
+	if got.FailureCategory != FailureCategoryUnknown {
+		t.Fatalf("failureCategory without record failure = %q, want %q", got.FailureCategory, FailureCategoryUnknown)
 	}
 }
 
