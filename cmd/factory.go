@@ -477,7 +477,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		return failFactoryRunSetup(store, record, deps.now(), err, redactor)
 	}
 
-	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
+	runningRecord, err := markFactoryRunInProgressWithRedactor(store, record, deps.now(), redactor)
 	if err != nil {
 		return factoryRunExecutionResult{Record: record}, err
 	}
@@ -515,7 +515,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
@@ -537,7 +537,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
-		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, artifactErr)
 		} else {
 			failedRecord = artifactRecord
@@ -550,7 +550,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 
 	artifactAt := deps.now()
-	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, artifactAt, deps)
+	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, artifactAt, deps, redactor)
 	if err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
@@ -569,7 +569,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
-		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, artifactErr)
 		} else {
 			failedRecord = artifactRecord
@@ -580,14 +580,14 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
+	completedRecord, err = markFactoryRunSucceededWithRedactor(store, completedRecord, completedAt, redactor)
 	if err != nil {
 		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
 	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
 		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
-	completedRecord, err = recordFactoryRunRecordArtifact(store, completedRecord)
+	completedRecord, err = recordFactoryRunRecordArtifactWithRedactor(store, completedRecord, redactor)
 	if err != nil {
 		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
@@ -733,16 +733,21 @@ func createFactoryRunRecord(store factory.Store, record factory.RunRecord) error
 }
 
 func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
+	return markFactoryRunInProgressWithRedactor(store, record, now, factory.RunSecretRedactor{})
+}
+
+func markFactoryRunInProgressWithRedactor(store factory.Store, record factory.RunRecord, now time.Time, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	record.Status = factory.RunStatusRunning
 	record.CurrentStep = "run"
 	record.UpdatedAt = now.UTC()
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactor.RedactRunRecord(record)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run in progress: %w", err)
 	}
 	return record, nil
 }
 
-func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps) (factory.RunRecord, error) {
+func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
@@ -775,17 +780,19 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 		return factory.RunRecord{}, fmt.Errorf("reload factory run artifacts: %w", err)
 	}
 	record.UpdatedAt = now.UTC()
-	if err := store.SaveRun(record); err != nil {
+	safeRecord := redactor.RedactRunRecord(*record)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("record factory artifacts: %w", err)
 	}
-	return *record, nil
+	return safeRecord, nil
 }
 
 func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, redactor factory.RunSecretRedactor) (factory.RunRecord, time.Time, error) {
 	startedAt := deps.now()
 	record.CurrentStep = "verify"
 	record.UpdatedAt = startedAt.UTC()
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactor.RedactRunRecord(record)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return record, deps.now(), fmt.Errorf("mark factory run verifying: %w", err)
 	}
 
@@ -812,7 +819,8 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		Artifacts: safeArtifacts,
 	}
 	record.UpdatedAt = finishedAt.UTC()
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord = redactor.RedactRunRecord(record)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
 	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts, redactor); err != nil {
@@ -1106,16 +1114,21 @@ func safeFactoryPRURL(rawURL string) string {
 }
 
 func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
+	return markFactoryRunSucceededWithRedactor(store, record, now, factory.RunSecretRedactor{})
+}
+
+func markFactoryRunSucceededWithRedactor(store factory.Store, record factory.RunRecord, now time.Time, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	finishedAt := now.UTC()
 	record.Status = factory.RunStatusSucceeded
 	record.CurrentStep = "done"
 	record.UpdatedAt = finishedAt
 	record.FinishedAt = &finishedAt
 	record.Failure = nil
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactor.RedactRunRecord(record)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run succeeded: %w", err)
 	}
-	return record, nil
+	return safeRecord, nil
 }
 
 func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error) (factory.RunRecord, error) {
@@ -1151,10 +1164,11 @@ func markFactoryRunFailedWithRedactor(store factory.Store, record factory.RunRec
 	record.UpdatedAt = finishedAt
 	record.FinishedAt = &finishedAt
 	record.Failure = &failure
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactor.RedactRunRecord(record)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run failed: %w", err)
 	}
-	return record, nil
+	return safeRecord, nil
 }
 
 func factorySandboxPipelineRecordError(record factory.RunRecord, fallback error) error {
@@ -1369,6 +1383,10 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 }
 
 func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecord) (factory.RunRecord, error) {
+	return recordFactoryRunRecordArtifactWithRedactor(store, record, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunRecordArtifactWithRedactor(store factory.Store, record factory.RunRecord, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	recordPath := factoryRunRecordArtifactPath(store, record.RunID)
 	if recordPath == "" {
 		return record, nil
@@ -1379,7 +1397,7 @@ func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecor
 		Type: "json",
 		Path: recordPath,
 	}
-	if _, err := store.SaveArtifactFile(record.RunID, artifact, recordPath); err != nil {
+	if _, err := store.SaveArtifactFileWithRedactor(record.RunID, artifact, recordPath, redactor); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("store factory run record artifact: %w", err)
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)

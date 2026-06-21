@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 // RunSecretRedactionPlaceholder is the stable replacement for configured run
@@ -56,6 +58,121 @@ func (r RunSecretRedactor) RedactArtifactReference(artifact ArtifactReference) A
 	artifact.Summary = r.redactArtifactSummary(artifact.Summary)
 	artifact.Warnings = r.redactStringSlice(artifact.Warnings)
 	return artifact
+}
+
+// RedactRunRecord returns a copy of record with resolved run-scoped secret
+// values removed from durable string metadata.
+func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
+	if len(r.secretValues) == 0 {
+		return record
+	}
+	record.Status = r.RedactString(record.Status)
+	record.ExecutorMode = r.RedactString(record.ExecutorMode)
+	record.Source = r.redactSourceMetadata(record.Source)
+	record.RepoPath = r.RedactString(record.RepoPath)
+	record.RepoRemote = r.RedactString(record.RepoRemote)
+	record.BranchName = r.RedactString(record.BranchName)
+	record.BaseBranch = r.RedactString(record.BaseBranch)
+	record.SandboxName = r.RedactString(record.SandboxName)
+	record.Sandbox = r.redactSandboxMetadata(record.Sandbox)
+	record.CurrentStep = r.RedactString(record.CurrentStep)
+	record.Artifacts = r.redactArtifactReferences(record.Artifacts)
+	record.Verification = r.redactVerificationRecord(record.Verification)
+	record.Failure = r.redactFailureSummary(record.Failure)
+	record.Secrets = r.redactSecretMetadata(record.Secrets)
+	return record
+}
+
+func (r RunSecretRedactor) redactSourceMetadata(source SourceMetadata) SourceMetadata {
+	source.Kind = r.RedactString(source.Kind)
+	source.Path = r.RedactString(source.Path)
+	source.ReportPath = r.RedactString(source.ReportPath)
+	source.Title = r.RedactString(source.Title)
+	return source
+}
+
+func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *SandboxMetadata {
+	if sandbox == nil {
+		return nil
+	}
+	safe := *sandbox
+	safe.Name = r.RedactString(safe.Name)
+	safe.Provider = r.RedactString(safe.Provider)
+	safe.Status = r.RedactString(safe.Status)
+	safe.Connection = r.redactSandboxConnectionMetadata(safe.Connection)
+	safe.SSHCommand = r.RedactString(safe.SSHCommand)
+	safe.CleanupCommand = r.RedactString(safe.CleanupCommand)
+	safe.Handoff = r.RedactString(safe.Handoff)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxConnectionMetadata(connection *SandboxConnectionMetadata) *SandboxConnectionMetadata {
+	if connection == nil {
+		return nil
+	}
+	safe := *connection
+	safe.Address = r.RedactString(safe.Address)
+	safe.PublicIP = r.RedactString(safe.PublicIP)
+	safe.TailscaleIP = r.RedactString(safe.TailscaleIP)
+	safe.TailscaleHostname = r.RedactString(safe.TailscaleHostname)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactArtifactReferences(artifacts []ArtifactReference) []ArtifactReference {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	safe := make([]ArtifactReference, len(artifacts))
+	for i, artifact := range artifacts {
+		safe[i] = r.RedactArtifactReference(artifact)
+	}
+	return safe
+}
+
+func (r RunSecretRedactor) redactVerificationRecord(verification *VerificationRecord) *VerificationRecord {
+	if verification == nil {
+		return nil
+	}
+	safe := *verification
+	if len(verification.Artifacts) > 0 {
+		safe.Artifacts = make([]verify.ArtifactReference, len(verification.Artifacts))
+		for i, artifact := range verification.Artifacts {
+			safe.Artifacts[i] = verify.ArtifactReference{
+				CheckID: r.RedactString(artifact.CheckID),
+				Kind:    r.RedactString(artifact.Kind),
+				Path:    r.RedactString(artifact.Path),
+			}
+		}
+	}
+	return &safe
+}
+
+func (r RunSecretRedactor) redactFailureSummary(failure *FailureSummary) *FailureSummary {
+	if failure == nil {
+		return nil
+	}
+	safe := *failure
+	safe.Step = r.RedactString(safe.Step)
+	safe.Category = r.RedactString(safe.Category)
+	safe.Message = r.RedactString(safe.Message)
+	safe.SuggestedCommand = r.RedactString(safe.SuggestedCommand)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSecretMetadata(secrets []RunSecretMetadata) []RunSecretMetadata {
+	if len(secrets) == 0 {
+		return nil
+	}
+	safe := make([]RunSecretMetadata, len(secrets))
+	for i, secret := range secrets {
+		safe[i] = RunSecretMetadata{
+			Name:     r.RedactString(secret.Name),
+			Source:   r.RedactString(secret.Source),
+			Required: secret.Required,
+			Present:  secret.Present,
+		}
+	}
+	return safe
 }
 
 func (r RunSecretRedactor) redactStringSlice(values []string) []string {

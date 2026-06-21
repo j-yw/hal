@@ -492,7 +492,7 @@ func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testin
 			return "hal/factory", nil
 		},
 		repoRemote: func(string) (string, error) {
-			return "git@github.com:jywlabs/hal.git", nil
+			return "https://x:" + secretValue + "@github.com/jywlabs/hal.git", nil
 		},
 		lookupEnv: func(name string) (string, bool) {
 			if name != "GITHUB_TOKEN" {
@@ -528,6 +528,9 @@ func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testin
 			if strings.Contains(string(data), secretValue) {
 				t.Fatalf("run record JSON leaked secret value: %s", string(data))
 			}
+			if loaded.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+				t.Fatalf("stored repo remote = %q, want redacted secret value", loaded.RepoRemote)
+			}
 			return nil
 		},
 		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
@@ -538,6 +541,20 @@ func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testin
 	}
 	if !pipelineCalled {
 		t.Fatal("pipeline dependency was not invoked")
+	}
+	record, err := store.LoadRun("run-secret-success")
+	if err != nil {
+		t.Fatalf("LoadRun() final record error: %v", err)
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal(final run record) error: %v", err)
+	}
+	if strings.Contains(string(data), secretValue) {
+		t.Fatalf("final run record JSON leaked secret value: %s", string(data))
+	}
+	if record.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+		t.Fatalf("final repo remote = %q, want redacted secret value", record.RepoRemote)
 	}
 }
 
