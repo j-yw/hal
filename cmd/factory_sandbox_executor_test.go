@@ -678,6 +678,78 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecution
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromRemoteOutput(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 45, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	secret := "ghp_remote_output_secret_12345"
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-secret",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:   "GITHUB_TOKEN",
+			Source: factory.RunSecretSourceEnv,
+			Value:  secret,
+		}},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, out io.Writer) error {
+			if env["GITHUB_TOKEN"] != secret {
+				t.Fatalf("GITHUB_TOKEN env = %q, want secret", env["GITHUB_TOKEN"])
+			}
+			if _, err := io.WriteString(out, "using "+secret[:12]); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(out, secret[12:]+"\n"); err != nil {
+				return err
+			}
+			_, err := io.WriteString(out, "finished\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("remote output leaked secret: %q", out.String())
+	}
+	if !strings.Contains(out.String(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("remote output missing redaction marker: %q", out.String())
+	}
+	foundRedactedEvent := false
+	for _, event := range events {
+		text := fmt.Sprintf("%#v", event)
+		if strings.Contains(text, secret) {
+			t.Fatalf("remote event leaked secret: %#v", event)
+		}
+		if strings.Contains(text, factory.RunSecretRedactionPlaceholder) {
+			foundRedactedEvent = true
+		}
+	}
+	if !foundRedactedEvent {
+		t.Fatalf("remote events missing redaction marker: %#v", events)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecution(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0755); err != nil {

@@ -209,7 +209,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		return fmt.Errorf("record factory sandbox metadata: %w", err)
 	}
 
-	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput)
+	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
 	provider, err := deps.resolveProvider(target.Provider)
 	if err != nil {
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err)
@@ -279,12 +279,13 @@ type factorySandboxTimelineWriter struct {
 	runID        string
 	sandboxName  string
 	provider     string
-	redact       func(string) string
+	eventRedact  func(string) string
+	outputRedact func(string) string
 	pending      string
 	nextSequence int64
 }
 
-func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, dst io.Writer) *factorySandboxTimelineWriter {
+func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, dst io.Writer, secrets []factory.ResolvedRunSecret) *factorySandboxTimelineWriter {
 	if dst == nil {
 		dst = io.Discard
 	}
@@ -304,14 +305,18 @@ func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExe
 		nextSequence = nextFactoryRunEventSequence(events)
 	}
 	redactor := sandboxRedactor(false, nil, target)
+	secretRedactor := factory.NewRunSecretRedactor(secrets)
 	return &factorySandboxTimelineWriter{
-		dst:          dst,
-		store:        store,
-		deps:         deps,
-		runID:        runID,
-		sandboxName:  sandboxName,
-		provider:     provider,
-		redact:       redactor.Redact,
+		dst:         dst,
+		store:       store,
+		deps:        deps,
+		runID:       runID,
+		sandboxName: sandboxName,
+		provider:    provider,
+		eventRedact: func(value string) string {
+			return secretRedactor.RedactString(redactor.Redact(value))
+		},
+		outputRedact: secretRedactor.RedactString,
 		nextSequence: nextSequence,
 	}
 }
@@ -324,11 +329,6 @@ func (w *factorySandboxTimelineWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.dst != nil {
-		if _, err := w.dst.Write(p); err != nil {
-			return 0, err
-		}
-	}
 	w.pending += string(p)
 	if err := w.flushCompleteLinesLocked(); err != nil {
 		return 0, err
@@ -348,9 +348,16 @@ func (w *factorySandboxTimelineWriter) Flush() error {
 		return err
 	}
 	line := strings.TrimSpace(w.pending)
+	rawLine := w.pending
 	w.pending = ""
 	if line == "" {
+		if rawLine != "" {
+			return w.writeOutputLocked(rawLine)
+		}
 		return nil
+	}
+	if err := w.writeOutputLocked(rawLine); err != nil {
+		return err
 	}
 	return w.appendLineLocked(line)
 }
@@ -399,7 +406,11 @@ func (w *factorySandboxTimelineWriter) flushCompleteLinesLocked() error {
 			return nil
 		}
 		line := strings.TrimSpace(w.pending[:idx])
+		rawLine := w.pending[:idx+1]
 		w.pending = w.pending[idx+1:]
+		if err := w.writeOutputLocked(rawLine); err != nil {
+			return err
+		}
 		if line == "" {
 			continue
 		}
@@ -409,12 +420,23 @@ func (w *factorySandboxTimelineWriter) flushCompleteLinesLocked() error {
 	}
 }
 
+func (w *factorySandboxTimelineWriter) writeOutputLocked(line string) error {
+	if w.dst == nil || line == "" {
+		return nil
+	}
+	if w.outputRedact != nil {
+		line = w.outputRedact(line)
+	}
+	_, err := w.dst.Write([]byte(line))
+	return err
+}
+
 func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 	if strings.TrimSpace(w.runID) == "" {
 		return nil
 	}
-	if w.redact != nil {
-		line = w.redact(line)
+	if w.eventRedact != nil {
+		line = w.eventRedact(line)
 	}
 	event := factory.EventRecord{
 		Sequence:  w.nextSequence,
