@@ -541,13 +541,12 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 
 func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 45, 0, 0, time.UTC)
-	target := &sandbox.SandboxState{
-		Name:     "factory-local",
-		Provider: "daytona",
-		Status:   sandbox.StatusRunning,
-	}
 	var savedRecords []factory.RunRecord
 	var events []factory.EventRecord
+	loadCalled := false
+	provisionCalled := false
+	startCalled := false
+	resolveProviderCalled := false
 	execCalled := false
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
@@ -559,10 +558,24 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 			RepoPath:    "/Users/v/work/hal",
 		},
 	}, factorySandboxExecutorDeps{
-		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
-		now:             func() time.Time { return now },
-		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
-		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			loadCalled = true
+			return nil, fs.ErrNotExist
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
+			startCalled = true
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			resolveProviderCalled = true
+			return fakeFactorySandboxProvider{}, nil
+		},
 		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
 			execCalled = true
 			return nil
@@ -580,13 +593,16 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want %q", err, wantErr)
 	}
+	if loadCalled || provisionCalled || startCalled || resolveProviderCalled {
+		t.Fatalf("sandbox lifecycle should not run without a workspace directory: load=%t provision=%t start=%t resolveProvider=%t", loadCalled, provisionCalled, startCalled, resolveProviderCalled)
+	}
 	if execCalled {
 		t.Fatalf("remote execution should not run without a workspace directory")
 	}
-	if len(savedRecords) != 3 {
-		t.Fatalf("saved records = %d, want 3", len(savedRecords))
+	if len(savedRecords) != 2 {
+		t.Fatalf("saved records = %d, want 2", len(savedRecords))
 	}
-	failed := savedRecords[2]
+	failed := savedRecords[1]
 	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "prepare_inputs" {
 		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
 	}
