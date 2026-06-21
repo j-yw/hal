@@ -196,6 +196,52 @@ func TestLoadHandoffSummaryFailedSandboxRun(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryUnsafeSandboxNameFallsBackToInspect(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 10, 30, 0, 0, time.UTC)
+	record := RunRecord{
+		RunID:        "run-unsafe-sandbox",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeSandbox,
+		SandboxName:  "fallback;rm",
+		Sandbox: &SandboxMetadata{
+			Name: "factory-remote;rm",
+		},
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt.Add(time.Minute),
+		Failure: &FailureSummary{
+			Step:        "run",
+			Category:    FailureCategoryPipeline,
+			Message:     "remote execution failed",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+
+	if summary.SandboxName != "" {
+		t.Fatalf("SandboxName = %q, want empty invalid name", summary.SandboxName)
+	}
+	if summary.SSHCommand != "" {
+		t.Fatalf("SSHCommand = %q, want empty", summary.SSHCommand)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.ID != handoffInspectActionID || summary.NextAction.Type != NextActionTypeInspect {
+		t.Fatalf("NextAction = %#v, want inspect action", summary.NextAction)
+	}
+	if summary.NextAction.Command != "hal factory status run-unsafe-sandbox --json" {
+		t.Fatalf("NextAction.Command = %q", summary.NextAction.Command)
+	}
+}
+
 func TestLoadHandoffSummaryCompletedRunHasNoTakeoverGuidance(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
@@ -240,6 +286,27 @@ func TestLoadHandoffSummaryCompletedRunHasNoTakeoverGuidance(t *testing.T) {
 	}
 	if summary.InspectCommand != "hal factory status run-complete --json" {
 		t.Fatalf("InspectCommand = %q", summary.InspectCommand)
+	}
+}
+
+func TestHandoffInspectCommandRejectsUnsafeRunIDs(t *testing.T) {
+	tests := []struct {
+		runID string
+		want  string
+	}{
+		{runID: "run-safe_001.2", want: "hal factory status run-safe_001.2 --json"},
+		{runID: "run unsafe", want: ""},
+		{runID: "run;rm", want: ""},
+		{runID: "run$(rm)", want: ""},
+		{runID: "../run", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.runID, func(t *testing.T) {
+			if got := HandoffInspectCommand(tt.runID); got != tt.want {
+				t.Fatalf("HandoffInspectCommand(%q) = %q, want %q", tt.runID, got, tt.want)
+			}
+		})
 	}
 }
 

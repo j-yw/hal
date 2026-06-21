@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 const (
@@ -101,6 +103,12 @@ func HandoffInspectCommand(runID string) string {
 	if runID == "" {
 		return ""
 	}
+	if _, err := validateRunID(runID); err != nil {
+		return ""
+	}
+	if !handoffSafeCommandToken(runID) {
+		return ""
+	}
 	return fmt.Sprintf("hal factory status %s --json", runID)
 }
 
@@ -128,11 +136,38 @@ func handoffNextAction(summary HandoffSummary, id, actionType, command, descript
 
 func handoffSandboxName(record RunRecord) string {
 	if record.Sandbox != nil {
-		if name := strings.TrimSpace(record.Sandbox.Name); name != "" {
+		if name := handoffSafeSandboxName(record.Sandbox.Name); name != "" {
 			return name
 		}
 	}
-	return strings.TrimSpace(record.SandboxName)
+	return handoffSafeSandboxName(record.SandboxName)
+}
+
+func handoffSafeSandboxName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if err := sandbox.ValidateName(name); err != nil {
+		return ""
+	}
+	return name
+}
+
+func handoffSafeCommandToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		isSafePunctuation := c == '-' || c == '_' || c == '.'
+		if !isAlpha && !isDigit && !isSafePunctuation {
+			return false
+		}
+	}
+	return true
 }
 
 func handoffCurrentStep(record RunRecord) string {

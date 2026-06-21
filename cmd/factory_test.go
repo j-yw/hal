@@ -3428,6 +3428,35 @@ func TestNewFactoryRunNextActionIncludesSafeRunContext(t *testing.T) {
 	}
 }
 
+func TestNewFactoryRunNextActionRejectsUnsafeCommandInputs(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:        "run-handoff",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory;rm",
+		Failure: &factory.FailureSummary{
+			Message: "remote execution failed",
+		},
+	})
+	if action == nil {
+		t.Fatal("next action should fall back to inspect")
+	}
+	if action.Type != factory.NextActionTypeInspect || action.Command != "hal factory status run-handoff --json" {
+		t.Fatalf("action = %#v, want inspect fallback", action)
+	}
+	if action.SandboxName != "" {
+		t.Fatalf("sandboxName = %q, want empty invalid name", action.SandboxName)
+	}
+
+	action = newFactoryRunNextAction(factory.RunRecord{
+		RunID:  "run;rm",
+		Status: factory.RunStatusSucceeded,
+	})
+	if action != nil {
+		t.Fatalf("next action = %#v, want nil for unsafe run ID", action)
+	}
+}
+
 func TestNewFactoryRunNextActionUsesCompletedTypeForSucceededRuns(t *testing.T) {
 	action := newFactoryRunNextAction(factory.RunRecord{
 		RunID:       "run-complete",
