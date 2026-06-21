@@ -1040,6 +1040,71 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRecordsResolveProviderFailureHandoff(t *testing.T) {
+	now := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	providerErr := factorySandboxTestError("unknown provider missing")
+	target := &sandbox.SandboxState{
+		Name:     "factory-provider",
+		Provider: "missing",
+		Status:   sandbox.StatusRunning,
+		IP:       "203.0.113.42",
+	}
+	var savedRecords []factory.RunRecord
+	var events []factory.EventRecord
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-provider",
+		RunRecord: factory.RunRecord{
+			RunID:       "run-provider-failure",
+			Status:      factory.RunStatusRunning,
+			CurrentStep: "run",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(providerName string) (sandbox.Provider, error) {
+			if providerName != "missing" {
+				t.Fatalf("providerName = %q, want missing", providerName)
+			}
+			return nil, providerErr
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			t.Fatalf("runProviderExec should not run when provider resolution fails")
+			return nil
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err == nil || err.Error() != "resolve sandbox provider \"missing\": unknown provider missing" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(savedRecords) != 3 {
+		t.Fatalf("saved records = %d, want 3", len(savedRecords))
+	}
+	failed := savedRecords[2]
+	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "resolve_provider" {
+		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
+	}
+	if failed.SandboxName != "factory-provider" || failed.Sandbox == nil || failed.Sandbox.Provider != "missing" {
+		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)
+	}
+	if failed.Failure == nil || failed.Failure.Message != providerErr.Error() || failed.Failure.SuggestedCommand != "hal sandbox ssh factory-provider" {
+		t.Fatalf("failed failure summary = %#v", failed.Failure)
+	}
+	if len(events) != 1 || events[0].EventType != factory.EventTypeFailureClassification || events[0].Metadata["step"] != "resolve_provider" {
+		t.Fatalf("failure events = %#v", events)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t *testing.T) {
 	now := time.Date(2026, 6, 21, 11, 15, 0, 0, time.UTC)
 	execErr := factorySandboxTestError("remote pipeline failed on 203.0.113.42")
