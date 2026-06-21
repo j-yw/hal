@@ -3598,6 +3598,11 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 			SourcePath: rawPath,
 			Path:       rawPath,
 			StoredPath: "artifacts/run-absolute-artifact-path/secret-feature.md",
+			Warnings: []string{
+				"optional artifact not found: " + rawPath,
+				"artifact metadata api_key=super-secret",
+			},
+			Partial: true,
 		},
 	}
 
@@ -3617,8 +3622,8 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 			t.Fatalf("json.Marshal(%s) error: %v", name, err)
 		}
 		raw := string(data)
-		if strings.Contains(raw, rawPath) || strings.Contains(raw, filepath.Dir(rawPath)) {
-			t.Fatalf("%s JSON leaked raw absolute artifact path %q: %s", name, rawPath, raw)
+		if strings.Contains(raw, rawPath) || strings.Contains(raw, filepath.Dir(rawPath)) || strings.Contains(raw, "super-secret") {
+			t.Fatalf("%s JSON leaked raw artifact warning content: %s", name, raw)
 		}
 	}
 }
