@@ -97,6 +97,14 @@ func (s Store) UpdateQueue(update QueueUpdateFunc) ([]QueueEntry, error) {
 // EnqueueQueueEntry appends one queued factory run entry using the store's
 // atomic queue mutation path.
 func (s Store) EnqueueQueueEntry(runID, executorMode string, opts QueueOperationOptions) (QueueEntry, error) {
+	return s.EnqueueQueueEntryWithLockedPostSave(runID, executorMode, opts, nil)
+}
+
+// EnqueueQueueEntryWithLockedPostSave appends one queued factory run entry,
+// saves it, then runs afterSave before releasing the queue lock. The callback
+// observes the committed queue entry while workers remain blocked from claiming
+// it. If the callback fails, the queue entry is rolled back before unlock.
+func (s Store) EnqueueQueueEntryWithLockedPostSave(runID, executorMode string, opts QueueOperationOptions, afterSave func(QueueEntry) error) (QueueEntry, error) {
 	runID, err := validateRunID(runID)
 	if err != nil {
 		return QueueEntry{}, err
@@ -125,11 +133,29 @@ func (s Store) EnqueueQueueEntry(runID, executorMode string, opts QueueOperation
 		AttemptCount: 0,
 	}
 
-	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
-		if existing := activeQueueEntryForRun(entries, runID); existing != nil {
-			return nil, fmt.Errorf("factory run %q already has active queue entry %q", runID, existing.QueueID)
+	if err := s.withQueueLock(func() error {
+		entries, err := s.loadQueue()
+		if err != nil {
+			return err
 		}
-		return append(entries, entry), nil
+		if existing := activeQueueEntryForRun(entries, runID); existing != nil {
+			return fmt.Errorf("factory run %q already has active queue entry %q", runID, existing.QueueID)
+		}
+
+		next := append(copyQueueEntries(entries), entry)
+		if err := s.saveQueue(next); err != nil {
+			return err
+		}
+		if afterSave == nil {
+			return nil
+		}
+		if err := afterSave(entry); err != nil {
+			if rollbackErr := s.saveQueue(entries); rollbackErr != nil {
+				return errors.Join(err, fmt.Errorf("rollback factory queue entry %q: %w", entry.QueueID, rollbackErr))
+			}
+			return err
+		}
+		return nil
 	}); err != nil {
 		return QueueEntry{}, err
 	}
