@@ -560,15 +560,15 @@ func deriveOutcomeFromArtifacts(artifacts []ArtifactReference, kind string) stri
 }
 
 func deriveOutcomeFromEvents(events []EventRecord, kind string) string {
+	if kind == "verification" {
+		if outcome := deriveVerificationOutcomeFromResultEvents(events); outcome != "" {
+			return outcome
+		}
+	}
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Metadata == nil {
 			continue
-		}
-		if kind == "verification" && event.EventType == EventTypeVerificationResult {
-			if status, _ := event.Metadata["status"].(string); strings.TrimSpace(status) != "" {
-				return strings.TrimSpace(status)
-			}
 		}
 		step, _ := event.Metadata["step"].(string)
 		if strings.TrimSpace(step) != kind {
@@ -586,6 +586,33 @@ func deriveOutcomeFromEvents(events []EventRecord, kind string) string {
 		}
 	}
 	return ""
+}
+
+func deriveVerificationOutcomeFromResultEvents(events []EventRecord) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.EventType != EventTypeVerificationResult || event.Metadata == nil {
+			continue
+		}
+		status, _ := event.Metadata["status"].(string)
+		return normalizeVerificationOutcome(status)
+	}
+	return ""
+}
+
+func normalizeVerificationOutcome(status string) string {
+	switch strings.TrimSpace(status) {
+	case verify.StatusPass, RunStatusSucceeded:
+		return "passed"
+	case verify.StatusFail, RunStatusFailed:
+		return "failed"
+	case verify.StatusWarn:
+		return verify.StatusWarn
+	case "skipped":
+		return "skipped"
+	default:
+		return strings.TrimSpace(status)
+	}
 }
 
 func eventDurationStep(event EventRecord) string {

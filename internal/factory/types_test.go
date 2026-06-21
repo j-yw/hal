@@ -547,6 +547,48 @@ func TestDeriveRunTelemetryNormalizesFailureCategory(t *testing.T) {
 	}
 }
 
+func TestDeriveRunTelemetryPrefersVerificationResultOutcome(t *testing.T) {
+	base := time.Date(2026, 6, 21, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		status     string
+		stepStatus string
+		want       string
+	}{
+		{name: "warn result beats succeeded step", status: verify.StatusWarn, stepStatus: RunStatusSucceeded, want: verify.StatusWarn},
+		{name: "pass result keeps passed vocabulary", status: verify.StatusPass, stepStatus: RunStatusSucceeded, want: "passed"},
+		{name: "fail result keeps failed vocabulary", status: verify.StatusFail, stepStatus: RunStatusFailed, want: "failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := []EventRecord{
+				{
+					EventType: EventTypeVerificationResult,
+					Timestamp: base,
+					Metadata:  map[string]any{"status": tt.status},
+				},
+				{
+					EventType: EventTypeStepEnded,
+					Timestamp: base.Add(time.Second),
+					Metadata: map[string]any{
+						"step":   RunDurationStepVerification,
+						"status": tt.stepStatus,
+					},
+				},
+			}
+
+			got := DeriveRunTelemetry(RunRecord{RunID: "run-verification-outcome"}, events)
+			if got == nil {
+				t.Fatal("DeriveRunTelemetry() = nil, want telemetry")
+			}
+			if got.VerificationOutcome != tt.want {
+				t.Fatalf("verificationOutcome = %q, want %q", got.VerificationOutcome, tt.want)
+			}
+		})
+	}
+}
+
 func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	types := []reflect.Type{
 		reflect.TypeOf(RunRecord{}),
