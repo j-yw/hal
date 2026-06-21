@@ -34,12 +34,13 @@ type factorySandboxCleanupRequest struct {
 }
 
 type factorySandboxExecutorRequest struct {
-	ProjectDir    string
-	SandboxName   string
-	RunRecord     factory.RunRecord
-	RemoteAuto    factoryRunAutoRequest
-	RemoteOutput  io.Writer
-	BeforeCleanup func(context.Context, factory.RunRecord) error
+	ProjectDir          string
+	SandboxName         string
+	RunRecord           factory.RunRecord
+	RemoteAuto          factoryRunAutoRequest
+	RemoteOutput        io.Writer
+	BeforeCleanup       func(context.Context, factory.RunRecord) error
+	DeferSuccessCleanup bool
 }
 
 type factorySandboxExecutorDeps struct {
@@ -218,9 +219,13 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err)
 		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err)
 	}
+	cleanupBehavior := factorySandboxCleanupBehavior(record)
+	if req.DeferSuccessCleanup && cleanupBehavior == factory.CleanupBehaviorOnSuccess {
+		cleanupBehavior = factory.CleanupBehaviorPreserve
+	}
 	cleanupSucceeded := false
 	defer func() {
-		if cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factorySandboxCleanupBehavior(record), cleanupSucceeded); cleanupErr != nil {
+		if cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, cleanupBehavior, cleanupSucceeded); cleanupErr != nil {
 			sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr)))
 			if returnErr != nil {
 				returnErr = errors.Join(returnErr, sanitizedCleanupErr)

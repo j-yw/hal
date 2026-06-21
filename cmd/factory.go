@@ -183,6 +183,9 @@ type factoryRunDeps struct {
 	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
 	loadVerify      func(string) (*verify.Config, error)
 	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
+	loadSandbox     func(string) (*sandbox.SandboxState, error)
+	resolveProvider func(string, string) (sandbox.Provider, error)
+	cleanupSandbox  func(context.Context, factorySandboxCleanupRequest) error
 	statusSnapshot  func(string) (factorySnapshotArtifact, error)
 	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
 	sandboxCopier   factory.SandboxArtifactCopier
@@ -213,10 +216,13 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
 	},
-	loadVerify:     verify.LoadConfig,
-	runVerify:      verify.Run,
-	statusSnapshot: defaultFactoryStatusSnapshot,
-	doctorSnapshot: defaultFactoryDoctorSnapshot,
+	loadVerify:      verify.LoadConfig,
+	runVerify:       verify.Run,
+	loadSandbox:     sandbox.LoadActiveInstance,
+	resolveProvider: resolveProviderWithFallback,
+	cleanupSandbox:  cleanupFactorySandbox,
+	statusSnapshot:  defaultFactoryStatusSnapshot,
+	doctorSnapshot:  defaultFactoryDoctorSnapshot,
 }
 
 type factoryRunRequest struct {
@@ -526,10 +532,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
 		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
-			ProjectDir:   dir,
-			RunRecord:    runningRecord,
-			RemoteAuto:   remoteAuto,
-			RemoteOutput: remoteOutput,
+			ProjectDir:          dir,
+			RunRecord:           runningRecord,
+			RemoteAuto:          remoteAuto,
+			RemoteOutput:        remoteOutput,
+			DeferSuccessCleanup: factoryRunDefersSandboxSuccessCleanup(policy),
 			BeforeCleanup: func(ctx context.Context, record factory.RunRecord) error {
 				if sandboxArtifactsCollected {
 					return nil
@@ -616,6 +623,32 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
+	completedRecord, err = cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx, dir, req, out, completedRecord, deps, policy)
+	if err != nil {
+		failedAt := deps.now()
+		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, failedAt, err)
+		var recordErrs []error
+		if failureErr != nil {
+			recordErrs = append(recordErrs, failureErr)
+		}
+		if eventErr := recordFactoryRunPipelineFailed(store, failedRecord.RunID, failedAt, err); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory cleanup failure event: %w", eventErr))
+		}
+		if failedRecord.Failure != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+			}
+		}
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+			recordErrs = append(recordErrs, artifactErr)
+		} else {
+			failedRecord = artifactRecord
+		}
+		if len(recordErrs) > 0 {
+			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
+		}
+		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
+	}
 	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
 	if err != nil {
 		return factoryRunExecutionResult{Record: completedRecord}, err
@@ -676,6 +709,15 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	}
 	if deps.runVerify == nil {
 		deps.runVerify = defaultFactoryRunDeps.runVerify
+	}
+	if deps.loadSandbox == nil {
+		deps.loadSandbox = defaultFactoryRunDeps.loadSandbox
+	}
+	if deps.resolveProvider == nil {
+		deps.resolveProvider = defaultFactoryRunDeps.resolveProvider
+	}
+	if deps.cleanupSandbox == nil {
+		deps.cleanupSandbox = defaultFactoryRunDeps.cleanupSandbox
 	}
 	if deps.statusSnapshot == nil {
 		deps.statusSnapshot = defaultFactoryRunDeps.statusSnapshot
@@ -885,6 +927,46 @@ func recordFactoryRunPreExecutionPolicyDecisions(store factory.Store, runID stri
 
 func factoryPolicySkipsCI(policy factory.FactoryPolicy) bool {
 	return !policy.PRCreationAllowed
+}
+
+func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
+	return policy.VerificationRequired && strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorOnSuccess
+}
+
+func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, error) {
+	if !req.Sandbox || !factoryRunDefersSandboxSuccessCleanup(policy) {
+		return record, nil
+	}
+	name := strings.TrimSpace(record.SandboxName)
+	if name == "" && record.Sandbox != nil {
+		name = strings.TrimSpace(record.Sandbox.Name)
+	}
+	if name == "" {
+		return record, nil
+	}
+	target, err := deps.loadSandbox(name)
+	if err != nil {
+		return record, fmt.Errorf("load factory sandbox for success cleanup %q: %w", name, err)
+	}
+	if target == nil {
+		return record, nil
+	}
+	provider, err := deps.resolveProvider(dir, target.Provider)
+	if err != nil {
+		return record, fmt.Errorf("resolve sandbox provider %q for success cleanup: %w", target.Provider, err)
+	}
+	cleanupOut := out
+	if req.JSON {
+		cleanupOut = io.Discard
+	}
+	if err := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+		Target:   target,
+		Provider: provider,
+		Out:      cleanupOut,
+	}); err != nil {
+		return record, fmt.Errorf("cleanup factory sandbox after verified success: %w", err)
+	}
+	return record, nil
 }
 
 func autoFactoryAttemptPolicyFromFactoryPolicy(policy factory.FactoryPolicy) autoFactoryAttemptPolicy {

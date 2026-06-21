@@ -2245,6 +2245,246 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 2, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verifiedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
+	policy.VerificationRequired = true
+	copier := &fakeFactorySandboxArtifactCopier{
+		files: map[string]string{
+			"/workspace/.hal/auto-state.json": `{"step":"done"}` + "\n",
+		},
+	}
+	target := &sandbox.SandboxState{
+		Name:     "factory-verified",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	var verificationCalled bool
+	var cleanupCalls int
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-deferred-cleanup", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return verifiedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			if !req.DeferSuccessCleanup {
+				t.Fatal("DeferSuccessCleanup = false, want true for on_success cleanup with required verification")
+			}
+			if req.BeforeCleanup == nil {
+				t.Fatal("BeforeCleanup should still be configured")
+			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			return store.SaveRun(&record)
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return &verify.Config{Checks: []verify.ShellCheck{
+				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
+			}}, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			verificationCalled = true
+			return &verify.Result{
+				Status: verify.StatusPass,
+				Summary: verify.Summary{
+					Total:  1,
+					Passed: 1,
+				},
+			}, nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if !verificationCalled {
+				t.Fatal("cleanup ran before verification passed")
+			}
+			if len(copier.fileCalls) != 1 {
+				t.Fatalf("cleanup ran before sandbox artifact collection; fileCalls = %#v", copier.fileCalls)
+			}
+			if req.Target == nil || req.Target.Name != target.Name {
+				t.Fatalf("cleanup target = %#v, want %q", req.Target, target.Name)
+			}
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxCopier:  copier,
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-auto-state",
+				Name:       "sandbox-auto-state",
+				Type:       "json",
+				RemotePath: "/workspace/.hal/auto-state.json",
+				Path:       ".hal/auto-state.json",
+			}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1 after verification passes", cleanupCalls)
+	}
+	record, err := store.LoadRun("run-sandbox-deferred-cleanup")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", record.Status)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+}
+
+func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 3, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verifiedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
+	policy.VerificationRequired = true
+	target := &sandbox.SandboxState{
+		Name:     "factory-verification-failed",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	var cleanupCalls int
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-preserve-verification-failure", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return verifiedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			if !req.DeferSuccessCleanup {
+				t.Fatal("DeferSuccessCleanup = false, want true for on_success cleanup with required verification")
+			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			return store.SaveRun(&record)
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return &verify.Config{Checks: []verify.ShellCheck{
+				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
+			}}, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			return &verify.Result{
+				Status: verify.StatusFail,
+				Summary: verify.Summary{
+					Total:  1,
+					Failed: 1,
+				},
+			}, nil
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "verification failed") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want verification failure", err)
+	}
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 when verification fails", cleanupCalls)
+	}
+	record, err := store.LoadRun("run-sandbox-preserve-verification-failure")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", record.Status)
+	}
+	if record.Failure == nil || record.Failure.Step != "verify" {
+		t.Fatalf("failure = %#v, want verify failure", record.Failure)
+	}
+}
+
 func TestRunFactoryRunWithDepsBlocksWhenVerificationRequiredAndMissing(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
