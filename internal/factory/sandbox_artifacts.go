@@ -157,6 +157,16 @@ func storeSandboxArtifactDir(store Store, runID string, request SandboxArtifactR
 		if entry.IsDir() {
 			return nil
 		}
+		if !sandboxArtifactPathInsideDir(localDir, filePath) {
+			return fmt.Errorf("sandbox artifact path %q is outside copied directory", filePath)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
 		rel, err := filepath.Rel(localDir, filePath)
 		if err != nil {
 			return err
@@ -180,6 +190,22 @@ func storeSandboxArtifactDir(store Store, runID string, request SandboxArtifactR
 		return nil, nil, err
 	}
 	return stored, nil, nil
+}
+
+func sandboxArtifactPathInsideDir(root, candidate string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootAbs, candidateAbs)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func saveSandboxArtifactFile(store Store, runID string, artifact ArtifactReference, sourcePath string) (ArtifactReference, error) {
