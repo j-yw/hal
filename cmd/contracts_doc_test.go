@@ -429,9 +429,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			contractValue: FactoryRunContractVersion,
 			requiredFields: []string{
 				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
-				"eventSummary", "failure", "id", "command", "description", "artifactLocations",
-				"logLocations", "sandboxName", "repoPath", "branchName", "pullRequestUrl",
-				"currentStep", "failureReason", "total", "byType",
+				"eventSummary", "failure", "id", "command", "description", "total", "byType",
 				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
 				"name", "type", "sourcePath", "path", "storedPath", "url", "sizeBytes", "createdAt", "partial",
 			},

@@ -3244,7 +3244,6 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		Status:          factory.RunStatusFailed,
 		NextAction: &FactoryRunNextAction{
 			ID:          "inspect_factory_run",
-			Type:        factory.NextActionTypeInspect,
 			Command:     "hal factory status run-json-contract --json",
 			Description: "Inspect the durable run record and timeline.",
 		},
@@ -3299,7 +3298,7 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("nextAction should be an object, got %T", raw["nextAction"])
 	}
-	requireFactoryFields(t, "factory run nextAction", nextAction, []string{"id", "type", "command", "description"})
+	requireExactKeys(t, nextAction, []string{"id", "command", "description"})
 
 	artifacts, ok := raw["artifacts"].([]any)
 	if !ok || len(artifacts) != 1 {
@@ -3327,7 +3326,7 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
 }
 
-func TestNewFactoryRunNextActionIncludesSafeRunContext(t *testing.T) {
+func TestNewFactoryRunNextActionUsesSafeSandboxTakeoverCommand(t *testing.T) {
 	record := factory.RunRecord{
 		RunID:        "run-handoff",
 		Status:       factory.RunStatusFailed,
@@ -3383,44 +3382,16 @@ func TestNewFactoryRunNextActionIncludesSafeRunContext(t *testing.T) {
 	if action.ID != "takeover_sandbox" {
 		t.Fatalf("id = %q, want takeover_sandbox", action.ID)
 	}
-	if action.Type != factory.NextActionTypeTakeover {
-		t.Fatalf("type = %q, want %q", action.Type, factory.NextActionTypeTakeover)
-	}
 	if action.Command != "hal sandbox ssh factory-handoff" {
 		t.Fatalf("command = %q", action.Command)
-	}
-	if action.RunID != record.RunID {
-		t.Fatalf("runId = %q, want %q", action.RunID, record.RunID)
-	}
-	if action.SandboxName != "factory-handoff" {
-		t.Fatalf("sandboxName = %q, want factory-handoff", action.SandboxName)
-	}
-	if action.RepoPath != record.RepoPath {
-		t.Fatalf("repoPath = %q, want %q", action.RepoPath, record.RepoPath)
-	}
-	if action.BranchName != record.BranchName {
-		t.Fatalf("branchName = %q, want %q", action.BranchName, record.BranchName)
-	}
-	if action.PullRequestURL != "https://github.com/jywlabs/hal/pull/42" {
-		t.Fatalf("pullRequestUrl = %q", action.PullRequestURL)
-	}
-	if action.CurrentStep != "ci" {
-		t.Fatalf("currentStep = %q, want ci", action.CurrentStep)
-	}
-	if action.FailureReason != "unit tests failed" {
-		t.Fatalf("failureReason = %q", action.FailureReason)
-	}
-	if len(action.ArtifactLocations) != 2 {
-		t.Fatalf("artifactLocations len = %d, want 2: %#v", len(action.ArtifactLocations), action.ArtifactLocations)
-	}
-	if len(action.LogLocations) != 1 {
-		t.Fatalf("logLocations len = %d, want 1: %#v", len(action.LogLocations), action.LogLocations)
 	}
 
 	data, err := json.Marshal(action)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
+	raw := parseFactoryJSON(t, data)
+	requireExactKeys(t, raw, []string{"id", "command", "description"})
 	for _, forbidden := range []string{"203.0.113.10", "100.64.0.10", "tailnet.ts.net", "root@"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("nextAction should not expose %q: %s", forbidden, string(data))
@@ -3428,7 +3399,7 @@ func TestNewFactoryRunNextActionIncludesSafeRunContext(t *testing.T) {
 	}
 }
 
-func TestNewFactoryRunNextActionRedactsSensitiveFailureReason(t *testing.T) {
+func TestNewFactoryRunNextActionDoesNotExposeFailureReason(t *testing.T) {
 	action := newFactoryRunNextAction(factory.RunRecord{
 		RunID:        "run-sensitive-handoff",
 		Status:       factory.RunStatusFailed,
@@ -3443,8 +3414,16 @@ func TestNewFactoryRunNextActionRedactsSensitiveFailureReason(t *testing.T) {
 	if action == nil {
 		t.Fatal("next action should be present")
 	}
-	if action.FailureReason != "[redacted]" {
-		t.Fatalf("failureReason = %q, want [redacted]", action.FailureReason)
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	raw := parseFactoryJSON(t, data)
+	requireExactKeys(t, raw, []string{"id", "command", "description"})
+	for _, forbidden := range []string{"203.0.113.10", "token=secret-value", "remote failed"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("nextAction should not expose %q: %s", forbidden, string(data))
+		}
 	}
 }
 
@@ -3461,11 +3440,8 @@ func TestNewFactoryRunNextActionRejectsUnsafeCommandInputs(t *testing.T) {
 	if action == nil {
 		t.Fatal("next action should fall back to inspect")
 	}
-	if action.Type != factory.NextActionTypeInspect || action.Command != "hal factory status run-handoff --json" {
+	if action.ID != "inspect_factory_run" || action.Command != "hal factory status run-handoff --json" {
 		t.Fatalf("action = %#v, want inspect fallback", action)
-	}
-	if action.SandboxName != "" {
-		t.Fatalf("sandboxName = %q, want empty invalid name", action.SandboxName)
 	}
 
 	action = newFactoryRunNextAction(factory.RunRecord{
@@ -3477,7 +3453,7 @@ func TestNewFactoryRunNextActionRejectsUnsafeCommandInputs(t *testing.T) {
 	}
 }
 
-func TestNewFactoryRunNextActionUsesCompletedTypeForSucceededRuns(t *testing.T) {
+func TestNewFactoryRunNextActionUsesCompletedDescriptionForSucceededRuns(t *testing.T) {
 	action := newFactoryRunNextAction(factory.RunRecord{
 		RunID:       "run-complete",
 		Status:      factory.RunStatusSucceeded,
@@ -3489,15 +3465,15 @@ func TestNewFactoryRunNextActionUsesCompletedTypeForSucceededRuns(t *testing.T) 
 	if action.ID != "inspect_factory_run" {
 		t.Fatalf("id = %q, want inspect_factory_run", action.ID)
 	}
-	if action.Type != factory.NextActionTypeCompleted {
-		t.Fatalf("type = %q, want %q", action.Type, factory.NextActionTypeCompleted)
+	if action.Command != "hal factory status run-complete --json" {
+		t.Fatalf("command = %q", action.Command)
 	}
-	if action.FailureReason != "" {
-		t.Fatalf("failureReason = %q, want empty", action.FailureReason)
+	if action.Description != "Inspect the completed durable run record and timeline." {
+		t.Fatalf("description = %q", action.Description)
 	}
 }
 
-func TestNewFactoryRunNextActionRedactsURLArtifactLocations(t *testing.T) {
+func TestNewFactoryRunNextActionDoesNotExposeArtifactLocations(t *testing.T) {
 	action := newFactoryRunNextAction(factory.RunRecord{
 		RunID:  "run-url-locations",
 		Status: factory.RunStatusFailed,
@@ -3519,23 +3495,13 @@ func TestNewFactoryRunNextActionRedactsURLArtifactLocations(t *testing.T) {
 	if action == nil {
 		t.Fatal("next action should be present")
 	}
-	if len(action.ArtifactLocations) != 1 {
-		t.Fatalf("artifactLocations len = %d, want 1: %#v", len(action.ArtifactLocations), action.ArtifactLocations)
-	}
-	if action.ArtifactLocations[0].Path != "[redacted]" {
-		t.Fatalf("artifact location path = %q, want [redacted]", action.ArtifactLocations[0].Path)
-	}
-	if len(action.LogLocations) != 1 {
-		t.Fatalf("logLocations len = %d, want 1: %#v", len(action.LogLocations), action.LogLocations)
-	}
-	if action.LogLocations[0].Path != "[redacted]" {
-		t.Fatalf("log location path = %q, want [redacted]", action.LogLocations[0].Path)
-	}
 
 	data, err := json.Marshal(action)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
+	raw := parseFactoryJSON(t, data)
+	requireExactKeys(t, raw, []string{"id", "command", "description"})
 	for _, forbidden := range []string{"192.0.2.42", "token=secret", "api_key=secret", "https://example.com"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("nextAction should not expose %q: %s", forbidden, string(data))
@@ -4748,6 +4714,15 @@ func requireExactKeys(t *testing.T, got map[string]any, want []string) {
 		t.Fatalf("keys = %v, want exactly %v", mapKeys(got), want)
 	}
 	requireFactoryFields(t, "object", got, want)
+}
+
+func parseFactoryJSON(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(raw) error: %v\nraw: %s", err, string(data))
+	}
+	return raw
 }
 
 func requireFactoryFields(t *testing.T, label string, got map[string]any, want []string) {

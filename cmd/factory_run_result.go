@@ -23,8 +23,12 @@ type FactoryRunResponse struct {
 	Failure         *FactoryRunFailure            `json:"failure"`
 }
 
-// FactoryRunNextAction suggests what to do after a factory run.
-type FactoryRunNextAction = factory.NextAction
+// FactoryRunNextAction suggests what to do after a local factory run.
+type FactoryRunNextAction struct {
+	ID          string `json:"id"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
 
 // FactoryRunEventSummary summarizes the durable timeline associated with a run.
 type FactoryRunEventSummary struct {
@@ -144,35 +148,22 @@ func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
 		return nil
 	}
 	actionID := "inspect_factory_run"
-	actionType := factory.NextActionTypeInspect
 	description := "Inspect the durable run record and timeline."
 	if record.Status == factory.RunStatusFailed && record.ExecutorMode == factory.ExecutorModeSandbox {
 		if sandboxName := factoryRunSandboxName(record); sandboxName != "" {
 			command = "hal sandbox ssh " + sandboxName
 			actionID = "takeover_sandbox"
-			actionType = factory.NextActionTypeTakeover
 			description = "Open an interactive shell in the sandbox for manual takeover."
 		}
 	}
 	if record.Status == factory.RunStatusSucceeded {
-		actionType = factory.NextActionTypeCompleted
 		description = "Inspect the completed durable run record and timeline."
 	}
 
 	return &FactoryRunNextAction{
-		ID:                actionID,
-		Type:              actionType,
-		Command:           command,
-		Description:       description,
-		RunID:             strings.TrimSpace(record.RunID),
-		SandboxName:       factoryRunSandboxName(record),
-		RepoPath:          strings.TrimSpace(record.RepoPath),
-		BranchName:        strings.TrimSpace(record.BranchName),
-		PullRequestURL:    factoryRunPullRequestURL(record),
-		CurrentStep:       strings.TrimSpace(record.CurrentStep),
-		FailureReason:     factoryRunFailureReason(record),
-		ArtifactLocations: factoryRunArtifactLocations(record.Artifacts, false),
-		LogLocations:      factoryRunArtifactLocations(record.Artifacts, true),
+		ID:          actionID,
+		Command:     command,
+		Description: description,
 	}
 }
 
@@ -194,74 +185,6 @@ func safeFactoryRunSandboxName(name string) string {
 		return ""
 	}
 	return name
-}
-
-func factoryRunPullRequestURL(record factory.RunRecord) string {
-	for _, artifact := range record.Artifacts {
-		if url := safeFactoryPRURL(factoryRunArtifactSummaryString(artifact, "pullRequestUrl")); url != "" {
-			return url
-		}
-		if url := safeFactoryPRURL(artifact.URL); url != "" && strings.Contains(strings.ToLower(artifact.Name), "pull") {
-			return url
-		}
-	}
-	return ""
-}
-
-func factoryRunArtifactSummaryString(artifact factory.ArtifactReference, key string) string {
-	if len(artifact.Summary) == 0 {
-		return ""
-	}
-	value, ok := artifact.Summary[key]
-	if !ok {
-		return ""
-	}
-	text, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(text)
-}
-
-func factoryRunFailureReason(record factory.RunRecord) string {
-	if record.Failure == nil {
-		return ""
-	}
-	return factory.SanitizeHandoffFailureReason(record.Failure.Message)
-}
-
-func factoryRunArtifactLocations(artifacts []factory.ArtifactReference, logsOnly bool) []factory.NextActionLocation {
-	locations := make([]factory.NextActionLocation, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if logsOnly != factoryRunArtifactLooksLikeLog(artifact) {
-			continue
-		}
-		location := factory.NextActionLocation{
-			Name:       strings.TrimSpace(artifact.Name),
-			Path:       sanitizeFactoryArtifactPath(artifact.Path),
-			StoredPath: strings.TrimSpace(artifact.StoredPath),
-		}
-		if location.Path == "" && location.StoredPath == "" {
-			continue
-		}
-		locations = append(locations, location)
-	}
-	if len(locations) == 0 {
-		return nil
-	}
-	return locations
-}
-
-func factoryRunArtifactLooksLikeLog(artifact factory.ArtifactReference) bool {
-	search := strings.ToLower(strings.Join([]string{
-		artifact.Name,
-		artifact.Type,
-		artifact.Path,
-		artifact.StoredPath,
-	}, " "))
-	return strings.Contains(search, "log") ||
-		strings.Contains(search, "stdout") ||
-		strings.Contains(search, "stderr")
 }
 
 func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
