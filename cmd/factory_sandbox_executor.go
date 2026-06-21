@@ -823,7 +823,7 @@ func factorySandboxConnectionMetadataFromState(instance *sandbox.SandboxState) *
 	}
 
 	connection := &factory.SandboxConnectionMetadata{
-		Address:           instance.IP,
+		Address:           sandbox.PreferredIP(instance),
 		PublicIP:          instance.IP,
 		TailscaleIP:       instance.TailscaleIP,
 		TailscaleHostname: instance.TailscaleHostname,
