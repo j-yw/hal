@@ -572,7 +572,7 @@ func factorySandboxPrepareRemoteInputs(ctx context.Context, req factorySandboxEx
 	remoteReq := req.RemoteAuto
 	workspaceDir := factorySandboxRemoteWorkspaceDir(req.RunRecord)
 	if workspaceDir == "" {
-		return remoteReq, nil
+		return remoteReq, fmt.Errorf("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
 	}
 	connectInfo := sandbox.ConnectInfoFromState(target)
 	if len(remoteReq.Args) > 0 {

@@ -495,6 +495,65 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 45, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "factory-local",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	var savedRecords []factory.RunRecord
+	var events []factory.EventRecord
+	execCalled := false
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-local",
+		RunRecord: factory.RunRecord{
+			RunID:       "run-missing-workspace",
+			Status:      factory.RunStatusRunning,
+			CurrentStep: "run",
+			RepoPath:    "/Users/v/work/hal",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			execCalled = true
+			return nil
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	wantErr := "prepare factory sandbox inputs: sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout"
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want %q", err, wantErr)
+	}
+	if execCalled {
+		t.Fatalf("remote execution should not run without a workspace directory")
+	}
+	if len(savedRecords) != 3 {
+		t.Fatalf("saved records = %d, want 3", len(savedRecords))
+	}
+	failed := savedRecords[2]
+	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "prepare_inputs" {
+		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
+	}
+	if failed.Failure == nil || failed.Failure.Message != strings.TrimPrefix(wantErr, "prepare factory sandbox inputs: ") {
+		t.Fatalf("failure summary = %#v", failed.Failure)
+	}
+	if len(events) != 1 || events[0].Metadata["step"] != "prepare_inputs" {
+		t.Fatalf("failure events = %#v", events)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *testing.T) {
 	now := time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
@@ -509,7 +568,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	var events []factory.EventRecord
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		SandboxName:  "factory-remote",
-		RunRecord:    factory.RunRecord{RunID: "run-remote-output", Status: factory.RunStatusRunning},
+		RunRecord:    factory.RunRecord{RunID: "run-remote-output", Status: factory.RunStatusRunning, RepoRemote: "git@github.com:example/repo.git"},
 		RemoteOutput: &out,
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -674,7 +733,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTa
 	resolved := false
 	var savedRecords []factory.RunRecord
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
-		RunRecord: factory.RunRecord{RunID: "run-default"},
+		RunRecord: factory.RunRecord{RunID: "run-default", RepoRemote: "git@github.com:example/repo.git"},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
@@ -931,7 +990,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		SandboxName:  "factory-failed",
-		RunRecord:    factory.RunRecord{RunID: "run-remote-failure", Status: factory.RunStatusRunning, CurrentStep: "run"},
+		RunRecord:    factory.RunRecord{RunID: "run-remote-failure", Status: factory.RunStatusRunning, CurrentStep: "run", RepoRemote: "git@github.com:example/repo.git"},
 		RemoteOutput: &out,
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
