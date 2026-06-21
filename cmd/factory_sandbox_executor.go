@@ -65,6 +65,8 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	appendEvent:     appendFactorySandboxTimelineEvent,
 }
 
+var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
+
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
@@ -118,6 +120,11 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	record.UpdatedAt = deps.now().UTC()
 	if err := deps.saveRun(store, &record); err != nil {
 		return fmt.Errorf("save sandbox factory run: %w", err)
+	}
+
+	if factorySandboxRemoteWorkspaceDir(record) == "" {
+		_ = recordFactorySandboxFailure(store, deps, &record, nil, "prepare_inputs", errFactorySandboxWorkspaceRequired)
+		return factorySandboxRecordedError("prepare factory sandbox inputs", nil, errFactorySandboxWorkspaceRequired)
 	}
 
 	var target *sandbox.SandboxState
@@ -579,7 +586,7 @@ func factorySandboxPrepareRemoteInputs(ctx context.Context, req factorySandboxEx
 	remoteReq := req.RemoteAuto
 	workspaceDir := factorySandboxRemoteWorkspaceDir(req.RunRecord)
 	if workspaceDir == "" {
-		return remoteReq, fmt.Errorf("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
+		return remoteReq, errFactorySandboxWorkspaceRequired
 	}
 	connectInfo := sandbox.ConnectInfoFromState(target)
 	if len(remoteReq.Args) > 0 {
