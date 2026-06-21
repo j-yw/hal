@@ -462,8 +462,9 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 
 	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if err != nil {
-		return failFactoryRunSetup(store, record, deps.now(), err)
+		return failFactoryRunSetup(store, record, deps.now(), err, redactor)
 	}
 
 	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
@@ -480,7 +481,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		Record:  runningRecord,
 		Store:   store,
 		RecordProgress: func(event factoryRunProgressEvent) error {
-			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
+			return recordFactoryRunProgressWithRedactor(store, runningRecord.RunID, deps.now(), event, redactor)
 		},
 	}
 	artifactSnapshot := snapshotFactoryRunArtifacts(dir)
@@ -513,11 +514,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		if req.Sandbox {
 			recordErr = factorySandboxPipelineRecordError(failedRecord, runErr)
 		}
-		failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, recordErr)
+		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, failedRecord, failedAt, recordErr, redactor)
 		if failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
 		}
-		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, recordErr); eventErr != nil {
+		if eventErr := recordFactoryRunPipelineFailedWithRedactor(store, runningRecord.RunID, failedAt, recordErr, redactor); eventErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory failure event: %w", eventErr))
 		}
 		if failedRecord.Failure != nil {
@@ -530,6 +531,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		} else {
 			failedRecord = artifactRecord
 		}
+		runErr = redactFactoryRunError(runErr, redactor)
 		if len(recordErrs) > 0 {
 			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{runErr}, recordErrs...)...)
 		}
@@ -543,12 +545,12 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
 	if err != nil {
-		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
+		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, completedAt, err, redactor)
 		var recordErrs []error
 		if failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
 		}
-		if eventErr := recordFactoryRunVerificationFailed(store, failedRecord.RunID, completedAt, err); eventErr != nil {
+		if eventErr := recordFactoryRunVerificationFailedWithRedactor(store, failedRecord.RunID, completedAt, err, redactor); eventErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory verification failure event: %w", eventErr))
 		}
 		if failedRecord.Failure != nil {
@@ -561,6 +563,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		} else {
 			failedRecord = artifactRecord
 		}
+		err = redactFactoryRunError(err, redactor)
 		if len(recordErrs) > 0 {
 			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
 		}
@@ -643,18 +646,19 @@ func resolveFactoryRunExecutionSecrets(req factoryRunRequest, record factory.Run
 	return req, record, err
 }
 
-func failFactoryRunSetup(store factory.Store, record factory.RunRecord, now time.Time, setupErr error) (factoryRunExecutionResult, error) {
+func failFactoryRunSetup(store factory.Store, record factory.RunRecord, now time.Time, setupErr error, redactor factory.RunSecretRedactor) (factoryRunExecutionResult, error) {
 	if setupErr == nil {
 		setupErr = fmt.Errorf("factory run setup failed")
 	}
 	validationErr := exitWithCode(nil, ExitCodeValidation, setupErr)
+	safeValidationErr := redactFactoryRunError(validationErr, redactor)
 	record.CurrentStep = "setup"
-	failedRecord, failureErr := markFactoryRunFailed(store, record, now, validationErr)
+	failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, record, now, validationErr, redactor)
 	var recordErrs []error
 	if failureErr != nil {
 		recordErrs = append(recordErrs, failureErr)
 	}
-	if eventErr := recordFactoryRunSetupFailed(store, record.RunID, now, validationErr); eventErr != nil {
+	if eventErr := recordFactoryRunSetupFailedWithRedactor(store, record.RunID, now, validationErr, redactor); eventErr != nil {
 		recordErrs = append(recordErrs, fmt.Errorf("record factory setup failure event: %w", eventErr))
 	}
 	if failedRecord.Failure != nil {
@@ -663,9 +667,9 @@ func failFactoryRunSetup(store factory.Store, record factory.RunRecord, now time
 		}
 	}
 	if len(recordErrs) > 0 {
-		return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{validationErr}, recordErrs...)...)
+		return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{safeValidationErr}, recordErrs...)...)
 	}
-	return factoryRunExecutionResult{Record: failedRecord, Render: true}, validationErr
+	return factoryRunExecutionResult{Record: failedRecord, Render: true}, safeValidationErr
 }
 
 func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps) (factory.RunRecord, error) {
@@ -1087,9 +1091,14 @@ func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now 
 }
 
 func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error) (factory.RunRecord, error) {
+	return markFactoryRunFailedWithRedactor(store, record, now, pipelineErr, factory.RunSecretRedactor{})
+}
+
+func markFactoryRunFailedWithRedactor(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	finishedAt := now.UTC()
 	existingFailure := record.Failure
 	failure := newFactoryRunFailureSummary(record.RunID, record.CurrentStep, pipelineErr)
+	failure = redactFactoryRunFailureSummary(failure, redactor)
 	if existingFailure != nil && record.ExecutorMode == factory.ExecutorModeSandbox {
 		preserved := *existingFailure
 		if strings.TrimSpace(preserved.Step) == "" {
@@ -1109,7 +1118,7 @@ func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now tim
 		}
 		failure = preserved
 		if command := strings.TrimSpace(existingFailure.SuggestedCommand); command != "" {
-			failure.SuggestedCommand = command
+			failure.SuggestedCommand = redactor.RedactString(command)
 		}
 	}
 	record.Status = factory.RunStatusFailed
@@ -1130,6 +1139,14 @@ func factorySandboxPipelineRecordError(record factory.RunRecord, fallback error)
 		}
 	}
 	return fallback
+}
+
+func redactFactoryRunFailureSummary(failure factory.FailureSummary, redactor factory.RunSecretRedactor) factory.FailureSummary {
+	failure.Step = redactor.RedactString(failure.Step)
+	failure.Category = redactor.RedactString(failure.Category)
+	failure.Message = redactor.RedactString(failure.Message)
+	failure.SuggestedCommand = redactor.RedactString(failure.SuggestedCommand)
+	return failure
 }
 
 func newFactoryRunFailureSummary(runID, currentStep string, pipelineErr error) factory.FailureSummary {
@@ -1235,6 +1252,33 @@ func factoryRunFailureExitCode(err error) int {
 		return execErr.ExitCode()
 	}
 	return 0
+}
+
+type factoryRunRedactedError struct {
+	message string
+	cause   error
+}
+
+func (e factoryRunRedactedError) Error() string {
+	return e.message
+}
+
+func (e factoryRunRedactedError) Unwrap() error {
+	return e.cause
+}
+
+func redactFactoryRunError(err error, redactor factory.RunSecretRedactor) error {
+	if err == nil {
+		return nil
+	}
+	message := redactor.RedactString(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return factoryRunRedactedError{
+		message: message,
+		cause:   err,
+	}
 }
 
 func factoryFailureMessageContains(message string, fragments ...string) bool {
@@ -2043,12 +2087,16 @@ func recordFactoryRunPipelineStarted(store factory.Store, record factory.RunReco
 }
 
 func recordFactoryRunProgress(store factory.Store, runID string, now time.Time, event factoryRunProgressEvent) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunProgressWithRedactor(store, runID, now, event, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunProgressWithRedactor(store factory.Store, runID string, now time.Time, event factoryRunProgressEvent, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeCommandOutputSummary,
 		Message:   event.Message,
 		Summary:   event.Summary,
 		Metadata:  event.Metadata,
-	})
+	}, redactor)
 }
 
 func recordFactoryRunVerificationResult(store factory.Store, runID string, now time.Time, result verify.Result) error {
@@ -2094,7 +2142,11 @@ func recordFactoryRunPipelineSucceeded(store factory.Store, runID string, now ti
 }
 
 func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.Time, pipelineErr error) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunPipelineFailedWithRedactor(store, runID, now, pipelineErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunPipelineFailedWithRedactor(store factory.Store, runID string, now time.Time, pipelineErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Local compound pipeline failed",
 		Metadata: map[string]any{
@@ -2102,11 +2154,15 @@ func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
 		},
-	})
+	}, redactor)
 }
 
 func recordFactoryRunSetupFailed(store factory.Store, runID string, now time.Time, setupErr error) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunSetupFailedWithRedactor(store, runID, now, setupErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunSetupFailedWithRedactor(store factory.Store, runID string, now time.Time, setupErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Factory run setup failed",
 		Metadata: map[string]any{
@@ -2114,11 +2170,15 @@ func recordFactoryRunSetupFailed(store factory.Store, runID string, now time.Tim
 			"status": factory.RunStatusFailed,
 			"error":  setupErr.Error(),
 		},
-	})
+	}, redactor)
 }
 
 func recordFactoryRunVerificationFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunVerificationFailedWithRedactor(store, runID, now, verificationErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunVerificationFailedWithRedactor(store factory.Store, runID string, now time.Time, verificationErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Verification failed",
 		Metadata: map[string]any{
@@ -2126,7 +2186,7 @@ func recordFactoryRunVerificationFailed(store factory.Store, runID string, now t
 			"status": factory.RunStatusFailed,
 			"error":  verificationErr.Error(),
 		},
-	})
+	}, redactor)
 }
 
 func recordFactoryRunFailureClassified(store factory.Store, runID string, now time.Time, failure factory.FailureSummary) error {
@@ -2149,11 +2209,63 @@ func recordFactoryRunFailureClassified(store factory.Store, runID string, now ti
 	})
 }
 
+func redactFactoryTimelineEvent(event factoryTimelineEvent, redactor factory.RunSecretRedactor) factoryTimelineEvent {
+	event.Message = redactor.RedactString(event.Message)
+	event.Summary = redactor.RedactString(event.Summary)
+	event.Metadata = redactFactoryTimelineMetadata(event.Metadata, redactor)
+	return event
+}
+
+func redactFactoryTimelineMetadata(metadata map[string]any, redactor factory.RunSecretRedactor) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	safe := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		safe[key] = redactFactoryTimelineValue(value, redactor)
+	}
+	return safe
+}
+
+func redactFactoryTimelineValue(value any, redactor factory.RunSecretRedactor) any {
+	switch v := value.(type) {
+	case string:
+		return redactor.RedactString(v)
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, redactor.RedactString(item))
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, redactFactoryTimelineValue(item, redactor))
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for key, item := range v {
+			out[key] = redactor.RedactString(item)
+		}
+		return out
+	case map[string]any:
+		return redactFactoryTimelineMetadata(v, redactor)
+	default:
+		return value
+	}
+}
+
 func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, timestamp, event, factory.RunSecretRedactor{})
+}
+
+func appendFactoryRunTimelineEventWithRedactor(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent, redactor factory.RunSecretRedactor) error {
 	events, err := store.LoadEvents(runID)
 	if err != nil {
 		return fmt.Errorf("load factory timeline %q: %w", runID, err)
 	}
+	event = redactFactoryTimelineEvent(event, redactor)
 
 	record := factory.EventRecord{
 		Sequence:  nextFactoryRunEventSequence(events),

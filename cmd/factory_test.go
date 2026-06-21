@@ -916,6 +916,188 @@ func TestRunFactoryRunWithDepsRecordsTimelineEventsForFailure(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunWithDepsRedactsSecretProgressEvents(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	secret := "ghp_progress_secret"
+	createdAt := time.Date(2026, 6, 20, 23, 30, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	progressAt := createdAt.Add(2 * time.Minute)
+	completedAt := createdAt.Add(3 * time.Minute)
+	times := []time.Time{createdAt, startedAt, progressAt, completedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-secret-progress", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name == "GITHUB_TOKEN" {
+				return secret, true
+			}
+			return "", false
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			return req.RecordProgress(factoryRunProgressEvent{
+				Message: "using token " + secret,
+				Summary: "validated with " + secret,
+				Metadata: map[string]any{
+					"step":   "validate",
+					"status": "completed",
+					"token":  "value=" + secret,
+					"nested": map[string]any{
+						"note": "inner " + secret,
+					},
+					"list": []any{"safe", secret},
+				},
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents("run-secret-progress")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepEnded,
+	})
+	eventData, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	if strings.Contains(string(eventData), secret) {
+		t.Fatalf("timeline events leaked secret: %s", eventData)
+	}
+	if !strings.Contains(string(eventData), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("timeline events missing redaction placeholder: %s", eventData)
+	}
+	if events[2].Message != "using token "+factory.RunSecretRedactionPlaceholder {
+		t.Fatalf("progress message = %q", events[2].Message)
+	}
+	if events[2].Summary != "validated with "+factory.RunSecretRedactionPlaceholder {
+		t.Fatalf("progress summary = %q", events[2].Summary)
+	}
+	if events[2].Metadata["step"] != "validate" || events[2].Metadata["status"] != "completed" {
+		t.Fatalf("non-secret progress metadata changed: %#v", events[2].Metadata)
+	}
+}
+
+func TestRunFactoryRunWithDepsRedactsSecretFailureOutputAndPersistence(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	secret := "ghp_failure_secret"
+	createdAt := time.Date(2026, 6, 20, 23, 45, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	pipelineErr := errors.New("pipeline rejected token " + secret)
+	var out bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		ReportPath: ".hal/reports/analysis.md",
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-secret-failure", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name == "GITHUB_TOKEN" {
+				return secret, true
+			}
+			return "", false
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			return pipelineErr
+		},
+	})
+	if !errors.Is(err, pipelineErr) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline error", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("returned error leaked secret: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("factory output leaked secret: %q", out.String())
+	}
+	if !strings.Contains(out.String(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("factory output missing redaction placeholder: %q", out.String())
+	}
+
+	record, err := store.LoadRun("run-secret-failure")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Failure == nil {
+		t.Fatal("failure summary is nil")
+	}
+	if strings.Contains(record.Failure.Message, secret) {
+		t.Fatalf("failure summary leaked secret: %#v", record.Failure)
+	}
+	if !strings.Contains(record.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("failure summary missing redaction placeholder: %#v", record.Failure)
+	}
+
+	events, err := store.LoadEvents("run-secret-failure")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	persisted, err := json.Marshal(struct {
+		Record factory.RunRecord     `json:"record"`
+		Events []factory.EventRecord `json:"events"`
+	}{Record: *record, Events: events})
+	if err != nil {
+		t.Fatalf("json.Marshal(persisted) error: %v", err)
+	}
+	if strings.Contains(string(persisted), secret) {
+		t.Fatalf("persisted run state leaked secret: %s", persisted)
+	}
+	if events[2].Metadata["error"] != "pipeline rejected token "+factory.RunSecretRedactionPlaceholder {
+		t.Fatalf("failure event error metadata = %#v", events[2].Metadata["error"])
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
