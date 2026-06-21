@@ -373,7 +373,7 @@ func warningSummaryPart(warningID string, checks []Check) string {
 
 func checkGitRepo(dir string) Check {
 	gitDir := filepath.Join(dir, ".git")
-	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+	if isGitRepoMarker(gitDir) {
 		return Check{
 			ID:            "git_repo",
 			Status:        StatusPass,
@@ -389,6 +389,21 @@ func checkGitRepo(dir string) Check {
 		RemediationID: RemediationNone,
 		Message:       "No .git directory found. Hal works best inside a git repository.",
 	}
+}
+
+func isGitRepoMarker(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if info.IsDir() {
+		return true
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(string(content)), "gitdir:")
 }
 
 func checkHalDir(halDir string) Check {
