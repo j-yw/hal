@@ -581,6 +581,9 @@ func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 	if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
 		args = append(args, "--base", baseBranch)
 	}
+	if engineName := normalizeFactoryRunEngineName(req.Engine); engineName != "" {
+		args = append(args, "--engine", engineName)
+	}
 	if req.SkipCI {
 		args = append(args, "--no-ci")
 	}

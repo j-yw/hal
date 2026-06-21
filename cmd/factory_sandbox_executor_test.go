@@ -544,6 +544,13 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 			want: []string{"hal", "auto", "--report", ".hal/reports/analysis.md", "--base", "develop"},
 		},
 		{
+			name: "engine",
+			req: factoryRunAutoRequest{
+				Engine: " Claude ",
+			},
+			want: []string{"hal", "auto", "--engine", "claude"},
+		},
+		{
 			name: "empty args are omitted",
 			req: factoryRunAutoRequest{
 				Args: []string{"", "  ", ".hal/prd-feature.md"},

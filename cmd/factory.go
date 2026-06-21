@@ -194,6 +194,7 @@ type factoryRunPipelineRequest struct {
 	Request        factoryRunRequest
 	Record         factory.RunRecord
 	Store          factory.Store
+	Engine         string
 	AttemptPolicy  autoFactoryAttemptPolicy
 	SkipCI         bool
 	RecordProgress func(factoryRunProgressEvent) error
@@ -230,6 +231,7 @@ type factoryRunAutoRequest struct {
 	Args          []string
 	ReportPath    string
 	BaseBranch    string
+	Engine        string
 	AttemptPolicy autoFactoryAttemptPolicy
 	SkipCI        bool
 }
@@ -452,11 +454,15 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
-	if err := enforceFactoryRunCreationPolicy(store, dir, record, out, req.JSON, deps, policy); err != nil {
+	engineName, err := resolveFactoryRunEngine(dir, deps)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	if err := enforceFactoryRunCreationPolicy(store, record, out, req.JSON, deps, policy, engineName); err != nil {
 		return err
 	}
 
-	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps, policy)
+	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps, policy, engineName)
 	if result.Render {
 		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
 			if execErr != nil {
@@ -468,7 +474,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	return execErr
 }
 
-func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factoryRunExecutionResult, error) {
+func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) (factoryRunExecutionResult, error) {
 	if out == nil {
 		out = io.Discard
 	}
@@ -500,6 +506,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		Request:       req,
 		Record:        runningRecord,
 		Store:         store,
+		Engine:        engineName,
 		AttemptPolicy: autoFactoryAttemptPolicyFromFactoryPolicy(policy),
 		SkipCI:        factoryPolicySkipsCI(policy),
 		RecordProgress: func(event factoryRunProgressEvent) error {
@@ -514,6 +521,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			remoteOutput = io.Discard
 		}
 		remoteAuto := factoryRunAutoRequestFromFactoryRequest(req)
+		remoteAuto.Engine = engineName
 		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
 		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
@@ -750,11 +758,22 @@ func persistFactoryRunPolicySnapshot(store factory.Store, record factory.RunReco
 	return record, nil
 }
 
-func enforceFactoryRunCreationPolicy(store factory.Store, dir string, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy) error {
+func resolveFactoryRunEngine(dir string, deps factoryRunDeps) (string, error) {
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryRunDeps.loadEngine
+	}
 	engineName, err := deps.loadEngine(dir)
 	if err != nil {
-		return failFactoryRunCreation(store, record, out, jsonMode, deps.now(), fmt.Errorf("load factory engine policy input: %w", err), nil)
+		return "", fmt.Errorf("load factory engine policy input: %w", err)
 	}
+	return normalizeFactoryRunEngineName(engineName), nil
+}
+
+func normalizeFactoryRunEngineName(engineName string) string {
+	return strings.ToLower(strings.TrimSpace(engineName))
+}
+
+func enforceFactoryRunCreationPolicy(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) error {
 	rejection := factoryRunCreationPolicyRejection(policy, record.ExecutorMode, engineName)
 	if rejection == nil {
 		return nil
@@ -2479,6 +2498,7 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	}
 
 	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
+	autoReq.Engine = strings.TrimSpace(req.Engine)
 	autoReq.AttemptPolicy = req.AttemptPolicy
 	autoReq.SkipCI = req.SkipCI
 	return deps.runAuto(ctx, autoReq)
@@ -2514,11 +2534,19 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	cmd.Flags().Int("review-streak", 0, "")
 	cmd.Flags().Int("review-max", 0, "")
 	cmd.Flags().String("report", strings.TrimSpace(req.ReportPath), "")
-	cmd.Flags().String("engine", "codex", "")
+	cmd.Flags().String("engine", factoryRunAutoEngine(req.Engine), "")
 	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
 	cmd.Flags().Bool("json", false, "")
 
 	return runAuto(cmd, req.Args)
+}
+
+func factoryRunAutoEngine(engineName string) string {
+	engineName = normalizeFactoryRunEngineName(engineName)
+	if engineName == "" {
+		return factory.PolicyEngineCodex
+	}
+	return engineName
 }
 
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {

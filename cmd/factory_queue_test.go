@@ -639,6 +639,9 @@ func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testin
 	if len(gotSandboxReq.RemoteAuto.Args) != 1 || gotSandboxReq.RemoteAuto.Args[0] != ".hal/prd-queue-sandbox.md" {
 		t.Fatalf("sandbox args = %#v, want queued markdown source", gotSandboxReq.RemoteAuto.Args)
 	}
+	if gotSandboxReq.RemoteAuto.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("sandbox engine = %q, want %q", gotSandboxReq.RemoteAuto.Engine, factory.PolicyEngineCodex)
+	}
 }
 
 func TestRunFactoryQueueWorkWithDepsRejectsCreationPolicyBeforeExecution(t *testing.T) {

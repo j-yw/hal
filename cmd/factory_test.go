@@ -354,6 +354,8 @@ func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *t
 func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	localCalled := false
+	policy := factory.DefaultFactoryPolicy()
+	policy.AllowedEngines = []string{factory.PolicyEngineClaude}
 
 	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
@@ -368,10 +370,19 @@ func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testi
 		repoRemote: func(string) (string, error) {
 			return "git@github.com:jywlabs/hal.git", nil
 		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return " Claude ", nil
+		},
 		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
 			localCalled = true
 			if req.Record.ExecutorMode != factory.ExecutorModeLocal {
 				t.Fatalf("local executorMode = %q, want %q", req.Record.ExecutorMode, factory.ExecutorModeLocal)
+			}
+			if req.Engine != factory.PolicyEngineClaude {
+				t.Fatalf("pipeline engine = %q, want %q", req.Engine, factory.PolicyEngineClaude)
 			}
 			return nil
 		},
@@ -407,6 +418,9 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 		repoRemote: func(string) (string, error) {
 			return "git@github.com:jywlabs/hal.git", nil
 		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
 		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
 			t.Fatal("local pipeline should not be called with --sandbox")
 			return nil
@@ -422,6 +436,7 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			wantAuto := factoryRunAutoRequest{
 				Args:       []string{".hal/prd-feature.md"},
 				BaseBranch: "main",
+				Engine:     factory.PolicyEngineCodex,
 			}
 			if !reflect.DeepEqual(req.RemoteAuto, wantAuto) {
 				t.Fatalf("remote auto request = %#v, want %#v", req.RemoteAuto, wantAuto)
@@ -3426,6 +3441,7 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 	called := false
 
 	err := runFactoryRunPipelineWithDeps(ctx, factoryRunPipelineRequest{
+		Engine: " claude ",
 		AttemptPolicy: autoFactoryAttemptPolicy{
 			MaxRunAttempts:       1,
 			MaxReviewFixAttempts: 2,
@@ -3455,6 +3471,7 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 	want := factoryRunAutoRequest{
 		Args:       []string{".hal/prd-feature.md"},
 		BaseBranch: "develop",
+		Engine:     "claude",
 		AttemptPolicy: autoFactoryAttemptPolicy{
 			MaxRunAttempts:       1,
 			MaxReviewFixAttempts: 2,

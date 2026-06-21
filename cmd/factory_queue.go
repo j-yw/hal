@@ -382,10 +382,16 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
 	}
 	record = &persistedRecord
-	if err := enforceFactoryRunCreationPolicy(store, runDir, *record, io.Discard, false, factoryRunDeps{
-		now:        deps.now,
+	engineName, err := resolveFactoryRunEngine(runDir, factoryRunDeps{
 		loadEngine: deps.loadEngine,
-	}, policy); err != nil {
+	})
+	if err != nil {
+		runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
+		return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+	}
+	if err := enforceFactoryRunCreationPolicy(store, *record, io.Discard, false, factoryRunDeps{
+		now: deps.now,
+	}, policy, engineName); err != nil {
 		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
 	}
 
@@ -393,7 +399,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		now:         deps.now,
 		runPipeline: deps.runPipeline,
 		runSandbox:  deps.runSandbox,
-	}, policy)
+	}, policy, engineName)
 	if execErr != nil {
 		return failClaimedFactoryQueueEntry(store, entry, execErr, deps.now)
 	}
