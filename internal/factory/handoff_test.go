@@ -94,6 +94,51 @@ func TestLoadHandoffSummaryFailedLocalRun(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryFailedLocalRunWithoutRepoPathFallsBackToInspect(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 9, 15, 0, 0, time.UTC)
+	record := RunRecord{
+		RunID:        "run-local-no-repo",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		CurrentStep:  "ci",
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt.Add(time.Minute),
+		Failure: &FailureSummary{
+			Step:        "ci",
+			Category:    FailureCategoryCI,
+			Message:     "ci gate blocked",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+	saveHandoffArtifact(t, store, record.RunID, ArtifactReference{
+		ID:   "auto-state",
+		Name: "auto-state",
+		Type: "json",
+		Path: ".hal/auto-state.json",
+	}, `{"step":"ci"}`)
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.ResumeCommand != "" {
+		t.Fatalf("ResumeCommand = %q, want empty without repo path", summary.ResumeCommand)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.ID != "inspect_factory_run" || summary.NextAction.Type != NextActionTypeInspect {
+		t.Fatalf("NextAction = %#v, want inspect action", summary.NextAction)
+	}
+	if summary.NextAction.Command != "hal factory status run-local-no-repo --json" {
+		t.Fatalf("NextAction.Command = %q", summary.NextAction.Command)
+	}
+}
+
 func TestLoadHandoffSummaryFailedSandboxRun(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)

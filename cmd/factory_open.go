@@ -204,6 +204,9 @@ func factoryOpenExecRequestFromSummary(summary *factory.HandoffSummary, in io.Re
 	}
 	command := ""
 	if summary.NextAction != nil {
+		if summary.NextAction.Type == factory.NextActionTypeContinue && strings.TrimSpace(summary.RepoPath) == "" {
+			return factoryOpenExecRequest{}, fmt.Errorf("factory run %q cannot resume without a recorded repo path", handoffRunID(summary))
+		}
 		command = strings.TrimSpace(summary.NextAction.Command)
 	}
 	if command == "" {

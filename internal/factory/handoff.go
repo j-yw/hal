@@ -86,7 +86,7 @@ func NewHandoffSummary(store Store, record RunRecord) HandoffSummary {
 		return summary
 	}
 
-	if handoffHasResumableAutoState(store, record) {
+	if handoffHasResumableAutoState(store, record) && summary.RepoPath != "" {
 		summary.ResumeCommand = "hal auto --resume"
 		summary.NextAction = handoffNextAction(summary, handoffResumeActionID, NextActionTypeContinue, summary.ResumeCommand, "Resume the saved auto pipeline state.")
 		return summary

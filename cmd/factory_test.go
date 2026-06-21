@@ -3963,6 +3963,22 @@ func TestRunFactoryOpenFailedLocalExecutesResumeWhenResumable(t *testing.T) {
 	}
 }
 
+func TestFactoryOpenExecRejectsResumeWithoutRepoPath(t *testing.T) {
+	_, err := factoryOpenExecRequestFromSummary(&factory.HandoffSummary{
+		RunID: "run-open-local-no-repo",
+		NextAction: &factory.NextAction{
+			Type:    factory.NextActionTypeContinue,
+			Command: "hal auto --resume",
+		},
+	}, nil, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("factoryOpenExecRequestFromSummary() error = nil, want missing repo path error")
+	}
+	if !strings.Contains(err.Error(), "cannot resume without a recorded repo path") {
+		t.Fatalf("error = %q, want missing repo path message", err.Error())
+	}
+}
+
 func TestRunFactoryOpenCompletedRunHasNoTakeoverCommand(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
