@@ -3380,6 +3380,9 @@ func TestNewFactoryRunNextActionIncludesSafeRunContext(t *testing.T) {
 	if action == nil {
 		t.Fatal("next action should be present")
 	}
+	if action.ID != "takeover_sandbox" {
+		t.Fatalf("id = %q, want takeover_sandbox", action.ID)
+	}
 	if action.Type != factory.NextActionTypeTakeover {
 		t.Fatalf("type = %q, want %q", action.Type, factory.NextActionTypeTakeover)
 	}
@@ -3433,6 +3436,9 @@ func TestNewFactoryRunNextActionUsesCompletedTypeForSucceededRuns(t *testing.T) 
 	})
 	if action == nil {
 		t.Fatal("next action should be present")
+	}
+	if action.ID != "inspect_factory_run" {
+		t.Fatalf("id = %q, want inspect_factory_run", action.ID)
 	}
 	if action.Type != factory.NextActionTypeCompleted {
 		t.Fatalf("type = %q, want %q", action.Type, factory.NextActionTypeCompleted)
@@ -3793,7 +3799,7 @@ func TestRunFactoryOpenFailedSandboxPrintsSSHCommand(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := runFactoryOpenWithDeps(context.Background(), &buf, io.Discard, record.RunID, false, factoryOpenDeps{
+	err := runFactoryOpenWithDeps(context.Background(), nil, &buf, io.Discard, record.RunID, false, factoryOpenDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 	})
 	if err != nil {
@@ -3850,7 +3856,8 @@ func TestRunFactoryOpenFailedLocalExecutesResumeWhenResumable(t *testing.T) {
 
 	var gotReq factoryOpenExecRequest
 	var buf bytes.Buffer
-	err := runFactoryOpenWithDeps(context.Background(), &buf, io.Discard, record.RunID, true, factoryOpenDeps{
+	stdin := strings.NewReader("takeover\n")
+	err := runFactoryOpenWithDeps(context.Background(), stdin, &buf, io.Discard, record.RunID, true, factoryOpenDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		execute: func(_ context.Context, req factoryOpenExecRequest) error {
 			gotReq = req
@@ -3862,6 +3869,9 @@ func TestRunFactoryOpenFailedLocalExecutesResumeWhenResumable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotReq.Args, []string{"hal", "auto", "--resume"}) {
 		t.Fatalf("exec args = %#v", gotReq.Args)
+	}
+	if gotReq.Stdin != stdin {
+		t.Fatalf("exec stdin = %#v, want injected stdin", gotReq.Stdin)
 	}
 	if gotReq.Dir != "/workspace/hal" {
 		t.Fatalf("exec dir = %q, want /workspace/hal", gotReq.Dir)
@@ -3890,7 +3900,7 @@ func TestRunFactoryOpenCompletedRunHasNoTakeoverCommand(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := runFactoryOpenWithDeps(context.Background(), &buf, io.Discard, record.RunID, false, factoryOpenDeps{
+	err := runFactoryOpenWithDeps(context.Background(), nil, &buf, io.Discard, record.RunID, false, factoryOpenDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 	})
 	if err != nil {
@@ -3924,7 +3934,7 @@ func TestRunFactoryOpenExecCompletedRunReturnsClearError(t *testing.T) {
 		t.Fatalf("SaveRun() error: %v", err)
 	}
 
-	err := runFactoryOpenWithDeps(context.Background(), io.Discard, io.Discard, record.RunID, true, factoryOpenDeps{
+	err := runFactoryOpenWithDeps(context.Background(), nil, io.Discard, io.Discard, record.RunID, true, factoryOpenDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		execute: func(context.Context, factoryOpenExecRequest) error {
 			t.Fatal("execute should not be called for completed run")

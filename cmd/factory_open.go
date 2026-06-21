@@ -39,6 +39,7 @@ type factoryOpenDeps struct {
 type factoryOpenExecRequest struct {
 	Dir    string
 	Args   []string
+	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -50,12 +51,14 @@ var defaultFactoryOpenDeps = factoryOpenDeps{
 
 func runFactoryOpen(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
+	in := io.Reader(os.Stdin)
 	errOut := io.Writer(os.Stderr)
 	ctx := context.Background()
 	execMode := factoryOpenExecFlag
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
+		in = cmd.InOrStdin()
 		errOut = cmd.ErrOrStderr()
 		if cmd.Context() != nil {
 			ctx = cmd.Context()
@@ -69,10 +72,13 @@ func runFactoryOpen(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	return runFactoryOpenWithDeps(ctx, out, errOut, args[0], execMode, defaultFactoryOpenDeps)
+	return runFactoryOpenWithDeps(ctx, in, out, errOut, args[0], execMode, defaultFactoryOpenDeps)
 }
 
-func runFactoryOpenWithDeps(ctx context.Context, out io.Writer, errOut io.Writer, runID string, execMode bool, deps factoryOpenDeps) error {
+func runFactoryOpenWithDeps(ctx context.Context, in io.Reader, out io.Writer, errOut io.Writer, runID string, execMode bool, deps factoryOpenDeps) error {
+	if in == nil {
+		in = os.Stdin
+	}
 	if out == nil {
 		out = io.Discard
 	}
@@ -106,7 +112,7 @@ func runFactoryOpenWithDeps(ctx context.Context, out io.Writer, errOut io.Writer
 		return nil
 	}
 
-	req, err := factoryOpenExecRequestFromSummary(summary, out, errOut)
+	req, err := factoryOpenExecRequestFromSummary(summary, in, out, errOut)
 	if err != nil {
 		return err
 	}
@@ -192,7 +198,7 @@ func renderFactoryHandoffLocations(out io.Writer, label string, locations []fact
 	}
 }
 
-func factoryOpenExecRequestFromSummary(summary *factory.HandoffSummary, out io.Writer, errOut io.Writer) (factoryOpenExecRequest, error) {
+func factoryOpenExecRequestFromSummary(summary *factory.HandoffSummary, in io.Reader, out io.Writer, errOut io.Writer) (factoryOpenExecRequest, error) {
 	if summary == nil || summary.NextAction == nil || strings.TrimSpace(summary.NextAction.Command) == "" {
 		return factoryOpenExecRequest{}, fmt.Errorf("factory run %q has no executable handoff action", handoffRunID(summary))
 	}
@@ -203,6 +209,7 @@ func factoryOpenExecRequestFromSummary(summary *factory.HandoffSummary, out io.W
 	return factoryOpenExecRequest{
 		Dir:    factoryOpenCommandDir(summary),
 		Args:   args,
+		Stdin:  in,
 		Stdout: out,
 		Stderr: errOut,
 	}, nil
@@ -250,6 +257,7 @@ func executeFactoryOpenCommand(ctx context.Context, req factoryOpenExecRequest) 
 	if strings.TrimSpace(req.Dir) != "" {
 		cmd.Dir = req.Dir
 	}
+	cmd.Stdin = req.Stdin
 	cmd.Stdout = req.Stdout
 	cmd.Stderr = req.Stderr
 	return cmd.Run()

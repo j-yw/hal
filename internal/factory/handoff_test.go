@@ -243,6 +243,84 @@ func TestLoadHandoffSummaryCompletedRunHasNoTakeoverGuidance(t *testing.T) {
 	}
 }
 
+func TestHandoffSafeURLRejectsSecretQueryKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "safe pr url",
+			raw:  "https://github.com/jywlabs/hal/pull/42",
+			want: "https://github.com/jywlabs/hal/pull/42",
+		},
+		{
+			name: "token query",
+			raw:  "https://github.com/jywlabs/hal/pull/42?token=secret",
+			want: "",
+		},
+		{
+			name: "access key query",
+			raw:  "https://github.com/jywlabs/hal/pull/42?access_key=secret",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := handoffSafeURL(tt.raw); got != tt.want {
+				t.Fatalf("handoffSafeURL(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
+	rawPath := filepath.Join(t.TempDir(), "external", "secret.md")
+	locations := handoffArtifactLocations([]ArtifactReference{
+		{
+			Name:       "absolute",
+			Type:       "markdown",
+			Path:       rawPath,
+			StoredPath: "artifacts/run-handoff/secret.md",
+		},
+		{
+			Name:       "url",
+			Type:       "json",
+			Path:       "https://example.com/artifact.json?token=secret",
+			StoredPath: "artifacts/run-handoff/artifact.json",
+		},
+		{
+			Name: "parent",
+			Type: "markdown",
+			Path: "../private.md",
+		},
+	}, false)
+
+	if len(locations) != 3 {
+		t.Fatalf("locations len = %d, want 3: %#v", len(locations), locations)
+	}
+	if locations[0].Path != "secret.md" {
+		t.Fatalf("absolute path = %q, want basename", locations[0].Path)
+	}
+	if locations[1].Path != "" || locations[1].StoredPath != "artifacts/run-handoff/artifact.json" {
+		t.Fatalf("url location = %#v, want stored path fallback", locations[1])
+	}
+	if locations[2].Path != "[redacted]" {
+		t.Fatalf("parent path = %q, want [redacted]", locations[2].Path)
+	}
+
+	data, err := json.Marshal(locations)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, forbidden := range []string{rawPath, filepath.Dir(rawPath), "token=secret", "../private.md"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
+		}
+	}
+}
+
 func saveHandoffArtifact(t *testing.T, store Store, runID string, artifact ArtifactReference, content string) ArtifactReference {
 	t.Helper()
 	sourcePath := filepath.Join(t.TempDir(), strings.Trim(strings.ReplaceAll(artifact.Path, "/", "-"), "-"))

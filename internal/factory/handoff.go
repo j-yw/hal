@@ -251,8 +251,11 @@ func handoffArtifactLocations(artifacts []ArtifactReference, logsOnly bool) []Ne
 		}
 		location := NextActionLocation{
 			Name:       strings.TrimSpace(artifact.Name),
-			Path:       strings.TrimSpace(artifact.Path),
+			Path:       handoffSafeArtifactPath(artifact.Path),
 			StoredPath: strings.TrimSpace(artifact.StoredPath),
+		}
+		if location.Path == handoffRedactedLocation && location.StoredPath != "" {
+			location.Path = ""
 		}
 		if location.Path == "" && location.StoredPath == "" {
 			continue
@@ -315,5 +318,91 @@ func handoffSafeURL(rawURL string) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return ""
 	}
+	for key := range parsed.Query() {
+		if handoffSecretKey(key) {
+			return ""
+		}
+	}
 	return parsed.String()
+}
+
+const handoffRedactedLocation = "[redacted]"
+
+func handoffSafeArtifactPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if handoffArtifactPathLooksLikeURL(path) {
+		return handoffRedactedLocation
+	}
+	cleanPath := filepath.Clean(path)
+	if handoffArtifactLooksLikeWindowsAbsolutePath(path) || handoffArtifactLooksLikeWindowsAbsolutePath(cleanPath) {
+		return handoffRedactedLocation
+	}
+	if filepath.IsAbs(cleanPath) {
+		base := filepath.Base(cleanPath)
+		if base == "" || base == "." || base == string(os.PathSeparator) {
+			return handoffRedactedLocation
+		}
+		return filepath.ToSlash(base)
+	}
+	if handoffArtifactPathIsParentRelative(cleanPath) {
+		return handoffRedactedLocation
+	}
+	return filepath.ToSlash(cleanPath)
+}
+
+func handoffArtifactPathLooksLikeURL(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return true
+	}
+	return parsed.Scheme != "" || parsed.Host != ""
+}
+
+func handoffArtifactPathIsParentRelative(path string) bool {
+	path = filepath.ToSlash(path)
+	if path == ".." || strings.HasPrefix(path, "../") {
+		return true
+	}
+	windowsPath := strings.ReplaceAll(path, `\`, "/")
+	return windowsPath == ".." || strings.HasPrefix(windowsPath, "../")
+}
+
+func handoffArtifactLooksLikeWindowsAbsolutePath(value string) bool {
+	if len(value) >= 3 {
+		drive := value[0]
+		if ((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+			return true
+		}
+	}
+	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `//`)
+}
+
+func handoffSecretKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	secretFragments := []string{
+		"token",
+		"secret",
+		"password",
+		"passwd",
+		"credential",
+		"private_key",
+		"private-key",
+		"api_key",
+		"api-key",
+		"access_key",
+		"access-key",
+		"auth",
+	}
+	for _, fragment := range secretFragments {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return key == "key" || strings.HasSuffix(key, "_key") || strings.HasSuffix(key, "-key")
 }
