@@ -41,6 +41,50 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 	}
 }
 
+func TestFactorySandboxConnectionMetadataFromStatePrefersTailscaleAddress(t *testing.T) {
+	tests := []struct {
+		name        string
+		instance    *sandbox.SandboxState
+		wantAddress string
+		wantPublic  string
+	}{
+		{
+			name: "tailscale ip preferred over public ip",
+			instance: &sandbox.SandboxState{
+				IP:                "203.0.113.42",
+				TailscaleIP:       "100.64.0.9",
+				TailscaleHostname: "hal-factory-dev",
+				TailscaleLockdown: true,
+			},
+			wantAddress: "100.64.0.9",
+			wantPublic:  "203.0.113.42",
+		},
+		{
+			name: "lockdown hostname fallback without public ip",
+			instance: &sandbox.SandboxState{
+				TailscaleHostname: "hal-factory-dev",
+				TailscaleLockdown: true,
+			},
+			wantAddress: "hal-factory-dev",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := factorySandboxConnectionMetadataFromState(tt.instance)
+			if got == nil {
+				t.Fatal("factorySandboxConnectionMetadataFromState() = nil")
+			}
+			if got.Address != tt.wantAddress {
+				t.Fatalf("Address = %q, want %q", got.Address, tt.wantAddress)
+			}
+			if got.PublicIP != tt.wantPublic {
+				t.Fatalf("PublicIP = %q, want %q", got.PublicIP, tt.wantPublic)
+			}
+		})
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testing.T) {
 	now := time.Date(2026, 6, 21, 9, 30, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
