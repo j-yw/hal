@@ -495,11 +495,15 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			failedRecord = artifactRecord
 		}
 
-		failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, runErr)
+		recordErr := runErr
+		if req.Sandbox {
+			recordErr = factorySandboxPipelineRecordError(failedRecord, runErr)
+		}
+		failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, recordErr)
 		if failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
 		}
-		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, runErr); eventErr != nil {
+		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, recordErr); eventErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory failure event: %w", eventErr))
 		}
 		if failedRecord.Failure != nil {
@@ -1038,6 +1042,23 @@ func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now tim
 	existingFailure := record.Failure
 	failure := newFactoryRunFailureSummary(record.RunID, record.CurrentStep, pipelineErr)
 	if existingFailure != nil && record.ExecutorMode == factory.ExecutorModeSandbox {
+		preserved := *existingFailure
+		if strings.TrimSpace(preserved.Step) == "" {
+			preserved.Step = failure.Step
+		}
+		if strings.TrimSpace(preserved.Category) == "" {
+			preserved.Category = failure.Category
+		}
+		if strings.TrimSpace(preserved.Message) == "" {
+			preserved.Message = failure.Message
+		}
+		if strings.TrimSpace(preserved.SuggestedCommand) == "" {
+			preserved.SuggestedCommand = failure.SuggestedCommand
+		}
+		if preserved.ExitCode == 0 {
+			preserved.ExitCode = failure.ExitCode
+		}
+		failure = preserved
 		if command := strings.TrimSpace(existingFailure.SuggestedCommand); command != "" {
 			failure.SuggestedCommand = command
 		}
@@ -1051,6 +1072,15 @@ func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now tim
 		return factory.RunRecord{}, fmt.Errorf("mark factory run failed: %w", err)
 	}
 	return record, nil
+}
+
+func factorySandboxPipelineRecordError(record factory.RunRecord, fallback error) error {
+	if record.Failure != nil {
+		if message := strings.TrimSpace(record.Failure.Message); message != "" {
+			return errors.New(message)
+		}
+	}
+	return fallback
 }
 
 func newFactoryRunFailureSummary(runID, currentStep string, pipelineErr error) factory.FailureSummary {
