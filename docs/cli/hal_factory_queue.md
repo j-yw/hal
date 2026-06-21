@@ -30,4 +30,3 @@ in the global factory store so pending work survives CLI exits and restarts.
 * [hal factory queue add](hal_factory_queue_add.md)	 - Add a factory run to the queue
 * [hal factory queue list](hal_factory_queue_list.md)	 - List factory queue entries
 * [hal factory queue work](hal_factory_queue_work.md)	 - Claim and process one queued factory run
-

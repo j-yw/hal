@@ -31,4 +31,3 @@ hal factory queue add <run-id> <executor-mode> [flags]
 ### SEE ALSO
 
 * [hal factory queue](hal_factory_queue.md)	 - Manage queued factory work
-
