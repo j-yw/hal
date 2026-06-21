@@ -1335,15 +1335,18 @@ func TestRunFactorySandboxExecutorWithDepsRecordsProvisionFailure(t *testing.T) 
 	}
 }
 
-func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata(t *testing.T) {
+func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadataAndAlwaysCleanup(t *testing.T) {
 	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
 	startErr := factorySandboxTestError("start failed")
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorAlways
 	target := &sandbox.SandboxState{
 		Name:     "factory-stopped",
 		Provider: "hetzner",
 		Status:   sandbox.StatusStopped,
 	}
 	var savedRecords []factory.RunRecord
+	var cleanupCalls int
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		SandboxName: "factory-stopped",
@@ -1352,6 +1355,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 			Status:      factory.RunStatusRunning,
 			CurrentStep: "run",
 			RepoRemote:  "git@github.com:example/repo.git",
+			Policy:      &policy,
 		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
@@ -1361,6 +1365,22 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 		},
 		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
 			return nil, startErr
+		},
+		resolveProvider: func(providerName string) (sandbox.Provider, error) {
+			if providerName != "hetzner" {
+				t.Fatalf("providerName = %q, want hetzner", providerName)
+			}
+			return fakeFactorySandboxProvider{}, nil
+		},
+		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if req.Target == nil || req.Target.Name != "factory-stopped" {
+				t.Fatalf("cleanup target = %#v, want factory-stopped", req.Target)
+			}
+			if req.Provider == nil {
+				t.Fatalf("cleanup provider = nil")
+			}
+			return nil
 		},
 		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
 			savedRecords = append(savedRecords, *record)
@@ -1383,6 +1403,9 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	}
 	if failed.Sandbox.SSHCommand != "hal sandbox ssh factory-stopped" {
 		t.Fatalf("ssh command = %q", failed.Sandbox.SSHCommand)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls)
 	}
 }
 
