@@ -971,6 +971,11 @@ func safeFactoryPRURL(rawURL string) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return ""
 	}
+	for key := range parsed.Query() {
+		if factoryArtifactSecretKey(key) {
+			return ""
+		}
+	}
 	return parsed.String()
 }
 
@@ -2523,7 +2528,19 @@ func sanitizeFactoryArtifactPath(path string) string {
 		}
 		return filepath.ToSlash(base)
 	}
+	if factoryArtifactPathIsParentRelative(cleanPath) {
+		return "[redacted]"
+	}
 	return filepath.ToSlash(cleanPath)
+}
+
+func factoryArtifactPathIsParentRelative(path string) bool {
+	path = filepath.ToSlash(path)
+	if path == ".." || strings.HasPrefix(path, "../") {
+		return true
+	}
+	windowsPath := strings.ReplaceAll(path, `\`, "/")
+	return windowsPath == ".." || strings.HasPrefix(windowsPath, "../")
 }
 
 func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, jsonMode bool) error {

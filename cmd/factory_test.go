@@ -3405,6 +3405,55 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 	}
 }
 
+func TestSafeFactoryPRURLRejectsSecretQueryKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "safe pr url",
+			raw:  "https://github.com/resciencelab/hal/pull/11",
+			want: "https://github.com/resciencelab/hal/pull/11",
+		},
+		{
+			name: "token query",
+			raw:  "https://github.com/resciencelab/hal/pull/11?token=secret",
+			want: "",
+		},
+		{
+			name: "api key query",
+			raw:  "https://github.com/resciencelab/hal/pull/11?api_key=secret",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := safeFactoryPRURL(tt.raw); got != tt.want {
+				t.Fatalf("safeFactoryPRURL(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeFactoryArtifactPathRedactsParentRelativePaths(t *testing.T) {
+	tests := []string{
+		"..",
+		"../private/report.md",
+		"reports/../../private/report.md",
+		`..\private\report.md`,
+	}
+
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if got := sanitizeFactoryArtifactPath(raw); got != "[redacted]" {
+				t.Fatalf("sanitizeFactoryArtifactPath(%q) = %q, want [redacted]", raw, got)
+			}
+		})
+	}
+}
+
 func TestRunFactoryArtifactsJSONEmptyState(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 8, 30, 0, 0, time.UTC)
