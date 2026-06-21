@@ -232,6 +232,45 @@ func TestBootstrapSanitizersRedactTimelineAndCommandRecords(t *testing.T) {
 	assertDoesNotContainSensitiveFixture(t, eventData, secret)
 }
 
+func TestBootstrapSanitizersRedactEncodedSecretValues(t *testing.T) {
+	secret := "p@ss word"
+	request := BootstrapRequest{
+		RequiredEnvKeys: []string{"PASSWORD"},
+		Env: map[string]string{
+			"PASSWORD": secret,
+		},
+	}
+
+	result := SanitizeBootstrapCommandResult(request, BootstrapCommandResult{
+		StdoutSummary: "remote accepted p%40ss%20word",
+		StderrSummary: "query token p%40ss+word",
+		Metadata: map[string]string{
+			"userinfo": "https://u:p%40ss%20word@github.com/example/repo.git",
+		},
+	})
+	resultData, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal(result) error = %v", err)
+	}
+	if strings.Contains(string(resultData), "p%40ss%20word") || strings.Contains(string(resultData), "p%40ss+word") {
+		t.Fatalf("sanitized bootstrap result leaked encoded secret: %s", string(resultData))
+	}
+
+	event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+		OutputSummary: "remote accepted p%40ss%20word and p%40ss+word",
+		Metadata: map[string]string{
+			"remote": "https://u:p%40ss%20word@github.com/example/repo.git",
+		},
+	})
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal(event) error = %v", err)
+	}
+	if strings.Contains(string(eventData), "p%40ss%20word") || strings.Contains(string(eventData), "p%40ss+word") {
+		t.Fatalf("sanitized bootstrap event leaked encoded secret: %s", string(eventData))
+	}
+}
+
 func TestRunBootstrapStepRedactsResolvedRunSecretValuesFromRecords(t *testing.T) {
 	secret := "ghp_run_scoped_bootstrap_secret_12345"
 	request := BootstrapRequestWithResolvedSecrets(BootstrapRequest{}, []ResolvedRunSecret{{

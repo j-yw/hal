@@ -82,7 +82,7 @@ func addBootstrapRedactionValue(values map[string]struct{}, value string) {
 	if strings.TrimSpace(value) == "" {
 		return
 	}
-	values[value] = struct{}{}
+	addBootstrapRedactionCandidate(values, value)
 
 	for _, fragment := range strings.FieldsFunc(value, func(r rune) bool {
 		return r == '\n' || r == '\r'
@@ -91,9 +91,24 @@ func addBootstrapRedactionValue(values map[string]struct{}, value string) {
 		if trimmed == "" {
 			continue
 		}
-		values[fragment] = struct{}{}
-		values[trimmed] = struct{}{}
+		addBootstrapRedactionCandidate(values, fragment)
+		addBootstrapRedactionCandidate(values, trimmed)
 	}
+}
+
+func addBootstrapRedactionCandidate(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	values[value] = struct{}{}
+	values[url.PathEscape(value)] = struct{}{}
+	values[url.QueryEscape(value)] = struct{}{}
+	values[bootstrapUserinfoEscape(value)] = struct{}{}
+}
+
+func bootstrapUserinfoEscape(value string) string {
+	const userinfoPrefix = "__hal_bootstrap__:"
+	return strings.TrimPrefix(url.UserPassword("__hal_bootstrap__", value).String(), userinfoPrefix)
 }
 
 // SanitizeBootstrapCommand returns a copy of command with sensitive args,
