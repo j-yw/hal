@@ -410,6 +410,51 @@ func TestSaveArtifactFileCopiesUnderFactoryStoreAndUpdatesRun(t *testing.T) {
 	}
 }
 
+func TestSaveArtifactFileWithRedactorRedactsStoredPayload(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	sourcePath := filepath.Join(t.TempDir(), "verify-stdout.txt")
+	secretValue := "ghp_factory_secret_value_123"
+	sourceData := []byte("checkout token=" + secretValue + "\n")
+	if err := os.WriteFile(sourcePath, sourceData, 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-artifacts-redacted")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "GITHUB_TOKEN", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "verify-stdout",
+		Name: "verification stdout",
+		Type: "text",
+	}, sourcePath, redactor)
+	if err != nil {
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
+	}
+
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	storedData, err := os.ReadFile(absoluteStoredPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	storedPayload := string(storedData)
+	if strings.Contains(storedPayload, secretValue) {
+		t.Fatalf("stored artifact payload contains raw secret: %q", storedPayload)
+	}
+	if !strings.Contains(storedPayload, RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored artifact payload = %q, want redaction placeholder", storedPayload)
+	}
+	if got.SizeBytes == nil || *got.SizeBytes != int64(len(storedData)) {
+		t.Fatalf("SizeBytes = %v, want stored payload size %d", got.SizeBytes, len(storedData))
+	}
+}
+
 func TestSaveArtifactFileUpsertsMetadataByStoredPath(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-artifacts-upsert")

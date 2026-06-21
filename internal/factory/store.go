@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,7 +184,7 @@ func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, source
 	if err := os.MkdirAll(filepath.Dir(absoluteStoredPath), 0o700); err != nil {
 		return ArtifactReference{}, fmt.Errorf("create factory artifact dir: %w", err)
 	}
-	copiedInfo, err := copyStoreFile(sourcePath, absoluteStoredPath, 0o600, info)
+	copiedInfo, err := copyStoreFileWithRedactor(sourcePath, absoluteStoredPath, 0o600, info, redactor)
 	if err != nil {
 		return ArtifactReference{}, fmt.Errorf("write factory artifact %q: %w", artifact.Name, err)
 	}
@@ -516,6 +517,10 @@ func isStoreRenameNoReplaceError(err error) bool {
 }
 
 func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo) (fs.FileInfo, error) {
+	return copyStoreFileWithRedactor(sourcePath, destPath, mode, expectedInfo, RunSecretRedactor{})
+}
+
+func copyStoreFileWithRedactor(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo, redactor RunSecretRedactor) (fs.FileInfo, error) {
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return nil, err
@@ -537,7 +542,7 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(dest, source); err != nil {
+	if err := copyStoreFilePayload(dest, source, redactor); err != nil {
 		_ = dest.Close()
 		_ = os.Remove(tmpPath)
 		return nil, err
@@ -554,7 +559,27 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 		_ = os.Remove(tmpPath)
 		return nil, err
 	}
-	return sourceInfo, nil
+	storedInfo, err := os.Stat(destPath)
+	if err != nil {
+		return nil, err
+	}
+	return storedInfo, nil
+}
+
+func copyStoreFilePayload(dest *os.File, source *os.File, redactor RunSecretRedactor) error {
+	if len(redactor.secretValues) == 0 {
+		_, err := io.Copy(dest, source)
+		return err
+	}
+	payload, err := io.ReadAll(source)
+	if err != nil {
+		return err
+	}
+	for _, secret := range redactor.secretValues {
+		payload = bytes.ReplaceAll(payload, []byte(secret), []byte(RunSecretRedactionPlaceholder))
+	}
+	_, err = dest.Write(payload)
+	return err
 }
 
 func artifactFileName(name, sourcePath string) string {
