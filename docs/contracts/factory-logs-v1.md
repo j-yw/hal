@@ -44,12 +44,9 @@ message:
 factory run "<run-id>" not found
 ```
 
-If the run exists but has no stored logs, the command returns a non-zero error
-with the message:
-
-```text
-factory run "<run-id>" has no stored logs
-```
+If the run exists but has no stored logs, the command succeeds. Table output
+prints an empty-state message, and JSON output returns the normal response with
+an empty `chunks` array.
 
 Store resolution, directory read, parse, or load failures return a non-zero
 command error. On failures, consumers should treat stdout as undefined and rely
