@@ -192,7 +192,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				provider:        provider,
 				connectInfo:     sandbox.ConnectInfoFromState(target),
 				runProviderExec: deps.runProviderExec,
-				out:             remoteOutput,
+				// Bootstrap timelines are persisted from sanitized BootstrapResult
+				// events; stream raw command output only to the caller-facing writer.
+				out: req.RemoteOutput,
 			},
 			Now: deps.now,
 		})
