@@ -64,3 +64,15 @@ func TestRunSecretRedactorPrefersLongestValue(t *testing.T) {
 		t.Fatalf("RedactString() = %q, want %q", got, want)
 	}
 }
+
+func TestRunSecretRedactorRedactsMultilineValueFragments(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "PRIVATE_KEY", Source: RunSecretSourceEnv, Required: true, Value: "-----BEGIN PRIVATE KEY-----\nline_one_secret_fragment\nline_two_secret_fragment\n-----END PRIVATE KEY-----"},
+	})
+
+	got := redactor.RedactString("key fragment line_one_secret_fragment\nnext line line_two_secret_fragment")
+	want := "key fragment " + RunSecretRedactionPlaceholder + "\nnext line " + RunSecretRedactionPlaceholder
+	if got != want {
+		t.Fatalf("RedactString() = %q, want %q", got, want)
+	}
+}

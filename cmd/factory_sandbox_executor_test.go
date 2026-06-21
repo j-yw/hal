@@ -763,6 +763,76 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromRemoteOutput
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRedactsMultilineSecretsFromRemoteOutput(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 47, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	fragments := []string{
+		"line_one_multiline_secret_fragment_12345",
+		"line_two_multiline_secret_fragment_67890",
+	}
+	secret := strings.Join(fragments, "\n")
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-multiline-secret",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:   "PRIVATE_KEY",
+			Source: factory.RunSecretSourceEnv,
+			Value:  secret,
+		}},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, out io.Writer) error {
+			if env["PRIVATE_KEY"] != secret {
+				t.Fatalf("PRIVATE_KEY env = %q, want secret", env["PRIVATE_KEY"])
+			}
+			if _, err := io.WriteString(out, "first "+fragments[0]+"\n"); err != nil {
+				return err
+			}
+			_, err := io.WriteString(out, "second "+fragments[1]+"\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	for _, fragment := range fragments {
+		if strings.Contains(out.String(), fragment) {
+			t.Fatalf("remote output leaked multiline secret fragment %q: %q", fragment, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("remote output missing redaction marker: %q", out.String())
+	}
+	for _, event := range events {
+		text := fmt.Sprintf("%#v", event)
+		for _, fragment := range fragments {
+			if strings.Contains(text, fragment) {
+				t.Fatalf("remote event leaked multiline secret fragment %q: %#v", fragment, event)
+			}
+		}
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromFailureRecords(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 50, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())

@@ -22,10 +22,7 @@ func NewRunSecretRedactor(secrets []ResolvedRunSecret) RunSecretRedactor {
 
 	valueSet := make(map[string]struct{}, len(secrets))
 	for _, secret := range secrets {
-		if strings.TrimSpace(secret.Value) == "" {
-			continue
-		}
-		valueSet[secret.Value] = struct{}{}
+		addRunSecretRedactionValue(valueSet, secret.Value)
 	}
 
 	return RunSecretRedactor{
@@ -40,6 +37,24 @@ func (r RunSecretRedactor) RedactString(value string) string {
 		value = strings.ReplaceAll(value, secret, RunSecretRedactionPlaceholder)
 	}
 	return value
+}
+
+func addRunSecretRedactionValue(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	values[value] = struct{}{}
+
+	for _, fragment := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		trimmed := strings.TrimSpace(fragment)
+		if trimmed == "" {
+			continue
+		}
+		values[fragment] = struct{}{}
+		values[trimmed] = struct{}{}
+	}
 }
 
 func sortedRunSecretRedactionValues(values map[string]struct{}) []string {
