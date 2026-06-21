@@ -239,15 +239,14 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		return err
 	}
 
-	entry, err := store.EnqueueQueueEntry(record.RunID, executorMode, factory.QueueOperationOptions{
+	entry, err := store.EnqueueQueueEntryWithLockedPostSave(record.RunID, executorMode, factory.QueueOperationOptions{
 		Now:        deps.now,
 		NewQueueID: deps.newQueueID,
+	}, func(entry factory.QueueEntry) error {
+		return recordFactoryRunQueued(store, entry, entry.CreatedAt)
 	})
 	if err != nil {
 		return fmt.Errorf("enqueue triggered factory run %q: %w", record.RunID, err)
-	}
-	if err := recordFactoryRunQueued(store, entry, entry.CreatedAt); err != nil {
-		return err
 	}
 
 	queuedRecord, err := store.LoadRun(record.RunID)
