@@ -1,0 +1,18 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory policy defaults live in `internal/factory.FactoryPolicy`; use `DefaultFactoryPolicy` and `Validate`, where zero attempt limits mean no policy cap, enum values normalize to lowercase, and validation errors use `factory.policy.<field>` paths.
+
+---
+
+## 2026-06-21 09:01 CST - US-001
+- Implemented durable factory policy defaults and validation for sandbox requirement, allowed engines, attempt limits, verification gating, PR creation, merge permission, and cleanup behavior.
+- Added policy constants/helpers plus focused tests for conservative defaults, invalid negative attempt limits, unsupported engine identifiers, invalid cleanup behavior, and enum normalization.
+- Files changed: `internal/factory/policy.go`, `internal/factory/policy_test.go`, `internal/factory/types_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: `go test -timeout 60s ./internal/factory`, `go test -timeout 300s ./...`, `make vet`, `make test`; `make lint` skipped because `golangci-lint` is not installed.
+- **Learnings for future iterations:**
+  - Keep durable factory DTOs in `internal/factory` and add them to `TestFactoryTypesHaveJSONTags` when they expose machine-readable fields.
+  - Policy attempt limits use `0` as unlimited/no cap so existing factory behavior remains unchanged until a stricter policy is configured.
+  - Field-specific policy validation errors should use `factory.policy.<field>` paths for future config-loading and command-surface diagnostics.
+---

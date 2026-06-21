@@ -1,0 +1,201 @@
+{
+  "project": "Factory Policy Gates",
+  "branchName": "hal/factory-policy-gates",
+  "description": "Add durable factory policy controls for autonomous execution, required gates, timeline auditing, and JSON status reporting while preserving direct hal auto behavior.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Add Factory Policy Defaults",
+      "description": "As a factory operator, I want a durable factory.policy model with conservative defaults so that factory autonomy boundaries are explicit before enforcement begins.",
+      "acceptanceCriteria": [
+        "A factory.policy configuration object exists with fields for sandbox requirement, allowed engines, max run attempts, max review fix attempts, max CI fix attempts, verification requirement, PR creation permission, merge permission, and cleanup behavior.",
+        "Default policy values allow current local-first factory execution without requiring sandbox execution.",
+        "Default policy values keep PR creation, merge, review, CI, and cleanup behavior equivalent to the current factory defaults.",
+        "Policy validation rejects negative attempt limits, unknown cleanup behavior values, and unsupported engine identifiers with field-specific error messages.",
+        "Unit tests cover default policy values and invalid policy values.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Load Factory Policy From Config",
+      "description": "As a factory operator, I want factory.policy loaded from configuration so that strict or custom policies can be applied consistently across factory commands.",
+      "acceptanceCriteria": [
+        "Factory config loading distinguishes missing policy fields from explicitly configured zero or empty values.",
+        "Missing policy fields are filled from the default factory policy.",
+        "Explicit strict policy values are preserved when loading configuration.",
+        "Invalid configured policy values return actionable validation errors that include the factory.policy field path.",
+        "Unit tests cover missing policy loading, explicit strict policy loading, explicit zero or empty values, and invalid configured values.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Add Policy Decision Timeline Events",
+      "description": "As a factory operator, I want policy decisions recorded as structured timeline events so that I can audit why automation advanced, stopped, or failed.",
+      "acceptanceCriteria": [
+        "Factory timeline support includes a policy decision event type for allowed execution, rejected execution, passed gates, and blocked gates.",
+        "Policy decision metadata records the policy field, decision, outcome, and reason.",
+        "Policy decision metadata omits secret values, raw environment values, unsafe source paths, and provider internals.",
+        "Event sequence numbers remain deterministic when policy events are appended in tests.",
+        "Unit tests assert one allowed policy decision event and one blocked policy decision event.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Reject Disallowed Factory Run Creation",
+      "description": "As a factory operator, I want factory run creation to reject disallowed execution modes so that unsafe work is blocked before execution starts.",
+      "acceptanceCriteria": [
+        "Factory run creation checks requested executor and engine values against factory.policy.allowedEngines.",
+        "Factory run creation rejects non-sandbox execution when factory.policy.sandboxRequired is true.",
+        "Rejected run creation returns a clear policy error before the run advances into active execution.",
+        "Rejected run creation records or reports the policy rejection consistently with existing factory run error handling.",
+        "Tests verify rejected creation does not invoke Codex, GitHub, sandbox providers, or network-dependent behavior.",
+        "Tests cover allowed default local execution, strict sandbox-required rejection, and disallowed engine rejection.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Enforce Factory Attempt Limits",
+      "description": "As a factory operator, I want active factory runs to obey configured attempt limits so that autonomous execution cannot exceed policy boundaries.",
+      "acceptanceCriteria": [
+        "Factory execution checks max run attempts before starting the next autonomous run step.",
+        "Factory execution checks max review fix attempts before starting another review-fix step.",
+        "Factory execution checks max CI fix attempts before starting another CI-fix step.",
+        "When an attempt limit is reached, the run is blocked or failed with policy-specific category or metadata before invoking the next autonomous step.",
+        "Default attempt limits preserve current factory behavior.",
+        "Strict attempt limits stop advancement in deterministic tests.",
+        "Tests use injected dependencies and deterministic clocks instead of spawning real engines or external CLIs.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Enforce Verification Required Gate",
+      "description": "As a factory operator, I want policy to require verification before handoff or merge so that runs cannot advance without an explicit successful verification result.",
+      "acceptanceCriteria": [
+        "factory.policy.verificationRequired blocks gated advancement when no verification result is available.",
+        "factory.policy.verificationRequired blocks gated advancement when the latest verification result is failed.",
+        "factory.policy.verificationRequired allows gated advancement when the latest verification result is successful.",
+        "The verification gate checks only an internal policy hook or existing structured result boundary and does not implement full verification adapters.",
+        "Missing or failed verification records a blocked policy gate decision in the run timeline.",
+        "Tests cover verification not required, verification required and missing, verification required and failed, and verification required and passed.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Enforce PR And Merge Gates",
+      "description": "As a factory operator, I want policy to control PR creation and merge permissions so that factory automation cannot publish or merge changes unless explicitly allowed.",
+      "acceptanceCriteria": [
+        "factory.policy.prCreationAllowed blocks factory PR creation when false.",
+        "factory.policy.mergeAllowed blocks factory merge attempts when false.",
+        "Blocked PR creation records a blocked policy gate decision in the run timeline.",
+        "Blocked merge attempts record a blocked policy gate decision in the run timeline.",
+        "Existing CI merge controls remain effective and are not bypassed by factory policy.",
+        "Tests cover PR creation allowed, PR creation blocked, merge allowed, and merge blocked.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Apply Cleanup Behavior Policy",
+      "description": "As a factory operator, I want cleanup behavior controlled by policy so that local or sandbox resources are retained or removed according to configured boundaries.",
+      "acceptanceCriteria": [
+        "factory.policy.cleanupBehavior supports explicit preserve, on_success, and always values.",
+        "The default cleanup behavior preserves current factory cleanup behavior.",
+        "The preserve value does not trigger new cleanup work at factory completion.",
+        "The on_success value triggers cleanup only after successful factory completion.",
+        "The always value triggers cleanup after terminal success or failure without adding hosted cleanup services.",
+        "Cleanup decisions record policy decision events in the run timeline.",
+        "Tests cover preserve, on_success after success, on_success after failure, and always after failure.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Expose Policy In Factory Status JSON",
+      "description": "As an automation integrator, I want factory JSON status output to include policy decisions so that external tooling can explain run state.",
+      "acceptanceCriteria": [
+        "Factory status JSON includes a policy summary for each relevant run.",
+        "Factory status JSON includes the latest policy gate decisions for each relevant run.",
+        "Status output uses command-specific safe response structs instead of exposing internal mutable structs directly.",
+        "Status JSON omits unsafe source paths, secret values, raw environment values, and unnecessary provider internals.",
+        "Tests assert JSON field names and representative payloads for default and strict policies.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Document Factory Policy Contracts",
+      "description": "As an automation integrator, I want factory policy fields documented in machine-readable contracts so that JSON consumers can depend on stable names and shapes.",
+      "acceptanceCriteria": [
+        "Contract documentation under docs/contracts describes every new or changed factory policy status field.",
+        "Contract documentation describes every durable policy decision and gate outcome JSON field.",
+        "Example JSON payloads include default policy and strict policy cases.",
+        "Field-locking tests verify JSON tags for durable policy and gate fields.",
+        "Documentation sync tests fail when documented fields drift from implementation structs.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Preserve Direct Hal Auto Behavior",
+      "description": "As an existing Hal user, I want non-factory hal auto flags and behavior to keep working so that factory policy does not break current workflows.",
+      "acceptanceCriteria": [
+        "Direct hal auto command behavior is unchanged when invoked outside factory orchestration.",
+        "Factory policy is applied only to factory-created or factory-executed runs.",
+        "Existing tests for --no-ci, --no-review, review streaks, and CI merge controls continue to pass.",
+        "Regression tests cover at least one factory policy path and one direct hal auto path.",
+        "Tests verify factory policy does not alter direct hal auto flag parsing.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

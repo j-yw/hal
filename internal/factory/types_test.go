@@ -210,6 +210,7 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(QueueEntry{}),
 		reflect.TypeOf(QueueClaim{}),
 		reflect.TypeOf(EventRecord{}),
+		reflect.TypeOf(FactoryPolicy{}),
 		reflect.TypeOf(BootstrapRequest{}),
 		reflect.TypeOf(BootstrapOptions{}),
 		reflect.TypeOf(BootstrapResult{}),
