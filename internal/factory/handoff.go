@@ -183,7 +183,20 @@ func handoffFailureReason(record RunRecord) string {
 	if record.Failure == nil {
 		return ""
 	}
-	return strings.TrimSpace(record.Failure.Message)
+	return SanitizeHandoffFailureReason(record.Failure.Message)
+}
+
+// SanitizeHandoffFailureReason returns failure text that is safe to include in
+// durable handoff and next-action surfaces.
+func SanitizeHandoffFailureReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return ""
+	}
+	if handoffStringNeedsRedaction(reason) {
+		return handoffRedactedLocation
+	}
+	return reason
 }
 
 func handoffPullRequestURL(store Store, record RunRecord) string {
@@ -413,6 +426,114 @@ func handoffArtifactLooksLikeWindowsAbsolutePath(value string) bool {
 		}
 	}
 	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `//`)
+}
+
+func handoffStringNeedsRedaction(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if net.ParseIP(strings.Trim(value, "[]")) != nil {
+		return true
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return true
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err == nil {
+			if parsed.User != nil {
+				return true
+			}
+			if host := strings.TrimSpace(parsed.Hostname()); host != "" && net.ParseIP(host) != nil {
+				return true
+			}
+			for key := range parsed.Query() {
+				if handoffSecretKey(key) {
+					return true
+				}
+			}
+		}
+	}
+	if handoffStringContainsAbsolutePath(value) {
+		return true
+	}
+	if handoffStringContainsSecretAssignment(value) {
+		return true
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '/' || r == ',' || r == ';' || r == '=' || r == '(' || r == ')' || r == '[' || r == ']'
+	})
+	for _, field := range fields {
+		if net.ParseIP(strings.Trim(field, "[]")) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffStringContainsAbsolutePath(value string) bool {
+	for _, field := range handoffRedactionFields(value) {
+		if handoffFieldIsAbsolutePath(field) {
+			return true
+		}
+		if strings.Contains(field, "://") {
+			continue
+		}
+		for _, sep := range []string{"=", ":"} {
+			if idx := strings.Index(field, sep); idx >= 0 && idx+1 < len(field) {
+				if handoffFieldIsAbsolutePath(field[idx+1:]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func handoffFieldIsAbsolutePath(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'<>[](){}.,;")
+	if value == "" {
+		return false
+	}
+	if filepath.IsAbs(value) {
+		return true
+	}
+	return handoffArtifactLooksLikeWindowsAbsolutePath(value)
+}
+
+func handoffStringContainsSecretAssignment(value string) bool {
+	fields := handoffRedactionFields(value)
+	for i, field := range fields {
+		field = strings.TrimSpace(field)
+		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if field == "" {
+			continue
+		}
+		if idx := strings.IndexAny(field, "=:"); idx > 0 && handoffSecretKey(field[:idx]) {
+			return true
+		}
+		if !handoffSecretKey(field) || i+1 >= len(fields) {
+			continue
+		}
+		next := strings.TrimSpace(fields[i+1])
+		if next == "=" || next == ":" || strings.HasPrefix(next, "=") || strings.HasPrefix(next, ":") {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffRedactionFields(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', ',', ';', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}', '?', '&':
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 func handoffSecretKey(key string) bool {

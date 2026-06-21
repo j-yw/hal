@@ -227,7 +227,7 @@ func factoryRunFailureReason(record factory.RunRecord) string {
 	if record.Failure == nil {
 		return ""
 	}
-	return strings.TrimSpace(record.Failure.Message)
+	return factory.SanitizeHandoffFailureReason(record.Failure.Message)
 }
 
 func factoryRunArtifactLocations(artifacts []factory.ArtifactReference, logsOnly bool) []factory.NextActionLocation {

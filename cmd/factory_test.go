@@ -3428,6 +3428,26 @@ func TestNewFactoryRunNextActionIncludesSafeRunContext(t *testing.T) {
 	}
 }
 
+func TestNewFactoryRunNextActionRedactsSensitiveFailureReason(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:        "run-sensitive-handoff",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory-handoff",
+		Failure: &factory.FailureSummary{
+			Step:    "ci",
+			Message: "remote failed at 203.0.113.10 with token=secret-value",
+		},
+	})
+
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+	if action.FailureReason != "[redacted]" {
+		t.Fatalf("failureReason = %q, want [redacted]", action.FailureReason)
+	}
+}
+
 func TestNewFactoryRunNextActionRejectsUnsafeCommandInputs(t *testing.T) {
 	action := newFactoryRunNextAction(factory.RunRecord{
 		RunID:        "run-handoff",
