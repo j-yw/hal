@@ -46,7 +46,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `artifacts` | array | Safe artifact summaries associated with the run |
 | `verification` | object | Verification summary and artifact references recorded from `hal verify --json` |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
-| `handoff` | object | Redaction-safe human handoff and next-action guidance derived from durable run state |
+| `handoff` | object | Redaction-safe human handoff and next-action guidance for failed runs with actionable follow-up |
 
 `sandboxName` is retained as a compatibility summary field. New consumers
 should read `sandbox.name` when the `sandbox` object is present.
@@ -116,11 +116,11 @@ When `handoff` is present:
 | `runId` | string | yes | Run identifier the handoff summary describes |
 | `status` | string | yes | Stored run lifecycle status |
 | `executorMode` | string | yes | Stored executor mode |
-| `handoffRequired` | boolean | yes | True when a failed run has actionable takeover or resume guidance |
+| `handoffRequired` | boolean | yes | True when a failed run has actionable follow-up guidance |
 | `nextAction` | object | no | Structured suggested next action for failed resumable/takeover runs |
 | `inspectCommand` | string | no | Safe command for inspecting the durable run record |
 | `resumeCommand` | string | no | Safe local resume command when saved auto state permits continuation |
-| `sshCommand` | string | no | Safe sandbox SSH command for sandbox-backed handoff |
+| `sshCommand` | string | no | Safe sandbox SSH command when the recorded sandbox status is running |
 | `repoPath` | string | no | Repository path recorded for local handoff |
 | `branchName` | string | no | Branch recorded for the run |
 | `sandboxName` | string | no | Sandbox name recorded for sandbox-backed runs |

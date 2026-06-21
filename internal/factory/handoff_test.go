@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 func TestLoadHandoffSummaryFailedLocalRun(t *testing.T) {
@@ -183,6 +185,7 @@ func TestLoadHandoffSummaryFailedSandboxRun(t *testing.T) {
 		SandboxName:  "fallback-sandbox",
 		Sandbox: &SandboxMetadata{
 			Name:       "factory-remote",
+			Status:     sandbox.StatusRunning,
 			SSHCommand: "ssh root@203.0.113.10",
 			Connection: &SandboxConnectionMetadata{
 				Address:           "203.0.113.10",
@@ -271,6 +274,66 @@ func TestLoadHandoffSummaryFailedSandboxRun(t *testing.T) {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("handoff summary should not expose %q: %s", forbidden, string(data))
 		}
+	}
+}
+
+func TestLoadHandoffSummaryFailedSandboxRunNotRunningFallsBackToInspect(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+	}{
+		{name: "stopped", status: sandbox.StatusStopped},
+		{name: "unknown", status: sandbox.StatusUnknown},
+		{name: "empty", status: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "factory"))
+			createdAt := time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC)
+			record := RunRecord{
+				RunID:        "run-sandbox-" + tt.name,
+				Status:       RunStatusFailed,
+				ExecutorMode: ExecutorModeSandbox,
+				SandboxName:  "factory-remote",
+				Sandbox: &SandboxMetadata{
+					Name:   "factory-remote",
+					Status: tt.status,
+				},
+				CurrentStep: "run",
+				CreatedAt:   createdAt,
+				UpdatedAt:   createdAt.Add(time.Minute),
+				Failure: &FailureSummary{
+					Step:        "run",
+					Category:    FailureCategoryPipeline,
+					Message:     "remote execution failed",
+					Recoverable: true,
+				},
+			}
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatalf("SaveRun() error = %v", err)
+			}
+
+			summary, err := LoadHandoffSummary(store, record.RunID)
+			if err != nil {
+				t.Fatalf("LoadHandoffSummary() error = %v", err)
+			}
+			if !summary.HandoffRequired {
+				t.Fatal("HandoffRequired = false, want true")
+			}
+			if summary.SSHCommand != "" {
+				t.Fatalf("SSHCommand = %q, want empty for status %q", summary.SSHCommand, tt.status)
+			}
+			if summary.NextAction == nil {
+				t.Fatal("NextAction = nil, want inspect action")
+			}
+			if summary.NextAction.ID != handoffInspectActionID || summary.NextAction.Type != NextActionTypeInspect {
+				t.Fatalf("NextAction = %#v, want inspect action", summary.NextAction)
+			}
+			if summary.NextAction.Command != "hal factory status "+record.RunID+" --json" {
+				t.Fatalf("NextAction.Command = %q", summary.NextAction.Command)
+			}
+		})
 	}
 }
 

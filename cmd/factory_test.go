@@ -3337,7 +3337,7 @@ func TestNewFactoryRunNextActionUsesSafeSandboxTakeoverCommand(t *testing.T) {
 		Sandbox: &factory.SandboxMetadata{
 			Name:       "factory-handoff",
 			Provider:   "daytona",
-			Status:     "running",
+			Status:     sandbox.StatusRunning,
 			SSHCommand: "ssh root@203.0.113.10",
 			Connection: &factory.SandboxConnectionMetadata{
 				Address:           "100.64.0.10",
@@ -3450,6 +3450,28 @@ func TestNewFactoryRunNextActionRejectsUnsafeCommandInputs(t *testing.T) {
 	})
 	if action != nil {
 		t.Fatalf("next action = %#v, want nil for unsafe run ID", action)
+	}
+}
+
+func TestNewFactoryRunNextActionFallsBackToInspectWhenSandboxNotRunning(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:        "run-stopped-sandbox",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory-handoff",
+		Sandbox: &factory.SandboxMetadata{
+			Name:   "factory-handoff",
+			Status: sandbox.StatusStopped,
+		},
+		Failure: &factory.FailureSummary{
+			Message: "remote execution failed",
+		},
+	})
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+	if action.ID != "inspect_factory_run" || action.Command != "hal factory status run-stopped-sandbox --json" {
+		t.Fatalf("action = %#v, want inspect fallback", action)
 	}
 }
 
@@ -3619,16 +3641,11 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	requireFactoryFields(t, "factory status run", run, []string{
 		"runId", "status", "executorMode", "source", "repoPath", "repoRemote", "branchName",
 		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-		"finishedAt", "artifacts", "failure", "handoff",
+		"finishedAt", "artifacts", "failure",
 	})
-	handoff, ok := run["handoff"].(map[string]any)
-	if !ok {
-		t.Fatalf("run.handoff should be an object, got %T", run["handoff"])
+	if _, ok := run["handoff"]; ok {
+		t.Fatalf("run.handoff should be omitted when there is no actionable handoff: %#v", run["handoff"])
 	}
-	requireFactoryFields(t, "factory status handoff", handoff, []string{
-		"runId", "status", "executorMode", "handoffRequired", "inspectCommand",
-		"branchName", "sandboxName", "currentStep", "artifactLocations",
-	})
 	artifacts, ok := run["artifacts"].([]any)
 	if !ok || len(artifacts) != 2 {
 		t.Fatalf("run.artifacts should be an array of 2, got %T len %d", run["artifacts"], len(resp.Run.Artifacts))
@@ -3673,6 +3690,7 @@ func TestRunFactoryStatusJSONIncludesStructuredHandoffNextAction(t *testing.T) {
 	record.SandboxName = "factory-remote"
 	record.Sandbox = &factory.SandboxMetadata{
 		Name:       "factory-remote",
+		Status:     sandbox.StatusRunning,
 		SSHCommand: "ssh root@203.0.113.10",
 		Connection: &factory.SandboxConnectionMetadata{
 			Address:  "203.0.113.10",
@@ -3838,6 +3856,7 @@ func TestRunFactoryOpenFailedSandboxPrintsSSHCommand(t *testing.T) {
 	record.SandboxName = "factory-remote"
 	record.Sandbox = &factory.SandboxMetadata{
 		Name:       "factory-remote",
+		Status:     sandbox.StatusRunning,
 		SSHCommand: "ssh root@203.0.113.10",
 		Connection: &factory.SandboxConnectionMetadata{
 			Address:  "203.0.113.10",

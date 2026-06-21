@@ -150,7 +150,7 @@ func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
 	actionID := "inspect_factory_run"
 	description := "Inspect the durable run record and timeline."
 	if record.Status == factory.RunStatusFailed && record.ExecutorMode == factory.ExecutorModeSandbox {
-		if sandboxName := factoryRunSandboxName(record); sandboxName != "" {
+		if sandboxName := factoryRunRunnableSandboxName(record); sandboxName != "" {
 			command = "hal sandbox ssh " + sandboxName
 			actionID = "takeover_sandbox"
 			description = "Open an interactive shell in the sandbox for manual takeover."
@@ -174,6 +174,13 @@ func factoryRunSandboxName(record factory.RunRecord) string {
 		}
 	}
 	return safeFactoryRunSandboxName(record.SandboxName)
+}
+
+func factoryRunRunnableSandboxName(record factory.RunRecord) string {
+	if record.Sandbox == nil || strings.TrimSpace(record.Sandbox.Status) != sandbox.StatusRunning {
+		return ""
+	}
+	return factoryRunSandboxName(record)
 }
 
 func safeFactoryRunSandboxName(name string) string {

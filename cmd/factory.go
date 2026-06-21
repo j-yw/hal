@@ -2358,11 +2358,18 @@ func runFactoryStatusWithDeps(out io.Writer, runID string, jsonMode bool, deps f
 
 	handoff := factory.NewHandoffSummary(store, *record)
 	if jsonMode {
-		return renderFactoryStatusJSON(out, *record, events, &handoff)
+		return renderFactoryStatusJSON(out, *record, events, factoryStatusJSONHandoff(handoff))
 	}
 
 	renderFactoryStatusTable(out, *record, events, &handoff)
 	return nil
+}
+
+func factoryStatusJSONHandoff(handoff factory.HandoffSummary) *factory.HandoffSummary {
+	if !handoff.HasActionableData() {
+		return nil
+	}
+	return &handoff
 }
 
 func runFactoryArtifacts(cmd *cobra.Command, args []string) error {

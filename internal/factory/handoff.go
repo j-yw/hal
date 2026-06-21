@@ -40,6 +40,15 @@ type HandoffSummary struct {
 	LogLocations      []NextActionLocation `json:"logLocations,omitempty"`
 }
 
+// HasActionableData reports whether the summary should be emitted on optional
+// machine-readable handoff surfaces.
+func (summary HandoffSummary) HasActionableData() bool {
+	return summary.HandoffRequired ||
+		summary.NextAction != nil ||
+		strings.TrimSpace(summary.ResumeCommand) != "" ||
+		strings.TrimSpace(summary.SSHCommand) != ""
+}
+
 // LoadHandoffSummary resolves a stored run ID into handoff guidance using only
 // the factory store and store-backed artifact payloads.
 func LoadHandoffSummary(store Store, runID string) (*HandoffSummary, error) {
@@ -77,7 +86,7 @@ func NewHandoffSummary(store Store, record RunRecord) HandoffSummary {
 
 	summary.HandoffRequired = true
 	if record.ExecutorMode == ExecutorModeSandbox {
-		if summary.SandboxName != "" {
+		if summary.SandboxName != "" && handoffSandboxIsRunning(record) {
 			summary.SSHCommand = "hal sandbox ssh " + summary.SandboxName
 			summary.NextAction = handoffNextAction(summary, handoffSandboxTakeoverActionID, NextActionTypeTakeover, summary.SSHCommand, "Open an interactive shell in the sandbox for manual takeover.")
 			return summary
@@ -141,6 +150,10 @@ func handoffSandboxName(record RunRecord) string {
 		}
 	}
 	return handoffSafeSandboxName(record.SandboxName)
+}
+
+func handoffSandboxIsRunning(record RunRecord) bool {
+	return record.Sandbox != nil && strings.TrimSpace(record.Sandbox.Status) == sandbox.StatusRunning
 }
 
 func handoffSafeSandboxName(name string) string {
