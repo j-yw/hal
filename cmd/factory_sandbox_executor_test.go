@@ -699,7 +699,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if started.EventType != factory.EventTypeStepStarted || started.Summary != "Remote sandbox execution started" {
 		t.Fatalf("start event = %#v", started)
 	}
-	if started.Metadata["source"] != "remote_sandbox" || started.Metadata["status"] != factory.RunStatusRunning {
+	if started.Metadata["source"] != "remote_sandbox" || started.Metadata["status"] != factory.RunStatusRunning || started.Metadata["step"] != factory.RunDurationStepEngineRun {
 		t.Fatalf("start event metadata = %#v", started.Metadata)
 	}
 	if firstLine.EventType != factory.EventTypeCommandOutputSummary || secondLine.EventType != factory.EventTypeCommandOutputSummary {
@@ -723,8 +723,12 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if completed.EventType != factory.EventTypeStepEnded || completed.Summary != "Remote sandbox execution completed" {
 		t.Fatalf("completion event = %#v", completed)
 	}
-	if completed.Metadata["source"] != "remote_sandbox" || completed.Metadata["status"] != factory.RunStatusSucceeded {
+	if completed.Metadata["source"] != "remote_sandbox" || completed.Metadata["status"] != factory.RunStatusSucceeded || completed.Metadata["step"] != factory.RunDurationStepEngineRun {
 		t.Fatalf("completion event metadata = %#v", completed.Metadata)
+	}
+	durations := factory.DeriveRunStepDurations(events)
+	if len(durations) != 1 || durations[0].Step != factory.RunDurationStepEngineRun {
+		t.Fatalf("derived step durations = %#v, want one engine_run duration", durations)
 	}
 }
 

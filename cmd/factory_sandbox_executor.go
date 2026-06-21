@@ -443,7 +443,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summary string, metadata map[string]any) error {
 	eventMetadata := map[string]any{
 		"source":       "remote_sandbox",
-		"step":         "run",
+		"step":         factory.RunDurationStepEngineRun,
 		"executorMode": factory.ExecutorModeSandbox,
 		"sandboxName":  w.sandboxName,
 		"provider":     w.provider,

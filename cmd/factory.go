@@ -223,6 +223,7 @@ type factoryRunPipelineRequest struct {
 	Request        factoryRunRequest
 	Record         factory.RunRecord
 	Store          factory.Store
+	Now            func() time.Time
 	RecordProgress func(factoryRunProgressEvent) error
 }
 
@@ -512,6 +513,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		Request: req,
 		Record:  runningRecord,
 		Store:   store,
+		Now:     deps.now,
 		RecordProgress: func(event factoryRunProgressEvent) error {
 			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
 		},
@@ -2353,15 +2355,22 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	}
 
 	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
-	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Starting local hal auto pipeline", nil); err != nil {
+	now := req.Now
+	if now == nil {
+		now = time.Now
+	}
+	startedAt := now()
+	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Starting local hal auto pipeline", &startedAt); err != nil {
 		return err
 	}
 	err := deps.runAuto(ctx, autoReq)
 	if err != nil {
-		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, err.Error(), "Local hal auto pipeline failed", nil)
+		failedAt := now()
+		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, err.Error(), "Local hal auto pipeline failed", &failedAt)
 		return err
 	}
-	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Local hal auto pipeline completed", nil); err != nil {
+	completedAt := now()
+	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Local hal auto pipeline completed", &completedAt); err != nil {
 		return err
 	}
 	return nil

@@ -3019,6 +3019,89 @@ func TestRunFactoryRunPipelineWithDepsPassesReportEntryToAuto(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsUsesInjectedClockForLogChunks(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	startedAt := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(2 * time.Minute)
+	times := []time.Time{startedAt, completedAt}
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-clock",
+		Store: store,
+		Now: func() time.Time {
+			if len(times) == 0 {
+				t.Fatal("unexpected clock call")
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-clock")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if !chunks[0].CreatedAt.Equal(startedAt) {
+		t.Fatalf("start chunk createdAt = %s, want %s", chunks[0].CreatedAt, startedAt)
+	}
+	if !chunks[1].CreatedAt.Equal(completedAt) {
+		t.Fatalf("completion chunk createdAt = %s, want %s", chunks[1].CreatedAt, completedAt)
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsUsesInjectedClockForFailureLogChunk(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	startedAt := time.Date(2026, 6, 21, 11, 5, 0, 0, time.UTC)
+	failedAt := startedAt.Add(30 * time.Second)
+	times := []time.Time{startedAt, failedAt}
+	wantErr := errors.New("auto failed")
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-clock-failure",
+		Store: store,
+		Now: func() time.Time {
+			if len(times) == 0 {
+				t.Fatal("unexpected clock call")
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-clock-failure")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if !chunks[0].CreatedAt.Equal(startedAt) {
+		t.Fatalf("start chunk createdAt = %s, want %s", chunks[0].CreatedAt, startedAt)
+	}
+	if !chunks[1].CreatedAt.Equal(failedAt) {
+		t.Fatalf("failure chunk createdAt = %s, want %s", chunks[1].CreatedAt, failedAt)
+	}
+}
+
 func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	chdirTemp(t)
 
