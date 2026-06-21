@@ -3,6 +3,7 @@ package compound
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -526,6 +527,44 @@ func TestRunPRStep_FailingExhaustsFixAttempts(t *testing.T) {
 	output := out.String()
 	if !strings.Contains(output, "CI still failing after") {
 		t.Fatalf("output = %q, want exhausted message", output)
+	}
+}
+
+func TestRunPRStep_MaxCIFixAttemptsBlocksBeforeNextFix(t *testing.T) {
+	stubCIWaitAlwaysFailing(t)
+
+	origFix := fixWithEngineInDirFn
+	fixWithEngineInDirFn = func(context.Context, string, ci.StatusResult, ci.FixOptions) (ci.FixResult, error) {
+		t.Fatal("CI fix should not be called after maxCiFixAttempts is reached")
+		return ci.FixResult{}, nil
+	}
+	t.Cleanup(func() {
+		fixWithEngineInDirFn = origFix
+	})
+
+	pipeline, _ := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+		CI: &CIState{
+			FixAttempts: 1,
+		},
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{MaxCIFixAttempts: 1})
+	var limitErr *PolicyLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("runPRStep() error = %v, want PolicyLimitError", err)
+	}
+	if limitErr.PolicyField != "factory.policy.maxCiFixAttempts" || limitErr.Step != StepCI || limitErr.Attempts != 1 || limitErr.Limit != 1 {
+		t.Fatalf("limit error = %+v, want maxCiFixAttempts CI limit", limitErr)
+	}
+	if state.CI.Status != "policy_blocked" || state.CI.Reason != "max_ci_fix_attempts" {
+		t.Fatalf("state.CI = %+v, want policy_blocked/max_ci_fix_attempts", state.CI)
 	}
 }
 

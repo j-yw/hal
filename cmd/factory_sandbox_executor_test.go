@@ -550,6 +550,27 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 			},
 			want: []string{"hal", "auto", ".hal/prd-feature.md"},
 		},
+		{
+			name: "attempt policy env",
+			req: factoryRunAutoRequest{
+				BaseBranch: "main",
+				AttemptPolicy: autoFactoryAttemptPolicy{
+					MaxRunAttempts:       1,
+					MaxReviewFixAttempts: 2,
+					MaxCIFixAttempts:     3,
+				},
+			},
+			want: []string{
+				"env",
+				"HAL_FACTORY_MAX_RUN_ATTEMPTS=1",
+				"HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=2",
+				"HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=3",
+				"hal",
+				"auto",
+				"--base",
+				"main",
+			},
+		},
 	}
 
 	for _, tt := range tests {

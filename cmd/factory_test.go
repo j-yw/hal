@@ -620,6 +620,95 @@ func TestRunFactoryRunWithDepsRejectsDisallowedPolicyEngineBeforeSandboxExecutio
 	})
 }
 
+func TestRunFactoryRunWithDepsRecordsAttemptLimitPolicyDecision(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.MaxRunAttempts = 1
+	limitErr := &compound.PolicyLimitError{
+		PolicyField: "factory.policy.maxRunAttempts",
+		Step:        compound.StepRun,
+		Attempts:    1,
+		Limit:       1,
+	}
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-policy-attempt-limit", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			if req.AttemptPolicy.MaxRunAttempts != 1 {
+				t.Fatalf("pipeline attempt policy = %+v, want maxRunAttempts 1", req.AttemptPolicy)
+			}
+			return limitErr
+		},
+	})
+	if !errors.Is(err, limitErr) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want policy limit error", err)
+	}
+
+	record, err := store.LoadRun("run-policy-attempt-limit")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", record.Status)
+	}
+	if record.CurrentStep != "policy" {
+		t.Fatalf("currentStep = %q, want policy", record.CurrentStep)
+	}
+	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryValidation {
+		t.Fatalf("failure = %#v, want validation failure", record.Failure)
+	}
+
+	events, err := store.LoadEvents("run-policy-attempt-limit")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	assertFactoryEventSequences(t, events)
+	assertPolicyDecisionMetadata(t, events[2].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.maxRunAttempts",
+		Decision:    factory.PolicyDecisionBlockedGate,
+		Outcome:     factory.PolicyOutcomeBlocked,
+		Reason:      "reached attempt limit 1 before run step (attempts=1)",
+	})
+	if !events[2].Timestamp.Equal(failedAt) {
+		t.Fatalf("policy event timestamp = %s, want %s", events[2].Timestamp, failedAt)
+	}
+}
+
 func TestFactoryRunRecordCreateAndInProgressTransition(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 20, 19, 0, 0, 0, time.UTC)
@@ -3100,6 +3189,11 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 	called := false
 
 	err := runFactoryRunPipelineWithDeps(ctx, factoryRunPipelineRequest{
+		AttemptPolicy: autoFactoryAttemptPolicy{
+			MaxRunAttempts:       1,
+			MaxReviewFixAttempts: 2,
+			MaxCIFixAttempts:     3,
+		},
 		Request: factoryRunRequest{
 			MarkdownPath: " .hal/prd-feature.md ",
 			BaseBranch:   " develop ",
@@ -3124,6 +3218,11 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 	want := factoryRunAutoRequest{
 		Args:       []string{".hal/prd-feature.md"},
 		BaseBranch: "develop",
+		AttemptPolicy: autoFactoryAttemptPolicy{
+			MaxRunAttempts:       1,
+			MaxReviewFixAttempts: 2,
+			MaxCIFixAttempts:     3,
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("auto request = %#v, want %#v", got, want)

@@ -581,7 +581,24 @@ func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 	if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
 		args = append(args, "--base", baseBranch)
 	}
+	if env := factorySandboxRemoteAutoEnv(req.AttemptPolicy); len(env) > 0 {
+		return append(append([]string{"env"}, env...), args...)
+	}
 	return args
+}
+
+func factorySandboxRemoteAutoEnv(policy autoFactoryAttemptPolicy) []string {
+	env := make([]string, 0, 3)
+	if policy.MaxRunAttempts > 0 {
+		env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxRunAttemptsEnv, policy.MaxRunAttempts))
+	}
+	if policy.MaxReviewFixAttempts > 0 {
+		env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxReviewFixAttemptsEnv, policy.MaxReviewFixAttempts))
+	}
+	if policy.MaxCIFixAttempts > 0 {
+		env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxCIFixAttemptsEnv, policy.MaxCIFixAttempts))
+	}
+	return env
 }
 
 func factorySandboxPrepareRemoteInputs(ctx context.Context, req factorySandboxExecutorRequest, provider sandbox.Provider, target *sandbox.SandboxState, out io.Writer, deps factorySandboxExecutorDeps) (factoryRunAutoRequest, error) {

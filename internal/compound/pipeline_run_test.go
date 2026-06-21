@@ -2,6 +2,7 @@ package compound
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,71 @@ type runStepTestEngine struct{}
 
 func (runStepTestEngine) Name() string {
 	return "run-step-test"
+}
+
+func TestRunLoopStep_MaxRunAttemptsCapsLoopIterations(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	cfg.MaxIterations = 7
+
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	state := &PipelineState{Step: StepRun, BaseBranch: "develop"}
+
+	var gotLoopConfig loop.Config
+	origRunLoopWithConfig := runLoopWithConfig
+	runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result, error) {
+		gotLoopConfig = cfg
+		return loop.Result{
+			Success:    true,
+			Complete:   false,
+			Iterations: 2,
+		}, nil
+	}
+	t.Cleanup(func() {
+		runLoopWithConfig = origRunLoopWithConfig
+	})
+
+	err := pipeline.runLoopStep(context.Background(), state, RunOptions{MaxRunAttempts: 2})
+	if err == nil {
+		t.Fatal("expected incomplete run gate error")
+	}
+	if gotLoopConfig.MaxIterations != 2 {
+		t.Fatalf("loop max iterations = %d, want policy cap 2", gotLoopConfig.MaxIterations)
+	}
+	if state.Run == nil || state.Run.MaxIterations != 2 {
+		t.Fatalf("state.Run = %+v, want maxIterations 2", state.Run)
+	}
+}
+
+func TestRunLoopStep_MaxRunAttemptsBlocksBeforeLoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	state := &PipelineState{
+		Step: StepRun,
+		Run: &RunState{
+			Iterations: 1,
+			Complete:   false,
+		},
+	}
+
+	origRunLoopWithConfig := runLoopWithConfig
+	runLoopWithConfig = func(context.Context, loop.Config) (loop.Result, error) {
+		t.Fatal("run loop should not be called after maxRunAttempts is reached")
+		return loop.Result{}, nil
+	}
+	t.Cleanup(func() {
+		runLoopWithConfig = origRunLoopWithConfig
+	})
+
+	err := pipeline.runLoopStep(context.Background(), state, RunOptions{MaxRunAttempts: 1})
+	var limitErr *PolicyLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("runLoopStep() error = %v, want PolicyLimitError", err)
+	}
+	if limitErr.PolicyField != "factory.policy.maxRunAttempts" || limitErr.Step != StepRun || limitErr.Attempts != 1 || limitErr.Limit != 1 {
+		t.Fatalf("limit error = %+v, want maxRunAttempts run limit", limitErr)
+	}
 }
 
 func (runStepTestEngine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {

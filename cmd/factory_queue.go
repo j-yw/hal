@@ -32,6 +32,7 @@ type factoryQueueWorkDeps struct {
 	defaultStore func() (factory.Store, error)
 	now          func() time.Time
 	claim        *factory.QueueClaim
+	loadPolicy   func(string) (*factory.FactoryPolicy, error)
 	runPipeline  func(context.Context, factoryRunPipelineRequest) error
 }
 
@@ -61,6 +62,7 @@ var defaultFactoryQueueListDeps = factoryQueueListDeps{
 var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
+	loadPolicy:   factory.LoadPolicyConfig,
 	runPipeline:  runFactoryRunPipeline,
 }
 
@@ -360,10 +362,18 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	}
 	record.ExecutorMode = entry.ExecutorMode
 
-	_, execErr := executeFactoryRun(ctx, factoryQueueRunDir(*record), factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, factoryRunDeps{
+	runDir := factoryQueueRunDir(*record)
+	policy, err := loadFactoryRunPolicy(runDir, factoryRunDeps{
+		loadPolicy: deps.loadPolicy,
+	})
+	if err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load factory policy: %w", err), deps.now)
+	}
+
+	_, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, factoryRunDeps{
 		now:         deps.now,
 		runPipeline: deps.runPipeline,
-	})
+	}, policy)
 	if execErr != nil {
 		return failClaimedFactoryQueueEntry(store, entry, execErr, deps.now)
 	}
@@ -436,6 +446,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	}
 	if deps.now == nil {
 		deps.now = defaultFactoryQueueWorkDeps.now
+	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryQueueWorkDeps.loadPolicy
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline

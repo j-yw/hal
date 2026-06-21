@@ -143,7 +143,7 @@ func TestStateRoundTrip_UsesUnifiedSchema(t *testing.T) {
 			Complete:      false,
 			MaxIterations: 25,
 		},
-		Review: &ReviewState{Status: "pending"},
+		Review: &ReviewState{Status: "pending", FixAttempts: 3},
 		CI:     &CIState{Status: "skipped", Reason: "skip_ci_flag"},
 		Analysis: &AnalysisResult{
 			PriorityItem:       "Top issue",
@@ -202,6 +202,9 @@ func TestStateRoundTrip_UsesUnifiedSchema(t *testing.T) {
 	}
 	if loaded.Validation == nil || loaded.Validation.Attempts != original.Validation.Attempts {
 		t.Fatalf("loaded.Validation = %+v, want attempts %d", loaded.Validation, original.Validation.Attempts)
+	}
+	if loaded.Review == nil || loaded.Review.FixAttempts != original.Review.FixAttempts {
+		t.Fatalf("loaded.Review = %+v, want fix attempts %d", loaded.Review, original.Review.FixAttempts)
 	}
 	if loaded.CI == nil || loaded.CI.Reason != original.CI.Reason {
 		t.Fatalf("loaded.CI = %+v, want reason %q", loaded.CI, original.CI.Reason)

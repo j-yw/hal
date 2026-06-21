@@ -194,6 +194,7 @@ type factoryRunPipelineRequest struct {
 	Request        factoryRunRequest
 	Record         factory.RunRecord
 	Store          factory.Store
+	AttemptPolicy  autoFactoryAttemptPolicy
 	RecordProgress func(factoryRunProgressEvent) error
 }
 
@@ -225,9 +226,10 @@ type factoryRunRequest struct {
 }
 
 type factoryRunAutoRequest struct {
-	Args       []string
-	ReportPath string
-	BaseBranch string
+	Args          []string
+	ReportPath    string
+	BaseBranch    string
+	AttemptPolicy autoFactoryAttemptPolicy
 }
 
 type factoryRunProgressEvent struct {
@@ -438,11 +440,15 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err := recordFactoryRunStarted(store, record); err != nil {
 		return err
 	}
-	if err := enforceFactoryRunCreationPolicy(store, dir, record, out, req.JSON, deps); err != nil {
+	policy, err := loadFactoryRunPolicy(dir, deps)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+	}
+	if err := enforceFactoryRunCreationPolicy(store, dir, record, out, req.JSON, deps, policy); err != nil {
 		return err
 	}
 
-	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps)
+	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps, policy)
 	if result.Render {
 		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
 			if execErr != nil {
@@ -454,7 +460,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	return execErr
 }
 
-func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps) (factoryRunExecutionResult, error) {
+func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factoryRunExecutionResult, error) {
 	if out == nil {
 		out = io.Discard
 	}
@@ -472,10 +478,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 
 	pipelineReq := factoryRunPipelineRequest{
-		RunID:   runningRecord.RunID,
-		Request: req,
-		Record:  runningRecord,
-		Store:   store,
+		RunID:         runningRecord.RunID,
+		Request:       req,
+		Record:        runningRecord,
+		Store:         store,
+		AttemptPolicy: autoFactoryAttemptPolicyFromFactoryPolicy(policy),
 		RecordProgress: func(event factoryRunProgressEvent) error {
 			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
 		},
@@ -487,10 +494,12 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		if req.JSON {
 			remoteOutput = io.Discard
 		}
+		remoteAuto := factoryRunAutoRequestFromFactoryRequest(req)
+		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
 			ProjectDir:   dir,
 			RunRecord:    runningRecord,
-			RemoteAuto:   factoryRunAutoRequestFromFactoryRequest(req),
+			RemoteAuto:   remoteAuto,
 			RemoteOutput: remoteOutput,
 		})
 	} else {
@@ -504,6 +513,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
+		}
+		if decision, ok := factoryPolicyDecisionFromAttemptLimit(runErr); ok {
+			if eventErr := recordFactoryPolicyDecision(store, runningRecord.RunID, failedAt, decision); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory policy decision: %w", eventErr))
+			}
 		}
 
 		recordErr := runErr
@@ -690,21 +704,26 @@ func (e *factoryPolicyRejectionError) policyDecisionMetadata() factory.PolicyDec
 	}
 }
 
-func enforceFactoryRunCreationPolicy(store factory.Store, dir string, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps) error {
+func loadFactoryRunPolicy(dir string, deps factoryRunDeps) (factory.FactoryPolicy, error) {
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryRunDeps.loadPolicy
+	}
 	policy, err := deps.loadPolicy(dir)
 	if err != nil {
-		return failFactoryRunCreation(store, record, out, jsonMode, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+		return factory.FactoryPolicy{}, err
 	}
 	if policy == nil {
-		defaultPolicy := factory.DefaultFactoryPolicy()
-		policy = &defaultPolicy
+		return factory.DefaultFactoryPolicy(), nil
 	}
+	return *policy, nil
+}
 
+func enforceFactoryRunCreationPolicy(store factory.Store, dir string, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy) error {
 	engineName, err := deps.loadEngine(dir)
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, jsonMode, deps.now(), fmt.Errorf("load factory engine policy input: %w", err), nil)
 	}
-	rejection := factoryRunCreationPolicyRejection(*policy, record.ExecutorMode, engineName)
+	rejection := factoryRunCreationPolicyRejection(policy, record.ExecutorMode, engineName)
 	if rejection == nil {
 		return nil
 	}
@@ -756,6 +775,27 @@ func factoryPolicyAllowsEngine(policy factory.FactoryPolicy, engineName string) 
 		}
 	}
 	return false
+}
+
+func autoFactoryAttemptPolicyFromFactoryPolicy(policy factory.FactoryPolicy) autoFactoryAttemptPolicy {
+	return autoFactoryAttemptPolicy{
+		MaxRunAttempts:       policy.MaxRunAttempts,
+		MaxReviewFixAttempts: policy.MaxReviewFixAttempts,
+		MaxCIFixAttempts:     policy.MaxCIFixAttempts,
+	}
+}
+
+func factoryPolicyDecisionFromAttemptLimit(err error) (factory.PolicyDecisionMetadata, bool) {
+	var limitErr *compound.PolicyLimitError
+	if !errors.As(err, &limitErr) || limitErr == nil {
+		return factory.PolicyDecisionMetadata{}, false
+	}
+	return factory.PolicyDecisionMetadata{
+		PolicyField: limitErr.PolicyField,
+		Decision:    factory.PolicyDecisionBlockedGate,
+		Outcome:     factory.PolicyOutcomeBlocked,
+		Reason:      limitErr.Reason(),
+	}, true
 }
 
 func failFactoryRunCreation(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata) error {
@@ -1246,6 +1286,10 @@ func classifyFactoryRunFailure(err error) string {
 	if errors.As(err, &policyErr) {
 		return factory.FailureCategoryValidation
 	}
+	var policyLimitErr *compound.PolicyLimitError
+	if errors.As(err, &policyLimitErr) {
+		return factory.FailureCategoryValidation
+	}
 
 	var exitErr *ExitCodeError
 	if errors.As(err, &exitErr) && exitErr.Code == ExitCodeValidation {
@@ -1284,6 +1328,10 @@ func classifyFactoryRunFailure(err error) string {
 func factoryRunFailureStep(currentStep string, err error) string {
 	var policyErr *factoryPolicyRejectionError
 	if errors.As(err, &policyErr) {
+		return "policy"
+	}
+	var policyLimitErr *compound.PolicyLimitError
+	if errors.As(err, &policyLimitErr) {
 		return "policy"
 	}
 	if step := autoFailedStep(err); step != "" {
@@ -2316,7 +2364,9 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 		return fmt.Errorf("factory run auto dependency is required")
 	}
 
-	return deps.runAuto(ctx, factoryRunAutoRequestFromFactoryRequest(req.Request))
+	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
+	autoReq.AttemptPolicy = req.AttemptPolicy
+	return deps.runAuto(ctx, autoReq)
 }
 
 func factoryRunAutoRequestFromFactoryRequest(req factoryRunRequest) factoryRunAutoRequest {
@@ -2334,6 +2384,7 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = contextWithAutoFactoryAttemptPolicy(ctx, req.AttemptPolicy)
 
 	cmd := &cobra.Command{Use: "auto"}
 	cmd.SetContext(ctx)
