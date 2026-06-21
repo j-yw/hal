@@ -514,6 +514,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		},
 	}
 	artifactSnapshot := snapshotFactoryRunArtifacts(dir)
+	sandboxArtifactsCollected := false
 	runErr := error(nil)
 	if req.Sandbox {
 		remoteOutput := out
@@ -529,6 +530,16 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			RunRecord:    runningRecord,
 			RemoteAuto:   remoteAuto,
 			RemoteOutput: remoteOutput,
+			BeforeCleanup: func(ctx context.Context, record factory.RunRecord) error {
+				if sandboxArtifactsCollected {
+					return nil
+				}
+				if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, record, deps); err != nil {
+					return err
+				}
+				sandboxArtifactsCollected = true
+				return nil
+			},
 		})
 	} else {
 		runErr = deps.runPipeline(ctx, pipelineReq)
@@ -537,7 +548,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, !sandboxArtifactsCollected); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
@@ -576,7 +587,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 
 	artifactAt := deps.now()
-	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, artifactAt, deps)
+	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, artifactAt, deps, !sandboxArtifactsCollected)
 	if err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
@@ -935,7 +946,7 @@ func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now
 	return record, nil
 }
 
-func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps) (factory.RunRecord, error) {
+func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps, collectSandboxArtifacts bool) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
@@ -960,8 +971,10 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot, snapshots); err != nil {
 		return factory.RunRecord{}, err
 	}
-	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, *record, deps); err != nil {
-		return factory.RunRecord{}, err
+	if collectSandboxArtifacts {
+		if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, *record, deps); err != nil {
+			return factory.RunRecord{}, err
+		}
 	}
 	record, err = store.LoadRun(runID)
 	if err != nil {

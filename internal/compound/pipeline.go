@@ -1159,21 +1159,7 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 	lastValidIssues := 0
 	fixesAppliedDuringReview := false
 	for cycle := 1; cycle <= maxCycles; cycle++ {
-		if opts.MaxReviewFixAttempts > 0 && state.Review.FixAttempts >= opts.MaxReviewFixAttempts {
-			state.Review.Status = "failed"
-			state.Step = StepReview
-			limitErr := &PolicyLimitError{
-				PolicyField: "factory.policy.maxReviewFixAttempts",
-				Step:        StepReview,
-				Attempts:    state.Review.FixAttempts,
-				Limit:       opts.MaxReviewFixAttempts,
-			}
-			if saveErr := p.saveState(state); saveErr != nil {
-				return fmt.Errorf("%w (also failed to save state: %v)", limitErr, saveErr)
-			}
-			return limitErr
-		}
-
+		limitReachedBeforeCycle := opts.MaxReviewFixAttempts > 0 && state.Review.FixAttempts >= opts.MaxReviewFixAttempts
 		p.display.ShowInfo("   Running review cycle %d/%d against %s...\n", cycle, maxCycles, baseBranch)
 		result, err := runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, 1)
 		if err != nil {
@@ -1187,7 +1173,22 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 
 		iteration := result.Iterations[len(result.Iterations)-1]
 		lastValidIssues = iteration.ValidIssues
-		if iteration.ValidIssues > 0 || iteration.FixesApplied > 0 {
+		countsAsFixAttempt := iteration.ValidIssues > 0 || iteration.FixesApplied > 0
+		if limitReachedBeforeCycle && countsAsFixAttempt {
+			state.Review.Status = "failed"
+			state.Step = StepReview
+			limitErr := &PolicyLimitError{
+				PolicyField: "factory.policy.maxReviewFixAttempts",
+				Step:        StepReview,
+				Attempts:    state.Review.FixAttempts,
+				Limit:       opts.MaxReviewFixAttempts,
+			}
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("%w (also failed to save state: %v)", limitErr, saveErr)
+			}
+			return limitErr
+		}
+		if countsAsFixAttempt {
 			state.Review.FixAttempts++
 		}
 		if iteration.FixesApplied > 0 {

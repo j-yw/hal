@@ -1628,6 +1628,84 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 4, 5, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	copier := &fakeFactorySandboxArtifactCopier{
+		files: map[string]string{
+			"/workspace/.hal/auto-state.json": `{"step":"done"}` + "\n",
+		},
+	}
+	cleanupStarted := false
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{Sandbox: true}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-cleanup-order", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-sandbox"
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			if req.BeforeCleanup == nil {
+				t.Fatal("BeforeCleanup was not configured for sandbox runs")
+			}
+			if err := req.BeforeCleanup(ctx, record); err != nil {
+				return err
+			}
+			cleanupStarted = true
+			delete(copier.files, "/workspace/.hal/auto-state.json")
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxCopier:  copier,
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			if cleanupStarted {
+				t.Fatal("sandbox artifacts were requested after sandbox cleanup started")
+			}
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-auto-state",
+				Name:       "sandbox-auto-state",
+				Type:       "json",
+				RemotePath: "/workspace/.hal/auto-state.json",
+				Path:       ".hal/auto-state.json",
+			}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	record, err := store.LoadRun("run-sandbox-cleanup-order")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+	if len(copier.fileCalls) != 1 {
+		t.Fatalf("sandbox artifact copy calls = %d, want 1 before cleanup", len(copier.fileCalls))
+	}
+}
+
 func TestRunFactoryRunWithDepsCollectsSandboxWarningsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
