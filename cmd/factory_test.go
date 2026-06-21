@@ -4047,7 +4047,7 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 	}
 }
 
-func TestSafeFactoryPRURLRejectsSecretQueryKeys(t *testing.T) {
+func TestSafeFactoryPRURLRejectsSecretURLParts(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
@@ -4059,6 +4059,11 @@ func TestSafeFactoryPRURLRejectsSecretQueryKeys(t *testing.T) {
 			want: "https://github.com/resciencelab/hal/pull/11",
 		},
 		{
+			name: "safe fragment",
+			raw:  "https://github.com/resciencelab/hal/pull/11#discussion_r123",
+			want: "https://github.com/resciencelab/hal/pull/11#discussion_r123",
+		},
+		{
 			name: "token query",
 			raw:  "https://github.com/resciencelab/hal/pull/11?token=secret",
 			want: "",
@@ -4066,6 +4071,16 @@ func TestSafeFactoryPRURLRejectsSecretQueryKeys(t *testing.T) {
 		{
 			name: "api key query",
 			raw:  "https://github.com/resciencelab/hal/pull/11?api_key=secret",
+			want: "",
+		},
+		{
+			name: "access token fragment",
+			raw:  "https://github.com/resciencelab/hal/pull/11#access_token=secret",
+			want: "",
+		},
+		{
+			name: "auth fragment",
+			raw:  "https://github.com/resciencelab/hal/pull/11#auth:bearer",
 			want: "",
 		},
 	}

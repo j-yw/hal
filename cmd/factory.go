@@ -1045,6 +1045,9 @@ func safeFactoryArtifactURL(rawURL string) string {
 			return ""
 		}
 	}
+	if factoryArtifactStringContainsSecretAssignment(parsed.Fragment) {
+		return ""
+	}
 	return parsed.String()
 }
 
@@ -2916,6 +2919,9 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 				if factoryArtifactSecretKey(key) {
 					return true
 				}
+			}
+			if factoryArtifactStringContainsSecretAssignment(parsed.Fragment) {
+				return true
 			}
 		}
 	}
