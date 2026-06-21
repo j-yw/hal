@@ -2104,6 +2104,83 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	}
 }
 
+func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 30, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+		JSON:         true,
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-json", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory-sandbox-executor", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			if _, err := io.WriteString(req.RemoteOutput, "remote ok\n"); err != nil {
+				return err
+			}
+			if err := appendFactoryRunTimelineEvent(store, req.RunRecord.RunID, startedAt.Add(10*time.Second), factoryTimelineEvent{
+				EventType: factory.EventTypeCommandOutputSummary,
+				Message:   "remote ok",
+				Summary:   "Remote sandbox output",
+				Metadata: map[string]any{
+					"source": "remote_sandbox",
+				},
+			}); err != nil {
+				return err
+			}
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(buf.String(), "remote ok") {
+		t.Fatalf("output = %q, want JSON without streamed remote output", buf.String())
+	}
+	var resp FactoryRunResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want %q", resp.Status, factory.RunStatusSucceeded)
+	}
+	events, err := store.LoadEvents("run-sandbox-json")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	if len(events) < 3 || events[2].Message != "remote ok" {
+		t.Fatalf("events = %#v, want recorded remote output event", events)
+	}
+}
+
 func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
