@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -2227,31 +2228,94 @@ func redactFactoryTimelineMetadata(metadata map[string]any, redactor factory.Run
 }
 
 func redactFactoryTimelineValue(value any, redactor factory.RunSecretRedactor) any {
-	switch v := value.(type) {
-	case string:
-		return redactor.RedactString(v)
-	case []string:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			out = append(out, redactor.RedactString(item))
-		}
-		return out
-	case []any:
-		out := make([]any, 0, len(v))
-		for _, item := range v {
-			out = append(out, redactFactoryTimelineValue(item, redactor))
-		}
-		return out
-	case map[string]string:
-		out := make(map[string]string, len(v))
-		for key, item := range v {
-			out[key] = redactor.RedactString(item)
-		}
-		return out
-	case map[string]any:
-		return redactFactoryTimelineMetadata(v, redactor)
-	default:
+	if value == nil {
 		return value
+	}
+	redacted, ok := redactFactoryTimelineReflectValue(reflect.ValueOf(value), redactor)
+	if !ok {
+		return value
+	}
+	return redacted.Interface()
+}
+
+func redactFactoryTimelineReflectValue(value reflect.Value, redactor factory.RunSecretRedactor) (reflect.Value, bool) {
+	if !value.IsValid() {
+		return value, false
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return value, false
+		}
+		return redactFactoryTimelineReflectValue(value.Elem(), redactor)
+	case reflect.Pointer:
+		if value.IsNil() {
+			return value, false
+		}
+		redacted, ok := redactFactoryTimelineReflectValue(value.Elem(), redactor)
+		if !ok {
+			return value, false
+		}
+		out := reflect.New(value.Type().Elem())
+		out.Elem().Set(redacted)
+		return out, true
+	case reflect.String:
+		redacted := redactor.RedactString(value.String())
+		if redacted == value.String() {
+			return value, false
+		}
+		return reflect.ValueOf(redacted).Convert(value.Type()), true
+	case reflect.Slice:
+		if value.IsNil() {
+			return value, false
+		}
+		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		changed := false
+		for i := 0; i < value.Len(); i++ {
+			item := value.Index(i)
+			redacted, ok := redactFactoryTimelineReflectValue(item, redactor)
+			if ok {
+				out.Index(i).Set(redacted)
+				changed = true
+				continue
+			}
+			out.Index(i).Set(item)
+		}
+		return out, changed
+	case reflect.Array:
+		out := reflect.New(value.Type()).Elem()
+		changed := false
+		for i := 0; i < value.Len(); i++ {
+			item := value.Index(i)
+			redacted, ok := redactFactoryTimelineReflectValue(item, redactor)
+			if ok {
+				out.Index(i).Set(redacted)
+				changed = true
+				continue
+			}
+			out.Index(i).Set(item)
+		}
+		return out, changed
+	case reflect.Map:
+		if value.IsNil() {
+			return value, false
+		}
+		out := reflect.MakeMapWithSize(value.Type(), value.Len())
+		changed := false
+		iter := value.MapRange()
+		for iter.Next() {
+			item := iter.Value()
+			redacted, ok := redactFactoryTimelineReflectValue(item, redactor)
+			if ok {
+				out.SetMapIndex(iter.Key(), redacted)
+				changed = true
+				continue
+			}
+			out.SetMapIndex(iter.Key(), item)
+		}
+		return out, changed
+	default:
+		return value, false
 	}
 }
 

@@ -967,7 +967,10 @@ func TestRunFactoryRunWithDepsRedactsSecretProgressEvents(t *testing.T) {
 					"nested": map[string]any{
 						"note": "inner " + secret,
 					},
-					"list": []any{"safe", secret},
+					"list":            []any{"safe", secret},
+					"typedStrings":    []string{"safe", "typed " + secret},
+					"typedStringMaps": []map[string]string{{"note": "typed " + secret}},
+					"typedAnyMaps":    []map[string]any{{"note": "typed any " + secret}},
 				},
 			})
 		},

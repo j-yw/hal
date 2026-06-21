@@ -224,8 +224,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				connectInfo:            sandbox.ConnectInfoFromState(target),
 				runProviderExecWithEnv: deps.runProviderExecWithEnv,
 				// Bootstrap timelines are persisted from sanitized BootstrapResult
-				// events; stream raw command output only to the caller-facing writer.
-				out: req.RemoteOutput,
+				// events; stream redacted command output to the caller-facing writer.
+				out:          req.RemoteOutput,
+				outputRedact: factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
 			},
 			Now: deps.now,
 		})
@@ -491,6 +492,7 @@ type factorySandboxBootstrapExecutor struct {
 	connectInfo            *sandbox.ConnectInfo
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	out                    io.Writer
+	outputRedact           func(string) string
 }
 
 func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command factory.BootstrapCommand) (factory.BootstrapCommandResult, error) {
@@ -499,13 +501,67 @@ func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command facto
 	}
 	var summary bytes.Buffer
 	out := io.Writer(&summary)
+	var streamOut *factorySandboxBootstrapOutputWriter
 	if e.out != nil {
-		out = io.MultiWriter(e.out, &summary)
+		streamOut = &factorySandboxBootstrapOutputWriter{
+			dst:    e.out,
+			redact: e.outputRedact,
+		}
+		out = io.MultiWriter(streamOut, &summary)
 	}
 	err := e.runProviderExecWithEnv(ctx, e.provider, e.connectInfo, factorySandboxBootstrapCommandArgs(command), command.Env, out)
+	if streamOut != nil {
+		if flushErr := streamOut.Flush(); err == nil && flushErr != nil {
+			err = flushErr
+		}
+	}
 	return factory.BootstrapCommandResult{
 		OutputSummary: strings.TrimSpace(summary.String()),
 	}, err
+}
+
+type factorySandboxBootstrapOutputWriter struct {
+	dst     io.Writer
+	redact  func(string) string
+	pending string
+}
+
+func (w *factorySandboxBootstrapOutputWriter) Write(p []byte) (int, error) {
+	if w == nil {
+		return len(p), nil
+	}
+	w.pending += string(p)
+	for {
+		idx := strings.IndexByte(w.pending, '\n')
+		if idx < 0 {
+			return len(p), nil
+		}
+		line := w.pending[:idx+1]
+		w.pending = w.pending[idx+1:]
+		if err := w.write(line); err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (w *factorySandboxBootstrapOutputWriter) Flush() error {
+	if w == nil || w.pending == "" {
+		return nil
+	}
+	line := w.pending
+	w.pending = ""
+	return w.write(line)
+}
+
+func (w *factorySandboxBootstrapOutputWriter) write(line string) error {
+	if w.dst == nil || line == "" {
+		return nil
+	}
+	if w.redact != nil {
+		line = w.redact(line)
+	}
+	_, err := w.dst.Write([]byte(line))
+	return err
 }
 
 func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []string {

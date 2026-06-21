@@ -366,8 +366,11 @@ func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStre
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if !strings.Contains(userOut.String(), secret) {
-		t.Fatalf("user output = %q, want raw bootstrap stream", userOut.String())
+	if strings.Contains(userOut.String(), secret) {
+		t.Fatalf("user output leaked bootstrap secret: %q", userOut.String())
+	}
+	if !strings.Contains(userOut.String(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("user output missing redaction marker: %q", userOut.String())
 	}
 	for _, event := range events {
 		if strings.Contains(fmt.Sprintf("%#v", event), secret) {
