@@ -85,6 +85,16 @@
 - GoReleaser v2 configs require version: 2, archives use formats (list), Homebrew uses homebrew_casks with repository, and target exclusions go under ignore.
 - GoReleaser CI checks need full tag history, so actions/checkout must use fetch-depth: 0.
 
+## Patterns from hal/factory-artifact-collection (2026-06-21)
+
+- Factory artifact payloads are stored under the global factory store `artifacts/<run-id>/`; use `factory.Store.SaveArtifactFile` for copying and metadata updates, and `factory.Store.ResolveArtifactPath` before reading stored paths.
+- Artifact persistence must not write payloads into the project `.hal/` directory; tests should use temp store roots and assert project `.hal` remains free of artifact payload state.
+- Local factory artifact collection should preserve legacy display `path` values while also populating store-backed `sourcePath`/`storedPath`; use stable artifact IDs for deterministic filenames when multiple artifacts share a display name.
+- Factory status/doctor snapshots are generated from structured packages (`internal/status.Get`, `internal/doctor.Run`) via injectable `factoryRunDeps` hooks, then materialized as JSON artifacts and saved through `Store.SaveArtifactFile`.
+- PR/CI factory outcome artifacts are derived from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata there in `runPRStep`, and materialize stored JSON artifacts plus warning-only partial records when outcome state is unavailable.
+- Sandbox artifact collection should go through `factory.SandboxArtifactCopier` and `factory.CollectSandboxArtifacts`; treat remote paths as copier inputs only, persist safe display `path`/`storedPath` metadata, and represent optional missing remote artifacts as partial warning records.
+- Factory artifact read-only JSON surfaces should use command-specific safe response structs instead of raw `factory.ArtifactReference`; omit `sourcePath`/`url`, keep display `path` plus store-relative `storedPath`, and sanitize summary/warning values that contain secrets or raw IP addresses.
+
 ## Patterns from compound/compound-pipeline-foundations (2026-02-05)
 
 - LoadConfig in internal/compound/config.go uses rawAutoConfig with pointer fields (*string, *int) for YAML unmarshaling to distinguish missing keys (nil → use default) from explicit empty values (non-nil → pass through to Validate).
@@ -444,16 +454,19 @@
 - Factory CLI surfaces live in `cmd/factory.go`; keep command logic behind injectable deps so tests can use isolated `factory.Store` roots instead of global config state.
 - `hal factory list --json` uses `FactoryListContractVersion` (`factory-list-v1`) and emits `runs` as summaries from `Store.ListRuns`; omit full `artifacts` and timeline events from list output, using `artifactCount` for compact history inspection.
 - `hal factory status <run-id> --json` uses `FactoryStatusContractVersion` (`factory-status-v1`) and emits full `run` plus append-ordered `timeline`; load the run before the timeline so missing run IDs return an error without writing a JSON payload.
+- Read-only `hal factory` subcommands should keep command logic behind small deps structs with `defaultStore func() (factory.Store, error)`, so tests can inject `factory.NewStore(t.TempDir())` and avoid global config state.
 - Factory JSON contract changes should update exact top-level key locks in `cmd/machine_contracts_test.go`, docs/example sync in `cmd/contracts_doc_test.go`, and internal DTO round-trip tests in `internal/factory/types_test.go`.
 - Adding a new factory command page requires command metadata coverage plus `make docs-cli`/`make docs-check`, because generated `docs/cli/hal_factory*.md` files are part of CI drift checks.
 
 ## Patterns from hal/local-factory-run-executor-wrapping-hal-auto (2026-06-21)
 
 - `hal factory run` command execution is wired through `factoryRunDeps` in `cmd/factory.go`; keep local pipeline invocation behind `runPipeline` so tests can avoid real engines, git/GitHub CLIs, network calls, and long-running `hal auto` work.
+- Sandbox factory artifact collection is gated by `factory.ExecutorModeSandbox` during `recordFactoryRunArtifacts`; sandbox executors should persist executor mode and sandbox name before finalization, and tests should inject `sandboxCopier`/`sandboxRequests` through `factoryRunDeps`.
 - Create a pending `factory.RunRecord`, persist it through `factory.Store.SaveRun`, then persist the `running` transition before invoking the pipeline dependency; command tests should verify ordering by loading the injected `factory.NewStore(t.TempDir())` inside the pipeline stub.
 - `factory.RunRecord` now includes `executorMode` and source kind constants; when adding or renaming durable run fields, update `internal/factory/types_test.go`, `cmd/factory_test.go`, `cmd/contracts_doc_test.go`, and `docs/contracts/examples/factory-status-v1.json` together.
 - Factory run lifecycle timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use `factoryRunPipelineRequest.RecordProgress` for injected progress events and keep terminal lifecycle event recording outside the wrapped `hal auto` implementation.
 - Factory run artifact references are collected in the `cmd/factory.go` wrapper after the injected pipeline returns; preserve explicit source paths, use `template` constants for canonical `.hal` files, include the factory store run-record path, and keep missing optional `.hal` artifacts non-fatal.
+- Factory `ArtifactReference` fields are additive/optional for compatibility: keep `name` and `type` required, retain legacy `path` for current CLI display/path matching, and use `sourcePath`/`storedPath` plus optional `sizeBytes`, `createdAt`, `summary`, `warnings`, and `partial` for richer durable metadata.
 - Factory run result payloads and non-JSON summaries should be built from the saved `factory.RunRecord` and `Store.LoadEvents` after terminal status is persisted, so `hal factory run` output reflects durable state rather than transient in-memory state.
 - On factory run failures, render the JSON or human result before returning the original pipeline error; this preserves actionable output while keeping non-zero CLI exit behavior.
 - Factory run failure categories are constants in `internal/factory/types.go`; classify wrapped pipeline errors in `cmd/factory.go` from explicit exit codes, canonical `step <name> failed:` auto errors, and conservative message fragments, defaulting to `unknown` when context is insufficient.

@@ -40,4 +40,3 @@ hal ci fix [flags]
 ### SEE ALSO
 
 * [hal ci](hal_ci.md)	 - Run CI workflow commands
-

@@ -140,6 +140,8 @@ Stable JSON contracts for agent integration:
 - [`docs/contracts/ci-fix-v1.md`](docs/contracts/ci-fix-v1.md) — `hal ci fix` output contract
 - [`docs/contracts/ci-merge-v1.md`](docs/contracts/ci-merge-v1.md) — `hal ci merge` output contract
 - [`docs/contracts/factory-trigger-v1.md`](docs/contracts/factory-trigger-v1.md) — `hal factory trigger --json` output contract
+- [`docs/contracts/verify-v1.md`](docs/contracts/verify-v1.md) — `hal verify --json` output contract
+- [`docs/contracts/factory-artifacts-v1.md`](docs/contracts/factory-artifacts-v1.md) — `hal factory artifacts <run-id> --json` output contract
 
 ## Commands
 
@@ -162,6 +164,29 @@ Stable JSON contracts for agent integration:
 | `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
 | `hal continue [--json]` | Show what to do next (combines status + doctor) |
 | `hal repair [--dry-run] [--json]` | Auto-fix safe issues detected by doctor |
+| `hal verify [--json]` | Run configured verification checks and emit verify-v1 JSON with `--json` |
+
+### Verification Gate
+
+Configure project verification checks in `.hal/config.yaml`:
+
+```yaml
+verify:
+  checks:
+    - id: test
+      name: Go tests
+      command: go test ./...
+      timeoutSeconds: 120
+    - id: lint
+      name: Lint
+      command: golangci-lint run ./...
+      required: false
+```
+
+Checks are shell commands. `required` defaults to `true`, and omitted `workDir`
+values run from the project root. Required check failures, timeouts, or missing
+commands produce a `fail` gate. Optional check problems produce warnings and a
+`warn` gate. When all checks pass, the gate status is `pass`.
 
 ### CI Workflow
 

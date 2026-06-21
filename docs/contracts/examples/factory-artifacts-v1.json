@@ -1,0 +1,53 @@
+{
+  "contractVersion": "factory-artifacts-v1",
+  "runId": "run-20260620-002",
+  "artifacts": [
+    {
+      "id": "status-snapshot",
+      "name": "status-snapshot",
+      "type": "json",
+      "path": "factory/status-snapshot.json",
+      "storedPath": "artifacts/run-20260620-002/status-snapshot.json",
+      "sizeBytes": 1024,
+      "createdAt": "2026-06-20T16:20:00Z",
+      "summary": {
+        "snapshotKind": "status",
+        "state": "auto_active"
+      }
+    },
+    {
+      "id": "review-report",
+      "name": "review-report",
+      "type": "markdown",
+      "path": ".hal/reports/review-loop-20260620.md",
+      "storedPath": "artifacts/run-20260620-002/review-report.md",
+      "sizeBytes": 4096,
+      "createdAt": "2026-06-20T16:24:00Z",
+      "summary": {
+        "validIssues": 0
+      }
+    },
+    {
+      "id": "missing-report",
+      "name": "missing-report",
+      "type": "markdown",
+      "path": ".hal/reports/missing.md",
+      "summary": {
+        "collectionStatus": "missing",
+        "apiToken": "[redacted]"
+      },
+      "warnings": [
+        "optional artifact not found"
+      ],
+      "partial": true
+    }
+  ],
+  "warnings": [
+    "optional artifact not found"
+  ],
+  "summary": {
+    "total": 3,
+    "partial": 1,
+    "warnings": 1
+  }
+}

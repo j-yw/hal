@@ -49,4 +49,3 @@ hal links [flags]
 * [hal links clean](hal_links_clean.md)	 - Remove deprecated and broken skill links
 * [hal links refresh](hal_links_refresh.md)	 - Refresh skill links for engines
 * [hal links status](hal_links_status.md)	 - Show link status for all engines
-

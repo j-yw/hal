@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 // Run status values.
@@ -18,7 +20,8 @@ const (
 
 // Executor mode values.
 const (
-	ExecutorModeLocal = "local"
+	ExecutorModeLocal   = "local"
+	ExecutorModeSandbox = "sandbox"
 )
 
 // SupportedExecutorModes returns the executor modes implemented by the factory
@@ -100,6 +103,7 @@ type RunRecord struct {
 	UpdatedAt    time.Time           `json:"updatedAt"`
 	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
 	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
+	Verification *VerificationRecord `json:"verification,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
 }
 
@@ -113,10 +117,24 @@ type SourceMetadata struct {
 
 // ArtifactReference references an artifact produced or consumed by a factory run.
 type ArtifactReference struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Path string `json:"path,omitempty"`
-	URL  string `json:"url,omitempty"`
+	ID         string         `json:"id,omitempty"`
+	Name       string         `json:"name"`
+	Type       string         `json:"type"`
+	SourcePath string         `json:"sourcePath,omitempty"`
+	StoredPath string         `json:"storedPath,omitempty"`
+	Path       string         `json:"path,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	SizeBytes  *int64         `json:"sizeBytes,omitempty"`
+	CreatedAt  *time.Time     `json:"createdAt,omitempty"`
+	Summary    map[string]any `json:"summary,omitempty"`
+	Warnings   []string       `json:"warnings,omitempty"`
+	Partial    bool           `json:"partial,omitempty"`
+}
+
+// VerificationRecord captures verification metadata associated with a run.
+type VerificationRecord struct {
+	Summary   verify.Summary             `json:"summary"`
+	Artifacts []verify.ArtifactReference `json:"artifacts,omitempty"`
 }
 
 // FailureSummary records the terminal failure context for a run.

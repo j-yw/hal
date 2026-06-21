@@ -13,6 +13,7 @@ import (
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 // TestContractDocsExist verifies that contract documentation exists for
@@ -37,12 +38,14 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-run-v1", "../docs/contracts/factory-run-v1.md"},
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
+		{"factory-artifacts-v1", "../docs/contracts/factory-artifacts-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
 		{"factory-trigger-v1", "../docs/contracts/factory-trigger-v1.md"},
 		{"factory-queue-entry-v1", "../docs/contracts/factory-queue-entry-v1.md"},
 		{"factory-queue-add-v1", "../docs/contracts/factory-queue-add-v1.md"},
 		{"factory-queue-list-v1", "../docs/contracts/factory-queue-list-v1.md"},
 		{"factory-queue-work-v1", "../docs/contracts/factory-queue-work-v1.md"},
+		{"verify-v1", "../docs/contracts/verify-v1.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -263,6 +266,73 @@ func TestContractDocsIncludeAutoV2Examples(t *testing.T) {
 	}
 }
 
+func TestContractDocsIncludeVerifyV1Fields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/verify-v1.md")
+	if err != nil {
+		t.Skipf("cannot read verify-v1.md: %v", err)
+	}
+	content := string(data)
+
+	requiredFields := []string{
+		"schemaVersion", "generatedAt", "status", "summary", "checks", "warnings", "artifacts",
+		"total", "passed", "failed", "timedOut", "missing", "skipped",
+		"id", "name", "adapter", "required", "command", "workDir", "timeoutSeconds",
+		"startedAt", "finishedAt", "durationMs", "exitCode", "stdoutArtifact", "stderrArtifact", "message",
+		"checkId", "kind", "path",
+	}
+	for _, field := range requiredFields {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("verify-v1.md missing field %q", field)
+		}
+	}
+
+	requiredValues := []string{
+		verify.SchemaVersion,
+		verify.StatusPass,
+		verify.StatusFail,
+		verify.StatusWarn,
+		verify.CheckStatusPass,
+		verify.CheckStatusFail,
+		verify.CheckStatusTimeout,
+		verify.CheckStatusMissing,
+		verify.CheckStatusSkipped,
+		verify.AdapterShell,
+	}
+	for _, value := range requiredValues {
+		if !strings.Contains(content, value) {
+			t.Errorf("verify-v1.md missing value %q", value)
+		}
+	}
+
+	if !strings.Contains(content, "Required check failures and timeouts produce a failing gate") {
+		t.Error("verify-v1.md missing required failure/timeout gate behavior")
+	}
+}
+
+func TestContractDocsIncludeVerifyV1Examples(t *testing.T) {
+	examples := []string{
+		"verify-v1-pass.json",
+		"verify-v1-fail.json",
+		"verify-v1-warn.json",
+	}
+
+	data, err := os.ReadFile("../docs/contracts/verify-v1.md")
+	if err != nil {
+		t.Skipf("cannot read verify-v1.md: %v", err)
+	}
+	content := string(data)
+
+	for _, example := range examples {
+		path := filepath.Join("..", "docs", "contracts", "examples", example)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Fatalf("verify-v1 example is missing at %s", path)
+		}
+		if !strings.Contains(content, example) {
+			t.Errorf("verify-v1.md should reference %s", example)
+		}
+	}
+}
+
 func TestContractDocsIncludeCIFields(t *testing.T) {
 	docs := []struct {
 		name           string
@@ -360,6 +430,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
 				"eventSummary", "failure", "id", "command", "description", "total", "byType",
 				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
+				"name", "type", "path", "storedPath", "sizeBytes", "createdAt", "partial",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -407,7 +478,8 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			requiredFields: []string{
 				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-				"finishedAt", "artifacts", "failure", "suggestedCommand",
+				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
+				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -421,6 +493,25 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.FailureCategoryGit,
 				factory.FailureCategoryCI,
 				factory.FailureCategoryUnknown,
+				verify.ArtifactKindStdout,
+				verify.ArtifactKindStderr,
+			},
+		},
+		{
+			name:          "factory-artifacts-v1",
+			path:          "../docs/contracts/factory-artifacts-v1.md",
+			contractValue: FactoryArtifactsContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "artifacts", "warnings", "summary",
+				"id", "name", "type", "path", "storedPath", "sizeBytes", "createdAt",
+				"partial", "total",
+			},
+			requiredValues: []string{
+				"factory-artifacts-v1",
+				"json",
+				"markdown",
+				"text",
+				"[redacted]",
 			},
 		},
 		{
@@ -568,6 +659,34 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if len(resp.Timeline) == 0 {
 			t.Fatal("factory status example should include timeline events")
 		}
+		if resp.Run.Verification == nil {
+			t.Fatal("factory status example should include verification metadata")
+		}
+		if resp.Run.Verification.Summary.Total == 0 {
+			t.Fatal("factory status example should include verification summary totals")
+		}
+		if len(resp.Run.Verification.Artifacts) == 0 {
+			t.Fatal("factory status example should include verification artifact references")
+		}
+	})
+
+	t.Run("factory artifacts example", func(t *testing.T) {
+		var resp FactoryArtifactsResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-artifacts-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "artifacts", "warnings", "summary"})
+		if resp.ContractVersion != FactoryArtifactsContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryArtifactsContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory artifacts example should include a run ID")
+		}
+		if len(resp.Artifacts) == 0 {
+			t.Fatal("factory artifacts example should include artifacts")
+		}
+		if resp.Summary.Total != len(resp.Artifacts) {
+			t.Fatalf("summary.total = %d, want artifacts len %d", resp.Summary.Total, len(resp.Artifacts))
+		}
 	})
 
 	t.Run("factory run example", func(t *testing.T) {
@@ -680,6 +799,100 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 			t.Fatalf("factory queue work noop entry = %#v, want nil", resp.Entry)
 		}
 	})
+}
+
+func TestVerifyContractExamplesMatchSchema(t *testing.T) {
+	topLevelKeys := []string{"schemaVersion", "generatedAt", "status", "summary", "checks", "warnings", "artifacts"}
+	summaryKeys := []string{"total", "passed", "failed", "timedOut", "missing", "skipped", "warnings"}
+	checkKeys := []string{
+		"id",
+		"name",
+		"adapter",
+		"status",
+		"required",
+		"command",
+		"workDir",
+		"timeoutSeconds",
+		"startedAt",
+		"finishedAt",
+		"durationMs",
+		"exitCode",
+		"stdoutArtifact",
+		"stderrArtifact",
+		"message",
+	}
+	warningKeys := []string{"checkId", "status", "message"}
+	artifactKeys := []string{"checkId", "kind", "path"}
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus string
+	}{
+		{name: "pass example", path: "../docs/contracts/examples/verify-v1-pass.json", wantStatus: verify.StatusPass},
+		{name: "fail example", path: "../docs/contracts/examples/verify-v1-fail.json", wantStatus: verify.StatusFail},
+		{name: "warn example", path: "../docs/contracts/examples/verify-v1-warn.json", wantStatus: verify.StatusWarn},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result verify.Result
+			raw := decodeStrictJSONExample(t, tt.path, &result)
+
+			requireExactKeys(t, raw, topLevelKeys)
+			if result.SchemaVersion != verify.SchemaVersion {
+				t.Fatalf("schemaVersion = %q, want %q", result.SchemaVersion, verify.SchemaVersion)
+			}
+			if result.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q", result.Status, tt.wantStatus)
+			}
+			if len(result.Checks) == 0 {
+				t.Fatal("example should include at least one check")
+			}
+
+			summary, ok := raw["summary"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("summary should be an object, got %T", raw["summary"])
+			}
+			requireExactKeys(t, summary, summaryKeys)
+
+			checks, ok := raw["checks"].([]interface{})
+			if !ok {
+				t.Fatalf("checks should be an array, got %T", raw["checks"])
+			}
+			for i, item := range checks {
+				check, ok := item.(map[string]interface{})
+				if !ok {
+					t.Fatalf("checks[%d] should be an object, got %T", i, item)
+				}
+				requireExactKeys(t, check, checkKeys)
+			}
+
+			warnings, ok := raw["warnings"].([]interface{})
+			if !ok {
+				t.Fatalf("warnings should be an array, got %T", raw["warnings"])
+			}
+			for i, item := range warnings {
+				warning, ok := item.(map[string]interface{})
+				if !ok {
+					t.Fatalf("warnings[%d] should be an object, got %T", i, item)
+				}
+				requireExactKeys(t, warning, warningKeys)
+			}
+
+			artifacts, ok := raw["artifacts"].([]interface{})
+			if !ok {
+				t.Fatalf("artifacts should be an array, got %T", raw["artifacts"])
+			}
+			for i, item := range artifacts {
+				artifact, ok := item.(map[string]interface{})
+				if !ok {
+					t.Fatalf("artifacts[%d] should be an object, got %T", i, item)
+				}
+				requireExactKeys(t, artifact, artifactKeys)
+			}
+		})
+	}
 }
 
 func decodeStrictJSONExample(t *testing.T, path string, out any) map[string]interface{} {

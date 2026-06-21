@@ -55,4 +55,3 @@ Subcommands:
 * [hal sandbox start](hal_sandbox_start.md)	 - Start stopped sandboxes
 * [hal sandbox status](hal_sandbox_status.md)	 - Show sandbox status
 * [hal sandbox stop](hal_sandbox_stop.md)	 - Power off / shut down one or more running sandboxes
-

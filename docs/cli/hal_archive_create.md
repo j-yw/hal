@@ -32,4 +32,3 @@ hal archive create [flags]
 ### SEE ALSO
 
 * [hal archive](hal_archive.md)	 - Archive current feature state
-
