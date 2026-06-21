@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory policy defaults live in `internal/factory.FactoryPolicy`; use `DefaultFactoryPolicy` and `Validate`, where zero attempt limits mean no policy cap, enum values normalize to lowercase, and validation errors use `factory.policy.<field>` paths.
+- Factory policy config loading lives in `internal/factory.LoadPolicyConfig`; merge pointer-backed `factory.policy` YAML fields over `DefaultFactoryPolicy` so explicit false, zero, and empty values are preserved without coupling direct `hal auto` config loading to factory policy validation.
 
 ---
 
@@ -15,4 +16,16 @@
   - Keep durable factory DTOs in `internal/factory` and add them to `TestFactoryTypesHaveJSONTags` when they expose machine-readable fields.
   - Policy attempt limits use `0` as unlimited/no cap so existing factory behavior remains unchanged until a stricter policy is configured.
   - Field-specific policy validation errors should use `factory.policy.<field>` paths for future config-loading and command-surface diagnostics.
+---
+
+## 2026-06-21 09:08 CST - US-002
+- Implemented factory policy config loading from `.hal/config.yaml` via `factory.LoadPolicyConfig`, merging configured `factory.policy` values over `DefaultFactoryPolicy`.
+- Added policy config tests for missing config/default loading, partial field default merging, strict explicit policy values, explicit zero/empty values, and invalid configured values with `factory.policy` validation paths.
+- Ran `make fmt`; it also normalized existing gofmt alignment/indentation in `internal/ci/auth.go`, `internal/ci/auth_test.go`, and `internal/ci/push.go`.
+- Files changed: `internal/factory/policy_config.go`, `internal/factory/policy_test.go`, `internal/ci/auth.go`, `internal/ci/auth_test.go`, `internal/ci/push.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: `go test -timeout 60s ./internal/factory`, `make fmt`, `make vet`, `make test`, `make lint` (advisory: `golangci-lint` is not installed; Makefile exited 0).
+- **Learnings for future iterations:**
+  - Keep factory-only policy configuration in `internal/factory` so direct `hal auto` config loading remains unaffected until factory command code explicitly opts into policy enforcement.
+  - Use pointer-backed raw YAML fields for policy config booleans, integers, strings, and slices so explicit `false`, `0`, `""`, and `[]` can be distinguished from omitted fields.
+  - Copy configured slices with `make`/`copy` rather than `append([]T(nil), values...)` when tests need to preserve an explicit empty slice instead of collapsing it to nil.
 ---

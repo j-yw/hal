@@ -1,6 +1,8 @@
 package factory
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -129,5 +131,185 @@ func TestFactoryPolicyValidateNormalizesEnums(t *testing.T) {
 	}
 	if policy.CleanupBehavior != CleanupBehaviorOnSuccess {
 		t.Fatalf("CleanupBehavior = %q, want %q", policy.CleanupBehavior, CleanupBehaviorOnSuccess)
+	}
+}
+
+func TestLoadPolicyConfigMissingUsesDefaults(t *testing.T) {
+	defaults := DefaultFactoryPolicy()
+
+	t.Run("non-existent directory", func(t *testing.T) {
+		got, err := LoadPolicyConfig(filepath.Join(t.TempDir(), "missing"))
+		if err != nil {
+			t.Fatalf("LoadPolicyConfig() unexpected error: %v", err)
+		}
+		assertFactoryPolicy(t, got, defaults)
+	})
+
+	t.Run("directory without config", func(t *testing.T) {
+		got, err := LoadPolicyConfig(t.TempDir())
+		if err != nil {
+			t.Fatalf("LoadPolicyConfig() unexpected error: %v", err)
+		}
+		assertFactoryPolicy(t, got, defaults)
+	})
+}
+
+func TestLoadPolicyConfigMergesMissingFieldsWithDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeFactoryConfig(t, dir, `factory:
+  policy:
+    sandboxRequired: true
+    allowedEngines:
+      - codex
+`)
+
+	got, err := LoadPolicyConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicyConfig() unexpected error: %v", err)
+	}
+
+	want := DefaultFactoryPolicy()
+	want.SandboxRequired = true
+	want.AllowedEngines = []string{PolicyEngineCodex}
+	assertFactoryPolicy(t, got, want)
+}
+
+func TestLoadPolicyConfigPreservesExplicitStrictValues(t *testing.T) {
+	dir := t.TempDir()
+	writeFactoryConfig(t, dir, `factory:
+  policy:
+    sandboxRequired: true
+    allowedEngines:
+      - codex
+    maxRunAttempts: 2
+    maxReviewFixAttempts: 3
+    maxCiFixAttempts: 4
+    verificationRequired: true
+    prCreationAllowed: false
+    mergeAllowed: false
+    cleanupBehavior: always
+`)
+
+	got, err := LoadPolicyConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicyConfig() unexpected error: %v", err)
+	}
+
+	want := FactoryPolicy{
+		SandboxRequired:      true,
+		AllowedEngines:       []string{PolicyEngineCodex},
+		MaxRunAttempts:       2,
+		MaxReviewFixAttempts: 3,
+		MaxCIFixAttempts:     4,
+		VerificationRequired: true,
+		PRCreationAllowed:    false,
+		MergeAllowed:         false,
+		CleanupBehavior:      CleanupBehaviorAlways,
+	}
+	assertFactoryPolicy(t, got, want)
+}
+
+func TestLoadPolicyConfigPreservesExplicitZeroAndEmptyValues(t *testing.T) {
+	dir := t.TempDir()
+	writeFactoryConfig(t, dir, `factory:
+  policy:
+    sandboxRequired: false
+    allowedEngines: []
+    maxRunAttempts: 0
+    maxReviewFixAttempts: 0
+    maxCiFixAttempts: 0
+    verificationRequired: false
+    prCreationAllowed: false
+    mergeAllowed: false
+    cleanupBehavior: preserve
+`)
+
+	got, err := LoadPolicyConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicyConfig() unexpected error: %v", err)
+	}
+
+	want := FactoryPolicy{
+		SandboxRequired:      false,
+		AllowedEngines:       []string{},
+		MaxRunAttempts:       0,
+		MaxReviewFixAttempts: 0,
+		MaxCIFixAttempts:     0,
+		VerificationRequired: false,
+		PRCreationAllowed:    false,
+		MergeAllowed:         false,
+		CleanupBehavior:      CleanupBehaviorPreserve,
+	}
+	assertFactoryPolicy(t, got, want)
+}
+
+func TestLoadPolicyConfigRejectsInvalidConfiguredValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "negative attempt limit",
+			yaml: `factory:
+  policy:
+    maxRunAttempts: -1
+`,
+			wantErr: "factory.policy.maxRunAttempts",
+		},
+		{
+			name: "unsupported engine",
+			yaml: `factory:
+  policy:
+    allowedEngines:
+      - codex
+      - gpt
+`,
+			wantErr: "factory.policy.allowedEngines[1]",
+		},
+		{
+			name: "empty cleanup behavior",
+			yaml: `factory:
+  policy:
+    cleanupBehavior: ""
+`,
+			wantErr: "factory.policy.cleanupBehavior",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFactoryConfig(t, dir, tt.yaml)
+
+			_, err := LoadPolicyConfig(dir)
+			if err == nil {
+				t.Fatal("LoadPolicyConfig() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadPolicyConfig() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func writeFactoryConfig(t *testing.T, dir, content string) {
+	t.Helper()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+}
+
+func assertFactoryPolicy(t *testing.T, got *FactoryPolicy, want FactoryPolicy) {
+	t.Helper()
+	if got == nil {
+		t.Fatal("policy = nil, want non-nil")
+	}
+	if !reflect.DeepEqual(*got, want) {
+		t.Fatalf("policy = %#v, want %#v", *got, want)
 	}
 }
