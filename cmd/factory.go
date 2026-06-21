@@ -313,11 +313,15 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	artifactSnapshot := snapshotFactoryRunArtifacts(dir)
 	runErr := error(nil)
 	if req.Sandbox {
+		remoteOutput := out
+		if req.JSON {
+			remoteOutput = io.Discard
+		}
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
 			ProjectDir:   dir,
 			RunRecord:    runningRecord,
 			RemoteAuto:   factoryRunAutoRequestFromFactoryRequest(req),
-			RemoteOutput: out,
+			RemoteOutput: remoteOutput,
 		})
 	} else {
 		runErr = deps.runPipeline(ctx, pipelineReq)
