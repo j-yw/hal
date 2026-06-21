@@ -480,6 +480,42 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	}
 }
 
+func TestFactorySandboxCopyInputToRemoteSplitsLargeInputCommands(t *testing.T) {
+	projectDir := t.TempDir()
+	inputPath := filepath.Join(projectDir, "large.md")
+	if err := os.WriteFile(inputPath, bytes.Repeat([]byte("a"), factorySandboxCopyInputChunkEncodedBytes), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	var execArgs [][]string
+
+	remotePath, changed, err := factorySandboxCopyInputToRemote(context.Background(), projectDir, "large.md", "/workspace/repo", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, io.Discard, factorySandboxExecutorDeps{
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ io.Writer) error {
+			execArgs = append(execArgs, append([]string(nil), args...))
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("factorySandboxCopyInputToRemote() unexpected error: %v", err)
+	}
+	if !changed || remotePath != "large.md" {
+		t.Fatalf("remotePath = %q, changed = %v, want large.md and changed", remotePath, changed)
+	}
+	if len(execArgs) != 2 {
+		t.Fatalf("exec calls = %d, want 2: %#v", len(execArgs), execArgs)
+	}
+	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/large.md'") {
+		t.Fatalf("first chunk command = %q, want overwrite redirect", execArgs[0][2])
+	}
+	if !strings.Contains(execArgs[1][2], "base64 -d >> '/workspace/repo/large.md'") {
+		t.Fatalf("second chunk command = %q, want append redirect", execArgs[1][2])
+	}
+	for _, args := range execArgs {
+		if len(args[2]) > factorySandboxCopyInputChunkEncodedBytes+512 {
+			t.Fatalf("copy command length = %d, want bounded chunk command", len(args[2]))
+		}
+	}
+}
+
 func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testing.T) {
 	tests := []struct {
 		name string

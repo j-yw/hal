@@ -67,6 +67,8 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 
 var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
 
+const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
+
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
@@ -626,9 +628,30 @@ func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath,
 	remotePath := factorySandboxRemoteInputPath(localPath)
 	remoteAbsPath := filepath.ToSlash(filepath.Join(workspaceDir, remotePath))
 	encoded := base64.StdEncoding.EncodeToString(content)
-	args := []string{"sh", "-lc", "mkdir -p " + shellQuote(filepath.ToSlash(filepath.Dir(remoteAbsPath))) + " && printf %s " + shellQuote(encoded) + " | base64 -d > " + shellQuote(remoteAbsPath)}
-	if err := deps.runProviderExec(ctx, provider, connectInfo, args, out); err != nil {
-		return localPath, false, fmt.Errorf("copy sandbox input %q to %q: %w", localPath, remotePath, err)
+	remoteDir := shellQuote(filepath.ToSlash(filepath.Dir(remoteAbsPath)))
+	remoteFile := shellQuote(remoteAbsPath)
+	if encoded == "" {
+		args := []string{"sh", "-lc", "mkdir -p " + remoteDir + " && : > " + remoteFile}
+		if err := deps.runProviderExec(ctx, provider, connectInfo, args, out); err != nil {
+			return localPath, false, fmt.Errorf("copy sandbox input %q to %q: %w", localPath, remotePath, err)
+		}
+		return remotePath, true, nil
+	}
+	for offset := 0; offset < len(encoded); offset += factorySandboxCopyInputChunkEncodedBytes {
+		end := offset + factorySandboxCopyInputChunkEncodedBytes
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		redirect := ">>"
+		prefix := ""
+		if offset == 0 {
+			redirect = ">"
+			prefix = "mkdir -p " + remoteDir + " && "
+		}
+		args := []string{"sh", "-lc", prefix + "printf %s " + shellQuote(encoded[offset:end]) + " | base64 -d " + redirect + " " + remoteFile}
+		if err := deps.runProviderExec(ctx, provider, connectInfo, args, out); err != nil {
+			return localPath, false, fmt.Errorf("copy sandbox input %q to %q: %w", localPath, remotePath, err)
+		}
 	}
 	return remotePath, true, nil
 }
