@@ -923,6 +923,110 @@ func TestRunFactoryRunWithDepsRecordsPROutcomeAndCIStatusArtifacts(t *testing.T)
 	}
 }
 
+func TestRunFactoryRunWithDepsRecordsArchivedArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	reportsDir := filepath.Join(halDir, "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	archiveRel := filepath.Join(".hal", "archive", "2026-06-21-factory")
+	archiveDir := filepath.Join(dir, archiveRel)
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-archived-artifacts", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			writeFile(t, halDir, "auto-state.json", `{
+  "step": "archive",
+  "branchName": "hal/factory",
+  "sourceMarkdown": ".hal/prd-feature.md",
+  "reportPath": ".hal/reports/review-latest.md",
+  "ci": {
+    "status": "passed",
+    "prUrl": "https://github.com/acme/hal/pull/84",
+    "prNumber": 84,
+    "prTitle": "Archived factory artifacts",
+    "prHeadRef": "hal/factory",
+    "prBaseRef": "main"
+  }
+}`)
+			writeFile(t, reportsDir, "review-latest.md", "# Latest review\n")
+			writeFile(t, reportsDir, "review-older.md", "# Older review\n")
+
+			if err := os.MkdirAll(filepath.Join(archiveDir, "reports"), 0755); err != nil {
+				t.Fatalf("MkdirAll(archive reports) error: %v", err)
+			}
+			for _, name := range []string{"prd.json", "auto-state.json", "prd-feature.md"} {
+				if err := os.Rename(filepath.Join(halDir, name), filepath.Join(archiveDir, name)); err != nil {
+					t.Fatalf("Rename(%s) error: %v", name, err)
+				}
+			}
+			if err := os.Rename(filepath.Join(reportsDir, "review-older.md"), filepath.Join(archiveDir, "reports", "review-older.md")); err != nil {
+				t.Fatalf("Rename(review-older.md) error: %v", err)
+			}
+			if err := os.Chtimes(filepath.Join(reportsDir, "review-latest.md"), completedAt, completedAt); err != nil {
+				t.Fatalf("Chtimes(review-latest.md) error: %v", err)
+			}
+			if err := os.Chtimes(archiveDir, completedAt, completedAt); err != nil {
+				t.Fatalf("Chtimes(archiveDir) error: %v", err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-archived-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/auto-state.json")
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-older.md")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd-feature.md"))
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd.json"))
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "auto-state.json"))
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "reports", "review-older.md"))
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-latest.md")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-archived-artifacts.json"))
+	prArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/pr-outcome.json")
+	if prArtifact.Summary["pullRequestUrl"] != "https://github.com/acme/hal/pull/84" {
+		t.Fatalf("archived pr summary = %#v", prArtifact.Summary)
+	}
+	ciArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/ci-outcome.json")
+	if ciArtifact.Summary["status"] != "passed" {
+		t.Fatalf("archived ci summary = %#v", ciArtifact.Summary)
+	}
+}
+
 func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
