@@ -2,6 +2,7 @@ package factory
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -242,7 +243,11 @@ func sandboxArtifactID(request SandboxArtifactRequest, relPath string) string {
 	}
 	id := sanitizeArtifactPathComponent(filepath.ToSlash(base))
 	if id == "" {
-		return "artifact"
+		id = "artifact"
+	}
+	if relPath != "" {
+		sum := sha256.Sum256([]byte(filepath.ToSlash(relPath)))
+		id = fmt.Sprintf("%s-%x", id, sum[:4])
 	}
 	return id
 }
