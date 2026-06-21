@@ -206,6 +206,11 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(SourceMetadata{}),
 		reflect.TypeOf(ArtifactReference{}),
 		reflect.TypeOf(VerificationRecord{}),
+		reflect.TypeOf(RunTelemetry{}),
+		reflect.TypeOf(RunStepDuration{}),
+		reflect.TypeOf(EngineTelemetry{}),
+		reflect.TypeOf(RunSandboxTelemetry{}),
+		reflect.TypeOf(SandboxCostEstimate{}),
 		reflect.TypeOf(FailureSummary{}),
 		reflect.TypeOf(QueueEntry{}),
 		reflect.TypeOf(QueueClaim{}),
@@ -492,6 +497,33 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 					{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
 				},
 			},
+			Telemetry: &RunTelemetry{
+				TotalDurationMs: ptrInt64(1200000),
+				StepDurations: []RunStepDuration{
+					{
+						Step:       "run",
+						StartedAt:  createdAt.Add(1 * time.Minute),
+						FinishedAt: updatedAt,
+						DurationMs: 540000,
+					},
+				},
+				Engine: &EngineTelemetry{
+					Name:  "codex",
+					Model: "gpt-5",
+				},
+				Sandbox: &RunSandboxTelemetry{
+					Provider: "hetzner",
+					Size:     "cx22",
+				},
+				EstimatedSandboxCost: &SandboxCostEstimate{
+					AmountUSD: 0.07,
+					Estimated: true,
+				},
+				CIOutcome:           "failed",
+				VerificationOutcome: "passed",
+				ArtifactCount:       ptrInt(2),
+				FailureCategory:     FailureCategoryCI,
+			},
 			Failure: &FailureSummary{
 				Step:             "ci",
 				Category:         FailureCategoryCI,
@@ -500,6 +532,26 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 				SuggestedCommand: "hal factory status 01975515-52ad-7f20-8f10-b35c07051b9f --json",
 				ExitCode:         1,
 			},
+		}
+
+		var decoded RunRecord
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("empty telemetry", func(t *testing.T) {
+		original := RunRecord{
+			RunID:        "run-empty-telemetry",
+			Status:       RunStatusSucceeded,
+			ExecutorMode: ExecutorModeLocal,
+			Source:       SourceMetadata{Kind: SourceKindMarkdown},
+			RepoPath:     "/work/hal",
+			RepoRemote:   "git@github.com:jywlabs/hal.git",
+			BranchName:   "hal/empty-telemetry",
+			BaseBranch:   "main",
+			CurrentStep:  "done",
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAt,
+			Telemetry:    &RunTelemetry{},
 		}
 
 		var decoded RunRecord
@@ -683,6 +735,39 @@ func TestRunRecordJSONFields(t *testing.T) {
 				{CheckID: "test", Kind: verify.ArtifactKindStderr, Path: ".hal/reports/verify/test-stderr.txt"},
 			},
 		},
+		Telemetry: &RunTelemetry{
+			TotalDurationMs: ptrInt64(1500000),
+			StepDurations: []RunStepDuration{
+				{
+					Step:       "setup",
+					StartedAt:  createdAt,
+					FinishedAt: createdAt.Add(5 * time.Minute),
+					DurationMs: 300000,
+				},
+				{
+					Step:       "run",
+					StartedAt:  createdAt.Add(5 * time.Minute),
+					FinishedAt: updatedAt,
+					DurationMs: 300000,
+				},
+			},
+			Engine: &EngineTelemetry{
+				Name:  "codex",
+				Model: "gpt-5",
+			},
+			Sandbox: &RunSandboxTelemetry{
+				Provider: "digitalocean",
+				Size:     "s-2vcpu-4gb",
+			},
+			EstimatedSandboxCost: &SandboxCostEstimate{
+				AmountUSD: 0.12,
+				Estimated: true,
+			},
+			CIOutcome:           "failed",
+			VerificationOutcome: "failed",
+			ArtifactCount:       ptrInt(2),
+			FailureCategory:     FailureCategoryCI,
+		},
 		Failure: &FailureSummary{
 			Step:             "ci",
 			Category:         FailureCategoryCI,
@@ -720,6 +805,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"finishedAt",
 		"artifacts",
 		"verification",
+		"telemetry",
 		"failure",
 	} {
 		if _, ok := raw[key]; !ok {
@@ -806,6 +892,40 @@ func TestRunRecordJSONFields(t *testing.T) {
 			t.Errorf("missing failure JSON field %q", key)
 		}
 	}
+
+	telemetry, ok := raw["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry should be an object, got %T", raw["telemetry"])
+	}
+	requireJSONMapKeys(t, telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"estimatedSandboxCost", "ciOutcome", "verificationOutcome",
+		"artifactCount", "failureCategory",
+	})
+	stepDurations, ok := telemetry["stepDurations"].([]any)
+	if !ok || len(stepDurations) != 2 {
+		t.Fatalf("telemetry.stepDurations should be an array of 2, got %T len %d", telemetry["stepDurations"], len(stepDurations))
+	}
+	firstStep, ok := stepDurations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.stepDurations[0] should be an object, got %T", stepDurations[0])
+	}
+	requireJSONMapKeys(t, firstStep, []string{"step", "startedAt", "finishedAt", "durationMs"})
+	engine, ok := telemetry["engine"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.engine should be an object, got %T", telemetry["engine"])
+	}
+	requireJSONMapKeys(t, engine, []string{"name", "model"})
+	sandboxTelemetry, ok := telemetry["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.sandbox should be an object, got %T", telemetry["sandbox"])
+	}
+	requireJSONMapKeys(t, sandboxTelemetry, []string{"provider", "size"})
+	cost, ok := telemetry["estimatedSandboxCost"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.estimatedSandboxCost should be an object, got %T", telemetry["estimatedSandboxCost"])
+	}
+	requireJSONMapKeys(t, cost, []string{"amountUsd", "estimated"})
 
 	sandbox, ok := raw["sandbox"].(map[string]any)
 	if !ok {
@@ -950,6 +1070,9 @@ func TestRunRecordLoadsWithoutArtifacts(t *testing.T) {
 	if decoded.Artifacts != nil {
 		t.Fatalf("artifacts = %#v, want nil for omitted legacy field", decoded.Artifacts)
 	}
+	if decoded.Telemetry != nil {
+		t.Fatalf("telemetry = %#v, want nil for omitted legacy field", decoded.Telemetry)
+	}
 }
 
 func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
@@ -981,6 +1104,10 @@ func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 }
 
 func ptrInt64(v int64) *int64 {
+	return &v
+}
+
+func ptrInt(v int) *int {
 	return &v
 }
 
@@ -1029,7 +1156,7 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "failure"} {
+	for _, key := range []string{"sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "telemetry", "failure"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional field %q in %s", key, string(data))
 		}

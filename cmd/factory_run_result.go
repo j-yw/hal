@@ -18,6 +18,7 @@ type FactoryRunResponse struct {
 	Status          string                        `json:"status"`
 	NextAction      *FactoryRunNextAction         `json:"nextAction"`
 	Artifacts       []FactoryRunArtifactReference `json:"artifacts"`
+	Telemetry       *factory.RunTelemetry         `json:"telemetry,omitempty"`
 	EventSummary    FactoryRunEventSummary        `json:"eventSummary"`
 	Failure         *FactoryRunFailure            `json:"failure"`
 }
@@ -115,6 +116,7 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		Status:          record.Status,
 		NextAction:      newFactoryRunNextAction(record),
 		Artifacts:       newFactoryRunArtifactReferences(record.Artifacts),
+		Telemetry:       record.Telemetry,
 		EventSummary:    newFactoryRunEventSummary(events),
 		Failure:         newFactoryRunFailure(record),
 	}

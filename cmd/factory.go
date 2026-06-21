@@ -311,6 +311,7 @@ type FactoryStatusRun struct {
 	FinishedAt   *time.Time                  `json:"finishedAt,omitempty"`
 	Artifacts    []FactoryArtifactSummary    `json:"artifacts,omitempty"`
 	Verification *factory.VerificationRecord `json:"verification,omitempty"`
+	Telemetry    *factory.RunTelemetry       `json:"telemetry,omitempty"`
 	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
 }
 
@@ -364,6 +365,7 @@ type FactoryRunSummary struct {
 	UpdatedAt     time.Time               `json:"updatedAt"`
 	FinishedAt    *time.Time              `json:"finishedAt,omitempty"`
 	ArtifactCount int                     `json:"artifactCount"`
+	Telemetry     *factory.RunTelemetry   `json:"telemetry,omitempty"`
 	Failure       *factory.FailureSummary `json:"failure,omitempty"`
 }
 
@@ -2454,6 +2456,7 @@ func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
 		FinishedAt:   record.FinishedAt,
 		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
 		Verification: record.Verification,
+		Telemetry:    record.Telemetry,
 		Failure:      record.Failure,
 	}
 }
@@ -2593,6 +2596,7 @@ func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
 		UpdatedAt:     record.UpdatedAt,
 		FinishedAt:    record.FinishedAt,
 		ArtifactCount: len(record.Artifacts),
+		Telemetry:     record.Telemetry,
 		Failure:       record.Failure,
 	}
 }

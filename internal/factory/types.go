@@ -105,6 +105,7 @@ type RunRecord struct {
 	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
 	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
 	Verification *VerificationRecord `json:"verification,omitempty"`
+	Telemetry    *RunTelemetry       `json:"telemetry,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
 }
 
@@ -158,6 +159,46 @@ type ArtifactReference struct {
 type VerificationRecord struct {
 	Summary   verify.Summary             `json:"summary"`
 	Artifacts []verify.ArtifactReference `json:"artifacts,omitempty"`
+}
+
+// RunTelemetry captures optional observability fields for factory run summaries.
+// Population is best-effort and additive so older records can omit it entirely.
+type RunTelemetry struct {
+	TotalDurationMs      *int64               `json:"totalDurationMs,omitempty"`
+	StepDurations        []RunStepDuration    `json:"stepDurations,omitempty"`
+	Engine               *EngineTelemetry     `json:"engine,omitempty"`
+	Sandbox              *RunSandboxTelemetry `json:"sandbox,omitempty"`
+	EstimatedSandboxCost *SandboxCostEstimate `json:"estimatedSandboxCost,omitempty"`
+	CIOutcome            string               `json:"ciOutcome,omitempty"`
+	VerificationOutcome  string               `json:"verificationOutcome,omitempty"`
+	ArtifactCount        *int                 `json:"artifactCount,omitempty"`
+	FailureCategory      string               `json:"failureCategory,omitempty"`
+}
+
+// RunStepDuration captures derived timing for one factory lifecycle step.
+type RunStepDuration struct {
+	Step       string    `json:"step"`
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt"`
+	DurationMs int64     `json:"durationMs"`
+}
+
+// EngineTelemetry captures the engine execution context when known.
+type EngineTelemetry struct {
+	Name  string `json:"name,omitempty"`
+	Model string `json:"model,omitempty"`
+}
+
+// RunSandboxTelemetry captures sandbox execution resources when known.
+type RunSandboxTelemetry struct {
+	Provider string `json:"provider,omitempty"`
+	Size     string `json:"size,omitempty"`
+}
+
+// SandboxCostEstimate captures an estimated sandbox cost when pricing is known.
+type SandboxCostEstimate struct {
+	AmountUSD float64 `json:"amountUsd"`
+	Estimated bool    `json:"estimated"`
 }
 
 // FailureSummary records the terminal failure context for a run.

@@ -3123,10 +3123,27 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	base := time.Date(2026, 6, 20, 16, 0, 0, 0, time.UTC)
 	older := testFactoryRunRecord("run-old", base.Add(1*time.Minute), base.Add(2*time.Minute))
 	newer := testFactoryRunRecord("run-new", base.Add(3*time.Minute), base.Add(5*time.Minute))
+	totalDurationMs := int64(720000)
+	artifactCount := 2
 	newer.SandboxName = "factory-sandbox"
 	newer.Artifacts = []factory.ArtifactReference{
 		{Name: "report", Type: "markdown", Path: ".hal/reports/run-new.md"},
 		{Name: "log", Type: "text", Path: ".hal/reports/run-new.log"},
+	}
+	newer.Telemetry = &factory.RunTelemetry{
+		TotalDurationMs: &totalDurationMs,
+		Engine: &factory.EngineTelemetry{
+			Name:  "codex",
+			Model: "gpt-5",
+		},
+		Sandbox: &factory.RunSandboxTelemetry{
+			Provider: "hetzner",
+			Size:     "cx22",
+		},
+		CIOutcome:       "failed",
+		ArtifactCount:   &artifactCount,
+		FailureCategory: factory.FailureCategoryCI,
+		StepDurations:   []factory.RunStepDuration{{Step: "run", StartedAt: base.Add(4 * time.Minute), FinishedAt: base.Add(5 * time.Minute), DurationMs: 60000}},
 	}
 	newer.Failure = &factory.FailureSummary{
 		Step:        "ci",
@@ -3177,6 +3194,9 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	if resp.Runs[0].Failure == nil || resp.Runs[0].Failure.Step != "ci" {
 		t.Fatalf("failure summary missing from first run: %#v", resp.Runs[0].Failure)
 	}
+	if resp.Runs[0].Telemetry == nil || resp.Runs[0].Telemetry.TotalDurationMs == nil || *resp.Runs[0].Telemetry.TotalDurationMs != totalDurationMs {
+		t.Fatalf("telemetry missing from first run: %#v", resp.Runs[0].Telemetry)
+	}
 
 	var raw map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
@@ -3193,7 +3213,15 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	requireFactoryFields(t, "factory list run", first, []string{
 		"runId", "status", "source", "repoPath", "repoRemote", "branchName",
 		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-		"artifactCount", "failure",
+		"artifactCount", "telemetry", "failure",
+	})
+	telemetry, ok := first["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("factory list telemetry should be an object, got %T", first["telemetry"])
+	}
+	requireFactoryFields(t, "factory list telemetry", telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"ciOutcome", "artifactCount", "failureCategory",
 	})
 	for _, omitted := range []string{"artifacts", "events", "timeline"} {
 		if _, ok := first[omitted]; ok {
@@ -3204,6 +3232,8 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 
 func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	base := time.Date(2026, 6, 20, 18, 30, 0, 0, time.UTC)
+	totalDurationMs := int64(900000)
+	artifactCount := 1
 	events := []factory.EventRecord{
 		{
 			Sequence:  1,
@@ -3242,6 +3272,33 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 			},
 		},
 		EventSummary: newFactoryRunEventSummary(events),
+		Telemetry: &factory.RunTelemetry{
+			TotalDurationMs: &totalDurationMs,
+			StepDurations: []factory.RunStepDuration{
+				{
+					Step:       "ci",
+					StartedAt:  base.Add(1 * time.Minute),
+					FinishedAt: base.Add(2 * time.Minute),
+					DurationMs: 60000,
+				},
+			},
+			Engine: &factory.EngineTelemetry{
+				Name:  "codex",
+				Model: "gpt-5",
+			},
+			Sandbox: &factory.RunSandboxTelemetry{
+				Provider: "digitalocean",
+				Size:     "s-2vcpu-4gb",
+			},
+			EstimatedSandboxCost: &factory.SandboxCostEstimate{
+				AmountUSD: 0.12,
+				Estimated: true,
+			},
+			CIOutcome:           "failed",
+			VerificationOutcome: "passed",
+			ArtifactCount:       &artifactCount,
+			FailureCategory:     factory.FailureCategoryCI,
+		},
 		Failure: &FactoryRunFailure{
 			Classification:   "ci",
 			ErrorMessage:     "unit tests failed",
@@ -3274,7 +3331,7 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	}
 	requireExactKeys(t, raw, []string{
 		"contractVersion", "version", "runId", "status", "nextAction",
-		"artifacts", "eventSummary", "failure",
+		"artifacts", "telemetry", "eventSummary", "failure",
 	})
 
 	nextAction, ok := raw["nextAction"].(map[string]any)
@@ -3302,6 +3359,16 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	}
 	requireFactoryFields(t, "factory run eventSummary", eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
 
+	telemetry, ok := raw["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry should be an object, got %T", raw["telemetry"])
+	}
+	requireFactoryFields(t, "factory run telemetry", telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"estimatedSandboxCost", "ciOutcome", "verificationOutcome",
+		"artifactCount", "failureCategory",
+	})
+
 	failure, ok := raw["failure"].(map[string]any)
 	if !ok {
 		t.Fatalf("failure should be an object, got %T", raw["failure"])
@@ -3326,6 +3393,8 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)
 	finishedAt := base.Add(20 * time.Minute)
+	totalDurationMs := int64(finishedAt.Sub(base).Milliseconds())
+	artifactCount := 2
 	record := testFactoryRunRecord("run-status", base, base.Add(10*time.Minute))
 	record.Status = factory.RunStatusSucceeded
 	record.SandboxName = "factory-status"
@@ -3342,6 +3411,33 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 			Type: "url",
 			URL:  "http://192.0.2.42/pull/1",
 		},
+	}
+	record.Telemetry = &factory.RunTelemetry{
+		TotalDurationMs: &totalDurationMs,
+		StepDurations: []factory.RunStepDuration{
+			{
+				Step:       "run",
+				StartedAt:  base.Add(1 * time.Minute),
+				FinishedAt: base.Add(3 * time.Minute),
+				DurationMs: 120000,
+			},
+		},
+		Engine: &factory.EngineTelemetry{
+			Name:  "codex",
+			Model: "gpt-5",
+		},
+		Sandbox: &factory.RunSandboxTelemetry{
+			Provider: "daytona",
+			Size:     "medium",
+		},
+		EstimatedSandboxCost: &factory.SandboxCostEstimate{
+			AmountUSD: 0.42,
+			Estimated: true,
+		},
+		CIOutcome:           "skipped",
+		VerificationOutcome: "passed",
+		ArtifactCount:       &artifactCount,
+		FailureCategory:     factory.FailureCategoryValidation,
 	}
 	record.Failure = &factory.FailureSummary{
 		Step:     "review",
@@ -3398,6 +3494,9 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	if len(resp.Run.Artifacts) != 2 {
 		t.Fatalf("run.artifacts len = %d, want 2", len(resp.Run.Artifacts))
 	}
+	if resp.Run.Telemetry == nil || resp.Run.Telemetry.Engine == nil || resp.Run.Telemetry.Engine.Name != "codex" {
+		t.Fatalf("run.telemetry = %#v, want engine metadata", resp.Run.Telemetry)
+	}
 	gotSequence := make([]int64, 0, len(resp.Timeline))
 	for _, event := range resp.Timeline {
 		gotSequence = append(gotSequence, event.Sequence)
@@ -3419,7 +3518,16 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	requireFactoryFields(t, "factory status run", run, []string{
 		"runId", "status", "executorMode", "source", "repoPath", "repoRemote", "branchName",
 		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-		"finishedAt", "artifacts", "failure",
+		"finishedAt", "artifacts", "telemetry", "failure",
+	})
+	telemetry, ok := run["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("run.telemetry should be an object, got %T", run["telemetry"])
+	}
+	requireFactoryFields(t, "factory status telemetry", telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"estimatedSandboxCost", "ciOutcome", "verificationOutcome",
+		"artifactCount", "failureCategory",
 	})
 	artifacts, ok := run["artifacts"].([]any)
 	if !ok || len(artifacts) != 2 {
