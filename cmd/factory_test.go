@@ -62,7 +62,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory run .hal/prd-feature.md",
 				"hal factory run --report .hal/reports/analysis.md",
 				"hal factory run .hal/prd-feature.md --base main --json",
-				"hal factory run .hal/prd-feature.md --sandbox",
+				"hal factory run .hal/prd-feature.md --sandbox --base main",
 			},
 		},
 		{
@@ -164,13 +164,21 @@ func TestParseFactoryRunRequest(t *testing.T) {
 			},
 		},
 		{
-			name:    "sandbox option",
-			args:    []string{".hal/prd-feature.md"},
-			sandbox: true,
+			name:       "sandbox option",
+			args:       []string{".hal/prd-feature.md"},
+			baseBranch: "main",
+			sandbox:    true,
 			want: factoryRunRequest{
 				MarkdownPath: ".hal/prd-feature.md",
+				BaseBranch:   "main",
 				Sandbox:      true,
 			},
+		},
+		{
+			name:    "sandbox requires base",
+			args:    []string{".hal/prd-feature.md"},
+			sandbox: true,
+			wantErr: "--base is required when --sandbox is set",
 		},
 		{
 			name:       "positional and report conflict",
