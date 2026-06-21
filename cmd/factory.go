@@ -2521,6 +2521,9 @@ func sanitizeFactoryArtifactPath(path string) string {
 		return ""
 	}
 	cleanPath := filepath.Clean(path)
+	if factoryArtifactLooksLikeWindowsAbsolutePath(path) || factoryArtifactLooksLikeWindowsAbsolutePath(cleanPath) {
+		return "[redacted]"
+	}
 	if filepath.IsAbs(cleanPath) {
 		base := filepath.Base(cleanPath)
 		if base == "" || base == "." || base == string(os.PathSeparator) {

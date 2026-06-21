@@ -257,6 +257,71 @@ func TestCollectSandboxArtifactsSanitizesSavedArtifactBeforeLaterFailure(t *test
 	}
 }
 
+func TestStoreSandboxArtifactDirSkipsSymlinks(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-sandbox-symlink")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	localDir := filepath.Join(t.TempDir(), "copied")
+	if err := os.MkdirAll(localDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "regular.txt"), []byte("regular\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() unexpected error: %v", err)
+	}
+	secretPath := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(secret) unexpected error: %v", err)
+	}
+	if err := os.Symlink(secretPath, filepath.Join(localDir, "leak.txt")); err != nil {
+		t.Skipf("Symlink() unavailable: %v", err)
+	}
+
+	artifacts, _, err := storeSandboxArtifactDir(store, record.RunID, SandboxArtifactRequest{
+		ID:   "verify",
+		Name: "verify",
+		Type: "directory",
+		Path: ".hal/reports/verify",
+	}, localDir)
+	if err != nil {
+		t.Fatalf("storeSandboxArtifactDir() unexpected error: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("artifacts len = %d, want 1: %#v", len(artifacts), artifacts)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	regular := requireStoredArtifact(t, store, record.RunID, loaded.Artifacts, ".hal/reports/verify/regular.txt")
+	if got := readStoredArtifact(t, store, record.RunID, regular); got != "regular\n" {
+		t.Fatalf("stored regular data = %q", got)
+	}
+	for _, artifact := range loaded.Artifacts {
+		if strings.Contains(artifact.Path, "leak") {
+			t.Fatalf("symlink artifact should not be stored: %#v", loaded.Artifacts)
+		}
+		if artifact.StoredPath == "" {
+			continue
+		}
+		storedPath, err := store.ResolveArtifactPath(record.RunID, artifact.StoredPath)
+		if err != nil {
+			t.Fatalf("ResolveArtifactPath(%q) error: %v", artifact.StoredPath, err)
+		}
+		data, err := os.ReadFile(storedPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%q) error: %v", storedPath, err)
+		}
+		if strings.Contains(string(data), "secret") {
+			t.Fatalf("stored artifact %q leaked symlink target data", artifact.Path)
+		}
+	}
+}
+
 type copyCall struct {
 	remotePath string
 }

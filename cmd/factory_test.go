@@ -3454,6 +3454,23 @@ func TestSanitizeFactoryArtifactPathRedactsParentRelativePaths(t *testing.T) {
 	}
 }
 
+func TestSanitizeFactoryArtifactPathRedactsWindowsAbsolutePaths(t *testing.T) {
+	tests := []string{
+		`C:\Users\name\secret.md`,
+		`C:/Users/name/secret.md`,
+		`\\server\share\secret.md`,
+		`//server/share/secret.md`,
+	}
+
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if got := sanitizeFactoryArtifactPath(raw); got != "[redacted]" {
+				t.Fatalf("sanitizeFactoryArtifactPath(%q) = %q, want [redacted]", raw, got)
+			}
+		})
+	}
+}
+
 func TestRunFactoryArtifactsJSONEmptyState(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 8, 30, 0, 0, time.UTC)
