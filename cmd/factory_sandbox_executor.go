@@ -118,7 +118,7 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	return deps
 }
 
-func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxExecutorRequest, deps factorySandboxExecutorDeps) error {
+func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxExecutorRequest, deps factorySandboxExecutorDeps) (returnErr error) {
 	deps = normalizeFactorySandboxExecutorDeps(deps)
 	if ctx == nil {
 		ctx = context.Background()
@@ -213,6 +213,17 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err)
 		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err)
 	}
+	cleanupSucceeded := false
+	defer func() {
+		if cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factorySandboxCleanupBehavior(record), cleanupSucceeded); cleanupErr != nil {
+			sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr)))
+			if returnErr != nil {
+				returnErr = errors.Join(returnErr, sanitizedCleanupErr)
+				return
+			}
+			returnErr = sanitizedCleanupErr
+		}
+	}()
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record); ok {
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
@@ -257,9 +268,6 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if flushErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
 		}
-		if cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factorySandboxCleanupBehavior(record), false); cleanupErr != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr))
-		}
 		sanitizedErr := factorySandboxSanitizedError(target, runErr)
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", fmt.Errorf("%s", sanitizedErr))
 		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
@@ -272,9 +280,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}); err != nil {
 		return err
 	}
-	if err := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factorySandboxCleanupBehavior(record), true); err != nil {
-		return fmt.Errorf("cleanup factory sandbox: %w", err)
-	}
+	cleanupSucceeded = true
 	return nil
 }
 

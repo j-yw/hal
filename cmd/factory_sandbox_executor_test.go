@@ -203,6 +203,105 @@ func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsCleansUpEarlyFailureWhenPolicyAlways(t *testing.T) {
+	tests := []struct {
+		name       string
+		record     factory.RunRecord
+		remoteAuto factoryRunAutoRequest
+		bootstrap  func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+		wantErr    string
+	}{
+		{
+			name: "bootstrap failure",
+			record: factory.RunRecord{
+				RunID:      "run-bootstrap-cleanup",
+				RepoRemote: "git@github.com:example/repo.git",
+				BaseBranch: "main",
+				BranchName: "hal/feature",
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				return factory.BootstrapResult{}, fmt.Errorf("bootstrap failed")
+			},
+			wantErr: "bootstrap factory sandbox workspace: bootstrap failed",
+		},
+		{
+			name: "prepare inputs failure",
+			record: factory.RunRecord{
+				RunID:      "run-prepare-cleanup",
+				RepoRemote: "git@github.com:example/repo.git",
+			},
+			remoteAuto: factoryRunAutoRequest{Args: []string{".hal/missing.md"}},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				t.Fatalf("bootstrap should not run without a base branch")
+				return factory.BootstrapResult{}, nil
+			},
+			wantErr: "prepare factory sandbox inputs: read sandbox input \".hal/missing.md\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := factory.NewStore(t.TempDir())
+			projectDir := t.TempDir()
+			policy := factory.DefaultFactoryPolicy()
+			policy.CleanupBehavior = factory.CleanupBehaviorAlways
+			record := tt.record
+			record.Policy = &policy
+			target := &sandbox.SandboxState{
+				Name:     "factory-dev",
+				Provider: "daytona",
+				Status:   sandbox.StatusRunning,
+			}
+
+			var beforeCleanupCalls int
+			var cleanupCalls int
+			var execCalls int
+			err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+				ProjectDir:   projectDir,
+				SandboxName:  "factory-dev",
+				RunRecord:    record,
+				RemoteAuto:   tt.remoteAuto,
+				RemoteOutput: io.Discard,
+				BeforeCleanup: func(context.Context, factory.RunRecord) error {
+					beforeCleanupCalls++
+					return nil
+				},
+			}, factorySandboxExecutorDeps{
+				defaultStore:    func() (factory.Store, error) { return store, nil },
+				loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+				resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+				bootstrap:       tt.bootstrap,
+				runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+					execCalls++
+					return nil
+				},
+				cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+					cleanupCalls++
+					if beforeCleanupCalls != cleanupCalls {
+						t.Fatalf("cleanup ran before BeforeCleanup")
+					}
+					if req.Target == nil || req.Target.Name != "factory-dev" {
+						t.Fatalf("cleanup target = %#v, want factory-dev", req.Target)
+					}
+					if req.Provider == nil {
+						t.Fatalf("cleanup provider = nil")
+					}
+					return nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want containing %q", err, tt.wantErr)
+			}
+			if beforeCleanupCalls != 1 || cleanupCalls != 1 {
+				t.Fatalf("BeforeCleanup/cleanup calls = %d/%d, want 1/1", beforeCleanupCalls, cleanupCalls)
+			}
+			if execCalls != 0 {
+				t.Fatalf("remote execution calls = %d, want 0", execCalls)
+			}
+		})
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testing.T) {
 	now := time.Date(2026, 6, 21, 9, 30, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
