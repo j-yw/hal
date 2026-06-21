@@ -194,6 +194,97 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 	}
 }
 
+func TestRunReviewValidationSkipsFixPromptWhenClean(t *testing.T) {
+	start := time.Date(2026, 2, 15, 10, 0, 0, 0, time.UTC)
+	end := start.Add(2 * time.Second)
+	times := []time.Time{start, end}
+	timeIndex := 0
+
+	deps := reviewIterationDeps{
+		now: func() time.Time {
+			if timeIndex >= len(times) {
+				return times[len(times)-1]
+			}
+			current := times[timeIndex]
+			timeIndex++
+			return current
+		},
+		currentBranch: func() (string, error) { return "hal/validation", nil },
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			return testReviewBranchContext(baseBranch, currentBranch), nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			return `{"summary":"clean validation","issues":[]}`, nil
+		},
+	}
+
+	result, err := runReviewValidation(context.Background(), "develop", deps)
+	if err != nil {
+		t.Fatalf("runReviewValidation() unexpected error: %v", err)
+	}
+	if result.CompletedIterations != 1 || result.StopReason != "no_valid_issues" {
+		t.Fatalf("result completed/stop = %d/%q, want 1/no_valid_issues", result.CompletedIterations, result.StopReason)
+	}
+	if result.Totals.ValidIssues != 0 || result.Totals.FixesApplied != 0 {
+		t.Fatalf("totals = %+v, want no valid issues and no fixes", result.Totals)
+	}
+}
+
+func TestRunReviewValidationReportsFindingsWithoutFixes(t *testing.T) {
+	start := time.Date(2026, 2, 15, 10, 30, 0, 0, time.UTC)
+	end := start.Add(2 * time.Second)
+	times := []time.Time{start, end}
+	timeIndex := 0
+	promptCalls := 0
+
+	deps := reviewIterationDeps{
+		now: func() time.Time {
+			if timeIndex >= len(times) {
+				return times[len(times)-1]
+			}
+			current := times[timeIndex]
+			timeIndex++
+			return current
+		},
+		currentBranch: func() (string, error) { return "hal/validation", nil },
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			return testReviewBranchContext(baseBranch, currentBranch), nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalls++
+			if promptCalls > 1 {
+				t.Fatalf("prompt called %d times, want review-only prompt", promptCalls)
+			}
+			return `{
+				"summary": "one candidate",
+				"issues": [{
+					"id": "ISSUE-001",
+					"title": "Still failing",
+					"severity": "medium",
+					"file": "cmd/review.go",
+					"line": 42,
+					"rationale": "The issue remains",
+					"suggestedFix": "Fix it later"
+				}]
+			}`, nil
+		},
+	}
+
+	result, err := runReviewValidation(context.Background(), "develop", deps)
+	if err != nil {
+		t.Fatalf("runReviewValidation() unexpected error: %v", err)
+	}
+	if result.Totals.IssuesFound != 1 || result.Totals.ValidIssues != 1 || result.Totals.FixesApplied != 0 {
+		t.Fatalf("totals = %+v, want one finding and no fixes", result.Totals)
+	}
+	if len(result.Iterations) != 1 || len(result.Iterations[0].Issues) != 1 {
+		t.Fatalf("iterations = %+v, want one issue detail", result.Iterations)
+	}
+	if result.Iterations[0].Issues[0].Fixed {
+		t.Fatal("validation issue should not be marked fixed")
+	}
+}
+
 func TestRunReviewLoopStopsEarlyWhenNoValidIssues(t *testing.T) {
 	start := time.Date(2026, 2, 15, 10, 0, 0, 0, time.UTC)
 	end := start.Add(10 * time.Second)

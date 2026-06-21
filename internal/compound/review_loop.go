@@ -61,6 +61,16 @@ func RunReviewLoopWithDisplay(ctx context.Context, eng engine.Engine, display *e
 	return runReviewLoop(ctx, baseBranch, requestedIterations, newReviewIterationDeps(eng, display))
 }
 
+// RunReviewValidationWithDisplay executes one non-mutating review pass. It
+// reports findings but deliberately skips the validation/autofix prompt.
+func RunReviewValidationWithDisplay(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string) (*ReviewLoopResult, error) {
+	if eng == nil {
+		return nil, fmt.Errorf("engine is required")
+	}
+
+	return runReviewValidation(ctx, baseBranch, newReviewIterationDeps(eng, display))
+}
+
 // RunCodexReviewLoop is kept for compatibility with older callers.
 func RunCodexReviewLoop(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
 	return RunReviewLoop(ctx, eng, baseBranch, requestedIterations)
@@ -311,6 +321,56 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 	}, nil
 }
 
+func runReviewValidation(ctx context.Context, baseBranch string, deps reviewIterationDeps) (*ReviewLoopResult, error) {
+	const requestedIterations = 1
+	baseBranch, deps, err := normalizeReviewLoopDeps(baseBranch, requestedIterations, deps)
+	if err != nil {
+		return nil, err
+	}
+
+	startedAt := deps.now()
+
+	currentBranch, err := deps.currentBranch()
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine current branch: %w", err)
+	}
+
+	deps.onIterationStart(1, requestedIterations)
+	iteration, err := runReviewOnlyIteration(ctx, baseBranch, currentBranch, deps)
+	if err != nil {
+		deps.onIterationComplete(1)
+		return nil, err
+	}
+	iteration.Iteration = 1
+	deps.onIterationComplete(1)
+
+	endedAt := deps.now()
+	stopReason := "max_iterations"
+	if iteration.ValidIssues == 0 {
+		stopReason = "no_valid_issues"
+	}
+
+	return &ReviewLoopResult{
+		Command:             fmt.Sprintf("hal review --base %s --iterations %d", baseBranch, requestedIterations),
+		BaseBranch:          baseBranch,
+		CurrentBranch:       currentBranch,
+		RequestedIterations: requestedIterations,
+		CompletedIterations: 1,
+		StopReason:          stopReason,
+		StartedAt:           startedAt,
+		EndedAt:             endedAt,
+		Duration:            endedAt.Sub(startedAt),
+		Totals: ReviewLoopTotals{
+			IssuesFound:   iteration.IssuesFound,
+			ValidIssues:   iteration.ValidIssues,
+			InvalidIssues: iteration.InvalidIssues,
+			FixesApplied:  iteration.FixesApplied,
+			FilesAffected: collectFilesAffected([]ReviewLoopIteration{iteration}),
+		},
+		Iterations: []ReviewLoopIteration{iteration},
+	}, nil
+}
+
 func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, deps reviewIterationDeps) (ReviewLoopIteration, error) {
 	iterStart := deps.now()
 
@@ -382,6 +442,47 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 
 	iteration.Duration = deps.now().Sub(iterStart)
 	return iteration, nil
+}
+
+func runReviewOnlyIteration(ctx context.Context, baseBranch, currentBranch string, deps reviewIterationDeps) (ReviewLoopIteration, error) {
+	iterStart := deps.now()
+
+	branchContext, err := deps.branchContext(baseBranch, currentBranch)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to gather review context against base branch %q: %w", baseBranch, err)
+	}
+
+	reviewPrompt := buildReviewLoopPrompt(branchContext)
+	reviewResponse, err := promptWithRetry(ctx, deps, reviewPrompt)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("review step failed: %w", err)
+	}
+
+	parsedReview, err := parseReviewResponseWithRepair(ctx, deps, reviewResponse)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to parse review output: %w", err)
+	}
+
+	issuesFound := len(parsedReview.Issues)
+	summary := strings.TrimSpace(parsedReview.Summary)
+	if summary == "" {
+		if issuesFound == 0 {
+			summary = "No issues found"
+		} else {
+			summary = fmt.Sprintf("Found %d issues", issuesFound)
+		}
+	}
+
+	return ReviewLoopIteration{
+		IssuesFound:   issuesFound,
+		ValidIssues:   issuesFound,
+		InvalidIssues: 0,
+		FixesApplied:  0,
+		Summary:       summary,
+		Status:        "reviewed",
+		Issues:        buildIssueDetails(parsedReview.Issues, nil),
+		Duration:      deps.now().Sub(iterStart),
+	}, nil
 }
 
 // buildIssueDetails merges review-phase issue data with fix-phase outcomes

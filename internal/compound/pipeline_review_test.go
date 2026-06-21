@@ -591,7 +591,7 @@ func TestRunReviewStep_FinalVerificationFailure_BlocksGate(t *testing.T) {
 	}
 }
 
-func TestRunReviewStep_MaxReviewFixAttemptsBlocksBeforeReviewLoop(t *testing.T) {
+func TestRunReviewStep_MaxReviewFixAttemptsAllowsCleanValidationAfterLimit(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
 	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
@@ -605,26 +605,38 @@ func TestRunReviewStep_MaxReviewFixAttemptsBlocksBeforeReviewLoop(t *testing.T) 
 			FixAttempts: 1,
 		},
 	}
+	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
 
+	calls := 0
 	origReviewLoop := runReviewLoopWithDisplay
 	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
-		t.Fatal("review loop should not run after max review fix attempts is reached")
+		t.Fatal("mutating review loop should not run after max review fix attempts is reached")
 		return nil, nil
 	}
 	t.Cleanup(func() {
 		runReviewLoopWithDisplay = origReviewLoop
 	})
+	origValidation := runReviewValidationWithDisplay
+	runReviewValidationWithDisplay = func(context.Context, engine.Engine, *engine.Display, string) (*ReviewLoopResult, error) {
+		calls++
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewValidationWithDisplay = origValidation
+	})
 
 	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
-	var limitErr *PolicyLimitError
-	if !errors.As(err, &limitErr) {
-		t.Fatalf("runReviewStep() error = %v, want PolicyLimitError", err)
+	if err != nil {
+		t.Fatalf("runReviewStep() unexpected error: %v", err)
 	}
-	if limitErr.PolicyField != "factory.policy.maxReviewFixAttempts" || limitErr.Step != StepReview || limitErr.Attempts != 1 || limitErr.Limit != 1 {
-		t.Fatalf("limit error = %+v, want maxReviewFixAttempts review limit", limitErr)
+	if calls != 1 {
+		t.Fatalf("validation calls = %d, want 1", calls)
 	}
-	if state.Review.Status != "failed" {
-		t.Fatalf("review status = %q, want failed", state.Review.Status)
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.Review.Status != "passed" || state.Review.FixAttempts != 1 {
+		t.Fatalf("review state = %+v, want passed with one prior fix attempt", state.Review)
 	}
 }
 
@@ -689,13 +701,29 @@ func TestRunReviewStep_MaxReviewFixAttemptsBlocksAdditionalFixCycle(t *testing.T
 		},
 	}
 
+	calls := 0
 	origReviewLoop := runReviewLoopWithDisplay
 	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
-		t.Fatal("review loop should not run after max review fix attempts is reached")
+		t.Fatal("mutating review loop should not run after max review fix attempts is reached")
 		return nil, nil
 	}
 	t.Cleanup(func() {
 		runReviewLoopWithDisplay = origReviewLoop
+	})
+	origValidation := runReviewValidationWithDisplay
+	runReviewValidationWithDisplay = func(context.Context, engine.Engine, *engine.Display, string) (*ReviewLoopResult, error) {
+		calls++
+		return &ReviewLoopResult{
+			Iterations: []ReviewLoopIteration{{
+				Iteration:    1,
+				IssuesFound:  1,
+				ValidIssues:  1,
+				FixesApplied: 0,
+			}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		runReviewValidationWithDisplay = origValidation
 	})
 
 	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
@@ -706,8 +734,14 @@ func TestRunReviewStep_MaxReviewFixAttemptsBlocksAdditionalFixCycle(t *testing.T
 	if limitErr.PolicyField != "factory.policy.maxReviewFixAttempts" || limitErr.Step != StepReview || limitErr.Attempts != 1 || limitErr.Limit != 1 {
 		t.Fatalf("limit error = %+v, want maxReviewFixAttempts review limit", limitErr)
 	}
+	if calls != 1 {
+		t.Fatalf("validation calls = %d, want 1 validation cycle before limit", calls)
+	}
 	if state.Review.Status != "failed" {
 		t.Fatalf("review status = %q, want failed", state.Review.Status)
+	}
+	if state.Review.FixAttempts != 1 {
+		t.Fatalf("fix attempts = %d, want unchanged at limit", state.Review.FixAttempts)
 	}
 }
 
