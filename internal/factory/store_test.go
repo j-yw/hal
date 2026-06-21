@@ -482,6 +482,37 @@ func TestSaveArtifactFileRejectsDirectories(t *testing.T) {
 	}
 }
 
+func TestSaveArtifactFileRejectsSymlinks(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-artifacts-symlink")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(targetPath, []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	linkPath := filepath.Join(dir, "artifact.txt")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err := store.SaveArtifactFile(record.RunID, ArtifactReference{Name: "artifact", Type: "text"}, linkPath)
+	if err == nil {
+		t.Fatalf("SaveArtifactFile() expected symlink source error")
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	if len(loaded.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none after symlink rejection", loaded.Artifacts)
+	}
+}
+
 func TestLoadRunMissingReturnsNotExist(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 

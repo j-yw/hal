@@ -141,12 +141,18 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 		return ArtifactReference{}, err
 	}
 
-	info, err := os.Stat(sourcePath)
+	info, err := os.Lstat(sourcePath)
 	if err != nil {
 		return ArtifactReference{}, fmt.Errorf("stat artifact source %q: %w", sourcePath, err)
 	}
 	if info.IsDir() {
 		return ArtifactReference{}, fmt.Errorf("artifact source %q is a directory", sourcePath)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is a symlink", sourcePath)
+	}
+	if !info.Mode().IsRegular() {
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
 	}
 
 	artifact.Name = strings.TrimSpace(artifact.Name)
@@ -166,12 +172,13 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 	if err := os.MkdirAll(filepath.Dir(absoluteStoredPath), 0o700); err != nil {
 		return ArtifactReference{}, fmt.Errorf("create factory artifact dir: %w", err)
 	}
-	if err := copyStoreFile(sourcePath, absoluteStoredPath, 0o600); err != nil {
+	copiedInfo, err := copyStoreFile(sourcePath, absoluteStoredPath, 0o600, info)
+	if err != nil {
 		return ArtifactReference{}, fmt.Errorf("write factory artifact %q: %w", artifact.Name, err)
 	}
 
-	size := info.Size()
-	createdAt := info.ModTime().UTC()
+	size := copiedInfo.Size()
+	createdAt := copiedInfo.ModTime().UTC()
 	artifact.SourcePath = sourcePath
 	artifact.StoredPath = storedPath
 	artifact.SizeBytes = &size
@@ -497,36 +504,46 @@ func isStoreRenameNoReplaceError(err error) bool {
 	return errors.Is(err, fs.ErrExist) || os.IsExist(err)
 }
 
-func copyStoreFile(sourcePath, destPath string, mode fs.FileMode) error {
+func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo) (fs.FileInfo, error) {
 	source, err := os.Open(sourcePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer source.Close()
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
+	}
+	if expectedInfo != nil && !os.SameFile(expectedInfo, sourceInfo) {
+		return nil, fmt.Errorf("artifact source %q changed during copy", sourcePath)
+	}
 
 	tmpPath := destPath + storeTempFileExt
 	dest, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := io.Copy(dest, source); err != nil {
 		_ = dest.Close()
 		_ = os.Remove(tmpPath)
-		return err
+		return nil, err
 	}
 	if err := dest.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return err
+		return nil, err
 	}
 	if err := os.Chmod(tmpPath, mode); err != nil {
 		_ = os.Remove(tmpPath)
-		return err
+		return nil, err
 	}
 	if err := saveStoreFile(tmpPath, destPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return err
+		return nil, err
 	}
-	return nil
+	return sourceInfo, nil
 }
 
 func artifactFileName(name, sourcePath string) string {

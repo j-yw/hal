@@ -891,6 +891,33 @@ func TestRunFactoryRunWithDepsRecordsArchivedArtifacts(t *testing.T) {
 	}
 }
 
+func TestCollectFactoryRunReportArtifactsSkipsNonRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, ".hal", "reports")
+	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+	}
+	regularPath := filepath.Join(reportsDir, "report.txt")
+	if err := os.WriteFile(regularPath, []byte("report\n"), 0o600); err != nil {
+		t.Fatalf("write regular report: %v", err)
+	}
+	targetPath := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(targetPath, []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(targetPath, filepath.Join(reportsDir, "secret-link.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	artifacts := collectFactoryRunReportArtifacts(dir, time.Time{})
+	if len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, want only regular report", artifacts)
+	}
+	if artifacts[0].Path != filepath.Join(".hal", "reports", "report.txt") {
+		t.Fatalf("artifact path = %q, want regular report", artifacts[0].Path)
+	}
+}
+
 func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")

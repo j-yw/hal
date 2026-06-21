@@ -1387,8 +1387,8 @@ func snapshotFactoryRunArtifacts(dir string) factoryArtifactSnapshot {
 }
 
 func snapshotFactoryArtifactFile(path string) factoryArtifactFileSnapshot {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
 		return factoryArtifactFileSnapshot{}
 	}
 	content, _ := os.ReadFile(path)
@@ -1555,7 +1555,7 @@ func collectFactoryRunReportArtifacts(dir string, startedAt time.Time) []factory
 			return nil
 		}
 		info, err := entry.Info()
-		if err != nil || info.IsDir() {
+		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
 		if !startedAt.IsZero() && info.ModTime().Before(startedAt) {
@@ -1659,7 +1659,7 @@ func collectFactoryRunArchivedArtifacts(dir string, startedAt time.Time) factory
 				continue
 			}
 			info, err := reportEntry.Info()
-			if err != nil || info.IsDir() {
+			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
 			original := filepath.Join(template.HalDir, "reports", name)
@@ -1848,8 +1848,8 @@ func factoryArtifactTypeForPath(path string) string {
 }
 
 func factoryArtifactFileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func factoryArtifactChangedSinceSnapshot(dir, path string, snapshot factoryArtifactSnapshot) bool {
