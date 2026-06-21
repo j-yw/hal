@@ -4300,7 +4300,7 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 
 	payloads := map[string]any{
 		"factory-run":       newFactoryRunResponse(record, nil),
-		"factory-status":    FactoryStatusResponse{ContractVersion: FactoryStatusContractVersion, Run: newFactoryStatusRun(record), Timeline: []factory.EventRecord{}},
+		"factory-status":    FactoryStatusResponse{ContractVersion: FactoryStatusContractVersion, Run: newFactoryStatusRun(record, []factory.EventRecord{}), Timeline: []factory.EventRecord{}},
 		"factory-artifacts": newFactoryArtifactsResponse(record),
 	}
 	for name, payload := range payloads {
