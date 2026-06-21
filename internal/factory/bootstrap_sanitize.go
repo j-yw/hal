@@ -49,6 +49,12 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 		addKey(key)
 	}
 	addURLCredentialRedactionTokens(valueSet, request.RepositoryURL)
+	for _, value := range request.secretValues {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			valueSet[value] = struct{}{}
+		}
+	}
 
 	return BootstrapSanitizer{
 		secretValues: sortedRedactionTokens(valueSet),

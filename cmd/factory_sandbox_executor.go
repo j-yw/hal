@@ -28,11 +28,12 @@ type factorySandboxProvisionRequest struct {
 }
 
 type factorySandboxExecutorRequest struct {
-	ProjectDir   string
-	SandboxName  string
-	RunRecord    factory.RunRecord
-	RemoteAuto   factoryRunAutoRequest
-	RemoteOutput io.Writer
+	ProjectDir      string
+	SandboxName     string
+	RunRecord       factory.RunRecord
+	ResolvedSecrets []factory.ResolvedRunSecret
+	RemoteAuto      factoryRunAutoRequest
+	RemoteOutput    io.Writer
 }
 
 type factorySandboxExecutorDeps struct {
@@ -202,7 +203,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err)
 	}
 
-	if bootstrapReq, ok := factorySandboxBootstrapRequest(record); ok {
+	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.ResolvedSecrets); ok {
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
 				provider:        provider,
@@ -495,14 +496,14 @@ func sortedStringMapKeys(values map[string]string) []string {
 	return keys
 }
 
-func factorySandboxBootstrapRequest(record factory.RunRecord) (factory.BootstrapRequest, bool) {
+func factorySandboxBootstrapRequest(record factory.RunRecord, secrets []factory.ResolvedRunSecret) (factory.BootstrapRequest, bool) {
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	repoRemote := strings.TrimSpace(record.RepoRemote)
 	baseBranch := strings.TrimSpace(record.BaseBranch)
 	if workspaceDir == "" || repoRemote == "" || baseBranch == "" {
 		return factory.BootstrapRequest{}, false
 	}
-	return factory.BootstrapRequest{
+	request := factory.BootstrapRequest{
 		RepositoryURL: repoRemote,
 		BaseBranch:    baseBranch,
 		RunBranch:     strings.TrimSpace(record.BranchName),
@@ -510,7 +511,8 @@ func factorySandboxBootstrapRequest(record factory.RunRecord) (factory.Bootstrap
 		Options: factory.BootstrapOptions{
 			RefreshHal: true,
 		},
-	}, true
+	}
+	return factory.BootstrapRequestWithResolvedSecrets(request, secrets), true
 }
 
 func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, result factory.BootstrapResult) error {

@@ -232,6 +232,79 @@ func TestBootstrapSanitizersRedactTimelineAndCommandRecords(t *testing.T) {
 	assertDoesNotContainSensitiveFixture(t, eventData, secret)
 }
 
+func TestRunBootstrapStepRedactsResolvedRunSecretValuesFromRecords(t *testing.T) {
+	secret := "ghp_run_scoped_bootstrap_secret_12345"
+	request := BootstrapRequestWithResolvedSecrets(BootstrapRequest{}, []ResolvedRunSecret{{
+		Name:     "GITHUB_TOKEN",
+		Source:   RunSecretSourceEnv,
+		Required: true,
+		Value:    secret,
+	}})
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{{
+			ExitCode:      0,
+			OutputSummary: "bootstrap output used " + secret,
+			Metadata: map[string]string{
+				"remote": "https://" + secret + "@github.com/example/repo.git",
+			},
+		}},
+	}
+
+	step, result, failure, err := RunBootstrapStep(
+		context.Background(),
+		BootstrapStepDeps{
+			Executor: executor,
+			Now:      incrementingClock(t, time.Date(2026, 6, 21, 8, 20, 0, 0, time.UTC)),
+			Request:  request,
+		},
+		"clone_repository",
+		BootstrapCommand{
+			Name: "git",
+			Args: []string{"clone", "https://" + secret + "@github.com/example/repo.git"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RunBootstrapStep() error = %v", err)
+	}
+	if failure != nil {
+		t.Fatalf("failure = %#v, want nil", failure)
+	}
+	if strings.Contains(step.CommandSummary, secret) {
+		t.Fatalf("command summary leaked secret: %q", step.CommandSummary)
+	}
+	if !strings.Contains(step.CommandSummary, bootstrapRedactedValue) {
+		t.Fatalf("command summary missing redaction marker: %q", step.CommandSummary)
+	}
+
+	resultData, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal(result) error = %v", err)
+	}
+	if strings.Contains(string(resultData), secret) {
+		t.Fatalf("bootstrap command result leaked secret: %s", string(resultData))
+	}
+	if !strings.Contains(string(resultData), bootstrapRedactedValue) {
+		t.Fatalf("bootstrap command result missing redaction marker: %s", string(resultData))
+	}
+
+	event := BootstrapTimelineEventFromStep(request, step, result, nil)
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal(event) error = %v", err)
+	}
+	if strings.Contains(string(eventData), secret) {
+		t.Fatalf("bootstrap timeline event leaked secret: %s", string(eventData))
+	}
+
+	requestData, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("json.Marshal(request) error = %v", err)
+	}
+	if strings.Contains(string(requestData), secret) {
+		t.Fatalf("bootstrap request JSON leaked in-memory secret value: %s", string(requestData))
+	}
+}
+
 func TestRunBootstrapStepClassifiesExecutorFailure(t *testing.T) {
 	startedAt := time.Date(2026, 6, 21, 2, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)

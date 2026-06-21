@@ -492,10 +492,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			remoteOutput = io.Discard
 		}
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
-			ProjectDir:   dir,
-			RunRecord:    runningRecord,
-			RemoteAuto:   factoryRunAutoRequestFromFactoryRequest(req),
-			RemoteOutput: remoteOutput,
+			ProjectDir:      dir,
+			RunRecord:       runningRecord,
+			ResolvedSecrets: req.ResolvedSecrets,
+			RemoteAuto:      factoryRunAutoRequestFromFactoryRequest(req),
+			RemoteOutput:    remoteOutput,
 		})
 	} else {
 		runErr = deps.runPipeline(ctx, pipelineReq)

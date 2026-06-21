@@ -37,14 +37,6 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
-## Patterns from hal/factory-run-scoped-secrets-and-credentials (2026-06-21)
-
-- Factory run-scoped secrets should use `internal/factory.RunSecretInput` for requested env-backed secrets and persist only `RunSecretMetadata` on `RunRecord.Secrets`; durable records should contain `name`, `source`, `required`, and `present`, never raw secret values.
-- Resolve factory run secrets through `factory.ResolveRunSecrets` at the `executeFactoryRun` setup boundary before marking runs in progress or calling local/sandbox executors; inject env lookup functions in tests and pass only `ResolvedRunSecret` values in memory.
-- Future factory run secret sources should plug into `internal/factory.RunSecretProvider` via `ResolveRunSecretsWithProviders`; keep `ResolveRunSecrets` as the default env-only path and use `ErrUnsupportedRunSecretSource` for unimplemented sources.
-- Use `factory.NewRunSecretRedactor` for any factory output, timeline, bootstrap, sandbox, or artifact surface that must redact resolved run secret values; empty values are ignored and the stable placeholder is `factory.RunSecretRedactionPlaceholder`.
-- When adding factory type-contract fields, update `internal/factory/types_test.go` coverage for JSON tags, round-trip behavior, explicit serialized fields, optional omission, and legacy JSON loading so schema changes stay backward compatible.
-
 ## Patterns from local-factory-queue-storage (2026-06-21)
 
 - Factory queue storage should build on `internal/factory.Store`: keep queue state under the global config-backed factory root (`StoreDir()/queue.json`), treat a missing queue file as empty read-only state, and preserve corrupt queue files by returning parse errors without overwriting or deleting them.

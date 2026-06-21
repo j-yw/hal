@@ -374,6 +374,99 @@ func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStre
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromBootstrapTimeline(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 10, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	secret := "ghp_sandbox_bootstrap_secret_12345"
+
+	var events []factory.EventRecord
+	var bootstrapReq factory.BootstrapRequest
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-bootstrap-secret",
+			RepoRemote: "git@github.com:example/repo.git",
+			BaseBranch: "main",
+			BranchName: "hal/feature",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    secret,
+		}},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		bootstrap: func(_ context.Context, req factory.BootstrapRequest, _ factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			bootstrapReq = req
+			finishedAt := now.Add(time.Second)
+			step := factory.BootstrapStepResult{
+				Name:           factory.BootstrapStepCloneRepository,
+				Status:         factory.RunStatusSucceeded,
+				CommandSummary: "git clone https://" + secret + "@github.com/example/repo.git /workspace/repo",
+				StartedAt:      now,
+				FinishedAt:     &finishedAt,
+			}
+			commandResult := factory.BootstrapCommandResult{
+				ExitCode:      0,
+				OutputSummary: "bootstrap cloned with " + secret,
+				Metadata: map[string]string{
+					"remote": "https://" + secret + "@github.com/example/repo.git",
+				},
+			}
+			return factory.BootstrapResult{
+				Timeline: []factory.BootstrapTimelineEvent{
+					factory.BootstrapTimelineEventFromStep(req, step, commandResult, nil),
+				},
+			}, nil
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		saveRun: func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString(secret) == secret {
+		t.Fatalf("bootstrap request did not carry resolved secret values for sanitization")
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want bootstrap/start/completion events: %#v", len(events), events)
+	}
+	bootstrapEvent := events[0]
+	for _, value := range []string{bootstrapEvent.Message, bootstrapEvent.Summary} {
+		if strings.Contains(value, secret) {
+			t.Fatalf("bootstrap event leaked secret in %q: %#v", value, bootstrapEvent)
+		}
+	}
+	for key, value := range bootstrapEvent.Metadata {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(text, secret) {
+			t.Fatalf("bootstrap event metadata %q leaked secret in %q: %#v", key, text, bootstrapEvent)
+		}
+	}
+	if command, ok := bootstrapEvent.Metadata["command"].(string); !ok || !strings.Contains(command, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("bootstrap event command missing redaction marker: %#v", bootstrapEvent.Metadata["command"])
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecution(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0755); err != nil {
