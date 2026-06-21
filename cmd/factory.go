@@ -477,6 +477,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		artifactErr := fmt.Errorf("record factory artifacts: %w", err)
 		failedRecord := completedRecord
 		var recordErrs []error
+		if reloadedRecord, loadErr := store.LoadRun(runningRecord.RunID); loadErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("reload factory run after artifact failure: %w", loadErr))
+		} else {
+			failedRecord = *reloadedRecord
+		}
 		if markedRecord, failureErr := markFactoryRunFailed(store, failedRecord, completedAt, artifactErr); failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
 		} else {

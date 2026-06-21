@@ -699,6 +699,75 @@ func TestRunFactoryRunWithDepsMarksRunFailedWhenArtifactCollectionFails(t *testi
 	}
 }
 
+func TestRunFactoryRunWithDepsPreservesPartialArtifactsWhenArtifactCollectionFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	reportsDir := filepath.Join(halDir, "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 5, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	reportPath := filepath.Join(".hal", "reports", "blocked.log")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-partial-artifact-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			writeFile(t, reportsDir, "blocked.log", "blocked\n")
+			ref := factory.ArtifactReference{
+				Name: factoryGeneratedReportArtifactName("blocked.log"),
+				Type: factoryArtifactTypeForPath(reportPath),
+				Path: filepath.Clean(reportPath),
+			}
+			ref.ID = factoryArtifactID(ref)
+			blockedArtifactPath := filepath.Join(store.ArtifactsDir(), "run-partial-artifact-failed", strings.Trim(ref.ID, "."))
+			if err := os.MkdirAll(blockedArtifactPath, 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact path) error: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(blockedArtifactPath+".bak", "child"), 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact backup path) error: %v", err)
+			}
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "record factory artifacts") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want artifact collection error", err)
+	}
+
+	record, err := store.LoadRun("run-partial-artifact-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-partial-artifact-failed.json"))
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
