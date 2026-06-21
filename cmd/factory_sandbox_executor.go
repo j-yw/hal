@@ -189,7 +189,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput)
 	provider, err := deps.resolveProvider(target.Provider)
 	if err != nil {
-		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err)
+		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err)
 	}
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record); ok {
