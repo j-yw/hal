@@ -2792,6 +2792,12 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 			}
 		}
 	}
+	if factoryArtifactStringContainsAbsolutePath(value) {
+		return true
+	}
+	if factoryArtifactStringContainsSecretAssignment(value) {
+		return true
+	}
 	fields := strings.FieldsFunc(value, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == '/' || r == ',' || r == ';' || r == '=' || r == '(' || r == ')' || r == '[' || r == ']'
 	})
@@ -2801,6 +2807,80 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 		}
 	}
 	return false
+}
+
+func factoryArtifactStringContainsAbsolutePath(value string) bool {
+	for _, field := range factoryArtifactRedactionFields(value) {
+		if factoryArtifactFieldIsAbsolutePath(field) {
+			return true
+		}
+		if strings.Contains(field, "://") {
+			continue
+		}
+		for _, sep := range []string{"=", ":"} {
+			if idx := strings.Index(field, sep); idx >= 0 && idx+1 < len(field) {
+				if factoryArtifactFieldIsAbsolutePath(field[idx+1:]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func factoryArtifactFieldIsAbsolutePath(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'<>[](){}.,;")
+	if value == "" {
+		return false
+	}
+	if filepath.IsAbs(value) {
+		return true
+	}
+	return factoryArtifactLooksLikeWindowsAbsolutePath(value)
+}
+
+func factoryArtifactLooksLikeWindowsAbsolutePath(value string) bool {
+	if len(value) >= 3 {
+		drive := value[0]
+		if ((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+			return true
+		}
+	}
+	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `//`)
+}
+
+func factoryArtifactStringContainsSecretAssignment(value string) bool {
+	fields := factoryArtifactRedactionFields(value)
+	for i, field := range fields {
+		field = strings.TrimSpace(field)
+		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if field == "" {
+			continue
+		}
+		if idx := strings.IndexAny(field, "=:"); idx > 0 && factoryArtifactSecretKey(field[:idx]) {
+			return true
+		}
+		if !factoryArtifactSecretKey(field) || i+1 >= len(fields) {
+			continue
+		}
+		next := strings.TrimSpace(fields[i+1])
+		if next == "=" || next == ":" || strings.HasPrefix(next, "=") || strings.HasPrefix(next, ":") {
+			return true
+		}
+	}
+	return false
+}
+
+func factoryArtifactRedactionFields(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', ',', ';', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}', '?', '&':
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 func formatFactoryListTime(t time.Time) string {
