@@ -195,6 +195,7 @@ type factoryRunPipelineRequest struct {
 	Record         factory.RunRecord
 	Store          factory.Store
 	AttemptPolicy  autoFactoryAttemptPolicy
+	SkipCI         bool
 	RecordProgress func(factoryRunProgressEvent) error
 }
 
@@ -230,6 +231,7 @@ type factoryRunAutoRequest struct {
 	ReportPath    string
 	BaseBranch    string
 	AttemptPolicy autoFactoryAttemptPolicy
+	SkipCI        bool
 }
 
 type factoryRunProgressEvent struct {
@@ -301,23 +303,25 @@ type FactoryStatusResponse struct {
 // FactoryStatusRun is the safe run surface for hal factory status --json. It
 // mirrors factory.RunRecord but uses sanitized artifact summaries.
 type FactoryStatusRun struct {
-	RunID        string                      `json:"runId"`
-	Status       string                      `json:"status"`
-	ExecutorMode string                      `json:"executorMode,omitempty"`
-	Source       factory.SourceMetadata      `json:"source"`
-	RepoPath     string                      `json:"repoPath"`
-	RepoRemote   string                      `json:"repoRemote"`
-	BranchName   string                      `json:"branchName"`
-	BaseBranch   string                      `json:"baseBranch"`
-	SandboxName  string                      `json:"sandboxName,omitempty"`
-	Sandbox      *factory.SandboxMetadata    `json:"sandbox,omitempty"`
-	CurrentStep  string                      `json:"currentStep"`
-	CreatedAt    time.Time                   `json:"createdAt"`
-	UpdatedAt    time.Time                   `json:"updatedAt"`
-	FinishedAt   *time.Time                  `json:"finishedAt,omitempty"`
-	Artifacts    []FactoryArtifactSummary    `json:"artifacts,omitempty"`
-	Verification *factory.VerificationRecord `json:"verification,omitempty"`
-	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
+	RunID           string                           `json:"runId"`
+	Status          string                           `json:"status"`
+	ExecutorMode    string                           `json:"executorMode"`
+	Source          factory.SourceMetadata           `json:"source"`
+	RepoPath        string                           `json:"repoPath"`
+	RepoRemote      string                           `json:"repoRemote"`
+	BranchName      string                           `json:"branchName"`
+	BaseBranch      string                           `json:"baseBranch"`
+	Policy          *factory.FactoryPolicy           `json:"policy,omitempty"`
+	PolicyDecisions []factory.PolicyDecisionMetadata `json:"policyDecisions,omitempty"`
+	SandboxName     string                           `json:"sandboxName,omitempty"`
+	Sandbox         *factory.SandboxMetadata         `json:"sandbox,omitempty"`
+	CurrentStep     string                           `json:"currentStep"`
+	CreatedAt       time.Time                        `json:"createdAt"`
+	UpdatedAt       time.Time                        `json:"updatedAt"`
+	FinishedAt      *time.Time                       `json:"finishedAt,omitempty"`
+	Artifacts       []FactoryArtifactSummary         `json:"artifacts,omitempty"`
+	Verification    *factory.VerificationRecord      `json:"verification,omitempty"`
+	Failure         *factory.FailureSummary          `json:"failure,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -444,6 +448,10 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
 	}
+	record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
 	if err := enforceFactoryRunCreationPolicy(store, dir, record, out, req.JSON, deps, policy); err != nil {
 		return err
 	}
@@ -468,12 +476,22 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if deps.runPipeline == nil {
 		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
 	}
+	if record.Policy == nil {
+		var err error
+		record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+		if err != nil {
+			return factoryRunExecutionResult{Record: record}, err
+		}
+	}
 
 	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
 	if err != nil {
 		return factoryRunExecutionResult{Record: record}, err
 	}
 	if err := recordFactoryRunPipelineStarted(store, runningRecord); err != nil {
+		return factoryRunExecutionResult{Record: runningRecord}, err
+	}
+	if err := recordFactoryRunPreExecutionPolicyDecisions(store, runningRecord.RunID, deps.now, policy); err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
 
@@ -483,6 +501,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		Record:        runningRecord,
 		Store:         store,
 		AttemptPolicy: autoFactoryAttemptPolicyFromFactoryPolicy(policy),
+		SkipCI:        factoryPolicySkipsCI(policy),
 		RecordProgress: func(event factoryRunProgressEvent) error {
 			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
 		},
@@ -496,6 +515,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		remoteAuto := factoryRunAutoRequestFromFactoryRequest(req)
 		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
+		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
 			ProjectDir:   dir,
 			RunRecord:    runningRecord,
@@ -552,7 +572,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
-	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
+	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, policy)
 	if err != nil {
 		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
 		var recordErrs []error
@@ -718,6 +738,18 @@ func loadFactoryRunPolicy(dir string, deps factoryRunDeps) (factory.FactoryPolic
 	return *policy, nil
 }
 
+func persistFactoryRunPolicySnapshot(store factory.Store, record factory.RunRecord, policy factory.FactoryPolicy) (factory.RunRecord, error) {
+	snapshot := policy
+	if policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), policy.AllowedEngines...)
+	}
+	record.Policy = &snapshot
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("persist factory policy snapshot: %w", err)
+	}
+	return record, nil
+}
+
 func enforceFactoryRunCreationPolicy(store factory.Store, dir string, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy) error {
 	engineName, err := deps.loadEngine(dir)
 	if err != nil {
@@ -775,6 +807,43 @@ func factoryPolicyAllowsEngine(policy factory.FactoryPolicy, engineName string) 
 		}
 	}
 	return false
+}
+
+func recordFactoryRunPreExecutionPolicyDecisions(store factory.Store, runID string, now func() time.Time, policy factory.FactoryPolicy) error {
+	if now == nil {
+		now = time.Now
+	}
+	var errs []error
+	if !policy.PRCreationAllowed {
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.prCreationAllowed",
+			Decision:    factory.PolicyDecisionBlockedGate,
+			Outcome:     factory.PolicyOutcomeBlocked,
+			Reason:      "PR creation disabled; CI/PR step skipped",
+		}
+		if err := recordFactoryPolicyDecision(store, runID, now(), decision); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if !policy.MergeAllowed {
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.mergeAllowed",
+			Decision:    factory.PolicyDecisionBlockedGate,
+			Outcome:     factory.PolicyOutcomeBlocked,
+			Reason:      "merge disabled by policy",
+		}
+		if err := recordFactoryPolicyDecision(store, runID, now(), decision); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func factoryPolicySkipsCI(policy factory.FactoryPolicy) bool {
+	return !policy.PRCreationAllowed
 }
 
 func autoFactoryAttemptPolicyFromFactoryPolicy(policy factory.FactoryPolicy) autoFactoryAttemptPolicy {
@@ -886,7 +955,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	return *record, nil
 }
 
-func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps) (factory.RunRecord, time.Time, error) {
+func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, time.Time, error) {
 	startedAt := deps.now()
 	record.CurrentStep = "verify"
 	record.UpdatedAt = startedAt.UTC()
@@ -899,6 +968,19 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, deps.now(), fmt.Errorf("load verification config: %w", err)
 	}
 	if cfg == nil || len(cfg.Checks) == 0 {
+		if policy.VerificationRequired {
+			finishedAt := deps.now()
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionBlockedGate,
+				Outcome:     factory.PolicyOutcomeBlocked,
+				Reason:      "verification required but no checks configured",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			return record, finishedAt, fmt.Errorf("verification required but no checks configured")
+		}
 		return record, deps.now(), nil
 	}
 
@@ -931,7 +1013,39 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("record factory verification event: %w", err)
 	}
 	if result.Status == verify.StatusFail {
+		if !policy.VerificationRequired {
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionAllowedExecution,
+				Outcome:     factory.PolicyOutcomeAllowed,
+				Reason:      "verification not required; advisory failure did not block",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			return record, finishedAt, nil
+		}
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.verificationRequired",
+			Decision:    factory.PolicyDecisionBlockedGate,
+			Outcome:     factory.PolicyOutcomeBlocked,
+			Reason:      "verification failed",
+		}
+		if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+		}
 		return record, finishedAt, newFactoryRunVerificationFailure(result)
+	}
+	if policy.VerificationRequired {
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.verificationRequired",
+			Decision:    factory.PolicyDecisionPassedGate,
+			Outcome:     factory.PolicyOutcomePassed,
+			Reason:      "verification passed",
+		}
+		if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+		}
 	}
 	return record, finishedAt, nil
 }
@@ -2366,6 +2480,7 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 
 	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
 	autoReq.AttemptPolicy = req.AttemptPolicy
+	autoReq.SkipCI = req.SkipCI
 	return deps.runAuto(ctx, autoReq)
 }
 
@@ -2392,7 +2507,7 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	cmd.SetErr(io.Discard)
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().Bool("resume", false, "")
-	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().Bool("no-ci", req.SkipCI, "")
 	cmd.Flags().Bool("skip-pr", false, "")
 	cmd.Flags().Bool("no-review", false, "")
 	cmd.Flags().String("mode", "", "")
@@ -2635,7 +2750,7 @@ func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord) error {
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
-		Run:             newFactoryStatusRun(record),
+		Run:             newFactoryStatusRun(record, events),
 		Timeline:        events,
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
@@ -2646,26 +2761,76 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	return nil
 }
 
-func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
+func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord) FactoryStatusRun {
 	return FactoryStatusRun{
-		RunID:        record.RunID,
-		Status:       record.Status,
-		ExecutorMode: record.ExecutorMode,
-		Source:       record.Source,
-		RepoPath:     record.RepoPath,
-		RepoRemote:   record.RepoRemote,
-		BranchName:   record.BranchName,
-		BaseBranch:   record.BaseBranch,
-		SandboxName:  record.SandboxName,
-		Sandbox:      record.Sandbox,
-		CurrentStep:  record.CurrentStep,
-		CreatedAt:    record.CreatedAt,
-		UpdatedAt:    record.UpdatedAt,
-		FinishedAt:   record.FinishedAt,
-		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
-		Verification: record.Verification,
-		Failure:      record.Failure,
+		RunID:           record.RunID,
+		Status:          record.Status,
+		ExecutorMode:    record.ExecutorMode,
+		Source:          record.Source,
+		RepoPath:        record.RepoPath,
+		RepoRemote:      record.RepoRemote,
+		BranchName:      record.BranchName,
+		BaseBranch:      record.BaseBranch,
+		Policy:          factoryPolicySnapshotPointer(record.Policy),
+		PolicyDecisions: factoryPolicyDecisionsFromEvents(events),
+		SandboxName:     record.SandboxName,
+		Sandbox:         record.Sandbox,
+		CurrentStep:     record.CurrentStep,
+		CreatedAt:       record.CreatedAt,
+		UpdatedAt:       record.UpdatedAt,
+		FinishedAt:      record.FinishedAt,
+		Artifacts:       newFactoryArtifactSummaries(record.Artifacts),
+		Verification:    record.Verification,
+		Failure:         record.Failure,
 	}
+}
+
+func factoryPolicySnapshotPointer(policy *factory.FactoryPolicy) *factory.FactoryPolicy {
+	if policy == nil {
+		return nil
+	}
+	snapshot := *policy
+	if policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), policy.AllowedEngines...)
+	}
+	return &snapshot
+}
+
+func factoryPolicyDecisionsFromEvents(events []factory.EventRecord) []factory.PolicyDecisionMetadata {
+	decisions := make([]factory.PolicyDecisionMetadata, 0)
+	for _, event := range events {
+		if event.EventType != factory.EventTypePolicyDecision {
+			continue
+		}
+		decision := factoryPolicyDecisionFromMetadata(event.Metadata)
+		if decision.PolicyField == "" && decision.Decision == "" && decision.Outcome == "" && decision.Reason == "" {
+			continue
+		}
+		decisions = append(decisions, decision)
+	}
+	if len(decisions) == 0 {
+		return nil
+	}
+	return decisions
+}
+
+func factoryPolicyDecisionFromMetadata(metadata map[string]any) factory.PolicyDecisionMetadata {
+	return factory.PolicyDecisionMetadata{
+		PolicyField: stringFromFactoryMetadata(metadata, "policyField"),
+		Decision:    stringFromFactoryMetadata(metadata, "decision"),
+		Outcome:     stringFromFactoryMetadata(metadata, "outcome"),
+		Reason:      stringFromFactoryMetadata(metadata, "reason"),
+	}
+}
+
+func stringFromFactoryMetadata(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	if value, ok := metadata[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func renderFactoryArtifactsJSON(out io.Writer, record factory.RunRecord) error {

@@ -2009,6 +2009,8 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 			{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
 		},
 	}
+	policy := factory.DefaultFactoryPolicy()
+	policy.VerificationRequired = true
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
@@ -2029,6 +2031,9 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 		},
 		repoRemote: func(string) (string, error) {
 			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
 		},
 		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
@@ -2124,6 +2129,7 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
+		factory.EventTypePolicyDecision,
 		factory.EventTypeStepEnded,
 	})
 	if events[2].Summary != "Verification passed" {
@@ -2135,8 +2141,135 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	if events[2].Metadata["status"] != verify.StatusPass {
 		t.Fatalf("verification event status metadata = %#v", events[2].Metadata)
 	}
-	if !events[3].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("completion event timestamp = %s, want %s", events[3].Timestamp, verifiedAt)
+	assertPolicyDecisionMetadata(t, events[3].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.verificationRequired",
+		Decision:    factory.PolicyDecisionPassedGate,
+		Outcome:     factory.PolicyOutcomePassed,
+		Reason:      "verification passed",
+	})
+	if !events[4].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("completion event timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
+	}
+}
+
+func TestRunFactoryRunWithDepsBlocksWhenVerificationRequiredAndMissing(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 5, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	missingAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, missingAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.VerificationRequired = true
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-verification-missing", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return missingAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			record, err := store.LoadRun("run-verification-missing")
+			if err != nil {
+				t.Fatalf("LoadRun() during verification error: %v", err)
+			}
+			if record.CurrentStep != "verify" {
+				t.Fatalf("currentStep during verification = %q, want verify", record.CurrentStep)
+			}
+			if !record.UpdatedAt.Equal(verifyingAt) {
+				t.Fatalf("updatedAt during verification = %s, want %s", record.UpdatedAt, verifyingAt)
+			}
+			return nil, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			t.Fatal("runVerify should not be called when no verification config is available")
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "verification required but no checks configured") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want missing verification gate failure", err)
+	}
+
+	record, err := store.LoadRun("run-verification-missing")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	if record.Verification != nil {
+		t.Fatalf("verification = %#v, want nil", record.Verification)
+	}
+	if record.Failure == nil {
+		t.Fatal("failure summary should be persisted")
+	}
+	if record.Failure.Step != "verify" {
+		t.Fatalf("failure step = %q, want verify", record.Failure.Step)
+	}
+	if record.Failure.Category != factory.FailureCategoryValidation {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryValidation)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(missingAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, missingAt)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	assertPolicyDecisionMetadata(t, events[2].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.verificationRequired",
+		Decision:    factory.PolicyDecisionBlockedGate,
+		Outcome:     factory.PolicyOutcomeBlocked,
+		Reason:      "verification required but no checks configured",
+	})
+	if !events[2].Timestamp.Equal(missingAt) {
+		t.Fatalf("policy event timestamp = %s, want %s", events[2].Timestamp, missingAt)
+	}
+	if events[3].Metadata["step"] != "verify" {
+		t.Fatalf("verification failure event step = %#v, want verify", events[3].Metadata["step"])
+	}
+	if events[3].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("verification failure event status = %#v, want %q", events[3].Metadata["status"], factory.RunStatusFailed)
+	}
+	if got, ok := events[3].Metadata["error"].(string); !ok || !strings.Contains(got, "verification required") {
+		t.Fatalf("verification failure event error = %#v, want verification required", events[3].Metadata["error"])
 	}
 }
 
@@ -2155,6 +2288,8 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 	verifyingAt := createdAt.Add(3 * time.Minute)
 	verifiedAt := createdAt.Add(4 * time.Minute)
 	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.VerificationRequired = true
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
@@ -2175,6 +2310,9 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 		},
 		repoRemote: func(string) (string, error) {
 			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
 		},
 		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
@@ -2251,24 +2389,123 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
+		factory.EventTypePolicyDecision,
 		factory.EventTypeStepEnded,
 		factory.EventTypeFailureClassification,
 	})
-	if events[3].Metadata["step"] != "verify" {
-		t.Fatalf("verification failure event step = %#v, want verify", events[3].Metadata["step"])
+	assertPolicyDecisionMetadata(t, events[3].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.verificationRequired",
+		Decision:    factory.PolicyDecisionBlockedGate,
+		Outcome:     factory.PolicyOutcomeBlocked,
+		Reason:      "verification failed",
+	})
+	if events[4].Metadata["step"] != "verify" {
+		t.Fatalf("verification failure event step = %#v, want verify", events[4].Metadata["step"])
 	}
-	if events[3].Metadata["status"] != factory.RunStatusFailed {
-		t.Fatalf("verification failure event status = %#v, want %q", events[3].Metadata["status"], factory.RunStatusFailed)
+	if events[4].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("verification failure event status = %#v, want %q", events[4].Metadata["status"], factory.RunStatusFailed)
 	}
 	if !events[2].Timestamp.Equal(verifiedAt) {
 		t.Fatalf("verification result timestamp = %s, want %s", events[2].Timestamp, verifiedAt)
 	}
-	if !events[3].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("verification failure timestamp = %s, want %s", events[3].Timestamp, verifiedAt)
+	if !events[4].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification failure timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
 	}
-	if got, ok := events[3].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
-		t.Fatalf("verification failure event error = %#v, want verification failure", events[3].Metadata["error"])
+	if got, ok := events[4].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
+		t.Fatalf("verification failure event error = %#v, want verification failure", events[4].Metadata["error"])
 	}
+}
+
+func TestRunFactoryRunWithDepsTreatsVerificationFailureAsAdvisoryByDefault(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 20, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verifiedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-verification-advisory", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return verifiedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return &verify.Config{Checks: []verify.ShellCheck{
+				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
+			}}, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			return &verify.Result{
+				Status: verify.StatusFail,
+				Summary: verify.Summary{
+					Total:  1,
+					Failed: 1,
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-verification-advisory")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusSucceeded)
+	}
+	if record.Verification == nil || record.Verification.Summary.Failed != 1 {
+		t.Fatalf("verification = %#v", record.Verification)
+	}
+	if record.Failure != nil {
+		t.Fatalf("failure = %#v, want nil", record.Failure)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeVerificationResult,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeStepEnded,
+	})
+	assertPolicyDecisionMetadata(t, events[3].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.verificationRequired",
+		Decision:    factory.PolicyDecisionAllowedExecution,
+		Outcome:     factory.PolicyOutcomeAllowed,
+		Reason:      "verification not required; advisory failure did not block",
+	})
 }
 
 func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) {

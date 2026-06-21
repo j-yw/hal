@@ -114,6 +114,7 @@ type RunRecord struct {
 	RepoRemote   string              `json:"repoRemote"`
 	BranchName   string              `json:"branchName"`
 	BaseBranch   string              `json:"baseBranch"`
+	Policy       *FactoryPolicy      `json:"policy,omitempty"`
 	SandboxName  string              `json:"sandboxName,omitempty"`
 	Sandbox      *SandboxMetadata    `json:"sandbox,omitempty"`
 	CurrentStep  string              `json:"currentStep"`
