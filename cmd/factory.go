@@ -468,13 +468,39 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 
 	completedAt := deps.now()
-	if _, err := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, completedAt); err != nil {
-		return err
-	}
-	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt, deps)
+	completedRecord, err := refreshFactoryRunBranch(store, runningRecord.RunID, dir, deps, completedAt)
 	if err != nil {
 		return err
 	}
+	artifactRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt, deps)
+	if err != nil {
+		artifactErr := fmt.Errorf("record factory artifacts: %w", err)
+		failedRecord := completedRecord
+		var recordErrs []error
+		if markedRecord, failureErr := markFactoryRunFailed(store, failedRecord, completedAt, artifactErr); failureErr != nil {
+			recordErrs = append(recordErrs, failureErr)
+		} else {
+			failedRecord = markedRecord
+		}
+		if failedRecord.Failure != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+			}
+		}
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+			recordErrs = append(recordErrs, artifactErr)
+		} else {
+			failedRecord = artifactRecord
+		}
+		if len(recordErrs) > 0 {
+			return errors.Join(append([]error{artifactErr}, recordErrs...)...)
+		}
+		if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID, req.JSON); renderErr != nil {
+			return errors.Join(artifactErr, renderErr)
+		}
+		return artifactErr
+	}
+	completedRecord = artifactRecord
 	completedRecord, completedAt, err = recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
 	if err != nil {
 		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
@@ -704,14 +730,14 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	}
 	record.UpdatedAt = finishedAt.UTC()
 	if err := store.SaveRun(&record); err != nil {
-		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
+		return record, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
 	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts); err != nil {
-		return factory.RunRecord{}, finishedAt, err
+		return record, finishedAt, err
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
 	if err != nil {
-		return factory.RunRecord{}, finishedAt, fmt.Errorf("reload factory run verification artifacts: %w", err)
+		return record, finishedAt, fmt.Errorf("reload factory run verification artifacts: %w", err)
 	}
 	record = *updatedRecord
 	if err := recordFactoryRunVerificationResult(store, record.RunID, finishedAt, *result); err != nil {
