@@ -1,0 +1,46 @@
+{
+  "contractVersion": "factory-run-v1",
+  "version": "dev",
+  "runId": "run-20260620-002",
+  "status": "failed",
+  "nextAction": {
+    "id": "inspect_factory_run",
+    "command": "hal factory status run-20260620-002 --json",
+    "description": "Inspect the durable run record and timeline."
+  },
+  "artifacts": [
+    {
+      "name": "run-record",
+      "type": "json",
+      "path": "factory/runs/run-20260620-002.json"
+    },
+    {
+      "name": "prd",
+      "type": "json",
+      "path": ".hal/prd.json"
+    },
+    {
+      "name": "review-report",
+      "type": "markdown",
+      "path": ".hal/reports/review-loop-20260620.md"
+    }
+  ],
+  "eventSummary": {
+    "total": 6,
+    "byType": {
+      "run_created": 1,
+      "step_started": 1,
+      "command_output_summary": 1,
+      "verification_result": 1,
+      "ci_state": 1,
+      "failure_classification": 1
+    },
+    "lastEventType": "failure_classification",
+    "lastSummary": "Failure classified"
+  },
+  "failure": {
+    "classification": "ci",
+    "errorMessage": "unit tests failed",
+    "suggestedCommand": "hal factory status run-20260620-002 --json"
+  }
+}
