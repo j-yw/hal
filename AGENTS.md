@@ -40,6 +40,7 @@
 ## Patterns from hal/factory-run-scoped-secrets-and-credentials (2026-06-21)
 
 - Factory run-scoped secrets should use `internal/factory.RunSecretInput` for requested env-backed secrets and persist only `RunSecretMetadata` on `RunRecord.Secrets`; durable records should contain `name`, `source`, `required`, and `present`, never raw secret values.
+- Resolve factory run secrets through `factory.ResolveRunSecrets` at the `executeFactoryRun` setup boundary before marking runs in progress or calling local/sandbox executors; inject env lookup functions in tests and pass only `ResolvedRunSecret` values in memory.
 - When adding factory type-contract fields, update `internal/factory/types_test.go` coverage for JSON tags, round-trip behavior, explicit serialized fields, optional omission, and legacy JSON loading so schema changes stay backward compatible.
 
 ## Patterns from local-factory-queue-storage (2026-06-21)

@@ -3,6 +3,7 @@
 ## Codebase Patterns
 
 - Factory run-scoped secrets should model requested env-backed secrets with `internal/factory.RunSecretInput` and persist only `RunSecretMetadata` on `RunRecord.Secrets`; durable records should contain `name`, `source`, `required`, and `present`, never raw secret values.
+- Resolve factory run secrets through `factory.ResolveRunSecrets` during `executeFactoryRun` setup before marking runs in progress or calling local/sandbox executors; keep raw values only on in-memory `ResolvedRunSecret` values.
 - Factory type-contract changes should update `internal/factory/types_test.go` JSON tag, round-trip, explicit field, optional omission, and legacy JSON loading coverage.
 
 ---
@@ -17,4 +18,17 @@
   - `RunRecord` is the durable factory run contract; new fields should be optional when preserving backward compatibility.
   - The factory package keeps schema behavior locked in `internal/factory/types_test.go`, including JSON tags and explicit serialized field checks.
   - Secret-related durable metadata should expose only presence, not values; derive safe metadata from inputs before persistence.
+---
+
+## 2026-06-21 09:13 CST - US-002
+- Implemented required environment secret resolution for factory runs before local or sandbox execution starts.
+- Added `factory.ResolveRunSecrets`, in-memory `ResolvedRunSecret` values, safe missing-secret errors, and setup-failure persistence that records only safe metadata on `RunRecord.Secrets`.
+- Wired injectable env lookup through direct factory runs and queued worker execution so tests can deterministically cover success, missing, and empty required env secrets.
+- Quality checks run: `go test -timeout 60s ./internal/factory`, `go test -timeout 60s ./cmd`, `go test -timeout 180s ./...`, `make vet`, `make build`, and `make lint` (golangci-lint not installed; target printed install hint).
+- Files changed: `internal/factory/secrets.go`, `internal/factory/secrets_test.go`, `cmd/factory.go`, `cmd/factory_queue.go`, `cmd/factory_test.go`, `cmd/factory_queue_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Browser verification skipped: backend CLI story with no frontend surface.
+- **Learnings for future iterations:**
+  - `executeFactoryRun` is the shared setup boundary for direct and queued factory execution; validation done there prevents both local and sandbox executors from starting.
+  - Queue workers reconstruct secret requirements from `RunRecord.Secrets` metadata and re-resolve values from the environment; raw values must never be persisted for queued runs.
+  - Missing required run secrets should be reported as validation failures that name the environment variable and omit secret values.
 ---

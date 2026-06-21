@@ -177,6 +177,7 @@ type factoryRunDeps struct {
 	workingDir      func() (string, error)
 	currentBranch   func(string) (string, error)
 	repoRemote      func(string) (string, error)
+	lookupEnv       func(string) (string, bool)
 	runPipeline     func(context.Context, factoryRunPipelineRequest) error
 	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
 	loadVerify      func(string) (*verify.Config, error)
@@ -202,6 +203,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	workingDir:    os.Getwd,
 	currentBranch: compound.CurrentBranchOptionalInDir,
 	repoRemote:    readGitRemoteOptionalInDir,
+	lookupEnv:     os.LookupEnv,
 	runPipeline:   runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
@@ -218,6 +220,9 @@ type factoryRunRequest struct {
 	BaseBranch   string
 	Sandbox      bool
 	JSON         bool
+	Secrets      []factory.RunSecretInput
+
+	ResolvedSecrets []factory.ResolvedRunSecret
 }
 
 type factoryRunAutoRequest struct {
@@ -456,6 +461,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
 	}
 
+	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
+	if err != nil {
+		return failFactoryRunSetup(store, record, deps.now(), err)
+	}
+
 	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
 	if err != nil {
 		return factoryRunExecutionResult{Record: record}, err
@@ -599,6 +609,9 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.repoRemote == nil {
 		deps.repoRemote = defaultFactoryRunDeps.repoRemote
 	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = defaultFactoryRunDeps.lookupEnv
+	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryRunDeps.runPipeline
 	}
@@ -621,6 +634,38 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 		deps.sandboxRequests = defaultFactorySandboxArtifactRequests
 	}
 	return deps
+}
+
+func resolveFactoryRunExecutionSecrets(req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps) (factoryRunRequest, factory.RunRecord, error) {
+	resolved, metadata, err := factory.ResolveRunSecrets(req.Secrets, deps.lookupEnv)
+	req.ResolvedSecrets = resolved
+	record.Secrets = metadata
+	return req, record, err
+}
+
+func failFactoryRunSetup(store factory.Store, record factory.RunRecord, now time.Time, setupErr error) (factoryRunExecutionResult, error) {
+	if setupErr == nil {
+		setupErr = fmt.Errorf("factory run setup failed")
+	}
+	validationErr := exitWithCode(nil, ExitCodeValidation, setupErr)
+	record.CurrentStep = "setup"
+	failedRecord, failureErr := markFactoryRunFailed(store, record, now, validationErr)
+	var recordErrs []error
+	if failureErr != nil {
+		recordErrs = append(recordErrs, failureErr)
+	}
+	if eventErr := recordFactoryRunSetupFailed(store, record.RunID, now, validationErr); eventErr != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("record factory setup failure event: %w", eventErr))
+	}
+	if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, now, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if len(recordErrs) > 0 {
+		return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{validationErr}, recordErrs...)...)
+	}
+	return factoryRunExecutionResult{Record: failedRecord, Render: true}, validationErr
 }
 
 func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps) (factory.RunRecord, error) {
@@ -2056,6 +2101,18 @@ func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.
 			"step":   "run",
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
+		},
+	})
+}
+
+func recordFactoryRunSetupFailed(store factory.Store, runID string, now time.Time, setupErr error) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory run setup failed",
+		Metadata: map[string]any{
+			"step":   "setup",
+			"status": factory.RunStatusFailed,
+			"error":  setupErr.Error(),
 		},
 	})
 }

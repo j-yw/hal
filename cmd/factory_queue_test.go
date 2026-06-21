@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -772,6 +773,32 @@ func TestExecuteClaimedFactoryQueueEntryMarksMissingRunFailed(t *testing.T) {
 	}
 	if !strings.Contains(entries[0].LastError, `load claimed factory run "missing-run"`) {
 		t.Fatalf("queue lastError = %q, want missing run context", entries[0].LastError)
+	}
+}
+
+func TestFactoryRunRequestFromQueueRecordPreservesSecretRequirements(t *testing.T) {
+	record := testFactoryRunRecord("run-secret-queue", time.Date(2026, 6, 21, 20, 45, 0, 0, time.UTC), time.Date(2026, 6, 21, 20, 45, 0, 0, time.UTC))
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-secret-queue.md"}
+	record.BaseBranch = "main"
+	record.Secrets = []factory.RunSecretMetadata{
+		{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true, Present: true},
+	}
+
+	req := factoryRunRequestFromQueueRecord(record)
+	if req.MarkdownPath != ".hal/prd-secret-queue.md" {
+		t.Fatalf("markdown path = %q, want queue record source", req.MarkdownPath)
+	}
+	if req.BaseBranch != "main" {
+		t.Fatalf("base branch = %q, want main", req.BaseBranch)
+	}
+	wantSecrets := []factory.RunSecretInput{
+		{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+	}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+	if len(req.ResolvedSecrets) != 0 {
+		t.Fatalf("resolved secrets = %#v, want none from durable queue record", req.ResolvedSecrets)
 	}
 }
 

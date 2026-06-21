@@ -32,6 +32,7 @@ type factoryQueueWorkDeps struct {
 	defaultStore func() (factory.Store, error)
 	now          func() time.Time
 	claim        *factory.QueueClaim
+	lookupEnv    func(string) (string, bool)
 	runPipeline  func(context.Context, factoryRunPipelineRequest) error
 }
 
@@ -61,6 +62,7 @@ var defaultFactoryQueueListDeps = factoryQueueListDeps{
 var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
+	lookupEnv:    os.LookupEnv,
 	runPipeline:  runFactoryRunPipeline,
 }
 
@@ -362,6 +364,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 
 	_, execErr := executeFactoryRun(ctx, factoryQueueRunDir(*record), factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, factoryRunDeps{
 		now:         deps.now,
+		lookupEnv:   deps.lookupEnv,
 		runPipeline: deps.runPipeline,
 	})
 	if execErr != nil {
@@ -393,6 +396,7 @@ func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry,
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {
 	req := factoryRunRequest{
 		BaseBranch: strings.TrimSpace(record.BaseBranch),
+		Secrets:    factoryRunSecretInputsFromMetadata(record.Secrets),
 	}
 	switch record.Source.Kind {
 	case factory.SourceKindMarkdown:
@@ -404,6 +408,21 @@ func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunReques
 		}
 	}
 	return req
+}
+
+func factoryRunSecretInputsFromMetadata(metadata []factory.RunSecretMetadata) []factory.RunSecretInput {
+	if len(metadata) == 0 {
+		return nil
+	}
+	inputs := make([]factory.RunSecretInput, 0, len(metadata))
+	for _, secret := range metadata {
+		inputs = append(inputs, factory.RunSecretInput{
+			Name:     secret.Name,
+			Source:   secret.Source,
+			Required: secret.Required,
+		})
+	}
+	return inputs
 }
 
 func factoryQueueRunDir(record factory.RunRecord) string {
@@ -436,6 +455,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	}
 	if deps.now == nil {
 		deps.now = defaultFactoryQueueWorkDeps.now
+	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = defaultFactoryQueueWorkDeps.lookupEnv
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline

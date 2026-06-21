@@ -445,6 +445,154 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	}
 }
 
+func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	secretValue := "ghp_factory_secret_value_123"
+	pipelineCalled := false
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Secrets: []factory.RunSecretInput{
+			{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+		},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-secret-success", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 30, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name != "GITHUB_TOKEN" {
+				t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+			}
+			return secretValue, true
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			pipelineCalled = true
+			if len(req.Request.ResolvedSecrets) != 1 {
+				t.Fatalf("resolved secrets = %#v, want one", req.Request.ResolvedSecrets)
+			}
+			if req.Request.ResolvedSecrets[0].Value != secretValue {
+				t.Fatalf("resolved secret value = %q, want injected value", req.Request.ResolvedSecrets[0].Value)
+			}
+			loaded, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() error: %v", err)
+			}
+			wantMetadata := []factory.RunSecretMetadata{{
+				Name:     "GITHUB_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: true,
+				Present:  true,
+			}}
+			if !reflect.DeepEqual(loaded.Secrets, wantMetadata) {
+				t.Fatalf("stored secrets = %#v, want %#v", loaded.Secrets, wantMetadata)
+			}
+			data, err := json.Marshal(loaded)
+			if err != nil {
+				t.Fatalf("json.Marshal(run record) error: %v", err)
+			}
+			if strings.Contains(string(data), secretValue) {
+				t.Fatalf("run record JSON leaked secret value: %s", string(data))
+			}
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !pipelineCalled {
+		t.Fatal("pipeline dependency was not invoked")
+	}
+}
+
+func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
+
+	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		Sandbox:      true,
+		Secrets: []factory.RunSecretInput{
+			{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+		},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-secret-missing", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name != "GITHUB_TOKEN" {
+				t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+			}
+			return " \t ", true
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called when required secret is missing")
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not be called when required secret is missing")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want missing secret error")
+	}
+	if !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Fatalf("runFactoryRunWithDeps() error = %q, want env var name", err.Error())
+	}
+
+	record, loadErr := store.LoadRun("run-secret-missing")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("record status = %q, want failed", record.Status)
+	}
+	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryValidation {
+		t.Fatalf("record failure = %#v, want validation failure", record.Failure)
+	}
+	wantMetadata := []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  false,
+	}}
+	if !reflect.DeepEqual(record.Secrets, wantMetadata) {
+		t.Fatalf("stored secrets = %#v, want %#v", record.Secrets, wantMetadata)
+	}
+
+	events, loadErr := store.LoadEvents("run-secret-missing")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	for _, event := range events {
+		if event.EventType == factory.EventTypeStepStarted {
+			t.Fatalf("unexpected step-started event before secret resolution: %#v", events)
+		}
+	}
+}
+
 func TestFactoryRunRecordCreateAndInProgressTransition(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 20, 19, 0, 0, 0, time.UTC)
