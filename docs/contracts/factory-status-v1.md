@@ -4,7 +4,7 @@
 **Contract Version:** `factory-status-v1`
 **Stability:** Stable. New optional fields may be added with `omitempty`; existing fields will not be removed or renamed.
 
-`hal factory status <run-id> --json` reads one run from the global factory store and emits the complete run record plus timeline events. This is the detail surface for artifacts, failures, and event history.
+`hal factory status <run-id> --json` reads one run from the global factory store and emits the run record plus timeline events. This is the detail surface for artifacts, failures, and event history. Artifact output is a safe summary surface and omits raw local source paths and URLs.
 
 This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.json`, or `.hal/progress.txt` contracts.
 
@@ -42,7 +42,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 |-------|------|-------------|
 | `sandboxName` | string | Sandbox name used for the run |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
-| `artifacts` | array | Full artifact references associated with the run |
+| `artifacts` | array | Safe artifact summaries associated with the run |
 | `verification` | object | Verification summary and artifact references recorded from `hal verify --json` |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
 
@@ -55,16 +55,24 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `reportPath` | string | no | Report path when the run started from an analysis report |
 | `title` | string | no | Human-readable source title |
 
-## Artifact Reference
+## Artifact Summary
 
 When `artifacts` is present, each entry may contain:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `id` | string | no | Stable artifact identifier |
 | `name` | string | yes | Stable artifact label |
 | `type` | string | yes | Artifact category, such as `json`, `markdown`, `text`, or `url` |
-| `path` | string | no | Local path for file artifacts |
-| `url` | string | no | URL for remote artifacts |
+| `path` | string | no | Display path for file artifacts, or `"[redacted]"` when only a raw URL is available |
+| `storedPath` | string | no | Store-relative path for persisted artifact payloads |
+| `sizeBytes` | integer | no | Stored artifact payload size in bytes |
+| `createdAt` | string | no | RFC 3339 timestamp of artifact creation |
+| `summary` | object | no | Sanitized artifact-specific summary values |
+| `warnings` | array | no | Sanitized artifact warnings |
+| `partial` | boolean | no | True when the artifact record is incomplete or warning-only |
+
+Raw `sourcePath` and `url` fields from stored run records are intentionally omitted from this JSON surface.
 
 ## Verification Record
 
