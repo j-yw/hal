@@ -1136,14 +1136,29 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 		t.Fatalf("provider args leaked secret value: %#v", provider.args)
 	}
 	script := out.String()
-	if !strings.Contains(script, "GITHUB_TOKEN="+secret) {
-		t.Fatalf("stdin script did not carry secret env assignment: %q", script)
+	if !strings.Contains(script, "export GITHUB_TOKEN='"+secret+"'") {
+		t.Fatalf("stdin script did not export secret env assignment: %q", script)
 	}
 	if strings.Contains(script, "EMPTY_TOKEN") {
 		t.Fatalf("stdin script included empty secret assignment: %q", script)
 	}
-	if !strings.Contains(script, "exec 'env'") || !strings.Contains(script, "'sh' '-lc'") {
+	if strings.Contains(script, "exec 'env'") {
+		t.Fatalf("stdin script used env argv assignment wrapper: %q", script)
+	}
+	if !strings.Contains(script, "exec 'sh' '-lc'") {
 		t.Fatalf("stdin script did not exec remote command: %q", script)
+	}
+}
+
+func TestFactorySandboxEnvExecScriptRejectsInvalidEnvNames(t *testing.T) {
+	_, err := factorySandboxEnvExecScript([]string{"hal", "auto"}, map[string]string{
+		"BAD-NAME": "secret",
+	})
+	if err == nil {
+		t.Fatal("factorySandboxEnvExecScript() error = nil, want invalid name error")
+	}
+	if !strings.Contains(err.Error(), `invalid sandbox environment variable name "BAD-NAME"`) {
+		t.Fatalf("factorySandboxEnvExecScript() error = %v", err)
 	}
 }
 

@@ -1067,15 +1067,34 @@ func runFactorySandboxProviderExecWithEnv(ctx context.Context, provider sandbox.
 	if cmd == nil {
 		return fmt.Errorf("sandbox provider returned nil exec command")
 	}
-	cmd.Stdin = strings.NewReader(factorySandboxEnvExecScript(args, env))
+	script, err := factorySandboxEnvExecScript(args, env)
+	if err != nil {
+		return err
+	}
+	cmd.Stdin = strings.NewReader(script)
 	return sandbox.RunCmd(cmd, out)
 }
 
-func factorySandboxEnvExecScript(args []string, env map[string]string) string {
-	command := []string{"env"}
-	command = append(command, factorySandboxSortedEnvAssignments(env)...)
-	command = append(command, args...)
-	return "set -e\nexec " + shellCommand(command) + "\n"
+func factorySandboxEnvExecScript(args []string, env map[string]string) (string, error) {
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	for _, key := range sortedStringMapKeys(env) {
+		if strings.TrimSpace(env[key]) == "" {
+			continue
+		}
+		if !isShellIdentifier(key) {
+			return "", fmt.Errorf("invalid sandbox environment variable name %q", key)
+		}
+		script.WriteString("export ")
+		script.WriteString(key)
+		script.WriteString("=")
+		script.WriteString(shellQuote(env[key]))
+		script.WriteString("\n")
+	}
+	script.WriteString("exec ")
+	script.WriteString(shellCommand(args))
+	script.WriteString("\n")
+	return script.String(), nil
 }
 
 func factorySandboxSortedEnvAssignments(env map[string]string) []string {
@@ -1091,6 +1110,26 @@ func factorySandboxSortedEnvAssignments(env map[string]string) []string {
 		assignments = append(assignments, key+"="+env[key])
 	}
 	return assignments
+}
+
+func isShellIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if i == 0 {
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' {
+				continue
+			}
+			return false
+		}
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func saveFactorySandboxRunRecord(store factory.Store, record *factory.RunRecord) error {
