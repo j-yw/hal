@@ -663,6 +663,10 @@ func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
 	if state.Review == nil || state.Review.FixAttempts != 1 {
 		t.Fatalf("state.Review = %+v, want one fix attempt", state.Review)
 	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Review == nil || saved.Review.Status != "failed" || saved.Review.FixAttempts != 1 {
+		t.Fatalf("saved state = %+v, want failed review with one fix attempt", saved)
+	}
 }
 
 func TestRunReviewStep_DoesNotCountInvalidFindingsAsFixAttempts(t *testing.T) {
