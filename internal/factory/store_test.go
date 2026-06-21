@@ -410,6 +410,59 @@ func TestSaveArtifactFileCopiesUnderFactoryStoreAndUpdatesRun(t *testing.T) {
 	}
 }
 
+func TestSaveArtifactFileCapsFlattenedArtifactFileNames(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	sourcePath := filepath.Join(t.TempDir(), "stdout.txt")
+	if err := os.WriteFile(sourcePath, []byte("ok\n"), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-long-artifact-name")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	nestedPath := ".hal/reports/" + strings.Repeat("deeply/nested/", 32) + "stdout"
+	got, err := store.SaveArtifactFile(record.RunID, ArtifactReference{
+		ID:   nestedPath,
+		Name: "Nested stdout",
+		Type: "text",
+	}, sourcePath)
+	if err != nil {
+		t.Fatalf("SaveArtifactFile() unexpected error: %v", err)
+	}
+
+	fileName := filepath.Base(got.StoredPath)
+	if len(fileName) > artifactFileNameMaxLength {
+		t.Fatalf("stored filename length = %d, want <= %d: %q", len(fileName), artifactFileNameMaxLength, fileName)
+	}
+	if !strings.HasSuffix(fileName, ".txt") {
+		t.Fatalf("stored filename = %q, want source extension preserved", fileName)
+	}
+	withoutExt := strings.TrimSuffix(fileName, ".txt")
+	parts := strings.Split(withoutExt, "-")
+	hash := parts[len(parts)-1]
+	if len(hash) != artifactFileNameHashBytes*2 {
+		t.Fatalf("stored filename hash = %q, want %d hex chars in %q", hash, artifactFileNameHashBytes*2, fileName)
+	}
+	if got.StoredPath == filepath.ToSlash(filepath.Join(artifactsDirName, record.RunID, sanitizeArtifactPathComponent(nestedPath)+".txt")) {
+		t.Fatalf("stored path was not capped: %q", got.StoredPath)
+	}
+
+	storedPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	storedData, err := os.ReadFile(storedPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	if string(storedData) != "ok\n" {
+		t.Fatalf("stored artifact = %q, want ok", storedData)
+	}
+}
+
 func TestSaveArtifactFileUpsertsMetadataByStoredPath(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-artifacts-upsert")

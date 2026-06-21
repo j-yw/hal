@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,10 @@ const (
 	runRecordFileExt    = ".json"
 	storeTempFileExt    = ".tmp"
 	storeBackupFileExt  = ".bak"
+
+	artifactFileNameMaxLength    = 240
+	artifactFileNameHashBytes    = 6
+	artifactFileNameMaxExtLength = 64
 )
 
 var errStoreDirUnavailable = errors.New("no global hal config home found")
@@ -555,7 +560,49 @@ func artifactFileName(name, sourcePath string) string {
 	if ext != "" && filepath.Ext(name) == "" {
 		name += ext
 	}
+	if len(name) > artifactFileNameMaxLength {
+		name = cappedArtifactFileName(name)
+	}
 	return name
+}
+
+func cappedArtifactFileName(name string) string {
+	originalExt := filepath.Ext(name)
+	if originalExt == name {
+		originalExt = ""
+	}
+	base := strings.TrimSuffix(name, originalExt)
+	ext := originalExt
+	if len(ext) > artifactFileNameMaxExtLength {
+		ext = ext[:artifactFileNameMaxExtLength]
+	}
+
+	hash := artifactFileNameHash(name)
+	suffix := "-" + hash + ext
+	maxBaseLength := artifactFileNameMaxLength - len(suffix)
+	if maxBaseLength < 1 {
+		ext = ""
+		suffix = "-" + hash
+		maxBaseLength = artifactFileNameMaxLength - len(suffix)
+	}
+
+	if len(base) > maxBaseLength {
+		base = base[:maxBaseLength]
+	}
+	base = strings.Trim(base, ".-")
+	if base == "" {
+		base = "artifact"
+		if len(base) > maxBaseLength {
+			base = base[:maxBaseLength]
+		}
+	}
+
+	return base + suffix
+}
+
+func artifactFileNameHash(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return fmt.Sprintf("%x", sum[:artifactFileNameHashBytes])
 }
 
 func artifactFileBaseName(artifact ArtifactReference) string {
