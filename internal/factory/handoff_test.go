@@ -129,6 +129,38 @@ func TestLoadHandoffSummaryRedactsSensitiveFailureReason(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := RunRecord{
+		RunID:        "run-sensitive-port",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		Failure: &FailureSummary{
+			Step:        "run",
+			Category:    FailureCategoryPipeline,
+			Message:     "connection failed to 203.0.113.10:22",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.FailureReason != "[redacted]" {
+		t.Fatalf("FailureReason = %q, want [redacted]", summary.FailureReason)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.FailureReason != "[redacted]" {
+		t.Fatalf("NextAction.FailureReason = %q, want [redacted]", summary.NextAction.FailureReason)
+	}
+}
+
 func TestLoadHandoffSummaryFailedLocalRunWithoutRepoPathFallsBackToInspect(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 9, 15, 0, 0, time.UTC)

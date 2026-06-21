@@ -478,7 +478,28 @@ func handoffStringNeedsRedaction(value string) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == '/' || r == ',' || r == ';' || r == '=' || r == '(' || r == ')' || r == '[' || r == ']'
 	})
 	for _, field := range fields {
-		if net.ParseIP(strings.Trim(field, "[]")) != nil {
+		if handoffFieldContainsIP(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffFieldContainsIP(field string) bool {
+	field = strings.TrimSpace(field)
+	field = strings.Trim(field, "\"'<>[](){}.,;")
+	if field == "" {
+		return false
+	}
+	if net.ParseIP(strings.Trim(field, "[]")) != nil {
+		return true
+	}
+	if host, _, err := net.SplitHostPort(field); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return true
+	}
+	if idx := strings.LastIndex(field, ":"); idx > 0 {
+		host := field[:idx]
+		if strings.Count(host, ":") == 0 && net.ParseIP(strings.Trim(host, "[]")) != nil {
 			return true
 		}
 	}
