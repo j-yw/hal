@@ -3282,6 +3282,44 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	}
 }
 
+func TestRunFactoryListJSONDerivesTotalDuration(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(9 * time.Minute)
+	record := testFactoryRunRecord("run-list-derived-duration", base, finishedAt)
+	record.Status = factory.RunStatusSucceeded
+	record.FinishedAt = &finishedAt
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryListWithDeps(&buf, true, factoryListDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryListWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryListResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if len(resp.Runs) != 1 {
+		t.Fatalf("runs len = %d, want 1", len(resp.Runs))
+	}
+	telemetry := resp.Runs[0].Telemetry
+	if telemetry == nil || telemetry.TotalDurationMs == nil {
+		t.Fatalf("telemetry = %#v, want derived total duration", telemetry)
+	}
+	if *telemetry.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *telemetry.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(telemetry.StepDurations) != 0 {
+		t.Fatalf("list telemetry stepDurations = %#v, want none without timeline load", telemetry.StepDurations)
+	}
+}
+
 func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	base := time.Date(2026, 6, 20, 18, 30, 0, 0, time.UTC)
 	totalDurationMs := int64(900000)
@@ -3426,6 +3464,55 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		t.Fatalf("failure should be an object, got %T", raw["failure"])
 	}
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
+}
+
+func TestNewFactoryRunResponseDerivesTelemetryDurations(t *testing.T) {
+	base := time.Date(2026, 6, 21, 13, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(15 * time.Minute)
+	record := testFactoryRunRecord("run-result-derived-duration", base, finishedAt)
+	record.Status = factory.RunStatusSucceeded
+	record.FinishedAt = &finishedAt
+	events := []factory.EventRecord{
+		{
+			Sequence:  1,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepStarted,
+			Timestamp: base.Add(2 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepEngineRun},
+		},
+		{
+			Sequence:  2,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(7 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepEngineRun},
+		},
+		{
+			Sequence:  3,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(8 * time.Minute),
+			Metadata:  map[string]any{"step": "run"},
+		},
+	}
+
+	resp := newFactoryRunResponse(record, events)
+	if resp.Telemetry == nil || resp.Telemetry.TotalDurationMs == nil {
+		t.Fatalf("telemetry = %#v, want derived durations", resp.Telemetry)
+	}
+	if *resp.Telemetry.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *resp.Telemetry.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(resp.Telemetry.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(resp.Telemetry.StepDurations), resp.Telemetry.StepDurations)
+	}
+	duration := resp.Telemetry.StepDurations[0]
+	if duration.Step != factory.RunDurationStepEngineRun {
+		t.Fatalf("step = %q, want %q", duration.Step, factory.RunDurationStepEngineRun)
+	}
+	if duration.DurationMs != 300000 {
+		t.Fatalf("durationMs = %d, want 300000", duration.DurationMs)
+	}
 }
 
 func TestFactoryListCommandRegisteredWithJSONFlag(t *testing.T) {
@@ -3613,6 +3700,83 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	requireFactoryFields(t, "factory status event", firstEvent, []string{
 		"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata",
 	})
+}
+
+func TestRunFactoryStatusJSONDerivesTelemetryDurations(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 14, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(30 * time.Minute)
+	record := testFactoryRunRecord("run-status-derived-duration", base, base.Add(12*time.Minute))
+	record.Status = factory.RunStatusSucceeded
+	record.FinishedAt = &finishedAt
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	events := []factory.EventRecord{
+		{
+			Sequence:  1,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepStarted,
+			Timestamp: base.Add(4 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepVerification},
+		},
+		{
+			Sequence:  2,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(6 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepVerification},
+		},
+		{
+			Sequence:  3,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepStarted,
+			Timestamp: base.Add(8 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepCI},
+		},
+		{
+			Sequence:  4,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(7 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepCI},
+		},
+	}
+	for _, event := range events {
+		event := event
+		if err := store.AppendEvent(&event); err != nil {
+			t.Fatalf("AppendEvent(%d) error: %v", event.Sequence, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryStatusResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	telemetry := resp.Run.Telemetry
+	if telemetry == nil || telemetry.TotalDurationMs == nil {
+		t.Fatalf("telemetry = %#v, want derived durations", telemetry)
+	}
+	if *telemetry.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *telemetry.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(telemetry.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(telemetry.StepDurations), telemetry.StepDurations)
+	}
+	if telemetry.StepDurations[0].Step != factory.RunDurationStepVerification {
+		t.Fatalf("stepDurations[0].step = %q, want %q", telemetry.StepDurations[0].Step, factory.RunDurationStepVerification)
+	}
+	if telemetry.StepDurations[0].DurationMs != 120000 {
+		t.Fatalf("stepDurations[0].durationMs = %d, want 120000", telemetry.StepDurations[0].DurationMs)
+	}
 }
 
 func TestRunFactoryStatusJSONMissingRunReturnsErrorWithoutPayload(t *testing.T) {

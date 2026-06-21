@@ -2431,7 +2431,7 @@ func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord) error {
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
-		Run:             newFactoryStatusRun(record),
+		Run:             newFactoryStatusRun(record, events),
 		Timeline:        events,
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
@@ -2442,7 +2442,7 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	return nil
 }
 
-func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
+func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord) FactoryStatusRun {
 	return FactoryStatusRun{
 		RunID:        record.RunID,
 		Status:       record.Status,
@@ -2460,7 +2460,7 @@ func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
 		FinishedAt:   record.FinishedAt,
 		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
 		Verification: record.Verification,
-		Telemetry:    record.Telemetry,
+		Telemetry:    factory.DeriveRunTelemetry(record, events),
 		Failure:      normalizedFactoryFailureSummary(record.Failure),
 	}
 }
@@ -2600,7 +2600,7 @@ func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
 		UpdatedAt:     record.UpdatedAt,
 		FinishedAt:    record.FinishedAt,
 		ArtifactCount: len(record.Artifacts),
-		Telemetry:     record.Telemetry,
+		Telemetry:     factory.DeriveRunTelemetry(record, nil),
 		Failure:       normalizedFactoryFailureSummary(record.Failure),
 	}
 }

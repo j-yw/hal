@@ -116,7 +116,7 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		Status:          record.Status,
 		NextAction:      newFactoryRunNextAction(record),
 		Artifacts:       newFactoryRunArtifactReferences(record.Artifacts),
-		Telemetry:       record.Telemetry,
+		Telemetry:       factory.DeriveRunTelemetry(record, events),
 		EventSummary:    newFactoryRunEventSummary(events),
 		Failure:         newFactoryRunFailure(record),
 	}

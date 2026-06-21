@@ -252,6 +252,244 @@ func TestEventTypeConstants(t *testing.T) {
 	}
 }
 
+func TestSupportedRunDurationSteps(t *testing.T) {
+	want := []string{
+		RunDurationStepSetup,
+		RunDurationStepQueueClaim,
+		RunDurationStepSandboxProvision,
+		RunDurationStepSandboxStart,
+		RunDurationStepEngineRun,
+		RunDurationStepReview,
+		RunDurationStepVerification,
+		RunDurationStepCI,
+		RunDurationStepArtifactCollect,
+		RunDurationStepFinalization,
+	}
+	if got := SupportedRunDurationSteps(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("SupportedRunDurationSteps() = %#v, want %#v", got, want)
+	}
+}
+
+func TestDeriveRunTelemetryCompleteTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(time.Hour)
+	record := RunRecord{
+		RunID:      "run-derived-complete",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+	}
+
+	steps := SupportedRunDurationSteps()
+	events := make([]EventRecord, 0, len(steps)*2+2)
+	events = append(events, EventRecord{
+		EventType: EventTypeStepStarted,
+		Timestamp: base.Add(30 * time.Second),
+		Metadata:  map[string]any{"step": "run"},
+	})
+	events = append(events, EventRecord{
+		EventType: EventTypeStepEnded,
+		Timestamp: base.Add(45 * time.Second),
+		Metadata:  map[string]any{"step": "run"},
+	})
+	for i, step := range steps {
+		startedAt := base.Add(time.Duration(i+1) * time.Minute)
+		finishedAt := startedAt.Add(time.Duration(i+1) * time.Second)
+		events = append(events,
+			EventRecord{
+				EventType: EventTypeStepStarted,
+				Timestamp: startedAt,
+				Metadata:  map[string]any{"step": step},
+			},
+			EventRecord{
+				EventType: EventTypeStepEnded,
+				Timestamp: finishedAt,
+				Metadata:  map[string]any{"step": step},
+			},
+		)
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil || got.TotalDurationMs == nil {
+		t.Fatalf("DeriveRunTelemetry() = %#v, want total duration", got)
+	}
+	if *got.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *got.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(got.StepDurations) != len(steps) {
+		t.Fatalf("stepDurations len = %d, want %d: %#v", len(got.StepDurations), len(steps), got.StepDurations)
+	}
+	for i, step := range steps {
+		duration := got.StepDurations[i]
+		startedAt := base.Add(time.Duration(i+1) * time.Minute)
+		finishedAt := startedAt.Add(time.Duration(i+1) * time.Second)
+		if duration.Step != step {
+			t.Fatalf("stepDurations[%d].step = %q, want %q", i, duration.Step, step)
+		}
+		if !duration.StartedAt.Equal(startedAt) {
+			t.Fatalf("stepDurations[%d].startedAt = %s, want %s", i, duration.StartedAt, startedAt)
+		}
+		if !duration.FinishedAt.Equal(finishedAt) {
+			t.Fatalf("stepDurations[%d].finishedAt = %s, want %s", i, duration.FinishedAt, finishedAt)
+		}
+		if duration.DurationMs != finishedAt.Sub(startedAt).Milliseconds() {
+			t.Fatalf("stepDurations[%d].durationMs = %d, want %d", i, duration.DurationMs, finishedAt.Sub(startedAt).Milliseconds())
+		}
+	}
+}
+
+func TestDeriveRunTelemetryPartialTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(10 * time.Minute)
+	record := RunRecord{
+		RunID:      "run-derived-partial",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+	}
+	events := []EventRecord{
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(1 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(3 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(4 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(5 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepReview},
+		},
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: time.Time{},
+			Metadata:  map[string]any{"step": RunDurationStepFinalization},
+		},
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil || got.TotalDurationMs == nil {
+		t.Fatalf("DeriveRunTelemetry() = %#v, want total duration", got)
+	}
+	if *got.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *got.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(got.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(got.StepDurations), got.StepDurations)
+	}
+	if got.StepDurations[0].Step != RunDurationStepSetup {
+		t.Fatalf("stepDurations[0].step = %q, want %q", got.StepDurations[0].Step, RunDurationStepSetup)
+	}
+}
+
+func TestDeriveRunTelemetryOutOfOrderTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(-time.Minute)
+	record := RunRecord{
+		RunID:      "run-derived-out-of-order",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+	}
+	events := []EventRecord{
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(5 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(4 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(6 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepReview},
+		},
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(7 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(9 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil {
+		t.Fatal("DeriveRunTelemetry() = nil, want valid step duration")
+	}
+	if got.TotalDurationMs != nil {
+		t.Fatalf("totalDurationMs = %d, want omitted for out-of-order run timestamps", *got.TotalDurationMs)
+	}
+	if len(got.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(got.StepDurations), got.StepDurations)
+	}
+	if got.StepDurations[0].Step != RunDurationStepCI {
+		t.Fatalf("stepDurations[0].step = %q, want %q", got.StepDurations[0].Step, RunDurationStepCI)
+	}
+	if got.StepDurations[0].DurationMs != 120000 {
+		t.Fatalf("stepDurations[0].durationMs = %d, want 120000", got.StepDurations[0].DurationMs)
+	}
+}
+
+func TestDeriveRunTelemetryPreservesExplicitTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(20 * time.Minute)
+	storedTotalDurationMs := int64(42)
+	record := RunRecord{
+		RunID:      "run-derived-explicit",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+		Telemetry: &RunTelemetry{
+			TotalDurationMs: &storedTotalDurationMs,
+			StepDurations: []RunStepDuration{
+				{
+					Step:       RunDurationStepSetup,
+					StartedAt:  base.Add(1 * time.Minute),
+					FinishedAt: base.Add(2 * time.Minute),
+					DurationMs: 60000,
+				},
+			},
+		},
+	}
+	events := []EventRecord{
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(3 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(5 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil || got.TotalDurationMs == nil {
+		t.Fatalf("DeriveRunTelemetry() = %#v, want explicit telemetry", got)
+	}
+	if *got.TotalDurationMs != storedTotalDurationMs {
+		t.Fatalf("totalDurationMs = %d, want explicit %d", *got.TotalDurationMs, storedTotalDurationMs)
+	}
+	if len(got.StepDurations) != 1 || got.StepDurations[0].Step != RunDurationStepSetup {
+		t.Fatalf("stepDurations = %#v, want explicit setup duration only", got.StepDurations)
+	}
+	if got == record.Telemetry {
+		t.Fatal("DeriveRunTelemetry() returned original telemetry pointer, want copy")
+	}
+}
+
 func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	types := []reflect.Type{
 		reflect.TypeOf(RunRecord{}),

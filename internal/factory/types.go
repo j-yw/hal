@@ -120,6 +120,38 @@ const (
 	EventTypeFailureClassification = "failure_classification"
 )
 
+// Run duration step values. These are the only lifecycle step names used for
+// derived per-step duration telemetry.
+const (
+	RunDurationStepSetup            = "setup"
+	RunDurationStepQueueClaim       = "queue_claim"
+	RunDurationStepSandboxProvision = "sandbox_provision"
+	RunDurationStepSandboxStart     = "sandbox_start"
+	RunDurationStepEngineRun        = "engine_run"
+	RunDurationStepReview           = "review"
+	RunDurationStepVerification     = "verification"
+	RunDurationStepCI               = "ci"
+	RunDurationStepArtifactCollect  = "artifact_collection"
+	RunDurationStepFinalization     = "finalization"
+)
+
+// SupportedRunDurationSteps returns the stable step names that can produce
+// derived per-step duration telemetry.
+func SupportedRunDurationSteps() []string {
+	return []string{
+		RunDurationStepSetup,
+		RunDurationStepQueueClaim,
+		RunDurationStepSandboxProvision,
+		RunDurationStepSandboxStart,
+		RunDurationStepEngineRun,
+		RunDurationStepReview,
+		RunDurationStepVerification,
+		RunDurationStepCI,
+		RunDurationStepArtifactCollect,
+		RunDurationStepFinalization,
+	}
+}
+
 // RunRecord captures persisted state for one factory run.
 type RunRecord struct {
 	RunID        string              `json:"runId"`
@@ -274,4 +306,139 @@ type EventRecord struct {
 	Message   string         `json:"message,omitempty"`
 	Summary   string         `json:"summary,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// DeriveRunTelemetry returns a copy of the record telemetry enriched with
+// timing fields derivable from the durable run record and timeline.
+func DeriveRunTelemetry(record RunRecord, events []EventRecord) *RunTelemetry {
+	telemetry := cloneRunTelemetry(record.Telemetry)
+
+	if totalDurationMs, ok := deriveRunTotalDuration(record); ok {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.TotalDurationMs == nil {
+			telemetry.TotalDurationMs = &totalDurationMs
+		}
+	}
+
+	stepDurations := DeriveRunStepDurations(events)
+	if len(stepDurations) > 0 {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if len(telemetry.StepDurations) == 0 {
+			telemetry.StepDurations = stepDurations
+		}
+	}
+
+	return telemetry
+}
+
+// DeriveRunStepDurations derives valid step duration pairs from timeline
+// events. Partial, unsupported, or out-of-order pairs are skipped.
+func DeriveRunStepDurations(events []EventRecord) []RunStepDuration {
+	startedAtByStep := map[string]time.Time{}
+	durations := []RunStepDuration{}
+
+	for _, event := range events {
+		step := eventDurationStep(event)
+		if step == "" || event.Timestamp.IsZero() {
+			continue
+		}
+
+		switch event.EventType {
+		case EventTypeStepStarted:
+			startedAtByStep[step] = event.Timestamp
+		case EventTypeStepEnded:
+			startedAt, ok := startedAtByStep[step]
+			if !ok || startedAt.IsZero() || event.Timestamp.Before(startedAt) {
+				continue
+			}
+			durations = append(durations, RunStepDuration{
+				Step:       step,
+				StartedAt:  startedAt,
+				FinishedAt: event.Timestamp,
+				DurationMs: event.Timestamp.Sub(startedAt).Milliseconds(),
+			})
+			delete(startedAtByStep, step)
+		}
+	}
+
+	return durations
+}
+
+func deriveRunTotalDuration(record RunRecord) (int64, bool) {
+	if record.CreatedAt.IsZero() || record.FinishedAt == nil || record.FinishedAt.IsZero() {
+		return 0, false
+	}
+	if record.FinishedAt.Before(record.CreatedAt) {
+		return 0, false
+	}
+	return record.FinishedAt.Sub(record.CreatedAt).Milliseconds(), true
+}
+
+func eventDurationStep(event EventRecord) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	step, ok := event.Metadata["step"].(string)
+	if !ok {
+		return ""
+	}
+	step = strings.TrimSpace(step)
+	if !isSupportedRunDurationStep(step) {
+		return ""
+	}
+	return step
+}
+
+func isSupportedRunDurationStep(step string) bool {
+	switch step {
+	case RunDurationStepSetup,
+		RunDurationStepQueueClaim,
+		RunDurationStepSandboxProvision,
+		RunDurationStepSandboxStart,
+		RunDurationStepEngineRun,
+		RunDurationStepReview,
+		RunDurationStepVerification,
+		RunDurationStepCI,
+		RunDurationStepArtifactCollect,
+		RunDurationStepFinalization:
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneRunTelemetry(src *RunTelemetry) *RunTelemetry {
+	if src == nil {
+		return nil
+	}
+
+	dst := *src
+	if src.TotalDurationMs != nil {
+		totalDurationMs := *src.TotalDurationMs
+		dst.TotalDurationMs = &totalDurationMs
+	}
+	if len(src.StepDurations) > 0 {
+		dst.StepDurations = append([]RunStepDuration(nil), src.StepDurations...)
+	}
+	if src.Engine != nil {
+		engine := *src.Engine
+		dst.Engine = &engine
+	}
+	if src.Sandbox != nil {
+		sandbox := *src.Sandbox
+		dst.Sandbox = &sandbox
+	}
+	if src.EstimatedSandboxCost != nil {
+		estimatedSandboxCost := *src.EstimatedSandboxCost
+		dst.EstimatedSandboxCost = &estimatedSandboxCost
+	}
+	if src.ArtifactCount != nil {
+		artifactCount := *src.ArtifactCount
+		dst.ArtifactCount = &artifactCount
+	}
+	return &dst
 }
