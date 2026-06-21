@@ -495,7 +495,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 		RunRecord: factory.RunRecord{
 			RunID:      "run-bootstrap-env",
 			Status:     factory.RunStatusRunning,
-			RepoRemote: "git@github.com:example/repo.git",
+			RepoRemote: "https://x:" + requiredSecret + "@github.com/example/repo.git",
 			BaseBranch: "main",
 			BranchName: "hal/feature",
 			Secrets: []factory.RunSecretMetadata{{
@@ -562,6 +562,9 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	if !reflect.DeepEqual(bootstrapReq.RequiredEnvKeys, []string{"GITHUB_TOKEN"}) {
 		t.Fatalf("required env keys = %#v, want GITHUB_TOKEN", bootstrapReq.RequiredEnvKeys)
 	}
+	if bootstrapReq.RepositoryURL != "https://x:"+requiredSecret+"@github.com/example/repo.git" {
+		t.Fatalf("bootstrap repository URL = %q, want raw in-memory remote", bootstrapReq.RepositoryURL)
+	}
 	if bootstrapReq.Env["GITHUB_TOKEN"] != requiredSecret || bootstrapReq.Env["OPTIONAL_TOKEN"] != optionalSecret {
 		t.Fatalf("bootstrap env = %#v, want resolved secrets", bootstrapReq.Env)
 	}
@@ -592,6 +595,9 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	}
 	if strings.Contains(string(runData), requiredSecret) || strings.Contains(string(runData), optionalSecret) {
 		t.Fatalf("stored run leaked secret values: %s", string(runData))
+	}
+	if storedRun.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/example/repo.git" {
+		t.Fatalf("stored repo remote = %q, want redacted secret value", storedRun.RepoRemote)
 	}
 	events, loadErr := store.LoadEvents("run-bootstrap-env")
 	if loadErr != nil {

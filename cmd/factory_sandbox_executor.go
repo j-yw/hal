@@ -135,7 +135,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	record := req.RunRecord
 	record.ExecutorMode = factory.ExecutorModeSandbox
 	record.UpdatedAt = deps.now().UTC()
-	if err := deps.saveRun(store, &record); err != nil {
+	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 		return fmt.Errorf("save sandbox factory run: %w", err)
 	}
 
@@ -206,7 +206,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 
 	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 	record.UpdatedAt = deps.now().UTC()
-	if err := deps.saveRun(store, &record); err != nil {
+	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 		return fmt.Errorf("record factory sandbox metadata: %w", err)
 	}
 
@@ -885,7 +885,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 		SuggestedCommand: factorySandboxFailureSuggestedCommand(record),
 	}
 	record.Failure = &failure
-	if err := deps.saveRun(store, record); err != nil {
+	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, record, secretRedactor); err != nil {
 		return err
 	}
 	events, err := store.LoadEvents(record.RunID)
@@ -1134,6 +1134,14 @@ func isShellIdentifier(name string) bool {
 
 func saveFactorySandboxRunRecord(store factory.Store, record *factory.RunRecord) error {
 	return store.SaveRun(record)
+}
+
+func saveFactorySandboxRunRecordWithRedactor(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, redactor factory.RunSecretRedactor) error {
+	if record == nil {
+		return deps.saveRun(store, record)
+	}
+	safeRecord := redactor.RedactRunRecord(*record)
+	return deps.saveRun(store, &safeRecord)
 }
 
 func appendFactorySandboxTimelineEvent(store factory.Store, event *factory.EventRecord) error {
