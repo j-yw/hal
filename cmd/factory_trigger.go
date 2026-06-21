@@ -83,10 +83,12 @@ Pass exactly one source payload: --prd <path>, --report <path>, or
 --discover-report. Use --repo <path> to target a repository explicitly from
 cron jobs or GitHub Actions workflows. The command creates a pending factory
 run record, enqueues it in the durable factory queue, and exits. A separate
-worker can later process the entry with hal factory queue work.`,
+worker can later process the entry with hal factory queue work. Sandbox
+executor mode requires --base so workers can prepare the remote workspace.`,
 	Example: `  hal factory trigger --repo . --prd .hal/prd-feature.md
   hal factory trigger --repo /work/hal --report .hal/reports/analysis.md --json
-  hal factory trigger --repo /work/hal --discover-report --json`,
+  hal factory trigger --repo /work/hal --discover-report --json
+  hal factory trigger --repo /work/hal --prd .hal/prd-feature.md --executor sandbox --base main`,
 	RunE: runFactoryTrigger,
 }
 
@@ -318,6 +320,9 @@ func parseFactoryTriggerRequest(req factoryTriggerRequest) (factoryTriggerReques
 	}
 	if req.ReportsDir != "" && !req.DiscoverReport {
 		return factoryTriggerRequest{}, fmt.Errorf("--reports-dir requires --discover-report")
+	}
+	if strings.TrimSpace(req.ExecutorMode) == factory.ExecutorModeSandbox && req.BaseBranch == "" {
+		return factoryTriggerRequest{}, fmt.Errorf("--base is required when --executor sandbox is set")
 	}
 	return req, nil
 }

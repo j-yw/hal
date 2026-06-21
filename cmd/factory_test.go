@@ -127,11 +127,13 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"--repo <path>",
 				"durable factory queue",
 				"hal factory queue work",
+				"executor mode requires --base",
 			},
 			requiredExampleLines: []string{
 				"hal factory trigger --repo . --prd .hal/prd-feature.md",
 				"hal factory trigger --repo /work/hal --report .hal/reports/analysis.md --json",
 				"hal factory trigger --repo /work/hal --discover-report --json",
+				"hal factory trigger --repo /work/hal --prd .hal/prd-feature.md --executor sandbox --base main",
 			},
 		},
 		{
