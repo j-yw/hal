@@ -36,6 +36,6 @@ pending local factory work in the same global store.
 * [hal factory artifacts](hal_factory_artifacts.md)	 - List artifacts for a stored factory run
 * [hal factory list](hal_factory_list.md)	 - List stored factory runs
 * [hal factory queue](hal_factory_queue.md)	 - Manage queued factory work
-* [hal factory run](hal_factory_run.md)	 - Run the local factory executor
+* [hal factory run](hal_factory_run.md)	 - Run a factory executor
 * [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run
 * [hal factory trigger](hal_factory_trigger.md)	 - Create queued factory runs from trigger payloads

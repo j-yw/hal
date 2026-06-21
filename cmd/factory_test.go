@@ -17,6 +17,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -55,9 +56,11 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			cmd:  factoryRunCmd,
 			requiredLongPhrases: []string{
 				"existing hal auto compound",
+				"managed sandbox",
 				"positional PRD markdown path",
 				"--report <path>",
 				"--base <branch>",
+				"--sandbox",
 				"--json",
 				"factory-run-v1",
 			},
@@ -65,6 +68,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory run .hal/prd-feature.md",
 				"hal factory run --report .hal/reports/analysis.md",
 				"hal factory run .hal/prd-feature.md --base main --json",
+				"hal factory run .hal/prd-feature.md --sandbox --base main",
 			},
 		},
 		{
@@ -227,6 +231,7 @@ func TestParseFactoryRunRequest(t *testing.T) {
 		reportPath string
 		baseBranch string
 		jsonMode   bool
+		sandbox    bool
 		want       factoryRunRequest
 		wantErr    string
 	}{
@@ -256,6 +261,23 @@ func TestParseFactoryRunRequest(t *testing.T) {
 			},
 		},
 		{
+			name:       "sandbox option",
+			args:       []string{".hal/prd-feature.md"},
+			baseBranch: "main",
+			sandbox:    true,
+			want: factoryRunRequest{
+				MarkdownPath: ".hal/prd-feature.md",
+				BaseBranch:   "main",
+				Sandbox:      true,
+			},
+		},
+		{
+			name:    "sandbox requires base",
+			args:    []string{".hal/prd-feature.md"},
+			sandbox: true,
+			wantErr: "--base is required when --sandbox is set",
+		},
+		{
 			name:       "positional and report conflict",
 			args:       []string{".hal/prd-feature.md"},
 			reportPath: ".hal/reports/analysis.md",
@@ -271,7 +293,7 @@ func TestParseFactoryRunRequest(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseFactoryRunRequest(tt.args, tt.reportPath, tt.baseBranch, tt.jsonMode)
+			got, err := parseFactoryRunRequest(tt.args, tt.reportPath, tt.baseBranch, tt.jsonMode, tt.sandbox)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("parseFactoryRunRequest() error = nil, want %q", tt.wantErr)
@@ -296,7 +318,7 @@ func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "json"} {
+	for _, flagName := range []string{"report", "base", "sandbox", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
@@ -326,6 +348,100 @@ func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *t
 	}
 	if !strings.Contains(err.Error(), "--report cannot be used with a positional PRD markdown path") {
 		t.Fatalf("Args() error = %q", err.Error())
+	}
+}
+
+func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	localCalled := false
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-local-default", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			localCalled = true
+			if req.Record.ExecutorMode != factory.ExecutorModeLocal {
+				t.Fatalf("local executorMode = %q, want %q", req.Record.ExecutorMode, factory.ExecutorModeLocal)
+			}
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not be called without --sandbox")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !localCalled {
+		t.Fatal("local pipeline was not called")
+	}
+}
+
+func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	sandboxCalled := false
+
+	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-selected", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called with --sandbox")
+			return nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			sandboxCalled = true
+			if req.ProjectDir != "/workspace/hal" {
+				t.Fatalf("sandbox ProjectDir = %q, want /workspace/hal", req.ProjectDir)
+			}
+			if req.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
+				t.Fatalf("sandbox executorMode = %q, want %q", req.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
+			}
+			wantAuto := factoryRunAutoRequest{
+				Args:       []string{".hal/prd-feature.md"},
+				BaseBranch: "main",
+			}
+			if !reflect.DeepEqual(req.RemoteAuto, wantAuto) {
+				t.Fatalf("remote auto request = %#v, want %#v", req.RemoteAuto, wantAuto)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !sandboxCalled {
+		t.Fatal("sandbox executor was not called")
+	}
+
+	record, err := store.LoadRun("run-sandbox-selected")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("persisted executorMode = %q, want %q", record.ExecutorMode, factory.ExecutorModeSandbox)
 	}
 }
 
@@ -1651,6 +1767,245 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 	}
 	if got, ok := events[3].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
 		t.Fatalf("verification failure event error = %#v, want verification failure", events[3].Metadata["error"])
+	}
+}
+
+func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-success", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory-sandbox-executor", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-remote"
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:           "factory-remote",
+				Provider:       "daytona",
+				Status:         sandbox.StatusRunning,
+				Connection:     &factory.SandboxConnectionMetadata{PublicIP: "203.0.113.42"},
+				SSHCommand:     "hal sandbox ssh factory-remote",
+				CleanupCommand: "hal sandbox delete factory-remote",
+				Handoff:        "Inspect sandbox with `hal sandbox ssh factory-remote`.",
+			}
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			if err := appendFactoryRunTimelineEvent(store, record.RunID, startedAt.Add(10*time.Second), factoryTimelineEvent{
+				EventType: factory.EventTypeStepStarted,
+				Summary:   "Remote sandbox execution started",
+				Metadata: map[string]any{
+					"source":      "remote_sandbox",
+					"sandboxName": "factory-remote",
+					"provider":    "daytona",
+					"status":      factory.RunStatusRunning,
+				},
+			}); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(req.RemoteOutput, "remote ok\n"); err != nil {
+				return err
+			}
+			if err := appendFactoryRunTimelineEvent(store, record.RunID, startedAt.Add(20*time.Second), factoryTimelineEvent{
+				EventType: factory.EventTypeCommandOutputSummary,
+				Message:   "remote ok",
+				Summary:   "Remote sandbox output",
+				Metadata: map[string]any{
+					"source":      "remote_sandbox",
+					"sandboxName": "factory-remote",
+					"provider":    "daytona",
+				},
+			}); err != nil {
+				return err
+			}
+			if err := appendFactoryRunTimelineEvent(store, record.RunID, startedAt.Add(30*time.Second), factoryTimelineEvent{
+				EventType: factory.EventTypeStepEnded,
+				Summary:   "Remote sandbox execution completed",
+				Metadata: map[string]any{
+					"source":      "remote_sandbox",
+					"sandboxName": "factory-remote",
+					"provider":    "daytona",
+					"status":      factory.RunStatusSucceeded,
+				},
+			}); err != nil {
+				return err
+			}
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-sandbox-success")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded || record.CurrentStep != "done" {
+		t.Fatalf("terminal status/step = %s/%s, want succeeded/done", record.Status, record.CurrentStep)
+	}
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("executorMode = %q, want sandbox", record.ExecutorMode)
+	}
+	if record.SandboxName != "factory-remote" || record.Sandbox == nil {
+		t.Fatalf("sandbox metadata = %#v", record.Sandbox)
+	}
+	if record.Sandbox.Provider != "daytona" || record.Sandbox.Status != sandbox.StatusRunning {
+		t.Fatalf("sandbox provider/status = %#v", record.Sandbox)
+	}
+	if record.Sandbox.Connection == nil || record.Sandbox.Connection.PublicIP != "203.0.113.42" {
+		t.Fatalf("sandbox connection = %#v", record.Sandbox.Connection)
+	}
+	if record.Sandbox.SSHCommand != "hal sandbox ssh factory-remote" || record.Sandbox.CleanupCommand != "hal sandbox delete factory-remote" {
+		t.Fatalf("sandbox commands = %#v", record.Sandbox)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-sandbox-success.json"))
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepStarted,
+		factory.EventTypeCommandOutputSummary,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepEnded,
+	})
+	assertFactoryEventSequences(t, events)
+	if events[2].Summary != "Remote sandbox execution started" || events[2].Metadata["source"] != "remote_sandbox" {
+		t.Fatalf("remote start event = %#v", events[2])
+	}
+	if events[3].Summary != "Remote sandbox output" || events[3].Message != "remote ok" {
+		t.Fatalf("remote output event = %#v", events[3])
+	}
+	if events[4].Summary != "Remote sandbox execution completed" || events[4].Metadata["status"] != factory.RunStatusSucceeded {
+		t.Fatalf("remote completion event = %#v", events[4])
+	}
+	if events[5].Summary != "Local compound pipeline completed" {
+		t.Fatalf("terminal completion event = %#v", events[5])
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "remote ok") || !strings.Contains(output, "Status: succeeded") {
+		t.Fatalf("output = %q, want remote output and success summary", output)
+	}
+}
+
+func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 2, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	var buf bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, &buf, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-failure", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory-sandbox-executor", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-remote"
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:           "factory-remote",
+				Provider:       "daytona",
+				Status:         sandbox.StatusRunning,
+				SSHCommand:     "hal sandbox ssh factory-remote",
+				CleanupCommand: "hal sandbox delete factory-remote",
+				Handoff:        "Inspect sandbox with `hal sandbox ssh factory-remote`.",
+			}
+			record.Status = factory.RunStatusFailed
+			record.CurrentStep = "run"
+			record.Failure = &factory.FailureSummary{
+				Step:             "run",
+				Category:         factory.FailureCategoryPipeline,
+				Message:          "remote pipeline failed",
+				Recoverable:      true,
+				SuggestedCommand: "hal sandbox ssh factory-remote",
+			}
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			return factorySandboxTestError("execute factory sandbox command: remote pipeline failed")
+		},
+	})
+	if err == nil {
+		t.Fatalf("runFactoryRunWithDeps() error = nil, want sandbox failure")
+	}
+
+	record, loadErr := store.LoadRun("run-sandbox-failure")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if record.Failure == nil {
+		t.Fatalf("failure summary = nil")
+	}
+	if record.Failure.SuggestedCommand != "hal sandbox ssh factory-remote" {
+		t.Fatalf("suggested command = %q", record.Failure.SuggestedCommand)
+	}
+	if !strings.Contains(buf.String(), "Suggested command: hal sandbox ssh factory-remote") {
+		t.Fatalf("output = %q, want sandbox ssh handoff", buf.String())
 	}
 }
 
@@ -3185,6 +3540,9 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 			name: "factory run cli reference links parent",
 			path: "../docs/cli/hal_factory_run.md",
 			wantFragments: []string{
+				"managed sandbox",
+				"hal factory run .hal/prd-feature.md --sandbox",
+				"--sandbox",
 				"[hal factory](hal_factory.md)",
 			},
 		},

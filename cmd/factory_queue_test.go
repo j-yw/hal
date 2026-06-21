@@ -244,7 +244,7 @@ func TestRunFactoryQueueAddWithDepsRejectsInvalidExecutorMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("runFactoryQueueAddWithDeps() error = nil, want invalid executor mode")
 	}
-	if !strings.Contains(err.Error(), `unsupported factory executor mode "remote" (supported: local)`) {
+	if !strings.Contains(err.Error(), `unsupported factory executor mode "remote" (supported: local, sandbox)`) {
 		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want unsupported mode", err.Error())
 	}
 

@@ -48,6 +48,29 @@
 - Queue worker command tests should inject `runPipeline`; no-work tests should fail if the executor is called so empty queue processing never depends on Codex, GitHub, sandbox providers, or other external execution.
 - Factory queue command definitions live in `cmd/factory_queue.go`; wire them from `cmd/factory.go`, update factory command metadata/link tests in `cmd/factory_test.go`, and regenerate `docs/cli` with `make docs-cli`.
 
+## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
+
+- Factory bootstrap command execution belongs behind `internal/factory.BootstrapCommandExecutor`; use `RunBootstrapStep` with injected fake executors and deterministic clocks in tests instead of spawning git, Hal, or engine CLIs directly.
+- Tooling verification bootstrap belongs in `internal/factory.BootstrapVerifyTooling`; configure Hal and engine checks with `BootstrapToolingCheck`, and use `InstallCommand` only with `BootstrapOptions.InstallMissingCLIs` so missing executables classify as `dependency` while failed setup commands classify as `engine_setup`.
+- Repository checkout bootstrap belongs in `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so tests assert deterministic git clone/fetch/checkout commands without touching real repositories.
+- Run branch preparation also belongs in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests can cover local retry, remote resume, and first-run branch creation without real git refs.
+- Hal template, standards, managed skill, and engine-link setup belongs in `internal/factory.BootstrapRefreshHal`; run `hal init`/`hal init --refresh-templates` and `hal links refresh` through the executor boundary instead of duplicating template or skill install logic.
+- Bootstrap request environment values belong on `BootstrapRequest.Env` and flow through `BootstrapStepDeps.Request`; call `RunBootstrapStep` so env injection, command-summary sanitization, and command-result sanitization stay centralized.
+- Bootstrap command/timeline persistence should use `NewBootstrapSanitizer` or `SanitizeBootstrapCommand*` helpers so sensitive env key names and configured secret values are redacted before serialization.
+- Bootstrap callers should record step outcomes through `recordBootstrapStepResult` / `BootstrapTimelineEventFromStep` so `BootstrapResult.Steps` and `BootstrapResult.Timeline` stay one-to-one with sanitized command summaries, output metadata, and failure category metadata.
+- High-level remote workspace setup should enter through `internal/factory.BootstrapWorkspace` with one `BootstrapDeps` value; it composes repository checkout, tooling verification, Hal refresh, and final checks while preserving shared executor, clock, branch probes, env injection, and first-failure stop behavior.
+
+## Patterns from hal/factory-sandbox-executor (2026-06-21)
+
+- Sandbox-backed factory execution side effects belong behind `factorySandboxExecutorDeps` in `cmd/factory_sandbox_executor.go`; extend the normalized dependency struct for registry, provisioning/start, provider exec, clock, and store persistence behavior so tests can fake each boundary without real sandbox providers or remote commands.
+- `hal factory run --sandbox` selection belongs in `factoryRunRequest.Sandbox` and dispatches through `factoryRunDeps.runSandbox`; keep the no-flag path on `runPipeline` and cover both paths with injected-dependency tests.
+- Existing sandbox reuse in `runFactorySandboxExecutorWithDeps` should persist `RunRecord.SandboxName` plus `RunRecord.Sandbox` immediately after target resolution/start, and no-name resolution should preserve `sandbox.ResolveDefault` running-only error strings unless provisioning behavior explicitly handles them.
+- Sandbox provision/start failures should be persisted inside `runFactorySandboxExecutorWithDeps` with `RunStatusFailed`, `FailureCategoryPipeline`, and sandbox handoff metadata before returning the wrapped error to the outer factory runner.
+- Sandbox remote execution should pass a structured `factoryRunAutoRequest` through `factorySandboxExecutorRequest`; build exact provider args with `factorySandboxRemoteAutoArgs` at the sandbox executor boundary and avoid env/config pass-through unless a redaction-safe contract explicitly requires it.
+- Sandbox remote output timeline capture belongs at the sandbox executor boundary: wrap the provider exec writer, tee to user output, split complete lines, sanitize with the sandbox redactor, and persist `command_output_summary` events tagged with `source=remote_sandbox`.
+- Sandbox executor remote lifecycle events should be appended through `factorySandboxTimelineWriter` so start/output/completion events share one sequence counter and consistent `source=remote_sandbox` metadata before the outer factory runner records terminal success/failure.
+- Sandbox remote execution failures should be sanitized and saved inside `runFactorySandboxExecutorWithDeps` before returning to the outer factory runner; `markFactoryRunFailed` should preserve existing sandbox SSH handoff commands while the status inspection command remains available through `nextAction`.
+
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
 - For runtime directory renames, use template.HalDir in Go code but separately sweep hardcoded user-facing strings in cmd/* and prompt templates (e.g., config.go, explode.go) so paths like .hal stay consistent.
@@ -197,6 +220,7 @@
 ## Patterns from autoresearch/hal-ux-machine-readability (2026-03-18)
 
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
+- For nested durable contract objects, use reflection-backed JSON tag checks in `cmd/contracts_doc_test.go` so documented field names stay synchronized with implementation structs.
 - Workflow state classification lives in `internal/status` — a pure filesystem package with no engine or config dependencies. The `cmd/status.go` wrapper adds engine from config.
 - Health/readiness checks live in `internal/doctor` — each check has `scope` (repo/engine_local/engine_global/migration) and `applicability` (required/optional/not_applicable) fields. The check order is locked by `TestRun_CheckCount`.
 - For doctor checks that depend on GitHub context (`github_auth`), treat non-git directories, missing `origin`, and non-GitHub remotes as `status=skip` + `applicability=not_applicable`; only emit a warning with remediation `gh auth login` (`Safe=false`) when a valid GitHub remote lacks authentication.
@@ -476,3 +500,9 @@
 - Factory queue JSON contracts use reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; queue command implementations should reuse these instead of redefining JSON shapes.
 - Queue contract work must update `docs/contracts/factory-queue-*.md`, `docs/contracts/examples/factory-queue-*.json`, `cmd/contracts_doc_test.go`, `cmd/machine_contracts_test.go`, and `internal/factory/types_test.go` together so field names, docs, and examples stay locked.
 - Queue worker execution should keep queue-specific state in `cmd/factory_queue.go` and run lifecycle state in the shared factory execution path in `cmd/factory.go`; tests should inject `factoryQueueWorkDeps.runPipeline` rather than invoking real `hal auto`.
+
+## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
+
+- Factory bootstrap request/result DTOs live in `internal/factory` alongside durable run/timeline records; keep them independent of command/runtime dependencies, and lock exported machine-readable fields with explicit JSON tags, raw-key assertions, and round-trip tests in `internal/factory/types_test.go`.
+- Bootstrap failure classification uses bootstrap-specific categories (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) in `internal/factory/bootstrap_failure.go`; keep this separate from generic factory run categories and avoid putting raw command output into timeline-ready failure messages.
+- Tooling verification bootstrap belongs in `internal/factory.BootstrapVerifyTooling`; configure Hal and engine checks with `BootstrapToolingCheck`, and use `InstallCommand` only with `BootstrapOptions.InstallMissingCLIs` so missing executables classify as `dependency` while failed setup commands classify as `engine_setup`.

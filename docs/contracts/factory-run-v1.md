@@ -27,6 +27,12 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 `artifacts` is always present. Empty artifact state is represented as an empty
 array. `eventSummary` is always present.
 
+Sandbox-backed runs do not duplicate full sandbox metadata in this compact
+result surface. Consumers that need the sandbox name, provider, lifecycle
+status, safe connection display fields, SSH command, cleanup command, or
+diagnostic handoff should follow `nextAction.command` and read the durable
+`factory-status-v1` run record.
+
 ## Next Action
 
 When `nextAction` is not null:

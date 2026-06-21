@@ -360,7 +360,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	}
 	record.ExecutorMode = entry.ExecutorMode
 
-	_, execErr := executeFactoryRun(ctx, factoryQueueRunDir(*record), factoryRunRequestFromQueueRecord(*record), store, *record, factoryRunDeps{
+	_, execErr := executeFactoryRun(ctx, factoryQueueRunDir(*record), factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, factoryRunDeps{
 		now:         deps.now,
 		runPipeline: deps.runPipeline,
 	})
