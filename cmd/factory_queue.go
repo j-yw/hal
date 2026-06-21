@@ -34,6 +34,7 @@ type factoryQueueWorkDeps struct {
 	claim        *factory.QueueClaim
 	lookupEnv    func(string) (string, bool)
 	runPipeline  func(context.Context, factoryRunPipelineRequest) error
+	runSandbox   func(context.Context, factorySandboxExecutorRequest) error
 }
 
 type factoryQueueAddRequest struct {
@@ -64,6 +65,9 @@ var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
 	now:          time.Now,
 	lookupEnv:    os.LookupEnv,
 	runPipeline:  runFactoryRunPipeline,
+	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
+	},
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -366,6 +370,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		now:         deps.now,
 		lookupEnv:   deps.lookupEnv,
 		runPipeline: deps.runPipeline,
+		runSandbox:  deps.runSandbox,
 	})
 	if execErr != nil {
 		return failClaimedFactoryQueueEntry(store, entry, execErr, deps.now)
@@ -396,6 +401,7 @@ func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry,
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {
 	req := factoryRunRequest{
 		BaseBranch: strings.TrimSpace(record.BaseBranch),
+		Sandbox:    strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox,
 		Secrets:    factoryRunSecretInputsFromMetadata(record.Secrets),
 	}
 	switch record.Source.Kind {
@@ -461,6 +467,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline
+	}
+	if deps.runSandbox == nil {
+		deps.runSandbox = defaultFactoryQueueWorkDeps.runSandbox
 	}
 	return deps
 }
