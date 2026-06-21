@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/spf13/cobra"
 )
 
 func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) {
@@ -98,6 +100,80 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	}
 	if events[0].Metadata["triggerKind"] != factory.SourceKindMarkdown {
 		t.Fatalf("triggerKind metadata = %#v", events[0].Metadata["triggerKind"])
+	}
+}
+
+func TestFactoryTriggerRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("repo", ".", "")
+	cmd.Flags().String("prd", "", "")
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().Bool("discover-report", false, "")
+	cmd.Flags().String("reports-dir", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().String("executor", factory.ExecutorModeLocal, "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("prd", ".hal/prd-feature.md"); err != nil {
+		t.Fatalf("Set(prd) error: %v", err)
+	}
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	req, err := factoryTriggerRequestFromCommand(cmd)
+	if err != nil {
+		t.Fatalf("factoryTriggerRequestFromCommand() unexpected error: %v", err)
+	}
+
+	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 0, 0, time.UTC)
+
+	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeSandbox,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, factoryTriggerTestDeps(store, now, "run-trigger-secret", "queue-trigger-secret"))
+	if err != nil {
+		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-trigger-secret")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	wantMetadata := []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  false,
+	}}
+	if !reflect.DeepEqual(record.Secrets, wantMetadata) {
+		t.Fatalf("secrets metadata = %#v, want %#v", record.Secrets, wantMetadata)
+	}
+	req := factoryRunRequestFromQueueRecord(*record)
+	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("queue request secrets = %#v, want %#v", req.Secrets, wantSecrets)
 	}
 }
 

@@ -318,13 +318,41 @@ func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "sandbox", "json"} {
+	for _, flagName := range []string{"report", "base", "secret-env", "sandbox", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
 	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory run missing metadata fields: %v", missing)
+	}
+}
+
+func TestFactoryRunRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+	if err := cmd.Flags().Set("secret-env", " NPM_TOKEN "); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+
+	wantSecrets := []factory.RunSecretInput{
+		{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+		{Name: "NPM_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+	}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("secrets = %#v, want %#v", req.Secrets, wantSecrets)
 	}
 }
 
@@ -1100,6 +1128,107 @@ func TestRunFactoryRunWithDepsRedactsSecretFailureOutputAndPersistence(t *testin
 	}
 	if events[2].Metadata["error"] != "pipeline rejected token "+factory.RunSecretRedactionPlaceholder {
 		t.Fatalf("failure event error metadata = %#v", events[2].Metadata["error"])
+	}
+}
+
+func TestRunFactoryRunWithDepsRedactsSecretVerificationMetadata(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	verifyDir := filepath.Join(halDir, "reports", "verify")
+	if err := os.MkdirAll(verifyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(verifyDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	secret := "ghp_verify_secret"
+	artifactPath := filepath.Join(".hal", "reports", "verify", "stdout-"+secret+".txt")
+	createdAt := time.Date(2026, 6, 21, 2, 0, 0, 0, time.UTC)
+	times := []time.Time{
+		createdAt,
+		createdAt.Add(1 * time.Minute),
+		createdAt.Add(2 * time.Minute),
+		createdAt.Add(3 * time.Minute),
+		createdAt.Add(4 * time.Minute),
+	}
+	verifyCfg := &verify.Config{Checks: []verify.ShellCheck{{ID: "check", Command: "true", Required: true}}}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-secret-verification", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return createdAt.Add(4 * time.Minute)
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name == "GITHUB_TOKEN" {
+				return secret, true
+			}
+			return "", false
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return verifyCfg, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			writeFile(t, verifyDir, "stdout-"+secret+".txt", "verification stdout\n")
+			return &verify.Result{
+				Status:  verify.StatusPass,
+				Summary: verify.Summary{Total: 1, Passed: 1},
+				Artifacts: []verify.ArtifactReference{{
+					CheckID: "check-" + secret,
+					Kind:    verify.ArtifactKindStdout,
+					Path:    artifactPath,
+				}},
+			}, nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-secret-verification")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	persisted, err := json.Marshal(struct {
+		Record factory.RunRecord     `json:"record"`
+		Events []factory.EventRecord `json:"events"`
+	}{Record: *record, Events: events})
+	if err != nil {
+		t.Fatalf("json.Marshal(persisted) error: %v", err)
+	}
+	if strings.Contains(string(persisted), secret) {
+		t.Fatalf("persisted verification metadata leaked secret: %s", persisted)
+	}
+	if !strings.Contains(string(persisted), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("persisted verification metadata missing redaction placeholder: %s", persisted)
 	}
 }
 

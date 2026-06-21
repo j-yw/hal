@@ -11,7 +11,9 @@ Pass exactly one source payload: --prd <path>, --report <path>, or
 --discover-report. Use --repo <path> to target a repository explicitly from
 cron jobs or GitHub Actions workflows. The command creates a pending factory
 run record, enqueues it in the durable factory queue, and exits. A separate
-worker can later process the entry with hal factory queue work.
+worker can later process the entry with hal factory queue work. Use
+--secret-env to persist required environment variable names that the worker
+must resolve only when it executes the run.
 
 ```
 hal factory trigger [flags]
@@ -21,6 +23,7 @@ hal factory trigger [flags]
 
 ```
   hal factory trigger --repo . --prd .hal/prd-feature.md
+  hal factory trigger --repo . --prd .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory trigger --repo /work/hal --report .hal/reports/analysis.md --json
   hal factory trigger --repo /work/hal --discover-report --json
 ```
@@ -28,15 +31,16 @@ hal factory trigger [flags]
 ### Options
 
 ```
-      --base string          Target base branch for follow-up review or CI
-      --discover-report      Discover the latest report from the repository reports directory
-      --executor string      Factory executor mode for the queued run (default "local")
-  -h, --help                 help for trigger
-      --json                 Output machine-readable JSON (factory-trigger-v1 contract)
-      --prd string           Markdown PRD path for the queued run
-      --repo string          Repository path for the queued run (default ".")
-      --report string        Analysis report path for the queued run
-      --reports-dir string   Reports directory override for --discover-report
+      --base string              Target base branch for follow-up review or CI
+      --discover-report          Discover the latest report from the repository reports directory
+      --executor string          Factory executor mode for the queued run (default "local")
+  -h, --help                     help for trigger
+      --json                     Output machine-readable JSON (factory-trigger-v1 contract)
+      --prd string               Markdown PRD path for the queued run
+      --repo string              Repository path for the queued run (default ".")
+      --report string            Analysis report path for the queued run
+      --reports-dir string       Reports directory override for --discover-report
+      --secret-env stringArray   Required environment variable secret for the queued run (repeatable)
 ```
 
 ### SEE ALSO

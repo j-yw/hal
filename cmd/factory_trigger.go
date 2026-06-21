@@ -24,6 +24,7 @@ var factoryTriggerDiscoverReportFlag bool
 var factoryTriggerReportsDirFlag string
 var factoryTriggerBaseFlag string
 var factoryTriggerExecutorFlag string
+var factoryTriggerSecretEnvFlags []string
 var factoryTriggerJSONFlag bool
 
 type factoryTriggerDeps struct {
@@ -45,6 +46,7 @@ type factoryTriggerRequest struct {
 	ReportsDir     string
 	BaseBranch     string
 	ExecutorMode   string
+	Secrets        []factory.RunSecretInput
 	JSON           bool
 }
 
@@ -79,8 +81,11 @@ Pass exactly one source payload: --prd <path>, --report <path>, or
 --discover-report. Use --repo <path> to target a repository explicitly from
 cron jobs or GitHub Actions workflows. The command creates a pending factory
 run record, enqueues it in the durable factory queue, and exits. A separate
-worker can later process the entry with hal factory queue work.`,
+worker can later process the entry with hal factory queue work. Use
+--secret-env to persist required environment variable names that the worker
+must resolve only when it executes the run.`,
 	Example: `  hal factory trigger --repo . --prd .hal/prd-feature.md
+  hal factory trigger --repo . --prd .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory trigger --repo /work/hal --report .hal/reports/analysis.md --json
   hal factory trigger --repo /work/hal --discover-report --json`,
 	RunE: runFactoryTrigger,
@@ -94,6 +99,7 @@ func configureFactoryTriggerCommand() {
 	factoryTriggerCmd.Flags().StringVar(&factoryTriggerReportsDirFlag, "reports-dir", "", "Reports directory override for --discover-report")
 	factoryTriggerCmd.Flags().StringVar(&factoryTriggerBaseFlag, "base", "", "Target base branch for follow-up review or CI")
 	factoryTriggerCmd.Flags().StringVar(&factoryTriggerExecutorFlag, "executor", factory.ExecutorModeLocal, "Factory executor mode for the queued run")
+	factoryTriggerCmd.Flags().StringArrayVar(&factoryTriggerSecretEnvFlags, "secret-env", nil, "Required environment variable secret for the queued run (repeatable)")
 	factoryTriggerCmd.Flags().BoolVar(&factoryTriggerJSONFlag, "json", false, "Output machine-readable JSON (factory-trigger-v1 contract)")
 }
 
@@ -112,6 +118,7 @@ func runFactoryTrigger(cmd *cobra.Command, _ []string) error {
 }
 
 func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest, error) {
+	secretEnv := append([]string(nil), factoryTriggerSecretEnvFlags...)
 	req := factoryTriggerRequest{
 		RepoPath:       factoryTriggerRepoFlag,
 		MarkdownPath:   factoryTriggerPRDFlag,
@@ -173,6 +180,13 @@ func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest
 			}
 			req.ExecutorMode = value
 		}
+		if cmd.Flags().Lookup("secret-env") != nil {
+			value, err := cmd.Flags().GetStringArray("secret-env")
+			if err != nil {
+				return factoryTriggerRequest{}, err
+			}
+			secretEnv = value
+		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
 			if err != nil {
@@ -181,6 +195,12 @@ func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest
 			req.JSON = value
 		}
 	}
+
+	secrets, err := parseFactoryRunSecretEnvFlags(secretEnv)
+	if err != nil {
+		return factoryTriggerRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	req.Secrets = secrets
 
 	if _, err := parseFactoryTriggerRequest(req); err != nil {
 		return factoryTriggerRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
@@ -216,6 +236,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		return err
 	}
 	sourceReq.BaseBranch = strings.TrimSpace(req.BaseBranch)
+	sourceReq.Secrets = req.Secrets
 
 	store, err := deps.defaultStore()
 	if err != nil {

@@ -42,6 +42,7 @@ var factoryStatusJSONFlag bool
 var factoryArtifactsJSONFlag bool
 var factoryRunReportFlag string
 var factoryRunBaseFlag string
+var factoryRunSecretEnvFlags []string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
 
@@ -75,10 +76,13 @@ Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
 base branch to the executor. Sandbox mode requires --base so the remote
-workspace can be checked out deterministically. Use --sandbox for remote
-sandbox-backed execution, and --json for machine-readable factory-run-v1 output.`,
+workspace can be checked out deterministically. Use --secret-env to declare
+required environment variables that should be resolved only for this run. Use
+--sandbox for remote sandbox-backed execution, and --json for machine-readable
+factory-run-v1 output.`,
 	Example: `  hal factory run .hal/prd-feature.md
   hal factory run --report .hal/reports/analysis.md
+  hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
   hal factory run .hal/prd-feature.md --sandbox --base main`,
 	RunE: runFactoryRun,
@@ -131,6 +135,7 @@ output omits raw source paths and remote URLs from artifact records.`,
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
+	factoryRunCmd.Flags().StringArrayVar(&factoryRunSecretEnvFlags, "secret-env", nil, "Required environment variable secret for the run (repeatable)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunSandboxFlag, "sandbox", false, "Run the factory executor in a managed sandbox")
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
@@ -546,7 +551,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
-	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
+	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, redactor)
 	if err != nil {
 		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, completedAt, err, redactor)
 		var recordErrs []error
@@ -704,6 +709,7 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		BranchName:   branchName,
 		BaseBranch:   strings.TrimSpace(req.BaseBranch),
 		CurrentStep:  factory.RunStatusPending,
+		Secrets:      factoryRunSecretMetadataFromInputs(req.Secrets),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
@@ -772,7 +778,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	return *record, nil
 }
 
-func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps) (factory.RunRecord, time.Time, error) {
+func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, redactor factory.RunSecretRedactor) (factory.RunRecord, time.Time, error) {
 	startedAt := deps.now()
 	record.CurrentStep = "verify"
 	record.UpdatedAt = startedAt.UTC()
@@ -797,15 +803,16 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("run verification: no result")
 	}
 
+	safeArtifacts := redactFactoryVerificationArtifacts(result.Artifacts, redactor)
 	record.Verification = &factory.VerificationRecord{
 		Summary:   result.Summary,
-		Artifacts: result.Artifacts,
+		Artifacts: safeArtifacts,
 	}
 	record.UpdatedAt = finishedAt.UTC()
 	if err := store.SaveRun(&record); err != nil {
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
-	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts); err != nil {
+	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts, redactor); err != nil {
 		return factory.RunRecord{}, finishedAt, err
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
@@ -813,7 +820,7 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("reload factory run verification artifacts: %w", err)
 	}
 	record = *updatedRecord
-	if err := recordFactoryRunVerificationResult(store, record.RunID, finishedAt, *result); err != nil {
+	if err := recordFactoryRunVerificationResultWithRedactor(store, record.RunID, finishedAt, *result, redactor); err != nil {
 		return record, finishedAt, fmt.Errorf("record factory verification event: %w", err)
 	}
 	if result.Status == verify.StatusFail {
@@ -1005,6 +1012,21 @@ func factoryOutcomePipelineState(dir string, startedAt time.Time) *compound.Pipe
 		return liveState
 	}
 	return nil
+}
+
+func redactFactoryVerificationArtifacts(artifacts []verify.ArtifactReference, redactor factory.RunSecretRedactor) []verify.ArtifactReference {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	safe := make([]verify.ArtifactReference, len(artifacts))
+	for i, artifact := range artifacts {
+		safe[i] = verify.ArtifactReference{
+			CheckID: redactor.RedactString(artifact.CheckID),
+			Kind:    redactor.RedactString(artifact.Kind),
+			Path:    redactor.RedactString(artifact.Path),
+		}
+	}
+	return safe
 }
 
 func factoryPipelineStateHasOutcomeData(state *compound.PipelineState) bool {
@@ -1413,7 +1435,7 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 	return nil
 }
 
-func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference) error {
+func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference, redactor factory.RunSecretRedactor) error {
 	for _, artifact := range artifacts {
 		path := strings.TrimSpace(artifact.Path)
 		if path == "" {
@@ -1443,7 +1465,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 			},
 		}
 		ref.ID = factoryArtifactID(ref)
-		if _, err := store.SaveArtifactFile(runID, ref, sourcePath); err != nil {
+		if _, err := store.SaveArtifactFileWithRedactor(runID, ref, sourcePath, redactor); err != nil {
 			return fmt.Errorf("store factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
 		}
 	}
@@ -2103,7 +2125,11 @@ func recordFactoryRunProgressWithRedactor(store factory.Store, runID string, now
 }
 
 func recordFactoryRunVerificationResult(store factory.Store, runID string, now time.Time, result verify.Result) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunVerificationResultWithRedactor(store, runID, now, result, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunVerificationResultWithRedactor(store factory.Store, runID string, now time.Time, result verify.Result, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeVerificationResult,
 		Summary:   factoryRunVerificationSummary(result),
 		Metadata: map[string]any{
@@ -2117,7 +2143,7 @@ func recordFactoryRunVerificationResult(store factory.Store, runID string, now t
 			"warnings":      result.Summary.Warnings,
 			"artifactCount": len(result.Artifacts),
 		},
-	})
+	}, redactor)
 }
 
 func factoryRunVerificationSummary(result verify.Result) string {
@@ -2454,6 +2480,7 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {
 	reportPath := factoryRunReportFlag
 	baseBranch := factoryRunBaseFlag
+	secretEnv := append([]string(nil), factoryRunSecretEnvFlags...)
 	jsonMode := factoryRunJSONFlag
 	sandboxMode := factoryRunSandboxFlag
 
@@ -2472,6 +2499,13 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			}
 			baseBranch = value
 		}
+		if cmd.Flags().Lookup("secret-env") != nil {
+			value, err := cmd.Flags().GetStringArray("secret-env")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			secretEnv = value
+		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
 			if err != nil {
@@ -2489,6 +2523,10 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	}
 
 	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, jsonMode, sandboxMode)
+	if err != nil {
+		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	req.Secrets, err = parseFactoryRunSecretEnvFlags(secretEnv)
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -2516,6 +2554,46 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMo
 		req.MarkdownPath = args[0]
 	}
 	return req, nil
+}
+
+func parseFactoryRunSecretEnvFlags(values []string) ([]factory.RunSecretInput, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	secrets := make([]factory.RunSecretInput, 0, len(values))
+	for _, value := range values {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			return nil, fmt.Errorf("--secret-env requires a non-empty environment variable name")
+		}
+		secrets = append(secrets, factory.RunSecretInput{
+			Name:     name,
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		})
+	}
+	return secrets, nil
+}
+
+func factoryRunSecretMetadataFromInputs(inputs []factory.RunSecretInput) []factory.RunSecretMetadata {
+	if len(inputs) == 0 {
+		return nil
+	}
+	metadata := make([]factory.RunSecretMetadata, 0, len(inputs))
+	for _, input := range inputs {
+		name := strings.TrimSpace(input.Name)
+		source := strings.TrimSpace(input.Source)
+		if name == "" && source == "" {
+			continue
+		}
+		metadata = append(metadata, factory.RunSecretMetadata{
+			Name:     name,
+			Source:   source,
+			Required: input.Required,
+			Present:  false,
+		})
+	}
+	return metadata
 }
 
 func runFactoryList(cmd *cobra.Command, args []string) error {
