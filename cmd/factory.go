@@ -541,10 +541,30 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
 		return err
 	}
-	completedRecord, err = recordFactoryRunRecordArtifact(store, completedRecord)
+	runRecordArtifact, err := recordFactoryRunRecordArtifact(store, completedRecord)
 	if err != nil {
-		return err
+		artifactErr := fmt.Errorf("record factory run artifact: %w", err)
+		failedRecord := completedRecord
+		var recordErrs []error
+		if markedRecord, failureErr := markFactoryRunFailed(store, failedRecord, completedAt, artifactErr); failureErr != nil {
+			recordErrs = append(recordErrs, failureErr)
+		} else {
+			failedRecord = markedRecord
+		}
+		if failedRecord.Failure != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+			}
+		}
+		if len(recordErrs) > 0 {
+			return errors.Join(append([]error{artifactErr}, recordErrs...)...)
+		}
+		if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID, req.JSON); renderErr != nil {
+			return errors.Join(artifactErr, renderErr)
+		}
+		return artifactErr
 	}
+	completedRecord = runRecordArtifact
 	return renderFactoryRunResult(out, store, completedRecord.RunID, req.JSON)
 }
 

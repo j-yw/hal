@@ -2147,6 +2147,82 @@ func TestRunFactoryRunWithDepsMarksRunFailedWhenVerificationArtifactStorageFails
 	}
 }
 
+func TestRunFactoryRunWithDepsMarksRunFailedWhenFinalRunRecordArtifactFails(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 5, 30, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	completedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, completedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-final-artifact-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			blockedArtifactPath := filepath.Join(store.ArtifactsDir(), "run-final-artifact-failed", "factory-run-record.json")
+			if err := os.MkdirAll(blockedArtifactPath, 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact path) error: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(blockedArtifactPath+".bak", "child"), 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact backup path) error: %v", err)
+			}
+			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "record factory run artifact") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want final run record artifact error", err)
+	}
+	runErr := err
+
+	record, err := store.LoadRun("run-final-artifact-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q; command error: %v; failure: %#v", record.Status, factory.RunStatusFailed, runErr, record.Failure)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(completedAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, completedAt)
+	}
+	if record.Failure == nil || !strings.Contains(record.Failure.Message, "record factory run artifact") {
+		t.Fatalf("failure summary = %#v, want final artifact failure", record.Failure)
+	}
+
+	events, err := store.LoadEvents("run-final-artifact-failed")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	if events[3].RunID != "run-final-artifact-failed" {
+		t.Fatalf("failure classification runID = %q", events[3].RunID)
+	}
+}
+
 func TestRunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows(t *testing.T) {
 	tests := []struct {
 		name       string
