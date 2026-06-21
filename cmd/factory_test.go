@@ -1250,7 +1250,20 @@ func TestRunFactoryRunWithDepsExcludesUnchangedGeneratedStateArtifacts(t *testin
 	}
 	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
 	writeFile(t, halDir, "prd.json", `{"project":"stale"}`)
-	writeFile(t, halDir, "auto-state.json", `{"step":"report","sourceMarkdown":".hal/stale.md","reportPath":".hal/reports/stale.md"}`)
+	writeFile(t, halDir, "auto-state.json", `{
+  "step": "report",
+  "branchName": "hal/stale",
+  "sourceMarkdown": ".hal/stale.md",
+  "reportPath": ".hal/reports/stale.md",
+  "ci": {
+    "status": "passed",
+    "prUrl": "https://github.com/acme/hal/pull/99",
+    "prNumber": 99,
+    "prTitle": "Stale factory artifacts",
+    "prHeadRef": "hal/stale",
+    "prBaseRef": "main"
+  }
+}`)
 	writeFile(t, halDir, "stale.md", "# Stale\n")
 	writeFile(t, reportsDir, "stale.md", "# Stale report\n")
 
@@ -1303,6 +1316,14 @@ func TestRunFactoryRunWithDepsExcludesUnchangedGeneratedStateArtifacts(t *testin
 	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/stale.md")
 	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/reports/stale.md")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-stale-artifacts.json"))
+	prOutcome := requireFactoryArtifactPath(t, record.Artifacts, "factory/pr-outcome.json")
+	if !prOutcome.Partial || prOutcome.StoredPath != "" || len(prOutcome.Warnings) == 0 {
+		t.Fatalf("stale PR outcome should be recorded as missing: %#v", prOutcome)
+	}
+	ciOutcome := requireFactoryArtifactPath(t, record.Artifacts, "factory/ci-outcome.json")
+	if !ciOutcome.Partial || ciOutcome.StoredPath != "" || len(ciOutcome.Warnings) == 0 {
+		t.Fatalf("stale CI outcome should be recorded as missing: %#v", ciOutcome)
+	}
 }
 
 func TestRunFactoryRunWithDepsCollectsStatusAndDoctorSnapshots(t *testing.T) {

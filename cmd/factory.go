@@ -623,7 +623,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	if err != nil {
 		return factory.RunRecord{}, err
 	}
-	outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir, record.CreatedAt)
+	outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir, record.CreatedAt, snapshot)
 	if outcomeCleanup != nil {
 		defer outcomeCleanup()
 	}
@@ -822,8 +822,8 @@ func materializeFactorySnapshotArtifacts(dir string, deps factoryRunDeps) ([]fac
 	return artifacts, cleanup, nil
 }
 
-func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time) ([]factory.ArtifactReference, func(), error) {
-	state := factoryOutcomePipelineState(dir, startedAt)
+func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time, snapshot factoryArtifactSnapshot) ([]factory.ArtifactReference, func(), error) {
+	state := factoryOutcomePipelineState(dir, startedAt, snapshot)
 	if state == nil || state.CI == nil {
 		return []factory.ArtifactReference{
 			missingFactoryOutcomeArtifact("pr-outcome", "factory/pr-outcome.json", "PR outcome data was unavailable"),
@@ -886,9 +886,11 @@ func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time) ([]fact
 	return artifacts, cleanup, nil
 }
 
-func factoryOutcomePipelineState(dir string, startedAt time.Time) *compound.PipelineState {
-	liveState, ok := loadFactoryRunPipelineState(filepath.Join(dir, template.HalDir, template.AutoStateFile))
-	if ok && factoryPipelineStateHasOutcomeData(liveState) {
+func factoryOutcomePipelineState(dir string, startedAt time.Time, snapshot factoryArtifactSnapshot) *compound.PipelineState {
+	autoStatePath := filepath.Join(template.HalDir, template.AutoStateFile)
+	liveState, ok := loadFactoryRunPipelineState(filepath.Join(dir, autoStatePath))
+	liveStateChanged := ok && factoryArtifactChangedSinceSnapshot(dir, autoStatePath, snapshot)
+	if liveStateChanged && factoryPipelineStateHasOutcomeData(liveState) {
 		return liveState
 	}
 
@@ -900,7 +902,7 @@ func factoryOutcomePipelineState(dir string, startedAt time.Time) *compound.Pipe
 		}
 	}
 
-	if ok {
+	if liveStateChanged {
 		return liveState
 	}
 	return nil
