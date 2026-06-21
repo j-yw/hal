@@ -65,6 +65,11 @@ const (
 	SourceKindPRD           = "prd"
 )
 
+// Run secret source values.
+const (
+	RunSecretSourceEnv = "env"
+)
+
 // Failure category values.
 const (
 	FailureCategoryValidation = "validation"
@@ -106,6 +111,34 @@ type RunRecord struct {
 	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
 	Verification *VerificationRecord `json:"verification,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
+	Secrets      []RunSecretMetadata `json:"secrets,omitempty"`
+}
+
+// RunSecretInput describes one secret required by a factory run. For
+// env-backed secrets, Name is the environment variable key to resolve.
+type RunSecretInput struct {
+	Name     string `json:"name"`
+	Source   string `json:"source"`
+	Required bool   `json:"required"`
+}
+
+// Metadata returns the redaction-safe form of a run secret input.
+func (s RunSecretInput) Metadata(present bool) RunSecretMetadata {
+	return RunSecretMetadata{
+		Name:     s.Name,
+		Source:   s.Source,
+		Required: s.Required,
+		Present:  present,
+	}
+}
+
+// RunSecretMetadata is the only secret data persisted on run records. It
+// records whether a value was present without storing the value itself.
+type RunSecretMetadata struct {
+	Name     string `json:"name"`
+	Source   string `json:"source"`
+	Required bool   `json:"required"`
+	Present  bool   `json:"present"`
 }
 
 // SandboxMetadata captures redaction-safe remote execution details for a

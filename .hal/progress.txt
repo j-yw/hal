@@ -1,0 +1,20 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+
+- Factory run-scoped secrets should model requested env-backed secrets with `internal/factory.RunSecretInput` and persist only `RunSecretMetadata` on `RunRecord.Secrets`; durable records should contain `name`, `source`, `required`, and `present`, never raw secret values.
+- Factory type-contract changes should update `internal/factory/types_test.go` JSON tag, round-trip, explicit field, optional omission, and legacy JSON loading coverage.
+
+---
+
+## 2026-06-21 09:01 CST - US-001
+- Implemented a safe factory run-secret schema with `RunSecretInput`, `RunSecretMetadata`, and optional `RunRecord.Secrets` persistence.
+- Added tests covering env secret source constants, JSON tags, round trips, exact safe metadata fields, omission from minimal records, legacy JSON compatibility, and absence of provided raw secret values in run-record JSON.
+- Quality checks run: `go test ./internal/factory`, `go test ./cmd`, `go test ./...`, `make test`, `make vet`, `make lint` (golangci-lint not installed; target printed install hint), and `make build`.
+- Files changed: `internal/factory/types.go`, `internal/factory/types_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Pre-existing worktree deletion retained for clean stop condition: `.pi/skills/factory/SKILL.md`.
+- **Learnings for future iterations:**
+  - `RunRecord` is the durable factory run contract; new fields should be optional when preserving backward compatibility.
+  - The factory package keeps schema behavior locked in `internal/factory/types_test.go`, including JSON tags and explicit serialized field checks.
+  - Secret-related durable metadata should expose only presence, not values; derive safe metadata from inputs before persistence.
+---
