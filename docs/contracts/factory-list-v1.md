@@ -43,6 +43,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 |-------|------|-------------|
 | `sandboxName` | string | Sandbox name used for the run |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
+| `telemetry` | object | Compact observability summary when run telemetry is available |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
 
 ## Source Metadata
@@ -53,6 +54,31 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `path` | string | no | Source file path when the run started from a local file |
 | `reportPath` | string | no | Report path when the run started from an analysis report |
 | `title` | string | no | Human-readable source title |
+
+## Telemetry
+
+When `telemetry` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `totalDurationMs` | integer | no | Derived total run duration in milliseconds |
+| `stepDurations` | array | no | Stored per-step duration records when available on the run summary |
+| `engine` | object | no | Engine name and model metadata when available |
+| `sandbox` | object | no | Sandbox provider and size telemetry when available |
+| `estimatedSandboxCost` | object | no | Estimated sandbox cost when provider, size, pricing, and duration are available |
+| `ciOutcome` | string | no | CI outcome when available |
+| `verificationOutcome` | string | no | Verification outcome when available |
+| `artifactCount` | integer | no | Count of artifact metadata records stored on the run |
+| `failureCategory` | string | no | Normalized failure category for failed runs, such as `validation`, `pipeline`, `engine`, `git`, `ci`, or `unknown` |
+
+Each `stepDurations` entry contains `step`, `startedAt`, `finishedAt`, and
+`durationMs`. `engine` contains `name` and `model`. `sandbox` contains
+`provider` and `size`. `estimatedSandboxCost` contains `amountUsd` and
+`estimated`.
+
+`hal factory list --json` does not include full event timelines. Use
+`hal factory status <run-id> --json` when consumers need complete timeline and
+artifact detail.
 
 ## Failure Summary
 

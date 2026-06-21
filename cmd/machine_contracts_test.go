@@ -601,6 +601,18 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 	})
 
 	t.Run("factory run result keys", func(t *testing.T) {
+		totalDurationMs := int64(600000)
+		artifactCount := 1
+		runTelemetry := &factory.RunTelemetry{
+			TotalDurationMs: &totalDurationMs,
+			Engine: &factory.EngineTelemetry{
+				Name:  "codex",
+				Model: "gpt-5",
+			},
+			ArtifactCount:   &artifactCount,
+			FailureCategory: factory.FailureCategoryCI,
+		}
+
 		var buf bytes.Buffer
 		err := renderFactoryRunJSON(&buf, FactoryRunResponse{
 			ContractVersion: FactoryRunContractVersion,
@@ -613,6 +625,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 				Description: "Inspect the durable run record and timeline.",
 			},
 			Artifacts:    newFactoryRunArtifactReferences(record.Artifacts),
+			Telemetry:    runTelemetry,
 			EventSummary: newFactoryRunEventSummary(events),
 			Failure: &FactoryRunFailure{
 				Classification:   factory.FailureCategoryCI,
@@ -625,7 +638,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		}
 
 		raw := parseJSON(t, buf.Bytes())
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if raw["contractVersion"] != FactoryRunContractVersion {
 			t.Fatalf("factory run contractVersion = %v, want %q", raw["contractVersion"], FactoryRunContractVersion)
 		}
@@ -645,6 +658,12 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			t.Fatalf("eventSummary should be object, got %T", raw["eventSummary"])
 		}
 		requireExactKeys(t, eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
+
+		telemetry, ok := raw["telemetry"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("telemetry should be object, got %T", raw["telemetry"])
+		}
+		requireExactKeys(t, telemetry, []string{"totalDurationMs", "engine", "artifactCount", "failureCategory"})
 
 		failure, ok := raw["failure"].(map[string]interface{})
 		if !ok {
