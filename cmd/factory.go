@@ -2969,7 +2969,7 @@ func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []
 
 func renderFactoryStatusTelemetry(out io.Writer, record factory.RunRecord, telemetry *factory.RunTelemetry) {
 	if record.Failure != nil {
-		category := factory.NormalizeFailureCategory(record.Failure.Category)
+		category := factory.NormalizeFailureCategoryForContractV1(record.Failure.Category)
 		if category != "" {
 			fmt.Fprintf(out, "Failure category: %s\n", category)
 		}

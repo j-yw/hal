@@ -2651,6 +2651,32 @@ func TestRunFactoryRunWithDepsRendersHumanSummaryForFailure(t *testing.T) {
 	}
 }
 
+func TestRenderFactoryStatusTelemetryPreservesLegacyFailureCategory(t *testing.T) {
+	tests := []string{"validation", "pipeline", "git", "ci"}
+
+	for _, category := range tests {
+		category := category
+		t.Run(category, func(t *testing.T) {
+			var buf bytes.Buffer
+			renderFactoryStatusTelemetry(&buf, factory.RunRecord{
+				RunID: "run-legacy-failure",
+				Failure: &factory.FailureSummary{
+					Category: category,
+					Message:  "failed",
+				},
+			}, nil)
+
+			output := buf.String()
+			if !strings.Contains(output, "Failure category: "+category+"\n") {
+				t.Fatalf("legacy failure category not preserved in output:\n%s", output)
+			}
+			if strings.Contains(output, "Failure category: "+factory.FailureCategoryUnknown+"\n") {
+				t.Fatalf("legacy failure category rendered as unknown:\n%s", output)
+			}
+		})
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
