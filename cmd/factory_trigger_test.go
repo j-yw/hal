@@ -52,6 +52,9 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	if resp.RunID != "run-trigger-prd" {
 		t.Fatalf("runId = %q, want run-trigger-prd", resp.RunID)
 	}
+	if resp.Entry == nil {
+		t.Fatal("entry = nil, want queued entry")
+	}
 	if resp.Entry.QueueID != "queue-trigger-prd" {
 		t.Fatalf("queueId = %q, want queue-trigger-prd", resp.Entry.QueueID)
 	}
@@ -176,6 +179,75 @@ func TestRunFactoryTriggerWithDepsRejectsSandboxRequiredBeforeEnqueue(t *testing
 		Outcome:     factory.PolicyOutcomeRejected,
 		Reason:      "requires sandbox executor (requested local)",
 	})
+}
+
+func TestRunFactoryTriggerWithDepsJSONPolicyRejectionUsesTriggerContract(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 30, 0, time.UTC)
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-json-policy", "queue-trigger-json-policy")
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeLocal,
+		JSON:         true,
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want sandboxRequired rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.sandboxRequired") {
+		t.Fatalf("runFactoryTriggerWithDeps() error = %q, want sandboxRequired rejection", err.Error())
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "runId", "run", "summary"})
+	if raw["contractVersion"] != FactoryTriggerContractVersion {
+		t.Fatalf("contractVersion = %v, want %q", raw["contractVersion"], FactoryTriggerContractVersion)
+	}
+	if _, ok := raw["version"]; ok {
+		t.Fatalf("unexpected factory-run-v1 version key in trigger response: %#v", raw)
+	}
+
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v", err)
+	}
+	if resp.Entry != nil {
+		t.Fatalf("entry = %#v, want nil before enqueue", resp.Entry)
+	}
+	if resp.RunID != "run-trigger-json-policy" || resp.Run.RunID != resp.RunID {
+		t.Fatalf("run IDs = response %q run %q, want run-trigger-json-policy", resp.RunID, resp.Run.RunID)
+	}
+	if resp.Run.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", resp.Run.Status)
+	}
+	if resp.Run.Failure == nil || resp.Run.Failure.Step != "policy" {
+		t.Fatalf("run failure = %#v, want policy failure", resp.Run.Failure)
+	}
+
+	entries, loadErr := store.LoadQueue()
+	if loadErr != nil {
+		t.Fatalf("LoadQueue() error: %v", loadErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
 }
 
 func TestRunFactoryTriggerWithDepsRejectsDisallowedEngineBeforeEnqueue(t *testing.T) {

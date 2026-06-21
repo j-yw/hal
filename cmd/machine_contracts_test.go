@@ -655,7 +655,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			ContractVersion: FactoryTriggerContractVersion,
 			RunID:           triggerRun.RunID,
 			Run:             triggerRun,
-			Entry:           queueEntry,
+			Entry:           &queueEntry,
 			Summary:         "queued triggered run run-contract as queue-contract-001",
 		})
 		if err != nil {

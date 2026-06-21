@@ -797,6 +797,9 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if resp.RunID == "" || resp.Run.RunID != resp.RunID {
 			t.Fatalf("factory trigger example run IDs = response %q run %q", resp.RunID, resp.Run.RunID)
 		}
+		if resp.Entry == nil {
+			t.Fatal("factory trigger example should include an entry")
+		}
 		if resp.Entry.QueueID == "" {
 			t.Fatal("factory trigger example should include a queue ID")
 		}

@@ -15,7 +15,7 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 | `contractVersion` | string | Always `"factory-trigger-v1"` for this contract |
 | `runId` | string | Created factory run ID |
 | `run` | object | Created durable factory run record |
-| `entry` | object | Created queue entry using `factory-queue-entry-v1` |
+| `entry` | object | Created queue entry using `factory-queue-entry-v1`; omitted for JSON failures that occur after run creation but before enqueue |
 | `summary` | string | Short human-readable summary of the trigger enqueue result |
 
 `run` and `entry` are always present on successful JSON output.
@@ -53,7 +53,9 @@ Important queue fields for trigger consumers include `queueId`, `runId`, `execut
 
 ## Error Behavior
 
-Missing trigger payloads, conflicting payloads, inaccessible repository paths, missing PRD/report files, empty report discovery results, unsupported executor modes, queue load errors, and queue persistence errors return non-zero command errors. On failures, consumers should treat stdout as undefined and rely on the command exit status.
+Missing trigger payloads, conflicting payloads, inaccessible repository paths, missing PRD/report files, empty report discovery results, unsupported executor modes, queue load errors, and queue persistence errors return non-zero command errors. On failures before a run record exists, consumers should treat stdout as undefined and rely on the command exit status.
+
+If `--json` is set and a run record is created but policy or snapshot validation fails before enqueue, stdout uses this `factory-trigger-v1` contract with `run.status` set to `failed` and `entry` omitted. The command still exits non-zero.
 
 ## Example Artifact
 
