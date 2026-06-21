@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -255,6 +256,77 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	}
 	if events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 {
 		t.Fatalf("event sequences = %d/%d/%d, want 1/2/3", events[0].Sequence, events[1].Sequence, events[2].Sequence)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStreamingOutput(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	secret := "repo-secret"
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+
+	var userOut bytes.Buffer
+	var events []factory.EventRecord
+	execCalls := 0
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-bootstrap-redaction",
+			RepoRemote: "https://token:" + secret + "@github.com/example/repo.git",
+			BaseBranch: "main",
+			BranchName: "hal/feature",
+		},
+		RemoteOutput: &userOut,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		loadSandbox:  func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		bootstrap: func(ctx context.Context, req factory.BootstrapRequest, deps factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			step, commandResult, failure, err := factory.RunBootstrapStep(ctx, factory.BootstrapStepDeps{
+				Executor: deps.Executor,
+				Now:      deps.Now,
+				Request:  req,
+			}, factory.BootstrapStepCloneRepository, factory.BootstrapCommand{
+				Name: "git",
+				Args: []string{"clone", req.RepositoryURL, req.WorkspaceDir},
+			})
+			return factory.BootstrapResult{
+				Steps:    []factory.BootstrapStepResult{step},
+				Timeline: []factory.BootstrapTimelineEvent{factory.BootstrapTimelineEventFromStep(req, step, commandResult, failure)},
+			}, err
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			execCalls++
+			if execCalls == 1 {
+				_, err := io.WriteString(out, "cloning with "+secret+"\n")
+				return err
+			}
+			return nil
+		},
+		saveRun: func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(store factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return store.AppendEvent(event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if !strings.Contains(userOut.String(), secret) {
+		t.Fatalf("user output = %q, want raw bootstrap stream", userOut.String())
+	}
+	for _, event := range events {
+		if strings.Contains(fmt.Sprintf("%#v", event), secret) {
+			t.Fatalf("persisted event leaked bootstrap secret: %#v", event)
+		}
 	}
 }
 
