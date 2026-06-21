@@ -591,7 +591,7 @@ func TestRunReviewStep_FinalVerificationFailure_BlocksGate(t *testing.T) {
 	}
 }
 
-func TestRunReviewStep_MaxReviewFixAttemptsAllowsCleanValidationAfterLimit(t *testing.T) {
+func TestRunReviewStep_MaxReviewFixAttemptsBlocksBeforeReviewLoop(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
 	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
@@ -605,27 +605,26 @@ func TestRunReviewStep_MaxReviewFixAttemptsAllowsCleanValidationAfterLimit(t *te
 			FixAttempts: 1,
 		},
 	}
-	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
 
-	calls := 0
 	origReviewLoop := runReviewLoopWithDisplay
 	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
-		calls++
-		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+		t.Fatal("review loop should not run after max review fix attempts is reached")
+		return nil, nil
 	}
 	t.Cleanup(func() {
 		runReviewLoopWithDisplay = origReviewLoop
 	})
 
 	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
-	if err != nil {
-		t.Fatalf("runReviewStep() unexpected error: %v", err)
+	var limitErr *PolicyLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("runReviewStep() error = %v, want PolicyLimitError", err)
 	}
-	if calls != 1 {
-		t.Fatalf("review calls = %d, want 1 clean validation pass", calls)
+	if limitErr.PolicyField != "factory.policy.maxReviewFixAttempts" || limitErr.Step != StepReview || limitErr.Attempts != 1 || limitErr.Limit != 1 {
+		t.Fatalf("limit error = %+v, want maxReviewFixAttempts review limit", limitErr)
 	}
-	if state.Review.Status != "passed" {
-		t.Fatalf("review status = %q, want passed", state.Review.Status)
+	if state.Review.Status != "failed" {
+		t.Fatalf("review status = %q, want failed", state.Review.Status)
 	}
 }
 
@@ -662,7 +661,7 @@ func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
 		runReviewLoopWithDisplay = origReviewLoop
 	})
 
-	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1, ReviewMaxCycles: 2})
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 2, ReviewMaxCycles: 2})
 	if err != nil {
 		t.Fatalf("runReviewStep() unexpected error: %v", err)
 	}
@@ -692,7 +691,8 @@ func TestRunReviewStep_MaxReviewFixAttemptsBlocksAdditionalFixCycle(t *testing.T
 
 	origReviewLoop := runReviewLoopWithDisplay
 	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
-		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 1, FixesApplied: 1}}}, nil
+		t.Fatal("review loop should not run after max review fix attempts is reached")
+		return nil, nil
 	}
 	t.Cleanup(func() {
 		runReviewLoopWithDisplay = origReviewLoop
