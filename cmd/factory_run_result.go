@@ -224,7 +224,7 @@ func factoryRunArtifactLocations(artifacts []factory.ArtifactReference, logsOnly
 		}
 		location := factory.NextActionLocation{
 			Name:       strings.TrimSpace(artifact.Name),
-			Path:       strings.TrimSpace(artifact.Path),
+			Path:       sanitizeFactoryArtifactPath(artifact.Path),
 			StoredPath: strings.TrimSpace(artifact.StoredPath),
 		}
 		if location.Path == "" && location.StoredPath == "" {
