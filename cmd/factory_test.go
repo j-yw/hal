@@ -1799,20 +1799,41 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	assertFactoryEventTypes(t, events, []string{
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
 		factory.EventTypeStepEnded,
 	})
-	if events[2].Summary != "Verification passed" {
-		t.Fatalf("verification event summary = %q", events[2].Summary)
+	if events[1].Metadata["step"] != factory.RunDurationStepEngineRun {
+		t.Fatalf("pipeline start event step = %#v, want %q", events[1].Metadata["step"], factory.RunDurationStepEngineRun)
 	}
-	if !events[2].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("verification event timestamp = %s, want %s", events[2].Timestamp, verifiedAt)
+	if events[2].Metadata["step"] != factory.RunDurationStepEngineRun {
+		t.Fatalf("pipeline completion event step = %#v, want %q", events[2].Metadata["step"], factory.RunDurationStepEngineRun)
 	}
-	if events[2].Metadata["status"] != verify.StatusPass {
-		t.Fatalf("verification event status metadata = %#v", events[2].Metadata)
+	if events[3].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification start event step = %#v, want %q", events[3].Metadata["step"], factory.RunDurationStepVerification)
 	}
-	if !events[3].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("completion event timestamp = %s, want %s", events[3].Timestamp, verifiedAt)
+	if events[4].Summary != "Verification passed" {
+		t.Fatalf("verification event summary = %q", events[4].Summary)
+	}
+	if !events[4].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification event timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
+	}
+	if events[4].Metadata["status"] != verify.StatusPass {
+		t.Fatalf("verification event status metadata = %#v", events[4].Metadata)
+	}
+	if events[5].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification completion event step = %#v, want %q", events[5].Metadata["step"], factory.RunDurationStepVerification)
+	}
+	if !events[5].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("completion event timestamp = %s, want %s", events[5].Timestamp, verifiedAt)
+	}
+	telemetry := factory.DeriveRunTelemetry(*record, events)
+	if telemetry == nil || len(telemetry.StepDurations) != 2 {
+		t.Fatalf("derived telemetry stepDurations = %#v, want engine and verification durations", telemetry)
+	}
+	if telemetry.StepDurations[0].Step != factory.RunDurationStepEngineRun || telemetry.StepDurations[1].Step != factory.RunDurationStepVerification {
+		t.Fatalf("derived telemetry steps = %#v, want engine_run then verification", telemetry.StepDurations)
 	}
 }
 
@@ -1926,24 +1947,33 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 	assertFactoryEventTypes(t, events, []string{
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
 		factory.EventTypeStepEnded,
 		factory.EventTypeFailureClassification,
 	})
-	if events[3].Metadata["step"] != "verify" {
-		t.Fatalf("verification failure event step = %#v, want verify", events[3].Metadata["step"])
+	if events[3].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification start event step = %#v, want %q", events[3].Metadata["step"], factory.RunDurationStepVerification)
 	}
-	if events[3].Metadata["status"] != factory.RunStatusFailed {
-		t.Fatalf("verification failure event status = %#v, want %q", events[3].Metadata["status"], factory.RunStatusFailed)
+	if events[5].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification failure event step = %#v, want %q", events[5].Metadata["step"], factory.RunDurationStepVerification)
 	}
-	if !events[2].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("verification result timestamp = %s, want %s", events[2].Timestamp, verifiedAt)
+	if events[5].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("verification failure event status = %#v, want %q", events[5].Metadata["status"], factory.RunStatusFailed)
 	}
-	if !events[3].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("verification failure timestamp = %s, want %s", events[3].Timestamp, verifiedAt)
+	if !events[4].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification result timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
 	}
-	if got, ok := events[3].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
-		t.Fatalf("verification failure event error = %#v, want verification failure", events[3].Metadata["error"])
+	if !events[5].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification failure timestamp = %s, want %s", events[5].Timestamp, verifiedAt)
+	}
+	if got, ok := events[5].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
+		t.Fatalf("verification failure event error = %#v, want verification failure", events[5].Metadata["error"])
+	}
+	telemetry := factory.DeriveRunTelemetry(*record, events)
+	if telemetry == nil || len(telemetry.StepDurations) != 2 {
+		t.Fatalf("derived telemetry stepDurations = %#v, want engine and verification durations", telemetry)
 	}
 }
 

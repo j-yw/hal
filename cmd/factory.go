@@ -569,8 +569,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, runErr
 	}
 
-	artifactAt := deps.now()
-	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, artifactAt, deps)
+	pipelineCompletedAt := deps.now()
+	if err := recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, pipelineCompletedAt); err != nil {
+		return factoryRunExecutionResult{Record: runningRecord}, err
+	}
+	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, pipelineCompletedAt, deps)
 	if err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
@@ -601,9 +604,6 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
 	if err != nil {
-		return factoryRunExecutionResult{Record: completedRecord}, err
-	}
-	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
 		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
 	completedRecord, err = recordFactoryRunRecordArtifact(store, completedRecord)
@@ -814,6 +814,9 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	if cfg == nil || len(cfg.Checks) == 0 {
 		return record, deps.now(), nil
 	}
+	if err := recordFactoryRunVerificationStarted(store, record.RunID, startedAt); err != nil {
+		return record, deps.now(), fmt.Errorf("record factory verification start event: %w", err)
+	}
 
 	result, err := deps.runVerify(ctx, cfg)
 	finishedAt := deps.now()
@@ -845,6 +848,9 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	}
 	if result.Status == verify.StatusFail {
 		return record, finishedAt, newFactoryRunVerificationFailure(result)
+	}
+	if err := recordFactoryRunVerificationSucceeded(store, record.RunID, finishedAt); err != nil {
+		return record, finishedAt, fmt.Errorf("record factory verification completion event: %w", err)
 	}
 	return record, finishedAt, nil
 }
@@ -2084,7 +2090,7 @@ func recordFactoryRunPipelineStarted(store factory.Store, record factory.RunReco
 		EventType: factory.EventTypeStepStarted,
 		Summary:   "Local compound pipeline started",
 		Metadata: map[string]any{
-			"step":   record.CurrentStep,
+			"step":   factory.RunDurationStepEngineRun,
 			"status": record.Status,
 		},
 	})
@@ -2138,7 +2144,7 @@ func recordFactoryRunPipelineSucceeded(store factory.Store, runID string, now ti
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Local compound pipeline completed",
 		Metadata: map[string]any{
-			"step":   "run",
+			"step":   factory.RunDurationStepEngineRun,
 			"status": factory.RunStatusSucceeded,
 		},
 	})
@@ -2149,9 +2155,31 @@ func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Local compound pipeline failed",
 		Metadata: map[string]any{
-			"step":   "run",
+			"step":   factory.RunDurationStepEngineRun,
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
+		},
+	})
+}
+
+func recordFactoryRunVerificationStarted(store factory.Store, runID string, now time.Time) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepStarted,
+		Summary:   "Verification started",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepVerification,
+			"status": factory.RunStatusRunning,
+		},
+	})
+}
+
+func recordFactoryRunVerificationSucceeded(store factory.Store, runID string, now time.Time) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Verification completed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepVerification,
+			"status": factory.RunStatusSucceeded,
 		},
 	})
 }
@@ -2161,7 +2189,7 @@ func recordFactoryRunVerificationFailed(store factory.Store, runID string, now t
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Verification failed",
 		Metadata: map[string]any{
-			"step":   "verify",
+			"step":   factory.RunDurationStepVerification,
 			"status": factory.RunStatusFailed,
 			"error":  verificationErr.Error(),
 		},
