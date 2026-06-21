@@ -2222,7 +2222,7 @@ func redactFactoryTimelineMetadata(metadata map[string]any, redactor factory.Run
 	}
 	safe := make(map[string]any, len(metadata))
 	for key, value := range metadata {
-		safe[key] = redactFactoryTimelineValue(value, redactor)
+		safe[redactor.RedactString(key)] = redactFactoryTimelineValue(value, redactor)
 	}
 	return safe
 }
@@ -2304,19 +2304,39 @@ func redactFactoryTimelineReflectValue(value reflect.Value, redactor factory.Run
 		changed := false
 		iter := value.MapRange()
 		for iter.Next() {
+			key := iter.Key()
+			redactedKey, keyChanged := redactFactoryTimelineMapKey(key, redactor)
+			if keyChanged {
+				changed = true
+			}
 			item := iter.Value()
-			redacted, ok := redactFactoryTimelineReflectValue(item, redactor)
-			if ok {
-				out.SetMapIndex(iter.Key(), redacted)
+			redactedItem, itemChanged := redactFactoryTimelineReflectValue(item, redactor)
+			if itemChanged {
+				out.SetMapIndex(redactedKey, redactedItem)
 				changed = true
 				continue
 			}
-			out.SetMapIndex(iter.Key(), item)
+			out.SetMapIndex(redactedKey, item)
 		}
 		return out, changed
 	default:
 		return value, false
 	}
+}
+
+func redactFactoryTimelineMapKey(key reflect.Value, redactor factory.RunSecretRedactor) (reflect.Value, bool) {
+	redacted, ok := redactFactoryTimelineReflectValue(key, redactor)
+	if !ok {
+		return key, false
+	}
+	keyType := key.Type()
+	if redacted.Type().AssignableTo(keyType) {
+		return redacted, true
+	}
+	if redacted.Type().ConvertibleTo(keyType) {
+		return redacted.Convert(keyType), true
+	}
+	return key, false
 }
 
 func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent) error {
