@@ -450,6 +450,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+			recordErrs = append(recordErrs, artifactErr)
+		} else {
+			failedRecord = artifactRecord
+		}
 		if len(recordErrs) > 0 {
 			return errors.Join(append([]error{err}, recordErrs...)...)
 		}
@@ -482,6 +487,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+			recordErrs = append(recordErrs, artifactErr)
+		} else {
+			failedRecord = artifactRecord
+		}
 		if len(recordErrs) > 0 {
 			return errors.Join(append([]error{err}, recordErrs...)...)
 		}
@@ -495,6 +505,10 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		return err
 	}
 	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
+		return err
+	}
+	completedRecord, err = recordFactoryRunRecordArtifact(store, completedRecord)
+	if err != nil {
 		return err
 	}
 	return renderFactoryRunResult(out, store, completedRecord.RunID, req.JSON)
@@ -1123,15 +1137,28 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 		collector.add(artifact)
 	}
 
-	if recordPath := factoryRunRecordArtifactPath(store, record.RunID); recordPath != "" {
-		collector.add(factory.ArtifactReference{
-			Name: "factory-run-record",
-			Type: "json",
-			Path: recordPath,
-		})
-	}
-
 	return collector.artifacts
+}
+
+func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecord) (factory.RunRecord, error) {
+	recordPath := factoryRunRecordArtifactPath(store, record.RunID)
+	if recordPath == "" {
+		return record, nil
+	}
+	artifact := factory.ArtifactReference{
+		ID:   "factory-run-record",
+		Name: "factory-run-record",
+		Type: "json",
+		Path: recordPath,
+	}
+	if _, err := store.SaveArtifactFile(record.RunID, artifact, recordPath); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("store factory run record artifact: %w", err)
+	}
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return factory.RunRecord{}, fmt.Errorf("reload factory run record artifact: %w", err)
+	}
+	return *updatedRecord, nil
 }
 
 func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot, snapshots []factory.ArtifactReference) error {

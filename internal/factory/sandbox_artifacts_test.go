@@ -26,6 +26,7 @@ func TestCollectSandboxArtifactsCopiesFilesAndDirectoriesThroughAbstraction(t *t
 		dirs: map[string]map[string]string{
 			"/workspace/.hal/reports/verify": {
 				"test/stdout.txt": "stdout\n",
+				"test-stdout.txt": "flat stdout\n",
 				"summary.json":    `{"passed":1}` + "\n",
 			},
 		},
@@ -53,8 +54,8 @@ func TestCollectSandboxArtifactsCopiesFilesAndDirectoriesThroughAbstraction(t *t
 	if err != nil {
 		t.Fatalf("CollectSandboxArtifacts() unexpected error: %v", err)
 	}
-	if len(artifacts) != 3 {
-		t.Fatalf("artifacts len = %d, want 3: %#v", len(artifacts), artifacts)
+	if len(artifacts) != 4 {
+		t.Fatalf("artifacts len = %d, want 4: %#v", len(artifacts), artifacts)
 	}
 
 	if !reflect.DeepEqual(copier.fileCalls, []copyCall{{
@@ -76,6 +77,7 @@ func TestCollectSandboxArtifactsCopiesFilesAndDirectoriesThroughAbstraction(t *t
 		".hal/reports/factory.log",
 		".hal/reports/verify/summary.json",
 		".hal/reports/verify/test/stdout.txt",
+		".hal/reports/verify/test-stdout.txt",
 	} {
 		artifact := requireStoredArtifact(t, store, record.RunID, loaded.Artifacts, wantPath)
 		if artifact.SourcePath != "" {
@@ -95,6 +97,10 @@ func TestCollectSandboxArtifactsCopiesFilesAndDirectoriesThroughAbstraction(t *t
 	summaryData := readStoredArtifact(t, store, record.RunID, summaryArtifact)
 	if !strings.Contains(summaryData, `"passed":1`) {
 		t.Fatalf("stored summary data = %q", summaryData)
+	}
+	flatStdoutArtifact := requireStoredArtifact(t, store, record.RunID, loaded.Artifacts, ".hal/reports/verify/test-stdout.txt")
+	if got := readStoredArtifact(t, store, record.RunID, flatStdoutArtifact); got != "flat stdout\n" {
+		t.Fatalf("stored flat stdout data = %q", got)
 	}
 
 	encoded, err := json.Marshal(loaded)

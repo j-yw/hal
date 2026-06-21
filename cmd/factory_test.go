@@ -1636,6 +1636,20 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	if record.FinishedAt == nil || !record.FinishedAt.Equal(verifiedAt) {
 		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, verifiedAt)
 	}
+	runRecordArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, factoryRunRecordArtifactPath(store, record.RunID))
+	var storedRunRecord factory.RunRecord
+	if err := json.Unmarshal([]byte(readStoredFactoryArtifact(t, store, record.RunID, runRecordArtifact)), &storedRunRecord); err != nil {
+		t.Fatalf("Unmarshal(factory run record artifact) error: %v", err)
+	}
+	if storedRunRecord.Status != factory.RunStatusSucceeded || storedRunRecord.CurrentStep != "done" {
+		t.Fatalf("stored run record status/currentStep = %q/%q, want %q/done", storedRunRecord.Status, storedRunRecord.CurrentStep, factory.RunStatusSucceeded)
+	}
+	if storedRunRecord.FinishedAt == nil || !storedRunRecord.FinishedAt.Equal(verifiedAt) {
+		t.Fatalf("stored run record finishedAt = %v, want %s", storedRunRecord.FinishedAt, verifiedAt)
+	}
+	if storedRunRecord.Verification == nil || storedRunRecord.Verification.Summary.Total != 1 {
+		t.Fatalf("stored run record verification = %#v", storedRunRecord.Verification)
+	}
 
 	events, err := store.LoadEvents(record.RunID)
 	if err != nil {
@@ -1751,6 +1765,17 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 	}
 	if record.FinishedAt == nil || !record.FinishedAt.Equal(verifiedAt) {
 		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, verifiedAt)
+	}
+	runRecordArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, factoryRunRecordArtifactPath(store, record.RunID))
+	var storedRunRecord factory.RunRecord
+	if err := json.Unmarshal([]byte(readStoredFactoryArtifact(t, store, record.RunID, runRecordArtifact)), &storedRunRecord); err != nil {
+		t.Fatalf("Unmarshal(factory run record artifact) error: %v", err)
+	}
+	if storedRunRecord.Status != factory.RunStatusFailed || storedRunRecord.CurrentStep != "verify" {
+		t.Fatalf("stored run record status/currentStep = %q/%q, want %q/verify", storedRunRecord.Status, storedRunRecord.CurrentStep, factory.RunStatusFailed)
+	}
+	if storedRunRecord.Failure == nil || storedRunRecord.Failure.Step != "verify" {
+		t.Fatalf("stored run record failure = %#v", storedRunRecord.Failure)
 	}
 
 	events, err := store.LoadEvents(record.RunID)
@@ -1884,7 +1909,7 @@ func TestRunFactoryRunWithDepsEmitsJSONForMarkdownAndReportFlows(t *testing.T) {
 			}
 			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.sourcePath)
 			requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.runID+".json")
 		})
 	}
 }
@@ -2002,7 +2027,7 @@ func TestRunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows(t *testi
 			}
 			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.sourcePath)
 			requireFactoryArtifactSummaryPath(t, resp.Artifacts, ".hal/prd.json")
-			requireFactoryArtifactSummaryPath(t, resp.Artifacts, filepath.Join(store.RunsDir(), tt.runID+".json"))
+			requireFactoryArtifactSummaryPath(t, resp.Artifacts, tt.runID+".json")
 		})
 	}
 }
