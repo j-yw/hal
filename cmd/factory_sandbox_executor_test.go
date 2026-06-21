@@ -762,7 +762,7 @@ func TestRunFactorySandboxExecutorWithDepsReturnsExplicitLoadFailure(t *testing.
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		SandboxName: "factory-broken",
-		RunRecord:   factory.RunRecord{RunID: "run-load-failure"},
+		RunRecord:   factory.RunRecord{RunID: "run-load-failure", RepoRemote: "git@github.com:example/repo.git"},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
@@ -1013,6 +1013,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsProvisionFailure(t *testing.T) 
 			Status:      factory.RunStatusRunning,
 			CurrentStep: "run",
 			BranchName:  "hal/factory-sandbox-executor",
+			RepoRemote:  "git@github.com:example/repo.git",
 		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -1069,6 +1070,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 			RunID:       "run-start-failure",
 			Status:      factory.RunStatusRunning,
 			CurrentStep: "run",
+			RepoRemote:  "git@github.com:example/repo.git",
 		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
@@ -1121,6 +1123,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsResolveProviderFailureHandoff(t
 			RunID:       "run-provider-failure",
 			Status:      factory.RunStatusRunning,
 			CurrentStep: "run",
+			RepoRemote:  "git@github.com:example/repo.git",
 		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
