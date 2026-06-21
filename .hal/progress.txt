@@ -5,6 +5,7 @@
 - Factory run-scoped secrets should model requested env-backed secrets with `internal/factory.RunSecretInput` and persist only `RunSecretMetadata` on `RunRecord.Secrets`; durable records should contain `name`, `source`, `required`, and `present`, never raw secret values.
 - Resolve factory run secrets through `factory.ResolveRunSecrets` during `executeFactoryRun` setup before marking runs in progress or calling local/sandbox executors; keep raw values only on in-memory `ResolvedRunSecret` values.
 - Future factory run secret sources should plug into `internal/factory.RunSecretProvider` via `ResolveRunSecretsWithProviders`; keep the default `ResolveRunSecrets` path env-only until a source is implemented.
+- Use `factory.NewRunSecretRedactor` for any factory output, timeline, bootstrap, sandbox, or artifact surface that must redact resolved run secret values; empty values are ignored and the stable placeholder is `factory.RunSecretRedactionPlaceholder`.
 - Factory type-contract changes should update `internal/factory/types_test.go` JSON tag, round-trip, explicit field, optional omission, and legacy JSON loading coverage.
 
 ---
@@ -46,4 +47,16 @@
   - Keep `ResolveRunSecrets` as the compatibility path for factory execution callers; add source-specific behavior through `ResolveRunSecretsWithProviders`.
   - Unsupported secret sources should fail with `ErrUnsupportedRunSecretSource` so setup failures are distinguishable from missing required env values.
   - Future provider tests can use `RunSecretProviderFunc` to stay deterministic without real token services or network calls.
+---
+
+## 2026-06-21 09:24 CST - US-004
+- Implemented centralized factory run-secret redaction with `RunSecretRedactor`, `NewRunSecretRedactor`, and the stable `RunSecretRedactionPlaceholder`.
+- Added focused tests covering single-value redaction, multiple values, repeated occurrences, ignored empty/whitespace values, and longest-token-first replacement.
+- Quality checks run: `go test -timeout 60s ./internal/factory`, `go test -timeout 180s ./...`, `make vet`, `make build`, and `make lint` (golangci-lint not installed; target printed install hint).
+- Files changed: `internal/factory/secret_redactor.go`, `internal/factory/secret_redactor_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Browser verification skipped: backend CLI/library story with no frontend surface.
+- **Learnings for future iterations:**
+  - Centralize run-scoped secret value replacement through `factory.NewRunSecretRedactor`; later output, timeline, bootstrap, sandbox, and artifact stories should compose this instead of duplicating string replacement.
+  - Sort redaction tokens longest-first so overlapping secret values are fully hidden before shorter substrings are replaced.
+  - Ignore empty or whitespace-only secret values before calling `strings.ReplaceAll` to avoid broad output mutation.
 ---
