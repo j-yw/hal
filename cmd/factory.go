@@ -61,12 +61,13 @@ pipeline, or pass --sandbox to run the factory executor in a managed sandbox.
 Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
-base branch to the executor, --sandbox for remote sandbox-backed execution, and
---json for machine-readable factory-run-v1 output.`,
+base branch to the executor. Sandbox mode requires --base so the remote
+workspace can be checked out deterministically. Use --sandbox for remote
+sandbox-backed execution, and --json for machine-readable factory-run-v1 output.`,
 	Example: `  hal factory run .hal/prd-feature.md
   hal factory run --report .hal/reports/analysis.md
   hal factory run .hal/prd-feature.md --base main --json
-  hal factory run .hal/prd-feature.md --sandbox`,
+  hal factory run .hal/prd-feature.md --sandbox --base main`,
 	RunE: runFactoryRun,
 }
 
@@ -1056,6 +1057,9 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMo
 	}
 	if len(args) == 1 && strings.TrimSpace(reportPath) != "" {
 		return factoryRunRequest{}, fmt.Errorf("--report cannot be used with a positional PRD markdown path")
+	}
+	if sandboxMode && strings.TrimSpace(baseBranch) == "" {
+		return factoryRunRequest{}, fmt.Errorf("--base is required when --sandbox is set")
 	}
 
 	req := factoryRunRequest{
