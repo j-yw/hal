@@ -480,7 +480,11 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	requiredSecret := "ghp_bootstrap_env_secret_12345"
 	optionalSecret := "npm_bootstrap_env_secret_67890"
 
-	var execArgs [][]string
+	type execCall struct {
+		args []string
+		env  map[string]string
+	}
+	var execCalls []execCall
 	var bootstrapReq factory.BootstrapRequest
 	var bootstrapStep factory.BootstrapStepResult
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
@@ -537,8 +541,15 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 				},
 			}, runErr
 		},
-		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ io.Writer) error {
-			execArgs = append(execArgs, append([]string(nil), args...))
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, env map[string]string, _ io.Writer) error {
+			envCopy := map[string]string{}
+			for key, value := range env {
+				envCopy[key] = value
+			}
+			execCalls = append(execCalls, execCall{
+				args: append([]string(nil), args...),
+				env:  envCopy,
+			})
 			return nil
 		},
 	})
@@ -551,19 +562,18 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	if bootstrapReq.Env["GITHUB_TOKEN"] != requiredSecret || bootstrapReq.Env["OPTIONAL_TOKEN"] != optionalSecret {
 		t.Fatalf("bootstrap env = %#v, want resolved secrets", bootstrapReq.Env)
 	}
-	if len(execArgs) != 2 {
-		t.Fatalf("exec calls = %d, want bootstrap and remote execution: %#v", len(execArgs), execArgs)
+	if len(execCalls) != 2 {
+		t.Fatalf("exec calls = %d, want bootstrap and remote execution: %#v", len(execCalls), execCalls)
 	}
-	containsArg := func(args []string, want string) bool {
-		for _, arg := range args {
-			if arg == want {
-				return true
-			}
-		}
-		return false
+	if execCalls[0].env["GITHUB_TOKEN"] != requiredSecret || execCalls[0].env["OPTIONAL_TOKEN"] != optionalSecret {
+		t.Fatalf("bootstrap exec env = %#v, want resolved secret env", execCalls[0].env)
 	}
-	if !containsArg(execArgs[0], "GITHUB_TOKEN="+requiredSecret) || !containsArg(execArgs[0], "OPTIONAL_TOKEN="+optionalSecret) {
-		t.Fatalf("bootstrap exec args did not receive resolved secret env: %#v", execArgs[0])
+	argText := strings.Join(execCalls[0].args, " ")
+	if strings.Contains(argText, requiredSecret) || strings.Contains(argText, optionalSecret) || strings.Contains(argText, "GITHUB_TOKEN=") || strings.Contains(argText, "OPTIONAL_TOKEN=") {
+		t.Fatalf("bootstrap exec args leaked secret env data: %#v", execCalls[0].args)
+	}
+	if !reflect.DeepEqual(execCalls[0].args, []string{"hal", "init"}) {
+		t.Fatalf("bootstrap exec args = %#v, want hal init", execCalls[0].args)
 	}
 	if strings.Contains(bootstrapStep.CommandSummary, requiredSecret) || strings.Contains(bootstrapStep.CommandSummary, "GITHUB_TOKEN") {
 		t.Fatalf("bootstrap command summary leaked secret data: %q", bootstrapStep.CommandSummary)

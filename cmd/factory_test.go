@@ -2525,10 +2525,16 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 	failedAt := createdAt.Add(2 * time.Minute)
 	times := []time.Time{createdAt, startedAt, failedAt}
 	var buf bytes.Buffer
+	secret := "secret-token"
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
 		Sandbox:      true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
 	}, &buf, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		newRunID:     func() (string, error) { return "run-sandbox-failure", nil },
@@ -2547,6 +2553,12 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 		repoRemote: func(string) (string, error) {
 			return "git@github.com:jywlabs/hal.git", nil
 		},
+		lookupEnv: func(name string) (string, bool) {
+			if name == "GITHUB_TOKEN" {
+				return secret, true
+			}
+			return "", false
+		},
 		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
 			record := req.RunRecord
 			record.ExecutorMode = factory.ExecutorModeSandbox
@@ -2564,14 +2576,14 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 			record.Failure = &factory.FailureSummary{
 				Step:             "run",
 				Category:         factory.FailureCategoryPipeline,
-				Message:          "remote pipeline failed",
+				Message:          "remote pipeline failed token=" + secret,
 				Recoverable:      true,
 				SuggestedCommand: "hal sandbox ssh factory-remote",
 			}
 			if err := store.SaveRun(&record); err != nil {
 				return err
 			}
-			return factorySandboxTestError("execute factory sandbox command: remote pipeline failed token=secret-token")
+			return factorySandboxTestError("execute factory sandbox command: remote pipeline failed token=" + secret)
 		},
 	})
 	if err == nil {
@@ -2585,8 +2597,11 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 	if record.Failure == nil {
 		t.Fatalf("failure summary = nil")
 	}
-	if record.Failure.Message != "remote pipeline failed" {
-		t.Fatalf("failure message = %q, want sanitized sandbox message", record.Failure.Message)
+	if strings.Contains(record.Failure.Message, secret) {
+		t.Fatalf("failure message leaked secret: %#v", record.Failure)
+	}
+	if !strings.Contains(record.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("failure message missing redaction placeholder: %#v", record.Failure)
 	}
 	if record.Failure.SuggestedCommand != "hal sandbox ssh factory-remote" {
 		t.Fatalf("suggested command = %q", record.Failure.SuggestedCommand)
@@ -2596,9 +2611,19 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 		t.Fatalf("LoadEvents() error: %v", loadEventsErr)
 	}
 	for _, event := range events {
-		if errorText, ok := event.Metadata["error"].(string); ok && strings.Contains(errorText, "secret-token") {
+		if errorText, ok := event.Metadata["error"].(string); ok && strings.Contains(errorText, secret) {
 			t.Fatalf("event leaked raw sandbox error: %#v", event)
 		}
+	}
+	persisted, marshalErr := json.Marshal(struct {
+		Record factory.RunRecord     `json:"record"`
+		Events []factory.EventRecord `json:"events"`
+	}{Record: *record, Events: events})
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal(record/events) error: %v", marshalErr)
+	}
+	if strings.Contains(string(persisted), secret) {
+		t.Fatalf("persisted sandbox failure leaked secret: %s", string(persisted))
 	}
 	if !strings.Contains(buf.String(), "Suggested command: hal sandbox ssh factory-remote") {
 		t.Fatalf("output = %q, want sandbox ssh handoff", buf.String())

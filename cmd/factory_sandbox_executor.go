@@ -219,9 +219,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.ResolvedSecrets); ok {
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
-				provider:        provider,
-				connectInfo:     sandbox.ConnectInfoFromState(target),
-				runProviderExec: deps.runProviderExec,
+				provider:               provider,
+				connectInfo:            sandbox.ConnectInfoFromState(target),
+				runProviderExecWithEnv: deps.runProviderExecWithEnv,
 				// Bootstrap timelines are persisted from sanitized BootstrapResult
 				// events; stream raw command output only to the caller-facing writer.
 				out: req.RemoteOutput,
@@ -486,14 +486,14 @@ func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summ
 }
 
 type factorySandboxBootstrapExecutor struct {
-	provider        sandbox.Provider
-	connectInfo     *sandbox.ConnectInfo
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	out             io.Writer
+	provider               sandbox.Provider
+	connectInfo            *sandbox.ConnectInfo
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	out                    io.Writer
 }
 
 func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command factory.BootstrapCommand) (factory.BootstrapCommandResult, error) {
-	if e == nil || e.runProviderExec == nil {
+	if e == nil || e.runProviderExecWithEnv == nil {
 		return factory.BootstrapCommandResult{}, fmt.Errorf("sandbox bootstrap executor is required")
 	}
 	var summary bytes.Buffer
@@ -501,18 +501,14 @@ func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command facto
 	if e.out != nil {
 		out = io.MultiWriter(e.out, &summary)
 	}
-	err := e.runProviderExec(ctx, e.provider, e.connectInfo, factorySandboxBootstrapCommandArgs(command), out)
+	err := e.runProviderExecWithEnv(ctx, e.provider, e.connectInfo, factorySandboxBootstrapCommandArgs(command), command.Env, out)
 	return factory.BootstrapCommandResult{
 		OutputSummary: strings.TrimSpace(summary.String()),
 	}, err
 }
 
 func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []string {
-	args := []string{"env"}
-	for _, key := range sortedStringMapKeys(command.Env) {
-		args = append(args, key+"="+command.Env[key])
-	}
-	args = append(args, strings.TrimSpace(command.Name))
+	args := []string{strings.TrimSpace(command.Name)}
 	args = append(args, command.Args...)
 	if dir := strings.TrimSpace(command.Dir); dir != "" {
 		return []string{"sh", "-lc", "cd " + shellQuote(dir) + " && exec " + shellCommand(args)}

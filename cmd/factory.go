@@ -1118,10 +1118,7 @@ func markFactoryRunFailedWithRedactor(store factory.Store, record factory.RunRec
 		if preserved.ExitCode == 0 {
 			preserved.ExitCode = failure.ExitCode
 		}
-		failure = preserved
-		if command := strings.TrimSpace(existingFailure.SuggestedCommand); command != "" {
-			failure.SuggestedCommand = redactor.RedactString(command)
-		}
+		failure = redactFactoryRunFailureSummary(preserved, redactor)
 	}
 	record.Status = factory.RunStatusFailed
 	record.CurrentStep = failure.Step
