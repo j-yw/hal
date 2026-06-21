@@ -14,8 +14,11 @@ func TestCodexLinkerName(t *testing.T) {
 }
 
 func TestCodexLinkerSkillsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("HOME", home)
+
 	linker := &CodexLinker{}
-	home, _ := os.UserHomeDir()
 	want := filepath.Join(home, ".codex", "skills")
 
 	if got := linker.SkillsDir(); got != want {

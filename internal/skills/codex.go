@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 )
 
+var userHomeDir = os.UserHomeDir
+
 // CodexLinker creates symlinks for Codex skill discovery.
-// Codex uses a global skills directory at ~/.codex/skills/.
+// Codex uses global directories under the active Codex home.
 type CodexLinker struct{}
 
 func init() {
@@ -18,31 +20,34 @@ func (c *CodexLinker) Name() string {
 	return "codex"
 }
 
-// codexHome returns the home directory for Codex global paths.
-// It prefers $HOME over os.UserHomeDir() so tests can isolate
-// global link operations via t.Setenv("HOME", tmpDir).
+// codexHome returns the root directory for Codex global paths.
+// It prefers $CODEX_HOME, then $HOME/.codex, then os.UserHomeDir()/.codex
+// so callers share one path resolution contract.
 func codexHome() string {
-	if h := os.Getenv("HOME"); h != "" {
+	if h := os.Getenv("CODEX_HOME"); h != "" {
 		return h
 	}
-	home, _ := os.UserHomeDir()
-	return home
+	if h := os.Getenv("HOME"); h != "" {
+		return filepath.Join(h, ".codex")
+	}
+	home, _ := userHomeDir()
+	return filepath.Join(home, ".codex")
 }
 
 // SkillsDir returns where Codex looks for skills.
-// Unlike Claude (project-local), Codex uses global ~/.codex/skills/.
+// Unlike Claude (project-local), Codex uses the active Codex home.
 func (c *CodexLinker) SkillsDir() string {
-	return filepath.Join(codexHome(), ".codex", "skills")
+	return filepath.Join(codexHome(), "skills")
 }
 
 // CommandsDir returns where Codex looks for user-invocable commands.
-// Uses global ~/.codex/commands/hal/ (parallel to skills).
+// Uses the active Codex home, parallel to skills.
 func (c *CodexLinker) CommandsDir() string {
-	return filepath.Join(codexHome(), ".codex", "commands", "hal")
+	return filepath.Join(codexHome(), "commands", "hal")
 }
 
-// LinkCommands creates a symlink from ~/.codex/commands/hal to .hal/commands/.
-// Uses absolute paths since the link target is outside ~/.codex/.
+// LinkCommands creates a symlink from Codex commands/hal to .hal/commands/.
+// Uses absolute paths since the link target is outside the Codex home.
 func (c *CodexLinker) LinkCommands(projectDir string) error {
 	link := c.CommandsDir()
 
@@ -66,8 +71,8 @@ func (c *CodexLinker) LinkCommands(projectDir string) error {
 	return os.Symlink(target, link)
 }
 
-// Link creates symlinks from ~/.codex/skills/ to .hal/skills/.
-// Uses absolute paths since the link target is outside ~/.codex/.
+// Link creates symlinks from Codex skills to .hal/skills/.
+// Uses absolute paths since the link target is outside the Codex home.
 func (c *CodexLinker) Link(projectDir string, skills []string) error {
 	skillsDir := c.SkillsDir()
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
@@ -98,7 +103,7 @@ func (c *CodexLinker) Link(projectDir string, skills []string) error {
 	return nil
 }
 
-// Unlink removes skill and command symlinks from ~/.codex/.
+// Unlink removes skill and command symlinks from the active Codex home.
 // Only removes links that point to this project.
 func (c *CodexLinker) Unlink(projectDir string) error {
 	absProjectDir, _ := filepath.Abs(projectDir)
