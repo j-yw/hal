@@ -75,6 +75,10 @@ func init() {
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
+	if os.Getenv(compound.ReviewLoopActiveEnv) != "" {
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("hal review cannot run from inside an active hal review loop"))
+	}
+
 	ctx := context.Background()
 	out := io.Writer(os.Stdout)
 	errOut := io.Writer(os.Stderr)

@@ -3,6 +3,7 @@ package compound
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +127,7 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("prompt calls = %d, want %d", promptCalls, 2)
 	}
 
-	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Merge base: abc123def456", "Changed files:", "Recent commits since merge-base:", "Inline diff preview:", "Use repository tools and shell commands", "Hard limit for this step: at most 8", "Do not run hal commands or go run . commands", "go test ./..."}
+	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Merge base: abc123def456", "Changed files:", "Recent commits since merge-base:", "Inline diff preview:", "Use repository tools and shell commands", "Hard limit for this step: at most 8", "nested Hal runs are forbidden", "go test ./..."}
 	for _, snippet := range reviewPromptSnippets {
 		if !strings.Contains(reviewPrompt, snippet) {
 			t.Fatalf("review prompt missing required schema snippet %q", snippet)
@@ -136,7 +137,7 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("review prompt should allow tool usage, got: %q", reviewPrompt)
 	}
 
-	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "Do not run hal commands or go run . commands", "go test ./..."}
+	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "nested Hal runs are forbidden", "go test ./..."}
 	for _, snippet := range fixPromptSnippets {
 		if !strings.Contains(fixPrompt, snippet) {
 			t.Fatalf("fix prompt missing required schema snippet %q", snippet)
@@ -703,7 +704,7 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 	if !strings.Contains(prompt, "Hard limit for this step: at most 8") {
 		t.Fatalf("prompt should enforce a review command budget, got: %q", prompt)
 	}
-	if !strings.Contains(prompt, "Do not run hal commands or go run . commands") {
+	if !strings.Contains(prompt, "nested Hal runs are forbidden") {
 		t.Fatalf("prompt should block recursive hal/go-run commands, got: %q", prompt)
 	}
 	if !strings.Contains(prompt, "go test ./...") {
@@ -745,7 +746,7 @@ func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
 		t.Fatalf("buildReviewLoopFixPrompt() unexpected error: %v", err)
 	}
 
-	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "Do not run hal commands or go run . commands", "go test ./..."}
+	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "nested Hal runs are forbidden", "go test ./..."}
 	for _, field := range required {
 		if !strings.Contains(prompt, field) {
 			t.Fatalf("prompt missing required fix field or instruction %q", field)
@@ -784,6 +785,41 @@ func TestPromptWithRetryRetriesTransientErrors(t *testing.T) {
 	}
 	if sleepCalls != 2 {
 		t.Fatalf("sleep calls = %d, want %d", sleepCalls, 2)
+	}
+}
+
+func TestPromptWithRetrySetsReviewLoopActiveEnv(t *testing.T) {
+	previous, hadPrevious := os.LookupEnv(ReviewLoopActiveEnv)
+	if err := os.Setenv(ReviewLoopActiveEnv, "outer"); err != nil {
+		t.Fatalf("Setenv() error: %v", err)
+	}
+	t.Cleanup(func() {
+		if hadPrevious {
+			_ = os.Setenv(ReviewLoopActiveEnv, previous)
+			return
+		}
+		_ = os.Unsetenv(ReviewLoopActiveEnv)
+	})
+
+	deps := reviewIterationDeps{
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			if got := os.Getenv(ReviewLoopActiveEnv); got != "1" {
+				t.Fatalf("%s during prompt = %q, want 1", ReviewLoopActiveEnv, got)
+			}
+			return "ok", nil
+		},
+		maxRetries: 0,
+	}
+
+	got, err := promptWithRetry(context.Background(), deps, "prompt")
+	if err != nil {
+		t.Fatalf("promptWithRetry() unexpected error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("promptWithRetry() = %q, want ok", got)
+	}
+	if got := os.Getenv(ReviewLoopActiveEnv); got != "outer" {
+		t.Fatalf("%s after prompt = %q, want outer", ReviewLoopActiveEnv, got)
 	}
 }
 

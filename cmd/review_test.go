@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/spf13/cobra"
 )
 
@@ -292,6 +293,47 @@ func TestRunReviewUsesCommandContextAndFlags(t *testing.T) {
 	}
 	if gotOut != cmd.OutOrStdout() {
 		t.Fatal("runLoop output writer did not match command output writer")
+	}
+}
+
+func TestRunReviewRejectsNestedReviewLoop(t *testing.T) {
+	t.Setenv(compound.ReviewLoopActiveEnv, "1")
+
+	originalDeps := defaultReviewDeps
+	t.Cleanup(func() { defaultReviewDeps = originalDeps })
+
+	runLoopCalled := false
+	defaultReviewDeps = reviewDeps{
+		resolveBaseBranch: func(branch string) (string, error) {
+			return branch, nil
+		},
+		runLoop: func(ctx context.Context, req reviewRequest, out io.Writer) error {
+			runLoopCalled = true
+			return nil
+		},
+	}
+
+	cmd := &cobra.Command{Use: "review"}
+	cmd.Flags().String("engine", "codex", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().Int("iterations", 10, "")
+
+	err := runReview(cmd, nil)
+	if err == nil {
+		t.Fatal("runReview() error = nil, want nested review error")
+	}
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("runReview() error = %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeValidation {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+	}
+	if !strings.Contains(err.Error(), "cannot run from inside an active hal review loop") {
+		t.Fatalf("runReview() error = %v, want nested review message", err)
+	}
+	if runLoopCalled {
+		t.Fatal("runLoop should not be called for nested review")
 	}
 }
 
