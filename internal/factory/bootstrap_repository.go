@@ -253,11 +253,14 @@ func (d BootstrapRepositoryDeps) validateExistingRepoRemote(repoPath string, rep
 		return fmt.Errorf("verify repository origin remote: %w", err)
 	}
 	actual = strings.TrimSpace(actual)
+	sanitizeRemoteURL := func(value string) string {
+		return sanitizeBootstrapURLCredentials(value, actual, repositoryURL)
+	}
 	if actual == "" {
-		return fmt.Errorf("repository origin remote is empty; expected %q", repositoryURL)
+		return fmt.Errorf("repository origin remote is empty; expected %q", sanitizeRemoteURL(repositoryURL))
 	}
 	if actual != repositoryURL {
-		return fmt.Errorf("repository origin remote %q does not match requested URL %q", actual, repositoryURL)
+		return fmt.Errorf("repository origin remote %q does not match requested URL %q", sanitizeRemoteURL(actual), sanitizeRemoteURL(repositoryURL))
 	}
 	return nil
 }

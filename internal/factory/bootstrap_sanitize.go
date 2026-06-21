@@ -75,6 +75,16 @@ func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string
 	}
 }
 
+func sanitizeBootstrapURLCredentials(value string, rawURLs ...string) string {
+	valueSet := map[string]struct{}{}
+	for _, rawURL := range rawURLs {
+		addURLCredentialRedactionTokens(valueSet, rawURL)
+	}
+	return BootstrapSanitizer{
+		secretValues: sortedRedactionTokens(valueSet),
+	}.SanitizeString(value)
+}
+
 // SanitizeBootstrapCommand returns a copy of command with sensitive args,
 // directories, and env entries redacted for records and tests.
 func SanitizeBootstrapCommand(request BootstrapRequest, command BootstrapCommand) BootstrapCommand {
