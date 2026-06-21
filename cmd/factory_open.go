@@ -199,10 +199,20 @@ func renderFactoryHandoffLocations(out io.Writer, label string, locations []fact
 }
 
 func factoryOpenExecRequestFromSummary(summary *factory.HandoffSummary, in io.Reader, out io.Writer, errOut io.Writer) (factoryOpenExecRequest, error) {
-	if summary == nil || summary.NextAction == nil || strings.TrimSpace(summary.NextAction.Command) == "" {
+	if summary == nil {
 		return factoryOpenExecRequest{}, fmt.Errorf("factory run %q has no executable handoff action", handoffRunID(summary))
 	}
-	args, err := factoryOpenCommandArgs(summary.NextAction.Command, summary.RunID)
+	command := ""
+	if summary.NextAction != nil {
+		command = strings.TrimSpace(summary.NextAction.Command)
+	}
+	if command == "" {
+		command = strings.TrimSpace(summary.InspectCommand)
+	}
+	if command == "" {
+		return factoryOpenExecRequest{}, fmt.Errorf("factory run %q has no executable handoff action", handoffRunID(summary))
+	}
+	args, err := factoryOpenCommandArgs(command, summary.RunID)
 	if err != nil {
 		return factoryOpenExecRequest{}, err
 	}

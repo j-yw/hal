@@ -2540,6 +2540,9 @@ func sanitizeFactoryArtifactPath(path string) string {
 	if path == "" {
 		return ""
 	}
+	if factoryArtifactPathLooksLikeURL(path) {
+		return "[redacted]"
+	}
 	cleanPath := filepath.Clean(path)
 	if factoryArtifactLooksLikeWindowsAbsolutePath(path) || factoryArtifactLooksLikeWindowsAbsolutePath(cleanPath) {
 		return "[redacted]"
@@ -2555,6 +2558,14 @@ func sanitizeFactoryArtifactPath(path string) string {
 		return "[redacted]"
 	}
 	return filepath.ToSlash(cleanPath)
+}
+
+func factoryArtifactPathLooksLikeURL(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return true
+	}
+	return parsed.Scheme != "" || parsed.Host != ""
 }
 
 func factoryArtifactPathIsParentRelative(path string) bool {

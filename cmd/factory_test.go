@@ -3448,6 +3448,52 @@ func TestNewFactoryRunNextActionUsesCompletedTypeForSucceededRuns(t *testing.T) 
 	}
 }
 
+func TestNewFactoryRunNextActionRedactsURLArtifactLocations(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:  "run-url-locations",
+		Status: factory.RunStatusFailed,
+		Artifacts: []factory.ArtifactReference{
+			{
+				Name:       "report",
+				Type:       "json",
+				Path:       "http://192.0.2.42/report.json?token=secret",
+				StoredPath: "artifacts/run-url-locations/report.json",
+			},
+			{
+				Name:       "stderr-log",
+				Type:       "text",
+				Path:       "https://example.com/stderr.log?api_key=secret",
+				StoredPath: "artifacts/run-url-locations/stderr.log",
+			},
+		},
+	})
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+	if len(action.ArtifactLocations) != 1 {
+		t.Fatalf("artifactLocations len = %d, want 1: %#v", len(action.ArtifactLocations), action.ArtifactLocations)
+	}
+	if action.ArtifactLocations[0].Path != "[redacted]" {
+		t.Fatalf("artifact location path = %q, want [redacted]", action.ArtifactLocations[0].Path)
+	}
+	if len(action.LogLocations) != 1 {
+		t.Fatalf("logLocations len = %d, want 1: %#v", len(action.LogLocations), action.LogLocations)
+	}
+	if action.LogLocations[0].Path != "[redacted]" {
+		t.Fatalf("log location path = %q, want [redacted]", action.LogLocations[0].Path)
+	}
+
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, forbidden := range []string{"192.0.2.42", "token=secret", "api_key=secret", "https://example.com"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("nextAction should not expose %q: %s", forbidden, string(data))
+		}
+	}
+}
+
 func TestFactoryListCommandRegisteredWithJSONFlag(t *testing.T) {
 	cmd, err := commandAtPath(Root(), "factory", "list")
 	if err != nil {
@@ -3924,7 +3970,7 @@ func TestRunFactoryOpenCompletedRunHasNoTakeoverCommand(t *testing.T) {
 	}
 }
 
-func TestRunFactoryOpenExecCompletedRunReturnsClearError(t *testing.T) {
+func TestRunFactoryOpenExecCompletedRunExecutesInspectionCommand(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 11, 30, 0, 0, time.UTC)
 	record := testFactoryRunRecord("run-open-complete-exec", base, base.Add(time.Minute))
@@ -3934,18 +3980,23 @@ func TestRunFactoryOpenExecCompletedRunReturnsClearError(t *testing.T) {
 		t.Fatalf("SaveRun() error: %v", err)
 	}
 
+	var gotReq factoryOpenExecRequest
 	err := runFactoryOpenWithDeps(context.Background(), nil, io.Discard, io.Discard, record.RunID, true, factoryOpenDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
-		execute: func(context.Context, factoryOpenExecRequest) error {
-			t.Fatal("execute should not be called for completed run")
+		execute: func(_ context.Context, req factoryOpenExecRequest) error {
+			gotReq = req
 			return nil
 		},
 	})
-	if err == nil {
-		t.Fatal("runFactoryOpenWithDeps() error = nil, want no executable action")
+	if err != nil {
+		t.Fatalf("runFactoryOpenWithDeps() unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), `factory run "run-open-complete-exec" has no executable handoff action`) {
-		t.Fatalf("error = %q", err.Error())
+	wantArgs := []string{"hal", "factory", "status", "run-open-complete-exec", "--json"}
+	if !reflect.DeepEqual(gotReq.Args, wantArgs) {
+		t.Fatalf("exec args = %#v, want %#v", gotReq.Args, wantArgs)
+	}
+	if gotReq.Dir != "" {
+		t.Fatalf("exec dir = %q, want empty", gotReq.Dir)
 	}
 }
 
