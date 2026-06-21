@@ -4,6 +4,7 @@
 
 - Factory run-scoped secrets should model requested env-backed secrets with `internal/factory.RunSecretInput` and persist only `RunSecretMetadata` on `RunRecord.Secrets`; durable records should contain `name`, `source`, `required`, and `present`, never raw secret values.
 - Resolve factory run secrets through `factory.ResolveRunSecrets` during `executeFactoryRun` setup before marking runs in progress or calling local/sandbox executors; keep raw values only on in-memory `ResolvedRunSecret` values.
+- Future factory run secret sources should plug into `internal/factory.RunSecretProvider` via `ResolveRunSecretsWithProviders`; keep the default `ResolveRunSecrets` path env-only until a source is implemented.
 - Factory type-contract changes should update `internal/factory/types_test.go` JSON tag, round-trip, explicit field, optional omission, and legacy JSON loading coverage.
 
 ---
@@ -31,4 +32,18 @@
   - `executeFactoryRun` is the shared setup boundary for direct and queued factory execution; validation done there prevents both local and sandbox executors from starting.
   - Queue workers reconstruct secret requirements from `RunRecord.Secrets` metadata and re-resolve values from the environment; raw values must never be persisted for queued runs.
   - Missing required run secrets should be reported as validation failures that name the environment variable and omit secret values.
+---
+
+## 2026-06-21 09:19 CST - US-003
+- Implemented a run secret provider extension point with `RunSecretProvider`, `RunSecretProviderFunc`, `RunSecretProviders`, `DefaultRunSecretProviders`, and `ResolveRunSecretsWithProviders`.
+- Kept v1 factory behavior env-backed by routing the existing `ResolveRunSecrets` API through `DefaultRunSecretProviders`, which registers only the env provider.
+- Added an unsupported-source sentinel and error type so non-env sources fail clearly until a provider is implemented.
+- Added tests for registered provider resolution, unsupported non-env sources, and existing env-backed behavior.
+- Quality checks run: `go test -timeout 60s ./internal/factory`, `go test -timeout 120s ./cmd`, `go test -timeout 180s ./...`, `make vet`, `make build`, and `make lint` (golangci-lint not installed; target printed install hint).
+- Files changed: `internal/factory/secrets.go`, `internal/factory/secrets_test.go`, `AGENTS.md`, `.hal/prd.json`, `.hal/progress.txt`.
+- Browser verification skipped: backend CLI story with no frontend surface.
+- **Learnings for future iterations:**
+  - Keep `ResolveRunSecrets` as the compatibility path for factory execution callers; add source-specific behavior through `ResolveRunSecretsWithProviders`.
+  - Unsupported secret sources should fail with `ErrUnsupportedRunSecretSource` so setup failures are distinguishable from missing required env values.
+  - Future provider tests can use `RunSecretProviderFunc` to stay deterministic without real token services or network calls.
 ---
