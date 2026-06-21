@@ -2422,7 +2422,7 @@ func newFactoryArtifactSummaries(artifacts []factory.ArtifactReference) []Factor
 			ID:         strings.TrimSpace(artifact.ID),
 			Name:       strings.TrimSpace(artifact.Name),
 			Type:       strings.TrimSpace(artifact.Type),
-			Path:       strings.TrimSpace(artifact.Path),
+			Path:       sanitizeFactoryArtifactPath(artifact.Path),
 			StoredPath: strings.TrimSpace(artifact.StoredPath),
 			SizeBytes:  artifact.SizeBytes,
 			CreatedAt:  artifact.CreatedAt,
@@ -2436,6 +2436,22 @@ func newFactoryArtifactSummaries(artifacts []factory.ArtifactReference) []Factor
 		summaries = append(summaries, entry)
 	}
 	return summaries
+}
+
+func sanitizeFactoryArtifactPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	cleanPath := filepath.Clean(path)
+	if filepath.IsAbs(cleanPath) {
+		base := filepath.Base(cleanPath)
+		if base == "" || base == "." || base == string(os.PathSeparator) {
+			return "[redacted]"
+		}
+		return filepath.ToSlash(base)
+	}
+	return filepath.ToSlash(cleanPath)
 }
 
 func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, jsonMode bool) error {

@@ -3298,6 +3298,42 @@ func TestRunFactoryArtifactsJSONEmitsSafePayload(t *testing.T) {
 	requireExactKeys(t, summary, []string{"total", "partial", "warnings"})
 }
 
+func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
+	base := time.Date(2026, 6, 21, 8, 25, 0, 0, time.UTC)
+	rawPath := filepath.Join(t.TempDir(), "external-prds", "secret-feature.md")
+	record := testFactoryRunRecord("run-absolute-artifact-path", base, base.Add(time.Minute))
+	record.Artifacts = []factory.ArtifactReference{
+		{
+			Name:       "source-markdown",
+			Type:       "markdown",
+			SourcePath: rawPath,
+			Path:       rawPath,
+			StoredPath: "artifacts/run-absolute-artifact-path/secret-feature.md",
+		},
+	}
+
+	summary := newFactoryArtifactSummaries(record.Artifacts)[0]
+	if summary.Path != "secret-feature.md" {
+		t.Fatalf("sanitized path = %q, want basename only", summary.Path)
+	}
+
+	payloads := map[string]any{
+		"factory-run":       newFactoryRunResponse(record, nil),
+		"factory-status":    FactoryStatusResponse{ContractVersion: FactoryStatusContractVersion, Run: newFactoryStatusRun(record), Timeline: []factory.EventRecord{}},
+		"factory-artifacts": newFactoryArtifactsResponse(record),
+	}
+	for name, payload := range payloads {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("json.Marshal(%s) error: %v", name, err)
+		}
+		raw := string(data)
+		if strings.Contains(raw, rawPath) || strings.Contains(raw, filepath.Dir(rawPath)) {
+			t.Fatalf("%s JSON leaked raw absolute artifact path %q: %s", name, rawPath, raw)
+		}
+	}
+}
+
 func TestRunFactoryArtifactsJSONEmptyState(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 8, 30, 0, 0, time.UTC)
