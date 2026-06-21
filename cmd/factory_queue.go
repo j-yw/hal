@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,7 @@ type factoryQueueWorkDeps struct {
 	now          func() time.Time
 	claim        *factory.QueueClaim
 	loadPolicy   func(string) (*factory.FactoryPolicy, error)
+	loadEngine   func(string) (string, error)
 	runPipeline  func(context.Context, factoryRunPipelineRequest) error
 }
 
@@ -63,6 +65,7 @@ var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
 	loadPolicy:   factory.LoadPolicyConfig,
+	loadEngine:   compound.LoadDefaultEngine,
 	runPipeline:  runFactoryRunPipeline,
 }
 
@@ -352,6 +355,7 @@ func runFactoryQueueWorkWithDeps(ctx context.Context, out io.Writer, req factory
 }
 
 func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, entry factory.QueueEntry, deps factoryQueueWorkDeps) (factory.QueueEntry, error) {
+	deps = normalizeFactoryQueueWorkDeps(deps)
 	if _, err := factory.ValidateExecutorMode(entry.ExecutorMode); err != nil {
 		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
 	}
@@ -367,7 +371,20 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		loadPolicy: deps.loadPolicy,
 	})
 	if err != nil {
-		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load factory policy: %w", err), deps.now)
+		runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+		return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+	}
+	persistedRecord, err := persistFactoryRunPolicySnapshot(store, *record, policy)
+	if err != nil {
+		runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
+		return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+	}
+	record = &persistedRecord
+	if err := enforceFactoryRunCreationPolicy(store, runDir, *record, io.Discard, false, factoryRunDeps{
+		now:        deps.now,
+		loadEngine: deps.loadEngine,
+	}, policy); err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
 	}
 
 	_, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, factoryRunDeps{
@@ -449,6 +466,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	}
 	if deps.loadPolicy == nil {
 		deps.loadPolicy = defaultFactoryQueueWorkDeps.loadPolicy
+	}
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryQueueWorkDeps.loadEngine
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline

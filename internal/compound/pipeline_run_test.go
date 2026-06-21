@@ -84,6 +84,48 @@ func TestRunLoopStep_MaxRunAttemptsBlocksBeforeLoop(t *testing.T) {
 	}
 }
 
+func TestRunLoopStep_MaxRunAttemptsUsesRemainingBudgetOnResume(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	cfg.MaxIterations = 7
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	state := &PipelineState{
+		Step: StepRun,
+		Run: &RunState{
+			Iterations: 3,
+			Complete:   false,
+		},
+	}
+
+	var gotLoopConfig loop.Config
+	origRunLoopWithConfig := runLoopWithConfig
+	runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result, error) {
+		gotLoopConfig = cfg
+		return loop.Result{
+			Success:    true,
+			Complete:   false,
+			Iterations: 2,
+		}, nil
+	}
+	t.Cleanup(func() {
+		runLoopWithConfig = origRunLoopWithConfig
+	})
+
+	err := pipeline.runLoopStep(context.Background(), state, RunOptions{MaxRunAttempts: 5})
+	if err == nil {
+		t.Fatal("expected incomplete run gate error")
+	}
+	if gotLoopConfig.MaxIterations != 2 {
+		t.Fatalf("loop max iterations = %d, want remaining policy budget 2", gotLoopConfig.MaxIterations)
+	}
+	if state.Run == nil || state.Run.Iterations != 5 {
+		t.Fatalf("state.Run = %+v, want cumulative iterations 5", state.Run)
+	}
+	if state.Run.MaxIterations != 2 {
+		t.Fatalf("state.Run.MaxIterations = %d, want remaining policy budget 2", state.Run.MaxIterations)
+	}
+}
+
 func (runStepTestEngine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {
 	return engine.Result{}
 }

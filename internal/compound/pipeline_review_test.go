@@ -665,6 +665,55 @@ func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
 	}
 }
 
+func TestRunReviewStep_DoesNotCountInvalidFindingsAsFixAttempts(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy-invalid",
+		StartedAt:  time.Now(),
+	}
+	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
+
+	cycles := 0
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		cycles++
+		return &ReviewLoopResult{
+			Iterations: []ReviewLoopIteration{{
+				Iteration:    cycles,
+				IssuesFound:  1,
+				ValidIssues:  0,
+				FixesApplied: 0,
+			}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{
+		MaxReviewFixAttempts: 1,
+		ReviewCleanStreak:    2,
+		ReviewMaxCycles:      2,
+	})
+	if err != nil {
+		t.Fatalf("runReviewStep() unexpected error: %v", err)
+	}
+	if cycles != 2 {
+		t.Fatalf("review cycles = %d, want 2", cycles)
+	}
+	if state.Review == nil || state.Review.FixAttempts != 0 {
+		t.Fatalf("state.Review = %+v, want zero fix attempts", state.Review)
+	}
+	if state.Review.Status != "passed" {
+		t.Fatalf("review status = %q, want passed", state.Review.Status)
+	}
+}
+
 func stubCleanReviewFinalVerification(t *testing.T, pipeline *Pipeline, branch string) {
 	t.Helper()
 	origChanges := workingTreeChangesInDirFn

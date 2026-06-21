@@ -995,12 +995,13 @@ func convertBranchFixCommand(convertMode, branchName string) string {
 func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: run\n")
 
-	maxRunIterations := p.runStepMaxIterations(opts)
-	if state.Run != nil && !state.Run.Complete && opts.MaxRunAttempts > 0 && state.Run.Iterations >= opts.MaxRunAttempts {
+	previousRunIterations := incompleteRunIterations(state)
+	maxRunIterations := p.runStepMaxIterations(state, opts)
+	if opts.MaxRunAttempts > 0 && previousRunIterations >= opts.MaxRunAttempts {
 		return &PolicyLimitError{
 			PolicyField: "factory.policy.maxRunAttempts",
 			Step:        StepRun,
-			Attempts:    state.Run.Iterations,
+			Attempts:    previousRunIterations,
 			Limit:       opts.MaxRunAttempts,
 		}
 	}
@@ -1046,8 +1047,9 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return fmt.Errorf("failed to create loop runner: %w", err)
 	}
 
+	totalRunIterations := previousRunIterations + result.Iterations
 	state.Run = &RunState{
-		Iterations:    result.Iterations,
+		Iterations:    totalRunIterations,
 		Complete:      result.Complete,
 		MaxIterations: maxRunIterations,
 	}
@@ -1079,12 +1081,22 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 	return nil
 }
 
-func (p *Pipeline) runStepMaxIterations(opts RunOptions) int {
+func (p *Pipeline) runStepMaxIterations(state *PipelineState, opts RunOptions) int {
 	maxIterations := p.config.MaxIterations
-	if opts.MaxRunAttempts > 0 && opts.MaxRunAttempts < maxIterations {
-		return opts.MaxRunAttempts
+	if opts.MaxRunAttempts > 0 {
+		remainingAttempts := opts.MaxRunAttempts - incompleteRunIterations(state)
+		if remainingAttempts < maxIterations {
+			return remainingAttempts
+		}
 	}
 	return maxIterations
+}
+
+func incompleteRunIterations(state *PipelineState) int {
+	if state == nil || state.Run == nil || state.Run.Complete || state.Run.Iterations <= 0 {
+		return 0
+	}
+	return state.Run.Iterations
 }
 
 // runReviewStep executes bounded review cycles before CI.
@@ -1162,7 +1174,7 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 
 		iteration := result.Iterations[len(result.Iterations)-1]
 		lastValidIssues = iteration.ValidIssues
-		if iteration.IssuesFound > 0 {
+		if iteration.ValidIssues > 0 || iteration.FixesApplied > 0 {
 			state.Review.FixAttempts++
 		}
 		if iteration.FixesApplied > 0 {
