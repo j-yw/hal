@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -253,7 +254,7 @@ func addRunSecretRedactionValue(values map[string]struct{}, value string) {
 	if strings.TrimSpace(value) == "" {
 		return
 	}
-	values[value] = struct{}{}
+	addRunSecretRedactionCandidate(values, value)
 
 	for _, fragment := range strings.FieldsFunc(value, func(r rune) bool {
 		return r == '\n' || r == '\r'
@@ -262,9 +263,24 @@ func addRunSecretRedactionValue(values map[string]struct{}, value string) {
 		if trimmed == "" {
 			continue
 		}
-		values[fragment] = struct{}{}
-		values[trimmed] = struct{}{}
+		addRunSecretRedactionCandidate(values, fragment)
+		addRunSecretRedactionCandidate(values, trimmed)
 	}
+}
+
+func addRunSecretRedactionCandidate(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	values[value] = struct{}{}
+	values[url.PathEscape(value)] = struct{}{}
+	values[url.QueryEscape(value)] = struct{}{}
+	values[runSecretUserinfoEscape(value)] = struct{}{}
+}
+
+func runSecretUserinfoEscape(value string) string {
+	const userinfoPrefix = "__hal_secret__:"
+	return strings.TrimPrefix(url.UserPassword("__hal_secret__", value).String(), userinfoPrefix)
 }
 
 func sortedRunSecretRedactionValues(values map[string]struct{}) []string {

@@ -33,6 +33,7 @@ type factoryQueueWorkDeps struct {
 	now          func() time.Time
 	claim        *factory.QueueClaim
 	lookupEnv    func(string) (string, bool)
+	repoRemote   func(string) (string, error)
 	runPipeline  func(context.Context, factoryRunPipelineRequest) error
 	runSandbox   func(context.Context, factorySandboxExecutorRequest) error
 }
@@ -64,6 +65,7 @@ var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
 	lookupEnv:    os.LookupEnv,
+	repoRemote:   readGitRemoteOptionalInDir,
 	runPipeline:  runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
@@ -365,8 +367,12 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err), deps.now)
 	}
 	record.ExecutorMode = entry.ExecutorMode
+	runRecord, err := rehydrateQueuedSandboxRunRecord(*record, deps)
+	if err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
+	}
 
-	_, execErr := executeFactoryRun(ctx, factoryQueueRunDir(*record), factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, factoryRunDeps{
+	_, execErr := executeFactoryRun(ctx, factoryQueueRunDir(runRecord), factoryRunRequestFromQueueRecord(runRecord), io.Discard, store, runRecord, factoryRunDeps{
 		now:         deps.now,
 		lookupEnv:   deps.lookupEnv,
 		runPipeline: deps.runPipeline,
@@ -383,6 +389,26 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		return entry, err
 	}
 	return completedEntry, nil
+}
+
+func rehydrateQueuedSandboxRunRecord(record factory.RunRecord, deps factoryQueueWorkDeps) (factory.RunRecord, error) {
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		return record, nil
+	}
+	if !strings.Contains(record.RepoRemote, factory.RunSecretRedactionPlaceholder) {
+		return record, nil
+	}
+	if deps.repoRemote == nil {
+		return record, nil
+	}
+	remote, err := deps.repoRemote(factoryQueueRunDir(record))
+	if err != nil {
+		return record, fmt.Errorf("refresh queued sandbox repository remote: %w", err)
+	}
+	if strings.TrimSpace(remote) != "" {
+		record.RepoRemote = strings.TrimSpace(remote)
+	}
+	return record, nil
 }
 
 func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time) (factory.QueueEntry, error) {
@@ -464,6 +490,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	}
 	if deps.lookupEnv == nil {
 		deps.lookupEnv = defaultFactoryQueueWorkDeps.lookupEnv
+	}
+	if deps.repoRemote == nil {
+		deps.repoRemote = defaultFactoryQueueWorkDeps.repoRemote
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline

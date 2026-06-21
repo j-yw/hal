@@ -654,6 +654,77 @@ func TestRunFactoryQueueWorkWithDepsDispatchesSandboxExecutorMode(t *testing.T) 
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 40, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox", PID: 5354, Hostname: "factory-host"}
+	secret := "ghp_factory_secret_value_123"
+	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
+	redactedRemote := "https://x:" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
+	record := testFactoryRunRecord("run-queue-sandbox-redacted-remote", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = "main"
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.RepoRemote = redactedRemote
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-redacted-remote", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var gotSandboxReq factorySandboxExecutorRequest
+	deps := queueWorkTestDepsWithExecutors(store, claimedAt, claim,
+		func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called for sandbox queue entry")
+			return nil
+		},
+		func(_ context.Context, req factorySandboxExecutorRequest) error {
+			gotSandboxReq = req
+			return nil
+		},
+	)
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name == "GITHUB_TOKEN" {
+			return secret, true
+		}
+		return "", false
+	}
+	deps.repoRemote = func(dir string) (string, error) {
+		if dir != record.RepoPath {
+			t.Fatalf("repoRemote dir = %q, want %q", dir, record.RepoPath)
+		}
+		return rawRemote, nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+
+	if gotSandboxReq.RunRecord.RepoRemote != rawRemote {
+		t.Fatalf("sandbox repo remote = %q, want raw remote", gotSandboxReq.RunRecord.RepoRemote)
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.RepoRemote != redactedRemote {
+		t.Fatalf("stored repo remote = %q, want redacted remote", loaded.RepoRemote)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsRejectsSandboxWithoutBaseBranch(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 18, 45, 0, 0, time.UTC)

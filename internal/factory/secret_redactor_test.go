@@ -77,6 +77,18 @@ func TestRunSecretRedactorRedactsMultilineValueFragments(t *testing.T) {
 	}
 }
 
+func TestRunSecretRedactorRedactsURLEncodedValues(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Value: "p@ss word"},
+	})
+
+	got := redactor.RedactString("remote=https://x:p%40ss%20word@github.com/example/repo.git query=token=p%40ss+word")
+	want := "remote=https://x:" + RunSecretRedactionPlaceholder + "@github.com/example/repo.git query=token=" + RunSecretRedactionPlaceholder
+	if got != want {
+		t.Fatalf("RedactString() = %q, want %q", got, want)
+	}
+}
+
 func TestRunSecretRedactorRedactsArtifactSummaryTypedCollections(t *testing.T) {
 	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
 		{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Value: "ghp_factory_secret_value_123"},
