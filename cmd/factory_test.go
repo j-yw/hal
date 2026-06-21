@@ -768,6 +768,76 @@ func TestRunFactoryRunWithDepsPreservesPartialArtifactsWhenArtifactCollectionFai
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-partial-artifact-failed.json"))
 }
 
+func TestRunFactoryRunWithDepsPreservesPartialArtifactsWhenPipelineAndArtifactCollectionFail(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	reportsDir := filepath.Join(halDir, "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(reportsDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 5, 10, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	failedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, failedAt}
+	reportPath := filepath.Join(".hal", "reports", "blocked.log")
+	pipelineErr := errors.New("pipeline failed after writing partial evidence")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-pipeline-partial-artifact-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			writeFile(t, reportsDir, "blocked.log", "blocked\n")
+			ref := factory.ArtifactReference{
+				Name: factoryGeneratedReportArtifactName("blocked.log"),
+				Type: factoryArtifactTypeForPath(reportPath),
+				Path: filepath.Clean(reportPath),
+			}
+			ref.ID = factoryArtifactID(ref)
+			blockedArtifactPath := filepath.Join(store.ArtifactsDir(), "run-pipeline-partial-artifact-failed", strings.Trim(ref.ID, "."))
+			if err := os.MkdirAll(blockedArtifactPath, 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact path) error: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(blockedArtifactPath+".bak", "child"), 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact backup path) error: %v", err)
+			}
+			return pipelineErr
+		},
+	})
+	if !errors.Is(err, pipelineErr) || !strings.Contains(err.Error(), "record factory artifacts") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want pipeline and artifact collection errors", err)
+	}
+
+	record, err := store.LoadRun("run-pipeline-partial-artifact-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
+	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-pipeline-partial-artifact-failed.json"))
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -1898,6 +1968,90 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	}
 	if !events[3].Timestamp.Equal(verifiedAt) {
 		t.Fatalf("completion event timestamp = %s, want %s", events[3].Timestamp, verifiedAt)
+	}
+}
+
+func TestRunFactoryRunWithDepsRecordsMissingVerificationArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 5, 20, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verifiedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-missing-verification-artifact", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return verifiedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return &verify.Config{Checks: []verify.ShellCheck{
+				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
+			}}, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			return &verify.Result{
+				Status: verify.StatusPass,
+				Summary: verify.Summary{
+					Total:  1,
+					Passed: 1,
+				},
+				Artifacts: []verify.ArtifactReference{
+					{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/missing-stdout.txt"},
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-missing-verification-artifact")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusSucceeded)
+	}
+	missing := requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/verify/missing-stdout.txt")
+	if !missing.Partial {
+		t.Fatalf("missing verification artifact Partial = false: %#v", missing)
+	}
+	if missing.StoredPath != "" {
+		t.Fatalf("missing verification artifact StoredPath = %q, want empty", missing.StoredPath)
+	}
+	if len(missing.Warnings) == 0 || !strings.Contains(missing.Warnings[0], "verification artifact not found") {
+		t.Fatalf("missing verification artifact warnings = %#v", missing.Warnings)
+	}
+	if missing.Summary["collectionStatus"] != "missing" || missing.Summary["checkId"] != "test" || missing.Summary["kind"] != verify.ArtifactKindStdout {
+		t.Fatalf("missing verification artifact summary = %#v", missing.Summary)
 	}
 }
 

@@ -437,6 +437,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		}
 		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
+			if reloadedRecord, loadErr := store.LoadRun(runningRecord.RunID); loadErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("reload factory run after artifact failure: %w", loadErr))
+			} else {
+				failedRecord = *reloadedRecord
+			}
 		} else {
 			failedRecord = artifactRecord
 		}
@@ -1301,16 +1306,10 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 }
 
 func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference) error {
+	missingArtifacts := make([]factory.ArtifactReference, 0)
 	for _, artifact := range artifacts {
 		path := strings.TrimSpace(artifact.Path)
 		if path == "" {
-			continue
-		}
-		sourcePath := path
-		if !filepath.IsAbs(sourcePath) {
-			sourcePath = filepath.Join(dir, sourcePath)
-		}
-		if !factoryArtifactFileExists(sourcePath) {
 			continue
 		}
 		nameParts := []string{"verification"}
@@ -1330,8 +1329,34 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 			},
 		}
 		ref.ID = factoryArtifactID(ref)
+		sourcePath := path
+		if !filepath.IsAbs(sourcePath) {
+			sourcePath = filepath.Join(dir, sourcePath)
+		}
+		if !factoryArtifactFileExists(sourcePath) {
+			missing := ref
+			missing.Partial = true
+			missing.Warnings = append(missing.Warnings, fmt.Sprintf("verification artifact not found: %s", ref.Path))
+			missing.Summary = mergeFactoryArtifactSummary(missing.Summary, map[string]any{
+				"collectionStatus": "missing",
+			})
+			missingArtifacts = append(missingArtifacts, missing)
+			continue
+		}
 		if _, err := store.SaveArtifactFile(runID, ref, sourcePath); err != nil {
 			return fmt.Errorf("store factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
+		}
+	}
+	if len(missingArtifacts) > 0 {
+		updatedRecord, err := store.LoadRun(runID)
+		if err != nil {
+			return fmt.Errorf("load factory run for missing verification artifact warnings: %w", err)
+		}
+		for _, missing := range missingArtifacts {
+			updatedRecord.Artifacts = upsertFactoryRunArtifact(updatedRecord.Artifacts, missing)
+		}
+		if err := store.SaveRun(updatedRecord); err != nil {
+			return fmt.Errorf("record missing factory verification artifact warnings: %w", err)
 		}
 	}
 	return nil
