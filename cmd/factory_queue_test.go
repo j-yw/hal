@@ -654,6 +654,60 @@ func TestRunFactoryQueueWorkWithDepsDispatchesSandboxExecutorMode(t *testing.T) 
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsRejectsSandboxWithoutBaseBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 45, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox", PID: 5354, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-sandbox-missing-base", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = ""
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-missing-base", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDepsWithExecutors(store, claimedAt, claim,
+		func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called for sandbox queue entry")
+			return nil
+		},
+		func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("runSandbox called for sandbox queue entry without base")
+			return nil
+		},
+	))
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want missing base error")
+	}
+	if !strings.Contains(err.Error(), "--base is required when --sandbox is set") {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want missing base error", err.Error())
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", loaded.Status)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Status != factory.QueueStatusFailed {
+		t.Fatalf("queue entries = %#v, want one failed entry", entries)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsClaimsFIFOEntry(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 19, 0, 0, 0, time.UTC)

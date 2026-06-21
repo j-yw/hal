@@ -467,6 +467,9 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if deps.runPipeline == nil {
 		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
 	}
+	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
+		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), factory.RunSecretRedactor{})
+	}
 
 	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)

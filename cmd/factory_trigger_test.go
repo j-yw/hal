@@ -146,6 +146,7 @@ func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *te
 	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
 		RepoPath:     repoDir,
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		ExecutorMode: factory.ExecutorModeSandbox,
 		Secrets: []factory.RunSecretInput{{
 			Name:     "GITHUB_TOKEN",
@@ -370,6 +371,15 @@ func TestRunFactoryTriggerWithDepsRejectsMissingPayloads(t *testing.T) {
 				ExecutorMode: factory.ExecutorModeLocal,
 			},
 			wantErr: "--reports-dir requires --discover-report",
+		},
+		{
+			name: "sandbox executor missing base",
+			req: factoryTriggerRequest{
+				RepoPath:     ".",
+				MarkdownPath: ".hal/prd.md",
+				ExecutorMode: factory.ExecutorModeSandbox,
+			},
+			wantErr: "--base is required when --executor sandbox is set",
 		},
 	}
 

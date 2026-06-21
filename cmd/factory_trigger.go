@@ -202,7 +202,8 @@ func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest
 	}
 	req.Secrets = secrets
 
-	if _, err := parseFactoryTriggerRequest(req); err != nil {
+	req, err = parseFactoryTriggerRequest(req)
+	if err != nil {
 		return factoryTriggerRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	return req, nil
@@ -221,10 +222,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		return fmt.Errorf("factory store dependency is required")
 	}
 
-	executorMode, err := factory.ValidateExecutorMode(req.ExecutorMode)
-	if err != nil {
-		return err
-	}
+	executorMode := req.ExecutorMode
 
 	repoPath, err := resolveFactoryTriggerRepoPath(req.RepoPath)
 	if err != nil {
@@ -288,6 +286,11 @@ func parseFactoryTriggerRequest(req factoryTriggerRequest) (factoryTriggerReques
 	req.ReportPath = strings.TrimSpace(req.ReportPath)
 	req.ReportsDir = strings.TrimSpace(req.ReportsDir)
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
+	executorMode, err := factory.ValidateExecutorMode(req.ExecutorMode)
+	if err != nil {
+		return factoryTriggerRequest{}, err
+	}
+	req.ExecutorMode = executorMode
 	if req.RepoPath == "" {
 		return factoryTriggerRequest{}, fmt.Errorf("factory trigger repository path is required")
 	}
@@ -310,6 +313,9 @@ func parseFactoryTriggerRequest(req factoryTriggerRequest) (factoryTriggerReques
 	}
 	if req.ReportsDir != "" && !req.DiscoverReport {
 		return factoryTriggerRequest{}, fmt.Errorf("--reports-dir requires --discover-report")
+	}
+	if req.ExecutorMode == factory.ExecutorModeSandbox && req.BaseBranch == "" {
+		return factoryTriggerRequest{}, fmt.Errorf("--base is required when --executor sandbox is set")
 	}
 	return req, nil
 }

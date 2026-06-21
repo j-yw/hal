@@ -2428,6 +2428,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, &buf, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -2585,6 +2586,7 @@ func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T)
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 		JSON:         true,
 	}, &buf, factoryRunDeps{
@@ -2663,6 +2665,7 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 		Secrets: []factory.RunSecretInput{{
 			Name:     "GITHUB_TOKEN",
