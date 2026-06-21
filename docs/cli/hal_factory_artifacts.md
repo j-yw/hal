@@ -32,4 +32,3 @@ hal factory artifacts <run-id> [flags]
 ### SEE ALSO
 
 * [hal factory](hal_factory.md)	 - Run and inspect factory workflows
-

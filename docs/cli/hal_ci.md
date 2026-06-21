@@ -36,4 +36,3 @@ Examples:
 * [hal ci merge](hal_ci_merge.md)	 - Merge the open pull request for the current branch
 * [hal ci push](hal_ci_push.md)	 - Push current branch and create or reuse a pull request
 * [hal ci status](hal_ci_status.md)	 - Show aggregated CI status for the current branch
-

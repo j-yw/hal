@@ -36,4 +36,3 @@ hal ci status [flags]
 ### SEE ALSO
 
 * [hal ci](hal_ci.md)	 - Run CI workflow commands
-

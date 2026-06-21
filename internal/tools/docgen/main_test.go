@@ -154,6 +154,29 @@ func TestRunMarkdownFrontmatter(t *testing.T) {
 	}
 }
 
+func TestRunMarkdownTrimsTrailingBlankLines(t *testing.T) {
+	outDir := t.TempDir()
+	root := newTestRootCommand()
+
+	err := run([]string{"-out", outDir, "-format", formatMarkdown}, root)
+	if err != nil {
+		t.Fatalf("run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, "hal_run.md"))
+	if err != nil {
+		t.Fatalf("failed to read generated markdown: %v", err)
+	}
+
+	content := string(data)
+	if strings.HasSuffix(content, "\n\n") {
+		t.Fatalf("generated markdown has trailing blank line: %q", content)
+	}
+	if !strings.HasSuffix(content, "\n") {
+		t.Fatalf("generated markdown should end with one newline: %q", content)
+	}
+}
+
 func TestRunDisablesAutoGenTag(t *testing.T) {
 	outDir := t.TempDir()
 	root := newTestRootCommand()

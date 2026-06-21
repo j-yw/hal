@@ -41,4 +41,3 @@ hal archive [flags]
 * [hal archive create](hal_archive_create.md)	 - Archive current feature state
 * [hal archive list](hal_archive_list.md)	 - List all archives
 * [hal archive restore](hal_archive_restore.md)	 - Restore an archived feature
-

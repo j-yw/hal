@@ -31,4 +31,3 @@ Use 'hal standards list' to see what's currently configured.
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
 * [hal standards discover](hal_standards_discover.md)	 - Discover and document standards from your codebase
 * [hal standards list](hal_standards_list.md)	 - List configured standards
-
