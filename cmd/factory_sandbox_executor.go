@@ -199,6 +199,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult); appendErr != nil {
 			return fmt.Errorf("record sandbox bootstrap timeline: %w", appendErr)
 		}
+		if syncErr := remoteOutput.SyncNextSequence(); syncErr != nil {
+			return fmt.Errorf("sync sandbox timeline sequence: %w", syncErr)
+		}
 		if bootstrapErr != nil {
 			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr)
 			return fmt.Errorf("bootstrap factory sandbox workspace: %w", bootstrapErr)
@@ -328,6 +331,22 @@ func (w *factorySandboxTimelineWriter) NextSequence() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.nextSequence
+}
+
+func (w *factorySandboxTimelineWriter) SyncNextSequence() error {
+	if w == nil || strings.TrimSpace(w.runID) == "" {
+		return nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	events, err := w.store.LoadEvents(w.runID)
+	if err != nil {
+		return fmt.Errorf("load factory sandbox timeline %q: %w", w.runID, err)
+	}
+	w.nextSequence = nextFactoryRunEventSequence(events)
+	return nil
 }
 
 func (w *factorySandboxTimelineWriter) appendExecutorEvent(eventType, summary string, metadata map[string]any) error {

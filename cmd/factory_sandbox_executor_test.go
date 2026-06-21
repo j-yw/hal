@@ -224,9 +224,9 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 			return nil
 		},
 		saveRun: func(factory.Store, *factory.RunRecord) error { return nil },
-		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+		appendEvent: func(store factory.Store, event *factory.EventRecord) error {
 			events = append(events, *event)
-			return nil
+			return store.AppendEvent(event)
 		},
 	})
 	if err != nil {
@@ -252,6 +252,9 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	}
 	if events[1].Summary != "Remote sandbox execution started" || events[2].Summary != "Remote sandbox execution completed" {
 		t.Fatalf("remote execution events = %#v", events)
+	}
+	if events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 {
+		t.Fatalf("event sequences = %d/%d/%d, want 1/2/3", events[0].Sequence, events[1].Sequence, events[2].Sequence)
 	}
 }
 
