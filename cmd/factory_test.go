@@ -3049,6 +3049,11 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 		{
 			Name: "pr",
 			Type: "url",
+			URL:  "https://github.com/acme/hal/pull/1",
+		},
+		{
+			Name: "internal-url",
+			Type: "url",
 			URL:  "http://192.0.2.42/pull/1",
 		},
 	}
@@ -3104,8 +3109,8 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	if resp.Run.RunID != record.RunID {
 		t.Fatalf("run.runId = %q, want %q", resp.Run.RunID, record.RunID)
 	}
-	if len(resp.Run.Artifacts) != 2 {
-		t.Fatalf("run.artifacts len = %d, want 2", len(resp.Run.Artifacts))
+	if len(resp.Run.Artifacts) != 3 {
+		t.Fatalf("run.artifacts len = %d, want 3", len(resp.Run.Artifacts))
 	}
 	gotSequence := make([]int64, 0, len(resp.Timeline))
 	for _, event := range resp.Timeline {
@@ -3131,8 +3136,8 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 		"finishedAt", "artifacts", "failure",
 	})
 	artifacts, ok := run["artifacts"].([]any)
-	if !ok || len(artifacts) != 2 {
-		t.Fatalf("run.artifacts should be an array of 2, got %T len %d", run["artifacts"], len(resp.Run.Artifacts))
+	if !ok || len(artifacts) != 3 {
+		t.Fatalf("run.artifacts should be an array of 3, got %T len %d", run["artifacts"], len(resp.Run.Artifacts))
 	}
 	firstArtifact, ok := artifacts[0].(map[string]any)
 	if !ok {
@@ -3145,11 +3150,21 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	if !ok {
 		t.Fatalf("second artifact should be an object, got %T", artifacts[1])
 	}
-	if _, ok := secondArtifact["url"]; ok {
-		t.Fatalf("status artifact should not expose url: %#v", secondArtifact)
+	if secondArtifact["url"] != "https://github.com/acme/hal/pull/1" {
+		t.Fatalf("status artifact url = %v, want preserved sanitized URL", secondArtifact["url"])
 	}
-	if secondArtifact["path"] != "[redacted]" {
-		t.Fatalf("url-only status artifact path = %v, want [redacted]", secondArtifact["path"])
+	if _, ok := secondArtifact["path"]; ok {
+		t.Fatalf("url status artifact should not synthesize a path when URL is preserved: %#v", secondArtifact)
+	}
+	thirdArtifact, ok := artifacts[2].(map[string]any)
+	if !ok {
+		t.Fatalf("third artifact should be an object, got %T", artifacts[2])
+	}
+	if _, ok := thirdArtifact["url"]; ok {
+		t.Fatalf("unsafe status artifact should not expose url: %#v", thirdArtifact)
+	}
+	if thirdArtifact["path"] != "[redacted]" {
+		t.Fatalf("unsafe url-only status artifact path = %v, want [redacted]", thirdArtifact["path"])
 	}
 	timeline, ok := raw["timeline"].([]any)
 	if !ok || len(timeline) != 2 {

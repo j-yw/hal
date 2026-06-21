@@ -474,7 +474,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
-				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
+				"missing", "skipped", "warnings", "url", "checkId", "kind", "failure", "suggestedCommand",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,

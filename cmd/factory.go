@@ -299,14 +299,16 @@ type FactoryArtifactsResponse struct {
 }
 
 // FactoryArtifactSummary is the safe artifact list surface for one stored
-// artifact. It intentionally omits sourcePath and url because those fields can
-// contain workspace-local paths or uncontracted network addresses.
+// artifact. It intentionally omits sourcePath because it can contain
+// workspace-local paths. URL is only populated by contract surfaces that expose
+// sanitized remote artifact URLs.
 type FactoryArtifactSummary struct {
 	ID         string         `json:"id,omitempty"`
 	Name       string         `json:"name"`
 	Type       string         `json:"type"`
 	Path       string         `json:"path,omitempty"`
 	StoredPath string         `json:"storedPath,omitempty"`
+	URL        string         `json:"url,omitempty"`
 	SizeBytes  *int64         `json:"sizeBytes,omitempty"`
 	CreatedAt  *time.Time     `json:"createdAt,omitempty"`
 	Summary    map[string]any `json:"summary,omitempty"`
@@ -958,6 +960,10 @@ func missingFactoryOutcomeArtifact(name, displayPath, warning string) factory.Ar
 }
 
 func safeFactoryPRURL(rawURL string) string {
+	return safeFactoryArtifactURL(rawURL)
+}
+
+func safeFactoryArtifactURL(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return ""
@@ -2441,7 +2447,7 @@ func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
 		CreatedAt:    record.CreatedAt,
 		UpdatedAt:    record.UpdatedAt,
 		FinishedAt:   record.FinishedAt,
-		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
+		Artifacts:    newFactoryStatusArtifactSummaries(record.Artifacts),
 		Verification: record.Verification,
 		Failure:      record.Failure,
 	}
@@ -2495,6 +2501,14 @@ func newFactoryArtifactsResponse(record factory.RunRecord) FactoryArtifactsRespo
 }
 
 func newFactoryArtifactSummaries(artifacts []factory.ArtifactReference) []FactoryArtifactSummary {
+	return newFactoryArtifactSummariesWithOptions(artifacts, false)
+}
+
+func newFactoryStatusArtifactSummaries(artifacts []factory.ArtifactReference) []FactoryArtifactSummary {
+	return newFactoryArtifactSummariesWithOptions(artifacts, true)
+}
+
+func newFactoryArtifactSummariesWithOptions(artifacts []factory.ArtifactReference, includeURL bool) []FactoryArtifactSummary {
 	summaries := make([]FactoryArtifactSummary, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		entry := FactoryArtifactSummary{
@@ -2509,8 +2523,13 @@ func newFactoryArtifactSummaries(artifacts []factory.ArtifactReference) []Factor
 			Warnings:   sanitizeFactoryArtifactWarnings(artifact.Warnings),
 			Partial:    artifact.Partial,
 		}
+		if includeURL {
+			entry.URL = safeFactoryArtifactURL(artifact.URL)
+		}
 		if entry.Path == "" && entry.StoredPath == "" && artifact.URL != "" {
-			entry.Path = "[redacted]"
+			if entry.URL == "" {
+				entry.Path = "[redacted]"
+			}
 		}
 		summaries = append(summaries, entry)
 	}
