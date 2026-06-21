@@ -348,7 +348,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return err
 	}
-	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
+	completedRecord, completedAt, err = recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
 	if err != nil {
 		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
 		var recordErrs []error
