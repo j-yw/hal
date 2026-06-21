@@ -285,7 +285,7 @@ func TestStoreSandboxArtifactDirSkipsSymlinks(t *testing.T) {
 		Name: "verify",
 		Type: "directory",
 		Path: ".hal/reports/verify",
-	}, localDir)
+	}, localDir, RunSecretRedactor{})
 	if err != nil {
 		t.Fatalf("storeSandboxArtifactDir() unexpected error: %v", err)
 	}

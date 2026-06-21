@@ -758,7 +758,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot, snapshots); err != nil {
 		return factory.RunRecord{}, err
 	}
-	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, *record, deps); err != nil {
+	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, *record, deps); err != nil {
 		return factory.RunRecord{}, err
 	}
 	record, err = store.LoadRun(runID)
@@ -1366,6 +1366,7 @@ func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecor
 
 func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot, snapshots []factory.ArtifactReference) error {
 	artifacts := collectFactoryRunArtifacts(store, dir, req, record, snapshot, snapshots)
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	missingArtifacts := make([]factory.ArtifactReference, 0)
 	for _, artifact := range artifacts {
 		sourcePath := artifact.Path
@@ -1381,8 +1382,9 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		}
 		if factoryArtifactFileExists(absoluteSourcePath) {
 			artifact.ID = factoryArtifactID(artifact)
-			if _, err := store.SaveArtifactFile(record.RunID, artifact, absoluteSourcePath); err != nil {
-				return fmt.Errorf("store factory artifact %q from %s: %w", artifact.Name, artifact.Path, err)
+			safeArtifact := redactor.RedactArtifactReference(artifact)
+			if _, err := store.SaveArtifactFileWithRedactor(record.RunID, artifact, absoluteSourcePath, redactor); err != nil {
+				return fmt.Errorf("store factory artifact %q from %s: %w", safeArtifact.Name, safeArtifact.Path, err)
 			}
 			continue
 		}
@@ -1394,7 +1396,7 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		missing.Summary = mergeFactoryArtifactSummary(missing.Summary, map[string]any{
 			"collectionStatus": "missing",
 		})
-		missingArtifacts = append(missingArtifacts, missing)
+		missingArtifacts = append(missingArtifacts, redactor.RedactArtifactReference(missing))
 	}
 	if len(missingArtifacts) > 0 {
 		updatedRecord, err := store.LoadRun(record.RunID)
@@ -1448,7 +1450,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 	return nil
 }
 
-func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) error {
+func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps) error {
 	if record.ExecutorMode != factory.ExecutorModeSandbox {
 		return nil
 	}
@@ -1462,7 +1464,8 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 	if deps.sandboxCopier == nil {
 		return nil
 	}
-	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, deps.sandboxCopier, requests); err != nil {
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, deps.sandboxCopier, requests, redactor); err != nil {
 		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 	}
 	return nil

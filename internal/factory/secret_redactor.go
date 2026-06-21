@@ -39,6 +39,71 @@ func (r RunSecretRedactor) RedactString(value string) string {
 	return value
 }
 
+// RedactArtifactReference returns a copy of artifact with run-scoped secret
+// values removed from persisted string metadata.
+func (r RunSecretRedactor) RedactArtifactReference(artifact ArtifactReference) ArtifactReference {
+	if len(r.secretValues) == 0 {
+		return artifact
+	}
+	artifact.ID = r.RedactString(artifact.ID)
+	artifact.Name = r.RedactString(artifact.Name)
+	artifact.Type = r.RedactString(artifact.Type)
+	artifact.SourcePath = r.RedactString(artifact.SourcePath)
+	artifact.StoredPath = r.RedactString(artifact.StoredPath)
+	artifact.Path = r.RedactString(artifact.Path)
+	artifact.URL = r.RedactString(artifact.URL)
+	artifact.Summary = r.redactArtifactSummary(artifact.Summary)
+	artifact.Warnings = r.redactStringSlice(artifact.Warnings)
+	return artifact
+}
+
+func (r RunSecretRedactor) redactStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = r.RedactString(value)
+	}
+	return out
+}
+
+func (r RunSecretRedactor) redactArtifactSummary(summary map[string]any) map[string]any {
+	if len(summary) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(summary))
+	for key, value := range summary {
+		out[r.RedactString(key)] = r.redactArtifactValue(value)
+	}
+	return out
+}
+
+func (r RunSecretRedactor) redactArtifactValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		return r.RedactString(v)
+	case []string:
+		return r.redactStringSlice(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = r.redactArtifactValue(item)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[r.RedactString(key)] = r.RedactString(item)
+		}
+		return out
+	case map[string]any:
+		return r.redactArtifactSummary(v)
+	default:
+		return value
+	}
+}
+
 func addRunSecretRedactionValue(values map[string]struct{}, value string) {
 	if strings.TrimSpace(value) == "" {
 		return

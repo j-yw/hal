@@ -124,6 +124,16 @@ func (s Store) Ensure() error {
 // artifact metadata on the run record. The stored path is deterministic and
 // scoped under artifacts/<run-id>/.
 func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, sourcePath string) (ArtifactReference, error) {
+	return s.saveArtifactFile(runID, artifact, sourcePath, RunSecretRedactor{})
+}
+
+// SaveArtifactFileWithRedactor copies a source file into the store and records
+// artifact metadata after removing run-scoped secret values.
+func (s Store) SaveArtifactFileWithRedactor(runID string, artifact ArtifactReference, sourcePath string, redactor RunSecretRedactor) (ArtifactReference, error) {
+	return s.saveArtifactFile(runID, artifact, sourcePath, redactor)
+}
+
+func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, sourcePath string, redactor RunSecretRedactor) (ArtifactReference, error) {
 	runID, err := validateRunID(runID)
 	if err != nil {
 		return ArtifactReference{}, err
@@ -163,6 +173,7 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 	if artifact.Type == "" {
 		return ArtifactReference{}, fmt.Errorf("artifact type is required")
 	}
+	artifact = redactor.RedactArtifactReference(artifact)
 
 	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifactFileBaseName(artifact), sourcePath)))
 	absoluteStoredPath, err := s.ResolveArtifactPath(runID, storedPath)
@@ -179,8 +190,8 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 
 	size := copiedInfo.Size()
 	createdAt := copiedInfo.ModTime().UTC()
-	artifact.SourcePath = sourcePath
-	artifact.StoredPath = storedPath
+	artifact.SourcePath = redactor.RedactString(sourcePath)
+	artifact.StoredPath = redactor.RedactString(storedPath)
 	artifact.SizeBytes = &size
 	artifact.CreatedAt = &createdAt
 
