@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 )
 
@@ -120,6 +121,20 @@ const (
 	EventTypeFailureClassification = "failure_classification"
 )
 
+// Log stream values.
+const (
+	LogStreamStdout  = "stdout"
+	LogStreamStderr  = "stderr"
+	LogStreamSummary = "summary"
+)
+
+// Log source values.
+const (
+	LogSourceLocalFactory  = "local_factory"
+	LogSourceRemoteSandbox = "remote_sandbox"
+	LogSourceEngine        = "engine"
+)
+
 // Run duration step values. These are the only lifecycle step names used for
 // derived per-step duration telemetry.
 const (
@@ -179,6 +194,7 @@ type RunRecord struct {
 type SandboxMetadata struct {
 	Name           string                     `json:"name"`
 	Provider       string                     `json:"provider"`
+	Size           string                     `json:"size,omitempty"`
 	Status         string                     `json:"status"`
 	Connection     *SandboxConnectionMetadata `json:"connection,omitempty"`
 	SSHCommand     string                     `json:"sshCommand,omitempty"`
@@ -308,6 +324,17 @@ type EventRecord struct {
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
+// LogChunk captures one durable factory log chunk or summarized output line.
+type LogChunk struct {
+	Sequence  int64     `json:"sequence"`
+	RunID     string    `json:"runId"`
+	Stream    string    `json:"stream,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	Text      string    `json:"text,omitempty"`
+	Summary   string    `json:"summary,omitempty"`
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+}
+
 // DeriveRunTelemetry returns a copy of the record telemetry enriched with
 // timing fields derivable from the durable run record and timeline.
 func DeriveRunTelemetry(record RunRecord, events []EventRecord) *RunTelemetry {
@@ -329,6 +356,61 @@ func DeriveRunTelemetry(record RunRecord, events []EventRecord) *RunTelemetry {
 		}
 		if len(telemetry.StepDurations) == 0 {
 			telemetry.StepDurations = stepDurations
+		}
+	}
+
+	if sandboxTelemetry := deriveSandboxTelemetry(record); sandboxTelemetry != nil {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.Sandbox == nil {
+			telemetry.Sandbox = sandboxTelemetry
+		}
+	}
+
+	if costEstimate := deriveSandboxCostEstimate(record, telemetry); costEstimate != nil {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.EstimatedSandboxCost == nil {
+			telemetry.EstimatedSandboxCost = costEstimate
+		}
+	}
+
+	if ciOutcome := deriveOutcome(record, events, "ci"); ciOutcome != "" {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if strings.TrimSpace(telemetry.CIOutcome) == "" {
+			telemetry.CIOutcome = ciOutcome
+		}
+	}
+
+	if verificationOutcome := deriveOutcome(record, events, "verification"); verificationOutcome != "" {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if strings.TrimSpace(telemetry.VerificationOutcome) == "" {
+			telemetry.VerificationOutcome = verificationOutcome
+		}
+	}
+
+	if len(record.Artifacts) > 0 {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.ArtifactCount == nil {
+			artifactCount := len(record.Artifacts)
+			telemetry.ArtifactCount = &artifactCount
+		}
+	}
+
+	if record.Failure != nil {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if strings.TrimSpace(telemetry.FailureCategory) == "" {
+			telemetry.FailureCategory = NormalizeFailureCategory(record.Failure.Category)
 		}
 	}
 
@@ -376,6 +458,112 @@ func deriveRunTotalDuration(record RunRecord) (int64, bool) {
 		return 0, false
 	}
 	return record.FinishedAt.Sub(record.CreatedAt).Milliseconds(), true
+}
+
+func deriveSandboxTelemetry(record RunRecord) *RunSandboxTelemetry {
+	if record.Sandbox == nil {
+		return nil
+	}
+	telemetry := &RunSandboxTelemetry{
+		Provider: strings.TrimSpace(record.Sandbox.Provider),
+		Size:     strings.TrimSpace(record.Sandbox.Size),
+	}
+	if telemetry.Provider == "" && telemetry.Size == "" {
+		return nil
+	}
+	return telemetry
+}
+
+func deriveSandboxCostEstimate(record RunRecord, telemetry *RunTelemetry) *SandboxCostEstimate {
+	if telemetry == nil || telemetry.Sandbox == nil || record.CreatedAt.IsZero() {
+		return nil
+	}
+	if telemetry.TotalDurationMs == nil {
+		return nil
+	}
+	provider := strings.TrimSpace(telemetry.Sandbox.Provider)
+	size := strings.TrimSpace(telemetry.Sandbox.Size)
+	if provider == "" || size == "" {
+		return nil
+	}
+	finishedAt := record.CreatedAt.Add(time.Duration(*telemetry.TotalDurationMs) * time.Millisecond)
+	instance := &sandbox.SandboxState{
+		Provider:  provider,
+		Size:      size,
+		CreatedAt: record.CreatedAt,
+	}
+	cost := sandbox.EstimatedCost(instance, func() time.Time { return finishedAt })
+	if cost < 0 {
+		return nil
+	}
+	return &SandboxCostEstimate{
+		AmountUSD: cost,
+		Estimated: true,
+	}
+}
+
+func deriveOutcome(record RunRecord, events []EventRecord, kind string) string {
+	if record.Telemetry != nil {
+		switch kind {
+		case "ci":
+			if outcome := strings.TrimSpace(record.Telemetry.CIOutcome); outcome != "" {
+				return outcome
+			}
+		case "verification":
+			if outcome := strings.TrimSpace(record.Telemetry.VerificationOutcome); outcome != "" {
+				return outcome
+			}
+		}
+	}
+	if outcome := deriveOutcomeFromArtifacts(record.Artifacts, kind); outcome != "" {
+		return outcome
+	}
+	return deriveOutcomeFromEvents(events, kind)
+}
+
+func deriveOutcomeFromArtifacts(artifacts []ArtifactReference, kind string) string {
+	for _, artifact := range artifacts {
+		if artifact.Summary == nil {
+			continue
+		}
+		outcomeKind, _ := artifact.Summary["outcomeKind"].(string)
+		if strings.TrimSpace(outcomeKind) != kind {
+			continue
+		}
+		if status, _ := artifact.Summary["status"].(string); strings.TrimSpace(status) != "" {
+			return strings.TrimSpace(status)
+		}
+	}
+	return ""
+}
+
+func deriveOutcomeFromEvents(events []EventRecord, kind string) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Metadata == nil {
+			continue
+		}
+		if kind == "verification" && event.EventType == EventTypeVerificationResult {
+			if status, _ := event.Metadata["status"].(string); strings.TrimSpace(status) != "" {
+				return strings.TrimSpace(status)
+			}
+		}
+		step, _ := event.Metadata["step"].(string)
+		if strings.TrimSpace(step) != kind {
+			continue
+		}
+		status, _ := event.Metadata["status"].(string)
+		status = strings.TrimSpace(status)
+		switch status {
+		case RunStatusSucceeded:
+			return "passed"
+		case RunStatusFailed:
+			return "failed"
+		case "skipped":
+			return "skipped"
+		}
+	}
+	return ""
 }
 
 func eventDurationStep(event EventRecord) string {

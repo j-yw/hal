@@ -531,6 +531,24 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			},
 		},
 		{
+			name:          "factory-logs-v1",
+			path:          "../docs/contracts/factory-logs-v1.md",
+			contractValue: FactoryLogsContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "chunks", "sequence", "stream",
+				"source", "text", "summary", "createdAt",
+			},
+			requiredValues: []string{
+				factory.LogStreamStdout,
+				factory.LogStreamStderr,
+				factory.LogStreamSummary,
+				factory.LogSourceLocalFactory,
+				factory.LogSourceRemoteSandbox,
+				factory.LogSourceEngine,
+				"[redacted]",
+			},
+		},
+		{
 			name:          "factory-timeline-v1",
 			path:          "../docs/contracts/factory-timeline-v1.md",
 			contractValue: "factory-status-v1",
@@ -753,6 +771,22 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if resp.Summary.Total != len(resp.Artifacts) {
 			t.Fatalf("summary.total = %d, want artifacts len %d", resp.Summary.Total, len(resp.Artifacts))
+		}
+	})
+
+	t.Run("factory logs example", func(t *testing.T) {
+		var resp FactoryLogsResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-logs-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "chunks"})
+		if resp.ContractVersion != FactoryLogsContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryLogsContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory logs example should include a run ID")
+		}
+		if len(resp.Chunks) == 0 {
+			t.Fatal("factory logs example should include chunks")
 		}
 	})
 

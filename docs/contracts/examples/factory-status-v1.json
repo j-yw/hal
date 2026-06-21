@@ -16,7 +16,8 @@
     "sandboxName": "factory-run-records",
     "sandbox": {
       "name": "factory-run-records",
-      "provider": "daytona",
+      "provider": "digitalocean",
+      "size": "s-2vcpu-4gb",
       "status": "running",
       "connection": {
         "address": "100.64.0.10",
@@ -72,6 +73,39 @@
           "path": ".hal/reports/verify/lint-stderr.txt"
         }
       ]
+    },
+    "telemetry": {
+      "totalDurationMs": 1980000,
+      "stepDurations": [
+        {
+          "step": "run",
+          "startedAt": "2026-06-20T16:02:00Z",
+          "finishedAt": "2026-06-20T16:18:00Z",
+          "durationMs": 960000
+        },
+        {
+          "step": "ci",
+          "startedAt": "2026-06-20T16:30:00Z",
+          "finishedAt": "2026-06-20T16:33:00Z",
+          "durationMs": 180000
+        }
+      ],
+      "engine": {
+        "name": "codex",
+        "model": "gpt-5"
+      },
+      "sandbox": {
+        "provider": "digitalocean",
+        "size": "s-2vcpu-4gb"
+      },
+      "estimatedSandboxCost": {
+        "amountUsd": 0.0198,
+        "estimated": true
+      },
+      "ciOutcome": "failing",
+      "verificationOutcome": "fail",
+      "artifactCount": 3,
+      "failureCategory": "CI"
     },
     "failure": {
       "step": "ci",

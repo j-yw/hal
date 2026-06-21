@@ -45,6 +45,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
 | `artifacts` | array | Safe artifact summaries associated with the run |
 | `verification` | object | Verification summary and artifact references recorded from `hal verify --json` |
+| `telemetry` | object | Derived observability summary including durations, engine, sandbox, outcomes, artifact count, cost estimate, and failure classification |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
 
 `sandboxName` is retained as a compatibility summary field. New consumers
@@ -58,6 +59,7 @@ When `sandbox` is present:
 |-------|------|----------|-------------|
 | `name` | string | yes | Sandbox registry name used for the run |
 | `provider` | string | yes | Sandbox provider identifier |
+| `size` | string | no | Provider-specific sandbox size when known |
 | `status` | string | yes | Final known sandbox lifecycle status, such as `running`, `stopped`, or `unknown` |
 | `connection` | object | no | Safe connection display fields |
 | `sshCommand` | string | no | Suggested local command for interactive inspection |
@@ -134,6 +136,27 @@ Each verification artifact reference uses the `verify-v1` artifact shape:
 | `checkId` | string | yes | Verification check identifier |
 | `kind` | string | yes | Artifact kind, such as `stdout` or `stderr` |
 | `path` | string | yes | Local path emitted by `hal verify --json` |
+
+## Telemetry
+
+When `telemetry` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `totalDurationMs` | integer | no | Derived total run duration in milliseconds |
+| `stepDurations` | array | no | Derived per-step duration records |
+| `engine` | object | no | Engine name and model metadata when available |
+| `sandbox` | object | no | Sandbox provider and size telemetry when available |
+| `estimatedSandboxCost` | object | no | Estimated sandbox cost when provider, size, pricing, and duration are available |
+| `ciOutcome` | string | no | CI outcome when available |
+| `verificationOutcome` | string | no | Verification outcome when available |
+| `artifactCount` | integer | no | Count of artifact metadata records stored on the run |
+| `failureCategory` | string | no | Normalized failure category for failed runs |
+
+Each `stepDurations` entry contains `step`, `startedAt`, `finishedAt`, and
+`durationMs`. `engine` contains `name` and `model`. `sandbox` contains
+`provider` and `size`. `estimatedSandboxCost` contains `amountUsd` and
+`estimated`.
 
 ## Failure Summary
 

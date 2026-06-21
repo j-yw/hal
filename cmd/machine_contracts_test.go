@@ -561,6 +561,45 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		requireExactKeys(t, summary, []string{"total", "partial", "warnings"})
 	})
 
+	t.Run("factory logs top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+		if err := store.AppendLogChunk(&factory.LogChunk{
+			RunID:     record.RunID,
+			Stream:    factory.LogStreamStdout,
+			Source:    factory.LogSourceLocalFactory,
+			Text:      "hello",
+			CreatedAt: base,
+		}); err != nil {
+			t.Fatalf("AppendLogChunk() error: %v", err)
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryLogsWithDeps(&buf, record.RunID, true, factoryLogsDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryLogsWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "chunks"})
+		if raw["contractVersion"] != FactoryLogsContractVersion {
+			t.Fatalf("factory logs contractVersion = %v, want %q", raw["contractVersion"], FactoryLogsContractVersion)
+		}
+		chunks, ok := raw["chunks"].([]interface{})
+		if !ok || len(chunks) != 1 {
+			t.Fatalf("chunks should be an array of 1, got %T", raw["chunks"])
+		}
+		chunk, ok := chunks[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("chunks[0] should be object, got %T", chunks[0])
+		}
+		requireExactKeys(t, chunk, []string{"sequence", "runId", "stream", "source", "text", "createdAt"})
+	})
+
 	t.Run("factory run result keys", func(t *testing.T) {
 		var buf bytes.Buffer
 		err := renderFactoryRunJSON(&buf, FactoryRunResponse{
