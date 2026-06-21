@@ -55,7 +55,7 @@
     "lastSummary": "Failure classified"
   },
   "failure": {
-    "classification": "ci",
+    "classification": "CI",
     "errorMessage": "unit tests failed",
     "suggestedCommand": "hal factory status run-20260620-002 --json"
   }

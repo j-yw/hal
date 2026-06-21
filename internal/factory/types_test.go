@@ -156,11 +156,15 @@ func TestFailureCategoryConstants(t *testing.T) {
 		got  string
 		want string
 	}{
-		{name: "validation", got: FailureCategoryValidation, want: "validation"},
-		{name: "pipeline", got: FailureCategoryPipeline, want: "pipeline"},
+		{name: "setup", got: FailureCategorySetup, want: "setup"},
 		{name: "engine", got: FailureCategoryEngine, want: "engine"},
-		{name: "git", got: FailureCategoryGit, want: "git"},
-		{name: "ci", got: FailureCategoryCI, want: "ci"},
+		{name: "PRD", got: FailureCategoryPRD, want: "PRD"},
+		{name: "run", got: FailureCategoryRun, want: "run"},
+		{name: "review", got: FailureCategoryReview, want: "review"},
+		{name: "verification", got: FailureCategoryVerification, want: "verification"},
+		{name: "CI", got: FailureCategoryCI, want: "CI"},
+		{name: "sandbox", got: FailureCategorySandbox, want: "sandbox"},
+		{name: "queue", got: FailureCategoryQueue, want: "queue"},
 		{name: "unknown", got: FailureCategoryUnknown, want: "unknown"},
 	}
 
@@ -168,6 +172,56 @@ func TestFailureCategoryConstants(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.got != tt.want {
 				t.Fatalf("failure category = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSupportedFailureCategories(t *testing.T) {
+	want := []string{
+		FailureCategorySetup,
+		FailureCategoryEngine,
+		FailureCategoryPRD,
+		FailureCategoryRun,
+		FailureCategoryReview,
+		FailureCategoryVerification,
+		FailureCategoryCI,
+		FailureCategorySandbox,
+		FailureCategoryQueue,
+		FailureCategoryUnknown,
+	}
+	if got := SupportedFailureCategories(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("SupportedFailureCategories() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNormalizeFailureCategory(t *testing.T) {
+	for _, category := range SupportedFailureCategories() {
+		category := category
+		t.Run(category, func(t *testing.T) {
+			if got := NormalizeFailureCategory(category); got != category {
+				t.Fatalf("NormalizeFailureCategory(%q) = %q, want %q", category, got, category)
+			}
+		})
+	}
+
+	tests := []struct {
+		name     string
+		category string
+	}{
+		{name: "empty", category: ""},
+		{name: "whitespace", category: "   "},
+		{name: "legacy validation", category: "validation"},
+		{name: "legacy pipeline", category: "pipeline"},
+		{name: "legacy lowercase ci", category: "ci"},
+		{name: "unsupported", category: "database"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeFailureCategory(tt.category); got != FailureCategoryUnknown {
+				t.Fatalf("NormalizeFailureCategory(%q) = %q, want %q", tt.category, got, FailureCategoryUnknown)
 			}
 		})
 	}
@@ -561,7 +615,7 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 	t.Run("failure summary", func(t *testing.T) {
 		original := FailureSummary{
 			Step:             "review",
-			Category:         FailureCategoryValidation,
+			Category:         FailureCategoryReview,
 			Message:          "review found valid issues",
 			Recoverable:      true,
 			SuggestedCommand: "hal factory status run-review --json",

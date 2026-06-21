@@ -21,7 +21,7 @@
       "artifactCount": 3,
       "failure": {
         "step": "ci",
-        "category": "ci",
+        "category": "CI",
         "message": "unit tests failed",
         "recoverable": true,
         "suggestedCommand": "hal factory status run-20260620-002 --json",

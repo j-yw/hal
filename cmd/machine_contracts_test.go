@@ -576,7 +576,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			Artifacts:    newFactoryRunArtifactReferences(record.Artifacts),
 			EventSummary: newFactoryRunEventSummary(events),
 			Failure: &FactoryRunFailure{
-				Classification:   "ci",
+				Classification:   factory.FailureCategoryCI,
 				ErrorMessage:     "unit tests failed",
 				SuggestedCommand: "hal factory status run-contract --json",
 			},

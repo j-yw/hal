@@ -1120,33 +1120,33 @@ func classifyFactoryRunFailure(err error) string {
 
 	var exitErr *ExitCodeError
 	if errors.As(err, &exitErr) && exitErr.Code == ExitCodeValidation {
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryPRD
 	}
 
 	step := autoFailedStep(err)
 	switch step {
 	case compound.StepValidate:
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryPRD
 	case compound.StepCI:
 		return factory.FailureCategoryCI
 	case compound.StepBranch:
-		return factory.FailureCategoryGit
+		return factory.FailureCategorySetup
 	}
 
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
 	case factoryFailureMessageContains(message, "validation", "validate", "invalid"):
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryPRD
 	case factoryFailureMessageContains(message, "verification", "verify"):
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryVerification
 	case factoryFailureMessageContains(message, "engine", "codex", "claude"):
 		return factory.FailureCategoryEngine
 	case factoryFailureMessageContains(message, "github", "git ", " git", "merge-base", "commit", "branch"):
-		return factory.FailureCategoryGit
+		return factory.FailureCategorySetup
 	case factoryFailureMessageContains(message, " ci", "ci ", "ci:", "ci-", "ci_", "workflow", "status check", "check run"):
 		return factory.FailureCategoryCI
 	case factoryFailureMessageContains(message, "pipeline") || step != "":
-		return factory.FailureCategoryPipeline
+		return factory.FailureCategoryRun
 	default:
 		return factory.FailureCategoryUnknown
 	}
@@ -1170,12 +1170,16 @@ func factoryRunFailureMessage(err error) string {
 }
 
 func factoryRunFailureRecoverable(category string) bool {
-	switch category {
-	case factory.FailureCategoryValidation,
-		factory.FailureCategoryPipeline,
+	switch factory.NormalizeFailureCategory(category) {
+	case factory.FailureCategorySetup,
 		factory.FailureCategoryEngine,
-		factory.FailureCategoryGit,
-		factory.FailureCategoryCI:
+		factory.FailureCategoryPRD,
+		factory.FailureCategoryRun,
+		factory.FailureCategoryReview,
+		factory.FailureCategoryVerification,
+		factory.FailureCategoryCI,
+		factory.FailureCategorySandbox,
+		factory.FailureCategoryQueue:
 		return true
 	default:
 		return false
@@ -2457,7 +2461,7 @@ func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
 		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
 		Verification: record.Verification,
 		Telemetry:    record.Telemetry,
-		Failure:      record.Failure,
+		Failure:      normalizedFactoryFailureSummary(record.Failure),
 	}
 }
 
@@ -2597,8 +2601,17 @@ func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
 		FinishedAt:    record.FinishedAt,
 		ArtifactCount: len(record.Artifacts),
 		Telemetry:     record.Telemetry,
-		Failure:       record.Failure,
+		Failure:       normalizedFactoryFailureSummary(record.Failure),
 	}
+}
+
+func normalizedFactoryFailureSummary(failure *factory.FailureSummary) *factory.FailureSummary {
+	if failure == nil {
+		return nil
+	}
+	normalizedFailure := *failure
+	normalizedFailure.Category = factory.NormalizeFailureCategory(normalizedFailure.Category)
+	return &normalizedFailure
 }
 
 func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {

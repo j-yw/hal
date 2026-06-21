@@ -75,7 +75,7 @@
     },
     "failure": {
       "step": "ci",
-      "category": "ci",
+      "category": "CI",
       "message": "unit tests failed",
       "recoverable": true,
       "suggestedCommand": "hal factory status run-20260620-002 --json",
@@ -146,7 +146,7 @@
       "timestamp": "2026-06-20T16:32:00Z",
       "summary": "Failure classified",
       "metadata": {
-        "category": "ci",
+        "category": "CI",
         "recoverable": true,
         "suggestedCommand": "hal factory status run-20260620-002 --json"
       }

@@ -67,13 +67,46 @@ const (
 
 // Failure category values.
 const (
-	FailureCategoryValidation = "validation"
-	FailureCategoryPipeline   = "pipeline"
-	FailureCategoryEngine     = "engine"
-	FailureCategoryGit        = "git"
-	FailureCategoryCI         = "ci"
-	FailureCategoryUnknown    = "unknown"
+	FailureCategorySetup        = "setup"
+	FailureCategoryEngine       = "engine"
+	FailureCategoryPRD          = "PRD"
+	FailureCategoryRun          = "run"
+	FailureCategoryReview       = "review"
+	FailureCategoryVerification = "verification"
+	FailureCategoryCI           = "CI"
+	FailureCategorySandbox      = "sandbox"
+	FailureCategoryQueue        = "queue"
+	FailureCategoryUnknown      = "unknown"
 )
+
+// SupportedFailureCategories returns the stable failure category contract in
+// display order.
+func SupportedFailureCategories() []string {
+	return []string{
+		FailureCategorySetup,
+		FailureCategoryEngine,
+		FailureCategoryPRD,
+		FailureCategoryRun,
+		FailureCategoryReview,
+		FailureCategoryVerification,
+		FailureCategoryCI,
+		FailureCategorySandbox,
+		FailureCategoryQueue,
+		FailureCategoryUnknown,
+	}
+}
+
+// NormalizeFailureCategory resolves missing or unsupported categories to the
+// stable unknown category.
+func NormalizeFailureCategory(category string) string {
+	trimmedCategory := strings.TrimSpace(category)
+	for _, supportedCategory := range SupportedFailureCategories() {
+		if trimmedCategory == supportedCategory {
+			return trimmedCategory
+		}
+	}
+	return FailureCategoryUnknown
+}
 
 // Timeline event type values.
 const (

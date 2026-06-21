@@ -752,7 +752,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	message := factorySandboxSanitizedError(target, failureErr)
 	failure := factory.FailureSummary{
 		Step:             step,
-		Category:         factory.FailureCategoryPipeline,
+		Category:         factory.FailureCategorySandbox,
 		Message:          message,
 		Recoverable:      true,
 		SuggestedCommand: factorySandboxFailureSuggestedCommand(record),

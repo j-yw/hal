@@ -159,10 +159,7 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 	if record.Failure == nil {
 		return nil
 	}
-	classification := strings.TrimSpace(record.Failure.Category)
-	if classification == "" {
-		classification = factory.FailureCategoryUnknown
-	}
+	classification := factory.NormalizeFailureCategory(record.Failure.Category)
 	failure := &FactoryRunFailure{
 		Classification: classification,
 		ErrorMessage:   record.Failure.Message,

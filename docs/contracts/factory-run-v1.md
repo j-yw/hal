@@ -94,11 +94,15 @@ When `failure` is not null:
 
 Failure classification values are:
 
-- `validation`
-- `pipeline`
+- `setup`
 - `engine`
-- `git`
-- `ci`
+- `PRD`
+- `run`
+- `review`
+- `verification`
+- `CI`
+- `sandbox`
+- `queue`
 - `unknown`
 
 ## Status Values

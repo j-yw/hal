@@ -763,7 +763,7 @@ func TestRunFactoryRunWithDepsRecordsTimelineEventsForFailure(t *testing.T) {
 	if events[3].Summary != "Failure classified" {
 		t.Fatalf("classification summary = %q", events[3].Summary)
 	}
-	if events[3].Metadata["category"] != factory.FailureCategoryPipeline {
+	if events[3].Metadata["category"] != factory.FailureCategoryRun {
 		t.Fatalf("classification category metadata = %#v", events[3].Metadata)
 	}
 }
@@ -1901,8 +1901,8 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 	if record.Failure.Step != "verify" {
 		t.Fatalf("failure step = %q, want verify", record.Failure.Step)
 	}
-	if record.Failure.Category != factory.FailureCategoryValidation {
-		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryValidation)
+	if record.Failure.Category != factory.FailureCategoryVerification {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryVerification)
 	}
 	if record.FinishedAt == nil || !record.FinishedAt.Equal(verifiedAt) {
 		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, verifiedAt)
@@ -2233,7 +2233,7 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 			record.CurrentStep = "run"
 			record.Failure = &factory.FailureSummary{
 				Step:             "run",
-				Category:         factory.FailureCategoryPipeline,
+				Category:         factory.FailureCategoryRun,
 				Message:          "remote pipeline failed",
 				Recoverable:      true,
 				SuggestedCommand: "hal sandbox ssh factory-remote",
@@ -2693,8 +2693,8 @@ func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	if record.Failure == nil {
 		t.Fatal("failure summary should be persisted")
 	}
-	if record.Failure.Category != factory.FailureCategoryPipeline {
-		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryPipeline)
+	if record.Failure.Category != factory.FailureCategoryRun {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryRun)
 	}
 	if record.Failure.Message != pipelineErr.Error() {
 		t.Fatalf("failure message = %q, want %q", record.Failure.Message, pipelineErr.Error())
@@ -2814,12 +2814,12 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		{
 			name: "validation exit code",
 			err:  exitWithCode(nil, ExitCodeValidation, errors.New("invalid input")),
-			want: factory.FailureCategoryValidation,
+			want: factory.FailureCategoryPRD,
 		},
 		{
 			name: "validate step",
 			err:  errors.New("step validate failed: invalid PRD"),
-			want: factory.FailureCategoryValidation,
+			want: factory.FailureCategoryPRD,
 		},
 		{
 			name: "ci step",
@@ -2829,7 +2829,7 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		{
 			name: "branch step",
 			err:  errors.New("step branch failed: git checkout failed"),
-			want: factory.FailureCategoryGit,
+			want: factory.FailureCategorySetup,
 		},
 		{
 			name: "engine message",
@@ -2839,7 +2839,7 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		{
 			name: "pipeline message",
 			err:  errors.New("pipeline failed"),
-			want: factory.FailureCategoryPipeline,
+			want: factory.FailureCategoryRun,
 		},
 		{
 			name: "unknown message",
@@ -2853,6 +2853,58 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := classifyFactoryRunFailure(tt.err); got != tt.want {
 				t.Fatalf("classifyFactoryRunFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewFactoryRunFailureNormalizesClassification(t *testing.T) {
+	for _, category := range factory.SupportedFailureCategories() {
+		category := category
+		t.Run(category, func(t *testing.T) {
+			record := factory.RunRecord{
+				RunID: "run-normalize-category",
+				Failure: &factory.FailureSummary{
+					Category: category,
+					Message:  "failed",
+				},
+			}
+
+			failure := newFactoryRunFailure(record)
+			if failure == nil {
+				t.Fatal("newFactoryRunFailure() = nil, want failure")
+			}
+			if failure.Classification != category {
+				t.Fatalf("classification = %q, want %q", failure.Classification, category)
+			}
+		})
+	}
+
+	tests := []struct {
+		name     string
+		category string
+	}{
+		{name: "empty", category: ""},
+		{name: "invalid", category: "validation"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			record := factory.RunRecord{
+				RunID: "run-normalize-category",
+				Failure: &factory.FailureSummary{
+					Category: tt.category,
+					Message:  "failed",
+				},
+			}
+
+			failure := newFactoryRunFailure(record)
+			if failure == nil {
+				t.Fatal("newFactoryRunFailure() = nil, want failure")
+			}
+			if failure.Classification != factory.FailureCategoryUnknown {
+				t.Fatalf("classification = %q, want %q", failure.Classification, factory.FailureCategoryUnknown)
 			}
 		})
 	}
@@ -3300,7 +3352,7 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 			FailureCategory:     factory.FailureCategoryCI,
 		},
 		Failure: &FactoryRunFailure{
-			Classification:   "ci",
+			Classification:   factory.FailureCategoryCI,
 			ErrorMessage:     "unit tests failed",
 			SuggestedCommand: "hal factory status run-json-contract --json",
 		},
@@ -3437,11 +3489,11 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 		CIOutcome:           "skipped",
 		VerificationOutcome: "passed",
 		ArtifactCount:       &artifactCount,
-		FailureCategory:     factory.FailureCategoryValidation,
+		FailureCategory:     factory.FailureCategoryReview,
 	}
 	record.Failure = &factory.FailureSummary{
 		Step:     "review",
-		Category: "validation",
+		Category: factory.FailureCategoryReview,
 		Message:  "review found issues",
 	}
 	if err := store.SaveRun(&record); err != nil {
