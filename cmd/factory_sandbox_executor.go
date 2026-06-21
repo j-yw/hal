@@ -125,6 +125,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 
 	store, err := deps.defaultStore()
 	if err != nil {
@@ -139,8 +140,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 
 	if factorySandboxRemoteWorkspaceDir(record) == "" {
-		_ = recordFactorySandboxFailure(store, deps, &record, nil, "prepare_inputs", errFactorySandboxWorkspaceRequired)
-		return factorySandboxRecordedError("prepare factory sandbox inputs", nil, errFactorySandboxWorkspaceRequired)
+		_ = recordFactorySandboxFailure(store, deps, &record, nil, "prepare_inputs", errFactorySandboxWorkspaceRequired, secretRedactor)
+		return factorySandboxRecordedError("prepare factory sandbox inputs", nil, errFactorySandboxWorkspaceRequired, secretRedactor)
 	}
 
 	var target *sandbox.SandboxState
@@ -159,8 +160,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				Out:        req.RemoteOutput,
 			})
 			if err != nil {
-				_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err)
-				return factorySandboxRecordedError("provision factory sandbox", nil, err)
+				_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err, secretRedactor)
+				return factorySandboxRecordedError("provision factory sandbox", nil, err, secretRedactor)
 			}
 		}
 	} else {
@@ -184,8 +185,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 					Out:        req.RemoteOutput,
 				})
 				if err != nil {
-					_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err)
-					return factorySandboxRecordedError("provision factory sandbox", nil, err)
+					_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err, secretRedactor)
+					return factorySandboxRecordedError("provision factory sandbox", nil, err, secretRedactor)
 				}
 			}
 		}
@@ -197,8 +198,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if target.Status != sandbox.StatusRunning {
 		startedTarget, err := deps.startSandbox(ctx, target, req.RemoteOutput)
 		if err != nil {
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "start", err)
-			return factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", target.Name), target, err)
+			_ = recordFactorySandboxFailure(store, deps, &record, target, "start", err, secretRedactor)
+			return factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", target.Name), target, err, secretRedactor)
 		}
 		target = startedTarget
 	}
@@ -212,8 +213,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
 	provider, err := deps.resolveProvider(target.Provider)
 	if err != nil {
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err)
-		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err, secretRedactor)
+		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err, secretRedactor)
 	}
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.ResolvedSecrets); ok {
@@ -235,15 +236,15 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return fmt.Errorf("sync sandbox timeline sequence: %w", syncErr)
 		}
 		if bootstrapErr != nil {
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr)
-			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, bootstrapErr)
+			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr, secretRedactor)
+			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, bootstrapErr, secretRedactor)
 		}
 	}
 
 	remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, target, remoteOutput, deps)
 	if err != nil {
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err)
-		return factorySandboxRecordedError("prepare factory sandbox inputs", target, err)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err, secretRedactor)
+		return factorySandboxRecordedError("prepare factory sandbox inputs", target, err, secretRedactor)
 	}
 
 	remoteArgs := factorySandboxRemoteCommandArgs(record, remoteAuto)
@@ -259,8 +260,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if flushErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
 		}
-		sanitizedErr := factorySandboxSanitizedError(target, runErr)
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", fmt.Errorf("%s", sanitizedErr))
+		sanitizedErr := factorySandboxSanitizedError(target, runErr, secretRedactor)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", runErr, secretRedactor)
 		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
 	}
 	if flushErr != nil {
@@ -805,7 +806,7 @@ func factorySandboxProvisionName(record factory.RunRecord) string {
 	return sandbox.SandboxNameFromBranch(record.BranchName)
 }
 
-func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error) error {
+func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error, secretRedactor factory.RunSecretRedactor) error {
 	if record == nil {
 		return nil
 	}
@@ -819,7 +820,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	record.CurrentStep = step
 	record.UpdatedAt = failedAt
 	record.FinishedAt = &failedAt
-	message := factorySandboxSanitizedError(target, failureErr)
+	message := factorySandboxSanitizedError(target, failureErr, secretRedactor)
 	failure := factory.FailureSummary{
 		Step:             step,
 		Category:         factory.FailureCategoryPipeline,
@@ -851,7 +852,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	})
 }
 
-func factorySandboxSanitizedError(target *sandbox.SandboxState, err error) string {
+func factorySandboxSanitizedError(target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) string {
 	if err == nil {
 		return "sandbox factory executor failed"
 	}
@@ -860,14 +861,14 @@ func factorySandboxSanitizedError(target *sandbox.SandboxState, err error) strin
 		message = "sandbox factory executor failed"
 	}
 	if target == nil {
-		return message
+		return secretRedactor.RedactString(message)
 	}
 	redactor := sandboxRedactor(false, nil, target)
-	return redactor.Redact(message)
+	return secretRedactor.RedactString(redactor.Redact(message))
 }
 
-func factorySandboxRecordedError(prefix string, target *sandbox.SandboxState, err error) error {
-	return fmt.Errorf("%s: %s", prefix, factorySandboxSanitizedError(target, err))
+func factorySandboxRecordedError(prefix string, target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) error {
+	return fmt.Errorf("%s: %s", prefix, factorySandboxSanitizedError(target, err, secretRedactor))
 }
 
 func factorySandboxFailureSuggestedCommand(record *factory.RunRecord) string {
