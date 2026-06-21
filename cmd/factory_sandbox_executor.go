@@ -37,17 +37,18 @@ type factorySandboxExecutorRequest struct {
 }
 
 type factorySandboxExecutorDeps struct {
-	defaultStore    func() (factory.Store, error)
-	now             func() time.Time
-	resolveDefault  func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
-	loadSandbox     func(string) (*sandbox.SandboxState, error)
-	provision       func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
-	startSandbox    func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
-	resolveProvider func(string) (sandbox.Provider, error)
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	bootstrap       func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
-	saveRun         func(factory.Store, *factory.RunRecord) error
-	appendEvent     func(factory.Store, *factory.EventRecord) error
+	defaultStore           func() (factory.Store, error)
+	now                    func() time.Time
+	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
+	resolveProvider        func(string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	saveRun                func(factory.Store, *factory.RunRecord) error
+	appendEvent            func(factory.Store, *factory.EventRecord) error
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
@@ -60,10 +61,11 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
-	runProviderExec: runFactorySandboxProviderExec,
-	bootstrap:       factory.BootstrapWorkspace,
-	saveRun:         saveFactorySandboxRunRecord,
-	appendEvent:     appendFactorySandboxTimelineEvent,
+	runProviderExec:        runFactorySandboxProviderExec,
+	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	bootstrap:              factory.BootstrapWorkspace,
+	saveRun:                saveFactorySandboxRunRecord,
+	appendEvent:            appendFactorySandboxTimelineEvent,
 }
 
 var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
@@ -71,6 +73,7 @@ var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory
 const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	customRunProviderExec := deps.runProviderExec != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
 	}
@@ -94,6 +97,16 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
+	}
+	if deps.runProviderExecWithEnv == nil {
+		if customRunProviderExec {
+			runProviderExec := deps.runProviderExec
+			deps.runProviderExecWithEnv = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, _ map[string]string, out io.Writer) error {
+				return runProviderExec(ctx, provider, info, args, out)
+			}
+		} else {
+			deps.runProviderExecWithEnv = defaultFactorySandboxExecutorDeps.runProviderExecWithEnv
+		}
 	}
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultFactorySandboxExecutorDeps.bootstrap
@@ -240,7 +253,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}); err != nil {
 		return fmt.Errorf("record remote sandbox start: %w", err)
 	}
-	runErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, remoteOutput)
+	runErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, factorySandboxResolvedSecretEnv(req.ResolvedSecrets), remoteOutput)
 	flushErr := remoteOutput.Flush()
 	if runErr != nil {
 		if flushErr != nil {
@@ -509,7 +522,7 @@ func factorySandboxBootstrapRequest(record factory.RunRecord, secrets []factory.
 		RunBranch:       strings.TrimSpace(record.BranchName),
 		WorkspaceDir:    workspaceDir,
 		RequiredEnvKeys: factorySandboxBootstrapRequiredEnvKeys(record.Secrets),
-		Env:             factorySandboxBootstrapSecretEnv(secrets),
+		Env:             factorySandboxResolvedSecretEnv(secrets),
 		Options: factory.BootstrapOptions{
 			RefreshHal: true,
 		},
@@ -534,7 +547,7 @@ func factorySandboxBootstrapRequiredEnvKeys(secrets []factory.RunSecretMetadata)
 	return keys
 }
 
-func factorySandboxBootstrapSecretEnv(secrets []factory.ResolvedRunSecret) map[string]string {
+func factorySandboxResolvedSecretEnv(secrets []factory.ResolvedRunSecret) map[string]string {
 	env := make(map[string]string, len(secrets))
 	for _, secret := range secrets {
 		if strings.TrimSpace(secret.Source) != factory.RunSecretSourceEnv {
@@ -959,7 +972,50 @@ func runFactorySandboxProviderExec(ctx context.Context, provider sandbox.Provide
 	if err != nil {
 		return err
 	}
+	if cmd == nil {
+		return fmt.Errorf("sandbox provider returned nil exec command")
+	}
 	return sandbox.RunCmd(cmd, out)
+}
+
+func runFactorySandboxProviderExecWithEnv(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
+	if len(factorySandboxSortedEnvAssignments(env)) == 0 {
+		return runFactorySandboxProviderExec(ctx, provider, info, args, out)
+	}
+	if provider == nil {
+		return fmt.Errorf("sandbox provider is required")
+	}
+	cmd, err := provider.Exec(info, []string{"sh", "-s"})
+	if err != nil {
+		return err
+	}
+	if cmd == nil {
+		return fmt.Errorf("sandbox provider returned nil exec command")
+	}
+	cmd.Stdin = strings.NewReader(factorySandboxEnvExecScript(args, env))
+	return sandbox.RunCmd(cmd, out)
+}
+
+func factorySandboxEnvExecScript(args []string, env map[string]string) string {
+	command := []string{"env"}
+	command = append(command, factorySandboxSortedEnvAssignments(env)...)
+	command = append(command, args...)
+	return "set -e\nexec " + shellCommand(command) + "\n"
+}
+
+func factorySandboxSortedEnvAssignments(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := sortedStringMapKeys(env)
+	assignments := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if strings.TrimSpace(env[key]) == "" {
+			continue
+		}
+		assignments = append(assignments, key+"="+env[key])
+	}
+	return assignments
 }
 
 func saveFactorySandboxRunRecord(store factory.Store, record *factory.RunRecord) error {
