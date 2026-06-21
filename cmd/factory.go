@@ -2632,9 +2632,6 @@ func runFactoryLogsWithDeps(out io.Writer, runID string, jsonMode bool, deps fac
 	if err != nil {
 		return fmt.Errorf("load factory logs %q: %w", runID, err)
 	}
-	if len(chunks) == 0 {
-		return fmt.Errorf("factory run %q has no stored logs", runID)
-	}
 	chunks = sanitizeFactoryLogChunks(chunks)
 
 	if jsonMode {
@@ -2704,6 +2701,9 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 }
 
 func renderFactoryLogsJSON(out io.Writer, runID string, chunks []factory.LogChunk) error {
+	if chunks == nil {
+		chunks = []factory.LogChunk{}
+	}
 	resp := FactoryLogsResponse{
 		ContractVersion: FactoryLogsContractVersion,
 		RunID:           runID,
@@ -3033,6 +3033,10 @@ func renderFactoryArtifactsTable(out io.Writer, record factory.RunRecord) {
 
 func renderFactoryLogsTable(out io.Writer, runID string, chunks []factory.LogChunk) {
 	fmt.Fprintf(out, "Run ID: %s\n", runID)
+	if len(chunks) == 0 {
+		fmt.Fprintf(out, "No logs stored for factory run %s.\n", runID)
+		return
+	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "SEQUENCE\tSTREAM\tSOURCE\tCREATED\tTEXT")
 	for _, chunk := range chunks {

@@ -3965,6 +3965,53 @@ func TestFactoryStatusCommandRegisteredWithJSONFlag(t *testing.T) {
 	}
 }
 
+func TestRunFactoryLogsEmptyState(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 7, 45, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-no-logs", base, base.Add(time.Minute))
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryLogsWithDeps(&buf, record.RunID, false, factoryLogsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryLogsWithDeps() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Run ID: run-no-logs") {
+		t.Fatalf("output missing run ID:\n%s", output)
+	}
+	if !strings.Contains(output, "No logs stored for factory run run-no-logs.") {
+		t.Fatalf("output missing empty-state message:\n%s", output)
+	}
+
+	buf.Reset()
+	err = runFactoryLogsWithDeps(&buf, record.RunID, true, factoryLogsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryLogsWithDeps() JSON unexpected error: %v", err)
+	}
+
+	var resp FactoryLogsResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.ContractVersion != FactoryLogsContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryLogsContractVersion)
+	}
+	if resp.RunID != record.RunID {
+		t.Fatalf("runId = %q, want %q", resp.RunID, record.RunID)
+	}
+	if resp.Chunks == nil || len(resp.Chunks) != 0 {
+		t.Fatalf("chunks = %#v, want empty non-nil array", resp.Chunks)
+	}
+}
+
 func TestRunFactoryArtifactsListsCollectedArtifacts(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
