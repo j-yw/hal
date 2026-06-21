@@ -763,6 +763,11 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
 	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts); err != nil {
+		if updatedRecord, loadErr := store.LoadRun(record.RunID); loadErr == nil {
+			record = *updatedRecord
+		} else {
+			err = errors.Join(err, fmt.Errorf("reload factory run after verification artifact failure: %w", loadErr))
+		}
 		return record, finishedAt, err
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)

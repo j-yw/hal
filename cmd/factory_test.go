@@ -2301,6 +2301,98 @@ func TestRunFactoryRunWithDepsMarksRunFailedWhenVerificationArtifactStorageFails
 	}
 }
 
+func TestRunFactoryRunWithDepsPreservesPartialVerificationArtifactsWhenStorageFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 5, 40, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verifiedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-partial-verification-artifact-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return verifiedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return &verify.Config{Checks: []verify.ShellCheck{
+				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
+			}}, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			writeFile(t, dir, "verify-ok.txt", "ok\n")
+			blockedPath := "verify-blocked.txt"
+			writeFile(t, dir, blockedPath, "blocked\n")
+			ref := factory.ArtifactReference{
+				Name: "verification-test-stderr",
+				Type: factoryArtifactTypeForPath(blockedPath),
+				Path: filepath.Clean(blockedPath),
+			}
+			ref.ID = factoryArtifactID(ref)
+			blockedArtifactPath := filepath.Join(store.ArtifactsDir(), "run-partial-verification-artifact-failed", strings.Trim(ref.ID, "."))
+			if err := os.MkdirAll(blockedArtifactPath, 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact path) error: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(blockedArtifactPath+".bak", "child"), 0755); err != nil {
+				t.Fatalf("MkdirAll(blocked artifact backup path) error: %v", err)
+			}
+			return &verify.Result{
+				Status: verify.StatusPass,
+				Summary: verify.Summary{
+					Total:  1,
+					Passed: 1,
+				},
+				Artifacts: []verify.ArtifactReference{
+					{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: "verify-ok.txt"},
+					{CheckID: "test", Kind: verify.ArtifactKindStderr, Path: blockedPath},
+				},
+			}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "store factory verification artifact") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want verification artifact storage error", err)
+	}
+
+	record, err := store.LoadRun("run-partial-verification-artifact-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	requireFactoryArtifactPath(t, record.Artifacts, "verify-ok.txt")
+	if record.Failure == nil || record.Failure.Step != "verify" {
+		t.Fatalf("failure summary = %#v, want verify failure", record.Failure)
+	}
+}
+
 func TestRunFactoryRunWithDepsMarksRunFailedWhenFinalRunRecordArtifactFails(t *testing.T) {
 	dir := t.TempDir()
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
