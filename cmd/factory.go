@@ -421,10 +421,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		return err
 	}
 
-	result, execErr := executeFactoryRun(ctx, dir, req, store, record, factoryRunExecutionDeps{
-		now:         deps.now,
-		runPipeline: deps.runPipeline,
-	})
+	result, execErr := executeFactoryRun(ctx, dir, req, store, record, deps)
 	if result.Render {
 		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
 			if execErr != nil {
@@ -436,8 +433,8 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	return execErr
 }
 
-func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, store factory.Store, record factory.RunRecord, deps factoryRunExecutionDeps) (factoryRunExecutionResult, error) {
-	deps = normalizeFactoryRunExecutionDeps(deps)
+func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, store factory.Store, record factory.RunRecord, deps factoryRunDeps) (factoryRunExecutionResult, error) {
+	deps = normalizeFactoryRunDeps(deps)
 	if deps.runPipeline == nil {
 		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
 	}
@@ -508,12 +505,9 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, s
 			}
 		}
 		if len(recordErrs) > 0 {
-			return errors.Join(append([]error{err}, recordErrs...)...)
+			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
 		}
-		if renderErr := renderFactoryRunResult(out, store, failedRecord.RunID, req.JSON); renderErr != nil {
-			return errors.Join(err, renderErr)
-		}
-		return err
+		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
 	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
 	if err != nil {
