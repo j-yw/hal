@@ -43,6 +43,7 @@
 - Factory policy config loading lives in `internal/factory.LoadPolicyConfig`; merge pointer-backed `factory.policy` YAML fields over `DefaultFactoryPolicy` so explicit false, zero, and empty values are preserved without coupling direct `hal auto` config loading to factory policy validation.
 - When adding durable factory policy fields, include explicit JSON/YAML tags and add the type or field coverage to `internal/factory/types_test.go` so machine-readable contracts stay locked.
 - Policy decision timeline events use `factory.EventTypePolicyDecision` plus `factory.PolicyDecisionMetadata`; append them through `recordFactoryPolicyDecision` so sequence assignment stays with existing factory timeline helpers and metadata remains limited to `policyField`, `decision`, `outcome`, and `reason`.
+- Factory run creation policy gates live in `cmd/factory.go` after the pending run record and run-created event are persisted but before `executeFactoryRun`; use injected `factoryRunDeps.loadPolicy`/`loadEngine`, record rejections through `recordFactoryPolicyDecision`, and keep rejection tests asserting no pipeline or sandbox executor dependency is invoked.
 
 ## Patterns from local-factory-queue-storage (2026-06-21)
 

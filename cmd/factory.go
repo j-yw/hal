@@ -177,6 +177,8 @@ type factoryRunDeps struct {
 	workingDir      func() (string, error)
 	currentBranch   func(string) (string, error)
 	repoRemote      func(string) (string, error)
+	loadPolicy      func(string) (*factory.FactoryPolicy, error)
+	loadEngine      func(string) (string, error)
 	runPipeline     func(context.Context, factoryRunPipelineRequest) error
 	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
 	loadVerify      func(string) (*verify.Config, error)
@@ -202,6 +204,8 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	workingDir:    os.Getwd,
 	currentBranch: compound.CurrentBranchOptionalInDir,
 	repoRemote:    readGitRemoteOptionalInDir,
+	loadPolicy:    factory.LoadPolicyConfig,
+	loadEngine:    compound.LoadDefaultEngine,
 	runPipeline:   runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
@@ -434,6 +438,9 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err := recordFactoryRunStarted(store, record); err != nil {
 		return err
 	}
+	if err := enforceFactoryRunCreationPolicy(store, dir, record, out, req.JSON, deps); err != nil {
+		return err
+	}
 
 	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps)
 	if result.Render {
@@ -599,6 +606,12 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.repoRemote == nil {
 		deps.repoRemote = defaultFactoryRunDeps.repoRemote
 	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryRunDeps.loadPolicy
+	}
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryRunDeps.loadEngine
+	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryRunDeps.runPipeline
 	}
@@ -655,6 +668,119 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
+}
+
+type factoryPolicyRejectionError struct {
+	policyField string
+	decision    string
+	outcome     string
+	reason      string
+}
+
+func (e *factoryPolicyRejectionError) Error() string {
+	return fmt.Sprintf("factory policy rejected run creation: %s %s", e.policyField, e.reason)
+}
+
+func (e *factoryPolicyRejectionError) policyDecisionMetadata() factory.PolicyDecisionMetadata {
+	return factory.PolicyDecisionMetadata{
+		PolicyField: e.policyField,
+		Decision:    e.decision,
+		Outcome:     e.outcome,
+		Reason:      e.reason,
+	}
+}
+
+func enforceFactoryRunCreationPolicy(store factory.Store, dir string, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps) error {
+	policy, err := deps.loadPolicy(dir)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, jsonMode, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+	}
+	if policy == nil {
+		defaultPolicy := factory.DefaultFactoryPolicy()
+		policy = &defaultPolicy
+	}
+
+	engineName, err := deps.loadEngine(dir)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, jsonMode, deps.now(), fmt.Errorf("load factory engine policy input: %w", err), nil)
+	}
+	rejection := factoryRunCreationPolicyRejection(*policy, record.ExecutorMode, engineName)
+	if rejection == nil {
+		return nil
+	}
+
+	decision := rejection.policyDecisionMetadata()
+	return failFactoryRunCreation(store, record, out, jsonMode, deps.now(), rejection, &decision)
+}
+
+func factoryRunCreationPolicyRejection(policy factory.FactoryPolicy, executorMode, engineName string) *factoryPolicyRejectionError {
+	executorMode = strings.TrimSpace(executorMode)
+	if policy.SandboxRequired && executorMode != factory.ExecutorModeSandbox {
+		reason := fmt.Sprintf("requires sandbox executor (requested %s)", executorMode)
+		if executorMode == "" {
+			reason = "requires sandbox executor"
+		}
+		return &factoryPolicyRejectionError{
+			policyField: "factory.policy.sandboxRequired",
+			decision:    factory.PolicyDecisionRejectedExecution,
+			outcome:     factory.PolicyOutcomeRejected,
+			reason:      reason,
+		}
+	}
+
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if !factoryPolicyAllowsEngine(policy, engineName) {
+		reason := fmt.Sprintf("does not allow engine %q", engineName)
+		if engineName == "" {
+			reason = "does not allow an empty engine"
+		}
+		return &factoryPolicyRejectionError{
+			policyField: "factory.policy.allowedEngines",
+			decision:    factory.PolicyDecisionRejectedExecution,
+			outcome:     factory.PolicyOutcomeRejected,
+			reason:      reason,
+		}
+	}
+
+	return nil
+}
+
+func factoryPolicyAllowsEngine(policy factory.FactoryPolicy, engineName string) bool {
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if engineName == "" {
+		return false
+	}
+	for _, allowed := range policy.AllowedEngines {
+		if strings.ToLower(strings.TrimSpace(allowed)) == engineName {
+			return true
+		}
+	}
+	return false
+}
+
+func failFactoryRunCreation(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata) error {
+	var recordErrs []error
+	if decision != nil {
+		if err := recordFactoryPolicyDecision(store, record.RunID, failedAt, *decision); err != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory policy rejection: %w", err))
+		}
+	}
+
+	failedRecord, err := markFactoryRunFailed(store, record, failedAt, cause)
+	if err != nil {
+		recordErrs = append(recordErrs, err)
+	} else if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if renderErr := renderFactoryRunResult(out, store, record.RunID, jsonMode); renderErr != nil {
+		recordErrs = append(recordErrs, renderErr)
+	}
+	if len(recordErrs) > 0 {
+		return errors.Join(append([]error{cause}, recordErrs...)...)
+	}
+	return cause
 }
 
 func factoryExecutorModeFromRequest(req factoryRunRequest) string {
@@ -1116,6 +1242,11 @@ func classifyFactoryRunFailure(err error) string {
 		return factory.FailureCategoryUnknown
 	}
 
+	var policyErr *factoryPolicyRejectionError
+	if errors.As(err, &policyErr) {
+		return factory.FailureCategoryValidation
+	}
+
 	var exitErr *ExitCodeError
 	if errors.As(err, &exitErr) && exitErr.Code == ExitCodeValidation {
 		return factory.FailureCategoryValidation
@@ -1151,6 +1282,10 @@ func classifyFactoryRunFailure(err error) string {
 }
 
 func factoryRunFailureStep(currentStep string, err error) string {
+	var policyErr *factoryPolicyRejectionError
+	if errors.As(err, &policyErr) {
+		return "policy"
+	}
 	if step := autoFailedStep(err); step != "" {
 		return step
 	}

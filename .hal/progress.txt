@@ -5,6 +5,7 @@
 - Factory policy defaults live in `internal/factory.FactoryPolicy`; use `DefaultFactoryPolicy` and `Validate`, where zero attempt limits mean no policy cap, enum values normalize to lowercase, and validation errors use `factory.policy.<field>` paths.
 - Factory policy config loading lives in `internal/factory.LoadPolicyConfig`; merge pointer-backed `factory.policy` YAML fields over `DefaultFactoryPolicy` so explicit false, zero, and empty values are preserved without coupling direct `hal auto` config loading to factory policy validation.
 - Policy decision timeline events use `factory.EventTypePolicyDecision` plus `factory.PolicyDecisionMetadata`; append them through `recordFactoryPolicyDecision` so sequence assignment stays with existing factory timeline helpers and metadata remains limited to `policyField`, `decision`, `outcome`, and `reason`.
+- Factory run creation policy gates live in `cmd/factory.go` after the pending run record and run-created event are persisted but before `executeFactoryRun`; use injected policy/engine dependencies, record rejections with `recordFactoryPolicyDecision`, and fail at the `policy` step without invoking pipeline or sandbox execution.
 
 ---
 
@@ -40,4 +41,15 @@
 - **Learnings for future iterations:**
   - Policy decision events should be appended through `recordFactoryPolicyDecision` rather than hand-building timeline metadata so all policy gates share the same event type, sequence behavior, and safe metadata keys.
   - Durable policy decision fields belong in `internal/factory` with JSON tag coverage in `internal/factory/types_test.go`; command tests should assert append order and exact metadata keys for timeline events.
+---
+
+## 2026-06-21 09:23 CST - US-004
+- Implemented factory run creation policy enforcement for `factory.policy.sandboxRequired` and `factory.policy.allowedEngines`, resolving the factory engine through an injected dependency before execution starts.
+- Rejected runs now persist as failed at the `policy` step, record a `rejected_execution` policy decision, and add failure classification without starting the local pipeline or sandbox executor.
+- Added focused command tests for strict sandbox-required rejection and disallowed engine rejection before sandbox execution; existing default local execution coverage verifies the allowed default path remains unchanged.
+- Files changed: `cmd/factory.go`, `cmd/factory_test.go`, `.hal/prd.json`, `.hal/progress.txt`, `AGENTS.md`.
+- Quality checks: `go test -timeout 180s ./cmd`, `go test -timeout 60s ./internal/factory`, `go test -timeout 300s ./...`, `make vet`, `make test`, `make lint` (advisory: `golangci-lint` is not installed; Makefile exited 0).
+- **Learnings for future iterations:**
+  - Factory run creation gates should execute after the pending run record exists but before `executeFactoryRun`, so rejected runs are inspectable and never call engine, GitHub, or sandbox executor dependencies.
+  - Use injected `loadPolicy` and `loadEngine` dependencies in command tests to keep policy enforcement deterministic and isolated from local config.
 ---

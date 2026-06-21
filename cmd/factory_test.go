@@ -445,6 +445,181 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	}
 }
 
+func TestRunFactoryRunWithDepsRejectsLocalWhenPolicyRequiresSandbox(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 10, 30, 0, 0, time.UTC)
+	rejectedAt := createdAt.Add(1 * time.Minute)
+	times := []time.Time{createdAt, rejectedAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-policy-sandbox-required", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return rejectedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called when sandboxRequired rejects creation")
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not be called for a rejected local run")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want policy rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.sandboxRequired") || !strings.Contains(err.Error(), "requires sandbox executor") {
+		t.Fatalf("runFactoryRunWithDeps() error = %q, want sandboxRequired rejection", err.Error())
+	}
+
+	record, err := store.LoadRun("run-policy-sandbox-required")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", record.Status)
+	}
+	if record.CurrentStep != "policy" {
+		t.Fatalf("currentStep = %q, want policy", record.CurrentStep)
+	}
+	if record.Failure == nil {
+		t.Fatal("failure summary is nil")
+	}
+	if record.Failure.Category != factory.FailureCategoryValidation {
+		t.Fatalf("failure category = %q, want validation", record.Failure.Category)
+	}
+
+	events, err := store.LoadEvents("run-policy-sandbox-required")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeFailureClassification,
+	})
+	assertFactoryEventSequences(t, events)
+	assertPolicyDecisionMetadata(t, events[1].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.sandboxRequired",
+		Decision:    factory.PolicyDecisionRejectedExecution,
+		Outcome:     factory.PolicyOutcomeRejected,
+		Reason:      "requires sandbox executor (requested local)",
+	})
+	if !events[1].Timestamp.Equal(rejectedAt) {
+		t.Fatalf("policy event timestamp = %s, want %s", events[1].Timestamp, rejectedAt)
+	}
+}
+
+func TestRunFactoryRunWithDepsRejectsDisallowedPolicyEngineBeforeSandboxExecution(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
+	rejectedAt := createdAt.Add(1 * time.Minute)
+	times := []time.Time{createdAt, rejectedAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.AllowedEngines = []string{factory.PolicyEngineClaude}
+
+	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-policy-disallowed-engine", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return rejectedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called for a sandbox request")
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not be called when allowedEngines rejects creation")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want policy rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.allowedEngines") || !strings.Contains(err.Error(), `engine "codex"`) {
+		t.Fatalf("runFactoryRunWithDeps() error = %q, want allowedEngines rejection", err.Error())
+	}
+
+	record, err := store.LoadRun("run-policy-disallowed-engine")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", record.Status)
+	}
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("executorMode = %q, want sandbox", record.ExecutorMode)
+	}
+	if record.CurrentStep != "policy" {
+		t.Fatalf("currentStep = %q, want policy", record.CurrentStep)
+	}
+	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryValidation {
+		t.Fatalf("failure = %#v, want validation failure", record.Failure)
+	}
+
+	events, err := store.LoadEvents("run-policy-disallowed-engine")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeFailureClassification,
+	})
+	assertFactoryEventSequences(t, events)
+	assertPolicyDecisionMetadata(t, events[1].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.allowedEngines",
+		Decision:    factory.PolicyDecisionRejectedExecution,
+		Outcome:     factory.PolicyOutcomeRejected,
+		Reason:      `does not allow engine "codex"`,
+	})
+}
+
 func TestFactoryRunRecordCreateAndInProgressTransition(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 20, 19, 0, 0, 0, time.UTC)
