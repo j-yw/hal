@@ -264,6 +264,45 @@ func TestRunFactoryQueueAddWithDepsRejectsInvalidExecutorMode(t *testing.T) {
 	}
 }
 
+func TestRunFactoryQueueAddWithDepsRejectsSandboxRunWithoutBaseBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 14, 5, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-sandbox-no-base", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.RunStatusPending
+	record.BaseBranch = ""
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	err := runFactoryQueueAddWithDeps(io.Discard, factoryQueueAddRequest{
+		RunID:        record.RunID,
+		ExecutorMode: factory.ExecutorModeSandbox,
+	}, queueAddTestDeps(store, createdAt, "queue-sandbox-no-base"))
+	if err == nil {
+		t.Fatal("runFactoryQueueAddWithDeps() error = nil, want missing base branch rejection")
+	}
+	wantErr := `factory run "run-sandbox-no-base" must have baseBranch set before using sandbox executor`
+	if err.Error() != wantErr {
+		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want %q", err.Error(), wantErr)
+	}
+
+	entries, loadErr := store.LoadQueue()
+	if loadErr != nil {
+		t.Fatalf("LoadQueue() error: %v", loadErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
+	events, loadErr := store.LoadEvents(record.RunID)
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events len = %d, want 0: %#v", len(events), events)
+	}
+}
+
 func TestRunFactoryQueueListWithDepsJSONOutputEmptyQueue(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 
@@ -641,6 +680,58 @@ func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testin
 	}
 	if gotSandboxReq.RemoteAuto.Engine != factory.PolicyEngineCodex {
 		t.Fatalf("sandbox engine = %q, want %q", gotSandboxReq.RemoteAuto.Engine, factory.PolicyEngineCodex)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsRejectsLegacySandboxEntryWithoutBaseBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 20, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox-no-base", PID: 5358, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-sandbox-no-base", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = ""
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-no-base", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline should not be called for sandbox queue entries")
+		return nil
+	})
+	deps.runSandbox = func(context.Context, factorySandboxExecutorRequest) error {
+		t.Fatal("runSandbox should not be called when sandbox queued run has no base branch")
+		return nil
+	}
+
+	err := runFactoryQueueWorkWithDeps(context.Background(), io.Discard, factoryQueueWorkRequest{}, deps)
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want missing base branch rejection")
+	}
+	wantErr := `factory run "run-queue-sandbox-no-base" must have baseBranch set before using sandbox executor`
+	if err.Error() != wantErr {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want %q", err.Error(), wantErr)
+	}
+
+	entries, loadErr := store.LoadQueue()
+	if loadErr != nil {
+		t.Fatalf("LoadQueue() error: %v", loadErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
+	}
+	if entries[0].Status != factory.QueueStatusFailed {
+		t.Fatalf("queue status = %q, want failed", entries[0].Status)
+	}
+	if entries[0].LastError != wantErr {
+		t.Fatalf("queue lastError = %q, want %q", entries[0].LastError, wantErr)
 	}
 }
 

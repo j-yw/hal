@@ -92,9 +92,11 @@ var factoryQueueAddCmd = &cobra.Command{
 
 Provide the run ID to enqueue and the executor mode that the worker should use
 when processing it. Use --json for machine-readable output following the
-factory-queue-add-v1 contract.`,
+factory-queue-add-v1 contract. Sandbox executor mode requires the run record to
+include a base branch.`,
 	Example: `  hal factory queue add run-20260620-001 local
-  hal factory queue add run-20260620-001 local --json`,
+  hal factory queue add run-20260620-001 local --json
+  hal factory queue add run-20260620-001 sandbox`,
 	RunE: runFactoryQueueAdd,
 }
 
@@ -267,6 +269,9 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 	if record.Status != factory.RunStatusPending {
 		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
 	}
+	if err := validateFactoryQueueSandboxBaseBranch(*record, executorMode); err != nil {
+		return err
+	}
 
 	entry, err := store.EnqueueQueueEntry(req.RunID, executorMode, factory.QueueOperationOptions{
 		Now:        deps.now,
@@ -367,6 +372,9 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err), deps.now)
 	}
 	record.ExecutorMode = entry.ExecutorMode
+	if err := validateFactoryQueueSandboxBaseBranch(*record, entry.ExecutorMode); err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
+	}
 
 	runDir := factoryQueueRunDir(*record)
 	policy := factoryPolicySnapshotFromRecord(record)
@@ -438,6 +446,13 @@ func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry,
 		return entry, errors.Join(cause, markErr)
 	}
 	return failedEntry, cause
+}
+
+func validateFactoryQueueSandboxBaseBranch(record factory.RunRecord, executorMode string) error {
+	if executorMode == factory.ExecutorModeSandbox && strings.TrimSpace(record.BaseBranch) == "" {
+		return fmt.Errorf("factory run %q must have baseBranch set before using sandbox executor", record.RunID)
+	}
+	return nil
 }
 
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {

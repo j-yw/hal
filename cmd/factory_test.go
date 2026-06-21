@@ -157,12 +157,14 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			requiredLongPhrases: []string{
 				"existing factory run",
 				"executor mode",
+				"base branch",
 				"--json",
 				"factory-queue-add-v1",
 			},
 			requiredExampleLines: []string{
 				"hal factory queue add run-20260620-001 local",
 				"hal factory queue add run-20260620-001 local --json",
+				"hal factory queue add run-20260620-001 sandbox",
 			},
 		},
 		{
