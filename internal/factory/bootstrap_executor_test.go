@@ -305,6 +305,75 @@ func TestRunBootstrapStepRedactsResolvedRunSecretValuesFromRecords(t *testing.T)
 	}
 }
 
+func TestRunBootstrapStepRedactsMultilineSecretFragments(t *testing.T) {
+	envFragment := "env_private_key_fragment"
+	resolvedFragment := "resolved_private_key_fragment"
+	envSecret := "-----BEGIN PRIVATE KEY-----\n" + envFragment + "\n-----END PRIVATE KEY-----"
+	resolvedSecret := "-----BEGIN PRIVATE KEY-----\n" + resolvedFragment + "\n-----END PRIVATE KEY-----"
+	request := BootstrapRequestWithResolvedSecrets(BootstrapRequest{
+		Env: map[string]string{
+			"PRIVATE_KEY": envSecret,
+		},
+	}, []ResolvedRunSecret{{
+		Name:     "SSH_PRIVATE_KEY",
+		Source:   RunSecretSourceEnv,
+		Required: true,
+		Value:    resolvedSecret,
+	}})
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{{
+			ExitCode:      0,
+			OutputSummary: "bootstrap emitted " + envFragment + " and " + resolvedFragment,
+			Metadata: map[string]string{
+				"envFragment":      envFragment,
+				"resolvedFragment": resolvedFragment,
+			},
+		}},
+	}
+
+	step, result, failure, err := RunBootstrapStep(
+		context.Background(),
+		BootstrapStepDeps{
+			Executor: executor,
+			Now:      incrementingClock(t, time.Date(2026, 6, 21, 8, 30, 0, 0, time.UTC)),
+			Request:  request,
+		},
+		"setup_private_key",
+		BootstrapCommand{
+			Name: "sh",
+			Args: []string{"-c", "printf %s " + envFragment + " " + resolvedFragment},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RunBootstrapStep() error = %v", err)
+	}
+	if failure != nil {
+		t.Fatalf("failure = %#v, want nil", failure)
+	}
+
+	event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+		Timestamp:      time.Date(2026, 6, 21, 8, 31, 0, 0, time.UTC),
+		Step:           "setup_private_key",
+		Status:         RunStatusSucceeded,
+		CommandSummary: "sh -c printf %s " + envFragment + " " + resolvedFragment,
+		OutputSummary:  "bootstrap emitted " + envFragment + " and " + resolvedFragment,
+		Metadata: map[string]string{
+			"envFragment":      envFragment,
+			"resolvedFragment": resolvedFragment,
+		},
+	})
+
+	for name, value := range map[string]string{
+		"step":   step.CommandSummary,
+		"result": result.OutputSummary + " " + result.Metadata["envFragment"] + " " + result.Metadata["resolvedFragment"],
+		"event":  event.CommandSummary + " " + event.OutputSummary + " " + event.Metadata["envFragment"] + " " + event.Metadata["resolvedFragment"],
+	} {
+		if strings.Contains(value, envFragment) || strings.Contains(value, resolvedFragment) {
+			t.Fatalf("%s leaked multiline secret fragment: %q", name, value)
+		}
+	}
+}
+
 func TestRunBootstrapStepClassifiesExecutorFailure(t *testing.T) {
 	startedAt := time.Date(2026, 6, 21, 2, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)

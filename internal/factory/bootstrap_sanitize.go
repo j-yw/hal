@@ -32,7 +32,7 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 		}
 		keySet[key] = struct{}{}
 		if value := request.Env[key]; value != "" {
-			valueSet[value] = struct{}{}
+			addBootstrapRedactionValue(valueSet, value)
 		}
 	}
 
@@ -42,7 +42,7 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 		}
 		keySet[strings.TrimSpace(key)] = struct{}{}
 		if value != "" {
-			valueSet[value] = struct{}{}
+			addBootstrapRedactionValue(valueSet, value)
 		}
 	}
 	for _, key := range request.RequiredEnvKeys {
@@ -50,10 +50,7 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 	}
 	addURLCredentialRedactionTokens(valueSet, request.RepositoryURL)
 	for _, value := range request.secretValues {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			valueSet[value] = struct{}{}
-		}
+		addBootstrapRedactionValue(valueSet, value)
 	}
 
 	return BootstrapSanitizer{
@@ -74,10 +71,28 @@ func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string
 	}
 
 	if userinfo := parsed.User.String(); userinfo != "" {
-		valueSet[userinfo] = struct{}{}
+		addBootstrapRedactionValue(valueSet, userinfo)
 	}
 	if password, ok := parsed.User.Password(); ok && password != "" {
-		valueSet[password] = struct{}{}
+		addBootstrapRedactionValue(valueSet, password)
+	}
+}
+
+func addBootstrapRedactionValue(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	values[value] = struct{}{}
+
+	for _, fragment := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		trimmed := strings.TrimSpace(fragment)
+		if trimmed == "" {
+			continue
+		}
+		values[fragment] = struct{}{}
+		values[trimmed] = struct{}{}
 	}
 }
 
