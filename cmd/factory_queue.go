@@ -369,19 +369,23 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	record.ExecutorMode = entry.ExecutorMode
 
 	runDir := factoryQueueRunDir(*record)
-	policy, err := loadFactoryRunPolicy(runDir, factoryRunDeps{
-		loadPolicy: deps.loadPolicy,
-	})
-	if err != nil {
-		runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
-		return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+	policy := factoryPolicySnapshotFromRecord(record)
+	if policy == nil {
+		loadedPolicy, err := loadFactoryRunPolicy(runDir, factoryRunDeps{
+			loadPolicy: deps.loadPolicy,
+		})
+		if err != nil {
+			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+		}
+		persistedRecord, err := persistFactoryRunPolicySnapshot(store, *record, loadedPolicy)
+		if err != nil {
+			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+		}
+		record = &persistedRecord
+		policy = factoryPolicySnapshotFromRecord(record)
 	}
-	persistedRecord, err := persistFactoryRunPolicySnapshot(store, *record, policy)
-	if err != nil {
-		runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
-		return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
-	}
-	record = &persistedRecord
 	engineName, err := resolveFactoryRunEngine(runDir, factoryRunDeps{
 		loadEngine: deps.loadEngine,
 	})
@@ -391,7 +395,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	}
 	if err := enforceFactoryRunCreationPolicy(store, *record, io.Discard, false, factoryRunDeps{
 		now: deps.now,
-	}, policy, engineName); err != nil {
+	}, *policy, engineName); err != nil {
 		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
 	}
 
@@ -399,7 +403,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		now:         deps.now,
 		runPipeline: deps.runPipeline,
 		runSandbox:  deps.runSandbox,
-	}, policy, engineName)
+	}, *policy, engineName)
 	if execErr != nil {
 		return failClaimedFactoryQueueEntry(store, entry, execErr, deps.now)
 	}

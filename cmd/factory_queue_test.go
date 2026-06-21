@@ -718,6 +718,61 @@ func TestRunFactoryQueueWorkWithDepsRejectsCreationPolicyBeforeExecution(t *test
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsUsesStoredPolicySnapshot(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 40, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-policy-snapshot", PID: 5356, Hostname: "factory-host"}
+	policySnapshot := factory.DefaultFactoryPolicy()
+	policySnapshot.AllowedEngines = []string{factory.PolicyEngineCodex}
+	policySnapshot.MaxRunAttempts = 3
+	record := testFactoryRunRecord("run-queue-policy-snapshot", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Policy = &policySnapshot
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-policy-snapshot.md"}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-policy-snapshot-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var gotPipelineReq factoryRunPipelineRequest
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(_ context.Context, req factoryRunPipelineRequest) error {
+		gotPipelineReq = req
+		return nil
+	})
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		t.Fatal("loadPolicy should not be called when run record already has a policy snapshot")
+		return nil, nil
+	}
+	deps.loadEngine = func(string) (string, error) {
+		return factory.PolicyEngineCodex, nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	if gotPipelineReq.AttemptPolicy.MaxRunAttempts != 3 {
+		t.Fatalf("pipeline max run attempts = %d, want snapshot value 3", gotPipelineReq.AttemptPolicy.MaxRunAttempts)
+	}
+	if gotPipelineReq.Record.Policy == nil || gotPipelineReq.Record.Policy.MaxRunAttempts != 3 {
+		t.Fatalf("pipeline record policy = %#v, want stored snapshot", gotPipelineReq.Record.Policy)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Policy == nil || loaded.Policy.MaxRunAttempts != 3 {
+		t.Fatalf("loaded policy = %#v, want stored snapshot", loaded.Policy)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsMarksRunFailedWhenPolicyLoadFails(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 18, 45, 0, 0, time.UTC)

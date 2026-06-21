@@ -769,6 +769,17 @@ func persistFactoryRunPolicySnapshot(store factory.Store, record factory.RunReco
 	return record, nil
 }
 
+func factoryPolicySnapshotFromRecord(record *factory.RunRecord) *factory.FactoryPolicy {
+	if record == nil || record.Policy == nil {
+		return nil
+	}
+	snapshot := *record.Policy
+	if record.Policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), record.Policy.AllowedEngines...)
+	}
+	return &snapshot
+}
+
 func resolveFactoryRunEngine(dir string, deps factoryRunDeps) (string, error) {
 	if deps.loadEngine == nil {
 		deps.loadEngine = defaultFactoryRunDeps.loadEngine

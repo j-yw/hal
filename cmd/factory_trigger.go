@@ -34,6 +34,8 @@ type factoryTriggerDeps struct {
 	currentBranch        func(string) (string, error)
 	repoRemote           func(string) (string, error)
 	loadConfig           func(string) (*compound.AutoConfig, error)
+	loadPolicy           func(string) (*factory.FactoryPolicy, error)
+	loadEngine           func(string) (string, error)
 	discoverLatestReport func(string, string) (string, bool, error)
 }
 
@@ -65,6 +67,8 @@ var defaultFactoryTriggerDeps = factoryTriggerDeps{
 	currentBranch:        compound.CurrentBranchOptionalInDir,
 	repoRemote:           readGitRemoteOptionalInDir,
 	loadConfig:           compound.LoadConfig,
+	loadPolicy:           factory.LoadPolicyConfig,
+	loadEngine:           compound.LoadDefaultEngine,
 	discoverLatestReport: discoverLatestReportCandidate,
 }
 
@@ -239,6 +243,27 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	if err := recordFactoryRunTriggered(store, record, factoryTriggerKind(req)); err != nil {
 		return err
 	}
+	policy, err := loadFactoryRunPolicy(repoPath, factoryRunDeps{
+		loadPolicy: deps.loadPolicy,
+	})
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+	}
+	record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	engineName, err := resolveFactoryRunEngine(repoPath, factoryRunDeps{
+		loadEngine: deps.loadEngine,
+	})
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	if err := enforceFactoryRunCreationPolicy(store, record, out, req.JSON, factoryRunDeps{
+		now: deps.now,
+	}, policy, engineName); err != nil {
+		return err
+	}
 
 	entry, err := store.EnqueueQueueEntryWithLockedPostSave(record.RunID, executorMode, factory.QueueOperationOptions{
 		Now:        deps.now,
@@ -311,6 +336,12 @@ func normalizeFactoryTriggerDeps(deps factoryTriggerDeps) factoryTriggerDeps {
 	}
 	if deps.loadConfig == nil {
 		deps.loadConfig = defaultFactoryTriggerDeps.loadConfig
+	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryTriggerDeps.loadPolicy
+	}
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryTriggerDeps.loadEngine
 	}
 	if deps.discoverLatestReport == nil {
 		deps.discoverLatestReport = defaultFactoryTriggerDeps.discoverLatestReport

@@ -73,6 +73,12 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	if resp.Run.BaseBranch != "hal/local-factory-queue-and-worker-commands" {
 		t.Fatalf("baseBranch = %q", resp.Run.BaseBranch)
 	}
+	if resp.Run.Policy == nil {
+		t.Fatal("run policy snapshot = nil, want trigger-time policy snapshot")
+	}
+	if got, want := strings.Join(resp.Run.Policy.AllowedEngines, ","), strings.Join(factory.SupportedPolicyEngines(), ","); got != want {
+		t.Fatalf("policy.allowedEngines = %q, want %q", got, want)
+	}
 	if resp.Summary != "queued triggered run run-trigger-prd as queue-trigger-prd" {
 		t.Fatalf("summary = %q", resp.Summary)
 	}
@@ -99,6 +105,138 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	if events[0].Metadata["triggerKind"] != factory.SourceKindMarkdown {
 		t.Fatalf("triggerKind metadata = %#v", events[0].Metadata["triggerKind"])
 	}
+}
+
+func TestRunFactoryTriggerWithDepsRejectsSandboxRequiredBeforeEnqueue(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 0, 0, time.UTC)
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-policy-sandbox", "queue-trigger-policy-sandbox")
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+
+	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeLocal,
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want sandboxRequired rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.sandboxRequired") {
+		t.Fatalf("runFactoryTriggerWithDeps() error = %q, want sandboxRequired rejection", err.Error())
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
+
+	record, err := store.LoadRun("run-trigger-policy-sandbox")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", record.Status)
+	}
+	if record.Policy == nil || !record.Policy.SandboxRequired {
+		t.Fatalf("policy snapshot = %#v, want sandboxRequired snapshot", record.Policy)
+	}
+	if record.Failure == nil || record.Failure.Step != "policy" {
+		t.Fatalf("failure = %#v, want policy failure", record.Failure)
+	}
+
+	events, err := store.LoadEvents("run-trigger-policy-sandbox")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeFailureClassification,
+	})
+	assertPolicyDecisionMetadata(t, events[1].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.sandboxRequired",
+		Decision:    factory.PolicyDecisionRejectedExecution,
+		Outcome:     factory.PolicyOutcomeRejected,
+		Reason:      "requires sandbox executor (requested local)",
+	})
+}
+
+func TestRunFactoryTriggerWithDepsRejectsDisallowedEngineBeforeEnqueue(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 3, 0, 0, time.UTC)
+	policy := factory.DefaultFactoryPolicy()
+	policy.AllowedEngines = []string{factory.PolicyEngineClaude}
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-policy-engine", "queue-trigger-policy-engine")
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+	deps.loadEngine = func(string) (string, error) {
+		return factory.PolicyEngineCodex, nil
+	}
+
+	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeLocal,
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want allowedEngines rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.allowedEngines") {
+		t.Fatalf("runFactoryTriggerWithDeps() error = %q, want allowedEngines rejection", err.Error())
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
+	record, err := store.LoadRun("run-trigger-policy-engine")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Policy == nil || strings.Join(record.Policy.AllowedEngines, ",") != factory.PolicyEngineClaude {
+		t.Fatalf("policy snapshot = %#v, want claude-only snapshot", record.Policy)
+	}
+
+	events, err := store.LoadEvents("run-trigger-policy-engine")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeFailureClassification,
+	})
+	assertPolicyDecisionMetadata(t, events[1].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.allowedEngines",
+		Decision:    factory.PolicyDecisionRejectedExecution,
+		Outcome:     factory.PolicyOutcomeRejected,
+		Reason:      `does not allow engine "codex"`,
+	})
 }
 
 func TestRunFactoryTriggerWithDepsMarksRunFailedWhenEnqueueFails(t *testing.T) {
@@ -372,6 +510,13 @@ func factoryTriggerTestDeps(store factory.Store, now time.Time, runID, queueID s
 		loadConfig: func(string) (*compound.AutoConfig, error) {
 			cfg := compound.DefaultAutoConfig()
 			return &cfg, nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			policy := factory.DefaultFactoryPolicy()
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
 		},
 		discoverLatestReport: discoverLatestReportCandidate,
 	}
