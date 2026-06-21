@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -399,6 +400,56 @@ func TestAppendEventAndLoadEventsRoundTripWithNewStore(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, events) {
 		t.Fatalf("LoadEvents() = %#v, want %#v", got, events)
+	}
+}
+
+func TestAppendEventPreservesConcurrentAppends(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-events-concurrent"
+	const count = 64
+
+	errCh := make(chan error, count)
+	var wg sync.WaitGroup
+	for i := 1; i <= count; i++ {
+		sequence := int64(i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			event := testEventRecord(runID, sequence, EventTypeCommandOutputSummary)
+			errCh <- store.AppendEvent(&event)
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("AppendEvent() unexpected error: %v", err)
+		}
+	}
+
+	got, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() unexpected error: %v", err)
+	}
+	if len(got) != count {
+		t.Fatalf("LoadEvents() length = %d, want %d", len(got), count)
+	}
+
+	seen := make(map[int64]bool, count)
+	for _, event := range got {
+		if event.RunID != runID {
+			t.Fatalf("event runID = %q, want %q", event.RunID, runID)
+		}
+		if seen[event.Sequence] {
+			t.Fatalf("duplicate event sequence %d", event.Sequence)
+		}
+		seen[event.Sequence] = true
+	}
+	for i := int64(1); i <= count; i++ {
+		if !seen[i] {
+			t.Fatalf("missing event sequence %d", i)
+		}
 	}
 }
 
