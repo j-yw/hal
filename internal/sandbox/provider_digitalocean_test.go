@@ -530,12 +530,14 @@ func TestDigitalOceanProvider_Exec_WithConnectInfoIP(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	args := strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, "root@10.20.30.40") {
-		t.Errorf("Exec cmd should contain root@10.20.30.40, got: %s", args)
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@10.20.30.40", "'ls' '-la'"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
-	if !strings.Contains(args, "-- 'ls' '-la'") {
-		t.Errorf("Exec cmd should contain quoted remote command, got: %s", args)
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want)
+		}
 	}
 }
 

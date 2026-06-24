@@ -1721,7 +1721,7 @@ func TestFactorySandboxBootstrapExecutorPreservesExitCode(t *testing.T) {
 }
 
 func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *testing.T) {
-	invocation := factorySandboxBootstrapCommandInvocation(factory.BootstrapCommand{
+	invocation, err := factorySandboxBootstrapCommandInvocation(factory.BootstrapCommand{
 		Name: "git",
 		Args: []string{"clone", "git@github.com:example/repo.git", "/home/ubuntu/workspace/repo"},
 		Dir:  "/home/ubuntu/workspace",
@@ -1730,6 +1730,9 @@ func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *
 			"GIT_TERMINAL_PROMPT": "0",
 		},
 	})
+	if err != nil {
+		t.Fatalf("factorySandboxBootstrapCommandInvocation() error: %v", err)
+	}
 	want := []string{"sh", "-s", "--", "git", "clone", "git@github.com:example/repo.git", "/home/ubuntu/workspace/repo"}
 	if !reflect.DeepEqual(invocation.args, want) {
 		t.Fatalf("bootstrap args = %#v, want %#v", invocation.args, want)
@@ -1757,6 +1760,22 @@ func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *
 		if !strings.Contains(script, wantLine) {
 			t.Fatalf("bootstrap input missing %q in:\n%s", wantLine, script)
 		}
+	}
+}
+
+func TestFactorySandboxBootstrapCommandInvocationRejectsInvalidEnvKey(t *testing.T) {
+	_, err := factorySandboxBootstrapCommandInvocation(factory.BootstrapCommand{
+		Name: "env",
+		Env: map[string]string{
+			"GOOD_ENV":     "ok",
+			"BAD; touch x": "unsafe",
+		},
+	})
+	if err == nil {
+		t.Fatal("factorySandboxBootstrapCommandInvocation() error = nil, want invalid env key error")
+	}
+	if !strings.Contains(err.Error(), "invalid bootstrap environment variable name") {
+		t.Fatalf("factorySandboxBootstrapCommandInvocation() error = %q, want invalid env key error", err)
 	}
 }
 

@@ -80,6 +80,7 @@ var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory
 const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 
 var factorySandboxURLUserinfoPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
+var factorySandboxEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	customRunProviderExec := deps.runProviderExec != nil
@@ -532,8 +533,10 @@ func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command facto
 	if e.out != nil {
 		out = io.MultiWriter(e.out, &summary)
 	}
-	invocation := factorySandboxBootstrapCommandInvocation(command)
-	var err error
+	invocation, err := factorySandboxBootstrapCommandInvocation(command)
+	if err != nil {
+		return factory.BootstrapCommandResult{}, err
+	}
 	if invocation.input != nil {
 		runWithInput := e.runProviderExecWithInput
 		if runWithInput == nil {
@@ -564,29 +567,39 @@ type factorySandboxBootstrapInvocation struct {
 }
 
 func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []string {
-	return factorySandboxBootstrapCommandInvocation(command).args
+	invocation, err := factorySandboxBootstrapCommandInvocation(command)
+	if err != nil {
+		return nil
+	}
+	return invocation.args
 }
 
-func factorySandboxBootstrapCommandInvocation(command factory.BootstrapCommand) factorySandboxBootstrapInvocation {
+func factorySandboxBootstrapCommandInvocation(command factory.BootstrapCommand) (factorySandboxBootstrapInvocation, error) {
 	args := []string{strings.TrimSpace(command.Name)}
 	args = append(args, command.Args...)
 	if len(command.Env) == 0 && strings.TrimSpace(command.Dir) == "" {
-		return factorySandboxBootstrapInvocation{args: args}
+		return factorySandboxBootstrapInvocation{args: args}, nil
 	}
 
-	script := factorySandboxBootstrapStdinScript(command)
+	script, err := factorySandboxBootstrapStdinScript(command)
+	if err != nil {
+		return factorySandboxBootstrapInvocation{}, err
+	}
 	scriptArgs := []string{"sh", "-s", "--", strings.TrimSpace(command.Name)}
 	scriptArgs = append(scriptArgs, command.Args...)
 	return factorySandboxBootstrapInvocation{
 		args:  scriptArgs,
 		input: strings.NewReader(script),
-	}
+	}, nil
 }
 
-func factorySandboxBootstrapStdinScript(command factory.BootstrapCommand) string {
+func factorySandboxBootstrapStdinScript(command factory.BootstrapCommand) (string, error) {
 	var script strings.Builder
 	script.WriteString("set -eu\n")
 	for _, key := range sortedStringMapKeys(command.Env) {
+		if !factorySandboxEnvNamePattern.MatchString(key) {
+			return "", fmt.Errorf("invalid bootstrap environment variable name %q", key)
+		}
 		script.WriteString("export ")
 		script.WriteString(key)
 		script.WriteString("=")
@@ -601,7 +614,7 @@ func factorySandboxBootstrapStdinScript(command factory.BootstrapCommand) string
 		script.WriteString("\n")
 	}
 	script.WriteString("exec \"$@\"\n")
-	return script.String()
+	return script.String(), nil
 }
 
 func sortedStringMapKeys(values map[string]string) []string {

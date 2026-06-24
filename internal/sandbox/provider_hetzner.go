@@ -321,7 +321,6 @@ func (h *HetznerProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, err
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
 		"root@" + ip,
-		"--",
 	}
 	cmdArgs = append(cmdArgs, sshRemoteCommand(args))
 	cmd := exec.Command("ssh", cmdArgs...)
