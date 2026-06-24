@@ -720,6 +720,7 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 
 func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 	rawPath := filepath.Join(t.TempDir(), "external", "secret.md")
+	secretBasePath := filepath.Join(t.TempDir(), "external", "api_key=sk-secret.json")
 	locations := handoffArtifactLocations("run-handoff", []ArtifactReference{
 		{
 			Name:       "absolute",
@@ -738,10 +739,30 @@ func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 			Type: "markdown",
 			Path: "../private.md",
 		},
+		{
+			Name: "relative-secret",
+			Type: "json",
+			Path: ".hal/reports/token=ghp_secret.json",
+		},
+		{
+			Name: "absolute-secret-base",
+			Type: "json",
+			Path: secretBasePath,
+		},
+		{
+			Name: "ip-segment",
+			Type: "json",
+			Path: "reports/10.0.0.1/output.json",
+		},
+		{
+			Name: "ssh-host-segment",
+			Type: "json",
+			Path: "reports/user@example-1.com:22/output.json",
+		},
 	}, false)
 
-	if len(locations) != 3 {
-		t.Fatalf("locations len = %d, want 3: %#v", len(locations), locations)
+	if len(locations) != 7 {
+		t.Fatalf("locations len = %d, want 7: %#v", len(locations), locations)
 	}
 	if locations[0].Path != "secret.md" {
 		t.Fatalf("absolute path = %q, want basename", locations[0].Path)
@@ -752,12 +773,17 @@ func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 	if locations[2].Path != "[redacted]" {
 		t.Fatalf("parent path = %q, want [redacted]", locations[2].Path)
 	}
+	for i := 3; i < len(locations); i++ {
+		if locations[i].Path != "[redacted]" {
+			t.Fatalf("locations[%d].Path = %q, want [redacted]", i, locations[i].Path)
+		}
+	}
 
 	data, err := json.Marshal(locations)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	for _, forbidden := range []string{rawPath, filepath.Dir(rawPath), "token=secret", "../private.md"} {
+	for _, forbidden := range []string{rawPath, filepath.Dir(rawPath), "token=secret", "../private.md", "ghp_secret", "sk-secret", "10.0.0.1", "example-1.com"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
 		}

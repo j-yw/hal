@@ -459,12 +459,20 @@ func handoffSafeArtifactPath(path string) string {
 		if base == "" || base == "." || base == string(os.PathSeparator) {
 			return handoffRedactedLocation
 		}
-		return filepath.ToSlash(base)
+		safePath := filepath.ToSlash(base)
+		if handoffArtifactDisplayPathNeedsRedaction(safePath) {
+			return handoffRedactedLocation
+		}
+		return safePath
 	}
 	if handoffArtifactPathIsParentRelative(cleanPath) {
 		return handoffRedactedLocation
 	}
-	return filepath.ToSlash(cleanPath)
+	safePath := filepath.ToSlash(cleanPath)
+	if handoffArtifactDisplayPathNeedsRedaction(safePath) {
+		return handoffRedactedLocation
+	}
+	return safePath
 }
 
 func handoffSafeStoredArtifactPath(runID, storedPath string) string {
@@ -489,6 +497,26 @@ func handoffSafeStoredArtifactPath(runID, storedPath string) string {
 		return ""
 	}
 	return safePath
+}
+
+func handoffArtifactDisplayPathNeedsRedaction(path string) bool {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" {
+		return false
+	}
+	if handoffStoredPathContainsSecret(path) {
+		return true
+	}
+	for _, segment := range strings.Split(path, "/") {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || segment == "." {
+			continue
+		}
+		if handoffStringNeedsRedaction(segment) {
+			return true
+		}
+	}
+	return false
 }
 
 func handoffStoredPathContainsSecret(storedPath string) bool {
