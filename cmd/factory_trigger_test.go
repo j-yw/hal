@@ -295,6 +295,15 @@ func TestRunFactoryTriggerWithDepsRejectsMissingPayloads(t *testing.T) {
 			},
 			wantErr: "--reports-dir requires --discover-report",
 		},
+		{
+			name: "sandbox missing base branch",
+			req: factoryTriggerRequest{
+				RepoPath:     ".",
+				MarkdownPath: ".hal/prd.md",
+				ExecutorMode: factory.ExecutorModeSandbox,
+			},
+			wantErr: "--base is required when --executor sandbox is set",
+		},
 	}
 
 	for _, tt := range tests {

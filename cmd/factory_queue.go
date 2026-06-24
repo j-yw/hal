@@ -268,6 +268,9 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 	if record.Status != factory.RunStatusPending {
 		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
 	}
+	if err := validateFactoryQueueExecutorRun(*record, executorMode); err != nil {
+		return err
+	}
 
 	entry, err := store.EnqueueQueueEntryWithLockedPostSave(req.RunID, executorMode, factory.QueueOperationOptions{
 		Now:        deps.now,
@@ -373,6 +376,9 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		return failClaimedFactoryQueueEntryAfterRunStateError(store, entry, *record, err, deps.now)
 	}
 	record.ExecutorMode = entry.ExecutorMode
+	if err := validateFactoryQueueExecutorRun(*record, entry.ExecutorMode); err != nil {
+		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+	}
 
 	currentBranch := deps.currentBranch
 	if currentBranch == nil {
@@ -382,8 +388,10 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	if err != nil {
 		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
 	}
-	if err := validateClaimedFactoryQueueBranch(runDir, *record, currentBranch); err != nil {
-		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+	if entry.ExecutorMode != factory.ExecutorModeSandbox {
+		if err := validateClaimedFactoryQueueBranch(runDir, *record, currentBranch); err != nil {
+			return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+		}
 	}
 
 	result, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), store, *record, io.Discard, "", factoryRunExecutionDeps{
@@ -399,6 +407,13 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	}
 
 	return succeedClaimedFactoryQueueEntry(store, entry, deps.now)
+}
+
+func validateFactoryQueueExecutorRun(record factory.RunRecord, executorMode string) error {
+	if strings.TrimSpace(executorMode) == factory.ExecutorModeSandbox && strings.TrimSpace(record.BaseBranch) == "" {
+		return fmt.Errorf("sandbox factory run %q requires a base branch", record.RunID)
+	}
+	return nil
 }
 
 func validateClaimedFactoryQueueBranch(dir string, record factory.RunRecord, currentBranch func(string) (string, error)) error {

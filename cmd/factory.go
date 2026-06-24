@@ -1678,9 +1678,9 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		if sourcePath == "" {
 			continue
 		}
-		absoluteSourcePath := sourcePath
-		if !filepath.IsAbs(absoluteSourcePath) {
-			absoluteSourcePath = filepath.Join(dir, sourcePath)
+		absoluteSourcePath, err := resolveFactoryArtifactSourcePath(dir, sourcePath)
+		if err != nil {
+			return fmt.Errorf("resolve factory artifact %q from %s: %w", artifact.Name, artifact.Path, err)
 		}
 		if factoryArtifactFileExists(absoluteSourcePath) {
 			artifact.ID = factoryArtifactID(artifact)
@@ -1738,9 +1738,9 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 			},
 		}
 		ref.ID = factoryArtifactID(ref)
-		sourcePath := path
-		if !filepath.IsAbs(sourcePath) {
-			sourcePath = filepath.Join(dir, sourcePath)
+		sourcePath, err := resolveFactoryArtifactSourcePath(dir, path)
+		if err != nil {
+			return fmt.Errorf("resolve factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
 		}
 		if !factoryArtifactFileExists(sourcePath) {
 			missing := ref
@@ -1766,6 +1766,75 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 		}
 		if err := store.SaveRun(updatedRecord); err != nil {
 			return fmt.Errorf("record missing factory verification artifact warnings: %w", err)
+		}
+	}
+	return nil
+}
+
+func resolveFactoryArtifactSourcePath(dir, sourcePath string) (string, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return "", fmt.Errorf("artifact source path is required")
+	}
+	absoluteSourcePath := sourcePath
+	if !filepath.IsAbs(absoluteSourcePath) {
+		absoluteSourcePath = filepath.Join(dir, sourcePath)
+	}
+	var err error
+	absoluteSourcePath, err = filepath.Abs(absoluteSourcePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact source path: %w", err)
+	}
+	absoluteSourcePath = filepath.Clean(absoluteSourcePath)
+
+	absoluteDir, err := filepath.Abs(strings.TrimSpace(dir))
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact base directory: %w", err)
+	}
+	absoluteDir = filepath.Clean(absoluteDir)
+	if !filepath.IsAbs(sourcePath) || factoryArtifactPathWithinDir(absoluteDir, absoluteSourcePath) {
+		if err := rejectFactoryArtifactSymlinkParents(absoluteDir, absoluteSourcePath); err != nil {
+			return "", err
+		}
+	}
+	return absoluteSourcePath, nil
+}
+
+func factoryArtifactPathWithinDir(dir, candidate string) bool {
+	rel, err := filepath.Rel(dir, candidate)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+func rejectFactoryArtifactSymlinkParents(dir, sourcePath string) error {
+	parent := filepath.Dir(sourcePath)
+	if !factoryArtifactPathWithinDir(dir, parent) {
+		return nil
+	}
+	relParent, err := filepath.Rel(dir, parent)
+	if err != nil || relParent == "." {
+		return nil
+	}
+	current := dir
+	for _, part := range strings.Split(relParent, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect artifact source parent %q: %w", current, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("artifact source parent %q is a symlink", current)
+		}
+		if !info.IsDir() {
+			return nil
 		}
 	}
 	return nil
@@ -2136,9 +2205,12 @@ func collectFactoryRunArchivedArtifacts(dir string, startedAt time.Time) factory
 		archiveDirPath := filepath.Join(archiveRoot, dirEntry.name)
 		archiveRel := filepath.Join(template.HalDir, "archive", dirEntry.name)
 		archived.addFile(filepath.Join(template.HalDir, template.PRDFile), filepath.Join(archiveRel, template.PRDFile), filepath.Join(archiveDirPath, template.PRDFile))
-		if archived.addFile(filepath.Join(template.HalDir, template.AutoStateFile), filepath.Join(archiveRel, template.AutoStateFile), filepath.Join(archiveDirPath, template.AutoStateFile)) {
-			if state, ok := loadFactoryRunPipelineState(filepath.Join(archiveDirPath, template.AutoStateFile)); ok {
-				archived.pipelineStates = append(archived.pipelineStates, *state)
+		autoStatePath := filepath.Join(archiveDirPath, template.AutoStateFile)
+		if archived.addFile(filepath.Join(template.HalDir, template.AutoStateFile), filepath.Join(archiveRel, template.AutoStateFile), autoStatePath) {
+			if factoryArtifactModifiedAtOrAfter(autoStatePath, startedAt) {
+				if state, ok := loadFactoryRunPipelineState(autoStatePath); ok {
+					archived.pipelineStates = append(archived.pipelineStates, *state)
+				}
 			}
 		}
 
@@ -2351,6 +2423,14 @@ func factoryArtifactTypeForPath(path string) string {
 func factoryArtifactFileExists(path string) bool {
 	info, err := os.Lstat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func factoryArtifactModifiedAtOrAfter(path string, threshold time.Time) bool {
+	if threshold.IsZero() {
+		return true
+	}
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular() && !info.ModTime().Before(threshold)
 }
 
 func factoryArtifactChangedSinceSnapshot(dir, path string, snapshot factoryArtifactSnapshot) bool {

@@ -1536,6 +1536,66 @@ func TestRunFactoryRunWithDepsRecordsArchivedArtifacts(t *testing.T) {
 	}
 }
 
+func TestFactoryOutcomePipelineStateIgnoresStaleArchivedAutoState(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	staleAt := startedAt.Add(-1 * time.Hour)
+	archiveDir := filepath.Join(dir, ".hal", "archive", "2026-06-21-stale")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(archiveDir) error: %v", err)
+	}
+	writeFile(t, archiveDir, "auto-state.json", `{
+  "branchName": "hal/old",
+  "ci": {
+    "status": "passed",
+    "prUrl": "https://github.com/acme/hal/pull/1"
+  }
+}`)
+	autoStatePath := filepath.Join(archiveDir, "auto-state.json")
+	if err := os.Chtimes(autoStatePath, staleAt, staleAt); err != nil {
+		t.Fatalf("Chtimes(auto-state) error: %v", err)
+	}
+	if err := os.Chtimes(archiveDir, startedAt.Add(time.Minute), startedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("Chtimes(archiveDir) error: %v", err)
+	}
+
+	if state := factoryOutcomePipelineState(dir, startedAt, nil); state != nil {
+		t.Fatalf("factoryOutcomePipelineState() = %#v, want nil for stale archived auto-state", state)
+	}
+}
+
+func TestCollectAndStoreFactoryRunArtifactsRejectsSymlinkedLocalParent(t *testing.T) {
+	dir := t.TempDir()
+	outsideHal := t.TempDir()
+	writeFile(t, outsideHal, "prd.json", `{"secret":"outside"}`)
+	if err := os.Symlink(outsideHal, filepath.Join(dir, ".hal")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-symlinked-local-parent", createdAt, createdAt)
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	err := collectAndStoreFactoryRunArtifacts(store, dir, factoryRunRequest{}, record, nil, nil)
+	if err == nil {
+		t.Fatal("collectAndStoreFactoryRunArtifacts() error = nil, want symlink parent rejection")
+	}
+	if !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("collectAndStoreFactoryRunArtifacts() error = %q, want symlink rejection", err.Error())
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if len(loaded.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none after symlink parent rejection", loaded.Artifacts)
+	}
+}
+
 func TestCollectFactoryRunReportArtifactsSkipsNonRegularFiles(t *testing.T) {
 	dir := t.TempDir()
 	reportsDir := filepath.Join(dir, ".hal", "reports")

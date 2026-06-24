@@ -270,6 +270,9 @@ func parseFactoryTriggerRequest(req factoryTriggerRequest) (factoryTriggerReques
 	if req.RepoPath == "" {
 		return factoryTriggerRequest{}, fmt.Errorf("factory trigger repository path is required")
 	}
+	if strings.TrimSpace(req.ExecutorMode) == factory.ExecutorModeSandbox && req.BaseBranch == "" {
+		return factoryTriggerRequest{}, fmt.Errorf("--base is required when --executor sandbox is set")
+	}
 
 	sourceCount := 0
 	if req.MarkdownPath != "" {

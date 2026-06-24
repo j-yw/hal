@@ -140,6 +140,37 @@ func TestRunFactoryQueueAddWithDepsCreatesQueueEntryAndRecordsRunState(t *testin
 	}
 }
 
+func TestRunFactoryQueueAddWithDepsRejectsSandboxRunWithoutBaseBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 12, 15, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-sandbox-missing-base", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.RunStatusPending
+	record.BaseBranch = ""
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	err := runFactoryQueueAddWithDeps(io.Discard, factoryQueueAddRequest{
+		RunID:        record.RunID,
+		ExecutorMode: factory.ExecutorModeSandbox,
+	}, queueAddTestDeps(store, createdAt.Add(5*time.Minute), "queue-sandbox-missing-base"))
+	if err == nil {
+		t.Fatal("runFactoryQueueAddWithDeps() error = nil, want missing base branch")
+	}
+	want := `sandbox factory run "run-sandbox-missing-base" requires a base branch`
+	if err.Error() != want {
+		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want %q", err.Error(), want)
+	}
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries = %#v, want none", entries)
+	}
+}
+
 func TestRunFactoryQueueAddWithDepsRejectsNonPendingRun(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1064,6 +1095,9 @@ func TestExecuteClaimedFactoryQueueEntryRoutesSandboxExecutor(t *testing.T) {
 	deps.sandboxRequests = func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
 		return nil
 	}
+	deps.currentBranch = func(string) (string, error) {
+		return "hal/worker-left-on-other-branch", nil
+	}
 
 	finalEntry, err := executeClaimedFactoryQueueEntry(context.Background(), store, entry, deps)
 	if err != nil {
@@ -1089,6 +1123,57 @@ func TestExecuteClaimedFactoryQueueEntryRoutesSandboxExecutor(t *testing.T) {
 	}
 	if gotSandboxReq.RemoteAuto.BaseBranch != "develop" {
 		t.Fatalf("sandbox remote auto base = %q, want develop", gotSandboxReq.RemoteAuto.BaseBranch)
+	}
+}
+
+func TestExecuteClaimedFactoryQueueEntryRejectsSandboxRunWithoutBaseBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 19, 10, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	record := testFactoryRunRecord("run-sandbox-claimed-missing-base", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusClaimed
+	record.BaseBranch = ""
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-claimed-missing-base", record.RunID, factory.QueueStatusClaimed, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	entry.ClaimedAt = &claimedAt
+	entry.AttemptCount = 1
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, factory.QueueClaim{WorkerID: "worker-sandbox-base", PID: 5502, Hostname: "factory-host"}, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline called for invalid sandbox queue entry")
+		return nil
+	})
+	deps.runSandbox = func(context.Context, factorySandboxExecutorRequest) error {
+		t.Fatal("runSandbox called for invalid sandbox queue entry")
+		return nil
+	}
+
+	finalEntry, err := executeClaimedFactoryQueueEntry(context.Background(), store, entry, deps)
+	if err == nil {
+		t.Fatal("executeClaimedFactoryQueueEntry() error = nil, want missing base branch")
+	}
+	want := `sandbox factory run "run-sandbox-claimed-missing-base" requires a base branch`
+	if err.Error() != want {
+		t.Fatalf("executeClaimedFactoryQueueEntry() error = %q, want %q", err.Error(), want)
+	}
+	if finalEntry.Status != factory.QueueStatusFailed {
+		t.Fatalf("final queue status = %q, want failed", finalEntry.Status)
+	}
+	loaded, loadErr := store.LoadRun(record.RunID)
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if loaded.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", loaded.Status)
+	}
+	if loaded.Failure == nil || loaded.Failure.Message != want {
+		t.Fatalf("run failure = %#v, want %q", loaded.Failure, want)
 	}
 }
 
