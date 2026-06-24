@@ -918,14 +918,19 @@ func TestRunFactoryQueueWorkWithDepsKeepsQueueSucceededWhenSuccessEventAppendFai
 		t.Fatalf("SaveQueue() error: %v", err)
 	}
 
+	pipelineFinished := false
+	completionNowSeen := false
 	poisonedTimeline := false
-	nowCalls := 0
 	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		pipelineFinished = true
 		return nil
 	})
 	deps.now = func() time.Time {
-		nowCalls++
-		if nowCalls >= 5 && !poisonedTimeline {
+		if pipelineFinished && !completionNowSeen {
+			completionNowSeen = true
+			return claimedAt
+		}
+		if pipelineFinished && completionNowSeen && !poisonedTimeline {
 			poisonedTimeline = true
 			timelinePath := filepath.Join(store.TimelinesDir(), record.RunID+".json")
 			if err := os.Remove(timelinePath); err != nil {

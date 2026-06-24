@@ -207,16 +207,29 @@ func (s Store) ListQueue() ([]QueueEntry, error) {
 // queued entries are available.
 func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, error) {
 	opts = normalizeQueueOperationOptions(opts)
+	now := opts.Now().UTC()
+	entries, err := s.loadQueue()
+	if err != nil {
+		return nil, err
+	}
+	if !hasClaimableQueueEntry(entries, now, opts.ClaimLeaseDuration) {
+		return nil, nil
+	}
+
 	claim := opts.queueClaim()
 
 	var claimed *QueueEntry
-	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+	if err := s.withQueueLock(func() error {
+		entries, err := s.loadQueue()
+		if err != nil {
+			return err
+		}
 		now := opts.Now().UTC()
 		requeueExpiredQueueClaims(entries, now, opts.ClaimLeaseDuration)
 
 		idx := oldestQueuedEntryIndex(entries)
 		if idx < 0 {
-			return entries, nil
+			return nil
 		}
 
 		entries[idx].Status = QueueStatusClaimed
@@ -228,7 +241,7 @@ func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, err
 
 		entry := entries[idx]
 		claimed = &entry
-		return entries, nil
+		return s.saveQueue(entries)
 	}); err != nil {
 		return nil, err
 	}
@@ -767,6 +780,21 @@ func oldestQueuedEntryIndex(entries []QueueEntry) int {
 		}
 	}
 	return oldest
+}
+
+func hasClaimableQueueEntry(entries []QueueEntry, now time.Time, leaseDuration time.Duration) bool {
+	if oldestQueuedEntryIndex(entries) >= 0 {
+		return true
+	}
+	for _, entry := range entries {
+		if entry.Status != QueueStatusClaimed {
+			continue
+		}
+		if queueClaimExpired(entry, now, leaseDuration) {
+			return true
+		}
+	}
+	return false
 }
 
 func activeQueueEntryForRun(entries []QueueEntry, runID string) *QueueEntry {
