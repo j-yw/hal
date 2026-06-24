@@ -28,6 +28,7 @@ Review / reporting:
 Status / health:
   hal status [--json]
   hal doctor [--json]
+  hal verify [--json]
   hal continue [--json]
   hal repair [--dry-run] [--json]
 
@@ -93,5 +94,6 @@ Quick start:
 * [hal standards](hal_standards.md)	 - Manage project standards
 * [hal status](hal_status.md)	 - Show current workflow state
 * [hal validate](hal_validate.md)	 - Validate a PRD using AI
+* [hal verify](hal_verify.md)	 - Run configured verification checks
 * [hal version](hal_version.md)	 - Show version info
 

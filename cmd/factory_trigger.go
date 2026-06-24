@@ -221,7 +221,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	if err != nil {
 		return fmt.Errorf("open factory store: %w", err)
 	}
-	record, err := newFactoryRunRecord(repoPath, sourceReq, factoryRunDeps{
+	record, _, err := newFactoryRunRecord(repoPath, sourceReq, factoryRunDeps{
 		newRunID:      deps.newRunID,
 		now:           deps.now,
 		workingDir:    func() (string, error) { return repoPath, nil },

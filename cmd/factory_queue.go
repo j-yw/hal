@@ -381,7 +381,7 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
 	}
 
-	result, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), store, *record, factoryRunExecutionDeps{
+	result, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), store, *record, io.Discard, "", factoryRunExecutionDeps{
 		now:           deps.now,
 		currentBranch: currentBranch,
 		runPipeline:   deps.runPipeline,
@@ -441,13 +441,17 @@ func finalizeClaimedFactoryQueueExecutionError(store factory.Store, entry factor
 }
 
 func succeedClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, now func() time.Time) (factory.QueueEntry, error) {
+	completedAt := now()
 	completedEntry, err := store.MarkQueueEntrySucceeded(entry.QueueID, factory.QueueOperationOptions{
-		Now:                  now,
+		Now:                  func() time.Time { return completedAt },
 		ExpectedClaimedAt:    entry.ClaimedAt,
 		ExpectedAttemptCount: entry.AttemptCount,
 	})
 	if err != nil {
 		return entry, err
+	}
+	if eventErr := recordFactoryRunQueueSucceeded(store, entry.RunID, completedAt, completedEntry); eventErr != nil {
+		return completedEntry, fmt.Errorf("record factory queue success event: %w", eventErr)
 	}
 	return completedEntry, nil
 }
@@ -594,6 +598,23 @@ func recordFactoryRunQueueFailed(store factory.Store, runID string, now time.Tim
 	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Factory queue work failed",
+		Metadata:  metadata,
+	})
+}
+
+func recordFactoryRunQueueSucceeded(store factory.Store, runID string, now time.Time, entry factory.QueueEntry) error {
+	metadata := map[string]any{
+		"queueId":      entry.QueueID,
+		"executorMode": entry.ExecutorMode,
+		"status":       factory.QueueStatusSucceeded,
+		"step":         factory.QueueStatusClaimed,
+	}
+	if entry.AttemptCount != 0 {
+		metadata["attemptCount"] = entry.AttemptCount
+	}
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory queue work succeeded",
 		Metadata:  metadata,
 	})
 }

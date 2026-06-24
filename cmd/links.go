@@ -58,12 +58,16 @@ each AI engine can discover project skills. These links are:
     .claude/skills/  → .hal/skills/   (Claude Code)
     .pi/skills/      → .hal/skills/   (Pi)
 
-  Global (single-active-repo):
-    ~/.codex/skills/  → .hal/skills/  (Codex)
+  Global (active Codex home):
+    $CODEX_HOME/skills/  → .hal/skills/  (Codex, when CODEX_HOME is set)
+    ~/.codex/skills/     → .hal/skills/  (Codex default)
+
+Set CODEX_HOME per worktree to isolate Codex global skill and command links.
+When CODEX_HOME is unset, Hal uses ~/.codex.
 
 Side effects:
 - refresh creates or replaces engine skill and command symlinks in .claude/,
-  .pi/, and ~/.codex for Codex.
+  .pi/, and the active Codex home for Codex.
 - clean removes deprecated or broken engine skill symlinks.
 
 Use 'hal links status' to inspect link health.
@@ -282,12 +286,34 @@ func inspectLinker(absDir, dir string, linker skills.EngineLinker) LinkStatus {
 			if _, err := os.Stat(linkPath); os.IsNotExist(err) {
 				detail.Status = "broken"
 				issues = append(issues, skill+" → broken target: "+target)
+			} else if mode == "global" && target != filepath.Join(absDir, template.HalDir, "skills", skill) {
+				detail.Status = "stale"
+				issues = append(issues, skill+" link points to "+target+", not this project")
 			} else {
 				detail.Status = "ok"
 			}
 		}
 
 		es.Links = append(es.Links, detail)
+	}
+
+	if mode == "global" && commandsDir != "" {
+		info, err := os.Lstat(commandsDir)
+		if os.IsNotExist(err) {
+			issues = append(issues, "commands link missing")
+		} else if err != nil {
+			issues = append(issues, "commands: "+err.Error())
+		} else if info.Mode()&os.ModeSymlink == 0 {
+			issues = append(issues, "commands is not a symlink")
+		} else {
+			target, _ := os.Readlink(commandsDir)
+			expectedTarget := filepath.Join(absDir, template.HalDir, template.CommandsDir)
+			if _, err := os.Stat(commandsDir); os.IsNotExist(err) {
+				issues = append(issues, "commands → broken target: "+target)
+			} else if target != expectedTarget {
+				issues = append(issues, "commands link points to "+target+", not this project")
+			}
+		}
 	}
 
 	if len(issues) > 0 {
@@ -365,9 +391,10 @@ func runLinksRefresh(cmd *cobra.Command, args []string) error {
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 	}
+	return runLinksRefreshFn(".", args, out)
+}
 
-	projectDir := "."
-
+func runLinksRefreshFn(projectDir string, args []string, out io.Writer) error {
 	// Check .hal/skills exists
 	halSkillsDir := filepath.Join(projectDir, template.HalDir, "skills")
 	if _, err := os.Stat(halSkillsDir); os.IsNotExist(err) {

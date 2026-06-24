@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 func TestRunStatusConstants(t *testing.T) {
@@ -181,12 +183,24 @@ func TestEventTypeConstants(t *testing.T) {
 func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	types := []reflect.Type{
 		reflect.TypeOf(RunRecord{}),
+		reflect.TypeOf(SandboxMetadata{}),
+		reflect.TypeOf(SandboxConnectionMetadata{}),
 		reflect.TypeOf(SourceMetadata{}),
 		reflect.TypeOf(ArtifactReference{}),
+		reflect.TypeOf(VerificationRecord{}),
 		reflect.TypeOf(FailureSummary{}),
 		reflect.TypeOf(QueueEntry{}),
 		reflect.TypeOf(QueueClaim{}),
 		reflect.TypeOf(EventRecord{}),
+		reflect.TypeOf(BootstrapRequest{}),
+		reflect.TypeOf(BootstrapOptions{}),
+		reflect.TypeOf(BootstrapResult{}),
+		reflect.TypeOf(BootstrapStepResult{}),
+		reflect.TypeOf(BootstrapTimelineEvent{}),
+		reflect.TypeOf(BootstrapFailure{}),
+		reflect.TypeOf(BootstrapCommand{}),
+		reflect.TypeOf(BootstrapCommandResult{}),
+		reflect.TypeOf(BootstrapToolingCheck{}),
 	}
 
 	for _, typ := range types {
@@ -203,6 +217,202 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBootstrapRequestJSONFields(t *testing.T) {
+	original := BootstrapRequest{
+		RepositoryURL:   "git@github.com:jywlabs/hal.git",
+		BaseBranch:      "main",
+		RunBranch:       "hal/factory-remote-workspace-bootstrap",
+		WorkspaceDir:    "/workspace/hal",
+		RequiredEnvKeys: []string{"GITHUB_TOKEN", "HAL_ENGINE"},
+		Env: map[string]string{
+			"HAL_ENGINE": "codex",
+		},
+		Options: BootstrapOptions{
+			RefreshHal:         true,
+			InstallMissingCLIs: true,
+			DryRun:             true,
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	for _, key := range []string{
+		"repositoryUrl",
+		"baseBranch",
+		"runBranch",
+		"workspaceDir",
+		"requiredEnvKeys",
+		"env",
+		"options",
+	} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing bootstrap request JSON field %q", key)
+		}
+	}
+
+	env, ok := raw["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("env should be an object, got %T", raw["env"])
+	}
+	if env["HAL_ENGINE"] != "codex" {
+		t.Fatalf("HAL_ENGINE env value = %#v, want codex", env["HAL_ENGINE"])
+	}
+
+	options, ok := raw["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("options should be an object, got %T", raw["options"])
+	}
+	for _, key := range []string{"refreshHal", "installMissingClis", "dryRun"} {
+		if _, ok := options[key]; !ok {
+			t.Errorf("missing bootstrap option JSON field %q", key)
+		}
+	}
+
+	var decoded BootstrapRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestBootstrapResultJSONFields(t *testing.T) {
+	startedAt := time.Date(2026, 6, 20, 20, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(15 * time.Second)
+	original := BootstrapResult{
+		RepoPath:         "/workspace/hal",
+		CheckedOutBranch: "hal/factory-remote-workspace-bootstrap",
+		Steps: []BootstrapStepResult{
+			{
+				Name:           "clone",
+				Status:         RunStatusFailed,
+				CommandSummary: "git clone <repository> /workspace/hal",
+				StartedAt:      startedAt,
+				FinishedAt:     &finishedAt,
+				ExitCode:       128,
+			},
+		},
+		Timeline: []BootstrapTimelineEvent{
+			{
+				Timestamp:      finishedAt,
+				Step:           "clone",
+				Status:         RunStatusFailed,
+				Message:        "repository clone failed",
+				CommandSummary: "git clone <repository> /workspace/hal",
+				OutputSummary:  "remote rejected authentication",
+				Metadata: map[string]string{
+					"remote": "github",
+				},
+			},
+		},
+		Failure: &BootstrapFailure{
+			Step:     "clone",
+			Category: BootstrapFailureCategoryRepo,
+			Message:  "repository clone failed",
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	for _, key := range []string{"repoPath", "checkedOutBranch", "steps", "timeline", "failure"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing bootstrap result JSON field %q", key)
+		}
+	}
+
+	steps, ok := raw["steps"].([]any)
+	if !ok {
+		t.Fatalf("steps should be an array, got %T", raw["steps"])
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps length = %d, want 1", len(steps))
+	}
+	step, ok := steps[0].(map[string]any)
+	if !ok {
+		t.Fatalf("steps[0] should be an object, got %T", steps[0])
+	}
+	for _, key := range []string{"name", "status", "commandSummary", "startedAt", "finishedAt", "exitCode"} {
+		if _, ok := step[key]; !ok {
+			t.Errorf("missing bootstrap step JSON field %q", key)
+		}
+	}
+
+	timeline, ok := raw["timeline"].([]any)
+	if !ok {
+		t.Fatalf("timeline should be an array, got %T", raw["timeline"])
+	}
+	if len(timeline) != 1 {
+		t.Fatalf("timeline length = %d, want 1", len(timeline))
+	}
+	event, ok := timeline[0].(map[string]any)
+	if !ok {
+		t.Fatalf("timeline[0] should be an object, got %T", timeline[0])
+	}
+	for _, key := range []string{"timestamp", "step", "status", "message", "commandSummary", "outputSummary", "metadata"} {
+		if _, ok := event[key]; !ok {
+			t.Errorf("missing bootstrap timeline JSON field %q", key)
+		}
+	}
+
+	failure, ok := raw["failure"].(map[string]any)
+	if !ok {
+		t.Fatalf("failure should be an object, got %T", raw["failure"])
+	}
+	for _, key := range []string{"step", "category", "message"} {
+		if _, ok := failure[key]; !ok {
+			t.Errorf("missing bootstrap failure JSON field %q", key)
+		}
+	}
+
+	var decoded BootstrapResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestBootstrapResultOptionalFailureOmitted(t *testing.T) {
+	original := BootstrapResult{
+		RepoPath:         "/workspace/hal",
+		CheckedOutBranch: "hal/factory-remote-workspace-bootstrap",
+		Steps:            []BootstrapStepResult{},
+		Timeline:         []BootstrapTimelineEvent{},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	if _, ok := raw["failure"]; ok {
+		t.Errorf("unexpected optional bootstrap failure field in %s", string(data))
 	}
 }
 
@@ -227,6 +437,21 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 			BranchName:  "hal/factory-run-records",
 			BaseBranch:  "develop",
 			SandboxName: "factory-run",
+			Sandbox: &SandboxMetadata{
+				Name:     "factory-run",
+				Provider: "daytona",
+				Status:   "running",
+				Connection: &SandboxConnectionMetadata{
+					Address:           "100.64.0.10",
+					PublicIP:          "203.0.113.10",
+					TailscaleIP:       "100.64.0.10",
+					TailscaleHostname: "factory-run.tailnet.ts.net",
+					TailscaleLockdown: true,
+				},
+				SSHCommand:     "hal sandbox ssh factory-run",
+				CleanupCommand: "hal sandbox delete factory-run",
+				Handoff:        "Inspect the sandbox before cleanup.",
+			},
 			CurrentStep: "ci",
 			CreatedAt:   createdAt,
 			UpdatedAt:   updatedAt,
@@ -234,6 +459,20 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 			Artifacts: []ArtifactReference{
 				{Name: "prd", Type: "json", Path: ".hal/prd.json"},
 				{Name: "pull_request", Type: "url", URL: "https://github.com/jywlabs/hal/pull/123"},
+			},
+			Verification: &VerificationRecord{
+				Summary: verify.Summary{
+					Total:    3,
+					Passed:   1,
+					Failed:   1,
+					TimedOut: 1,
+					Missing:  0,
+					Skipped:  0,
+					Warnings: 1,
+				},
+				Artifacts: []verify.ArtifactReference{
+					{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
+				},
 			},
 			Failure: &FailureSummary{
 				Step:             "ci",
@@ -272,6 +511,26 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 		}
 
 		var decoded ArtifactReference
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("verification record", func(t *testing.T) {
+		original := VerificationRecord{
+			Summary: verify.Summary{
+				Total:    3,
+				Passed:   1,
+				Failed:   1,
+				TimedOut: 1,
+				Missing:  0,
+				Skipped:  0,
+				Warnings: 1,
+			},
+			Artifacts: []verify.ArtifactReference{
+				{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
+			},
+		}
+
+		var decoded VerificationRecord
 		requireJSONRoundTrip(t, original, &decoded)
 	})
 
@@ -338,6 +597,21 @@ func TestRunRecordJSONFields(t *testing.T) {
 		BranchName:  "hal/factory-run-records",
 		BaseBranch:  "develop",
 		SandboxName: "factory-run",
+		Sandbox: &SandboxMetadata{
+			Name:     "factory-run",
+			Provider: "daytona",
+			Status:   "running",
+			Connection: &SandboxConnectionMetadata{
+				Address:           "100.64.0.10",
+				PublicIP:          "203.0.113.10",
+				TailscaleIP:       "100.64.0.10",
+				TailscaleHostname: "factory-run.tailnet.ts.net",
+				TailscaleLockdown: true,
+			},
+			SSHCommand:     "hal sandbox ssh factory-run",
+			CleanupCommand: "hal sandbox delete factory-run",
+			Handoff:        "Inspect the sandbox before cleanup.",
+		},
 		CurrentStep: "run",
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
@@ -352,6 +626,21 @@ func TestRunRecordJSONFields(t *testing.T) {
 				Name: "pull_request",
 				Type: "url",
 				URL:  "https://github.com/jywlabs/hal/pull/123",
+			},
+		},
+		Verification: &VerificationRecord{
+			Summary: verify.Summary{
+				Total:    4,
+				Passed:   2,
+				Failed:   1,
+				TimedOut: 1,
+				Missing:  0,
+				Skipped:  0,
+				Warnings: 1,
+			},
+			Artifacts: []verify.ArtifactReference{
+				{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
+				{CheckID: "test", Kind: verify.ArtifactKindStderr, Path: ".hal/reports/verify/test-stderr.txt"},
 			},
 		},
 		Failure: &FailureSummary{
@@ -384,11 +673,13 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"branchName",
 		"baseBranch",
 		"sandboxName",
+		"sandbox",
 		"currentStep",
 		"createdAt",
 		"updatedAt",
 		"finishedAt",
 		"artifacts",
+		"verification",
 		"failure",
 	} {
 		if _, ok := raw[key]; !ok {
@@ -430,6 +721,41 @@ func TestRunRecordJSONFields(t *testing.T) {
 		t.Errorf("missing artifact JSON field %q", "url")
 	}
 
+	verification, ok := raw["verification"].(map[string]any)
+	if !ok {
+		t.Fatalf("verification should be an object, got %T", raw["verification"])
+	}
+	for _, key := range []string{"summary", "artifacts"} {
+		if _, ok := verification[key]; !ok {
+			t.Errorf("missing verification JSON field %q", key)
+		}
+	}
+	verificationSummary, ok := verification["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("verification.summary should be an object, got %T", verification["summary"])
+	}
+	for _, key := range []string{"total", "passed", "failed", "timedOut", "skipped", "warnings"} {
+		if _, ok := verificationSummary[key]; !ok {
+			t.Errorf("missing verification summary JSON field %q", key)
+		}
+	}
+	verificationArtifacts, ok := verification["artifacts"].([]any)
+	if !ok {
+		t.Fatalf("verification.artifacts should be an array, got %T", verification["artifacts"])
+	}
+	if len(verificationArtifacts) != 2 {
+		t.Fatalf("verification.artifacts length = %d, want 2", len(verificationArtifacts))
+	}
+	firstVerificationArtifact, ok := verificationArtifacts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("verification.artifacts[0] should be an object, got %T", verificationArtifacts[0])
+	}
+	for _, key := range []string{"checkId", "kind", "path"} {
+		if _, ok := firstVerificationArtifact[key]; !ok {
+			t.Errorf("missing verification artifact JSON field %q", key)
+		}
+	}
+
 	failure, ok := raw["failure"].(map[string]any)
 	if !ok {
 		t.Fatalf("failure should be an object, got %T", raw["failure"])
@@ -437,6 +763,33 @@ func TestRunRecordJSONFields(t *testing.T) {
 	for _, key := range []string{"step", "category", "message", "recoverable", "suggestedCommand", "exitCode"} {
 		if _, ok := failure[key]; !ok {
 			t.Errorf("missing failure JSON field %q", key)
+		}
+	}
+
+	sandbox, ok := raw["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("sandbox should be an object, got %T", raw["sandbox"])
+	}
+	for _, key := range []string{"name", "provider", "status", "connection", "sshCommand", "cleanupCommand", "handoff"} {
+		if _, ok := sandbox[key]; !ok {
+			t.Errorf("missing sandbox JSON field %q", key)
+		}
+	}
+	connection, ok := sandbox["connection"].(map[string]any)
+	if !ok {
+		t.Fatalf("sandbox.connection should be an object, got %T", sandbox["connection"])
+	}
+	for _, key := range []string{"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown"} {
+		if _, ok := connection[key]; !ok {
+			t.Errorf("missing sandbox connection JSON field %q", key)
+		}
+	}
+	for _, forbidden := range []string{"token", "privateKey", "credential", "env", "apiKey"} {
+		if _, ok := sandbox[forbidden]; ok {
+			t.Errorf("unsafe sandbox field %q should not be serialized", forbidden)
+		}
+		if _, ok := connection[forbidden]; ok {
+			t.Errorf("unsafe sandbox connection field %q should not be serialized", forbidden)
 		}
 	}
 
@@ -545,6 +898,16 @@ func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
 	}
 }
 
+func requireJSONMapKeys(t *testing.T, raw map[string]any, keys []string) {
+	t.Helper()
+
+	for _, key := range keys {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing JSON field %q", key)
+		}
+	}
+}
+
 func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 	t.Helper()
 
@@ -593,7 +956,7 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"sandboxName", "finishedAt", "artifacts", "failure"} {
+	for _, key := range []string{"sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "failure"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional field %q in %s", key, string(data))
 		}
@@ -607,6 +970,96 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		if _, ok := source[key]; ok {
 			t.Errorf("unexpected optional source field %q in %s", key, string(data))
 		}
+	}
+}
+
+func TestRunRecordCanIncludeVerificationSummaryAndArtifacts(t *testing.T) {
+	now := time.Date(2026, 6, 20, 11, 0, 0, 0, time.UTC)
+	original := RunRecord{
+		RunID:        "run-verification",
+		Status:       RunStatusSucceeded,
+		ExecutorMode: ExecutorModeLocal,
+		Source:       SourceMetadata{Kind: SourceKindMarkdown, Path: ".hal/prd-verify.md"},
+		RepoPath:     "/work/hal",
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
+		BranchName:   "hal/verify",
+		BaseBranch:   "main",
+		CurrentStep:  "done",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Artifacts: []ArtifactReference{
+			{Name: "verification-stdout", Type: "text", Path: ".hal/reports/verify/test-stdout.txt"},
+			{Name: "verification-stderr", Type: "text", Path: ".hal/reports/verify/test-stderr.txt"},
+		},
+		Verification: &VerificationRecord{
+			Summary: verify.Summary{
+				Total:    5,
+				Passed:   2,
+				Failed:   1,
+				TimedOut: 1,
+				Missing:  0,
+				Skipped:  1,
+				Warnings: 1,
+			},
+			Artifacts: []verify.ArtifactReference{
+				{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
+				{CheckID: "lint", Kind: verify.ArtifactKindStderr, Path: ".hal/reports/verify/lint-stderr.txt"},
+			},
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+	verification, ok := raw["verification"].(map[string]any)
+	if !ok {
+		t.Fatalf("verification should be an object, got %T", raw["verification"])
+	}
+	requireJSONMapKeys(t, verification, []string{"summary", "artifacts"})
+
+	summary, ok := verification["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("verification.summary should be an object, got %T", verification["summary"])
+	}
+	requireJSONMapKeys(t, summary, []string{"total", "passed", "failed", "timedOut", "skipped", "warnings"})
+	if summary["total"] != float64(5) {
+		t.Fatalf("verification.summary.total = %v, want 5", summary["total"])
+	}
+	if summary["timedOut"] != float64(1) {
+		t.Fatalf("verification.summary.timedOut = %v, want 1", summary["timedOut"])
+	}
+	if summary["warnings"] != float64(1) {
+		t.Fatalf("verification.summary.warnings = %v, want 1", summary["warnings"])
+	}
+
+	artifacts, ok := verification["artifacts"].([]any)
+	if !ok {
+		t.Fatalf("verification.artifacts should be an array, got %T", verification["artifacts"])
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("verification.artifacts length = %d, want 2", len(artifacts))
+	}
+	firstArtifact, ok := artifacts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("verification.artifacts[0] should be an object, got %T", artifacts[0])
+	}
+	requireJSONMapKeys(t, firstArtifact, []string{"checkId", "kind", "path"})
+	if firstArtifact["path"] != ".hal/reports/verify/test-stdout.txt" {
+		t.Fatalf("verification artifact path = %v, want .hal/reports/verify/test-stdout.txt", firstArtifact["path"])
+	}
+
+	var decoded RunRecord
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
 	}
 }
 

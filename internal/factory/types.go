@@ -1,10 +1,12 @@
-// Package factory defines durable factory run records and timeline events.
+// Package factory defines durable factory run records, timeline events, and bootstrap contracts.
 package factory
 
 import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 // Run status values.
@@ -18,7 +20,8 @@ const (
 
 // Executor mode values.
 const (
-	ExecutorModeLocal = "local"
+	ExecutorModeLocal   = "local"
+	ExecutorModeSandbox = "sandbox"
 )
 
 // SupportedExecutorModes returns the executor modes implemented by the factory
@@ -95,12 +98,36 @@ type RunRecord struct {
 	BranchName   string              `json:"branchName"`
 	BaseBranch   string              `json:"baseBranch"`
 	SandboxName  string              `json:"sandboxName,omitempty"`
+	Sandbox      *SandboxMetadata    `json:"sandbox,omitempty"`
 	CurrentStep  string              `json:"currentStep"`
 	CreatedAt    time.Time           `json:"createdAt"`
 	UpdatedAt    time.Time           `json:"updatedAt"`
 	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
 	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
+	Verification *VerificationRecord `json:"verification,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
+}
+
+// SandboxMetadata captures redaction-safe remote execution details for a
+// sandbox-backed factory run.
+type SandboxMetadata struct {
+	Name           string                     `json:"name"`
+	Provider       string                     `json:"provider"`
+	Status         string                     `json:"status"`
+	Connection     *SandboxConnectionMetadata `json:"connection,omitempty"`
+	SSHCommand     string                     `json:"sshCommand,omitempty"`
+	CleanupCommand string                     `json:"cleanupCommand,omitempty"`
+	Handoff        string                     `json:"handoff,omitempty"`
+}
+
+// SandboxConnectionMetadata contains safe connection display fields. It must
+// not grow credentials, private keys, tokens, or raw environment values.
+type SandboxConnectionMetadata struct {
+	Address           string `json:"address,omitempty"`
+	PublicIP          string `json:"publicIp,omitempty"`
+	TailscaleIP       string `json:"tailscaleIp,omitempty"`
+	TailscaleHostname string `json:"tailscaleHostname,omitempty"`
+	TailscaleLockdown bool   `json:"tailscaleLockdown,omitempty"`
 }
 
 // SourceMetadata identifies the input that started a factory run.
@@ -117,6 +144,12 @@ type ArtifactReference struct {
 	Type string `json:"type"`
 	Path string `json:"path,omitempty"`
 	URL  string `json:"url,omitempty"`
+}
+
+// VerificationRecord captures verification metadata associated with a run.
+type VerificationRecord struct {
+	Summary   verify.Summary             `json:"summary"`
+	Artifacts []verify.ArtifactReference `json:"artifacts,omitempty"`
 }
 
 // FailureSummary records the terminal failure context for a run.

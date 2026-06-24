@@ -831,7 +831,7 @@ func TestMachineContractFields_DoctorChecksHaveScopeAndApplicability(t *testing.
 
 func TestMachineContractFields_Repair(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 
 	var buf bytes.Buffer
 	if err := runRepairFn(dir, true, true, &buf); err != nil {
@@ -852,7 +852,7 @@ func TestMachineContractFields_Repair(t *testing.T) {
 
 func TestMachineContractFields_LinksStatus(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
 
 	var buf bytes.Buffer

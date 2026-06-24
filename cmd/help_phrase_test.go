@@ -86,10 +86,25 @@ func TestTargetedCommandHelpPhrases(t *testing.T) {
 			wantPhrases: []string{"Side effects"},
 		},
 		{
-			name:        "init help documents side effects",
-			cmd:         initCmd,
-			text:        commandLongHelp,
-			wantPhrases: []string{"Side effects"},
+			name: "init help documents side effects",
+			cmd:  initCmd,
+			text: commandLongHelp,
+			wantPhrases: []string{
+				"Side effects",
+				"CODEX_HOME",
+				"isolate Codex global links per",
+				"active Codex home",
+			},
+		},
+		{
+			name: "links help documents codex home isolation",
+			cmd:  linksCmd,
+			text: commandLongHelp,
+			wantPhrases: []string{
+				"CODEX_HOME",
+				"isolate Codex global skill and command links",
+				"active Codex home",
+			},
 		},
 	}
 
