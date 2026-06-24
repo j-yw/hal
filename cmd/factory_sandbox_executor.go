@@ -1153,7 +1153,7 @@ func runFactorySandboxProviderExec(ctx context.Context, provider sandbox.Provide
 	if err != nil {
 		return err
 	}
-	return sandbox.RunCmd(cmd, out)
+	return sandbox.RunCmdContext(ctx, cmd, out)
 }
 
 func saveFactorySandboxRunRecord(store factory.Store, record *factory.RunRecord) error {
