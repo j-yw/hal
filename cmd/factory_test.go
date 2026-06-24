@@ -4715,6 +4715,38 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
 }
 
+func TestNewFactoryRunResponseRejectsArtifactURLFragments(t *testing.T) {
+	base := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-artifact-fragment-url", base, base.Add(time.Minute))
+	record.Artifacts = []factory.ArtifactReference{
+		{
+			ID:   "download",
+			Name: "download",
+			Type: "json",
+			URL:  "https://storage.example.com/artifact.json#opaque-token",
+		},
+	}
+
+	resp := newFactoryRunResponse(record, nil)
+	if len(resp.Artifacts) != 1 {
+		t.Fatalf("artifacts len = %d, want 1", len(resp.Artifacts))
+	}
+	if resp.Artifacts[0].URL != "" {
+		t.Fatalf("factory run artifact URL = %q, want empty", resp.Artifacts[0].URL)
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	raw := string(data)
+	for _, leaked := range []string{"opaque-token", "https://storage.example.com/artifact.json#opaque-token"} {
+		if strings.Contains(raw, leaked) {
+			t.Fatalf("factory run JSON leaked artifact URL fragment %q: %s", leaked, raw)
+		}
+	}
+}
+
 func TestFactoryListCommandRegisteredWithJSONFlag(t *testing.T) {
 	cmd, err := commandAtPath(Root(), "factory", "list")
 	if err != nil {

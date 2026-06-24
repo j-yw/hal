@@ -154,7 +154,7 @@ func newFactoryRunArtifactReferences(artifacts []factory.ArtifactReference) []Fa
 			SourcePath: sanitizeFactoryArtifactPath(artifact.SourcePath),
 			StoredPath: sanitizeFactoryArtifactPath(artifact.StoredPath),
 			Path:       sanitizeFactoryArtifactPath(artifact.Path),
-			URL:        safeFactoryPRURL(artifact.URL),
+			URL:        safeFactoryArtifactURL(artifact.URL),
 			SizeBytes:  artifact.SizeBytes,
 			CreatedAt:  artifact.CreatedAt,
 			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
