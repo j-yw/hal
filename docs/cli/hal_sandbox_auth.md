@@ -34,4 +34,3 @@ setup and gh's credential helper.
 
 * [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments
 * [hal sandbox auth sync](hal_sandbox_auth_sync.md)	 - Sync Codex and pi auth into a sandbox
-

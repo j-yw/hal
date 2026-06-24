@@ -39,6 +39,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-run-v1", "../docs/contracts/factory-run-v1.md"},
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
+		{"factory-artifacts-v1", "../docs/contracts/factory-artifacts-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
 		{"factory-trigger-v1", "../docs/contracts/factory-trigger-v1.md"},
 		{"verify-v1", "../docs/contracts/verify-v1.md"},
@@ -430,6 +431,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
 				"eventSummary", "failure", "id", "command", "description", "total", "byType",
 				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
+				"name", "type", "sourcePath", "path", "storedPath", "url", "sizeBytes", "createdAt", "partial",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -478,7 +480,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
-				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
+				"missing", "skipped", "warnings", "url", "checkId", "kind", "failure", "suggestedCommand",
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
 			},
@@ -497,6 +499,23 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				verify.ArtifactKindStdout,
 				verify.ArtifactKindStderr,
 				"sandbox",
+			},
+		},
+		{
+			name:          "factory-artifacts-v1",
+			path:          "../docs/contracts/factory-artifacts-v1.md",
+			contractValue: FactoryArtifactsContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "artifacts", "warnings", "summary",
+				"id", "name", "type", "path", "storedPath", "sizeBytes", "createdAt",
+				"partial", "total",
+			},
+			requiredValues: []string{
+				"factory-artifacts-v1",
+				"json",
+				"markdown",
+				"text",
+				"[redacted]",
 			},
 		},
 		{
@@ -697,6 +716,25 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if resp.Run.Sandbox.Connection == nil {
 			t.Fatal("factory status example should include sandbox connection metadata")
+		}
+	})
+
+	t.Run("factory artifacts example", func(t *testing.T) {
+		var resp FactoryArtifactsResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-artifacts-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "artifacts", "warnings", "summary"})
+		if resp.ContractVersion != FactoryArtifactsContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryArtifactsContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory artifacts example should include a run ID")
+		}
+		if len(resp.Artifacts) == 0 {
+			t.Fatal("factory artifacts example should include artifacts")
+		}
+		if resp.Summary.Total != len(resp.Artifacts) {
+			t.Fatalf("summary.total = %d, want artifacts len %d", resp.Summary.Total, len(resp.Artifacts))
 		}
 	})
 

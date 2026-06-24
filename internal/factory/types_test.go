@@ -34,8 +34,21 @@ func TestRunStatusConstants(t *testing.T) {
 }
 
 func TestExecutorModeConstants(t *testing.T) {
-	if ExecutorModeLocal != "local" {
-		t.Fatalf("ExecutorModeLocal = %q, want local", ExecutorModeLocal)
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "local", got: ExecutorModeLocal, want: "local"},
+		{name: "sandbox", got: ExecutorModeSandbox, want: "sandbox"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("executor mode = %q, want %q", tt.got, tt.want)
+			}
+		})
 	}
 }
 
@@ -52,6 +65,11 @@ func TestValidateExecutorMode(t *testing.T) {
 			want: ExecutorModeLocal,
 		},
 		{
+			name: "sandbox",
+			mode: ExecutorModeSandbox,
+			want: ExecutorModeSandbox,
+		},
+		{
 			name:    "empty",
 			wantErr: "factory executor mode is required",
 		},
@@ -63,7 +81,7 @@ func TestValidateExecutorMode(t *testing.T) {
 		{
 			name:    "unsupported",
 			mode:    "remote",
-			wantErr: `unsupported factory executor mode "remote" (supported: local)`,
+			wantErr: `unsupported factory executor mode "remote" (supported: local, sandbox)`,
 		},
 	}
 
@@ -503,11 +521,23 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 	})
 
 	t.Run("artifact reference", func(t *testing.T) {
+		sizeBytes := int64(4096)
+		createdAt := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
 		original := ArtifactReference{
-			Name: "pull_request",
-			Type: "url",
-			Path: ".hal/reports/pr.md",
-			URL:  "https://github.com/jywlabs/hal/pull/123",
+			ID:         "artifact-pr-report",
+			Name:       "pull_request",
+			Type:       "url",
+			SourcePath: ".hal/reports/pr.md",
+			StoredPath: "artifacts/run-123/pr.md",
+			Path:       ".hal/reports/pr.md",
+			URL:        "https://github.com/jywlabs/hal/pull/123",
+			SizeBytes:  &sizeBytes,
+			CreatedAt:  &createdAt,
+			Summary: map[string]any{
+				"status": "merged",
+			},
+			Warnings: []string{"ci summary was unavailable"},
+			Partial:  true,
 		}
 
 		var decoded ArtifactReference
@@ -618,14 +648,24 @@ func TestRunRecordJSONFields(t *testing.T) {
 		FinishedAt:  &finishedAt,
 		Artifacts: []ArtifactReference{
 			{
-				Name: "prd",
-				Type: "json",
-				Path: ".hal/prd.json",
+				ID:         "artifact-prd",
+				Name:       "prd",
+				Type:       "json",
+				SourcePath: ".hal/prd.json",
+				StoredPath: "artifacts/01975515-52ad-7f20-8f10-b35c07051b9f/prd.json",
+				Path:       ".hal/prd.json",
+				SizeBytes:  ptrInt64(512),
+				CreatedAt:  &createdAt,
+				Summary: map[string]any{
+					"format": "canonical",
+				},
 			},
 			{
-				Name: "pull_request",
-				Type: "url",
-				URL:  "https://github.com/jywlabs/hal/pull/123",
+				Name:     "pull_request",
+				Type:     "url",
+				URL:      "https://github.com/jywlabs/hal/pull/123",
+				Warnings: []string{"collected without CI status"},
+				Partial:  true,
 			},
 		},
 		Verification: &VerificationRecord{
@@ -708,7 +748,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("artifacts[0] should be an object, got %T", artifacts[0])
 	}
-	for _, key := range []string{"name", "type", "path"} {
+	for _, key := range []string{"id", "name", "type", "sourcePath", "storedPath", "path", "sizeBytes", "createdAt", "summary"} {
 		if _, ok := firstArtifact[key]; !ok {
 			t.Errorf("missing artifact JSON field %q", key)
 		}
@@ -720,6 +760,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 	if _, ok := secondArtifact["url"]; !ok {
 		t.Errorf("missing artifact JSON field %q", "url")
 	}
+	requireJSONMapKeys(t, secondArtifact, []string{"warnings", "partial"})
 
 	verification, ok := raw["verification"].(map[string]any)
 	if !ok {
@@ -799,6 +840,34 @@ func TestRunRecordJSONFields(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decoded, original) {
 		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestRunRecordLoadsWithoutArtifacts(t *testing.T) {
+	payload := []byte(`{
+		"runId": "run-without-artifacts",
+		"status": "succeeded",
+		"executorMode": "local",
+		"source": {"kind": "markdown", "path": ".hal/prd.md"},
+		"repoPath": "/work/hal",
+		"repoRemote": "git@github.com:jywlabs/hal.git",
+		"branchName": "hal/old-run",
+		"baseBranch": "main",
+		"currentStep": "done",
+		"createdAt": "2026-06-20T09:30:00Z",
+		"updatedAt": "2026-06-20T09:45:00Z"
+	}`)
+
+	var decoded RunRecord
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(old run record) error = %v", err)
+	}
+
+	if decoded.RunID != "run-without-artifacts" {
+		t.Fatalf("runId = %q, want run-without-artifacts", decoded.RunID)
+	}
+	if decoded.Artifacts != nil {
+		t.Fatalf("artifacts = %#v, want nil for omitted legacy field", decoded.Artifacts)
 	}
 }
 
@@ -896,6 +965,10 @@ func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
 	if !reflect.DeepEqual(*decoded, original) {
 		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", *decoded, original)
 	}
+}
+
+func ptrInt64(v int64) *int64 {
+	return &v
 }
 
 func requireJSONMapKeys(t *testing.T, raw map[string]any, keys []string) {

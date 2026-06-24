@@ -31,4 +31,3 @@ hal factory queue list [flags]
 ### SEE ALSO
 
 * [hal factory queue](hal_factory_queue.md)	 - Manage queued factory work
-

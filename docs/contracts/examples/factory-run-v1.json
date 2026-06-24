@@ -10,19 +10,35 @@
   },
   "artifacts": [
     {
+      "id": "factory-runs-run-20260620-002.json",
       "name": "run-record",
       "type": "json",
-      "path": "factory/runs/run-20260620-002.json"
+      "path": "factory/runs/run-20260620-002.json",
+      "url": "https://github.com/acme/hal/actions/runs/123",
+      "storedPath": "artifacts/run-20260620-002/factory-runs-run-20260620-002.json",
+      "sizeBytes": 2048,
+      "createdAt": "2026-06-20T12:04:00Z"
     },
     {
+      "id": "hal-prd.json",
       "name": "prd",
       "type": "json",
-      "path": ".hal/prd.json"
+      "path": ".hal/prd.json",
+      "storedPath": "artifacts/run-20260620-002/hal-prd.json",
+      "sizeBytes": 512,
+      "createdAt": "2026-06-20T12:03:00Z"
     },
     {
+      "id": "hal-reports-review-loop-20260620.md",
       "name": "review-report",
       "type": "markdown",
-      "path": ".hal/reports/review-loop-20260620.md"
+      "path": ".hal/reports/review-loop-20260620.md",
+      "storedPath": "artifacts/run-20260620-002/hal-reports-review-loop-20260620.md",
+      "sizeBytes": 4096,
+      "createdAt": "2026-06-20T12:02:00Z",
+      "summary": {
+        "collectionStatus": "stored"
+      }
     }
   ],
   "eventSummary": {

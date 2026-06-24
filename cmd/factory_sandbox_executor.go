@@ -299,6 +299,10 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err)
 		return factorySandboxRecordedError("prepare factory sandbox inputs", target, err)
 	}
+	if err := recordFactorySandboxRemoteInputSource(store, deps, &record, req.RemoteAuto, remoteAuto); err != nil {
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err)
+		return factorySandboxRecordedError("record factory sandbox remote input", target, err)
+	}
 
 	remoteArgs := factorySandboxRemoteCommandArgs(record, remoteAuto)
 	if err := remoteOutput.appendExecutorEvent(factory.EventTypeStepStarted, "Remote sandbox execution started", map[string]any{
@@ -848,6 +852,46 @@ func factorySandboxPrepareRemoteInputs(ctx context.Context, req factorySandboxEx
 		}
 	}
 	return remoteReq, nil
+}
+
+func recordFactorySandboxRemoteInputSource(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, originalReq, remoteReq factoryRunAutoRequest) error {
+	if record == nil {
+		return nil
+	}
+	source, changed := factorySandboxRemoteInputSource(record.Source, originalReq, remoteReq)
+	if !changed {
+		return nil
+	}
+	record.Source = source
+	record.UpdatedAt = deps.now().UTC()
+	if err := deps.saveRun(store, record); err != nil {
+		return fmt.Errorf("record factory sandbox remote input source: %w", err)
+	}
+	return nil
+}
+
+func factorySandboxRemoteInputSource(source factory.SourceMetadata, originalReq, remoteReq factoryRunAutoRequest) (factory.SourceMetadata, bool) {
+	originalReport := strings.TrimSpace(originalReq.ReportPath)
+	remoteReport := strings.TrimSpace(remoteReq.ReportPath)
+	if originalReport != "" && remoteReport != "" && remoteReport != originalReport {
+		source.Kind = factory.SourceKindReport
+		source.Path = remoteReport
+		source.ReportPath = remoteReport
+		return source, true
+	}
+
+	if len(originalReq.Args) == 0 || len(remoteReq.Args) == 0 {
+		return source, false
+	}
+	originalPath := strings.TrimSpace(originalReq.Args[0])
+	remotePath := strings.TrimSpace(remoteReq.Args[0])
+	if originalPath == "" || remotePath == "" || remotePath == originalPath {
+		return source, false
+	}
+	source.Kind = factory.SourceKindMarkdown
+	source.Path = remotePath
+	source.ReportPath = ""
+	return source, true
 }
 
 func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath, workspaceDir string, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer, deps factorySandboxExecutorDeps) (string, bool, error) {

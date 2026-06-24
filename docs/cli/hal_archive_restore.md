@@ -37,4 +37,3 @@ hal archive restore <name> [flags]
 ### SEE ALSO
 
 * [hal archive](hal_archive.md)	 - Archive current feature state
-

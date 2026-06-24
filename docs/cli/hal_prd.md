@@ -29,4 +29,3 @@ hal prd [flags]
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
 * [hal prd audit](hal_prd_audit.md)	 - Audit PRD health and detect drift
-

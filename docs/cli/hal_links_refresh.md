@@ -35,4 +35,3 @@ hal links refresh [engine] [flags]
 ### SEE ALSO
 
 * [hal links](hal_links.md)	 - Manage engine skill links
-

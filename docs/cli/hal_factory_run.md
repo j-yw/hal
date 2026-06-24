@@ -42,4 +42,3 @@ hal factory run [prd-path] [flags]
 ### SEE ALSO
 
 * [hal factory](hal_factory.md)	 - Run and inspect factory workflows
-

@@ -526,6 +526,41 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		}
 	})
 
+	t.Run("factory artifacts top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryArtifactsWithDeps(&buf, record.RunID, true, factoryArtifactsDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryArtifactsWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "artifacts", "warnings", "summary"})
+		if raw["contractVersion"] != FactoryArtifactsContractVersion {
+			t.Fatalf("factory artifacts contractVersion = %v, want %q", raw["contractVersion"], FactoryArtifactsContractVersion)
+		}
+		artifacts, ok := raw["artifacts"].([]interface{})
+		if !ok || len(artifacts) != 1 {
+			t.Fatalf("artifacts should be an array of 1, got %T", raw["artifacts"])
+		}
+		artifact, ok := artifacts[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("artifacts[0] should be object, got %T", artifacts[0])
+		}
+		requireExactKeys(t, artifact, []string{"name", "type", "path"})
+		summary, ok := raw["summary"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("summary should be object, got %T", raw["summary"])
+		}
+		requireExactKeys(t, summary, []string{"total", "partial", "warnings"})
+	})
+
 	t.Run("factory run result keys", func(t *testing.T) {
 		var buf bytes.Buffer
 		err := renderFactoryRunJSON(&buf, FactoryRunResponse{
@@ -538,7 +573,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 				Command:     "hal factory status run-contract --json",
 				Description: "Inspect the durable run record and timeline.",
 			},
-			Artifacts:    record.Artifacts,
+			Artifacts:    newFactoryRunArtifactReferences(record.Artifacts),
 			EventSummary: newFactoryRunEventSummary(events),
 			Failure: &FactoryRunFailure{
 				Classification:   "ci",

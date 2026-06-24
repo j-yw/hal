@@ -49,4 +49,3 @@ hal sandbox setup [flags]
 ### SEE ALSO
 
 * [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments
-

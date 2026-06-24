@@ -19,6 +19,7 @@ pending local factory work in the same global store.
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory artifacts <run-id>
   hal factory trigger --repo . --prd .hal/prd-feature.md --json
   hal factory queue list --json
 ```
@@ -32,9 +33,9 @@ pending local factory work in the same global store.
 ### SEE ALSO
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
+* [hal factory artifacts](hal_factory_artifacts.md)	 - List artifacts for a stored factory run
 * [hal factory list](hal_factory_list.md)	 - List stored factory runs
 * [hal factory queue](hal_factory_queue.md)	 - Manage queued factory work
 * [hal factory run](hal_factory_run.md)	 - Run a factory executor
 * [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run
 * [hal factory trigger](hal_factory_trigger.md)	 - Create queued factory runs from trigger payloads
-

@@ -41,4 +41,3 @@ hal review --base <base-branch> [iterations] [flags]
 ### SEE ALSO
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
-

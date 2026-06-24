@@ -30,11 +30,14 @@ type factoryQueueListDeps struct {
 }
 
 type factoryQueueWorkDeps struct {
-	defaultStore  func() (factory.Store, error)
-	now           func() time.Time
-	claim         *factory.QueueClaim
-	currentBranch func(string) (string, error)
-	runPipeline   func(context.Context, factoryRunPipelineRequest) error
+	defaultStore    func() (factory.Store, error)
+	now             func() time.Time
+	claim           *factory.QueueClaim
+	currentBranch   func(string) (string, error)
+	runPipeline     func(context.Context, factoryRunPipelineRequest) error
+	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
+	sandboxCopier   factory.SandboxArtifactCopier
+	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryQueueAddRequest struct {
@@ -61,10 +64,12 @@ var defaultFactoryQueueListDeps = factoryQueueListDeps{
 }
 
 var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
-	defaultStore:  factory.DefaultStore,
-	now:           time.Now,
-	currentBranch: defaultFactoryRunDeps.currentBranch,
-	runPipeline:   runFactoryRunPipeline,
+	defaultStore:    factory.DefaultStore,
+	now:             time.Now,
+	currentBranch:   defaultFactoryRunDeps.currentBranch,
+	runPipeline:     runFactoryRunPipeline,
+	runSandbox:      defaultFactoryRunDeps.runSandbox,
+	sandboxRequests: defaultFactorySandboxArtifactRequests,
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -263,6 +268,9 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 	if record.Status != factory.RunStatusPending {
 		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
 	}
+	if err := validateFactoryQueueExecutorRun(*record, executorMode); err != nil {
+		return err
+	}
 
 	entry, err := store.EnqueueQueueEntryWithLockedPostSave(req.RunID, executorMode, factory.QueueOperationOptions{
 		Now:        deps.now,
@@ -368,6 +376,9 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		return failClaimedFactoryQueueEntryAfterRunStateError(store, entry, *record, err, deps.now)
 	}
 	record.ExecutorMode = entry.ExecutorMode
+	if err := validateFactoryQueueExecutorRun(*record, entry.ExecutorMode); err != nil {
+		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+	}
 
 	currentBranch := deps.currentBranch
 	if currentBranch == nil {
@@ -377,20 +388,32 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	if err != nil {
 		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
 	}
-	if err := validateClaimedFactoryQueueBranch(runDir, *record, currentBranch); err != nil {
-		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+	if entry.ExecutorMode != factory.ExecutorModeSandbox {
+		if err := validateClaimedFactoryQueueBranch(runDir, *record, currentBranch); err != nil {
+			return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+		}
 	}
 
 	result, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), store, *record, io.Discard, "", factoryRunExecutionDeps{
-		now:           deps.now,
-		currentBranch: currentBranch,
-		runPipeline:   deps.runPipeline,
+		now:             deps.now,
+		currentBranch:   currentBranch,
+		runPipeline:     deps.runPipeline,
+		runSandbox:      deps.runSandbox,
+		sandboxCopier:   deps.sandboxCopier,
+		sandboxRequests: deps.sandboxRequests,
 	})
 	if execErr != nil {
 		return finalizeClaimedFactoryQueueExecutionError(store, entry, result.Record, execErr, deps.now)
 	}
 
 	return succeedClaimedFactoryQueueEntry(store, entry, deps.now)
+}
+
+func validateFactoryQueueExecutorRun(record factory.RunRecord, executorMode string) error {
+	if strings.TrimSpace(executorMode) == factory.ExecutorModeSandbox && strings.TrimSpace(record.BaseBranch) == "" {
+		return fmt.Errorf("sandbox factory run %q requires a base branch", record.RunID)
+	}
+	return nil
 }
 
 func validateClaimedFactoryQueueBranch(dir string, record factory.RunRecord, currentBranch func(string) (string, error)) error {
@@ -621,7 +644,9 @@ func recordFactoryRunQueueSucceeded(store factory.Store, runID string, now time.
 
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {
 	req := factoryRunRequest{
-		BaseBranch: strings.TrimSpace(record.BaseBranch),
+		BaseBranch:  strings.TrimSpace(record.BaseBranch),
+		Sandbox:     strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox,
+		SandboxName: strings.TrimSpace(record.SandboxName),
 	}
 	switch record.Source.Kind {
 	case factory.SourceKindMarkdown:
@@ -671,6 +696,15 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline
+	}
+	if deps.runSandbox == nil {
+		deps.runSandbox = defaultFactoryQueueWorkDeps.runSandbox
+	}
+	if deps.currentBranch == nil {
+		deps.currentBranch = defaultFactoryQueueWorkDeps.currentBranch
+	}
+	if deps.sandboxRequests == nil {
+		deps.sandboxRequests = defaultFactoryQueueWorkDeps.sandboxRequests
 	}
 	return deps
 }
