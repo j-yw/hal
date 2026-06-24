@@ -397,11 +397,13 @@ func TestLoadHandoffSummaryRedactsSSHHostnameFailureReason(t *testing.T) {
 func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 	tests := []string{
 		"authentication failed for token ghp_xxx",
+		"authentication failed for token|ghp_xxx",
 		"authentication failed for token <ghp_xxx>",
 		"authentication failed for --token ghp_xxx",
 		"authentication failed for --api-key sk-secretvalue",
 		"authentication failed for Authorization Bearer ghp_xxx",
 		"provider returned ghp_xxx",
+		"provider returned status|ghp_xxx",
 		"provider returned <ghp_xxx>",
 		"engine returned sk-secretvalue",
 		"provider returned Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
@@ -1148,14 +1150,19 @@ func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 			Path: "reports/10.0.0.1/output.json",
 		},
 		{
+			Name: "pipe-secret",
+			Type: "json",
+			Path: ".hal/reports/status|ghp_secret.json",
+		},
+		{
 			Name: "ssh-host-segment",
 			Type: "json",
 			Path: "reports/user@example-1.com:22/output.json",
 		},
 	}, false)
 
-	if len(locations) != 8 {
-		t.Fatalf("locations len = %d, want 8: %#v", len(locations), locations)
+	if len(locations) != 9 {
+		t.Fatalf("locations len = %d, want 9: %#v", len(locations), locations)
 	}
 	if locations[0].Path != "secret.md" {
 		t.Fatalf("absolute path = %q, want basename", locations[0].Path)

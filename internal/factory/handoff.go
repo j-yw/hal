@@ -1460,7 +1460,7 @@ func handoffTokenFieldCandidates(field string) []string {
 	}
 	candidates := []string{field}
 	for _, candidate := range strings.FieldsFunc(field, func(r rune) bool {
-		return r == '/' || r == '\\' || r == '=' || r == ':' || r == '#' || r == '.'
+		return r == '/' || r == '\\' || r == '=' || r == ':' || r == '#' || r == '.' || r == '|'
 	}) {
 		candidate = handoffTrimRedactionField(candidate)
 		if candidate != "" {
@@ -1504,7 +1504,7 @@ func handoffFieldLooksLikeTokenChars(value string) bool {
 func handoffRedactionFields(value string) []string {
 	return strings.FieldsFunc(value, func(r rune) bool {
 		switch r {
-		case ' ', '\t', '\n', '\r', ',', ';', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}', '?', '&':
+		case ' ', '\t', '\n', '\r', ',', ';', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}', '?', '&', '|':
 			return true
 		default:
 			return false
