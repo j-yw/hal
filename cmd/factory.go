@@ -1551,6 +1551,9 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch, sandboxName s
 	if sandboxMode && strings.TrimSpace(baseBranch) == "" {
 		return factoryRunRequest{}, fmt.Errorf("--base is required when --sandbox is set")
 	}
+	if !sandboxMode && strings.TrimSpace(sandboxName) != "" {
+		return factoryRunRequest{}, fmt.Errorf("--sandbox-name requires --sandbox")
+	}
 
 	req := factoryRunRequest{
 		ReportPath:  reportPath,
