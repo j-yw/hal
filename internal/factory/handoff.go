@@ -526,7 +526,7 @@ func handoffDocPlaceholderToken(token string) bool {
 
 func handoffFieldContainsIP(field string) bool {
 	field = strings.TrimSpace(field)
-	field = strings.Trim(field, "\"'<>[](){}.,;")
+	field = strings.Trim(field, "\"'<>[](){}.,;:")
 	if field == "" {
 		return false
 	}

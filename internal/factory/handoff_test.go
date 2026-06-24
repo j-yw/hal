@@ -178,34 +178,56 @@ func TestSanitizeHandoffFailureReasonRedactsSecretURLQueryValues(t *testing.T) {
 }
 
 func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	record := RunRecord{
-		RunID:        "run-sensitive-port",
-		Status:       RunStatusFailed,
-		ExecutorMode: ExecutorModeLocal,
-		Failure: &FailureSummary{
-			Step:        "run",
-			Category:    FailureCategoryPipeline,
-			Message:     "connection failed to 203.0.113.10:22",
-			Recoverable: true,
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{
+			name:    "address with port",
+			message: "connection failed to 203.0.113.10:22",
+		},
+		{
+			name:    "go dial tcp address with trailing colon",
+			message: "dial tcp 10.0.0.1:443: connect: refused",
+		},
+		{
+			name:    "go dial tcp ipv6 address with trailing colon",
+			message: "dial tcp [2001:db8::1]:443: connect: refused",
 		},
 	}
-	if err := store.SaveRun(&record); err != nil {
-		t.Fatalf("SaveRun() error = %v", err)
-	}
 
-	summary, err := LoadHandoffSummary(store, record.RunID)
-	if err != nil {
-		t.Fatalf("LoadHandoffSummary() error = %v", err)
-	}
-	if summary.FailureReason != "[redacted]" {
-		t.Fatalf("FailureReason = %q, want [redacted]", summary.FailureReason)
-	}
-	if summary.NextAction == nil {
-		t.Fatal("NextAction = nil, want inspect action")
-	}
-	if summary.NextAction.FailureReason != "[redacted]" {
-		t.Fatalf("NextAction.FailureReason = %q, want [redacted]", summary.NextAction.FailureReason)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "factory"))
+			record := RunRecord{
+				RunID:        "run-sensitive-port",
+				Status:       RunStatusFailed,
+				ExecutorMode: ExecutorModeLocal,
+				Failure: &FailureSummary{
+					Step:        "run",
+					Category:    FailureCategoryPipeline,
+					Message:     tt.message,
+					Recoverable: true,
+				},
+			}
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatalf("SaveRun() error = %v", err)
+			}
+
+			summary, err := LoadHandoffSummary(store, record.RunID)
+			if err != nil {
+				t.Fatalf("LoadHandoffSummary() error = %v", err)
+			}
+			if summary.FailureReason != "[redacted]" {
+				t.Fatalf("FailureReason = %q, want [redacted]", summary.FailureReason)
+			}
+			if summary.NextAction == nil {
+				t.Fatal("NextAction = nil, want inspect action")
+			}
+			if summary.NextAction.FailureReason != "[redacted]" {
+				t.Fatalf("NextAction.FailureReason = %q, want [redacted]", summary.NextAction.FailureReason)
+			}
+		})
 	}
 }
 
