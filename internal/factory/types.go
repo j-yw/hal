@@ -1,7 +1,11 @@
 // Package factory defines durable factory run records, timeline events, and bootstrap contracts.
 package factory
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Run status values.
 const (
@@ -16,6 +20,39 @@ const (
 const (
 	ExecutorModeLocal   = "local"
 	ExecutorModeSandbox = "sandbox"
+)
+
+// SupportedExecutorModes returns the executor modes implemented by the factory
+// executor layer.
+func SupportedExecutorModes() []string {
+	return []string{ExecutorModeLocal}
+}
+
+// ValidateExecutorMode normalizes and validates a factory executor mode.
+func ValidateExecutorMode(executorMode string) (string, error) {
+	trimmedExecutorMode := strings.TrimSpace(executorMode)
+	if trimmedExecutorMode == "" {
+		return "", fmt.Errorf("factory executor mode is required")
+	}
+	if executorMode != trimmedExecutorMode {
+		return "", fmt.Errorf("factory executor mode %q is invalid", executorMode)
+	}
+
+	for _, supported := range SupportedExecutorModes() {
+		if trimmedExecutorMode == supported {
+			return trimmedExecutorMode, nil
+		}
+	}
+
+	return "", fmt.Errorf("unsupported factory executor mode %q (supported: %s)", trimmedExecutorMode, strings.Join(SupportedExecutorModes(), ", "))
+}
+
+// Queue status values.
+const (
+	QueueStatusQueued    = "queued"
+	QueueStatusClaimed   = "claimed"
+	QueueStatusSucceeded = "succeeded"
+	QueueStatusFailed    = "failed"
 )
 
 // Run source kind values.
@@ -114,6 +151,27 @@ type FailureSummary struct {
 	Recoverable      bool   `json:"recoverable"`
 	SuggestedCommand string `json:"suggestedCommand,omitempty"`
 	ExitCode         int    `json:"exitCode,omitempty"`
+}
+
+// QueueEntry captures one durable factory queue item.
+type QueueEntry struct {
+	QueueID      string      `json:"queueId"`
+	RunID        string      `json:"runId"`
+	ExecutorMode string      `json:"executorMode"`
+	Status       string      `json:"status"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	ClaimedAt    *time.Time  `json:"claimedAt,omitempty"`
+	CompletedAt  *time.Time  `json:"completedAt,omitempty"`
+	Claim        *QueueClaim `json:"claim,omitempty"`
+	AttemptCount int         `json:"attemptCount"`
+	LastError    string      `json:"lastError,omitempty"`
+}
+
+// QueueClaim identifies the local worker process that claimed a queue entry.
+type QueueClaim struct {
+	WorkerID string `json:"workerId,omitempty"`
+	PID      int    `json:"pid,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // EventRecord captures one append-only timeline entry for a factory run.

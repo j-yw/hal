@@ -37,6 +37,17 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from local-factory-queue-storage (2026-06-21)
+
+- Factory queue storage should build on `internal/factory.Store`: keep queue state under the global config-backed factory root (`StoreDir()/queue.json`), treat a missing queue file as empty read-only state, and preserve corrupt queue files by returning parse errors without overwriting or deleting them.
+- Queue read-modify-write operations should use `Store.UpdateQueue` instead of separate `LoadQueue`/`SaveQueue` calls; it holds the local `queue.lock` across load, mutation, and temp-file-plus-rename save so concurrent local workers do not lose updates.
+- Queue command code should use the Store-level FIFO helpers (`EnqueueQueueEntry`, `ListQueue`, `ClaimNextQueueEntry`) and inject `QueueOperationOptions` in tests; FIFO order is by `CreatedAt` with `QueueID` as the stable tie-break.
+- Queue lifecycle transitions should use Store-level helpers (`ClaimNextQueueEntry`, `MarkQueueEntrySucceeded`, `MarkQueueEntryFailed`) so claim metadata, attempt counts, terminal timestamps, and retained history stay consistent.
+- Queue command implementations should validate executor modes through `factory.ValidateExecutorMode`, enqueue through Store helpers, and record queue-related run/timeline state in `cmd` so queue state and factory run history stay synchronized.
+- `hal factory queue work` should claim via `Store.ClaimNextQueueEntry`, record the queue claim event in `cmd`, execute the run through the shared factory run lifecycle helper, and finalize the queue entry with `MarkQueueEntrySucceeded`/`MarkQueueEntryFailed`.
+- Queue worker command tests should inject `runPipeline`; no-work tests should fail if the executor is called so empty queue processing never depends on Codex, GitHub, sandbox providers, or other external execution.
+- Factory queue command definitions live in `cmd/factory_queue.go`; wire them from `cmd/factory.go`, update factory command metadata/link tests in `cmd/factory_test.go`, and regenerate `docs/cli` with `make docs-cli`.
+
 ## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
 
 - Factory bootstrap command execution belongs behind `internal/factory.BootstrapCommandExecutor`; use `RunBootstrapStep` with injected fake executors and deterministic clocks in tests instead of spawning git, Hal, or engine CLIs directly.
@@ -463,6 +474,12 @@
 - Factory run result payloads and non-JSON summaries should be built from the saved `factory.RunRecord` and `Store.LoadEvents` after terminal status is persisted, so `hal factory run` output reflects durable state rather than transient in-memory state.
 - On factory run failures, render the JSON or human result before returning the original pipeline error; this preserves actionable output while keeping non-zero CLI exit behavior.
 - Factory run failure categories are constants in `internal/factory/types.go`; classify wrapped pipeline errors in `cmd/factory.go` from explicit exit codes, canonical `step <name> failed:` auto errors, and conservative message fragments, defaulting to `unknown` when context is insufficient.
+
+## Patterns from hal/local-factory-queue-and-worker-commands (2026-06-21)
+
+- Factory queue JSON contracts use reusable durable types in `internal/factory` (`QueueEntry`, `QueueClaim`, `QueueStatus*`) and command response DTOs in `cmd/factory_queue_contracts.go`; queue command implementations should reuse these instead of redefining JSON shapes.
+- Queue contract work must update `docs/contracts/factory-queue-*.md`, `docs/contracts/examples/factory-queue-*.json`, `cmd/contracts_doc_test.go`, `cmd/machine_contracts_test.go`, and `internal/factory/types_test.go` together so field names, docs, and examples stay locked.
+- Queue worker execution should keep queue-specific state in `cmd/factory_queue.go` and run lifecycle state in the shared factory execution path in `cmd/factory.go`; tests should inject `factoryQueueWorkDeps.runPipeline` rather than invoking real `hal auto`.
 
 ## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
 

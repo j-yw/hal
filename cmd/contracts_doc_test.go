@@ -39,6 +39,10 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
+		{"factory-queue-entry-v1", "../docs/contracts/factory-queue-entry-v1.md"},
+		{"factory-queue-add-v1", "../docs/contracts/factory-queue-add-v1.md"},
+		{"factory-queue-list-v1", "../docs/contracts/factory-queue-list-v1.md"},
+		{"factory-queue-work-v1", "../docs/contracts/factory-queue-work-v1.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -440,6 +444,61 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.EventTypeFailureClassification,
 			},
 		},
+		{
+			name:          "factory-queue-entry-v1",
+			path:          "../docs/contracts/factory-queue-entry-v1.md",
+			contractValue: "factory-queue-entry-v1",
+			requiredFields: []string{
+				"queueId", "runId", "executorMode", "status", "createdAt", "claimedAt",
+				"completedAt", "claim", "attemptCount", "lastError", "workerId", "pid", "hostname",
+			},
+			requiredValues: []string{
+				factory.QueueStatusQueued,
+				factory.QueueStatusClaimed,
+				factory.QueueStatusSucceeded,
+				factory.QueueStatusFailed,
+				factory.ExecutorModeLocal,
+			},
+		},
+		{
+			name:          "factory-queue-add-v1",
+			path:          "../docs/contracts/factory-queue-add-v1.md",
+			contractValue: FactoryQueueAddContractVersion,
+			requiredFields: []string{
+				"contractVersion", "entry", "summary",
+			},
+			requiredValues: []string{
+				"factory-queue-entry-v1",
+				factory.QueueStatusQueued,
+			},
+		},
+		{
+			name:          "factory-queue-list-v1",
+			path:          "../docs/contracts/factory-queue-list-v1.md",
+			contractValue: FactoryQueueListContractVersion,
+			requiredFields: []string{
+				"contractVersion", "entries", "summary", "createdAt", "queueId",
+			},
+			requiredValues: []string{
+				"factory-queue-entry-v1",
+				factory.QueueStatusQueued,
+				factory.QueueStatusClaimed,
+				factory.QueueStatusFailed,
+				factory.QueueStatusSucceeded,
+			},
+		},
+		{
+			name:          "factory-queue-work-v1",
+			path:          "../docs/contracts/factory-queue-work-v1.md",
+			contractValue: FactoryQueueWorkContractVersion,
+			requiredFields: []string{
+				"contractVersion", "claimed", "entry", "summary", "claimedAt", "claim",
+			},
+			requiredValues: []string{
+				"factory-queue-entry-v1",
+				factory.QueueStatusClaimed,
+			},
+		},
 	}
 
 	for _, doc := range docs {
@@ -573,6 +632,70 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if _, ok := raw["sandbox"]; ok {
 			t.Fatal("factory run example should not include full sandbox metadata; use factory status for durable sandbox details")
+		}
+	})
+
+	t.Run("factory queue add example", func(t *testing.T) {
+		var resp FactoryQueueAddResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-queue-add-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "entry", "summary"})
+		if resp.ContractVersion != FactoryQueueAddContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryQueueAddContractVersion)
+		}
+		if resp.Entry.QueueID == "" {
+			t.Fatal("factory queue add example should include a queue ID")
+		}
+		if resp.Entry.Status != factory.QueueStatusQueued {
+			t.Fatalf("queue status = %q, want %q", resp.Entry.Status, factory.QueueStatusQueued)
+		}
+	})
+
+	t.Run("factory queue list example", func(t *testing.T) {
+		var resp FactoryQueueListResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-queue-list-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "entries", "summary"})
+		if resp.ContractVersion != FactoryQueueListContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryQueueListContractVersion)
+		}
+		if len(resp.Entries) < 2 {
+			t.Fatalf("factory queue list example entries len = %d, want at least 2", len(resp.Entries))
+		}
+		if resp.Entries[1].Claim == nil {
+			t.Fatal("factory queue list example should include claim metadata on failed entry")
+		}
+	})
+
+	t.Run("factory queue work claimed example", func(t *testing.T) {
+		var resp FactoryQueueWorkResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-queue-work-claimed-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "claimed", "entry", "summary"})
+		if resp.ContractVersion != FactoryQueueWorkContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryQueueWorkContractVersion)
+		}
+		if !resp.Claimed {
+			t.Fatal("factory queue work claimed example should set claimed=true")
+		}
+		if resp.Entry == nil || resp.Entry.Status != factory.QueueStatusSucceeded {
+			t.Fatalf("factory queue work claimed entry = %#v, want succeeded entry", resp.Entry)
+		}
+	})
+
+	t.Run("factory queue work noop example", func(t *testing.T) {
+		var resp FactoryQueueWorkResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-queue-work-noop-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "claimed", "entry", "summary"})
+		if resp.ContractVersion != FactoryQueueWorkContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryQueueWorkContractVersion)
+		}
+		if resp.Claimed {
+			t.Fatal("factory queue work noop example should set claimed=false")
+		}
+		if resp.Entry != nil {
+			t.Fatalf("factory queue work noop entry = %#v, want nil", resp.Entry)
 		}
 	})
 }

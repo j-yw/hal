@@ -3,6 +3,8 @@ package factory
 import (
 	"encoding/json"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,6 +34,78 @@ func TestRunStatusConstants(t *testing.T) {
 func TestExecutorModeConstants(t *testing.T) {
 	if ExecutorModeLocal != "local" {
 		t.Fatalf("ExecutorModeLocal = %q, want local", ExecutorModeLocal)
+	}
+}
+
+func TestValidateExecutorMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "local",
+			mode: ExecutorModeLocal,
+			want: ExecutorModeLocal,
+		},
+		{
+			name:    "empty",
+			wantErr: "factory executor mode is required",
+		},
+		{
+			name:    "whitespace",
+			mode:    " local ",
+			wantErr: `factory executor mode " local " is invalid`,
+		},
+		{
+			name:    "unsupported",
+			mode:    "remote",
+			wantErr: `unsupported factory executor mode "remote" (supported: local)`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ValidateExecutorMode(tt.mode)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("ValidateExecutorMode() error = nil, want %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ValidateExecutorMode() error = %q, want %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateExecutorMode() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ValidateExecutorMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueueStatusConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "queued", got: QueueStatusQueued, want: "queued"},
+		{name: "claimed", got: QueueStatusClaimed, want: "claimed"},
+		{name: "succeeded", got: QueueStatusSucceeded, want: "succeeded"},
+		{name: "failed", got: QueueStatusFailed, want: "failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("queue status = %q, want %q", tt.got, tt.want)
+			}
+		})
 	}
 }
 
@@ -112,6 +186,8 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(SourceMetadata{}),
 		reflect.TypeOf(ArtifactReference{}),
 		reflect.TypeOf(FailureSummary{}),
+		reflect.TypeOf(QueueEntry{}),
+		reflect.TypeOf(QueueClaim{}),
 		reflect.TypeOf(EventRecord{}),
 		reflect.TypeOf(BootstrapRequest{}),
 		reflect.TypeOf(BootstrapOptions{}),
@@ -421,6 +497,30 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 		requireJSONRoundTrip(t, original, &decoded)
 	})
 
+	t.Run("queue entry", func(t *testing.T) {
+		claimedAt := createdAt.Add(2 * time.Minute)
+		completedAt := createdAt.Add(15 * time.Minute)
+		original := QueueEntry{
+			QueueID:      "queue-20260620-0001",
+			RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
+			ExecutorMode: ExecutorModeLocal,
+			Status:       QueueStatusFailed,
+			CreatedAt:    createdAt,
+			ClaimedAt:    &claimedAt,
+			CompletedAt:  &completedAt,
+			Claim: &QueueClaim{
+				WorkerID: "worker-a",
+				PID:      4242,
+				Hostname: "factory-host",
+			},
+			AttemptCount: 2,
+			LastError:    "unit tests failed",
+		}
+
+		var decoded QueueEntry
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
 	t.Run("timeline event", func(t *testing.T) {
 		original := EventRecord{
 			Sequence:  42,
@@ -614,6 +714,87 @@ func TestRunRecordJSONFields(t *testing.T) {
 	}
 }
 
+func TestQueueEntryJSONFields(t *testing.T) {
+	createdAt := time.Date(2026, 6, 20, 11, 30, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(3 * time.Minute)
+	completedAt := createdAt.Add(30 * time.Minute)
+	original := QueueEntry{
+		QueueID:      "queue-20260620-0001",
+		RunID:        "run-queue-contract",
+		ExecutorMode: ExecutorModeLocal,
+		Status:       QueueStatusFailed,
+		CreatedAt:    createdAt,
+		ClaimedAt:    &claimedAt,
+		CompletedAt:  &completedAt,
+		Claim: &QueueClaim{
+			WorkerID: "worker-a",
+			PID:      4242,
+			Hostname: "factory-host",
+		},
+		AttemptCount: 2,
+		LastError:    "executor failed",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{
+		"queueId",
+		"runId",
+		"executorMode",
+		"status",
+		"createdAt",
+		"claimedAt",
+		"completedAt",
+		"claim",
+		"attemptCount",
+		"lastError",
+	})
+
+	claim, ok := raw["claim"].(map[string]any)
+	if !ok {
+		t.Fatalf("claim should be an object, got %T", raw["claim"])
+	}
+	requireExactJSONKeys(t, claim, []string{"workerId", "pid", "hostname"})
+}
+
+func TestQueueEntryOptionalFieldsOmitted(t *testing.T) {
+	original := QueueEntry{
+		QueueID:      "queue-20260620-0002",
+		RunID:        "run-queued",
+		ExecutorMode: ExecutorModeLocal,
+		Status:       QueueStatusQueued,
+		CreatedAt:    time.Date(2026, 6, 20, 11, 45, 0, 0, time.UTC),
+		AttemptCount: 0,
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{
+		"queueId",
+		"runId",
+		"executorMode",
+		"status",
+		"createdAt",
+		"attemptCount",
+	})
+}
+
 func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
 	t.Helper()
 
@@ -627,6 +808,28 @@ func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
 	if !reflect.DeepEqual(*decoded, original) {
 		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", *decoded, original)
 	}
+}
+
+func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("JSON keys = %v, want exactly %v", sortedMapKeys(got), want)
+	}
+	for _, key := range want {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("missing JSON key %q in %v", key, sortedMapKeys(got))
+		}
+	}
+}
+
+func sortedMapKeys(got map[string]any) []string {
+	keys := make([]string, 0, len(got))
+	for key := range got {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func TestRunRecordOptionalFieldsOmitted(t *testing.T) {

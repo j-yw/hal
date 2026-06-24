@@ -37,6 +37,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"global factory store",
 				"separate from per-project",
 				"Factory run wraps the local auto pipeline",
+				"Queue commands manage",
 			},
 			requiredExampleLines: []string{
 				"hal factory run .hal/prd-feature.md",
@@ -44,6 +45,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory list",
 				"hal factory list --json",
 				"hal factory status <run-id> --json",
+				"hal factory queue list --json",
 			},
 		},
 		{
@@ -94,6 +96,64 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			requiredExampleLines: []string{
 				"hal factory status run-20260620-001",
 				"hal factory status run-20260620-001 --json",
+			},
+		},
+		{
+			name: "factory queue command",
+			cmd:  factoryQueueCmd,
+			requiredLongPhrases: []string{
+				"global factory queue",
+				"enqueue existing factory runs",
+				"claim one queued run",
+				"survives CLI exits and restarts",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue add run-20260620-001 local",
+				"hal factory queue list --json",
+				"hal factory queue work --json",
+			},
+		},
+		{
+			name: "factory queue add command",
+			cmd:  factoryQueueAddCmd,
+			requiredLongPhrases: []string{
+				"existing factory run",
+				"executor mode",
+				"--json",
+				"factory-queue-add-v1",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue add run-20260620-001 local",
+				"hal factory queue add run-20260620-001 local --json",
+			},
+		},
+		{
+			name: "factory queue list command",
+			cmd:  factoryQueueListCmd,
+			requiredLongPhrases: []string{
+				"global factory store",
+				"--json",
+				"factory-queue-list-v1",
+				"queued, claimed, and failed entries",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue list",
+				"hal factory queue list --json",
+			},
+		},
+		{
+			name: "factory queue work command",
+			cmd:  factoryQueueWorkCmd,
+			requiredLongPhrases: []string{
+				"at most one queued factory run",
+				"atomically claim",
+				"--json",
+				"factory-queue-work-v1",
+				"no-work response",
+			},
+			requiredExampleLines: []string{
+				"hal factory queue work",
+				"hal factory queue work --json",
 			},
 		},
 	}
@@ -716,6 +776,31 @@ func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T)
 	}
 	if !pipelineCalled {
 		t.Fatal("pipeline dependency was not invoked")
+	}
+}
+
+func TestNewFactoryRunRecordStoresAbsoluteRepoPath(t *testing.T) {
+	wantRepoPath, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatalf("filepath.Abs() error: %v", err)
+	}
+
+	record, _, err := newFactoryRunRecord(".", factoryRunRequest{}, factoryRunDeps{
+		newRunID:   func() (string, error) { return "run-absolute-repo", nil },
+		now:        func() time.Time { return time.Date(2026, 6, 21, 22, 0, 0, 0, time.UTC) },
+		workingDir: func() (string, error) { return ".", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("newFactoryRunRecord() unexpected error: %v", err)
+	}
+	if record.RepoPath != wantRepoPath {
+		t.Fatalf("repoPath = %q, want %q", record.RepoPath, wantRepoPath)
 	}
 }
 
@@ -2332,6 +2417,28 @@ func TestRunFactoryRunPipelineWithDepsUsesRecordBaseBranchFallback(t *testing.T)
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsPassesWorkDirToAuto(t *testing.T) {
+	var got factoryRunAutoRequest
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		WorkDir: " /workspace/hal ",
+		Record: factory.RunRecord{
+			RepoPath: "/fallback/repo",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(_ context.Context, req factoryRunAutoRequest) error {
+			got = req
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	if got.WorkDir != "/workspace/hal" {
+		t.Fatalf("auto workDir = %q, want /workspace/hal", got.WorkDir)
+	}
+}
+
 func TestRunFactoryRunPipelineWithDepsPassesProgressRecorderToAuto(t *testing.T) {
 	var got []factoryRunProgressEvent
 
@@ -2475,6 +2582,50 @@ func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	}
 	if json.Valid(bytes.TrimSpace(textOut.Bytes())) {
 		t.Fatalf("direct auto text output should not be JSON: %q", textOutput)
+	}
+}
+
+func TestRunInFactoryRunDirChangesAndRestores(t *testing.T) {
+	startDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error: %v", err)
+	}
+	targetDir := t.TempDir()
+	sentinel := errors.New("sentinel")
+	var duringDir string
+
+	err = runInFactoryRunDir(targetDir, func() error {
+		var err error
+		duringDir, err = os.Getwd()
+		if err != nil {
+			t.Fatalf("Getwd() during run error: %v", err)
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("runInFactoryRunDir() error = %v, want sentinel", err)
+	}
+	assertSameDir(t, duringDir, targetDir)
+
+	restoredDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() after run error: %v", err)
+	}
+	assertSameDir(t, restoredDir, startDir)
+}
+
+func assertSameDir(t *testing.T, got, want string) {
+	t.Helper()
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat got dir %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat want dir %q: %v", want, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("dir = %q, want %q", got, want)
 	}
 }
 
@@ -2938,6 +3089,38 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 				"[hal factory run](hal_factory_run.md)",
 				"[hal factory list](hal_factory_list.md)",
 				"[hal factory status](hal_factory_status.md)",
+				"[hal factory queue](hal_factory_queue.md)",
+			},
+		},
+		{
+			name: "factory queue cli reference links parent and subcommands",
+			path: "../docs/cli/hal_factory_queue.md",
+			wantFragments: []string{
+				"[hal factory](hal_factory.md)",
+				"[hal factory queue add](hal_factory_queue_add.md)",
+				"[hal factory queue list](hal_factory_queue_list.md)",
+				"[hal factory queue work](hal_factory_queue_work.md)",
+			},
+		},
+		{
+			name: "factory queue add cli reference links parent",
+			path: "../docs/cli/hal_factory_queue_add.md",
+			wantFragments: []string{
+				"[hal factory queue](hal_factory_queue.md)",
+			},
+		},
+		{
+			name: "factory queue list cli reference links parent",
+			path: "../docs/cli/hal_factory_queue_list.md",
+			wantFragments: []string{
+				"[hal factory queue](hal_factory_queue.md)",
+			},
+		},
+		{
+			name: "factory queue work cli reference links parent",
+			path: "../docs/cli/hal_factory_queue_work.md",
+			wantFragments: []string{
+				"[hal factory queue](hal_factory_queue.md)",
 			},
 		},
 		{

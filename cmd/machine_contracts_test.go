@@ -459,6 +459,24 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			Summary:   "created",
 		},
 	}
+	claimedAt := base.Add(2 * time.Minute)
+	completedAt := base.Add(30 * time.Minute)
+	queueEntry := factory.QueueEntry{
+		QueueID:      "queue-contract-001",
+		RunID:        record.RunID,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Status:       factory.QueueStatusFailed,
+		CreatedAt:    base.Add(-time.Minute),
+		ClaimedAt:    &claimedAt,
+		CompletedAt:  &completedAt,
+		Claim: &factory.QueueClaim{
+			WorkerID: "worker-contract",
+			PID:      4242,
+			Hostname: "factory-host",
+		},
+		AttemptCount: 2,
+		LastError:    "unit tests failed",
+	}
 
 	t.Run("factory list top-level keys", func(t *testing.T) {
 		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
@@ -559,6 +577,103 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			t.Fatalf("failure should be object, got %T", raw["failure"])
 		}
 		requireExactKeys(t, failure, []string{"classification", "errorMessage", "suggestedCommand"})
+	})
+
+	t.Run("factory queue add result keys", func(t *testing.T) {
+		data, err := json.Marshal(FactoryQueueAddResponse{
+			ContractVersion: FactoryQueueAddContractVersion,
+			Entry:           queueEntry,
+			Summary:         "queued run run-contract",
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal factory queue add response: %v", err)
+		}
+
+		raw := parseJSON(t, data)
+		requireExactKeys(t, raw, []string{"contractVersion", "entry", "summary"})
+		if raw["contractVersion"] != FactoryQueueAddContractVersion {
+			t.Fatalf("factory queue add contractVersion = %v, want %q", raw["contractVersion"], FactoryQueueAddContractVersion)
+		}
+
+		entry, ok := raw["entry"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("entry should be object, got %T", raw["entry"])
+		}
+		requireExactKeys(t, entry, []string{
+			"queueId", "runId", "executorMode", "status", "createdAt", "claimedAt",
+			"completedAt", "claim", "attemptCount", "lastError",
+		})
+
+		claim, ok := entry["claim"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("entry.claim should be object, got %T", entry["claim"])
+		}
+		requireExactKeys(t, claim, []string{"workerId", "pid", "hostname"})
+	})
+
+	t.Run("factory queue list result keys", func(t *testing.T) {
+		data, err := json.Marshal(FactoryQueueListResponse{
+			ContractVersion: FactoryQueueListContractVersion,
+			Entries:         []factory.QueueEntry{queueEntry},
+			Summary:         "1 queue entry",
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal factory queue list response: %v", err)
+		}
+
+		raw := parseJSON(t, data)
+		requireExactKeys(t, raw, []string{"contractVersion", "entries", "summary"})
+		if raw["contractVersion"] != FactoryQueueListContractVersion {
+			t.Fatalf("factory queue list contractVersion = %v, want %q", raw["contractVersion"], FactoryQueueListContractVersion)
+		}
+	})
+
+	t.Run("factory queue work claimed result keys", func(t *testing.T) {
+		data, err := json.Marshal(FactoryQueueWorkResponse{
+			ContractVersion: FactoryQueueWorkContractVersion,
+			Claimed:         true,
+			Entry:           &queueEntry,
+			Summary:         "claimed queue entry queue-contract-001",
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal factory queue work response: %v", err)
+		}
+
+		raw := parseJSON(t, data)
+		requireExactKeys(t, raw, []string{"contractVersion", "claimed", "entry", "summary"})
+		if raw["contractVersion"] != FactoryQueueWorkContractVersion {
+			t.Fatalf("factory queue work contractVersion = %v, want %q", raw["contractVersion"], FactoryQueueWorkContractVersion)
+		}
+		if raw["claimed"] != true {
+			t.Fatalf("claimed = %v, want true", raw["claimed"])
+		}
+		if _, ok := raw["entry"].(map[string]interface{}); !ok {
+			t.Fatalf("entry should be object for claimed work, got %T", raw["entry"])
+		}
+	})
+
+	t.Run("factory queue work noop result keys", func(t *testing.T) {
+		data, err := json.Marshal(FactoryQueueWorkResponse{
+			ContractVersion: FactoryQueueWorkContractVersion,
+			Claimed:         false,
+			Entry:           nil,
+			Summary:         "no queued factory work",
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal factory queue noop response: %v", err)
+		}
+
+		raw := parseJSON(t, data)
+		requireExactKeys(t, raw, []string{"contractVersion", "claimed", "entry", "summary"})
+		if raw["contractVersion"] != FactoryQueueWorkContractVersion {
+			t.Fatalf("factory queue work contractVersion = %v, want %q", raw["contractVersion"], FactoryQueueWorkContractVersion)
+		}
+		if raw["claimed"] != false {
+			t.Fatalf("claimed = %v, want false", raw["claimed"])
+		}
+		if raw["entry"] != nil {
+			t.Fatalf("entry = %#v, want null", raw["entry"])
+		}
 	})
 }
 
