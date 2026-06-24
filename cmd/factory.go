@@ -3642,7 +3642,7 @@ func factoryArtifactFieldIsParentRelativePath(value string) bool {
 }
 
 func factoryArtifactStringContainsUnsafeURL(value string) bool {
-	for _, field := range factoryArtifactRedactionFields(value) {
+	for _, field := range factoryArtifactURLFields(value) {
 		field = strings.TrimSpace(field)
 		field = strings.Trim(field, "\"'<>[](){}.,;")
 		if !strings.Contains(field, "://") {
@@ -3653,6 +3653,17 @@ func factoryArtifactStringContainsUnsafeURL(value string) bool {
 		}
 	}
 	return false
+}
+
+func factoryArtifactURLFields(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}':
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 func factoryArtifactStringContainsAbsolutePath(value string) bool {

@@ -5270,14 +5270,18 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 func TestSanitizeFactoryArtifactSummaryRedactsSignedURLStrings(t *testing.T) {
 	summary := sanitizeFactoryArtifactSummary(map[string]any{
 		"downloadURL": "https://storage.example.com/artifact.json?sig=abc123",
+		"embeddedURL": "download failed: https://storage.example.com/artifact.json?sig=abc123.",
 		"fragmentURL": "https://storage.example.com/artifact.json#opaque-token",
 		"nested": map[string]any{
-			"awsURL": "https://storage.example.com/artifact.json?X-Amz-Signature=abc123",
+			"awsURL": "artifact url (https://storage.example.com/artifact.json?X-Amz-Signature=abc123)",
 		},
 	})
 
 	if summary["downloadURL"] != "[redacted]" {
 		t.Fatalf("signed URL summary value = %#v, want [redacted]", summary["downloadURL"])
+	}
+	if summary["embeddedURL"] != "[redacted]" {
+		t.Fatalf("embedded signed URL summary value = %#v, want [redacted]", summary["embeddedURL"])
 	}
 	if summary["fragmentURL"] != "[redacted]" {
 		t.Fatalf("fragment URL summary value = %#v, want [redacted]", summary["fragmentURL"])
@@ -5291,7 +5295,7 @@ func TestSanitizeFactoryArtifactSummaryRedactsSignedURLStrings(t *testing.T) {
 	}
 
 	warnings := sanitizeFactoryArtifactWarnings([]string{
-		"https://storage.example.com/artifact.json?X-Goog-Signature=abc123",
+		"download failed: https://storage.example.com/artifact.json?X-Goog-Signature=abc123.",
 	})
 	if len(warnings) != 1 || warnings[0] != "[redacted]" {
 		t.Fatalf("signed URL warnings = %#v, want [redacted]", warnings)
