@@ -35,6 +35,7 @@ func TestFactorySandboxArtifactCopierRejectsTopLevelFileSymlink(t *testing.T) {
 	copier := &factorySandboxArtifactCopier{
 		provider: localExecSandboxArtifactProvider{},
 		info:     &sandbox.ConnectInfo{Name: "local"},
+		baseDir:  remoteRoot,
 	}
 	err := copier.CopyFile(context.Background(), linkPath, localPath)
 	requireSymlinkSandboxArtifactCopyError(t, err)
@@ -85,7 +86,8 @@ exec /bin/cat "$@"
 				"SECRET_PATH=" + secretPath,
 			},
 		},
-		info: &sandbox.ConnectInfo{Name: "local"},
+		info:    &sandbox.ConnectInfo{Name: "local"},
+		baseDir: remoteRoot,
 	}
 	if err := copier.CopyFile(context.Background(), artifactPath, localPath); err != nil {
 		t.Fatalf("CopyFile() unexpected error = %v", err)
@@ -123,6 +125,7 @@ func TestFactorySandboxArtifactCopierRejectsTopLevelDirSymlink(t *testing.T) {
 	copier := &factorySandboxArtifactCopier{
 		provider: localExecSandboxArtifactProvider{},
 		info:     &sandbox.ConnectInfo{Name: "local"},
+		baseDir:  remoteRoot,
 	}
 	err := copier.CopyDir(context.Background(), linkPath, localPath)
 	requireSymlinkSandboxArtifactCopyError(t, err)
@@ -130,6 +133,65 @@ func TestFactorySandboxArtifactCopierRejectsTopLevelDirSymlink(t *testing.T) {
 		t.Fatalf("CopyDir() created local directory for symlinked artifact")
 	} else if !os.IsNotExist(statErr) {
 		t.Fatalf("Stat(localPath) error = %v, want not exist", statErr)
+	}
+}
+
+func TestFactorySandboxArtifactCopierResolveRemotePathRequiresWorkspaceContainment(t *testing.T) {
+	copier := &factorySandboxArtifactCopier{
+		baseDir: "/workspace/hal",
+	}
+	tests := []struct {
+		name            string
+		remotePath      string
+		want            string
+		wantErrContains string
+	}{
+		{
+			name:       "relative child",
+			remotePath: ".hal/progress.txt",
+			want:       "/workspace/hal/.hal/progress.txt",
+		},
+		{
+			name:       "absolute child",
+			remotePath: "/workspace/hal/.hal/progress.txt",
+			want:       "/workspace/hal/.hal/progress.txt",
+		},
+		{
+			name:            "relative escape",
+			remotePath:      "../../.ssh/id_rsa",
+			wantErrContains: "resolves outside workspace",
+		},
+		{
+			name:            "absolute outside",
+			remotePath:      "/etc/passwd",
+			wantErrContains: "resolves outside workspace",
+		},
+		{
+			name:            "absolute sibling prefix",
+			remotePath:      "/workspace/hal-secret/token",
+			wantErrContains: "resolves outside workspace",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := copier.resolveRemotePath(tt.remotePath)
+			if tt.wantErrContains != "" {
+				if err == nil {
+					t.Fatal("resolveRemotePath() error = nil, want error")
+				}
+				if !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Fatalf("resolveRemotePath() error = %v, want containing %q", err, tt.wantErrContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveRemotePath() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveRemotePath() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -269,14 +269,33 @@ func (c *factorySandboxArtifactCopier) resolveRemotePath(remotePath string) (str
 	if remotePath == "" {
 		return "", fmt.Errorf("sandbox artifact remote path is required")
 	}
-	if path.IsAbs(remotePath) {
-		return path.Clean(remotePath), nil
-	}
 	baseDir := strings.TrimSpace(filepath.ToSlash(c.baseDir))
 	if baseDir == "" {
-		return "", fmt.Errorf("sandbox workspace directory is required for relative artifact path %q", remotePath)
+		return "", fmt.Errorf("sandbox workspace directory is required for artifact path %q", remotePath)
 	}
-	return path.Clean(path.Join(baseDir, remotePath)), nil
+	baseDir = path.Clean(baseDir)
+	if !path.IsAbs(baseDir) {
+		return "", fmt.Errorf("sandbox workspace directory must be absolute: %q", baseDir)
+	}
+
+	resolvedPath := path.Clean(remotePath)
+	if !path.IsAbs(resolvedPath) {
+		resolvedPath = path.Clean(path.Join(baseDir, resolvedPath))
+	}
+	if !factorySandboxArtifactPathWithinBase(baseDir, resolvedPath) {
+		return "", fmt.Errorf("sandbox artifact path %q resolves outside workspace %q", remotePath, baseDir)
+	}
+	return resolvedPath, nil
+}
+
+func factorySandboxArtifactPathWithinBase(baseDir, candidate string) bool {
+	if candidate == baseDir {
+		return true
+	}
+	if baseDir == "/" {
+		return path.IsAbs(candidate)
+	}
+	return strings.HasPrefix(candidate, baseDir+"/")
 }
 
 func factorySandboxArtifactPythonCommand(script, remotePath string) []string {
