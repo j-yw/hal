@@ -38,6 +38,13 @@ context. Current factory workflow commands do not coordinate run state across
 sibling worktrees, other clones, other users, or organization-level project
 views.
 
+Factory run history is an existing local-machine global surface. `hal factory
+run` records durable run records and events in the global Hal configuration
+directory through the factory store, and `hal factory list/status` read that
+store rather than per-worktree `.hal/` state. Future control-plane migration
+work must preserve compatibility with, or explicitly backfill from, this current
+shared-on-one-machine run-record store.
+
 Sandbox management is an existing local-machine global exception to the
 worktree-local boundary: sandbox configuration and registry entries live under
 `$HAL_CONFIG_HOME`, `$XDG_CONFIG_HOME/hal`, or `$HOME/.config/hal`. That
