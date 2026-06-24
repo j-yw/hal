@@ -149,7 +149,7 @@ func TestRunSandboxAuthSyncToTargetTransfersArchive(t *testing.T) {
 	var out bytes.Buffer
 	result, err := runSandboxAuthSyncToTarget(context.Background(), target, fakeFactorySandboxProvider{}, sandboxAuthSyncOptions{}, &out, sandboxAuthSyncDeps{
 		homeDir: func() (string, error) { return home, nil },
-		runRemote: func(_ sandbox.Provider, info *sandbox.ConnectInfo, archive []byte, _ io.Writer) error {
+		runRemote: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, archive []byte, _ io.Writer) error {
 			gotInfo = info
 			gotArchive = append([]byte(nil), archive...)
 			return nil
@@ -183,7 +183,7 @@ func TestRunSandboxAuthSyncToTargetSkipsWhenNoAuthFiles(t *testing.T) {
 
 	result, err := runSandboxAuthSyncToTarget(context.Background(), target, fakeFactorySandboxProvider{}, sandboxAuthSyncOptions{}, &out, sandboxAuthSyncDeps{
 		homeDir: func() (string, error) { return t.TempDir(), nil },
-		runRemote: func(sandbox.Provider, *sandbox.ConnectInfo, []byte, io.Writer) error {
+		runRemote: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []byte, io.Writer) error {
 			called = true
 			return nil
 		},
@@ -200,6 +200,25 @@ func TestRunSandboxAuthSyncToTargetSkipsWhenNoAuthFiles(t *testing.T) {
 	if !strings.Contains(out.String(), "No local Codex/pi auth files found") {
 		t.Fatalf("output = %q", out.String())
 	}
+}
+
+func TestRunSandboxAuthRemoteInstallHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runSandboxAuthRemoteInstall(ctx, sandboxAuthExecProvider{cmd: exec.Command("sh", "-c", "cat >/dev/null")}, &sandbox.ConnectInfo{}, []byte("archive"), io.Discard)
+	if err != context.Canceled {
+		t.Fatalf("runSandboxAuthRemoteInstall() error = %v, want context.Canceled", err)
+	}
+}
+
+type sandboxAuthExecProvider struct {
+	fakeFactorySandboxProvider
+	cmd *exec.Cmd
+}
+
+func (p sandboxAuthExecProvider) Exec(*sandbox.ConnectInfo, []string) (*exec.Cmd, error) {
+	return p.cmd, nil
 }
 
 func TestSandboxAuthRemoteInstallScriptExtractsPrivateArchive(t *testing.T) {

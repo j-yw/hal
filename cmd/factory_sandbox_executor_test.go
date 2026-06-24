@@ -208,7 +208,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
-	wantExecArgs := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd.md'"}
+	wantExecArgs := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd.md'"}
 	if !reflect.DeepEqual(gotExecArgs, wantExecArgs) {
 		t.Fatalf("exec args = %#v", gotExecArgs)
 	}
@@ -262,7 +262,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 					Step:           factory.BootstrapStepCloneRepository,
 					Status:         factory.RunStatusSucceeded,
 					Message:        "bootstrap step succeeded",
-					CommandSummary: "git clone <redacted> /workspace/repo",
+					CommandSummary: "git clone <redacted> /home/ubuntu/workspace/repo",
 				}},
 			}, nil
 		},
@@ -282,7 +282,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	if !reflect.DeepEqual(calls, []string{"provider", "exec", "bootstrap", "exec", "exec"}) {
 		t.Fatalf("calls = %#v, want provider/auth/bootstrap/exec/branch-probe", calls)
 	}
-	if bootstrapReq.RepositoryURL != "git@github.com:example/repo.git" || bootstrapReq.BaseBranch != "main" || bootstrapReq.RunBranch != "hal/feature" || bootstrapReq.WorkspaceDir != "/workspace/repo" {
+	if bootstrapReq.RepositoryURL != "git@github.com:example/repo.git" || bootstrapReq.BaseBranch != "main" || bootstrapReq.RunBranch != "hal/feature" || bootstrapReq.WorkspaceDir != "/home/ubuntu/workspace/repo" {
 		t.Fatalf("bootstrap request = %#v", bootstrapReq)
 	}
 	if !bootstrapReq.Options.RefreshHal {
@@ -337,7 +337,7 @@ func TestRunFactorySandboxExecutorWithDepsSyncsAgentAuthBeforeBootstrap(t *testi
 				calls = append(calls, "github_auth")
 			case strings.Contains(joined, "exec 'hal' 'auto'"):
 				calls = append(calls, "remote_run")
-			case reflect.DeepEqual(args, []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}):
+			case reflect.DeepEqual(args, []string{"git", "-C", "/home/ubuntu/workspace/repo", "branch", "--show-current"}):
 				calls = append(calls, "branch_probe")
 			}
 			return nil
@@ -410,7 +410,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceWithRemoteRepositor
 			case len(args) == 3 && args[0] == "sh" && args[1] == "-lc" && strings.Contains(args[2], "non_git_non_empty"):
 				_, err := io.WriteString(out, "git")
 				return err
-			case len(args) == 6 && reflect.DeepEqual(args, []string{"git", "-C", "/workspace/repo", "config", "--get", "remote.origin.url"}):
+			case len(args) == 6 && reflect.DeepEqual(args, []string{"git", "-C", "/home/ubuntu/workspace/repo", "config", "--get", "remote.origin.url"}):
 				_, err := io.WriteString(out, "git@github.com:example/repo.git\n")
 				return err
 			default:
@@ -432,13 +432,13 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceWithRemoteRepositor
 	if !strings.Contains(execArgs[0][2], "gh auth login --with-token") {
 		t.Fatalf("github auth repair args = %#v", execArgs[0])
 	}
-	if !strings.Contains(execArgs[1][2], "p='/workspace/repo'") {
+	if !strings.Contains(execArgs[1][2], "p='/home/ubuntu/workspace/repo'") {
 		t.Fatalf("repo exists probe args = %#v", execArgs[1])
 	}
-	if !reflect.DeepEqual(execArgs[2], []string{"git", "-C", "/workspace/repo", "config", "--get", "remote.origin.url"}) {
+	if !reflect.DeepEqual(execArgs[2], []string{"git", "-C", "/home/ubuntu/workspace/repo", "config", "--get", "remote.origin.url"}) {
 		t.Fatalf("repo remote probe args = %#v", execArgs[2])
 	}
-	if !reflect.DeepEqual(execArgs[4], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
+	if !reflect.DeepEqual(execArgs[4], []string{"git", "-C", "/home/ubuntu/workspace/repo", "branch", "--show-current"}) {
 		t.Fatalf("repo branch probe args = %#v", execArgs[4])
 	}
 }
@@ -632,14 +632,14 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if !strings.Contains(execArgs[0][2], "gh auth login --with-token") {
 		t.Fatalf("github auth repair args = %#v", execArgs[0])
 	}
-	if !strings.Contains(execArgs[1][2], "base64 -d > '/workspace/repo/.hal/prd-feature.md'") {
+	if !strings.Contains(execArgs[1][2], "base64 -d > '/home/ubuntu/workspace/repo/.hal/prd-feature.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[2], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
-	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
+	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/home/ubuntu/workspace/repo", "branch", "--show-current"}) {
 		t.Fatalf("remote branch probe args = %#v", execArgs[3])
 	}
 }
@@ -690,14 +690,14 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if !strings.Contains(execArgs[0][2], "gh auth login --with-token") {
 		t.Fatalf("github auth repair args = %#v", execArgs[0])
 	}
-	if !strings.Contains(execArgs[1][2], "base64 -d > '/workspace/repo/.hal/factory-inputs/analysis.md'") {
+	if !strings.Contains(execArgs[1][2], "base64 -d > '/home/ubuntu/workspace/repo/.hal/factory-inputs/analysis.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[2], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
-	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
+	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/home/ubuntu/workspace/repo", "branch", "--show-current"}) {
 		t.Fatalf("remote branch probe args = %#v", execArgs[3])
 	}
 }
@@ -710,14 +710,14 @@ func TestFactorySandboxRemoteRepoURLFuncReadsRawOriginConfig(t *testing.T) {
 		return err
 	})
 
-	got, err := remoteURL("/workspace/repo")
+	got, err := remoteURL("/home/ubuntu/workspace/repo")
 	if err != nil {
 		t.Fatalf("remoteURL() unexpected error: %v", err)
 	}
 	if got != "git@github.com:example/repo.git" {
 		t.Fatalf("remoteURL() = %q, want git@github.com:example/repo.git", got)
 	}
-	wantArgs := []string{"git", "-C", "/workspace/repo", "config", "--get", "remote.origin.url"}
+	wantArgs := []string{"git", "-C", "/home/ubuntu/workspace/repo", "config", "--get", "remote.origin.url"}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("probe args = %#v, want %#v", gotArgs, wantArgs)
 	}
@@ -731,7 +731,7 @@ func TestFactorySandboxCopyInputToRemoteSplitsLargeInputCommands(t *testing.T) {
 	}
 	var execArgs [][]string
 
-	remotePath, changed, err := factorySandboxCopyInputToRemote(context.Background(), projectDir, "large.md", "/workspace/repo", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, io.Discard, factorySandboxExecutorDeps{
+	remotePath, changed, err := factorySandboxCopyInputToRemote(context.Background(), projectDir, "large.md", "/home/ubuntu/workspace/repo", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, io.Discard, factorySandboxExecutorDeps{
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ io.Writer) error {
 			execArgs = append(execArgs, append([]string(nil), args...))
 			return nil
@@ -746,10 +746,10 @@ func TestFactorySandboxCopyInputToRemoteSplitsLargeInputCommands(t *testing.T) {
 	if len(execArgs) != 2 {
 		t.Fatalf("exec calls = %d, want 2: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/large.md'") {
+	if !strings.Contains(execArgs[0][2], "base64 -d > '/home/ubuntu/workspace/repo/large.md'") {
 		t.Fatalf("first chunk command = %q, want overwrite redirect", execArgs[0][2])
 	}
-	if !strings.Contains(execArgs[1][2], "base64 -d >> '/workspace/repo/large.md'") {
+	if !strings.Contains(execArgs[1][2], "base64 -d >> '/home/ubuntu/workspace/repo/large.md'") {
 		t.Fatalf("second chunk command = %q, want append redirect", execArgs[1][2])
 	}
 	for _, args := range execArgs {
@@ -807,14 +807,27 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) {
 	got := factorySandboxRemoteCommandArgs(factory.RunRecord{
 		RepoRemote: "git@github.com:jywlabs/hal.git",
+		RepoPath:   "/home/ubuntu/workspace/hal",
 	}, factoryRunAutoRequest{
 		Args:       []string{" .hal/prd-feature.md "},
 		BaseBranch: " hal/factory-remote-workspace-bootstrap ",
 	})
 
-	want := []string{"sh", "-lc", "cd '/workspace/hal' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
+	want := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/hal' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFactorySandboxRemoteWorkspacePathUsesExecHome(t *testing.T) {
+	got := factorySandboxRemoteWorkspacePath(factory.RunRecord{
+		RepoRemote: "git@github.com:example/repo.git",
+	}, "/home/ubuntu")
+	if got != "/home/ubuntu/workspace/repo" {
+		t.Fatalf("factorySandboxRemoteWorkspacePath() = %q, want /home/ubuntu/workspace/repo", got)
+	}
+	if strings.HasPrefix(got, "/workspace/") {
+		t.Fatalf("workspace path should not use root-owned /workspace: %q", got)
 	}
 }
 
@@ -838,7 +851,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteBranchAfterSuccess(t *tes
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
-			if reflect.DeepEqual(args, []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
+			if reflect.DeepEqual(args, []string{"git", "-C", "/home/ubuntu/workspace/repo", "branch", "--show-current"}) {
 				_, err := io.WriteString(out, "hal/remote-feature\n")
 				return err
 			}
@@ -953,7 +966,7 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 			return nil
 		},
 	})
-	wantErr := "prepare factory sandbox inputs: sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout"
+	wantErr := "prepare factory sandbox inputs: sandbox workspace directory is required; configure remote.origin.url or provide a repository path"
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want %q", err, wantErr)
 	}
@@ -1710,14 +1723,14 @@ func TestFactorySandboxBootstrapExecutorPreservesExitCode(t *testing.T) {
 func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *testing.T) {
 	invocation := factorySandboxBootstrapCommandInvocation(factory.BootstrapCommand{
 		Name: "git",
-		Args: []string{"clone", "git@github.com:example/repo.git", "/workspace/repo"},
-		Dir:  "/workspace",
+		Args: []string{"clone", "git@github.com:example/repo.git", "/home/ubuntu/workspace/repo"},
+		Dir:  "/home/ubuntu/workspace",
 		Env: map[string]string{
 			"GITHUB_TOKEN":        "super-secret-token",
 			"GIT_TERMINAL_PROMPT": "0",
 		},
 	})
-	want := []string{"sh", "-s", "--", "git", "clone", "git@github.com:example/repo.git", "/workspace/repo"}
+	want := []string{"sh", "-s", "--", "git", "clone", "git@github.com:example/repo.git", "/home/ubuntu/workspace/repo"}
 	if !reflect.DeepEqual(invocation.args, want) {
 		t.Fatalf("bootstrap args = %#v, want %#v", invocation.args, want)
 	}
@@ -1736,8 +1749,8 @@ func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *
 	required := []string{
 		"export GITHUB_TOKEN='super-secret-token'",
 		"export GIT_TERMINAL_PROMPT='0'",
-		"mkdir -p '/workspace'",
-		"cd '/workspace'",
+		"mkdir -p '/home/ubuntu/workspace'",
+		"cd '/home/ubuntu/workspace'",
 		"exec \"$@\"",
 	}
 	for _, wantLine := range required {
@@ -1754,10 +1767,14 @@ func TestFactorySandboxGitHubAuthScriptRepairsGhAndGitSSHRemotes(t *testing.T) {
 		"load_env_file /root/.env",
 		"sudo -n test -r /root/.env",
 		"${GITHUB_TOKEN:-${GH_TOKEN:-}}",
+		"${GIT_USER_NAME:-}",
+		"${GIT_USER_EMAIL:-}",
 		"export HOME=\"$remote_home\"",
 		"gh auth login --with-token",
 		"env -u GITHUB_TOKEN -u GH_TOKEN",
 		"gh auth setup-git",
+		"git config --global user.name \"$GIT_USER_NAME\"",
+		"git config --global user.email \"$GIT_USER_EMAIL\"",
 		"ensure_instead_of https://github.com/ git@github.com:",
 		"ensure_instead_of https://github.com/ ssh://git@github.com/",
 	}
@@ -1776,7 +1793,7 @@ func TestFactorySandboxGitHubAuthScriptRepairsGhAndGitSSHRemotes(t *testing.T) {
 
 func TestFactorySandboxGitHubAuthScriptReadsTokenFromExecUserHome(t *testing.T) {
 	home := t.TempDir()
-	writeFile(t, home, ".env", "GITHUB_TOKEN='ghp_home'\n")
+	writeFile(t, home, ".env", "GITHUB_TOKEN='ghp_home'\nGIT_USER_NAME='Exec User'\nGIT_USER_EMAIL='exec@example.com'\n")
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	logPath := filepath.Join(t.TempDir(), "calls.log")
 	binDir := t.TempDir()
@@ -1799,6 +1816,15 @@ func TestFactorySandboxGitHubAuthScriptReadsTokenFromExecUserHome(t *testing.T) 
 	if got := strings.TrimSpace(string(data)); got != "ghp_home" {
 		t.Fatalf("gh token = %q, want ghp_home", got)
 	}
+	log := readFactorySandboxFakeToolLog(t, logPath)
+	for _, want := range []string{
+		"git args: [config] [--global] [user.name] [Exec User]",
+		"git args: [config] [--global] [user.email] [exec@example.com]",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("fake tool log missing %q:\n%s", want, log)
+		}
+	}
 }
 
 func TestFactorySandboxGitHubAuthScriptReadsRootEnvWithSudoFallback(t *testing.T) {
@@ -1813,7 +1839,11 @@ if [ "$1" = "-n" ] && [ "$2" = "test" ] && [ "$3" = "-r" ] && [ "$4" = "/root/.e
   exit 0
 fi
 if [ "$1" = "-n" ] && [ "$2" = "sh" ] && [ "$3" = "-c" ]; then
-  printf '%s' 'ghp_sudo'
+  case "$4" in
+    *GIT_USER_NAME*) printf '%s' 'Root User' ;;
+    *GIT_USER_EMAIL*) printf '%s' 'root@example.com' ;;
+    *) printf '%s' 'ghp_sudo' ;;
+  esac
   exit 0
 fi
 echo "unexpected sudo args: $*" >&2
@@ -1835,6 +1865,15 @@ exit 1
 	}
 	if got := strings.TrimSpace(string(data)); got != "ghp_sudo" {
 		t.Fatalf("gh token = %q, want ghp_sudo", got)
+	}
+	log := readFactorySandboxFakeToolLog(t, logPath)
+	for _, want := range []string{
+		"git args: [config] [--global] [user.name] [Root User]",
+		"git args: [config] [--global] [user.email] [root@example.com]",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("fake tool log missing %q:\n%s", want, log)
+		}
 	}
 }
 
@@ -1867,12 +1906,15 @@ fi
 echo "unexpected gh args: $*" >&2
 exit 1
 `, shellQuote(logPath), shellQuote(logPath), shellQuote(logPath), shellQuote(tokenPath)))
-	writeExecutableTestFile(t, dir, "git", `#!/bin/sh
+	writeExecutableTestFile(t, dir, "git", fmt.Sprintf(`#!/bin/sh
+printf 'git args:' >> %s
+for arg in "$@"; do printf ' [%%s]' "$arg" >> %s; done
+printf '\n' >> %s
 if [ "$1" = "config" ] && [ "$2" = "--global" ] && [ "$3" = "--get-all" ]; then
   exit 1
 fi
 exit 0
-`)
+`, shellQuote(logPath), shellQuote(logPath), shellQuote(logPath)))
 }
 
 func readFactorySandboxFakeToolLog(t *testing.T, path string) string {

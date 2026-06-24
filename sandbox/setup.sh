@@ -66,10 +66,9 @@ configure_github_auth() {
 
   if command -v gh &>/dev/null; then
     if ! printf '%s' "$token" | env -u GITHUB_TOKEN -u GH_TOKEN gh auth login --with-token 2>/dev/null; then
-      env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1
+      env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 || true
     fi
-    env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1
-    env -u GITHUB_TOKEN -u GH_TOKEN gh auth setup-git 2>/dev/null || true
+    env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 && env -u GITHUB_TOKEN -u GH_TOKEN gh auth setup-git 2>/dev/null || true
   fi
 
   # Factory bootstrap may clone SSH-style GitHub remotes. Rewrite those to

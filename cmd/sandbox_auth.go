@@ -84,7 +84,7 @@ type sandboxAuthSyncDeps struct {
 	homeDir         func() (string, error)
 	resolveTarget   func(string) (*sandbox.SandboxState, string, error)
 	resolveProvider func(string) (sandbox.Provider, error)
-	runRemote       func(sandbox.Provider, *sandbox.ConnectInfo, []byte, io.Writer) error
+	runRemote       func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []byte, io.Writer) error
 }
 
 type sandboxAuthProfileSpec struct {
@@ -188,7 +188,7 @@ func runSandboxAuthSyncToTarget(ctx context.Context, target *sandbox.SandboxStat
 	if out != nil {
 		fmt.Fprintf(out, "Syncing sandbox auth to %s (%s)...\n", target.Name, formatSandboxAuthProfiles(result.Profiles))
 	}
-	if err := deps.runRemote(provider, sandbox.ConnectInfoFromState(target), archive, out); err != nil {
+	if err := deps.runRemote(ctx, provider, sandbox.ConnectInfoFromState(target), archive, out); err != nil {
 		return sandboxAuthSyncResult{}, fmt.Errorf("install sandbox auth profile: %w", err)
 	}
 	if out != nil {
@@ -358,13 +358,13 @@ func writeSandboxAuthFile(tw *tar.Writer, file sandboxAuthFile) error {
 	return nil
 }
 
-func runSandboxAuthRemoteInstall(provider sandbox.Provider, info *sandbox.ConnectInfo, archive []byte, out io.Writer) error {
+func runSandboxAuthRemoteInstall(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, archive []byte, out io.Writer) error {
 	cmd, err := provider.Exec(info, []string{"sh", "-lc", sandboxAuthRemoteInstallScript()})
 	if err != nil {
 		return err
 	}
 	cmd.Stdin = bytes.NewReader(archive)
-	return sandbox.RunCmd(cmd, out)
+	return sandbox.RunCmdContext(ctx, cmd, out)
 }
 
 func sandboxAuthRemoteInstallScript() string {

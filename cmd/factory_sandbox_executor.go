@@ -50,6 +50,7 @@ type factorySandboxExecutorDeps struct {
 	runProviderExec          func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderExecWithInput func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Reader, io.Writer) error
 	syncAgentAuth            func(context.Context, sandbox.Provider, *sandbox.SandboxState, io.Writer) error
+	remoteHome               func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, io.Writer) (string, error)
 	bootstrap                func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	saveRun                  func(factory.Store, *factory.RunRecord) error
 	appendEvent              func(factory.Store, *factory.EventRecord) error
@@ -68,12 +69,13 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	runProviderExec:          runFactorySandboxProviderExec,
 	runProviderExecWithInput: runFactorySandboxProviderExecWithInput,
 	syncAgentAuth:            syncFactorySandboxAgentAuth,
+	remoteHome:               resolveFactorySandboxRemoteHome,
 	bootstrap:                factory.BootstrapWorkspace,
 	saveRun:                  saveFactorySandboxRunRecord,
 	appendEvent:              appendFactorySandboxTimelineEvent,
 }
 
-var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
+var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or provide a repository path")
 
 const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 
@@ -119,6 +121,15 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 			return nil
 		}
 	}
+	if deps.remoteHome == nil {
+		if customRunProviderExec {
+			deps.remoteHome = func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, io.Writer) (string, error) {
+				return "/home/ubuntu", nil
+			}
+		} else {
+			deps.remoteHome = defaultFactorySandboxExecutorDeps.remoteHome
+		}
+	}
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultFactorySandboxExecutorDeps.bootstrap
 	}
@@ -143,13 +154,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 
 	record := req.RunRecord
+	if strings.TrimSpace(record.RepoRemote) == "" {
+		record.RepoRemote = strings.TrimSpace(req.BootstrapRepositoryURL)
+	}
 	record.ExecutorMode = factory.ExecutorModeSandbox
 	record.UpdatedAt = deps.now().UTC()
 	if err := deps.saveRun(store, &record); err != nil {
 		return fmt.Errorf("save sandbox factory run: %w", err)
 	}
 
-	if factorySandboxRemoteWorkspaceDir(record) == "" {
+	if factorySandboxRemoteWorkspaceName(record) == "" {
 		_ = recordFactorySandboxFailure(store, deps, &record, nil, "prepare_inputs", errFactorySandboxWorkspaceRequired)
 		return factorySandboxRecordedError("prepare factory sandbox inputs", nil, errFactorySandboxWorkspaceRequired)
 	}
@@ -236,6 +250,14 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "agent_auth", err)
 		return factorySandboxRecordedError("sync factory sandbox agent auth", target, err)
 	}
+
+	workspaceDir, err := factorySandboxResolveWorkspaceDir(ctx, record, provider, target, remoteOutput, deps)
+	if err != nil {
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err)
+		return factorySandboxRecordedError("prepare factory sandbox workspace", target, err)
+	}
+	record.RepoPath = workspaceDir
+	req.RunRecord = record
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.BootstrapRepositoryURL); ok {
 		connectInfo := sandbox.ConnectInfoFromState(target)
@@ -866,6 +888,44 @@ func syncFactorySandboxAgentAuth(ctx context.Context, provider sandbox.Provider,
 	return err
 }
 
+func factorySandboxResolveWorkspaceDir(ctx context.Context, record factory.RunRecord, provider sandbox.Provider, target *sandbox.SandboxState, out io.Writer, deps factorySandboxExecutorDeps) (string, error) {
+	if deps.remoteHome == nil {
+		return "", fmt.Errorf("sandbox remote home resolver is required")
+	}
+	home, err := deps.remoteHome(ctx, provider, sandbox.ConnectInfoFromState(target), out)
+	if err != nil {
+		return "", fmt.Errorf("resolve sandbox exec home: %w", err)
+	}
+	workspaceDir := factorySandboxRemoteWorkspacePath(record, home)
+	if workspaceDir == "" {
+		return "", errFactorySandboxWorkspaceRequired
+	}
+	return workspaceDir, nil
+}
+
+func resolveFactorySandboxRemoteHome(ctx context.Context, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer) (string, error) {
+	output, err := factorySandboxRunRemoteProbe(ctx, provider, connectInfo, runFactorySandboxProviderExec, []string{"sh", "-lc", factorySandboxRemoteHomeScript()})
+	if err != nil {
+		return "", err
+	}
+	home := filepath.ToSlash(filepath.Clean(strings.TrimSpace(output)))
+	if home == "" || home == "." {
+		return "", fmt.Errorf("sandbox exec home is empty")
+	}
+	return home, nil
+}
+
+func factorySandboxRemoteHomeScript() string {
+	return strings.Join([]string{
+		"remote_home=\"${HOME:-}\"",
+		"if [ -z \"$remote_home\" ] && command -v getent >/dev/null 2>&1; then",
+		"  remote_home=\"$(getent passwd \"$(id -u)\" | cut -d: -f6)\"",
+		"fi",
+		"if [ -z \"$remote_home\" ]; then remote_home=\"$(pwd)\"; fi",
+		"printf %s \"$remote_home\"",
+	}, "\n")
+}
+
 func factorySandboxGitHubAuthScript() string {
 	return strings.Join([]string{
 		"set -eu",
@@ -882,11 +942,19 @@ func factorySandboxGitHubAuthScript() string {
 		"if [ -z \"$token\" ] && command -v sudo >/dev/null 2>&1 && sudo -n test -r /root/.env 2>/dev/null; then",
 		"  token=\"$(sudo -n sh -c '. /root/.env; printf %s \"${GITHUB_TOKEN:-${GH_TOKEN:-}}\"' 2>/dev/null || true)\"",
 		"fi",
+		"if [ -z \"${GIT_USER_NAME:-}\" ] && command -v sudo >/dev/null 2>&1 && sudo -n test -r /root/.env 2>/dev/null; then",
+		"  GIT_USER_NAME=\"$(sudo -n sh -c '. /root/.env; printf %s \"${GIT_USER_NAME:-}\"' 2>/dev/null || true)\"",
+		"fi",
+		"if [ -z \"${GIT_USER_EMAIL:-}\" ] && command -v sudo >/dev/null 2>&1 && sudo -n test -r /root/.env 2>/dev/null; then",
+		"  GIT_USER_EMAIL=\"$(sudo -n sh -c '. /root/.env; printf %s \"${GIT_USER_EMAIL:-}\"' 2>/dev/null || true)\"",
+		"fi",
 		"if [ -z \"$token\" ]; then echo \"GitHub token not present; skipping auth repair\"; exit 0; fi",
 		"if ! command -v gh >/dev/null 2>&1; then echo \"gh not installed; skipping auth repair\"; exit 0; fi",
 		"if ! printf '%s' \"$token\" | env -u GITHUB_TOKEN -u GH_TOKEN gh auth login --with-token >/dev/null 2>&1; then env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 || { echo \"gh auth unavailable after token login\"; exit 1; }; fi",
 		"env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 || { echo \"gh auth unavailable after token login\"; exit 1; }",
 		"env -u GITHUB_TOKEN -u GH_TOKEN gh auth setup-git >/dev/null 2>&1 || true",
+		"if [ -n \"${GIT_USER_NAME:-}\" ]; then git config --global user.name \"$GIT_USER_NAME\"; fi",
+		"if [ -n \"${GIT_USER_EMAIL:-}\" ]; then git config --global user.email \"$GIT_USER_EMAIL\"; fi",
 		"ensure_instead_of() { base=\"$1\"; value=\"$2\"; git config --global --get-all \"url.${base}.insteadOf\" 2>/dev/null | grep -Fx \"$value\" >/dev/null || git config --global --add \"url.${base}.insteadOf\" \"$value\"; }",
 		"ensure_instead_of https://github.com/ git@github.com:",
 		"ensure_instead_of https://github.com/ ssh://git@github.com/",
@@ -924,13 +992,24 @@ func factorySandboxRemoteBootstrapCleanupScript() string {
 }
 
 func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
-	if name := repositoryNameFromRemote(record.RepoRemote); name != "" {
-		return "/workspace/" + name
+	repoPath := strings.TrimSpace(record.RepoPath)
+	if repoPath == "" {
+		return ""
 	}
-	if repoPath := strings.TrimSpace(record.RepoPath); strings.HasPrefix(repoPath, "/workspace/") {
-		return repoPath
+	return filepath.ToSlash(filepath.Clean(repoPath))
+}
+
+func factorySandboxRemoteWorkspacePath(record factory.RunRecord, remoteHome string) string {
+	name := factorySandboxRemoteWorkspaceName(record)
+	remoteHome = strings.TrimSpace(remoteHome)
+	if name == "" || remoteHome == "" {
+		return ""
 	}
-	return ""
+	return filepath.ToSlash(filepath.Join(remoteHome, "workspace", name))
+}
+
+func factorySandboxRemoteWorkspaceName(record factory.RunRecord) string {
+	return repositoryNameFromRemote(record.RepoRemote)
 }
 
 func repositoryNameFromRemote(remote string) string {
