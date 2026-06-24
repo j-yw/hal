@@ -127,6 +127,64 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 	}
 }
 
+func TestValidateExistingRepoRemoteAcceptsEquivalentGitHubRemoteFormats(t *testing.T) {
+	tests := []struct {
+		name      string
+		actual    string
+		requested string
+	}{
+		{
+			name:      "ssh actual matches https requested",
+			actual:    "git@github.com:jywlabs/hal.git",
+			requested: "https://github.com/jywlabs/hal",
+		},
+		{
+			name:      "ssh url actual matches https requested",
+			actual:    "ssh://git@github.com/jywlabs/hal.git",
+			requested: "https://github.com/jywlabs/hal.git",
+		},
+		{
+			name:      "https actual matches ssh requested without git suffix",
+			actual:    "https://github.com/jywlabs/hal.git",
+			requested: "git@github.com:jywlabs/hal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := BootstrapRepositoryDeps{
+				RepoRemoteURL: func(path string) (string, error) {
+					if path != "/workspace/hal" {
+						t.Fatalf("repo remote path = %q, want /workspace/hal", path)
+					}
+					return tt.actual, nil
+				},
+			}
+			if err := deps.validateExistingRepoRemote("/workspace/hal", tt.requested); err != nil {
+				t.Fatalf("validateExistingRepoRemote() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateExistingRepoRemoteRejectsDifferentGitHubRepository(t *testing.T) {
+	deps := BootstrapRepositoryDeps{
+		RepoRemoteURL: func(path string) (string, error) {
+			if path != "/workspace/hal" {
+				t.Fatalf("repo remote path = %q, want /workspace/hal", path)
+			}
+			return "git@github.com:other/project.git", nil
+		},
+	}
+	err := deps.validateExistingRepoRemote("/workspace/hal", "https://github.com/jywlabs/hal.git")
+	if err == nil {
+		t.Fatal("validateExistingRepoRemote() error = nil, want remote mismatch")
+	}
+	if !strings.Contains(err.Error(), "does not match requested URL") {
+		t.Fatalf("validateExistingRepoRemote() error = %v", err)
+	}
+}
+
 func TestBootstrapRepositoryCheckoutRejectsExistingRepoWithUnexpectedRemote(t *testing.T) {
 	req := BootstrapRequest{
 		RepositoryURL: "git@github.com:jywlabs/hal.git",

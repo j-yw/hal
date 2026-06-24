@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,10 +254,69 @@ func (d BootstrapRepositoryDeps) validateExistingRepoRemote(repoPath string, rep
 	if actual == "" {
 		return fmt.Errorf("repository origin remote is empty; expected %q", repositoryURL)
 	}
-	if actual != repositoryURL {
+	if !bootstrapRepositoryRemoteMatches(actual, repositoryURL) {
 		return fmt.Errorf("repository origin remote %q does not match requested URL %q", actual, repositoryURL)
 	}
 	return nil
+}
+
+func bootstrapRepositoryRemoteMatches(actual, expected string) bool {
+	actual = strings.TrimSpace(actual)
+	expected = strings.TrimSpace(expected)
+	if actual == expected {
+		return true
+	}
+
+	actualRepo, ok := normalizeBootstrapGitHubRemote(actual)
+	if !ok {
+		return false
+	}
+	expectedRepo, ok := normalizeBootstrapGitHubRemote(expected)
+	if !ok {
+		return false
+	}
+	return actualRepo == expectedRepo
+}
+
+func normalizeBootstrapGitHubRemote(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", false
+	}
+
+	if strings.Contains(remote, "://") {
+		parsed, err := url.Parse(remote)
+		if err != nil || !strings.EqualFold(parsed.Hostname(), "github.com") {
+			return "", false
+		}
+		return normalizeBootstrapGitHubRemotePath(parsed.Path)
+	}
+
+	hostAndPath := strings.SplitN(remote, ":", 2)
+	if len(hostAndPath) != 2 || strings.Contains(hostAndPath[0], "/") {
+		return "", false
+	}
+	host := hostAndPath[0]
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if !strings.EqualFold(host, "github.com") {
+		return "", false
+	}
+	return normalizeBootstrapGitHubRemotePath(hostAndPath[1])
+}
+
+func normalizeBootstrapGitHubRemotePath(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimSuffix(path, "/")
+	path = strings.TrimSuffix(path, ".git")
+
+	segments := strings.Split(path, "/")
+	if len(segments) != 2 || segments[0] == "" || segments[1] == "" {
+		return "", false
+	}
+	return strings.ToLower(segments[0] + "/" + segments[1]), true
 }
 
 func (d BootstrapRepositoryDeps) repoRemoteURL(path string) (string, error) {
