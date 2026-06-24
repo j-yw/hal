@@ -5267,6 +5267,110 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 	}
 }
 
+func TestFactoryArtifactsJSONRedactsPathURLsWhenURLsAreOmitted(t *testing.T) {
+	base := time.Date(2026, 6, 21, 8, 27, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-artifact-path-url", base, base.Add(time.Minute))
+	record.Artifacts = []factory.ArtifactReference{
+		{
+			ID:         "remote-report",
+			Name:       "remote-report",
+			Type:       "json",
+			Path:       "https://storage.example.com/artifact.json",
+			StoredPath: "https://storage.example.com/stored-artifact.json",
+			URL:        "https://storage.example.com/download/artifact.json",
+		},
+	}
+
+	resp := newFactoryArtifactsResponse(record)
+	if got := resp.Artifacts[0].Path; got != "[redacted]" {
+		t.Fatalf("artifact path = %q, want [redacted]", got)
+	}
+	if got := resp.Artifacts[0].StoredPath; got != "[redacted]" {
+		t.Fatalf("artifact storedPath = %q, want [redacted]", got)
+	}
+	if got := resp.Artifacts[0].URL; got != "" {
+		t.Fatalf("artifact URL = %q, want empty", got)
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	if strings.Contains(string(data), "https://storage.example.com") {
+		t.Fatalf("factory artifacts JSON leaked URL through path fields: %s", data)
+	}
+
+	statusSummary := newFactoryStatusArtifactSummaries(record.Artifacts)[0]
+	if got := statusSummary.Path; got != "https://storage.example.com/artifact.json" {
+		t.Fatalf("status artifact path = %q, want sanitized URL", got)
+	}
+	if got := statusSummary.URL; got != "https://storage.example.com/download/artifact.json" {
+		t.Fatalf("status artifact URL = %q, want sanitized URL", got)
+	}
+}
+
+func TestScrubFactoryRunRecordForArtifactSanitizesTopLevelLocations(t *testing.T) {
+	base := time.Date(2026, 6, 21, 8, 28, 0, 0, time.UTC)
+	repoPath := filepath.Join(t.TempDir(), "private-workspace", "hal")
+	sourcePath := filepath.Join(t.TempDir(), "external-prds", "feature.md")
+	reportPath := filepath.Join(t.TempDir(), "reports", "review.md")
+	record := testFactoryRunRecord("run-record-top-level-scrub", base, base.Add(time.Minute))
+	record.RepoPath = repoPath
+	record.RepoRemote = "https://token:super-secret@github.com/private/repo.git"
+	record.Source.Path = sourcePath
+	record.Source.ReportPath = reportPath
+	record.Sandbox = &factory.SandboxMetadata{
+		Name:     "factory-remote",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		Connection: &factory.SandboxConnectionMetadata{
+			Address:           "203.0.113.42",
+			PublicIP:          "203.0.113.42",
+			TailscaleIP:       "100.64.0.10",
+			TailscaleHostname: "factory-remote.tailnet.example",
+		},
+		SSHCommand:     "hal sandbox ssh factory-remote",
+		CleanupCommand: "hal sandbox delete factory-remote",
+		Handoff:        "Inspect sandbox with `hal sandbox ssh factory-remote`.",
+	}
+
+	scrubbed := scrubFactoryRunRecordForArtifact(record)
+	if scrubbed.RepoPath != "hal" {
+		t.Fatalf("repoPath = %q, want basename", scrubbed.RepoPath)
+	}
+	if scrubbed.RepoRemote != "[redacted]" {
+		t.Fatalf("repoRemote = %q, want [redacted]", scrubbed.RepoRemote)
+	}
+	if scrubbed.Source.Path != "feature.md" {
+		t.Fatalf("source path = %q, want basename", scrubbed.Source.Path)
+	}
+	if scrubbed.Source.ReportPath != "review.md" {
+		t.Fatalf("source reportPath = %q, want basename", scrubbed.Source.ReportPath)
+	}
+	if scrubbed.Sandbox == nil || scrubbed.Sandbox.Connection != nil {
+		t.Fatalf("sandbox connection = %#v, want nil", scrubbed.Sandbox)
+	}
+
+	data, err := json.Marshal(scrubbed)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	raw := string(data)
+	leakedValues := []string{
+		filepath.Dir(repoPath),
+		filepath.Dir(sourcePath),
+		filepath.Dir(reportPath),
+		"super-secret",
+		"203.0.113.42",
+		"100.64.0.10",
+		"factory-remote.tailnet.example",
+	}
+	for _, leaked := range leakedValues {
+		if strings.Contains(raw, leaked) {
+			t.Fatalf("scrubbed factory run record leaked %q: %s", leaked, raw)
+		}
+	}
+}
+
 func TestSanitizeFactoryArtifactSummaryRedactsSignedURLStrings(t *testing.T) {
 	summary := sanitizeFactoryArtifactSummary(map[string]any{
 		"downloadURL": "https://storage.example.com/artifact.json?sig=abc123",

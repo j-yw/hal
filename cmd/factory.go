@@ -1629,9 +1629,52 @@ func materializeFactoryRunRecordArtifact(record factory.RunRecord) (string, func
 }
 
 func scrubFactoryRunRecordForArtifact(record factory.RunRecord) factory.RunRecord {
+	record.Source = scrubFactoryRunRecordSource(record.Source)
+	record.RepoPath = sanitizeFactoryRunRecordArtifactPath(record.RepoPath)
+	record.RepoRemote = sanitizeFactoryRunRecordRemote(record.RepoRemote)
+	record.Sandbox = scrubFactoryRunRecordSandbox(record.Sandbox)
 	record.Artifacts = scrubFactoryArtifactReferencesForRecordArtifact(record.Artifacts)
 	record.Verification = scrubFactoryVerificationRecord(record.Verification)
 	return record
+}
+
+func scrubFactoryRunRecordSource(source factory.SourceMetadata) factory.SourceMetadata {
+	source.Path = sanitizeFactoryRunRecordArtifactPath(source.Path)
+	source.ReportPath = sanitizeFactoryRunRecordArtifactPath(source.ReportPath)
+	return source
+}
+
+func scrubFactoryRunRecordSandbox(metadata *factory.SandboxMetadata) *factory.SandboxMetadata {
+	if metadata == nil {
+		return nil
+	}
+	out := *metadata
+	out.Connection = nil
+	return &out
+}
+
+func sanitizeFactoryRunRecordArtifactPath(path string) string {
+	return sanitizeFactoryArtifactPathWithURLMode(path, false)
+}
+
+func sanitizeFactoryRunRecordRemote(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	if strings.Contains(remote, "://") {
+		if safeURL := safeFactoryArtifactURL(remote); safeURL != "" {
+			return safeURL
+		}
+		return "[redacted]"
+	}
+	if factoryArtifactStringNeedsRedaction(remote) {
+		return "[redacted]"
+	}
+	if strings.Contains(remote, "@") || strings.Contains(remote, ":") {
+		return "[redacted]"
+	}
+	return sanitizeFactoryArtifactPath(remote)
 }
 
 func scrubFactoryArtifactReferencesForRecordArtifact(artifacts []factory.ArtifactReference) []factory.ArtifactReference {
@@ -3243,8 +3286,8 @@ func newFactoryArtifactSummariesWithOptions(artifacts []factory.ArtifactReferenc
 			ID:         strings.TrimSpace(artifact.ID),
 			Name:       strings.TrimSpace(artifact.Name),
 			Type:       strings.TrimSpace(artifact.Type),
-			Path:       sanitizeFactoryArtifactPath(artifact.Path),
-			StoredPath: sanitizeFactoryArtifactPath(artifact.StoredPath),
+			Path:       sanitizeFactoryArtifactPathWithURLMode(artifact.Path, includeURL),
+			StoredPath: sanitizeFactoryArtifactPathWithURLMode(artifact.StoredPath, includeURL),
 			SizeBytes:  artifact.SizeBytes,
 			CreatedAt:  artifact.CreatedAt,
 			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
@@ -3262,6 +3305,17 @@ func newFactoryArtifactSummariesWithOptions(artifacts []factory.ArtifactReferenc
 		summaries = append(summaries, entry)
 	}
 	return summaries
+}
+
+func sanitizeFactoryArtifactPathWithURLMode(path string, includeURL bool) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if !includeURL && strings.Contains(path, "://") {
+		return "[redacted]"
+	}
+	return sanitizeFactoryArtifactPath(path)
 }
 
 func sanitizeFactoryArtifactPath(path string) string {
