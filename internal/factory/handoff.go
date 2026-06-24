@@ -301,6 +301,7 @@ func SanitizeHandoffFailureReason(reason string) string {
 	normalizedReason := handoffNormalizeDocPlaceholders(reason)
 	if strings.ContainsAny(reason, "\r\n") ||
 		handoffStringContainsBareSecretValue(reason) ||
+		handoffURLQueryValueLooksLikeSecret(reason) ||
 		handoffStringNeedsRedaction(normalizedReason) ||
 		handoffStringContainsBareDNSHost(normalizedReason) {
 		return handoffRedactedLocation
@@ -886,6 +887,9 @@ func handoffStringContainsBareDNSHost(value string) bool {
 		if field == "" || strings.Contains(field, "://") {
 			continue
 		}
+		if handoffFieldIsDocumentationSCPPlaceholder(field) {
+			continue
+		}
 		if handoffFieldContainsBareDNSHost(field) {
 			return true
 		}
@@ -1042,6 +1046,13 @@ func handoffStringContainsSSHHost(value string) bool {
 		if handoffSSHURLContainsHost(field) || handoffFieldIsSSHUserHost(field) {
 			return true
 		}
+		if !strings.Contains(field, "://") {
+			if host, path, ok := handoffSplitSCPStyleSSHHost(field); ok &&
+				!handoffSCPStyleDocumentationPlaceholder(host, path) &&
+				handoffSSHHostLooksSensitive(host) {
+				return true
+			}
+		}
 		if !strings.EqualFold(field, "ssh") {
 			continue
 		}
@@ -1145,6 +1156,19 @@ func handoffSCPStyleDocumentationPlaceholder(host, path string) bool {
 	return path == "placeholder/placeholder" || path == "placeholder/placeholder.git"
 }
 
+func handoffFieldIsDocumentationSCPPlaceholder(field string) bool {
+	field = handoffTrimRedactionField(field)
+	if field == "" {
+		return false
+	}
+	if at := strings.LastIndexByte(field, '@'); at >= 0 && at+1 < len(field) {
+		host, path, ok := handoffSplitSCPStyleSSHHost(field[at+1:])
+		return ok && handoffSCPStyleDocumentationPlaceholder(host, path)
+	}
+	host, path, ok := handoffSplitSCPStyleSSHHost(field)
+	return ok && handoffSCPStyleDocumentationPlaceholder(host, path)
+}
+
 func handoffSSHHostLooksSensitive(host string) bool {
 	host = strings.TrimSpace(host)
 	host = strings.Trim(host, "[]")
@@ -1224,6 +1248,9 @@ func handoffStringContainsBareSecretValue(value string) bool {
 	for i, field := range fields {
 		field = strings.TrimSpace(field)
 		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if handoffFieldIsAuthScheme(field) && i+1 < len(fields) && handoffAuthCredentialValueLooksSensitive(fields[i+1]) {
+			return true
+		}
 		if !handoffStandaloneSecretKey(field) || i+1 >= len(fields) {
 			continue
 		}
@@ -1238,6 +1265,18 @@ func handoffStringContainsBareSecretValue(value string) bool {
 	return false
 }
 
+func handoffAuthCredentialValueLooksSensitive(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'<>[](){}.,;")
+	if value == "" {
+		return false
+	}
+	if handoffFieldLooksLikeSecretValue(value) {
+		return true
+	}
+	return len(value) >= 8 && handoffFieldLooksLikeCredentialChars(value)
+}
+
 func handoffFieldIsAuthScheme(value string) bool {
 	value = strings.ToLower(handoffTrimRedactionField(value))
 	switch value {
@@ -1246,6 +1285,17 @@ func handoffFieldIsAuthScheme(value string) bool {
 	default:
 		return false
 	}
+}
+
+func handoffFieldLooksLikeCredentialChars(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '+' || r == '/' || r == '=' || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func handoffStandaloneSecretKey(key string) bool {

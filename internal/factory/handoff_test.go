@@ -295,7 +295,10 @@ func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 		"authentication failed for --api-key sk-secretvalue",
 		"authentication failed for Authorization Bearer ghp_xxx",
 		"provider returned ghp_xxx",
+		"provider returned <ghp_xxx>",
 		"engine returned sk-secretvalue",
+		"provider returned Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
+		"provider returned Basic dXNlcjpwYXNz",
 	}
 	for _, tt := range tests {
 		t.Run(tt, func(t *testing.T) {
@@ -381,6 +384,7 @@ func TestSanitizeHandoffFailureReasonRedactsSSHHostnames(t *testing.T) {
 		"provider returned ubuntu@sandbox.example.com:22",
 		"provider returned deploy@prod",
 		"provider returned git@runner.internal:org/repo.git",
+		"provider returned runner.internal:org/repo.git",
 		"remote command failed: ssh prod failed",
 	}
 	for _, tt := range tests {
@@ -456,7 +460,7 @@ func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
 
 func TestLoadHandoffSummaryPreservesFailureReasonWithDocumentationPlaceholders(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	message := `step ci failed: failed to create PR: git remote "origin" is not configured; set origin to git@github.com:<owner>/<repo>.git or https://github.com/<owner>/<repo>.git`
+	message := `step ci failed: failed to create PR: git remote "origin" is not configured; set origin to git@github.com:<owner>/<repo>.git, github.com:<owner>/<repo>.git, or https://github.com/<owner>/<repo>.git`
 	record := RunRecord{
 		RunID:        "run-placeholder-failure",
 		Status:       RunStatusFailed,
