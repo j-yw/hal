@@ -232,6 +232,9 @@ func handoffSafeCommandToken(value string) bool {
 	if value == "" {
 		return false
 	}
+	if strings.HasPrefix(value, "-") {
+		return false
+	}
 	for i := 0; i < len(value); i++ {
 		c := value[i]
 		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')

@@ -958,6 +958,8 @@ func TestHandoffInspectCommandRejectsUnsafeRunIDs(t *testing.T) {
 		want  string
 	}{
 		{runID: "run-safe_001.2", want: "hal factory status run-safe_001.2 --json"},
+		{runID: "--help", want: ""},
+		{runID: "-run-flag-shaped", want: ""},
 		{runID: "run unsafe", want: ""},
 		{runID: "run;rm", want: ""},
 		{runID: "run$(rm)", want: ""},
