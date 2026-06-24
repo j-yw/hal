@@ -1526,13 +1526,6 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 	canonicalPRDPath := filepath.Join(template.HalDir, template.PRDFile)
 	autoStatePath := filepath.Join(template.HalDir, template.AutoStateFile)
 	if req.Sandbox {
-		if recordPath := factoryRunRecordArtifactPath(store, record.RunID); recordPath != "" {
-			collector.add(factory.ArtifactReference{
-				Name: "factory-run-record",
-				Type: "json",
-				Path: recordPath,
-			})
-		}
 		for _, artifact := range snapshots {
 			collector.add(artifact)
 		}
@@ -3417,7 +3410,7 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 				return true
 			}
 			for key := range parsed.Query() {
-				if factoryArtifactSecretKey(key) {
+				if factoryArtifactSecretURLQueryKey(key) {
 					return true
 				}
 			}

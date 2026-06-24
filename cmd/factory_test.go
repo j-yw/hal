@@ -3084,8 +3084,22 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 		t.Fatalf("sandbox commands = %#v", record.Sandbox)
 	}
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
-	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-sandbox-success.json"))
+	runRecordPath := factoryRunRecordArtifactPath(store, record.RunID)
+	requireFactoryArtifactPath(t, record.Artifacts, runRecordPath)
 	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
+	runRecordArtifacts := 0
+	for _, artifact := range record.Artifacts {
+		if artifact.Name != "factory-run-record" && artifact.Path != runRecordPath {
+			continue
+		}
+		runRecordArtifacts++
+		if artifact.ID != "factory-run-record" {
+			t.Fatalf("factory run record artifact ID = %q, want factory-run-record", artifact.ID)
+		}
+	}
+	if runRecordArtifacts != 1 {
+		t.Fatalf("factory run record artifacts = %d, want 1: %#v", runRecordArtifacts, record.Artifacts)
+	}
 
 	events, err := store.LoadEvents(record.RunID)
 	if err != nil {
@@ -5070,6 +5084,33 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 		if strings.Contains(raw, rawPath) || strings.Contains(raw, filepath.Dir(rawPath)) || strings.Contains(raw, "super-secret") {
 			t.Fatalf("%s JSON leaked raw artifact warning content: %s", name, raw)
 		}
+	}
+}
+
+func TestSanitizeFactoryArtifactSummaryRedactsSignedURLStrings(t *testing.T) {
+	summary := sanitizeFactoryArtifactSummary(map[string]any{
+		"downloadURL": "https://storage.example.com/artifact.json?sig=abc123",
+		"nested": map[string]any{
+			"awsURL": "https://storage.example.com/artifact.json?X-Amz-Signature=abc123",
+		},
+	})
+
+	if summary["downloadURL"] != "[redacted]" {
+		t.Fatalf("signed URL summary value = %#v, want [redacted]", summary["downloadURL"])
+	}
+	nested, ok := summary["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested summary = %#v, want map[string]any", summary["nested"])
+	}
+	if nested["awsURL"] != "[redacted]" {
+		t.Fatalf("signed nested URL summary value = %#v, want [redacted]", nested["awsURL"])
+	}
+
+	warnings := sanitizeFactoryArtifactWarnings([]string{
+		"https://storage.example.com/artifact.json?X-Goog-Signature=abc123",
+	})
+	if len(warnings) != 1 || warnings[0] != "[redacted]" {
+		t.Fatalf("signed URL warnings = %#v, want [redacted]", warnings)
 	}
 }
 
