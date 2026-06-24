@@ -40,6 +40,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
+		{"factory-trigger-v1", "../docs/contracts/factory-trigger-v1.md"},
 		{"verify-v1", "../docs/contracts/verify-v1.md"},
 		{"factory-queue-entry-v1", "../docs/contracts/factory-queue-entry-v1.md"},
 		{"factory-queue-add-v1", "../docs/contracts/factory-queue-add-v1.md"},
@@ -517,6 +518,23 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			},
 		},
 		{
+			name:          "factory-trigger-v1",
+			path:          "../docs/contracts/factory-trigger-v1.md",
+			contractValue: FactoryTriggerContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "run", "entry", "summary",
+				"repoPath", "source", "queueId", "executorMode", "factory-queue-entry-v1",
+			},
+			requiredValues: []string{
+				factory.RunStatusPending,
+				factory.QueueStatusQueued,
+				factory.ExecutorModeLocal,
+				factory.SourceKindMarkdown,
+				factory.SourceKindReport,
+				"report_discovery",
+			},
+		},
+		{
 			name:          "factory-queue-entry-v1",
 			path:          "../docs/contracts/factory-queue-entry-v1.md",
 			contractValue: "factory-queue-entry-v1",
@@ -707,6 +725,28 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if _, ok := raw["sandbox"]; ok {
 			t.Fatal("factory run example should not include full sandbox metadata; use factory status for durable sandbox details")
+		}
+	})
+
+	t.Run("factory trigger example", func(t *testing.T) {
+		var resp FactoryTriggerResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-trigger-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "run", "entry", "summary"})
+		if resp.ContractVersion != FactoryTriggerContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryTriggerContractVersion)
+		}
+		if resp.RunID == "" || resp.Run.RunID != resp.RunID {
+			t.Fatalf("factory trigger example run IDs = response %q run %q", resp.RunID, resp.Run.RunID)
+		}
+		if resp.Entry.QueueID == "" {
+			t.Fatal("factory trigger example should include a queue ID")
+		}
+		if resp.Entry.Status != factory.QueueStatusQueued {
+			t.Fatalf("queue status = %q, want %q", resp.Entry.Status, factory.QueueStatusQueued)
+		}
+		if resp.Run.CurrentStep != factory.QueueStatusQueued {
+			t.Fatalf("run currentStep = %q, want queued", resp.Run.CurrentStep)
 		}
 	})
 

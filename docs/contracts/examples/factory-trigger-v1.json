@@ -1,0 +1,29 @@
+{
+  "contractVersion": "factory-trigger-v1",
+  "runId": "run-20260621-001",
+  "run": {
+    "runId": "run-20260621-001",
+    "status": "pending",
+    "executorMode": "local",
+    "source": {
+      "kind": "markdown",
+      "path": ".hal/prd-factory-trigger-entrypoints.md"
+    },
+    "repoPath": "/work/hal",
+    "repoRemote": "git@github.com:ReScienceLab/hal.git",
+    "branchName": "hal/factory-trigger-entrypoints",
+    "baseBranch": "hal/local-factory-queue-and-worker-commands",
+    "currentStep": "queued",
+    "createdAt": "2026-06-21T22:00:00Z",
+    "updatedAt": "2026-06-21T22:00:00Z"
+  },
+  "entry": {
+    "queueId": "queue-20260621-001",
+    "runId": "run-20260621-001",
+    "executorMode": "local",
+    "status": "queued",
+    "createdAt": "2026-06-21T22:00:00Z",
+    "attemptCount": 0
+  },
+  "summary": "queued triggered run run-20260621-001 as queue-20260621-001"
+}

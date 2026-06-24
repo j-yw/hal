@@ -52,6 +52,7 @@ pending local factory work in the same global store.`,
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory trigger --repo . --prd .hal/prd-feature.md --json
   hal factory queue list --json`,
 }
 
@@ -113,10 +114,12 @@ func init() {
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
+	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
+	factoryCmd.AddCommand(factoryTriggerCmd)
 	factoryCmd.AddCommand(factoryQueueCmd)
 	rootCmd.AddCommand(factoryCmd)
 }
