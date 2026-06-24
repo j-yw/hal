@@ -500,6 +500,9 @@ func handoffStringNeedsRedaction(value string) bool {
 			if handoffURLQueryContainsSecret(parsed.Query()) {
 				return true
 			}
+			if handoffURLFragmentContainsSecret(parsed.Fragment) {
+				return true
+			}
 		}
 	}
 	if handoffStringContainsAbsolutePath(value) {

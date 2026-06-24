@@ -177,6 +177,13 @@ func TestSanitizeHandoffFailureReasonRedactsSecretURLQueryValues(t *testing.T) {
 	}
 }
 
+func TestSanitizeHandoffFailureReasonRedactsSecretURLFragmentValues(t *testing.T) {
+	reason := "ci failed: https://example.com/callback#access_token=ghp_secret"
+	if got := SanitizeHandoffFailureReason(reason); got != "[redacted]" {
+		t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
+	}
+}
+
 func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
 	tests := []struct {
 		name    string
