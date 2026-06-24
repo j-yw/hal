@@ -152,7 +152,7 @@ func newFactoryRunArtifactReferences(artifacts []factory.ArtifactReference) []Fa
 			Name:       strings.TrimSpace(artifact.Name),
 			Type:       strings.TrimSpace(artifact.Type),
 			SourcePath: sanitizeFactoryArtifactPath(artifact.SourcePath),
-			StoredPath: strings.TrimSpace(artifact.StoredPath),
+			StoredPath: sanitizeFactoryArtifactPath(artifact.StoredPath),
 			Path:       sanitizeFactoryArtifactPath(artifact.Path),
 			URL:        safeFactoryPRURL(artifact.URL),
 			SizeBytes:  artifact.SizeBytes,

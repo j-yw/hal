@@ -1636,6 +1636,7 @@ func scrubFactoryArtifactReferencesForRecordArtifact(artifacts []factory.Artifac
 	for i, artifact := range artifacts {
 		artifact.SourcePath = ""
 		artifact.Path = sanitizeFactoryArtifactPath(artifact.Path)
+		artifact.StoredPath = sanitizeFactoryArtifactPath(artifact.StoredPath)
 		artifact.URL = safeFactoryArtifactURL(artifact.URL)
 		artifact.Summary = sanitizeFactoryArtifactSummary(artifact.Summary)
 		artifact.Warnings = sanitizeFactoryArtifactWarnings(artifact.Warnings)
@@ -3076,7 +3077,7 @@ func newFactoryArtifactSummariesWithOptions(artifacts []factory.ArtifactReferenc
 			Name:       strings.TrimSpace(artifact.Name),
 			Type:       strings.TrimSpace(artifact.Type),
 			Path:       sanitizeFactoryArtifactPath(artifact.Path),
-			StoredPath: strings.TrimSpace(artifact.StoredPath),
+			StoredPath: sanitizeFactoryArtifactPath(artifact.StoredPath),
 			SizeBytes:  artifact.SizeBytes,
 			CreatedAt:  artifact.CreatedAt,
 			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),

@@ -5057,7 +5057,7 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 			Type:       "markdown",
 			SourcePath: rawPath,
 			Path:       rawPath,
-			StoredPath: "artifacts/run-absolute-artifact-path/secret-feature.md",
+			StoredPath: rawPath,
 			Warnings: []string{
 				"optional artifact not found: " + rawPath,
 				"artifact metadata api_key=super-secret",
@@ -5075,6 +5075,9 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 	summary := newFactoryArtifactSummaries(record.Artifacts)[0]
 	if summary.Path != "secret-feature.md" {
 		t.Fatalf("sanitized path = %q, want basename only", summary.Path)
+	}
+	if summary.StoredPath != "secret-feature.md" {
+		t.Fatalf("sanitized storedPath = %q, want basename only", summary.StoredPath)
 	}
 
 	payloads := map[string]any{
