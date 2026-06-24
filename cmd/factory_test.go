@@ -1596,6 +1596,42 @@ func TestCollectAndStoreFactoryRunArtifactsRejectsSymlinkedLocalParent(t *testin
 	}
 }
 
+func TestCollectAndStoreFactoryRunArtifactsRejectsUntrustedPathOutsideProject(t *testing.T) {
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("WriteFile(outsidePath) error: %v", err)
+	}
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 12, 45, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-outside-artifact-path", createdAt, createdAt)
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	err := collectAndStoreFactoryRunArtifacts(store, dir, factoryRunRequest{}, record, nil, []factory.ArtifactReference{{
+		Name: "outside",
+		Type: "text",
+		Path: outsidePath,
+	}})
+	if err == nil {
+		t.Fatal("collectAndStoreFactoryRunArtifacts() error = nil, want outside project rejection")
+	}
+	if !strings.Contains(err.Error(), "resolves outside project directory") {
+		t.Fatalf("collectAndStoreFactoryRunArtifacts() error = %q, want outside project rejection", err.Error())
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if len(loaded.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none after outside project rejection", loaded.Artifacts)
+	}
+}
+
 func TestCollectFactoryRunReportArtifactsSkipsNonRegularFiles(t *testing.T) {
 	dir := t.TempDir()
 	reportsDir := filepath.Join(dir, ".hal", "reports")
@@ -1724,6 +1760,47 @@ func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *te
 	}
 	if _, err := os.Stat(filepath.Join(halDir, "artifacts")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("artifact collection should not create project .hal artifacts, stat error = %v", err)
+	}
+}
+
+func TestCollectAndStoreFactorySandboxArtifactsSkipsBeforeRemoteWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 13, 0, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-sandbox-before-remote-workspace", createdAt, createdAt)
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.RepoPath = dir
+	record.SandboxName = "factory-sandbox"
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	requestCalls := 0
+	err := collectAndStoreFactorySandboxArtifacts(context.Background(), store, dir, record, factoryRunExecutionDeps{
+		sandboxRequests: func(_ string, _ factory.RunRecord) []factory.SandboxArtifactRequest {
+			requestCalls++
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-progress",
+				Name:       "sandbox-progress",
+				Type:       "text",
+				RemotePath: ".hal/progress.txt",
+				Path:       ".hal/progress.txt",
+				Optional:   true,
+			}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("collectAndStoreFactorySandboxArtifacts() unexpected error: %v", err)
+	}
+	if requestCalls != 1 {
+		t.Fatalf("sandboxRequests calls = %d, want 1", requestCalls)
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if len(loaded.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none before remote workspace is ready", loaded.Artifacts)
 	}
 }
 

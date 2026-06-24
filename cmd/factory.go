@@ -1672,13 +1672,15 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 			continue
 		}
 		sourcePath := artifact.Path
+		allowExternalSourcePath := false
 		if artifact.SourcePath != "" {
 			sourcePath = artifact.SourcePath
+			allowExternalSourcePath = true
 		}
 		if sourcePath == "" {
 			continue
 		}
-		absoluteSourcePath, err := resolveFactoryArtifactSourcePath(dir, sourcePath)
+		absoluteSourcePath, err := resolveFactoryArtifactSourcePath(dir, sourcePath, allowExternalSourcePath)
 		if err != nil {
 			return fmt.Errorf("resolve factory artifact %q from %s: %w", artifact.Name, artifact.Path, err)
 		}
@@ -1738,7 +1740,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 			},
 		}
 		ref.ID = factoryArtifactID(ref)
-		sourcePath, err := resolveFactoryArtifactSourcePath(dir, path)
+		sourcePath, err := resolveFactoryArtifactSourcePath(dir, path, false)
 		if err != nil {
 			return fmt.Errorf("resolve factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
 		}
@@ -1771,7 +1773,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 	return nil
 }
 
-func resolveFactoryArtifactSourcePath(dir, sourcePath string) (string, error) {
+func resolveFactoryArtifactSourcePath(dir, sourcePath string, allowExternal bool) (string, error) {
 	sourcePath = strings.TrimSpace(sourcePath)
 	if sourcePath == "" {
 		return "", fmt.Errorf("artifact source path is required")
@@ -1792,7 +1794,11 @@ func resolveFactoryArtifactSourcePath(dir, sourcePath string) (string, error) {
 		return "", fmt.Errorf("resolve artifact base directory: %w", err)
 	}
 	absoluteDir = filepath.Clean(absoluteDir)
-	if !filepath.IsAbs(sourcePath) || factoryArtifactPathWithinDir(absoluteDir, absoluteSourcePath) {
+	withinProject := factoryArtifactPathWithinDir(absoluteDir, absoluteSourcePath)
+	if !withinProject && !allowExternal {
+		return "", fmt.Errorf("artifact source path %q resolves outside project directory %q", sourcePath, absoluteDir)
+	}
+	if !filepath.IsAbs(sourcePath) || withinProject {
 		if err := rejectFactoryArtifactSymlinkParents(absoluteDir, absoluteSourcePath); err != nil {
 			return "", err
 		}
@@ -1853,7 +1859,7 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 	}
 	copier := deps.sandboxCopier
 	if copier == nil {
-		if strings.TrimSpace(record.RepoPath) == "" {
+		if !factorySandboxRemoteWorkspaceReady(dir, record) {
 			return nil
 		}
 		defaultCopier, err := newFactorySandboxArtifactCopier(dir, record)
@@ -1866,6 +1872,26 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 	}
 	return nil
+}
+
+func factorySandboxRemoteWorkspaceReady(dir string, record factory.RunRecord) bool {
+	repoPath := strings.TrimSpace(record.RepoPath)
+	if repoPath == "" {
+		return false
+	}
+	localDir, err := filepath.Abs(strings.TrimSpace(dir))
+	if err != nil {
+		return true
+	}
+	localDir = filepath.Clean(localDir)
+	normalizedRepoPath := repoPath
+	if !filepath.IsAbs(normalizedRepoPath) {
+		normalizedRepoPath = filepath.Join(localDir, normalizedRepoPath)
+	}
+	if normalizedRepoPath, err = filepath.Abs(normalizedRepoPath); err != nil {
+		normalizedRepoPath = repoPath
+	}
+	return filepath.Clean(normalizedRepoPath) != localDir
 }
 
 func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
