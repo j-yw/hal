@@ -409,7 +409,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceWithRemoteRepositor
 			case len(args) == 3 && args[0] == "sh" && args[1] == "-lc" && strings.Contains(args[2], "non_git_non_empty"):
 				_, err := io.WriteString(out, "git")
 				return err
-			case len(args) == 6 && reflect.DeepEqual(args, []string{"git", "-C", "/workspace/repo", "remote", "get-url", "origin"}):
+			case len(args) == 6 && reflect.DeepEqual(args, []string{"git", "-C", "/workspace/repo", "config", "--get", "remote.origin.url"}):
 				_, err := io.WriteString(out, "git@github.com:example/repo.git\n")
 				return err
 			default:
@@ -434,7 +434,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceWithRemoteRepositor
 	if !strings.Contains(execArgs[1][2], "p='/workspace/repo'") {
 		t.Fatalf("repo exists probe args = %#v", execArgs[1])
 	}
-	if !reflect.DeepEqual(execArgs[2], []string{"git", "-C", "/workspace/repo", "remote", "get-url", "origin"}) {
+	if !reflect.DeepEqual(execArgs[2], []string{"git", "-C", "/workspace/repo", "config", "--get", "remote.origin.url"}) {
 		t.Fatalf("repo remote probe args = %#v", execArgs[2])
 	}
 	if !reflect.DeepEqual(execArgs[4], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
@@ -698,6 +698,27 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	}
 	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
 		t.Fatalf("remote branch probe args = %#v", execArgs[3])
+	}
+}
+
+func TestFactorySandboxRemoteRepoURLFuncReadsRawOriginConfig(t *testing.T) {
+	var gotArgs []string
+	remoteURL := factorySandboxRemoteRepoURLFunc(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
+		gotArgs = append([]string(nil), args...)
+		_, err := io.WriteString(out, "git@github.com:example/repo.git\n")
+		return err
+	})
+
+	got, err := remoteURL("/workspace/repo")
+	if err != nil {
+		t.Fatalf("remoteURL() unexpected error: %v", err)
+	}
+	if got != "git@github.com:example/repo.git" {
+		t.Fatalf("remoteURL() = %q, want git@github.com:example/repo.git", got)
+	}
+	wantArgs := []string{"git", "-C", "/workspace/repo", "config", "--get", "remote.origin.url"}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("probe args = %#v, want %#v", gotArgs, wantArgs)
 	}
 }
 

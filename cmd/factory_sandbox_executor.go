@@ -591,7 +591,7 @@ func factorySandboxRemoteRepoURLFunc(ctx context.Context, provider sandbox.Provi
 		if path == "." || path == "" {
 			return "", fmt.Errorf("repository path is required")
 		}
-		output, err := factorySandboxRunRemoteProbe(ctx, provider, connectInfo, runExec, []string{"git", "-C", path, "remote", "get-url", "origin"})
+		output, err := factorySandboxRunRemoteProbe(ctx, provider, connectInfo, runExec, []string{"git", "-C", path, "config", "--get", "remote.origin.url"})
 		if err != nil {
 			return "", err
 		}
