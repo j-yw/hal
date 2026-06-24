@@ -261,6 +261,7 @@ func handoffSafeDisplayValue(value string) string {
 	normalizedValue := handoffNormalizeDocPlaceholders(value)
 	if strings.ContainsAny(value, "\r\n") ||
 		handoffStringContainsBareSecretValue(value) ||
+		handoffURLQueryValueLooksLikeSecret(value) ||
 		handoffStringNeedsRedaction(normalizedValue) ||
 		handoffDisplayValueContainsBareDNSHost(normalizedValue) {
 		return handoffRedactedLocation
@@ -449,6 +450,7 @@ func handoffLocationNameNeedsRedaction(name string) bool {
 	}
 	normalizedName := handoffNormalizeDocPlaceholders(name)
 	return handoffStringContainsBareSecretValue(name) ||
+		handoffURLQueryValueLooksLikeSecret(name) ||
 		handoffStringNeedsRedaction(normalizedName) ||
 		handoffDisplayValueContainsBareDNSHost(normalizedName)
 }
