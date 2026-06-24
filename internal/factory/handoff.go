@@ -451,7 +451,58 @@ func handoffSafeURL(rawURL string) string {
 	if handoffURLFragmentContainsSecret(parsed.Fragment) {
 		return ""
 	}
+	if handoffURLPathContainsSecret(parsed) {
+		return ""
+	}
 	return parsed.String()
+}
+
+func handoffURLPathContainsSecret(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	for _, candidate := range []string{parsed.EscapedPath(), parsed.RawPath, parsed.Path} {
+		if handoffURLPathStringContainsSecret(candidate) {
+			return true
+		}
+		if unescaped, err := url.PathUnescape(candidate); err == nil && unescaped != candidate {
+			if handoffURLPathStringContainsSecret(unescaped) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func handoffURLPathStringContainsSecret(path string) bool {
+	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+	if path == "" {
+		return false
+	}
+	if handoffStringContainsSecretAssignment(path) ||
+		handoffStringContainsSecretValueAssignment(path) ||
+		handoffStringContainsBareSecretValue(path) ||
+		handoffURLQueryValueLooksLikeSecret(path) {
+		return true
+	}
+	segments := strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/'
+	})
+	for i, segment := range segments {
+		segment = handoffTrimRedactionField(segment)
+		if segment == "" {
+			continue
+		}
+		if handoffStringContainsSecretAssignment(segment) ||
+			handoffStringContainsSecretValueAssignment(segment) ||
+			handoffURLQueryValueLooksLikeSecret(segment) {
+			return true
+		}
+		if handoffStandaloneSecretKey(segment) && i+1 < len(segments) && handoffFieldLooksLikeSecretValue(segments[i+1]) {
+			return true
+		}
+	}
+	return false
 }
 
 const handoffRedactedLocation = "[redacted]"

@@ -712,6 +712,26 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 			want: "",
 		},
 		{
+			name: "secret path prefix",
+			raw:  "https://github.com/jywlabs/hal/ghp_secretvalue123",
+			want: "",
+		},
+		{
+			name: "escaped secret path prefix",
+			raw:  "https://github.com/jywlabs/hal/%67%68%70%5Fsecretvalue123",
+			want: "",
+		},
+		{
+			name: "secret path assignment",
+			raw:  "https://github.com/jywlabs/hal/token=secret",
+			want: "",
+		},
+		{
+			name: "secret path segment value",
+			raw:  "https://github.com/jywlabs/hal/token/secret-value",
+			want: "",
+		},
+		{
 			name: "safe fragment",
 			raw:  "https://github.com/jywlabs/hal/pull/42#discussion_r123",
 			want: "https://github.com/jywlabs/hal/pull/42#discussion_r123",
