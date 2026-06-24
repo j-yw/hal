@@ -290,6 +290,21 @@ func TestSanitizeHandoffFailureReasonRedactsURLHosts(t *testing.T) {
 	}
 }
 
+func TestSanitizeHandoffFailureReasonRedactsBareDNSHostnames(t *testing.T) {
+	tests := []string{
+		"dial tcp db.internal.example.com:5432: connect: refused",
+		"dial tcp runner.internal:8443: connect: refused",
+		"lookup ci.internal.example.com: no such host",
+	}
+	for _, tt := range tests {
+		t.Run(tt, func(t *testing.T) {
+			if got := SanitizeHandoffFailureReason(tt); got != "[redacted]" {
+				t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
+			}
+		})
+	}
+}
+
 func TestSanitizeHandoffFailureReasonRedactsSecretURLFragmentValues(t *testing.T) {
 	reason := "ci failed: https://example.com/callback#access_token=ghp_secret"
 	if got := SanitizeHandoffFailureReason(reason); got != "[redacted]" {
@@ -332,6 +347,14 @@ func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
 		{
 			name:    "go dial tcp ipv6 address with trailing colon",
 			message: "dial tcp [2001:db8::1]:443: connect: refused",
+		},
+		{
+			name:    "go dial tcp dns hostname with trailing colon",
+			message: "dial tcp db.internal.example.com:5432: connect: refused",
+		},
+		{
+			name:    "bare dns hostname without port",
+			message: "connection failed to runner.internal",
 		},
 	}
 

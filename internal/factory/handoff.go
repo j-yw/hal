@@ -267,7 +267,10 @@ func SanitizeHandoffFailureReason(reason string) string {
 	if reason == "" {
 		return ""
 	}
-	if handoffStringContainsBareSecretValue(reason) || handoffStringNeedsRedaction(handoffNormalizeDocPlaceholders(reason)) {
+	normalizedReason := handoffNormalizeDocPlaceholders(reason)
+	if handoffStringContainsBareSecretValue(reason) ||
+		handoffStringNeedsRedaction(normalizedReason) ||
+		handoffStringContainsBareDNSHost(normalizedReason) {
 		return handoffRedactedLocation
 	}
 	return reason
@@ -795,6 +798,102 @@ func handoffFieldContainsIP(field string) bool {
 	if idx := strings.LastIndex(field, ":"); idx > 0 {
 		host := field[:idx]
 		if strings.Count(host, ":") == 0 && net.ParseIP(strings.Trim(host, "[]")) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffStringContainsBareDNSHost(value string) bool {
+	for _, field := range handoffRedactionFields(value) {
+		field = handoffTrimRedactionField(field)
+		if field == "" || strings.Contains(field, "://") {
+			continue
+		}
+		if handoffFieldContainsBareDNSHost(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffFieldContainsBareDNSHost(field string) bool {
+	field = strings.TrimSpace(field)
+	field = strings.Trim(field, "\"'<>[](){}.,;:")
+	if field == "" || strings.ContainsAny(field, `/\@`) {
+		return false
+	}
+	if idx := strings.LastIndexByte(field, '='); idx >= 0 && idx+1 < len(field) {
+		field = strings.TrimSpace(field[idx+1:])
+	}
+	if host, _, err := net.SplitHostPort(field); err == nil {
+		return handoffBareDNSHostLooksSensitive(host, true)
+	}
+	if idx := strings.LastIndexByte(field, ':'); idx > 0 {
+		host := field[:idx]
+		port := field[idx+1:]
+		if strings.Contains(host, ":") || !handoffStringIsDecimalPort(port) {
+			return false
+		}
+		return handoffBareDNSHostLooksSensitive(host, true)
+	}
+	return handoffBareDNSHostLooksSensitive(field, false)
+}
+
+func handoffStringIsDecimalPort(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func handoffBareDNSHostLooksSensitive(host string, hasPort bool) bool {
+	host = strings.TrimSpace(host)
+	host = strings.Trim(host, "[]")
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(host) > 253 || net.ParseIP(host) != nil || strings.ContainsAny(host, `:/\@_`) {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+			isDigit := r >= '0' && r <= '9'
+			if !isAlpha && !isDigit && r != '-' {
+				return false
+			}
+		}
+	}
+	tld := labels[len(labels)-1]
+	if len(tld) < 2 || !handoffStringContainsAlpha(tld) {
+		return false
+	}
+	if hasPort || len(labels) >= 3 {
+		return true
+	}
+	for _, label := range labels {
+		switch strings.ToLower(label) {
+		case "internal", "intranet", "corp", "corporate", "local", "localhost", "lan", "tailnet":
+			return true
+		}
+	}
+	return false
+}
+
+func handoffStringContainsAlpha(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
 			return true
 		}
 	}
