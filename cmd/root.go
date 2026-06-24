@@ -11,8 +11,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "hal",
-	Short: "Hal - Autonomous task executor using AI coding agents",
+	Use:     "hal",
+	Short:   "Hal - Autonomous task executor using AI coding agents",
+	Version: Version,
 	CompletionOptions: cobra.CompletionOptions{
 		DisableDefaultCmd: true,
 	},

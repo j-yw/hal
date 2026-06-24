@@ -22,6 +22,9 @@ func TestBootstrapScriptsUseCanonicalRepository(t *testing.T) {
 		if !strings.Contains(tt.script, "GITHUB_TOKEN") {
 			t.Errorf("%s bootstrap script should support authenticated private-repo fetches", tt.name)
 		}
+		if !strings.Contains(tt.script, "GH_TOKEN") {
+			t.Errorf("%s bootstrap script should support GH_TOKEN for authenticated private-repo fetches", tt.name)
+		}
 		if !strings.Contains(tt.script, "https://raw.githubusercontent.com/*|https://github.com/*/raw/*") {
 			t.Errorf("%s bootstrap script should restrict token forwarding to trusted GitHub URLs", tt.name)
 		}

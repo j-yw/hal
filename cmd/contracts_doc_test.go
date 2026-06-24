@@ -1,13 +1,17 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/doctor"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 )
@@ -31,6 +35,10 @@ func TestContractDocsExist(t *testing.T) {
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
 		{"ci-fix-v1", "../docs/contracts/ci-fix-v1.md"},
 		{"ci-merge-v1", "../docs/contracts/ci-merge-v1.md"},
+		{"factory-run-v1", "../docs/contracts/factory-run-v1.md"},
+		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
+		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
+		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
 	}
 
 	for _, doc := range requiredDocs {
@@ -330,4 +338,262 @@ func TestContractDocsIncludeCIFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestContractDocsIncludeFactoryFields(t *testing.T) {
+	docs := []struct {
+		name           string
+		path           string
+		contractValue  string
+		requiredFields []string
+		requiredValues []string
+	}{
+		{
+			name:          "factory-run-v1",
+			path:          "../docs/contracts/factory-run-v1.md",
+			contractValue: FactoryRunContractVersion,
+			requiredFields: []string{
+				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
+				"eventSummary", "failure", "id", "command", "description", "total", "byType",
+				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
+			},
+			requiredValues: []string{
+				factory.RunStatusPending,
+				factory.RunStatusRunning,
+				factory.RunStatusSucceeded,
+				factory.RunStatusFailed,
+				factory.RunStatusCanceled,
+				factory.EventTypeRunCreated,
+				factory.EventTypeFailureClassification,
+				"validation",
+				"pipeline",
+				"engine",
+				"git",
+				"ci",
+				"unknown",
+			},
+		},
+		{
+			name:          "factory-list-v1",
+			path:          "../docs/contracts/factory-list-v1.md",
+			contractValue: FactoryListContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runs", "runId", "status", "source", "repoPath", "repoRemote",
+				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
+				"finishedAt", "artifactCount", "failure", "suggestedCommand",
+			},
+			requiredValues: []string{
+				factory.RunStatusPending,
+				factory.RunStatusRunning,
+				factory.RunStatusSucceeded,
+				factory.RunStatusFailed,
+				factory.RunStatusCanceled,
+				factory.FailureCategoryValidation,
+				factory.FailureCategoryPipeline,
+				factory.FailureCategoryEngine,
+				factory.FailureCategoryGit,
+				factory.FailureCategoryCI,
+				factory.FailureCategoryUnknown,
+			},
+		},
+		{
+			name:          "factory-status-v1",
+			path:          "../docs/contracts/factory-status-v1.md",
+			contractValue: FactoryStatusContractVersion,
+			requiredFields: []string{
+				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
+				"branchName", "baseBranch", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
+				"finishedAt", "artifacts", "failure", "suggestedCommand",
+				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
+				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
+			},
+			requiredValues: []string{
+				factory.RunStatusPending,
+				factory.RunStatusRunning,
+				factory.RunStatusSucceeded,
+				factory.RunStatusFailed,
+				factory.RunStatusCanceled,
+				factory.FailureCategoryValidation,
+				factory.FailureCategoryPipeline,
+				factory.FailureCategoryEngine,
+				factory.FailureCategoryGit,
+				factory.FailureCategoryCI,
+				factory.FailureCategoryUnknown,
+				"sandbox",
+			},
+		},
+		{
+			name:          "factory-timeline-v1",
+			path:          "../docs/contracts/factory-timeline-v1.md",
+			contractValue: "factory-status-v1",
+			requiredFields: []string{
+				"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata",
+			},
+			requiredValues: []string{
+				factory.EventTypeRunCreated,
+				factory.EventTypeStepStarted,
+				factory.EventTypeStepEnded,
+				factory.EventTypeCommandOutputSummary,
+				factory.EventTypeVerificationResult,
+				factory.EventTypeCIState,
+				factory.EventTypeArtifactSync,
+				factory.EventTypeFailureClassification,
+			},
+		},
+	}
+
+	for _, doc := range docs {
+		t.Run(doc.name, func(t *testing.T) {
+			data, err := os.ReadFile(doc.path)
+			if err != nil {
+				t.Fatalf("cannot read %s: %v", doc.path, err)
+			}
+			content := string(data)
+
+			if !strings.Contains(content, doc.contractValue) {
+				t.Errorf("%s missing contract value %q", doc.name, doc.contractValue)
+			}
+			for _, field := range doc.requiredFields {
+				if !strings.Contains(content, "`"+field+"`") {
+					t.Errorf("%s missing field %q", doc.name, field)
+				}
+			}
+			for _, value := range doc.requiredValues {
+				if !strings.Contains(content, value) {
+					t.Errorf("%s missing value %q", doc.name, value)
+				}
+			}
+		})
+	}
+}
+
+func TestFactoryStatusDocsIncludeSandboxMetadataJSONFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/factory-status-v1.md")
+	if err != nil {
+		t.Fatalf("cannot read factory-status-v1.md: %v", err)
+	}
+	content := string(data)
+
+	fields := append(
+		jsonFieldNames(t, reflect.TypeOf(factory.SandboxMetadata{})),
+		jsonFieldNames(t, reflect.TypeOf(factory.SandboxConnectionMetadata{}))...,
+	)
+	for _, field := range fields {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("factory-status-v1.md missing sandbox metadata JSON field %q", field)
+		}
+	}
+	for _, forbidden := range []string{"`token`", "`privateKey`", "`credential`", "`env`", "`apiKey`"} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("factory-status-v1.md documents forbidden sandbox field %s", forbidden)
+		}
+	}
+}
+
+func jsonFieldNames(t *testing.T, typ reflect.Type) []string {
+	t.Helper()
+
+	var fields []string
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			t.Fatalf("%s.%s missing json tag", typ.Name(), field.Name)
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" {
+			t.Fatalf("%s.%s has empty json tag name", typ.Name(), field.Name)
+		}
+		fields = append(fields, name)
+	}
+	return fields
+}
+
+func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
+	t.Run("factory list example", func(t *testing.T) {
+		var resp FactoryListResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-list-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runs"})
+		if resp.ContractVersion != FactoryListContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryListContractVersion)
+		}
+		if len(resp.Runs) == 0 {
+			t.Fatal("factory list example should include at least one run")
+		}
+	})
+
+	t.Run("factory status example", func(t *testing.T) {
+		var resp FactoryStatusResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-status-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "run", "timeline"})
+		if resp.ContractVersion != FactoryStatusContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryStatusContractVersion)
+		}
+		if resp.Run.RunID == "" {
+			t.Fatal("factory status example should include a run ID")
+		}
+		if len(resp.Timeline) == 0 {
+			t.Fatal("factory status example should include timeline events")
+		}
+		if resp.Run.Sandbox == nil {
+			t.Fatal("factory status example should include sandbox metadata for a sandbox-backed run")
+		}
+		if resp.Run.Sandbox.Connection == nil {
+			t.Fatal("factory status example should include sandbox connection metadata")
+		}
+	})
+
+	t.Run("factory run example", func(t *testing.T) {
+		var resp FactoryRunResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-run-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		if resp.ContractVersion != FactoryRunContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory run example should include a run ID")
+		}
+		if resp.NextAction == nil {
+			t.Fatal("factory run example should include nextAction")
+		}
+		if len(resp.Artifacts) == 0 {
+			t.Fatal("factory run example should include artifacts")
+		}
+		if resp.EventSummary.Total == 0 {
+			t.Fatal("factory run example should include event summary totals")
+		}
+		if resp.Failure == nil {
+			t.Fatal("factory run example should include failure details")
+		}
+		if _, ok := raw["sandbox"]; ok {
+			t.Fatal("factory run example should not include full sandbox metadata; use factory status for durable sandbox details")
+		}
+	})
+}
+
+func decodeStrictJSONExample(t *testing.T, path string, out any) map[string]interface{} {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", path, err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		t.Fatalf("decode %s against command schema: %v", path, err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parse %s as JSON object: %v", path, err)
+	}
+	return raw
 }

@@ -1,0 +1,49 @@
+{
+  "contractVersion": "factory-list-v1",
+  "runs": [
+    {
+      "runId": "run-20260620-002",
+      "status": "failed",
+      "source": {
+        "kind": "markdown",
+        "path": ".hal/prd-factory.md",
+        "title": "Factory run records"
+      },
+      "repoPath": "/workspace/hal",
+      "repoRemote": "git@github.com:jywlabs/hal.git",
+      "branchName": "hal/factory-run-records",
+      "baseBranch": "develop",
+      "sandboxName": "factory-run-records",
+      "currentStep": "ci",
+      "createdAt": "2026-06-20T16:00:00Z",
+      "updatedAt": "2026-06-20T16:32:00Z",
+      "finishedAt": "2026-06-20T16:33:00Z",
+      "artifactCount": 3,
+      "failure": {
+        "step": "ci",
+        "category": "ci",
+        "message": "unit tests failed",
+        "recoverable": true,
+        "suggestedCommand": "hal factory status run-20260620-002 --json",
+        "exitCode": 1
+      }
+    },
+    {
+      "runId": "run-20260620-001",
+      "status": "succeeded",
+      "source": {
+        "kind": "report",
+        "reportPath": ".hal/reports/factory-analysis.md",
+        "title": "Factory analysis"
+      },
+      "repoPath": "/workspace/hal",
+      "repoRemote": "git@github.com:jywlabs/hal.git",
+      "branchName": "hal/factory-list-command",
+      "baseBranch": "develop",
+      "currentStep": "archive",
+      "createdAt": "2026-06-20T15:00:00Z",
+      "updatedAt": "2026-06-20T15:45:00Z",
+      "artifactCount": 2
+    }
+  ]
+}

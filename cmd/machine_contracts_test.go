@@ -11,6 +11,7 @@ import (
 	"time"
 
 	ci "github.com/jywlabs/hal/internal/ci"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/status"
@@ -410,6 +411,154 @@ func TestMachineContractFields_CICommandOutputs(t *testing.T) {
 		if raw["contractVersion"] != ci.MergeContractVersion {
 			t.Fatalf("ci merge contractVersion = %v, want %q", raw["contractVersion"], ci.MergeContractVersion)
 		}
+	})
+}
+
+func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
+	parseJSON := func(t *testing.T, data []byte) map[string]interface{} {
+		t.Helper()
+		var raw map[string]interface{}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("JSON parse error: %v\n%s", err, string(data))
+		}
+		return raw
+	}
+
+	base := time.Date(2026, 6, 20, 18, 0, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-contract",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Source:       factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-factory.md", Title: "Factory"},
+		RepoPath:     "/workspace/hal",
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
+		BranchName:   "hal/factory",
+		BaseBranch:   "develop",
+		SandboxName:  "factory-contract",
+		CurrentStep:  "ci",
+		CreatedAt:    base,
+		UpdatedAt:    base.Add(10 * time.Minute),
+		Artifacts: []factory.ArtifactReference{
+			{Name: "report", Type: "markdown", Path: ".hal/reports/factory.md"},
+		},
+		Failure: &factory.FailureSummary{
+			Step:             "ci",
+			Category:         factory.FailureCategoryCI,
+			Message:          "unit tests failed",
+			Recoverable:      true,
+			SuggestedCommand: "hal factory status run-contract --json",
+			ExitCode:         1,
+		},
+	}
+	events := []factory.EventRecord{
+		{
+			Sequence:  1,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeRunCreated,
+			Timestamp: base,
+			Summary:   "created",
+		},
+	}
+
+	t.Run("factory list top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryListWithDeps(&buf, true, factoryListDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryListWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runs"})
+		if raw["contractVersion"] != FactoryListContractVersion {
+			t.Fatalf("factory list contractVersion = %v, want %q", raw["contractVersion"], FactoryListContractVersion)
+		}
+	})
+
+	t.Run("factory status top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+		for _, event := range events {
+			event := event
+			if err := store.AppendEvent(&event); err != nil {
+				t.Fatalf("AppendEvent() error: %v", err)
+			}
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryStatusWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "run", "timeline"})
+		if raw["contractVersion"] != FactoryStatusContractVersion {
+			t.Fatalf("factory status contractVersion = %v, want %q", raw["contractVersion"], FactoryStatusContractVersion)
+		}
+	})
+
+	t.Run("factory run result keys", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := renderFactoryRunJSON(&buf, FactoryRunResponse{
+			ContractVersion: FactoryRunContractVersion,
+			Version:         "dev",
+			RunID:           record.RunID,
+			Status:          record.Status,
+			NextAction: &FactoryRunNextAction{
+				ID:          "inspect_factory_run",
+				Command:     "hal factory status run-contract --json",
+				Description: "Inspect the durable run record and timeline.",
+			},
+			Artifacts:    record.Artifacts,
+			EventSummary: newFactoryRunEventSummary(events),
+			Failure: &FactoryRunFailure{
+				Classification:   "ci",
+				ErrorMessage:     "unit tests failed",
+				SuggestedCommand: "hal factory status run-contract --json",
+			},
+		})
+		if err != nil {
+			t.Fatalf("renderFactoryRunJSON error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		if raw["contractVersion"] != FactoryRunContractVersion {
+			t.Fatalf("factory run contractVersion = %v, want %q", raw["contractVersion"], FactoryRunContractVersion)
+		}
+
+		nextAction, ok := raw["nextAction"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("nextAction should be object, got %T", raw["nextAction"])
+		}
+		for _, field := range []string{"id", "command", "description"} {
+			if _, ok := nextAction[field].(string); !ok {
+				t.Fatalf("nextAction.%s should be a string", field)
+			}
+		}
+
+		eventSummary, ok := raw["eventSummary"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("eventSummary should be object, got %T", raw["eventSummary"])
+		}
+		requireExactKeys(t, eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
+
+		failure, ok := raw["failure"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("failure should be object, got %T", raw["failure"])
+		}
+		requireExactKeys(t, failure, []string{"classification", "errorMessage", "suggestedCommand"})
 	})
 }
 
