@@ -23,6 +23,162 @@ type factorySandboxArtifactCopier struct {
 	baseDir  string
 }
 
+const factorySandboxArtifactPythonRunner = `script=$1
+path=$2
+if command -v python3 >/dev/null 2>&1; then
+	exec python3 -c "$script" "$path"
+fi
+if command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1; then
+	exec python -c "$script" "$path"
+fi
+echo "python3 is required to copy sandbox artifacts without following symlinks" >&2
+exit 46`
+
+const factorySandboxArtifactCopyFilePythonScript = `import errno
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+
+def fail(message, code):
+    if message:
+        os.write(2, (message + "\n").encode("utf-8"))
+    sys.exit(code)
+
+no_follow = getattr(os, "O_NOFOLLOW", None)
+if no_follow is None:
+    fail("O_NOFOLLOW is required to copy sandbox artifacts without following symlinks", 46)
+
+try:
+    fd = os.open(path, os.O_RDONLY | no_follow)
+except OSError as err:
+    if err.errno == errno.ELOOP:
+        fail("sandbox artifact path is a symlink", 45)
+    if err.errno in (errno.ENOENT, errno.ENOTDIR):
+        sys.exit(44)
+    raise
+
+try:
+    file_stat = os.fstat(fd)
+    if not stat.S_ISREG(file_stat.st_mode):
+        sys.exit(44)
+    while True:
+        chunk = os.read(fd, 1024 * 1024)
+        if not chunk:
+            break
+        os.write(1, chunk)
+finally:
+    os.close(fd)`
+
+const factorySandboxArtifactCopyDirPythonScript = `import errno
+import os
+import stat
+import sys
+import tarfile
+
+path = sys.argv[1]
+
+def fail(message, code):
+    if message:
+        os.write(2, (message + "\n").encode("utf-8"))
+    sys.exit(code)
+
+def is_symlink_path(candidate):
+    try:
+        return stat.S_ISLNK(os.lstat(candidate).st_mode)
+    except OSError:
+        return False
+
+no_follow = getattr(os, "O_NOFOLLOW", None)
+directory_flag = getattr(os, "O_DIRECTORY", 0)
+if no_follow is None:
+    fail("O_NOFOLLOW is required to copy sandbox artifacts without following symlinks", 46)
+
+def add_dir_entry(tar, rel_path, entry_stat):
+    info = tarfile.TarInfo(rel_path + "/")
+    info.type = tarfile.DIRTYPE
+    info.mode = entry_stat.st_mode & 0o777
+    info.mtime = int(entry_stat.st_mtime)
+    tar.addfile(info)
+
+def add_file(tar, dir_fd, name, rel_path):
+    try:
+        file_fd = os.open(name, os.O_RDONLY | no_follow, dir_fd=dir_fd)
+    except OSError as err:
+        if err.errno in (errno.ELOOP, errno.ENOENT, errno.ENOTDIR):
+            return
+        raise
+    try:
+        file_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            return
+        info = tarfile.TarInfo(rel_path)
+        info.size = file_stat.st_size
+        info.mode = file_stat.st_mode & 0o777
+        info.mtime = int(file_stat.st_mtime)
+        with os.fdopen(os.dup(file_fd), "rb") as file_obj:
+            tar.addfile(info, file_obj)
+    finally:
+        os.close(file_fd)
+
+def add_dir(tar, dir_fd, rel_path):
+    for name in sorted(os.listdir(dir_fd)):
+        if name in (".", ".."):
+            continue
+        entry_path = name if not rel_path else rel_path + "/" + name
+        try:
+            entry_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError as err:
+            if err.errno in (errno.ENOENT, errno.ENOTDIR):
+                continue
+            raise
+        if stat.S_ISLNK(entry_stat.st_mode):
+            continue
+        if stat.S_ISDIR(entry_stat.st_mode):
+            try:
+                child_fd = os.open(name, os.O_RDONLY | directory_flag | no_follow, dir_fd=dir_fd)
+            except OSError as err:
+                if err.errno in (errno.ELOOP, errno.ENOENT, errno.ENOTDIR):
+                    continue
+                raise
+            try:
+                child_stat = os.fstat(child_fd)
+                if not stat.S_ISDIR(child_stat.st_mode):
+                    continue
+                add_dir_entry(tar, entry_path, child_stat)
+                add_dir(tar, child_fd, entry_path)
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(entry_stat.st_mode):
+            add_file(tar, dir_fd, name, entry_path)
+
+try:
+    root_fd = os.open(path, os.O_RDONLY | directory_flag | no_follow)
+except OSError as err:
+    if err.errno == errno.ELOOP or is_symlink_path(path):
+        fail("sandbox artifact path is a symlink", 45)
+    if err.errno in (errno.ENOENT, errno.ENOTDIR):
+        sys.exit(44)
+    raise
+
+try:
+    root_stat = os.fstat(root_fd)
+    if not stat.S_ISDIR(root_stat.st_mode):
+        sys.exit(44)
+    out = os.fdopen(os.dup(1), "wb")
+    try:
+        tar = tarfile.open(fileobj=out, mode="w|")
+        try:
+            add_dir(tar, root_fd, "")
+        finally:
+            tar.close()
+        out.flush()
+    finally:
+        out.close()
+finally:
+    os.close(root_fd)`
+
 func newFactorySandboxArtifactCopier(dir string, record factory.RunRecord) (factory.SandboxArtifactCopier, error) {
 	sandboxName := strings.TrimSpace(record.SandboxName)
 	if sandboxName == "" {
@@ -61,21 +217,7 @@ func (c *factorySandboxArtifactCopier) CopyFile(ctx context.Context, remotePath,
 		return fmt.Errorf("create sandbox artifact file: %w", err)
 	}
 	var stderr bytes.Buffer
-	runErr := c.run(ctx, []string{
-		"sh",
-		"-c",
-		`path=$1
-if [ -L "$path" ]; then
-	echo "sandbox artifact path is a symlink" >&2
-	exit 45
-fi
-if [ ! -f "$path" ]; then
-	exit 44
-fi
-cat -- "$path"`,
-		"hal-copy-file",
-		resolvedRemotePath,
-	}, file, &stderr)
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyFilePythonScript, resolvedRemotePath), file, &stderr)
 	closeErr := file.Close()
 	if runErr != nil {
 		_ = os.Remove(localPath)
@@ -105,21 +247,7 @@ func (c *factorySandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, 
 	defer os.Remove(tarPath)
 
 	var stderr bytes.Buffer
-	runErr := c.run(ctx, []string{
-		"sh",
-		"-c",
-		`path=$1
-if [ -L "$path" ]; then
-	echo "sandbox artifact path is a symlink" >&2
-	exit 45
-fi
-if [ ! -d "$path" ]; then
-	exit 44
-fi
-tar -C "$path" -cf - .`,
-		"hal-copy-dir",
-		resolvedRemotePath,
-	}, tarFile, &stderr)
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyDirPythonScript, resolvedRemotePath), tarFile, &stderr)
 	closeErr := tarFile.Close()
 	if runErr != nil {
 		_ = os.RemoveAll(localPath)
@@ -149,6 +277,17 @@ func (c *factorySandboxArtifactCopier) resolveRemotePath(remotePath string) (str
 		return "", fmt.Errorf("sandbox workspace directory is required for relative artifact path %q", remotePath)
 	}
 	return path.Clean(path.Join(baseDir, remotePath)), nil
+}
+
+func factorySandboxArtifactPythonCommand(script, remotePath string) []string {
+	return []string{
+		"sh",
+		"-c",
+		factorySandboxArtifactPythonRunner,
+		"hal-copy-artifact",
+		script,
+		remotePath,
+	}
 }
 
 func (c *factorySandboxArtifactCopier) run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
