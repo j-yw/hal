@@ -1898,7 +1898,7 @@ func factorySandboxRemoteWorkspaceReady(dir string, record factory.RunRecord) bo
 	return filepath.Clean(normalizedRepoPath) != localDir
 }
 
-func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+func defaultFactorySandboxArtifactRequests(dir string, record factory.RunRecord) []factory.SandboxArtifactRequest {
 	summary := map[string]any{
 		"executorMode": factory.ExecutorModeSandbox,
 	}
@@ -1945,7 +1945,7 @@ func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) [
 			Summary:    summary,
 		},
 	}
-	if sourcePath := strings.TrimSpace(record.Source.Path); sourcePath != "" {
+	if sourcePath, ok := factorySandboxSourceArtifactPath(dir, record.Source.Path); ok {
 		requests = append([]factory.SandboxArtifactRequest{{
 			ID:         "sandbox-source",
 			Name:       "sandbox-source",
@@ -1957,6 +1957,61 @@ func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) [
 		}}, requests...)
 	}
 	return requests
+}
+
+func factorySandboxSourceArtifactPath(dir, sourcePath string) (string, bool) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return "", false
+	}
+	cleanSource := filepath.Clean(sourcePath)
+
+	if strings.TrimSpace(dir) == "" {
+		if filepath.IsAbs(cleanSource) {
+			return "", false
+		}
+		return cleanFactorySandboxSourceArtifactRelativePath(cleanSource)
+	}
+
+	baseDir, err := filepath.Abs(strings.TrimSpace(dir))
+	if err != nil {
+		if filepath.IsAbs(cleanSource) {
+			return "", false
+		}
+		return cleanFactorySandboxSourceArtifactRelativePath(cleanSource)
+	}
+	baseDir = filepath.Clean(baseDir)
+
+	absoluteSource := cleanSource
+	if !filepath.IsAbs(absoluteSource) {
+		absoluteSource = filepath.Join(baseDir, cleanSource)
+	}
+	absoluteSource, err = filepath.Abs(absoluteSource)
+	if err != nil {
+		return "", false
+	}
+	absoluteSource = filepath.Clean(absoluteSource)
+	if !factoryArtifactPathWithinDir(baseDir, absoluteSource) {
+		return "", false
+	}
+
+	relativeSource, err := filepath.Rel(baseDir, absoluteSource)
+	if err != nil {
+		return "", false
+	}
+	return cleanFactorySandboxSourceArtifactRelativePath(relativeSource)
+}
+
+func cleanFactorySandboxSourceArtifactRelativePath(sourcePath string) (string, bool) {
+	clean := filepath.Clean(strings.TrimSpace(sourcePath))
+	slashPath := strings.ReplaceAll(filepath.ToSlash(clean), "\\", "/")
+	if slashPath == "" || slashPath == "." || slashPath == ".." || strings.HasPrefix(slashPath, "../") {
+		return "", false
+	}
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || hasWindowsDriveVolume(slashPath) {
+		return "", false
+	}
+	return slashPath, true
 }
 
 type factoryArtifactCollector struct {

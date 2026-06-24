@@ -774,6 +774,73 @@ func TestRunFactorySandboxExecutorWithDepsPersistsRemoteReportSourcePath(t *test
 	}
 }
 
+func TestDefaultFactorySandboxArtifactRequestsNormalizesLocalAbsoluteSource(t *testing.T) {
+	projectDir := t.TempDir()
+	sourcePath := filepath.Join(projectDir, "docs", "analysis.md")
+
+	requests := defaultFactorySandboxArtifactRequests(projectDir, factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		Source: factory.SourceMetadata{
+			Kind: factory.SourceKindMarkdown,
+			Path: sourcePath,
+		},
+		RepoPath:    "/workspace/hal",
+		SandboxName: "factory-dev",
+	})
+
+	if len(requests) == 0 || requests[0].ID != "sandbox-source" {
+		t.Fatalf("artifact requests = %#v, want sandbox-source first", requests)
+	}
+	const wantPath = "docs/analysis.md"
+	if requests[0].RemotePath != wantPath || requests[0].Path != wantPath {
+		t.Fatalf("sandbox-source paths = %q/%q, want %q", requests[0].RemotePath, requests[0].Path, wantPath)
+	}
+}
+
+func TestDefaultFactorySandboxArtifactRequestsSkipsExternalAbsoluteSource(t *testing.T) {
+	projectDir := t.TempDir()
+	sourcePath := filepath.Join(t.TempDir(), "analysis.md")
+
+	requests := defaultFactorySandboxArtifactRequests(projectDir, factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		Source: factory.SourceMetadata{
+			Kind: factory.SourceKindMarkdown,
+			Path: sourcePath,
+		},
+		RepoPath:    "/workspace/hal",
+		SandboxName: "factory-dev",
+	})
+
+	for _, request := range requests {
+		if request.ID == "sandbox-source" {
+			t.Fatalf("artifact requests = %#v, want external sandbox-source skipped", requests)
+		}
+	}
+}
+
+func TestDefaultFactorySandboxArtifactRequestsSkipsUnsafeSourcePaths(t *testing.T) {
+	projectDir := t.TempDir()
+	for _, sourcePath := range []string{projectDir, "../analysis.md"} {
+		t.Run(sourcePath, func(t *testing.T) {
+			requests := defaultFactorySandboxArtifactRequests(projectDir, factory.RunRecord{
+				ExecutorMode: factory.ExecutorModeSandbox,
+				Source: factory.SourceMetadata{
+					Kind: factory.SourceKindMarkdown,
+					Path: sourcePath,
+				},
+				RepoPath:    "/workspace/hal",
+				SandboxName: "factory-dev",
+			})
+
+			for _, request := range requests {
+				if request.ID == "sandbox-source" {
+					t.Fatalf("artifact requests = %#v, want unsafe sandbox-source skipped", requests)
+				}
+			}
+		})
+	}
+}
+
 func TestFactorySandboxRemoteRepoURLFuncReadsRawOriginConfig(t *testing.T) {
 	var gotArgs []string
 	remoteURL := factorySandboxRemoteRepoURLFunc(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
