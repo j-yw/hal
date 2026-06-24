@@ -23,13 +23,20 @@ type factorySandboxArtifactCopier struct {
 	baseDir  string
 }
 
+type factorySandboxArtifactRemotePath struct {
+	baseDir      string
+	relativePath string
+	resolvedPath string
+}
+
 const factorySandboxArtifactPythonRunner = `script=$1
-path=$2
+base=$2
+path=$3
 if command -v python3 >/dev/null 2>&1; then
-	exec python3 -c "$script" "$path"
+	exec python3 -c "$script" "$base" "$path"
 fi
 if command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1; then
-	exec python -c "$script" "$path"
+	exec python -c "$script" "$base" "$path"
 fi
 echo "python3 is required to copy sandbox artifacts without following symlinks" >&2
 exit 46`
@@ -39,7 +46,8 @@ import os
 import stat
 import sys
 
-path = sys.argv[1]
+base_path = sys.argv[1]
+rel_path = sys.argv[2]
 
 def fail(message, code):
     if message:
@@ -47,17 +55,80 @@ def fail(message, code):
     sys.exit(code)
 
 no_follow = getattr(os, "O_NOFOLLOW", None)
+directory_flag = getattr(os, "O_DIRECTORY", 0)
 if no_follow is None:
     fail("O_NOFOLLOW is required to copy sandbox artifacts without following symlinks", 46)
 
-try:
-    fd = os.open(path, os.O_RDONLY | no_follow)
-except OSError as err:
-    if err.errno == errno.ELOOP:
-        fail("sandbox artifact path is a symlink", 45)
-    if err.errno in (errno.ENOENT, errno.ENOTDIR):
-        sys.exit(44)
-    raise
+def is_symlink_path(candidate):
+    try:
+        return stat.S_ISLNK(os.lstat(candidate).st_mode)
+    except OSError:
+        return False
+
+def is_symlink_child(dir_fd, name):
+    try:
+        return stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+    except OSError:
+        return False
+
+def clean_relative_parts(candidate):
+    if candidate in ("", "."):
+        return []
+    parts = []
+    for part in candidate.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            sys.exit(44)
+        parts.append(part)
+    return parts
+
+def open_base_dir(candidate):
+    try:
+        fd = os.open(candidate, os.O_RDONLY | directory_flag | no_follow)
+    except OSError as err:
+        if err.errno == errno.ELOOP or is_symlink_path(candidate):
+            fail("sandbox workspace path is a symlink", 45)
+        if err.errno in (errno.ENOENT, errno.ENOTDIR):
+            sys.exit(44)
+        raise
+    try:
+        base_stat = os.fstat(fd)
+        if not stat.S_ISDIR(base_stat.st_mode):
+            sys.exit(44)
+        return fd
+    except:
+        os.close(fd)
+        raise
+
+def open_artifact_path(base, relative, final_directory):
+    parts = clean_relative_parts(relative)
+    fd = open_base_dir(base)
+    for index, name in enumerate(parts):
+        last = index == len(parts) - 1
+        flags = os.O_RDONLY | no_follow
+        if not last or final_directory:
+            flags |= directory_flag
+        try:
+            child_fd = os.open(name, flags, dir_fd=fd)
+        except OSError as err:
+            if err.errno == errno.ELOOP or is_symlink_child(fd, name):
+                fail("sandbox artifact path is a symlink", 45)
+            if err.errno in (errno.ENOENT, errno.ENOTDIR):
+                sys.exit(44)
+            raise
+        try:
+            child_stat = os.fstat(child_fd)
+            if not last and not stat.S_ISDIR(child_stat.st_mode):
+                sys.exit(44)
+            os.close(fd)
+            fd = child_fd
+        except:
+            os.close(child_fd)
+            raise
+    return fd
+
+fd = open_artifact_path(base_path, rel_path, False)
 
 try:
     file_stat = os.fstat(fd)
@@ -77,7 +148,8 @@ import stat
 import sys
 import tarfile
 
-path = sys.argv[1]
+base_path = sys.argv[1]
+rel_path = sys.argv[2]
 
 def fail(message, code):
     if message:
@@ -94,6 +166,69 @@ no_follow = getattr(os, "O_NOFOLLOW", None)
 directory_flag = getattr(os, "O_DIRECTORY", 0)
 if no_follow is None:
     fail("O_NOFOLLOW is required to copy sandbox artifacts without following symlinks", 46)
+
+def is_symlink_child(dir_fd, name):
+    try:
+        return stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+    except OSError:
+        return False
+
+def clean_relative_parts(candidate):
+    if candidate in ("", "."):
+        return []
+    parts = []
+    for part in candidate.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            sys.exit(44)
+        parts.append(part)
+    return parts
+
+def open_base_dir(candidate):
+    try:
+        fd = os.open(candidate, os.O_RDONLY | directory_flag | no_follow)
+    except OSError as err:
+        if err.errno == errno.ELOOP or is_symlink_path(candidate):
+            fail("sandbox workspace path is a symlink", 45)
+        if err.errno in (errno.ENOENT, errno.ENOTDIR):
+            sys.exit(44)
+        raise
+    try:
+        base_stat = os.fstat(fd)
+        if not stat.S_ISDIR(base_stat.st_mode):
+            sys.exit(44)
+        return fd
+    except:
+        os.close(fd)
+        raise
+
+def open_artifact_path(base, relative, final_directory):
+    parts = clean_relative_parts(relative)
+    fd = open_base_dir(base)
+    for index, name in enumerate(parts):
+        last = index == len(parts) - 1
+        flags = os.O_RDONLY | no_follow
+        if not last or final_directory:
+            flags |= directory_flag
+        try:
+            child_fd = os.open(name, flags, dir_fd=fd)
+        except OSError as err:
+            if err.errno == errno.ELOOP or is_symlink_child(fd, name):
+                fail("sandbox artifact path is a symlink", 45)
+            if err.errno in (errno.ENOENT, errno.ENOTDIR):
+                sys.exit(44)
+            raise
+        try:
+            child_stat = os.fstat(child_fd)
+            if (not last or final_directory) and not stat.S_ISDIR(child_stat.st_mode):
+                sys.exit(44)
+            os.close(fd)
+            fd = child_fd
+        except:
+            os.close(child_fd)
+            raise
+    return fd
 
 def add_dir_entry(tar, rel_path, entry_stat):
     info = tarfile.TarInfo(rel_path + "/")
@@ -153,14 +288,7 @@ def add_dir(tar, dir_fd, rel_path):
         elif stat.S_ISREG(entry_stat.st_mode):
             add_file(tar, dir_fd, name, entry_path)
 
-try:
-    root_fd = os.open(path, os.O_RDONLY | directory_flag | no_follow)
-except OSError as err:
-    if err.errno == errno.ELOOP or is_symlink_path(path):
-        fail("sandbox artifact path is a symlink", 45)
-    if err.errno in (errno.ENOENT, errno.ENOTDIR):
-        sys.exit(44)
-    raise
+root_fd = open_artifact_path(base_path, rel_path, True)
 
 try:
     root_stat = os.fstat(root_fd)
@@ -204,7 +332,7 @@ func newFactorySandboxArtifactCopier(dir string, record factory.RunRecord) (fact
 }
 
 func (c *factorySandboxArtifactCopier) CopyFile(ctx context.Context, remotePath, localPath string) error {
-	resolvedRemotePath, err := c.resolveRemotePath(remotePath)
+	resolvedRemotePath, err := c.resolveSandboxArtifactPath(remotePath)
 	if err != nil {
 		return err
 	}
@@ -217,11 +345,11 @@ func (c *factorySandboxArtifactCopier) CopyFile(ctx context.Context, remotePath,
 		return fmt.Errorf("create sandbox artifact file: %w", err)
 	}
 	var stderr bytes.Buffer
-	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyFilePythonScript, resolvedRemotePath), file, &stderr)
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyFilePythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), file, &stderr)
 	closeErr := file.Close()
 	if runErr != nil {
 		_ = os.Remove(localPath)
-		return factorySandboxArtifactCopyError(resolvedRemotePath, stderr.String(), runErr)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, stderr.String(), runErr)
 	}
 	if closeErr != nil {
 		_ = os.Remove(localPath)
@@ -231,7 +359,7 @@ func (c *factorySandboxArtifactCopier) CopyFile(ctx context.Context, remotePath,
 }
 
 func (c *factorySandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, localPath string) error {
-	resolvedRemotePath, err := c.resolveRemotePath(remotePath)
+	resolvedRemotePath, err := c.resolveSandboxArtifactPath(remotePath)
 	if err != nil {
 		return err
 	}
@@ -247,11 +375,11 @@ func (c *factorySandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, 
 	defer os.Remove(tarPath)
 
 	var stderr bytes.Buffer
-	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyDirPythonScript, resolvedRemotePath), tarFile, &stderr)
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyDirPythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), tarFile, &stderr)
 	closeErr := tarFile.Close()
 	if runErr != nil {
 		_ = os.RemoveAll(localPath)
-		return factorySandboxArtifactCopyError(resolvedRemotePath, stderr.String(), runErr)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, stderr.String(), runErr)
 	}
 	if closeErr != nil {
 		_ = os.RemoveAll(localPath)
@@ -265,17 +393,25 @@ func (c *factorySandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, 
 }
 
 func (c *factorySandboxArtifactCopier) resolveRemotePath(remotePath string) (string, error) {
+	resolved, err := c.resolveSandboxArtifactPath(remotePath)
+	if err != nil {
+		return "", err
+	}
+	return resolved.resolvedPath, nil
+}
+
+func (c *factorySandboxArtifactCopier) resolveSandboxArtifactPath(remotePath string) (factorySandboxArtifactRemotePath, error) {
 	remotePath = strings.TrimSpace(filepath.ToSlash(remotePath))
 	if remotePath == "" {
-		return "", fmt.Errorf("sandbox artifact remote path is required")
+		return factorySandboxArtifactRemotePath{}, fmt.Errorf("sandbox artifact remote path is required")
 	}
 	baseDir := strings.TrimSpace(filepath.ToSlash(c.baseDir))
 	if baseDir == "" {
-		return "", fmt.Errorf("sandbox workspace directory is required for artifact path %q", remotePath)
+		return factorySandboxArtifactRemotePath{}, fmt.Errorf("sandbox workspace directory is required for artifact path %q", remotePath)
 	}
 	baseDir = path.Clean(baseDir)
 	if !path.IsAbs(baseDir) {
-		return "", fmt.Errorf("sandbox workspace directory must be absolute: %q", baseDir)
+		return factorySandboxArtifactRemotePath{}, fmt.Errorf("sandbox workspace directory must be absolute: %q", baseDir)
 	}
 
 	resolvedPath := path.Clean(remotePath)
@@ -283,9 +419,24 @@ func (c *factorySandboxArtifactCopier) resolveRemotePath(remotePath string) (str
 		resolvedPath = path.Clean(path.Join(baseDir, resolvedPath))
 	}
 	if !factorySandboxArtifactPathWithinBase(baseDir, resolvedPath) {
-		return "", fmt.Errorf("sandbox artifact path %q resolves outside workspace %q", remotePath, baseDir)
+		return factorySandboxArtifactRemotePath{}, fmt.Errorf("sandbox artifact path %q resolves outside workspace %q", remotePath, baseDir)
 	}
-	return resolvedPath, nil
+	relativePath := "."
+	if resolvedPath != baseDir {
+		if baseDir == "/" {
+			relativePath = strings.TrimPrefix(resolvedPath, "/")
+		} else {
+			relativePath = strings.TrimPrefix(resolvedPath, baseDir+"/")
+		}
+		if relativePath == "" {
+			relativePath = "."
+		}
+	}
+	return factorySandboxArtifactRemotePath{
+		baseDir:      baseDir,
+		relativePath: relativePath,
+		resolvedPath: resolvedPath,
+	}, nil
 }
 
 func factorySandboxArtifactPathWithinBase(baseDir, candidate string) bool {
@@ -298,13 +449,14 @@ func factorySandboxArtifactPathWithinBase(baseDir, candidate string) bool {
 	return strings.HasPrefix(candidate, baseDir+"/")
 }
 
-func factorySandboxArtifactPythonCommand(script, remotePath string) []string {
+func factorySandboxArtifactPythonCommand(script, baseDir, remotePath string) []string {
 	return []string{
 		"sh",
 		"-c",
 		factorySandboxArtifactPythonRunner,
 		"hal-copy-artifact",
 		script,
+		baseDir,
 		remotePath,
 	}
 }
