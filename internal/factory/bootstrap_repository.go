@@ -203,6 +203,19 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 
 	commands := make([]bootstrapRepositoryCommand, 0, 2)
 	if exists {
+		if actualRemote, err := deps.repoRemoteURL(repoPath); err != nil {
+			return nil, fmt.Errorf("verify repository origin remote: %w", err)
+		} else if safeRepositoryURL, ok := bootstrapRepositoryCredentialFreeURL(actualRemote); ok {
+			commands = append(commands, bootstrapRepositoryCommand{
+				stepName: BootstrapStepSanitizeOrigin,
+				command: BootstrapCommand{
+					Name: "git",
+					Args: []string{"remote", "set-url", "origin", safeRepositoryURL},
+					Dir:  repoPath,
+					Env:  bootstrapGitEnv(),
+				},
+			})
+		}
 		commands = append(commands, bootstrapRepositoryCommand{
 			stepName: BootstrapStepFetchRepository,
 			command: BootstrapCommand{

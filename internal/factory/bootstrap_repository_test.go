@@ -222,6 +222,58 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 	}
 }
 
+func TestBootstrapRepositoryCheckoutSanitizesCredentialedExistingOrigin(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "origin sanitized"},
+			{ExitCode: 0, OutputSummary: "repository fetched"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+		},
+	}
+
+	req := BootstrapRequest{
+		RepositoryURL: "https://github.com/jywlabs/hal.git",
+		BaseBranch:    "main",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 10, 15, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		RepoRemoteURL: bootstrapRepoRemoteURL("https://user:token@github.com/jywlabs/hal.git"),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+
+	wantCalls := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"remote", "set-url", "origin", "https://github.com/jywlabs/hal.git"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"fetch", "--prune", "origin"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "-B", "main", "origin/main"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls, wantCalls) {
+		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
+	}
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepSanitizeOrigin, BootstrapStepFetchRepository, BootstrapStepCheckoutBase})
+}
+
 func TestValidateExistingRepoRemoteAcceptsEquivalentGitHubRemoteFormats(t *testing.T) {
 	tests := []struct {
 		name      string
