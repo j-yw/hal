@@ -607,7 +607,10 @@ func extractFactorySandboxArtifactTar(tarPath, localPath string) error {
 			return fmt.Errorf("read sandbox artifact archive: %w", err)
 		}
 
-		relPath := cleanFactorySandboxArtifactTarPath(header.Name)
+		relPath, err := cleanFactorySandboxArtifactTarPath(header.Name)
+		if err != nil {
+			return err
+		}
 		if relPath == "" {
 			continue
 		}
@@ -661,12 +664,22 @@ func hasWindowsDriveVolume(name string) bool {
 	return ('a' <= drive && drive <= 'z') || ('A' <= drive && drive <= 'Z')
 }
 
-func cleanFactorySandboxArtifactTarPath(name string) string {
-	clean := strings.TrimPrefix(path.Clean("/"+filepath.ToSlash(name)), "/")
-	if clean == "." || clean == "" {
-		return ""
+func cleanFactorySandboxArtifactTarPath(name string) (string, error) {
+	slashName := strings.ReplaceAll(filepath.ToSlash(name), "\\", "/")
+	if path.IsAbs(slashName) || filepath.VolumeName(name) != "" || hasWindowsDriveVolume(slashName) {
+		return "", fmt.Errorf("unsafe sandbox artifact archive path %q", name)
 	}
-	return clean
+	for _, segment := range strings.Split(slashName, "/") {
+		if segment == ".." {
+			return "", fmt.Errorf("unsafe sandbox artifact archive path %q", name)
+		}
+	}
+
+	clean := path.Clean(slashName)
+	if clean == "." || clean == "" {
+		return "", nil
+	}
+	return clean, nil
 }
 
 func writeFactorySandboxArtifactTarFile(targetPath string, reader io.Reader) error {
