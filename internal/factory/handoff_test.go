@@ -872,6 +872,70 @@ func TestHandoffArtifactLocationsSanitizeUnsafeNames(t *testing.T) {
 	}
 }
 
+func TestHandoffArtifactLooksLikeLogRequiresToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		artifact ArtifactReference
+		want     bool
+	}{
+		{
+			name: "log name token",
+			artifact: ArtifactReference{
+				Name: "ci-log",
+				Type: "text",
+				Path: ".hal/reports/ci-output.txt",
+			},
+			want: true,
+		},
+		{
+			name: "stdout path token",
+			artifact: ArtifactReference{
+				Name: "verification-output",
+				Type: "text",
+				Path: ".hal/reports/verify/test-stdout.txt",
+			},
+			want: true,
+		},
+		{
+			name: "log extension",
+			artifact: ArtifactReference{
+				Name: "ci-output",
+				Type: "text",
+				Path: ".hal/reports/ci-output.log",
+			},
+			want: true,
+		},
+		{
+			name: "catalog artifact",
+			artifact: ArtifactReference{
+				Name:       "catalog",
+				Type:       "json",
+				Path:       "factory/catalog.json",
+				StoredPath: "artifacts/run-catalog/catalog.json",
+			},
+			want: false,
+		},
+		{
+			name: "changelog artifact",
+			artifact: ArtifactReference{
+				Name:       "changelog",
+				Type:       "markdown",
+				Path:       "docs/changelog.md",
+				StoredPath: "artifacts/run-changelog/changelog.md",
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := handoffArtifactLooksLikeLog(tt.artifact); got != tt.want {
+				t.Fatalf("handoffArtifactLooksLikeLog() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func saveHandoffArtifact(t *testing.T, store Store, runID string, artifact ArtifactReference, content string) ArtifactReference {
 	t.Helper()
 	sourcePath := filepath.Join(t.TempDir(), strings.Trim(strings.ReplaceAll(artifact.Path, "/", "-"), "-"))

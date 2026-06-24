@@ -368,15 +368,29 @@ func handoffLocationNameContainsURLHost(name string) bool {
 }
 
 func handoffArtifactLooksLikeLog(artifact ArtifactReference) bool {
-	search := strings.ToLower(strings.Join([]string{
+	for _, value := range []string{
 		artifact.Name,
 		artifact.Type,
 		artifact.Path,
 		artifact.StoredPath,
-	}, " "))
-	return strings.Contains(search, "log") ||
-		strings.Contains(search, "stdout") ||
-		strings.Contains(search, "stderr")
+	} {
+		if handoffArtifactHasLogToken(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffArtifactHasLogToken(value string) bool {
+	for _, token := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		switch token {
+		case "log", "logs", "stdout", "stderr":
+			return true
+		}
+	}
+	return false
 }
 
 func handoffArtifactLooksLikePR(artifact ArtifactReference) bool {
