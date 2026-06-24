@@ -1723,9 +1723,21 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 			}
 			return nil
 		},
-		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
-		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
-		sandboxCopier:  copier,
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{
+				Name: "status-snapshot",
+				Path: filepath.ToSlash(filepath.Join("factory", "status-snapshot.json")),
+				Data: []byte(`{"state":"ready"}` + "\n"),
+			}, nil
+		},
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{
+				Name: "doctor-snapshot",
+				Path: filepath.ToSlash(filepath.Join("factory", "doctor-snapshot.json")),
+				Data: []byte(`{"overallStatus":"pass"}` + "\n"),
+			}, nil
+		},
+		sandboxCopier: copier,
 		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
 			requestCalls++
 			if record.ExecutorMode != factory.ExecutorModeSandbox {
@@ -1790,6 +1802,8 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	if autoState.Summary["sandboxName"] != "factory-sandbox" {
 		t.Fatalf("sandbox artifact summary = %#v", autoState.Summary)
 	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/status-snapshot.json")
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/doctor-snapshot.json")
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/review.md")
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/stdout.txt")
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/result.json")

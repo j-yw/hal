@@ -27,7 +27,7 @@ const (
 // SupportedExecutorModes returns the executor modes implemented by the factory
 // executor layer.
 func SupportedExecutorModes() []string {
-	return []string{ExecutorModeLocal}
+	return []string{ExecutorModeLocal, ExecutorModeSandbox}
 }
 
 // ValidateExecutorMode normalizes and validates a factory executor mode.

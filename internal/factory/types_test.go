@@ -65,6 +65,11 @@ func TestValidateExecutorMode(t *testing.T) {
 			want: ExecutorModeLocal,
 		},
 		{
+			name: "sandbox",
+			mode: ExecutorModeSandbox,
+			want: ExecutorModeSandbox,
+		},
+		{
 			name:    "empty",
 			wantErr: "factory executor mode is required",
 		},
@@ -76,7 +81,7 @@ func TestValidateExecutorMode(t *testing.T) {
 		{
 			name:    "unsupported",
 			mode:    "remote",
-			wantErr: `unsupported factory executor mode "remote" (supported: local)`,
+			wantErr: `unsupported factory executor mode "remote" (supported: local, sandbox)`,
 		},
 	}
 

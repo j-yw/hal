@@ -1436,6 +1436,9 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 				Path: recordPath,
 			})
 		}
+		for _, artifact := range snapshots {
+			collector.add(artifact)
+		}
 		return collector.artifacts
 	}
 

@@ -328,7 +328,7 @@ func TestRunFactoryQueueAddWithDepsRejectsInvalidExecutorMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("runFactoryQueueAddWithDeps() error = nil, want invalid executor mode")
 	}
-	if !strings.Contains(err.Error(), `unsupported factory executor mode "remote" (supported: local)`) {
+	if !strings.Contains(err.Error(), `unsupported factory executor mode "remote" (supported: local, sandbox)`) {
 		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want unsupported mode", err.Error())
 	}
 
@@ -1023,6 +1023,72 @@ func TestExecuteClaimedFactoryQueueEntryMarksRunFailedWhenPipelineStartEventAppe
 	}
 	if loaded.Failure == nil || !strings.Contains(loaded.Failure.Message, `load factory timeline "run-start-event-failure"`) {
 		t.Fatalf("run failure = %#v, want timeline load failure", loaded.Failure)
+	}
+}
+
+func TestExecuteClaimedFactoryQueueEntryRoutesSandboxExecutor(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	repoDir := t.TempDir()
+	createdAt := time.Date(2026, 6, 21, 19, 0, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox", PID: 5501, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-sandbox-queue", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusClaimed
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-feature.md", Title: "Factory Sandbox"}
+	record.RepoPath = repoDir
+	record.SandboxName = "factory-dev"
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox", record.RunID, factory.QueueStatusClaimed, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	entry.ClaimedAt = &claimedAt
+	entry.AttemptCount = 1
+	entry.Claim = &claim
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	sandboxCalled := false
+	var gotSandboxReq factorySandboxExecutorRequest
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline called for sandbox queue entry")
+		return nil
+	})
+	deps.runSandbox = func(_ context.Context, req factorySandboxExecutorRequest) error {
+		sandboxCalled = true
+		gotSandboxReq = req
+		return nil
+	}
+	deps.sandboxRequests = func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+		return nil
+	}
+
+	finalEntry, err := executeClaimedFactoryQueueEntry(context.Background(), store, entry, deps)
+	if err != nil {
+		t.Fatalf("executeClaimedFactoryQueueEntry() error: %v", err)
+	}
+	if finalEntry.Status != factory.QueueStatusSucceeded {
+		t.Fatalf("final queue status = %q, want succeeded", finalEntry.Status)
+	}
+	if !sandboxCalled {
+		t.Fatal("runSandbox was not called")
+	}
+	if gotSandboxReq.SandboxName != "factory-dev" {
+		t.Fatalf("sandbox name = %q, want factory-dev", gotSandboxReq.SandboxName)
+	}
+	if gotSandboxReq.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("sandbox run executorMode = %q, want sandbox", gotSandboxReq.RunRecord.ExecutorMode)
+	}
+	if gotSandboxReq.RunRecord.RepoPath != repoDir {
+		t.Fatalf("sandbox run repoPath = %q, want %q", gotSandboxReq.RunRecord.RepoPath, repoDir)
+	}
+	if len(gotSandboxReq.RemoteAuto.Args) != 1 || gotSandboxReq.RemoteAuto.Args[0] != ".hal/prd-feature.md" {
+		t.Fatalf("sandbox remote auto args = %#v, want markdown source", gotSandboxReq.RemoteAuto.Args)
+	}
+	if gotSandboxReq.RemoteAuto.BaseBranch != "develop" {
+		t.Fatalf("sandbox remote auto base = %q, want develop", gotSandboxReq.RemoteAuto.BaseBranch)
 	}
 }
 
