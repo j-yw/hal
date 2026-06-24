@@ -20,7 +20,7 @@ func TestCollectSandboxAuthFilesSelectsAuthProfilesOnly(t *testing.T) {
 	clearSandboxAuthCodexHome(t)
 	home := t.TempDir()
 	writeSandboxAuthTestFile(t, home, ".codex/auth.json", "codex-auth")
-	writeSandboxAuthTestFile(t, home, ".codex/config.toml", "model = 'x'")
+	writeSandboxAuthTestFile(t, home, ".codex/config.toml", "[mcp_servers.local]\ncommand = 'secret-wrapper'")
 	writeSandboxAuthTestFile(t, home, ".codex/logs_2.sqlite", "large logs should not sync")
 	writeSandboxAuthTestFile(t, home, ".pi/agent/auth.json", "pi-auth")
 	writeSandboxAuthTestFile(t, home, ".pi/agent/settings.json", "{}")
@@ -34,7 +34,6 @@ func TestCollectSandboxAuthFilesSelectsAuthProfilesOnly(t *testing.T) {
 	got := sandboxAuthArchivePaths(files)
 	want := []string{
 		".codex/auth.json",
-		".codex/config.toml",
 		".pi/agent/auth.json",
 		".pi/agent/settings.json",
 	}
@@ -42,7 +41,7 @@ func TestCollectSandboxAuthFilesSelectsAuthProfilesOnly(t *testing.T) {
 		t.Fatalf("paths = %#v, want %#v", got, want)
 	}
 	for _, file := range files {
-		if file.ArchivePath == ".codex/logs_2.sqlite" || strings.Contains(file.ArchivePath, "sessions") || strings.HasPrefix(file.ArchivePath, ".claude") {
+		if file.ArchivePath == ".codex/config.toml" || file.ArchivePath == ".codex/logs_2.sqlite" || strings.Contains(file.ArchivePath, "sessions") || strings.HasPrefix(file.ArchivePath, ".claude") {
 			t.Fatalf("unexpected synced file: %#v", file)
 		}
 	}

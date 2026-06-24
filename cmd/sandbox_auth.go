@@ -207,7 +207,6 @@ func sandboxAuthProfileSpecs(opts sandboxAuthSyncOptions) []sandboxAuthProfileSp
 			ArchiveRoot: ".codex",
 			Entries: []string{
 				"auth.json",
-				"config.toml",
 				"version.json",
 				"installation_id",
 			},
