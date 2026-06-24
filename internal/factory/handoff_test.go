@@ -202,6 +202,21 @@ func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 	tests := []string{
 		"authentication failed for token ghp_xxx",
 		"authentication failed for token <ghp_xxx>",
+		"authentication failed for Authorization Bearer ghp_xxx",
+	}
+	for _, tt := range tests {
+		t.Run(tt, func(t *testing.T) {
+			if got := SanitizeHandoffFailureReason(tt); got != "[redacted]" {
+				t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
+			}
+		})
+	}
+}
+
+func TestSanitizeHandoffFailureReasonRedactsFileURLPaths(t *testing.T) {
+	tests := []string{
+		"local log available at file:///Users/example/.hal/reports/failure.txt",
+		"local log available at file://localhost/Users/example/.hal/reports/failure.txt",
 	}
 	for _, tt := range tests {
 		t.Run(tt, func(t *testing.T) {

@@ -503,6 +503,9 @@ func handoffStringNeedsRedaction(value string) bool {
 			if handoffURLFragmentContainsSecret(parsed.Fragment) {
 				return true
 			}
+			if handoffURLContainsAbsoluteLocalPath(parsed) {
+				return true
+			}
 		}
 	}
 	if handoffStringContainsSSHHost(value) {
@@ -595,6 +598,9 @@ func handoffStringContainsAbsolutePath(value string) bool {
 			return true
 		}
 		if strings.Contains(field, "://") {
+			if handoffURLFieldContainsAbsoluteLocalPath(field) {
+				return true
+			}
 			continue
 		}
 		for _, sep := range []string{"=", ":"} {
@@ -606,6 +612,21 @@ func handoffStringContainsAbsolutePath(value string) bool {
 		}
 	}
 	return false
+}
+
+func handoffURLFieldContainsAbsoluteLocalPath(field string) bool {
+	parsed, err := url.Parse(handoffTrimRedactionField(field))
+	if err != nil {
+		return false
+	}
+	return handoffURLContainsAbsoluteLocalPath(parsed)
+}
+
+func handoffURLContainsAbsoluteLocalPath(parsed *url.URL) bool {
+	if parsed == nil || strings.ToLower(parsed.Scheme) != "file" {
+		return false
+	}
+	return handoffFieldIsAbsolutePath(parsed.Path) || handoffFieldIsAbsolutePath(parsed.Opaque)
 }
 
 func handoffFieldIsAbsolutePath(value string) bool {
@@ -790,11 +811,25 @@ func handoffStringContainsBareSecretValue(value string) bool {
 		if !handoffStandaloneSecretKey(field) || i+1 >= len(fields) {
 			continue
 		}
-		if handoffFieldLooksLikeSecretValue(fields[i+1]) {
+		next := i + 1
+		if handoffFieldIsAuthScheme(fields[next]) && next+1 < len(fields) {
+			next++
+		}
+		if handoffFieldLooksLikeSecretValue(fields[next]) {
 			return true
 		}
 	}
 	return false
+}
+
+func handoffFieldIsAuthScheme(value string) bool {
+	value = strings.ToLower(handoffTrimRedactionField(value))
+	switch value {
+	case "bearer", "basic":
+		return true
+	default:
+		return false
+	}
 }
 
 func handoffStandaloneSecretKey(key string) bool {
