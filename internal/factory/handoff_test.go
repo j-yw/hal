@@ -145,6 +145,46 @@ func TestLoadHandoffSummaryRedactsSensitiveRepoPath(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryRedactsSensitiveBranchAndStep(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := RunRecord{
+		RunID:        "run-sensitive-handoff-context",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		BranchName:   "hal/token=secret-value",
+		CurrentStep:  "ci",
+		Failure: &FailureSummary{
+			Step:        "/workspace/token=secret-value/ci",
+			Category:    FailureCategoryCI,
+			Message:     "ci gate blocked",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.BranchName != "[redacted]" {
+		t.Fatalf("BranchName = %q, want [redacted]", summary.BranchName)
+	}
+	if summary.CurrentStep != "[redacted]" {
+		t.Fatalf("CurrentStep = %q, want [redacted]", summary.CurrentStep)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.BranchName != "[redacted]" {
+		t.Fatalf("NextAction.BranchName = %q, want [redacted]", summary.NextAction.BranchName)
+	}
+	if summary.NextAction.CurrentStep != "[redacted]" {
+		t.Fatalf("NextAction.CurrentStep = %q, want [redacted]", summary.NextAction.CurrentStep)
+	}
+}
+
 func TestLoadHandoffSummaryDropsPullRequestURLWithSecretQueryValue(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := RunRecord{

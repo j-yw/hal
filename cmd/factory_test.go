@@ -3329,7 +3329,7 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
 }
 
-func TestNewFactoryRunNextActionUsesSafeSandboxTakeoverCommand(t *testing.T) {
+func TestNewFactoryRunNextActionUsesInspectCommandForSandboxFailures(t *testing.T) {
 	record := factory.RunRecord{
 		RunID:        "run-handoff",
 		Status:       factory.RunStatusFailed,
@@ -3382,10 +3382,10 @@ func TestNewFactoryRunNextActionUsesSafeSandboxTakeoverCommand(t *testing.T) {
 	if action == nil {
 		t.Fatal("next action should be present")
 	}
-	if action.ID != "takeover_sandbox" {
-		t.Fatalf("id = %q, want takeover_sandbox", action.ID)
+	if action.ID != "inspect_factory_run" {
+		t.Fatalf("id = %q, want inspect_factory_run", action.ID)
 	}
-	if action.Command != "hal sandbox ssh factory-handoff" {
+	if action.Command != "hal factory status run-handoff --json" {
 		t.Fatalf("command = %q", action.Command)
 	}
 

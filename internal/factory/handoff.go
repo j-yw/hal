@@ -71,10 +71,10 @@ func NewHandoffSummary(store Store, record RunRecord) HandoffSummary {
 		ExecutorMode:      strings.TrimSpace(record.ExecutorMode),
 		InspectCommand:    HandoffInspectCommand(record.RunID),
 		RepoPath:          handoffSafeRepoPath(record.RepoPath),
-		BranchName:        strings.TrimSpace(record.BranchName),
+		BranchName:        handoffSafeDisplayValue(record.BranchName),
 		SandboxName:       handoffSandboxName(record),
 		PullRequestURL:    handoffPullRequestURL(store, record),
-		CurrentStep:       handoffCurrentStep(record),
+		CurrentStep:       handoffSafeDisplayValue(handoffCurrentStep(record)),
 		FailureReason:     handoffFailureReason(record),
 		ArtifactLocations: handoffArtifactLocations(record.RunID, record.Artifacts, false),
 		LogLocations:      handoffArtifactLocations(record.RunID, record.Artifacts, true),
@@ -251,6 +251,37 @@ func handoffCurrentStep(record RunRecord) string {
 		}
 	}
 	return strings.TrimSpace(record.CurrentStep)
+}
+
+func handoffSafeDisplayValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	normalizedValue := handoffNormalizeDocPlaceholders(value)
+	if strings.ContainsAny(value, "\r\n") ||
+		handoffStringContainsBareSecretValue(value) ||
+		handoffStringNeedsRedaction(normalizedValue) ||
+		handoffDisplayValueContainsBareDNSHost(normalizedValue) {
+		return handoffRedactedLocation
+	}
+	return value
+}
+
+func handoffDisplayValueContainsBareDNSHost(value string) bool {
+	if handoffStringContainsBareDNSHost(value) {
+		return true
+	}
+	for _, field := range handoffRedactionFields(value) {
+		for _, segment := range strings.FieldsFunc(field, func(r rune) bool {
+			return r == '/' || r == '\\'
+		}) {
+			if handoffFieldContainsBareDNSHost(segment) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func handoffFailureReason(record RunRecord) string {

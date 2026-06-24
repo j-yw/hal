@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
-	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 // FactoryRunResponse is the machine-readable JSON output for hal factory run --json.
@@ -149,13 +148,6 @@ func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
 	}
 	actionID := "inspect_factory_run"
 	description := "Inspect the durable run record and timeline."
-	if record.Status == factory.RunStatusFailed && record.ExecutorMode == factory.ExecutorModeSandbox {
-		if sandboxName := factoryRunRunnableSandboxName(record); sandboxName != "" {
-			command = "hal sandbox ssh " + sandboxName
-			actionID = "takeover_sandbox"
-			description = "Open an interactive shell in the sandbox for manual takeover."
-		}
-	}
 	if record.Status == factory.RunStatusSucceeded {
 		description = "Inspect the completed durable run record and timeline."
 	}
@@ -165,33 +157,6 @@ func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
 		Command:     command,
 		Description: description,
 	}
-}
-
-func factoryRunSandboxName(record factory.RunRecord) string {
-	if record.Sandbox != nil {
-		if name := safeFactoryRunSandboxName(record.Sandbox.Name); name != "" {
-			return name
-		}
-	}
-	return safeFactoryRunSandboxName(record.SandboxName)
-}
-
-func factoryRunRunnableSandboxName(record factory.RunRecord) string {
-	if record.Sandbox == nil || strings.TrimSpace(record.Sandbox.Status) != sandbox.StatusRunning {
-		return ""
-	}
-	return factoryRunSandboxName(record)
-}
-
-func safeFactoryRunSandboxName(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ""
-	}
-	if err := sandbox.ValidateName(name); err != nil {
-		return ""
-	}
-	return name
 }
 
 func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
