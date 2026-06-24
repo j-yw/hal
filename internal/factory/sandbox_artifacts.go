@@ -106,7 +106,10 @@ func collectSandboxArtifact(ctx context.Context, store Store, runID string, copi
 		request.Path = sandboxArtifactDisplayPath(request)
 	}
 
-	localPath := filepath.Join(tempDir, sandboxArtifactLocalName(request))
+	localPath, err := sandboxArtifactLocalPath(tempDir, request)
+	if err != nil {
+		return nil, nil, err
+	}
 	var copyErr error
 	if request.Directory {
 		copyErr = copier.CopyDir(ctx, request.RemotePath, localPath)
@@ -254,9 +257,22 @@ func sandboxArtifactDisplayPath(request SandboxArtifactRequest) string {
 
 func sandboxArtifactLocalName(request SandboxArtifactRequest) string {
 	if request.Directory {
-		return sandboxArtifactID(request, "")
+		return artifactFileName(sandboxArtifactID(request, ""), request.RemotePath)
 	}
 	return artifactFileName(sandboxArtifactID(request, ""), request.RemotePath)
+}
+
+func sandboxArtifactLocalPath(tempDir string, request SandboxArtifactRequest) (string, error) {
+	localName := sandboxArtifactLocalName(request)
+	if localName == "" || localName == "." || localName == ".." || filepath.Base(localName) != localName {
+		return "", fmt.Errorf("sandbox artifact %q has unsafe local name %q", request.Name, localName)
+	}
+	localPath := filepath.Join(tempDir, localName)
+	rel, err := filepath.Rel(tempDir, localPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("sandbox artifact %q local path escapes temp directory", request.Name)
+	}
+	return localPath, nil
 }
 
 func sandboxArtifactID(request SandboxArtifactRequest, relPath string) string {

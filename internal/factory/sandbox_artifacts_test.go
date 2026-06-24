@@ -112,6 +112,57 @@ func TestCollectSandboxArtifactsCopiesFilesAndDirectoriesThroughAbstraction(t *t
 	}
 }
 
+func TestCollectSandboxArtifactsKeepsDotDirectoryIDInTempChild(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-sandbox-dot-directory-id")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	copier := &fakeSandboxArtifactCopier{
+		files: map[string]string{
+			"/workspace/.hal/reports/factory.log": "factory log\n",
+		},
+		dirs: map[string]map[string]string{
+			"/workspace/.hal/reports/dot": {
+				"payload.txt": "payload\n",
+			},
+		},
+	}
+
+	_, err := CollectSandboxArtifacts(context.Background(), store, record.RunID, copier, []SandboxArtifactRequest{
+		{
+			ID:         "factory-log",
+			Name:       "factory-log",
+			Type:       "text",
+			RemotePath: "/workspace/.hal/reports/factory.log",
+			Path:       ".hal/reports/factory.log",
+		},
+		{
+			ID:         ".",
+			Name:       "dot",
+			Type:       "directory",
+			RemotePath: "/workspace/.hal/reports/dot",
+			Path:       ".hal/reports/dot",
+			Directory:  true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CollectSandboxArtifacts() unexpected error: %v", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	requireStoredArtifact(t, store, record.RunID, loaded.Artifacts, ".hal/reports/factory.log")
+	requireStoredArtifact(t, store, record.RunID, loaded.Artifacts, ".hal/reports/dot/payload.txt")
+	if len(loaded.Artifacts) != 2 {
+		t.Fatalf("artifacts len = %d, want 2: %#v", len(loaded.Artifacts), loaded.Artifacts)
+	}
+}
+
 func TestCollectSandboxArtifactsRecordsMissingOptionalWarnings(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-sandbox-missing")
