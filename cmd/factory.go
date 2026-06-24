@@ -226,10 +226,6 @@ type FactoryRunSummary struct {
 }
 
 func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
-	if len(args) > 1 {
-		return maxArgsValidation(1)(cmd, args)
-	}
-
 	reportPath := ""
 	if cmd != nil && cmd.Flags().Lookup("report") != nil {
 		value, err := cmd.Flags().GetString("report")
@@ -240,9 +236,23 @@ func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
 	}
 
 	if _, err := parseFactoryRunRequest(args, reportPath, "", false, false); err != nil {
-		return exitWithCode(cmd, ExitCodeValidation, err)
+		return factoryRunArgsValidationError(cmd, err)
 	}
 	return nil
+}
+
+func factoryRunArgsValidationError(cmd *cobra.Command, err error) error {
+	if factoryRunJSONRequested(cmd) {
+		out := io.Writer(os.Stdout)
+		if cmd != nil {
+			out = cmd.OutOrStdout()
+		}
+		if renderErr := renderFactoryRunValidationErrorJSON(out, err); renderErr != nil {
+			return renderErr
+		}
+		return exitWithCode(cmd, ExitCodeValidation, nil)
+	}
+	return exitWithCode(cmd, ExitCodeValidation, err)
 }
 
 func runFactoryRun(cmd *cobra.Command, args []string) error {
