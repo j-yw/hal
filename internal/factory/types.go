@@ -1,4 +1,4 @@
-// Package factory defines durable factory run records and timeline events.
+// Package factory defines durable factory run records, timeline events, and bootstrap contracts.
 package factory
 
 import "time"
@@ -10,6 +10,30 @@ const (
 	RunStatusSucceeded = "succeeded"
 	RunStatusFailed    = "failed"
 	RunStatusCanceled  = "canceled"
+)
+
+// Executor mode values.
+const (
+	ExecutorModeLocal   = "local"
+	ExecutorModeSandbox = "sandbox"
+)
+
+// Run source kind values.
+const (
+	SourceKindAutoDiscovery = "auto_discovery"
+	SourceKindMarkdown      = "markdown"
+	SourceKindReport        = "report"
+	SourceKindPRD           = "prd"
+)
+
+// Failure category values.
+const (
+	FailureCategoryValidation = "validation"
+	FailureCategoryPipeline   = "pipeline"
+	FailureCategoryEngine     = "engine"
+	FailureCategoryGit        = "git"
+	FailureCategoryCI         = "ci"
+	FailureCategoryUnknown    = "unknown"
 )
 
 // Timeline event type values.
@@ -26,20 +50,44 @@ const (
 
 // RunRecord captures persisted state for one factory run.
 type RunRecord struct {
-	RunID       string              `json:"runId"`
-	Status      string              `json:"status"`
-	Source      SourceMetadata      `json:"source"`
-	RepoPath    string              `json:"repoPath"`
-	RepoRemote  string              `json:"repoRemote"`
-	BranchName  string              `json:"branchName"`
-	BaseBranch  string              `json:"baseBranch"`
-	SandboxName string              `json:"sandboxName,omitempty"`
-	CurrentStep string              `json:"currentStep"`
-	CreatedAt   time.Time           `json:"createdAt"`
-	UpdatedAt   time.Time           `json:"updatedAt"`
-	FinishedAt  *time.Time          `json:"finishedAt,omitempty"`
-	Artifacts   []ArtifactReference `json:"artifacts,omitempty"`
-	Failure     *FailureSummary     `json:"failure,omitempty"`
+	RunID        string              `json:"runId"`
+	Status       string              `json:"status"`
+	ExecutorMode string              `json:"executorMode,omitempty"`
+	Source       SourceMetadata      `json:"source"`
+	RepoPath     string              `json:"repoPath"`
+	RepoRemote   string              `json:"repoRemote"`
+	BranchName   string              `json:"branchName"`
+	BaseBranch   string              `json:"baseBranch"`
+	SandboxName  string              `json:"sandboxName,omitempty"`
+	Sandbox      *SandboxMetadata    `json:"sandbox,omitempty"`
+	CurrentStep  string              `json:"currentStep"`
+	CreatedAt    time.Time           `json:"createdAt"`
+	UpdatedAt    time.Time           `json:"updatedAt"`
+	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
+	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
+	Failure      *FailureSummary     `json:"failure,omitempty"`
+}
+
+// SandboxMetadata captures redaction-safe remote execution details for a
+// sandbox-backed factory run.
+type SandboxMetadata struct {
+	Name           string                     `json:"name"`
+	Provider       string                     `json:"provider"`
+	Status         string                     `json:"status"`
+	Connection     *SandboxConnectionMetadata `json:"connection,omitempty"`
+	SSHCommand     string                     `json:"sshCommand,omitempty"`
+	CleanupCommand string                     `json:"cleanupCommand,omitempty"`
+	Handoff        string                     `json:"handoff,omitempty"`
+}
+
+// SandboxConnectionMetadata contains safe connection display fields. It must
+// not grow credentials, private keys, tokens, or raw environment values.
+type SandboxConnectionMetadata struct {
+	Address           string `json:"address,omitempty"`
+	PublicIP          string `json:"publicIp,omitempty"`
+	TailscaleIP       string `json:"tailscaleIp,omitempty"`
+	TailscaleHostname string `json:"tailscaleHostname,omitempty"`
+	TailscaleLockdown bool   `json:"tailscaleLockdown,omitempty"`
 }
 
 // SourceMetadata identifies the input that started a factory run.
@@ -60,11 +108,12 @@ type ArtifactReference struct {
 
 // FailureSummary records the terminal failure context for a run.
 type FailureSummary struct {
-	Step        string `json:"step"`
-	Category    string `json:"category,omitempty"`
-	Message     string `json:"message"`
-	Recoverable bool   `json:"recoverable"`
-	ExitCode    int    `json:"exitCode,omitempty"`
+	Step             string `json:"step"`
+	Category         string `json:"category,omitempty"`
+	Message          string `json:"message"`
+	Recoverable      bool   `json:"recoverable"`
+	SuggestedCommand string `json:"suggestedCommand,omitempty"`
+	ExitCode         int    `json:"exitCode,omitempty"`
 }
 
 // EventRecord captures one append-only timeline entry for a factory run.

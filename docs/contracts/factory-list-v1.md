@@ -61,9 +61,10 @@ When `failure` is present:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `step` | string | yes | Step that failed |
-| `category` | string | no | Failure category, such as `test`, `review`, or `ci` |
+| `category` | string | no | Failure category, such as `validation`, `pipeline`, `engine`, `git`, `ci`, or `unknown` |
 | `message` | string | yes | Human-readable failure summary |
 | `recoverable` | boolean | yes | Whether an automated retry or fix can continue the run |
+| `suggestedCommand` | string | no | Suggested inspection, retry, or resume command when safely available |
 | `exitCode` | integer | no | Process exit code when available and non-zero |
 
 ## Status Values

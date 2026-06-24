@@ -600,10 +600,11 @@ func testRunRecord(runID string) RunRecord {
 	updatedAt := createdAt.Add(2 * time.Minute)
 
 	return RunRecord{
-		RunID:  runID,
-		Status: RunStatusRunning,
+		RunID:        runID,
+		Status:       RunStatusRunning,
+		ExecutorMode: ExecutorModeLocal,
 		Source: SourceMetadata{
-			Kind:  "markdown",
+			Kind:  SourceKindMarkdown,
 			Path:  ".hal/prd-factory.md",
 			Title: "Factory run records",
 		},

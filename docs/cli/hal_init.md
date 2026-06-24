@@ -20,9 +20,14 @@ Engine-local links (project-scoped):
   .claude/skills/        Symlinks to .hal/skills/ for Claude Code
   .pi/skills/            Symlinks to .hal/skills/ for Pi
 
-Global links (affects ~/.codex — only for Codex users):
-  ~/.codex/skills/       Symlinks for Codex skill discovery
-  ~/.codex/commands/     Symlinks for Codex commands
+Global links (active Codex home — only for Codex users):
+  $CODEX_HOME/skills/    Symlinks for Codex skill discovery when CODEX_HOME is set
+  $CODEX_HOME/commands/  Symlinks for Codex commands when CODEX_HOME is set
+  ~/.codex/skills/       Default Codex skill links when CODEX_HOME is unset
+  ~/.codex/commands/     Default Codex command links when CODEX_HOME is unset
+
+Set CODEX_HOME before running 'hal init' to isolate Codex global links per
+worktree. When CODEX_HOME is unset, Hal uses ~/.codex.
 
 Side effects:
 - Creates or preserves .hal/ files and directories.
@@ -30,7 +35,7 @@ Side effects:
   commands remain committable.
 - Migrates legacy .goralph/ to .hal/ when present.
 - Creates or refreshes project-local engine links under .claude/ and .pi/.
-- May update Codex global links under ~/.codex for Codex users.
+- May update Codex global links under the active Codex home for Codex users.
 
 Use 'hal doctor' to check environment health.
 Use 'hal status' to check workflow state.

@@ -126,16 +126,18 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 	var stdout, stderr bytes.Buffer
 	parser := NewParser()
 	streamWriter := &streamHandler{
-		parser:  parser,
-		display: display,
-		buffer:  nil,
+		parser:       parser,
+		display:      display,
+		buffer:       nil,
+		lastActivity: time.Now(),
 	}
+	idleTimeout := codexStreamInactivityTimeout(timeout)
 
 	cmd.Stdout = io.MultiWriter(streamWriter, &stdout)
 	cmd.Stderr = &stderr
 
 	// Run command
-	err := cmd.Run()
+	err := runCommandWithInactivityWatch(cmd, streamWriter, idleTimeout)
 	streamWriter.Flush()
 
 	output := stdout.String()
@@ -199,12 +201,18 @@ func (e *Engine) parseResultStatus(output string) (hasResult bool, success bool)
 
 // streamHandler processes output line by line.
 type streamHandler struct {
-	parser  *Parser
-	display *engine.Display
-	buffer  []byte
+	parser       *Parser
+	display      *engine.Display
+	buffer       []byte
+	activityMu   sync.Mutex
+	lastActivity time.Time
 }
 
 func (h *streamHandler) Write(p []byte) (n int, err error) {
+	if len(p) > 0 {
+		h.touchActivity()
+	}
+
 	h.buffer = append(h.buffer, p...)
 
 	// Process complete lines
@@ -226,6 +234,24 @@ func (h *streamHandler) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+func (h *streamHandler) touchActivity() {
+	h.activityMu.Lock()
+	h.lastActivity = time.Now()
+	h.activityMu.Unlock()
+}
+
+func (h *streamHandler) idleFor(now time.Time) time.Duration {
+	h.activityMu.Lock()
+	last := h.lastActivity
+	h.activityMu.Unlock()
+
+	if last.IsZero() {
+		return 0
+	}
+
+	return now.Sub(last)
+}
+
 func (h *streamHandler) Flush() {
 	if len(h.buffer) > 0 {
 		event := h.parser.ParseLine(h.buffer)
@@ -233,6 +259,7 @@ func (h *streamHandler) Flush() {
 			h.display.ShowEvent(event)
 		}
 		h.buffer = nil
+		h.touchActivity()
 	}
 }
 
@@ -414,7 +441,11 @@ func recoverPromptError(
 	return "", nil, false
 }
 
-func runCommandWithInactivityWatch(cmd *exec.Cmd, collector *textCollectingStreamHandler, idleTimeout time.Duration) error {
+type streamActivityTracker interface {
+	idleFor(time.Time) time.Duration
+}
+
+func runCommandWithInactivityWatch(cmd *exec.Cmd, tracker streamActivityTracker, idleTimeout time.Duration) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -436,10 +467,10 @@ func runCommandWithInactivityWatch(cmd *exec.Cmd, collector *textCollectingStrea
 		case err := <-waitCh:
 			return err
 		case <-ticker.C:
-			if collector == nil {
+			if tracker == nil {
 				continue
 			}
-			if collector.idleFor(time.Now()) < idleTimeout {
+			if tracker.idleFor(time.Now()) < idleTimeout {
 				continue
 			}
 

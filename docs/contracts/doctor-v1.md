@@ -52,7 +52,7 @@
 | `hal_skills` | repo | Managed skills installed |
 | `hal_commands` | repo | Managed commands installed |
 | `local_skill_links` | engine_local | `.claude/skills/`, `.pi/skills/` links correct |
-| `codex_global_links` | engine_global | `~/.codex/skills/` links correct (codex only) |
+| `codex_global_links` | engine_global | Active Codex home (`$CODEX_HOME` when set, otherwise `~/.codex`) skill links and `commands/hal` link point to this repo (codex only) |
 | `legacy_debris` | migration | No `.goralph/`, `ralph` links, or `rules/` |
 | `legacy_sandbox_state` | migration | No legacy `.hal/sandbox.json` state file |
 | `broken_skill_links` | migration | No broken symlinks in engine dirs |
@@ -97,7 +97,7 @@
   "overallStatus": "fail",
   "engine": "codex",
   "checks": [
-    {"id": "git_repo", "status": "warn", "severity": "warn", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "No .git directory found. Hal works best inside a git repository."},
+    {"id": "git_repo", "status": "warn", "severity": "warn", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "No .git directory or worktree metadata file found. Hal works best inside a git repository."},
     {"id": "hal_dir", "status": "fail", "severity": "error", "scope": "repo", "applicability": "required", "remediationId": "run_hal_init", "message": "Missing .hal/ directory.", "remediation": {"command": "hal init", "safe": true}},
     {"id": "config_yaml", "status": "skip", "severity": "info", "scope": "repo", "applicability": "required", "remediationId": "none", "message": "Skipped: .hal/ directory not found."}
   ],

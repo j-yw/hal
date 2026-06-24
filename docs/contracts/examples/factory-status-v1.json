@@ -3,6 +3,7 @@
   "run": {
     "runId": "run-20260620-002",
     "status": "failed",
+    "executorMode": "sandbox",
     "source": {
       "kind": "markdown",
       "path": ".hal/prd-factory.md",
@@ -13,6 +14,21 @@
     "branchName": "hal/factory-run-records",
     "baseBranch": "develop",
     "sandboxName": "factory-run-records",
+    "sandbox": {
+      "name": "factory-run-records",
+      "provider": "daytona",
+      "status": "running",
+      "connection": {
+        "address": "100.64.0.10",
+        "publicIp": "203.0.113.10",
+        "tailscaleIp": "100.64.0.10",
+        "tailscaleHostname": "factory-run-records.tailnet.ts.net",
+        "tailscaleLockdown": true
+      },
+      "sshCommand": "hal sandbox ssh factory-run-records",
+      "cleanupCommand": "hal sandbox delete factory-run-records",
+      "handoff": "Inspect the sandbox before cleanup."
+    },
     "currentStep": "ci",
     "createdAt": "2026-06-20T16:00:00Z",
     "updatedAt": "2026-06-20T16:32:00Z",
@@ -36,9 +52,10 @@
     ],
     "failure": {
       "step": "ci",
-      "category": "test",
+      "category": "ci",
       "message": "unit tests failed",
       "recoverable": true,
+      "suggestedCommand": "hal factory status run-20260620-002 --json",
       "exitCode": 1
     }
   },
@@ -106,8 +123,9 @@
       "timestamp": "2026-06-20T16:32:00Z",
       "summary": "Failure classified",
       "metadata": {
-        "category": "test",
-        "recoverable": true
+        "category": "ci",
+        "recoverable": true,
+        "suggestedCommand": "hal factory status run-20260620-002 --json"
       }
     }
   ]
