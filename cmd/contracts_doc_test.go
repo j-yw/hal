@@ -671,17 +671,11 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if len(resp.Timeline) == 0 {
 			t.Fatal("factory status example should include timeline events")
 		}
-		if resp.Run.Verification == nil {
-			t.Fatal("factory status example should include verification metadata")
-		}
-		if resp.Run.Verification.Summary.Total == 0 {
-			t.Fatal("factory status example should include verification summary totals")
-		}
-		if len(resp.Run.Verification.Artifacts) == 0 {
-			t.Fatal("factory status example should include verification artifact references")
-		}
 		if resp.Run.Sandbox == nil {
 			t.Fatal("factory status example should include sandbox metadata for a sandbox-backed run")
+		}
+		if resp.Run.Verification != nil {
+			t.Fatal("factory status sandbox example should not include local verification metadata")
 		}
 		if resp.Run.Sandbox.Connection == nil {
 			t.Fatal("factory status example should include sandbox connection metadata")

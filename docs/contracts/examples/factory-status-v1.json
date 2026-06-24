@@ -50,29 +50,6 @@
         "url": "https://github.com/jywlabs/hal/pull/123"
       }
     ],
-    "verification": {
-      "summary": {
-        "total": 3,
-        "passed": 1,
-        "failed": 1,
-        "timedOut": 0,
-        "missing": 0,
-        "skipped": 0,
-        "warnings": 1
-      },
-      "artifacts": [
-        {
-          "checkId": "test",
-          "kind": "stdout",
-          "path": ".hal/reports/verify/test-stdout.txt"
-        },
-        {
-          "checkId": "lint",
-          "kind": "stderr",
-          "path": ".hal/reports/verify/lint-stderr.txt"
-        }
-      ]
-    },
     "failure": {
       "step": "ci",
       "category": "ci",
