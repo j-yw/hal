@@ -338,6 +338,9 @@ func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testi
 			if req.Record.ExecutorMode != factory.ExecutorModeLocal {
 				t.Fatalf("local executorMode = %q, want %q", req.Record.ExecutorMode, factory.ExecutorModeLocal)
 			}
+			if req.Record.BaseBranch != "" {
+				t.Fatalf("local baseBranch = %q, want empty default", req.Record.BaseBranch)
+			}
 			return nil
 		},
 		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
@@ -557,8 +560,8 @@ func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T)
 				Path:       ".hal/reports/analysis.md",
 				ReportPath: ".hal/reports/analysis.md",
 			})
-			if loaded.BaseBranch != "hal/factory" {
-				t.Fatalf("baseBranch = %q, want hal/factory", loaded.BaseBranch)
+			if loaded.BaseBranch != "" {
+				t.Fatalf("baseBranch = %q, want empty default", loaded.BaseBranch)
 			}
 			return nil
 		},

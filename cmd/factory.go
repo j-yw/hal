@@ -447,7 +447,7 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		return factory.RunRecord{}, fmt.Errorf("resolve current branch: %w", err)
 	}
 	baseBranch := strings.TrimSpace(req.BaseBranch)
-	if baseBranch == "" {
+	if req.Sandbox && baseBranch == "" {
 		baseBranch = strings.TrimSpace(branchName)
 	}
 	repoRemote, err := deps.repoRemote(dir)
