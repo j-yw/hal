@@ -505,6 +505,9 @@ func handoffStringNeedsRedaction(value string) bool {
 			}
 		}
 	}
+	if handoffStringContainsSSHHost(value) {
+		return true
+	}
 	if handoffStringContainsAbsolutePath(value) {
 		return true
 	}
@@ -615,6 +618,126 @@ func handoffFieldIsAbsolutePath(value string) bool {
 		return true
 	}
 	return handoffArtifactLooksLikeWindowsAbsolutePath(value)
+}
+
+func handoffStringContainsSSHHost(value string) bool {
+	fields := handoffRedactionFields(value)
+	for i, field := range fields {
+		field = handoffTrimRedactionField(field)
+		if field == "" {
+			continue
+		}
+		if handoffSSHURLContainsHost(field) || handoffFieldIsSSHUserHost(field) {
+			return true
+		}
+		if !strings.EqualFold(field, "ssh") {
+			continue
+		}
+		for _, next := range fields[i+1:] {
+			next = handoffTrimRedactionField(next)
+			if next == "" {
+				continue
+			}
+			if strings.HasPrefix(next, "-") {
+				continue
+			}
+			return handoffSSHURLContainsHost(next) ||
+				handoffFieldIsSSHUserHost(next) ||
+				handoffFieldIsSSHBareHost(next)
+		}
+	}
+	return false
+}
+
+func handoffSSHURLContainsHost(field string) bool {
+	if !strings.Contains(field, "://") {
+		return false
+	}
+	parsed, err := url.Parse(field)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "ssh") {
+		return false
+	}
+	return handoffSSHHostLooksSensitive(parsed.Hostname())
+}
+
+func handoffFieldIsSSHUserHost(field string) bool {
+	if strings.Contains(field, "://") {
+		return false
+	}
+	at := strings.LastIndex(field, "@")
+	if at <= 0 || at+1 >= len(field) {
+		return false
+	}
+	host, ok := handoffSplitSSHHostPort(field[at+1:])
+	return ok && handoffSSHHostLooksSensitive(host)
+}
+
+func handoffFieldIsSSHBareHost(field string) bool {
+	host, ok := handoffSplitSSHHostPort(field)
+	return ok && handoffSSHHostLooksSensitive(host)
+}
+
+func handoffSplitSSHHostPort(value string) (string, bool) {
+	value = handoffTrimRedactionField(value)
+	value = strings.TrimSuffix(value, ":")
+	if value == "" || strings.ContainsAny(value, `/\`) {
+		return "", false
+	}
+	if host, port, err := net.SplitHostPort(value); err == nil {
+		return host, port != ""
+	}
+	if idx := strings.LastIndex(value, ":"); idx > 0 {
+		host := value[:idx]
+		port := value[idx+1:]
+		if strings.Contains(host, ":") || port == "" {
+			return "", false
+		}
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				return "", false
+			}
+		}
+		return host, true
+	}
+	return value, true
+}
+
+func handoffSSHHostLooksSensitive(host string) bool {
+	host = strings.TrimSpace(host)
+	host = strings.Trim(host, "[]")
+	host = strings.TrimSuffix(host, ".")
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	hasHostnameMarker := len(labels) > 1
+	for _, label := range labels {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+			isDigit := r >= '0' && r <= '9'
+			if isDigit || r == '-' {
+				hasHostnameMarker = true
+			}
+			if !isAlpha && !isDigit && r != '-' {
+				return false
+			}
+		}
+	}
+	return hasHostnameMarker
+}
+
+func handoffTrimRedactionField(field string) string {
+	field = strings.TrimSpace(field)
+	return strings.Trim(field, "\"'<>[](){}.,;")
 }
 
 func handoffStringContainsSecretAssignment(value string) bool {

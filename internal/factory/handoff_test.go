@@ -156,6 +156,48 @@ func TestLoadHandoffSummaryRedactsSensitiveFailureReason(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryRedactsSSHHostnameFailureReason(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := RunRecord{
+		RunID:        "run-sensitive-ssh-host",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		Failure: &FailureSummary{
+			Step:        "run",
+			Category:    FailureCategoryPipeline,
+			Message:     "remote command failed: ssh ubuntu@sandbox.example.com:22 failed",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+
+	if summary.FailureReason != "[redacted]" {
+		t.Fatalf("FailureReason = %q, want [redacted]", summary.FailureReason)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.FailureReason != "[redacted]" {
+		t.Fatalf("NextAction.FailureReason = %q, want [redacted]", summary.NextAction.FailureReason)
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, forbidden := range []string{"sandbox.example.com", "ubuntu@"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("handoff summary should not expose %q: %s", forbidden, string(data))
+		}
+	}
+}
+
 func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 	tests := []string{
 		"authentication failed for token ghp_xxx",
@@ -181,6 +223,22 @@ func TestSanitizeHandoffFailureReasonRedactsSecretURLFragmentValues(t *testing.T
 	reason := "ci failed: https://example.com/callback#access_token=ghp_secret"
 	if got := SanitizeHandoffFailureReason(reason); got != "[redacted]" {
 		t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
+	}
+}
+
+func TestSanitizeHandoffFailureReasonRedactsSSHHostnames(t *testing.T) {
+	tests := []string{
+		"remote command failed: ssh ubuntu@sandbox.example.com:22 failed",
+		"remote command failed: ssh sandbox.example.com failed",
+		"remote connection failed: ssh://sandbox.example.com",
+		"provider returned ubuntu@sandbox.example.com:22",
+	}
+	for _, tt := range tests {
+		t.Run(tt, func(t *testing.T) {
+			if got := SanitizeHandoffFailureReason(tt); got != "[redacted]" {
+				t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
+			}
+		})
 	}
 }
 
