@@ -211,7 +211,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
-	wantExecArgs := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/github.com/example/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd.md'"}
+	wantExecArgs := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/github.com/example/repo' && { git checkout -- .hal/config.yaml >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd.md'"}
 	if !reflect.DeepEqual(gotExecArgs, wantExecArgs) {
 		t.Fatalf("exec args = %#v", gotExecArgs)
 	}
@@ -647,7 +647,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if !strings.Contains(execArgs[1][2], "base64 -d > '/home/ubuntu/workspace/github.com/example/repo/.hal/prd-feature.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/github.com/example/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/github.com/example/repo' && { git checkout -- .hal/config.yaml >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[2], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
@@ -705,7 +705,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if !strings.Contains(execArgs[1][2], "base64 -d > '/home/ubuntu/workspace/github.com/example/repo/.hal/factory-inputs/analysis.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/github.com/example/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/github.com/example/repo' && { git checkout -- .hal/config.yaml >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[2], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
@@ -825,9 +825,21 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 		BaseBranch: " hal/factory-remote-workspace-bootstrap ",
 	})
 
-	want := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/hal' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
+	want := []string{"sh", "-lc", "cd '/home/ubuntu/workspace/hal' && { git checkout -- .hal/config.yaml >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFactorySandboxRemoteBootstrapCleanupScriptPreservesEngineLinks(t *testing.T) {
+	script := factorySandboxRemoteBootstrapCleanupScript()
+	if !strings.Contains(script, ".hal/config.yaml") {
+		t.Fatalf("cleanup script = %q, want config reset", script)
+	}
+	for _, forbidden := range []string{".claude", ".pi", "git clean"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("cleanup script = %q, must not remove engine link %q", script, forbidden)
+		}
 	}
 }
 
@@ -1694,6 +1706,10 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 			return fakeFactorySandboxProvider{}, nil
 		},
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if reflect.DeepEqual(args, []string{"git", "-C", "/home/ubuntu/workspace/github.com/example/repo", "branch", "--show-current"}) {
+				_, err := io.WriteString(out, "hal/remote-failed\n")
+				return err
+			}
 			if !strings.Contains(strings.Join(args, " "), "exec 'hal' 'auto'") {
 				return nil
 			}
@@ -1720,12 +1736,15 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 	if !strings.Contains(err.Error(), "<address redacted>") {
 		t.Fatalf("returned error missing redaction marker: %v", err)
 	}
-	if len(savedRecords) != 4 {
-		t.Fatalf("saved records = %d, want 4", len(savedRecords))
+	if len(savedRecords) != 5 {
+		t.Fatalf("saved records = %d, want 5", len(savedRecords))
 	}
-	failed := savedRecords[3]
+	failed := savedRecords[len(savedRecords)-1]
 	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "run" {
 		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
+	}
+	if failed.BranchName != "hal/remote-failed" {
+		t.Fatalf("failed branchName = %q, want refreshed remote branch", failed.BranchName)
 	}
 	if failed.SandboxName != "factory-failed" || failed.Sandbox == nil || failed.Sandbox.Provider != "daytona" {
 		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)

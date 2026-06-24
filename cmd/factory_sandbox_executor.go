@@ -313,6 +313,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if flushErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
 		}
+		if err := recordFactorySandboxRemoteBranch(ctx, store, deps, &record, provider, target); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("record factory sandbox branch: %w", err))
+		}
 		sanitizedErr := factorySandboxSanitizedError(target, runErr)
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", fmt.Errorf("%s", sanitizedErr))
 		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
@@ -1007,8 +1010,7 @@ func factorySandboxRemoteCommandArgs(record factory.RunRecord, req factoryRunAut
 }
 
 func factorySandboxRemoteBootstrapCleanupScript() string {
-	cleanArgs := []string{"git", "clean", "-fd", "--", ".claude", ".pi"}
-	return "{ for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; " + shellCommand(cleanArgs) + " >/dev/null 2>&1 || true; }"
+	return "{ git checkout -- .hal/config.yaml >/dev/null 2>&1 || true; }"
 }
 
 func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
