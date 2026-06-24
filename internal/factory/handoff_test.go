@@ -161,6 +161,33 @@ func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryPreservesFailureReasonWithDocumentationPlaceholders(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	message := `step ci failed: failed to create PR: git remote "origin" is not configured; set origin to git@github.com:<owner>/<repo>.git or https://github.com/<owner>/<repo>.git`
+	record := RunRecord{
+		RunID:        "run-placeholder-failure",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		Failure: &FailureSummary{
+			Step:        "ci",
+			Category:    FailureCategoryCI,
+			Message:     message,
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.FailureReason != message {
+		t.Fatalf("FailureReason = %q, want original actionable message", summary.FailureReason)
+	}
+}
+
 func TestLoadHandoffSummaryFailedLocalRunWithoutRepoPathFallsBackToInspect(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 9, 15, 0, 0, time.UTC)

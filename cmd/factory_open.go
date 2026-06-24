@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const FactoryOpenContractVersion = "factory-open-v1"
+
 var factoryOpenCmd = &cobra.Command{
 	Use:   "open <run-id>",
 	Short: "Open handoff guidance for a factory run",
@@ -25,9 +28,11 @@ By default this command prints the best inspection, takeover, or resume command
 without executing it. Failed sandbox runs point to the sandbox SSH command.
 Failed local runs show repository context and resume guidance when saved auto
 state permits continuation. Pass --exec to execute only the generated safe Hal
-command.`,
+command. Pass --json to emit the factory-open-v1 contract without executing
+handoff commands.`,
 	Example: `  hal factory open run-20260620-001
-  hal factory open run-20260620-001 --exec`,
+  hal factory open run-20260620-001 --exec
+  hal factory open run-20260620-001 --json`,
 	RunE: runFactoryOpen,
 }
 
@@ -36,12 +41,26 @@ type factoryOpenDeps struct {
 	execute      func(context.Context, factoryOpenExecRequest) error
 }
 
+type factoryOpenRequest struct {
+	RunID string
+	Exec  bool
+	JSON  bool
+}
+
 type factoryOpenExecRequest struct {
 	Dir    string
 	Args   []string
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+}
+
+type FactoryOpenResponse struct {
+	ContractVersion string                  `json:"contractVersion"`
+	RunID           string                  `json:"runId"`
+	Handoff         *factory.HandoffSummary `json:"handoff,omitempty"`
+	Error           string                  `json:"error,omitempty"`
+	Summary         string                  `json:"summary"`
 }
 
 var defaultFactoryOpenDeps = factoryOpenDeps{
@@ -55,6 +74,7 @@ func runFactoryOpen(cmd *cobra.Command, args []string) error {
 	errOut := io.Writer(os.Stderr)
 	ctx := context.Background()
 	execMode := factoryOpenExecFlag
+	jsonMode := factoryOpenJSONFlag
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
@@ -70,12 +90,30 @@ func runFactoryOpen(cmd *cobra.Command, args []string) error {
 			}
 			execMode = value
 		}
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
 	}
 
-	return runFactoryOpenWithDeps(ctx, in, out, errOut, args[0], execMode, defaultFactoryOpenDeps)
+	return runFactoryOpenWithOptions(ctx, in, out, errOut, factoryOpenRequest{
+		RunID: args[0],
+		Exec:  execMode,
+		JSON:  jsonMode,
+	}, defaultFactoryOpenDeps)
 }
 
 func runFactoryOpenWithDeps(ctx context.Context, in io.Reader, out io.Writer, errOut io.Writer, runID string, execMode bool, deps factoryOpenDeps) error {
+	return runFactoryOpenWithOptions(ctx, in, out, errOut, factoryOpenRequest{
+		RunID: runID,
+		Exec:  execMode,
+	}, deps)
+}
+
+func runFactoryOpenWithOptions(ctx context.Context, in io.Reader, out io.Writer, errOut io.Writer, req factoryOpenRequest, deps factoryOpenDeps) error {
 	if in == nil {
 		in = os.Stdin
 	}
@@ -91,7 +129,10 @@ func runFactoryOpenWithDeps(ctx context.Context, in io.Reader, out io.Writer, er
 	if deps.defaultStore == nil {
 		return fmt.Errorf("factory store dependency is required")
 	}
-	if execMode && deps.execute == nil {
+	if req.JSON && req.Exec {
+		return fmt.Errorf("--json cannot be used with --exec")
+	}
+	if req.Exec && deps.execute == nil {
 		return fmt.Errorf("factory open execute dependency is required")
 	}
 
@@ -99,24 +140,69 @@ func runFactoryOpenWithDeps(ctx context.Context, in io.Reader, out io.Writer, er
 	if err != nil {
 		return fmt.Errorf("open factory store: %w", err)
 	}
+	runID := strings.TrimSpace(req.RunID)
 	summary, err := factory.LoadHandoffSummary(store, runID)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("factory run %q not found", runID)
+		missingErr := fmt.Errorf("factory run %q not found", runID)
+		if req.JSON {
+			if renderErr := renderFactoryOpenJSON(out, runID, nil, missingErr); renderErr != nil {
+				return renderErr
+			}
+			return &ExitCodeError{Code: ExitCodeExpectedNonZero}
+		}
+		return missingErr
 	}
 	if err != nil {
 		return err
 	}
 
+	if req.JSON {
+		return renderFactoryOpenJSON(out, runID, summary, nil)
+	}
 	renderFactoryOpenOutput(out, summary)
-	if !execMode {
+	if !req.Exec {
 		return nil
 	}
 
-	req, err := factoryOpenExecRequestFromSummary(summary, in, out, errOut)
+	execReq, err := factoryOpenExecRequestFromSummary(summary, in, out, errOut)
 	if err != nil {
 		return err
 	}
-	return deps.execute(ctx, req)
+	return deps.execute(ctx, execReq)
+}
+
+func renderFactoryOpenJSON(out io.Writer, runID string, summary *factory.HandoffSummary, err error) error {
+	resp := FactoryOpenResponse{
+		ContractVersion: FactoryOpenContractVersion,
+		RunID:           runID,
+		Handoff:         summary,
+		Summary:         factoryOpenSummary(summary, err),
+	}
+	if err != nil {
+		resp.Error = strings.TrimSpace(err.Error())
+	}
+	data, marshalErr := json.MarshalIndent(resp, "", "  ")
+	if marshalErr != nil {
+		return fmt.Errorf("marshal factory open: %w", marshalErr)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func factoryOpenSummary(summary *factory.HandoffSummary, err error) string {
+	if err != nil {
+		return strings.TrimSpace(err.Error())
+	}
+	if summary == nil {
+		return ""
+	}
+	if summary.NextAction != nil && strings.TrimSpace(summary.NextAction.Command) != "" {
+		return "handoff action: " + strings.TrimSpace(summary.NextAction.Command)
+	}
+	if strings.TrimSpace(summary.InspectCommand) != "" {
+		return "handoff inspection: " + strings.TrimSpace(summary.InspectCommand)
+	}
+	return "no handoff action"
 }
 
 func renderFactoryOpenOutput(out io.Writer, summary *factory.HandoffSummary) {

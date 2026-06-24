@@ -112,10 +112,13 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"Failed sandbox runs",
 				"Failed local runs",
 				"--exec",
+				"--json",
+				"factory-open-v1 contract",
 			},
 			requiredExampleLines: []string{
 				"hal factory open run-20260620-001",
 				"hal factory open run-20260620-001 --exec",
+				"hal factory open run-20260620-001 --json",
 			},
 		},
 		{
@@ -3841,6 +3844,9 @@ func TestFactoryOpenCommandRegistered(t *testing.T) {
 	if cmd.Flags().Lookup("exec") == nil {
 		t.Fatal("factory open should expose --exec flag")
 	}
+	if cmd.Flags().Lookup("json") == nil {
+		t.Fatal("factory open should expose --json flag")
+	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory open missing metadata fields: %v", missing)
 	}
@@ -3906,6 +3912,78 @@ func TestRunFactoryOpenFailedSandboxPrintsSSHCommand(t *testing.T) {
 		if strings.Contains(output, forbidden) {
 			t.Fatalf("open output should not expose %q:\n%s", forbidden, output)
 		}
+	}
+}
+
+func TestRunFactoryOpenJSONEmitsHandoffSummary(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-open-json", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusFailed
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.BranchName = "hal/factory-handoff"
+	record.SandboxName = "factory-remote"
+	record.Sandbox = &factory.SandboxMetadata{
+		Name:   "factory-remote",
+		Status: sandbox.StatusRunning,
+	}
+	record.Failure = &factory.FailureSummary{
+		Step:        "run",
+		Category:    factory.FailureCategoryPipeline,
+		Message:     "remote execution failed",
+		Recoverable: true,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryOpenWithOptions(context.Background(), nil, &buf, io.Discard, factoryOpenRequest{
+		RunID: record.RunID,
+		JSON:  true,
+	}, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryOpenWithOptions() unexpected error: %v", err)
+	}
+
+	var resp FactoryOpenResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.ContractVersion != FactoryOpenContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryOpenContractVersion)
+	}
+	if resp.Handoff == nil || resp.Handoff.NextAction == nil {
+		t.Fatalf("handoff nextAction missing: %#v", resp.Handoff)
+	}
+	if resp.Handoff.NextAction.Command != "hal sandbox ssh factory-remote" {
+		t.Fatalf("nextAction command = %q", resp.Handoff.NextAction.Command)
+	}
+}
+
+func TestRunFactoryOpenJSONMissingRunReturnsJSONError(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	var buf bytes.Buffer
+	err := runFactoryOpenWithOptions(context.Background(), nil, &buf, io.Discard, factoryOpenRequest{
+		RunID: "missing-run",
+		JSON:  true,
+	}, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) || exitErr.Code != ExitCodeExpectedNonZero {
+		t.Fatalf("runFactoryOpenWithOptions() error = %v, want silent non-zero exit", err)
+	}
+
+	var resp FactoryOpenResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Error != `factory run "missing-run" not found` {
+		t.Fatalf("error = %q", resp.Error)
 	}
 }
 

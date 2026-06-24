@@ -44,6 +44,7 @@ var factoryRunBaseFlag string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
 var factoryOpenExecFlag bool
+var factoryOpenJSONFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -138,6 +139,7 @@ func init() {
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
 	factoryArtifactsCmd.Flags().BoolVar(&factoryArtifactsJSONFlag, "json", false, "Output machine-readable JSON (factory-artifacts-v1 contract)")
 	factoryOpenCmd.Flags().BoolVar(&factoryOpenExecFlag, "exec", false, "Execute the suggested inspection or resume command")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenJSONFlag, "json", false, "Output machine-readable JSON (factory-open-v1 contract)")
 	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)

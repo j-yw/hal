@@ -206,7 +206,7 @@ func SanitizeHandoffFailureReason(reason string) string {
 	if reason == "" {
 		return ""
 	}
-	if handoffStringNeedsRedaction(reason) {
+	if handoffStringNeedsRedaction(handoffNormalizeDocPlaceholders(reason)) {
 		return handoffRedactedLocation
 	}
 	return reason
@@ -483,6 +483,46 @@ func handoffStringNeedsRedaction(value string) bool {
 		}
 	}
 	return false
+}
+
+func handoffNormalizeDocPlaceholders(value string) string {
+	var out strings.Builder
+	for i := 0; i < len(value); {
+		if value[i] != '<' {
+			out.WriteByte(value[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(value[i+1:], '>')
+		if end < 0 {
+			out.WriteByte(value[i])
+			i++
+			continue
+		}
+		token := value[i+1 : i+1+end]
+		if handoffDocPlaceholderToken(token) {
+			out.WriteString("placeholder")
+			i += end + 2
+			continue
+		}
+		out.WriteString(value[i : i+end+2])
+		i += end + 2
+	}
+	return out.String()
+}
+
+func handoffDocPlaceholderToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func handoffFieldContainsIP(field string) bool {
