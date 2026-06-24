@@ -611,6 +611,21 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 			raw:  "https://github.com/jywlabs/hal/pull/42?ref=ghp_secret",
 			want: "",
 		},
+		{
+			name: "token fragment",
+			raw:  "https://github.com/jywlabs/hal/pull/42#token=secret",
+			want: "",
+		},
+		{
+			name: "secret fragment value",
+			raw:  "https://github.com/jywlabs/hal/pull/42#ref=ghp_secret",
+			want: "",
+		},
+		{
+			name: "safe fragment",
+			raw:  "https://github.com/jywlabs/hal/pull/42#discussion_r123",
+			want: "https://github.com/jywlabs/hal/pull/42#discussion_r123",
+		},
 	}
 
 	for _, tt := range tests {
@@ -624,7 +639,7 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 
 func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 	rawPath := filepath.Join(t.TempDir(), "external", "secret.md")
-	locations := handoffArtifactLocations([]ArtifactReference{
+	locations := handoffArtifactLocations("run-handoff", []ArtifactReference{
 		{
 			Name:       "absolute",
 			Type:       "markdown",
@@ -662,6 +677,57 @@ func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	for _, forbidden := range []string{rawPath, filepath.Dir(rawPath), "token=secret", "../private.md"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
+		}
+	}
+}
+
+func TestHandoffArtifactLocationsSanitizeUnsafeStoredPaths(t *testing.T) {
+	locations := handoffArtifactLocations("run-handoff", []ArtifactReference{
+		{
+			Name:       "url",
+			Type:       "json",
+			Path:       "https://example.com/artifact.json?token=secret",
+			StoredPath: "https://example.com/artifact.json?token=secret",
+		},
+		{
+			Name:       "wrong-run",
+			Type:       "json",
+			Path:       "safe.json",
+			StoredPath: "artifacts/other-run/artifact.json",
+		},
+		{
+			Name:       "parent",
+			Type:       "json",
+			Path:       "parent.json",
+			StoredPath: "artifacts/run-handoff/../private.json",
+		},
+		{
+			Name:       "token",
+			Type:       "json",
+			Path:       "token.json",
+			StoredPath: "artifacts/run-handoff/token=ghp_secret.json",
+		},
+	}, false)
+
+	if len(locations) != 4 {
+		t.Fatalf("locations len = %d, want 4: %#v", len(locations), locations)
+	}
+	if locations[0].Path != "[redacted]" || locations[0].StoredPath != "" {
+		t.Fatalf("url location = %#v, want redacted display without stored path", locations[0])
+	}
+	for i := 1; i < len(locations); i++ {
+		if locations[i].StoredPath != "" {
+			t.Fatalf("locations[%d].StoredPath = %q, want empty", i, locations[i].StoredPath)
+		}
+	}
+
+	data, err := json.Marshal(locations)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, forbidden := range []string{"https://example.com", "other-run", "../private", "ghp_secret"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
 		}

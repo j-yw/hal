@@ -76,8 +76,8 @@ func NewHandoffSummary(store Store, record RunRecord) HandoffSummary {
 		PullRequestURL:    handoffPullRequestURL(store, record),
 		CurrentStep:       handoffCurrentStep(record),
 		FailureReason:     handoffFailureReason(record),
-		ArtifactLocations: handoffArtifactLocations(record.Artifacts, false),
-		LogLocations:      handoffArtifactLocations(record.Artifacts, true),
+		ArtifactLocations: handoffArtifactLocations(record.RunID, record.Artifacts, false),
+		LogLocations:      handoffArtifactLocations(record.RunID, record.Artifacts, true),
 	}
 
 	if record.Status != RunStatusFailed {
@@ -304,7 +304,7 @@ func handoffReadStoredArtifact(store Store, runID string, artifact ArtifactRefer
 	return data, true
 }
 
-func handoffArtifactLocations(artifacts []ArtifactReference, logsOnly bool) []NextActionLocation {
+func handoffArtifactLocations(runID string, artifacts []ArtifactReference, logsOnly bool) []NextActionLocation {
 	locations := make([]NextActionLocation, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		if logsOnly != handoffArtifactLooksLikeLog(artifact) {
@@ -313,7 +313,7 @@ func handoffArtifactLocations(artifacts []ArtifactReference, logsOnly bool) []Ne
 		location := NextActionLocation{
 			Name:       strings.TrimSpace(artifact.Name),
 			Path:       handoffSafeArtifactPath(artifact.Path),
-			StoredPath: strings.TrimSpace(artifact.StoredPath),
+			StoredPath: handoffSafeStoredArtifactPath(runID, artifact.StoredPath),
 		}
 		if location.Path == handoffRedactedLocation && location.StoredPath != "" {
 			location.Path = ""
@@ -382,6 +382,9 @@ func handoffSafeURL(rawURL string) string {
 	if handoffURLQueryContainsSecret(parsed.Query()) {
 		return ""
 	}
+	if handoffURLFragmentContainsSecret(parsed.Fragment) {
+		return ""
+	}
 	return parsed.String()
 }
 
@@ -410,6 +413,41 @@ func handoffSafeArtifactPath(path string) string {
 		return handoffRedactedLocation
 	}
 	return filepath.ToSlash(cleanPath)
+}
+
+func handoffSafeStoredArtifactPath(runID, storedPath string) string {
+	runID = strings.TrimSpace(runID)
+	if _, err := validateRunID(runID); err != nil {
+		return ""
+	}
+	storedPath = strings.TrimSpace(storedPath)
+	if storedPath == "" {
+		return ""
+	}
+	if filepath.IsAbs(storedPath) || strings.ContainsAny(storedPath, `\`) || handoffArtifactPathLooksLikeURL(storedPath) {
+		return ""
+	}
+	cleanStoredPath := filepath.Clean(filepath.FromSlash(storedPath))
+	runPrefix := filepath.Join(artifactsDirName, runID)
+	if cleanStoredPath == "." || cleanStoredPath == runPrefix || !strings.HasPrefix(cleanStoredPath, runPrefix+string(filepath.Separator)) {
+		return ""
+	}
+	safePath := filepath.ToSlash(cleanStoredPath)
+	if handoffStoredPathContainsSecret(safePath) {
+		return ""
+	}
+	return safePath
+}
+
+func handoffStoredPathContainsSecret(storedPath string) bool {
+	for _, segment := range strings.Split(storedPath, "/") {
+		if handoffStringContainsSecretAssignment(segment) ||
+			handoffStringContainsSecretValueAssignment(segment) ||
+			handoffURLQueryValueLooksLikeSecret(segment) {
+			return true
+		}
+	}
+	return false
 }
 
 func handoffArtifactPathLooksLikeURL(path string) bool {
@@ -677,6 +715,23 @@ func handoffURLQueryContainsSecret(query url.Values) bool {
 		}
 	}
 	return false
+}
+
+func handoffURLFragmentContainsSecret(fragment string) bool {
+	fragment = strings.TrimSpace(fragment)
+	if fragment == "" {
+		return false
+	}
+	if query, err := url.ParseQuery(fragment); err == nil && handoffURLQueryContainsSecret(query) {
+		return true
+	}
+	if unescaped, err := url.QueryUnescape(fragment); err == nil {
+		fragment = unescaped
+	}
+	return handoffStringContainsSecretAssignment(fragment) ||
+		handoffStringContainsSecretValueAssignment(fragment) ||
+		handoffStringContainsBareSecretValue(fragment) ||
+		handoffURLQueryValueLooksLikeSecret(fragment)
 }
 
 func handoffURLQueryValueLooksLikeSecret(value string) bool {
