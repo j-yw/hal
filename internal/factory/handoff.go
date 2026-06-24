@@ -535,6 +535,9 @@ func handoffSafeURL(rawURL string) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return ""
 	}
+	if handoffBareDNSHostLooksSensitive(host, parsed.Port() != "") {
+		return ""
+	}
 	if handoffURLRawQueryContainsSecret(parsed.RawQuery) {
 		return ""
 	}

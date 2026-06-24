@@ -852,6 +852,16 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 			want: "https://github.com/jywlabs/hal/pull/42?ref=ci-main",
 		},
 		{
+			name: "private dns host",
+			raw:  "https://github.internal.corp/jywlabs/hal/pull/42",
+			want: "",
+		},
+		{
+			name: "host with port",
+			raw:  "https://github.com:8443/jywlabs/hal/pull/42",
+			want: "",
+		},
+		{
 			name: "token query",
 			raw:  "https://github.com/jywlabs/hal/pull/42?token=secret",
 			want: "",
