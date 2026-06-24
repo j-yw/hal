@@ -2423,6 +2423,11 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	if storedRunRecord.Verification == nil || storedRunRecord.Verification.Summary.Total != 1 {
 		t.Fatalf("stored run record verification = %#v", storedRunRecord.Verification)
 	}
+	for _, artifact := range storedRunRecord.Artifacts {
+		if artifact.SourcePath != "" {
+			t.Fatalf("stored run record artifact %q SourcePath = %q, want empty", artifact.Name, artifact.SourcePath)
+		}
+	}
 
 	events, err := store.LoadEvents(record.RunID)
 	if err != nil {
@@ -5092,6 +5097,31 @@ func TestSafeFactoryPRURLRejectsSecretURLParts(t *testing.T) {
 		{
 			name: "api key query",
 			raw:  "https://github.com/resciencelab/hal/pull/11?api_key=secret",
+			want: "",
+		},
+		{
+			name: "signature query",
+			raw:  "https://storage.example.com/artifact.json?signature=abc123",
+			want: "",
+		},
+		{
+			name: "short signature query",
+			raw:  "https://storage.example.com/artifact.json?sig=abc123",
+			want: "",
+		},
+		{
+			name: "aws signature query",
+			raw:  "https://storage.example.com/artifact.json?X-Amz-Signature=abc123",
+			want: "",
+		},
+		{
+			name: "google signature query",
+			raw:  "https://storage.example.com/artifact.json?X-Goog-Signature=abc123",
+			want: "",
+		},
+		{
+			name: "azure signature query",
+			raw:  "https://storage.example.com/artifact.json?X-Ms-Signature=abc123",
 			want: "",
 		},
 		{

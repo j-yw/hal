@@ -1317,7 +1317,7 @@ func safeFactoryArtifactURL(rawURL string) string {
 		return ""
 	}
 	for key := range parsed.Query() {
-		if factoryArtifactSecretKey(key) {
+		if factoryArtifactSecretURLQueryKey(key) {
 			return ""
 		}
 	}
@@ -1583,13 +1583,18 @@ func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecor
 	if recordPath == "" {
 		return record, nil
 	}
+	sourcePath, cleanup, err := materializeFactoryRunRecordArtifact(record)
+	if err != nil {
+		return factory.RunRecord{}, err
+	}
+	defer cleanup()
 	artifact := factory.ArtifactReference{
 		ID:   "factory-run-record",
 		Name: "factory-run-record",
 		Type: "json",
 		Path: recordPath,
 	}
-	if _, err := store.SaveArtifactFile(record.RunID, artifact, recordPath); err != nil {
+	if _, err := store.SaveArtifactFile(record.RunID, artifact, sourcePath); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("store factory run record artifact: %w", err)
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
@@ -1597,6 +1602,52 @@ func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecor
 		return factory.RunRecord{}, fmt.Errorf("reload factory run record artifact: %w", err)
 	}
 	return *updatedRecord, nil
+}
+
+func materializeFactoryRunRecordArtifact(record factory.RunRecord) (string, func(), error) {
+	scrubbed := scrubFactoryRunRecordForArtifact(record)
+	data, err := json.MarshalIndent(scrubbed, "", "  ")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("marshal factory run record artifact: %w", err)
+	}
+	tmp, err := os.CreateTemp("", "hal-factory-run-record-*.json")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create factory run record artifact temp file: %w", err)
+	}
+	cleanup := func() {
+		_ = os.Remove(tmp.Name())
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return "", func() {}, fmt.Errorf("write factory run record artifact temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("close factory run record artifact temp file: %w", err)
+	}
+	return tmp.Name(), cleanup, nil
+}
+
+func scrubFactoryRunRecordForArtifact(record factory.RunRecord) factory.RunRecord {
+	record.Artifacts = scrubFactoryArtifactReferencesForRecordArtifact(record.Artifacts)
+	return record
+}
+
+func scrubFactoryArtifactReferencesForRecordArtifact(artifacts []factory.ArtifactReference) []factory.ArtifactReference {
+	if artifacts == nil {
+		return nil
+	}
+	out := make([]factory.ArtifactReference, len(artifacts))
+	for i, artifact := range artifacts {
+		artifact.SourcePath = ""
+		artifact.Path = sanitizeFactoryArtifactPath(artifact.Path)
+		artifact.URL = safeFactoryArtifactURL(artifact.URL)
+		artifact.Summary = sanitizeFactoryArtifactSummary(artifact.Summary)
+		artifact.Warnings = sanitizeFactoryArtifactWarnings(artifact.Warnings)
+		out[i] = artifact
+	}
+	return out
 }
 
 func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot, snapshots []factory.ArtifactReference) error {
@@ -3330,6 +3381,19 @@ func factoryArtifactSecretKey(key string) bool {
 		}
 	}
 	return key == "key" || strings.HasSuffix(key, "_key") || strings.HasSuffix(key, "-key")
+}
+
+func factoryArtifactSecretURLQueryKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if factoryArtifactSecretKey(key) {
+		return true
+	}
+	switch key {
+	case "signature", "sig", "x-amz-signature", "x-goog-signature", "x-ms-signature":
+		return true
+	default:
+		return false
+	}
 }
 
 func factoryArtifactStringNeedsRedaction(value string) bool {
