@@ -471,25 +471,27 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, s
 	if err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
-	completedRecord, completedAt, err = recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
-	if err != nil {
-		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
-		var recordErrs []error
-		if failureErr != nil {
-			recordErrs = append(recordErrs, failureErr)
-		}
-		if eventErr := recordFactoryRunVerificationFailed(store, failedRecord.RunID, completedAt, err); eventErr != nil {
-			recordErrs = append(recordErrs, fmt.Errorf("record factory verification failure event: %w", eventErr))
-		}
-		if failedRecord.Failure != nil {
-			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
-				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+	if !req.Sandbox {
+		completedRecord, completedAt, err = recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
+		if err != nil {
+			failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
+			var recordErrs []error
+			if failureErr != nil {
+				recordErrs = append(recordErrs, failureErr)
 			}
+			if eventErr := recordFactoryRunVerificationFailed(store, failedRecord.RunID, completedAt, err); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory verification failure event: %w", eventErr))
+			}
+			if failedRecord.Failure != nil {
+				if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
+					recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+				}
+			}
+			if len(recordErrs) > 0 {
+				return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
+			}
+			return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 		}
-		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
-		}
-		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
 	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
 	if err != nil {

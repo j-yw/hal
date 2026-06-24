@@ -1681,6 +1681,14 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
 			return nil
 		},
+		loadVerify: func(string) (*verify.Config, error) {
+			t.Fatal("loadVerify called for sandbox run")
+			return nil, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			t.Fatal("runVerify called for sandbox run")
+			return nil, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
