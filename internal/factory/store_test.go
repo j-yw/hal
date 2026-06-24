@@ -406,6 +406,9 @@ func TestSaveArtifactFileCopiesUnderFactoryStoreAndUpdatesRun(t *testing.T) {
 	if loaded.Artifacts[0].StoredPath != wantStoredPath {
 		t.Fatalf("loaded artifact StoredPath = %q, want %q", loaded.Artifacts[0].StoredPath, wantStoredPath)
 	}
+	if loaded.Artifacts[0].SourcePath != "" {
+		t.Fatalf("loaded artifact SourcePath = %q, want empty", loaded.Artifacts[0].SourcePath)
+	}
 	if loaded.Artifacts[0].Summary["kind"] != "report" {
 		t.Fatalf("loaded artifact summary = %#v, want report kind", loaded.Artifacts[0].Summary)
 	}

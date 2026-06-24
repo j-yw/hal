@@ -1740,8 +1740,8 @@ func TestRunFactoryRunWithDepsCopiesLocalReportLogAndVerificationArtifacts(t *te
 		".hal/reports/test/stdout.txt",
 	} {
 		artifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, wantPath)
-		if artifact.SourcePath == "" {
-			t.Fatalf("artifact %q SourcePath should be set", wantPath)
+		if artifact.SourcePath != "" {
+			t.Fatalf("artifact %q SourcePath = %q, want empty", wantPath, artifact.SourcePath)
 		}
 		if artifact.SizeBytes == nil || *artifact.SizeBytes == 0 {
 			t.Fatalf("artifact %q SizeBytes = %v, want non-zero", wantPath, artifact.SizeBytes)

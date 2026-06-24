@@ -190,7 +190,9 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 	artifact.SizeBytes = &size
 	artifact.CreatedAt = &createdAt
 
-	record.Artifacts = upsertArtifact(record.Artifacts, artifact)
+	persistedArtifact := artifact
+	persistedArtifact.SourcePath = ""
+	record.Artifacts = upsertArtifact(record.Artifacts, persistedArtifact)
 	if err := s.SaveRun(record); err != nil {
 		return ArtifactReference{}, fmt.Errorf("save factory artifact metadata %q: %w", artifact.Name, err)
 	}
