@@ -196,6 +196,13 @@ func TestParseFactoryRunRequest(t *testing.T) {
 			wantErr: "--base is required when --sandbox is set",
 		},
 		{
+			name:        "sandbox name requires sandbox",
+			args:        []string{".hal/prd-feature.md"},
+			baseBranch:  "main",
+			sandboxName: "factory-dev",
+			wantErr:     "--sandbox-name requires --sandbox",
+		},
+		{
 			name:       "positional and report conflict",
 			args:       []string{".hal/prd-feature.md"},
 			reportPath: ".hal/reports/analysis.md",
