@@ -379,10 +379,8 @@ func handoffSafeURL(rawURL string) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return ""
 	}
-	for key := range parsed.Query() {
-		if handoffSecretKey(key) {
-			return ""
-		}
+	if handoffURLQueryContainsSecret(parsed.Query()) {
+		return ""
 	}
 	return parsed.String()
 }
@@ -461,10 +459,8 @@ func handoffStringNeedsRedaction(value string) bool {
 			if host := strings.TrimSpace(parsed.Hostname()); host != "" && net.ParseIP(host) != nil {
 				return true
 			}
-			for key := range parsed.Query() {
-				if handoffSecretKey(key) {
-					return true
-				}
+			if handoffURLQueryContainsSecret(parsed.Query()) {
+				return true
 			}
 		}
 	}
@@ -472,6 +468,9 @@ func handoffStringNeedsRedaction(value string) bool {
 		return true
 	}
 	if handoffStringContainsSecretAssignment(value) {
+		return true
+	}
+	if handoffStringContainsSecretValueAssignment(value) {
 		return true
 	}
 	fields := strings.FieldsFunc(value, func(r rune) bool {
@@ -599,6 +598,24 @@ func handoffStringContainsSecretAssignment(value string) bool {
 	return false
 }
 
+func handoffStringContainsSecretValueAssignment(value string) bool {
+	for _, field := range handoffRedactionFields(value) {
+		field = strings.TrimSpace(field)
+		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if field == "" {
+			continue
+		}
+		for _, sep := range []string{"=", ":"} {
+			if idx := strings.Index(field, sep); idx > 0 && idx+1 < len(field) {
+				if handoffURLQueryValueLooksLikeSecret(field[idx+1:]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func handoffStringContainsBareSecretValue(value string) bool {
 	fields := handoffRedactionFields(value)
 	for i, field := range fields {
@@ -632,7 +649,55 @@ func handoffFieldLooksLikeSecretValue(value string) bool {
 	if value == "" {
 		return false
 	}
-	lower := strings.ToLower(value)
+	if handoffFieldHasSecretPrefix(value) {
+		return true
+	}
+	if len(value) >= 6 && strings.ContainsAny(value, "_-./+=") {
+		return true
+	}
+	if len(value) >= 6 {
+		for _, r := range value {
+			if r >= '0' && r <= '9' {
+				return true
+			}
+		}
+	}
+	return len(value) >= 16 && handoffFieldLooksLikeTokenChars(value)
+}
+
+func handoffURLQueryContainsSecret(query url.Values) bool {
+	for key, values := range query {
+		if handoffSecretKey(key) {
+			return true
+		}
+		for _, value := range values {
+			if handoffURLQueryValueLooksLikeSecret(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func handoffURLQueryValueLooksLikeSecret(value string) bool {
+	for _, field := range handoffRedactionFields(value) {
+		field = strings.TrimSpace(field)
+		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if field == "" {
+			continue
+		}
+		if handoffFieldHasSecretPrefix(field) {
+			return true
+		}
+		if len(field) >= 20 && handoffFieldLooksLikeTokenChars(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffFieldHasSecretPrefix(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
 	knownPrefixes := []string{
 		"ghp_",
 		"github_pat_",
@@ -649,17 +714,7 @@ func handoffFieldLooksLikeSecretValue(value string) bool {
 			return true
 		}
 	}
-	if len(value) >= 6 && strings.ContainsAny(value, "_-./+=") {
-		return true
-	}
-	if len(value) >= 6 {
-		for _, r := range value {
-			if r >= '0' && r <= '9' {
-				return true
-			}
-		}
-	}
-	return len(value) >= 16 && handoffFieldLooksLikeTokenChars(value)
+	return false
 }
 
 func handoffFieldLooksLikeTokenChars(value string) bool {

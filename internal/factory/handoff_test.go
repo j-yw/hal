@@ -96,6 +96,33 @@ func TestLoadHandoffSummaryFailedLocalRun(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryDropsPullRequestURLWithSecretQueryValue(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := RunRecord{
+		RunID:        "run-sensitive-pr",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	saveHandoffArtifact(t, store, record.RunID, ArtifactReference{
+		ID:   "pr-outcome",
+		Name: "pr-outcome",
+		Type: "json",
+		Path: "factory/pr-outcome.json",
+	}, `{"pullRequestUrl":"https://github.com/jywlabs/hal/pull/42?ref=ghp_secret"}`)
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.PullRequestURL != "" {
+		t.Fatalf("PullRequestURL = %q, want empty", summary.PullRequestURL)
+	}
+}
+
 func TestLoadHandoffSummaryRedactsSensitiveFailureReason(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := RunRecord{
@@ -140,6 +167,13 @@ func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 				t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
 			}
 		})
+	}
+}
+
+func TestSanitizeHandoffFailureReasonRedactsSecretURLQueryValues(t *testing.T) {
+	reason := "ci failed: https://github.com/jywlabs/hal/pull/42?ref=ghp_secret"
+	if got := SanitizeHandoffFailureReason(reason); got != "[redacted]" {
+		t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
 	}
 }
 
@@ -524,7 +558,7 @@ func TestHandoffInspectCommandRejectsUnsafeRunIDs(t *testing.T) {
 	}
 }
 
-func TestHandoffSafeURLRejectsSecretQueryKeys(t *testing.T) {
+func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
@@ -536,6 +570,11 @@ func TestHandoffSafeURLRejectsSecretQueryKeys(t *testing.T) {
 			want: "https://github.com/jywlabs/hal/pull/42",
 		},
 		{
+			name: "safe query value",
+			raw:  "https://github.com/jywlabs/hal/pull/42?ref=ci-main",
+			want: "https://github.com/jywlabs/hal/pull/42?ref=ci-main",
+		},
+		{
 			name: "token query",
 			raw:  "https://github.com/jywlabs/hal/pull/42?token=secret",
 			want: "",
@@ -543,6 +582,11 @@ func TestHandoffSafeURLRejectsSecretQueryKeys(t *testing.T) {
 		{
 			name: "access key query",
 			raw:  "https://github.com/jywlabs/hal/pull/42?access_key=secret",
+			want: "",
+		},
+		{
+			name: "secret query value",
+			raw:  "https://github.com/jywlabs/hal/pull/42?ref=ghp_secret",
 			want: "",
 		},
 	}
