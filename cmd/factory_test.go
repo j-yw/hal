@@ -5049,6 +5049,7 @@ func TestRunFactoryArtifactsJSONEmitsSafePayload(t *testing.T) {
 func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 	base := time.Date(2026, 6, 21, 8, 25, 0, 0, time.UTC)
 	rawPath := filepath.Join(t.TempDir(), "external-prds", "secret-feature.md")
+	rawVerificationPath := filepath.Join(t.TempDir(), "verify-artifacts", "secret-output.log")
 	record := testFactoryRunRecord("run-absolute-artifact-path", base, base.Add(time.Minute))
 	record.Artifacts = []factory.ArtifactReference{
 		{
@@ -5064,6 +5065,12 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 			Partial: true,
 		},
 	}
+	record.Verification = &factory.VerificationRecord{
+		Summary: verify.Summary{Total: 1, Passed: 1},
+		Artifacts: []verify.ArtifactReference{
+			{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: rawVerificationPath},
+		},
+	}
 
 	summary := newFactoryArtifactSummaries(record.Artifacts)[0]
 	if summary.Path != "secret-feature.md" {
@@ -5071,9 +5078,10 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 	}
 
 	payloads := map[string]any{
-		"factory-run":       newFactoryRunResponse(record, nil),
-		"factory-status":    FactoryStatusResponse{ContractVersion: FactoryStatusContractVersion, Run: newFactoryStatusRun(record), Timeline: []factory.EventRecord{}},
-		"factory-artifacts": newFactoryArtifactsResponse(record),
+		"factory-run":        newFactoryRunResponse(record, nil),
+		"factory-run-record": scrubFactoryRunRecordForArtifact(record),
+		"factory-status":     FactoryStatusResponse{ContractVersion: FactoryStatusContractVersion, Run: newFactoryStatusRun(record), Timeline: []factory.EventRecord{}},
+		"factory-artifacts":  newFactoryArtifactsResponse(record),
 	}
 	for name, payload := range payloads {
 		data, err := json.Marshal(payload)
@@ -5081,7 +5089,7 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 			t.Fatalf("json.Marshal(%s) error: %v", name, err)
 		}
 		raw := string(data)
-		if strings.Contains(raw, rawPath) || strings.Contains(raw, filepath.Dir(rawPath)) || strings.Contains(raw, "super-secret") {
+		if strings.Contains(raw, rawPath) || strings.Contains(raw, filepath.Dir(rawPath)) || strings.Contains(raw, rawVerificationPath) || strings.Contains(raw, filepath.Dir(rawVerificationPath)) || strings.Contains(raw, "super-secret") {
 			t.Fatalf("%s JSON leaked raw artifact warning content: %s", name, raw)
 		}
 	}

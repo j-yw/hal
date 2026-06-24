@@ -1624,6 +1624,7 @@ func materializeFactoryRunRecordArtifact(record factory.RunRecord) (string, func
 
 func scrubFactoryRunRecordForArtifact(record factory.RunRecord) factory.RunRecord {
 	record.Artifacts = scrubFactoryArtifactReferencesForRecordArtifact(record.Artifacts)
+	record.Verification = scrubFactoryVerificationRecord(record.Verification)
 	return record
 }
 
@@ -1641,6 +1642,21 @@ func scrubFactoryArtifactReferencesForRecordArtifact(artifacts []factory.Artifac
 		out[i] = artifact
 	}
 	return out
+}
+
+func scrubFactoryVerificationRecord(record *factory.VerificationRecord) *factory.VerificationRecord {
+	if record == nil {
+		return nil
+	}
+	out := *record
+	if record.Artifacts != nil {
+		out.Artifacts = make([]verify.ArtifactReference, len(record.Artifacts))
+		for i, artifact := range record.Artifacts {
+			artifact.Path = sanitizeFactoryArtifactPath(artifact.Path)
+			out.Artifacts[i] = artifact
+		}
+	}
+	return &out
 }
 
 func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot, snapshots []factory.ArtifactReference) error {
@@ -2992,7 +3008,7 @@ func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
 		UpdatedAt:    record.UpdatedAt,
 		FinishedAt:   record.FinishedAt,
 		Artifacts:    newFactoryStatusArtifactSummaries(record.Artifacts),
-		Verification: record.Verification,
+		Verification: scrubFactoryVerificationRecord(record.Verification),
 		Failure:      record.Failure,
 	}
 }
