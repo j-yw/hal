@@ -208,7 +208,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
-	wantExecArgs := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd.md'"}
+	wantExecArgs := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd.md'"}
 	if !reflect.DeepEqual(gotExecArgs, wantExecArgs) {
 		t.Fatalf("exec args = %#v", gotExecArgs)
 	}
@@ -635,7 +635,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if !strings.Contains(execArgs[1][2], "base64 -d > '/workspace/repo/.hal/prd-feature.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[2], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
@@ -693,7 +693,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if !strings.Contains(execArgs[1][2], "base64 -d > '/workspace/repo/.hal/factory-inputs/analysis.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[2], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
@@ -812,7 +812,7 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 		BaseBranch: " hal/factory-remote-workspace-bootstrap ",
 	})
 
-	want := []string{"sh", "-lc", "cd '/workspace/hal' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
+	want := []string{"sh", "-lc", "cd '/workspace/hal' && { for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
 	}

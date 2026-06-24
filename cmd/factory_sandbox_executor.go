@@ -919,8 +919,8 @@ func factorySandboxRemoteCommandArgs(record factory.RunRecord, req factoryRunAut
 }
 
 func factorySandboxRemoteBootstrapCleanupScript() string {
-	cleanArgs := []string{"git", "clean", "-fd", "--", ".claude", ".pi", ".hal/commands"}
-	return "{ for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; " + shellCommand(cleanArgs) + " >/dev/null 2>&1 || true; }"
+	cleanArgs := []string{"git", "clean", "-fd", "--", ".claude", ".pi"}
+	return "{ for p in .hal/config.yaml .claude .pi; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; " + shellCommand(cleanArgs) + " >/dev/null 2>&1 || true; }"
 }
 
 func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
