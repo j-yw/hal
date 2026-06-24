@@ -316,6 +316,12 @@ func bootstrapRepositoryRemoteMatches(actual, expected string) bool {
 		return true
 	}
 
+	actualCredentialFree, actualOK := normalizeBootstrapRemoteCredentials(actual)
+	expectedCredentialFree, expectedOK := normalizeBootstrapRemoteCredentials(expected)
+	if actualOK && expectedOK && actualCredentialFree == expectedCredentialFree {
+		return true
+	}
+
 	actualRepo, ok := normalizeBootstrapGitHubRemote(actual)
 	if !ok {
 		return false
@@ -325,6 +331,32 @@ func bootstrapRepositoryRemoteMatches(actual, expected string) bool {
 		return false
 	}
 	return actualRepo == expectedRepo
+}
+
+func normalizeBootstrapRemoteCredentials(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" || !strings.Contains(remote, "://") {
+		return "", false
+	}
+
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	if parsed.User == nil {
+		return parsed.String(), true
+	}
+
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		parsed.User = nil
+		return parsed.String(), true
+	}
+
+	username := parsed.User.Username()
+	if _, hasPassword := parsed.User.Password(); hasPassword && username != "" {
+		parsed.User = url.User(username)
+	}
+	return parsed.String(), true
 }
 
 func normalizeBootstrapGitHubRemote(remote string) (string, bool) {

@@ -314,6 +314,46 @@ func TestValidateExistingRepoRemoteAcceptsEquivalentGitHubRemoteFormats(t *testi
 	}
 }
 
+func TestValidateExistingRepoRemoteAcceptsCredentialFreeHTTPRemote(t *testing.T) {
+	tests := []struct {
+		name      string
+		actual    string
+		requested string
+	}{
+		{
+			name:      "sanitized gitlab actual matches credentialed requested",
+			actual:    "https://gitlab.com/example/project.git",
+			requested: "https://user:token@gitlab.com/example/project.git",
+		},
+		{
+			name:      "credentialed actual matches sanitized requested",
+			actual:    "https://user:token@gitlab.com/example/project.git",
+			requested: "https://gitlab.com/example/project.git",
+		},
+		{
+			name:      "ssh url password is ignored",
+			actual:    "ssh://git@gitlab.example.com/example/project.git",
+			requested: "ssh://git:token@gitlab.example.com/example/project.git",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := BootstrapRepositoryDeps{
+				RepoRemoteURL: func(path string) (string, error) {
+					if path != "/workspace/hal" {
+						t.Fatalf("repo remote path = %q, want /workspace/hal", path)
+					}
+					return tt.actual, nil
+				},
+			}
+			if err := deps.validateExistingRepoRemote("/workspace/hal", tt.requested); err != nil {
+				t.Fatalf("validateExistingRepoRemote() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateExistingRepoRemoteRejectsDifferentGitHubRepository(t *testing.T) {
 	deps := BootstrapRepositoryDeps{
 		RepoRemoteURL: func(path string) (string, error) {
