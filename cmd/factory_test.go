@@ -130,14 +130,15 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 
 func TestParseFactoryRunRequest(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		reportPath string
-		baseBranch string
-		jsonMode   bool
-		sandbox    bool
-		want       factoryRunRequest
-		wantErr    string
+		name        string
+		args        []string
+		reportPath  string
+		baseBranch  string
+		sandboxName string
+		jsonMode    bool
+		sandbox     bool
+		want        factoryRunRequest
+		wantErr     string
 	}{
 		{
 			name: "no explicit source",
@@ -176,6 +177,19 @@ func TestParseFactoryRunRequest(t *testing.T) {
 			},
 		},
 		{
+			name:        "sandbox name option",
+			args:        []string{".hal/prd-feature.md"},
+			baseBranch:  "main",
+			sandboxName: "factory-dev",
+			sandbox:     true,
+			want: factoryRunRequest{
+				MarkdownPath: ".hal/prd-feature.md",
+				BaseBranch:   "main",
+				SandboxName:  "factory-dev",
+				Sandbox:      true,
+			},
+		},
+		{
 			name:    "sandbox requires base",
 			args:    []string{".hal/prd-feature.md"},
 			sandbox: true,
@@ -197,7 +211,7 @@ func TestParseFactoryRunRequest(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseFactoryRunRequest(tt.args, tt.reportPath, tt.baseBranch, tt.jsonMode, tt.sandbox)
+			got, err := parseFactoryRunRequest(tt.args, tt.reportPath, tt.baseBranch, tt.sandboxName, tt.jsonMode, tt.sandbox)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("parseFactoryRunRequest() error = nil, want %q", tt.wantErr)
@@ -222,7 +236,7 @@ func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "sandbox", "json"} {
+	for _, flagName := range []string{"report", "base", "sandbox-name", "sandbox", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
@@ -423,6 +437,7 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
 		BaseBranch:   "main",
+		SandboxName:  "factory-dev",
 		Sandbox:      true,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -443,6 +458,9 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			sandboxCalled = true
 			if req.ProjectDir != "/workspace/hal" {
 				t.Fatalf("sandbox ProjectDir = %q, want /workspace/hal", req.ProjectDir)
+			}
+			if req.SandboxName != "factory-dev" {
+				t.Fatalf("sandbox name = %q, want factory-dev", req.SandboxName)
 			}
 			if req.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
 				t.Fatalf("sandbox executorMode = %q, want %q", req.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
@@ -1353,8 +1371,8 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 		t.Fatalf("sandbox commands = %#v", record.Sandbox)
 	}
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
-	requireFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-sandbox-success.json"))
+	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
 
 	events, err := store.LoadEvents(record.RunID)
 	if err != nil {

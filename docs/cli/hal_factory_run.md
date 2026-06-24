@@ -12,7 +12,8 @@ spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
 base branch to the executor. Sandbox mode requires --base so the remote
 workspace can be checked out deterministically. Use --sandbox for remote
-sandbox-backed execution, and --json for machine-readable factory-run-v1 output.
+sandbox-backed execution, --sandbox-name <name> to target a specific sandbox,
+and --json for machine-readable factory-run-v1 output.
 
 ```
 hal factory run [prd-path] [flags]
@@ -30,11 +31,12 @@ hal factory run [prd-path] [flags]
 ### Options
 
 ```
-      --base string     Target base branch for follow-up review or CI
-  -h, --help            help for run
-      --json            Output machine-readable JSON (factory-run-v1 contract)
-      --report string   Start from an analysis report path
-      --sandbox         Run the factory executor in a managed sandbox
+      --base string           Target base branch for follow-up review or CI
+  -h, --help                  help for run
+      --json                  Output machine-readable JSON (factory-run-v1 contract)
+      --report string         Start from an analysis report path
+      --sandbox               Run the factory executor in a managed sandbox
+      --sandbox-name string   Target sandbox name for sandbox-backed execution
 ```
 
 ### SEE ALSO

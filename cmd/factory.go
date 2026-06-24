@@ -33,6 +33,7 @@ var factoryListJSONFlag bool
 var factoryStatusJSONFlag bool
 var factoryRunReportFlag string
 var factoryRunBaseFlag string
+var factoryRunSandboxNameFlag string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
 
@@ -63,7 +64,8 @@ spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
 base branch to the executor. Sandbox mode requires --base so the remote
 workspace can be checked out deterministically. Use --sandbox for remote
-sandbox-backed execution, and --json for machine-readable factory-run-v1 output.`,
+sandbox-backed execution, --sandbox-name <name> to target a specific sandbox,
+and --json for machine-readable factory-run-v1 output.`,
 	Example: `  hal factory run .hal/prd-feature.md
   hal factory run --report .hal/reports/analysis.md
   hal factory run .hal/prd-feature.md --base main --json
@@ -103,6 +105,7 @@ JSON output includes the full run record and timeline events in append order.`,
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
+	factoryRunCmd.Flags().StringVar(&factoryRunSandboxNameFlag, "sandbox-name", "", "Target sandbox name for sandbox-backed execution")
 	factoryRunCmd.Flags().BoolVar(&factoryRunSandboxFlag, "sandbox", false, "Run the factory executor in a managed sandbox")
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
@@ -165,6 +168,7 @@ type factoryRunRequest struct {
 	MarkdownPath string
 	ReportPath   string
 	BaseBranch   string
+	SandboxName  string
 	Sandbox      bool
 	JSON         bool
 }
@@ -235,7 +239,7 @@ func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
 		reportPath = value
 	}
 
-	if _, err := parseFactoryRunRequest(args, reportPath, "", false, false); err != nil {
+	if _, err := parseFactoryRunRequest(args, reportPath, "", "", false, false); err != nil {
 		return factoryRunArgsValidationError(cmd, err)
 	}
 	return nil
@@ -349,6 +353,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		}
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
 			ProjectDir:             dir,
+			SandboxName:            req.SandboxName,
 			BootstrapRepositoryURL: bootstrapRepositoryURL,
 			RunRecord:              runningRecord,
 			RemoteAuto:             factoryRunAutoRequestFromFactoryRequest(req),
@@ -740,6 +745,17 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 	halDir := filepath.Join(dir, template.HalDir)
 	canonicalPRDPath := filepath.Join(template.HalDir, template.PRDFile)
 	autoStatePath := filepath.Join(template.HalDir, template.AutoStateFile)
+	if req.Sandbox {
+		if recordPath := factoryRunRecordArtifactPath(store, record.RunID); recordPath != "" {
+			collector.add(factory.ArtifactReference{
+				Name: "factory-run-record",
+				Type: "json",
+				Path: recordPath,
+			})
+		}
+		return collector.artifacts
+	}
+
 	if !collector.addGenerated("canonical-prd", canonicalPRDPath, snapshot) {
 		collector.addArchived("canonical-prd", canonicalPRDPath, archived)
 	}
@@ -1476,6 +1492,7 @@ func factoryRunProgressStepFromLine(line string) (string, bool) {
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {
 	reportPath := factoryRunReportFlag
 	baseBranch := factoryRunBaseFlag
+	sandboxName := factoryRunSandboxNameFlag
 	jsonMode := factoryRunJSONFlag
 	sandboxMode := factoryRunSandboxFlag
 
@@ -1494,6 +1511,13 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			}
 			baseBranch = value
 		}
+		if cmd.Flags().Lookup("sandbox-name") != nil {
+			value, err := cmd.Flags().GetString("sandbox-name")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			sandboxName = value
+		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
 			if err != nil {
@@ -1510,14 +1534,14 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 		}
 	}
 
-	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, jsonMode, sandboxMode)
+	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, sandboxName, jsonMode, sandboxMode)
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	return req, nil
 }
 
-func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool) (factoryRunRequest, error) {
+func parseFactoryRunRequest(args []string, reportPath, baseBranch, sandboxName string, jsonMode bool, sandboxMode bool) (factoryRunRequest, error) {
 	if len(args) > 1 {
 		return factoryRunRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
 	}
@@ -1529,10 +1553,11 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMo
 	}
 
 	req := factoryRunRequest{
-		ReportPath: reportPath,
-		BaseBranch: baseBranch,
-		Sandbox:    sandboxMode,
-		JSON:       jsonMode,
+		ReportPath:  reportPath,
+		BaseBranch:  baseBranch,
+		SandboxName: sandboxName,
+		Sandbox:     sandboxMode,
+		JSON:        jsonMode,
 	}
 	if len(args) == 1 {
 		req.MarkdownPath = args[0]
