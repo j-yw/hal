@@ -65,6 +65,10 @@ func (c *factorySandboxArtifactCopier) CopyFile(ctx context.Context, remotePath,
 		"sh",
 		"-c",
 		`path=$1
+if [ -L "$path" ]; then
+	echo "sandbox artifact path is a symlink" >&2
+	exit 45
+fi
 if [ ! -f "$path" ]; then
 	exit 44
 fi
@@ -105,6 +109,10 @@ func (c *factorySandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, 
 		"sh",
 		"-c",
 		`path=$1
+if [ -L "$path" ]; then
+	echo "sandbox artifact path is a symlink" >&2
+	exit 45
+fi
 if [ ! -d "$path" ]; then
 	exit 44
 fi
