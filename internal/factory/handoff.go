@@ -614,6 +614,9 @@ func handoffSafeArtifactPath(path string) string {
 	if path == "" {
 		return ""
 	}
+	if strings.ContainsAny(path, "\r\n") {
+		return handoffRedactedLocation
+	}
 	if handoffArtifactPathLooksLikeURL(path) {
 		return handoffRedactedLocation
 	}
@@ -649,6 +652,9 @@ func handoffSafeStoredArtifactPath(runID, storedPath string) string {
 	}
 	storedPath = strings.TrimSpace(storedPath)
 	if storedPath == "" {
+		return ""
+	}
+	if strings.ContainsAny(storedPath, "\r\n") {
 		return ""
 	}
 	if filepath.IsAbs(storedPath) || strings.ContainsAny(storedPath, `\`) || handoffArtifactPathLooksLikeURL(storedPath) {

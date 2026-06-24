@@ -1268,6 +1268,49 @@ func TestHandoffArtifactLocationsSanitizeUnsafeStoredPaths(t *testing.T) {
 	}
 }
 
+func TestHandoffArtifactLocationsSanitizeMultilinePaths(t *testing.T) {
+	locations := handoffArtifactLocations("run-handoff", []ArtifactReference{
+		{
+			Name: "multiline-display",
+			Type: "json",
+			Path: "reports/status.json\ninjected line",
+		},
+		{
+			Name:       "multiline-display-with-stored",
+			Type:       "json",
+			Path:       "reports/status.json\r\ninjected line",
+			StoredPath: "artifacts/run-handoff/status.json",
+		},
+		{
+			Name:       "multiline-stored",
+			Type:       "json",
+			Path:       "safe.json",
+			StoredPath: "artifacts/run-handoff/status.json\ninjected line",
+		},
+	}, false)
+
+	if len(locations) != 3 {
+		t.Fatalf("locations len = %d, want 3: %#v", len(locations), locations)
+	}
+	if locations[0].Path != "[redacted]" || locations[0].StoredPath != "" {
+		t.Fatalf("multiline display location = %#v, want redacted display without stored path", locations[0])
+	}
+	if locations[1].Path != "" || locations[1].StoredPath != "artifacts/run-handoff/status.json" {
+		t.Fatalf("multiline display location with stored path = %#v, want stored path fallback", locations[1])
+	}
+	if locations[2].Path != "safe.json" || locations[2].StoredPath != "" {
+		t.Fatalf("multiline stored location = %#v, want display path without stored path", locations[2])
+	}
+
+	data, err := json.Marshal(locations)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if strings.ContainsAny(string(data), "\r\n") || strings.Contains(string(data), "injected line") {
+		t.Fatalf("locations should not expose multiline input: %s", string(data))
+	}
+}
+
 func TestHandoffArtifactLocationsSanitizeUnsafeNames(t *testing.T) {
 	rawPath := filepath.Join(t.TempDir(), "external", "secret.json")
 	artifacts := []ArtifactReference{
