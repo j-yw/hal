@@ -252,6 +252,33 @@ func TestLoadHandoffSummaryDropsPullRequestURLWithSecretQueryValue(t *testing.T)
 	}
 }
 
+func TestLoadHandoffSummaryDropsPullRequestURLWithLocalhost(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := RunRecord{
+		RunID:        "run-localhost-pr",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	saveHandoffArtifact(t, store, record.RunID, ArtifactReference{
+		ID:   "pr-outcome",
+		Name: "pr-outcome",
+		Type: "json",
+		Path: "factory/pr-outcome.json",
+	}, `{"pullRequestUrl":"http://localhost:3000/jywlabs/hal/pull/42"}`)
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.PullRequestURL != "" {
+		t.Fatalf("PullRequestURL = %q, want empty", summary.PullRequestURL)
+	}
+}
+
 func TestLoadHandoffSummaryRedactsSensitiveFailureReason(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := RunRecord{
@@ -918,6 +945,16 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 		{
 			name: "host with port",
 			raw:  "https://github.com:8443/jywlabs/hal/pull/42",
+			want: "",
+		},
+		{
+			name: "localhost host",
+			raw:  "http://localhost/jywlabs/hal/pull/42",
+			want: "",
+		},
+		{
+			name: "localhost host with port",
+			raw:  "http://localhost:3000/jywlabs/hal/pull/42",
 			want: "",
 		},
 		{

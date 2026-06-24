@@ -950,6 +950,10 @@ func handoffBareDNSHostLooksSensitive(host string, hasPort bool) bool {
 	}
 	labels := strings.Split(host, ".")
 	if len(labels) < 2 {
+		switch strings.ToLower(host) {
+		case "localhost", "localdomain":
+			return true
+		}
 		return false
 	}
 	for _, label := range labels {
