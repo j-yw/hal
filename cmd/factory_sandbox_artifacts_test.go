@@ -18,7 +18,7 @@ import (
 func TestFactorySandboxArtifactCopierRejectsTopLevelFileSymlink(t *testing.T) {
 	requireLocalSandboxArtifactCopierRuntime(t)
 
-	remoteRoot := t.TempDir()
+	remoteRoot := realSandboxArtifactTempDir(t)
 	halDir := filepath.Join(remoteRoot, ".hal")
 	if err := os.MkdirAll(halDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -50,8 +50,8 @@ func TestFactorySandboxArtifactCopierRejectsTopLevelFileSymlink(t *testing.T) {
 func TestFactorySandboxArtifactCopierRejectsIntermediateFileParentSymlink(t *testing.T) {
 	requireLocalSandboxArtifactCopierRuntime(t)
 
-	remoteRoot := t.TempDir()
-	outsideDir := t.TempDir()
+	remoteRoot := realSandboxArtifactTempDir(t)
+	outsideDir := realSandboxArtifactTempDir(t)
 	if err := os.WriteFile(filepath.Join(outsideDir, "progress.txt"), []byte("sandbox-secret"), 0o600); err != nil {
 		t.Fatalf("WriteFile(secret) error = %v", err)
 	}
@@ -75,10 +75,42 @@ func TestFactorySandboxArtifactCopierRejectsIntermediateFileParentSymlink(t *tes
 	}
 }
 
+func TestFactorySandboxArtifactCopierRejectsWorkspaceBaseParentSymlinkForFile(t *testing.T) {
+	requireLocalSandboxArtifactCopierRuntime(t)
+
+	actualRoot := realSandboxArtifactTempDir(t)
+	actualWorkspace := filepath.Join(actualRoot, "workspace")
+	halDir := filepath.Join(actualWorkspace, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "progress.txt"), []byte("sandbox-secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile(secret) error = %v", err)
+	}
+	linkRoot := filepath.Join(realSandboxArtifactTempDir(t), "linked-root")
+	if err := os.Symlink(actualRoot, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "progress.txt")
+	copier := &factorySandboxArtifactCopier{
+		provider: localExecSandboxArtifactProvider{},
+		info:     &sandbox.ConnectInfo{Name: "local"},
+		baseDir:  filepath.Join(linkRoot, "workspace"),
+	}
+	err := copier.CopyFile(context.Background(), ".hal/progress.txt", localPath)
+	requireSymlinkSandboxArtifactCopyError(t, err)
+	if data, readErr := os.ReadFile(localPath); readErr == nil {
+		t.Fatalf("CopyFile() copied through symlinked workspace parent: %q", data)
+	} else if !os.IsNotExist(readErr) {
+		t.Fatalf("ReadFile(localPath) error = %v, want not exist", readErr)
+	}
+}
+
 func TestFactorySandboxArtifactCopierDoesNotReusePathAfterFileCheck(t *testing.T) {
 	requireLocalSandboxArtifactCopierRuntime(t)
 
-	remoteRoot := t.TempDir()
+	remoteRoot := realSandboxArtifactTempDir(t)
 	halDir := filepath.Join(remoteRoot, ".hal")
 	if err := os.MkdirAll(halDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -133,7 +165,7 @@ exec /bin/cat "$@"
 func TestFactorySandboxArtifactCopierRejectsTopLevelDirSymlink(t *testing.T) {
 	requireLocalSandboxArtifactCopierRuntime(t)
 
-	remoteRoot := t.TempDir()
+	remoteRoot := realSandboxArtifactTempDir(t)
 	halDir := filepath.Join(remoteRoot, ".hal")
 	if err := os.MkdirAll(halDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -168,8 +200,8 @@ func TestFactorySandboxArtifactCopierRejectsTopLevelDirSymlink(t *testing.T) {
 func TestFactorySandboxArtifactCopierRejectsIntermediateDirParentSymlink(t *testing.T) {
 	requireLocalSandboxArtifactCopierRuntime(t)
 
-	remoteRoot := t.TempDir()
-	outsideHalDir := t.TempDir()
+	remoteRoot := realSandboxArtifactTempDir(t)
+	outsideHalDir := realSandboxArtifactTempDir(t)
 	reportsDir := filepath.Join(outsideHalDir, "reports")
 	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(reportsDir) error = %v", err)
@@ -192,6 +224,37 @@ func TestFactorySandboxArtifactCopierRejectsIntermediateDirParentSymlink(t *test
 	requireSymlinkSandboxArtifactCopyError(t, err)
 	if _, statErr := os.Stat(localPath); statErr == nil {
 		t.Fatalf("CopyDir() created local directory for symlinked parent artifact")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("Stat(localPath) error = %v, want not exist", statErr)
+	}
+}
+
+func TestFactorySandboxArtifactCopierRejectsWorkspaceBaseParentSymlinkForDir(t *testing.T) {
+	requireLocalSandboxArtifactCopierRuntime(t)
+
+	actualRoot := realSandboxArtifactTempDir(t)
+	reportsDir := filepath.Join(actualRoot, "workspace", ".hal", "reports")
+	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(reportsDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportsDir, "token.txt"), []byte("sandbox-secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile(secret file) error = %v", err)
+	}
+	linkRoot := filepath.Join(realSandboxArtifactTempDir(t), "linked-root")
+	if err := os.Symlink(actualRoot, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "reports")
+	copier := &factorySandboxArtifactCopier{
+		provider: localExecSandboxArtifactProvider{},
+		info:     &sandbox.ConnectInfo{Name: "local"},
+		baseDir:  filepath.Join(linkRoot, "workspace"),
+	}
+	err := copier.CopyDir(context.Background(), ".hal/reports", localPath)
+	requireSymlinkSandboxArtifactCopyError(t, err)
+	if _, statErr := os.Stat(localPath); statErr == nil {
+		t.Fatalf("CopyDir() created local directory through symlinked workspace parent")
 	} else if !os.IsNotExist(statErr) {
 		t.Fatalf("Stat(localPath) error = %v, want not exist", statErr)
 	}
@@ -320,6 +383,16 @@ sys.exit(0 if getattr(os, "O_NOFOLLOW", None) is not None else 1)`, ".", ".")
 	if err := cmd.Run(); err != nil {
 		t.Skipf("python O_NOFOLLOW unavailable: %v", err)
 	}
+}
+
+func realSandboxArtifactTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return dir
+	}
+	return realDir
 }
 
 type localExecSandboxArtifactProvider struct {

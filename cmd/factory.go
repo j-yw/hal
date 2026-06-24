@@ -1299,10 +1299,14 @@ func missingFactoryOutcomeArtifact(name, displayPath, warning string) factory.Ar
 }
 
 func safeFactoryPRURL(rawURL string) string {
-	return safeFactoryArtifactURL(rawURL)
+	return safeFactoryURL(rawURL, false)
 }
 
 func safeFactoryArtifactURL(rawURL string) string {
+	return safeFactoryURL(rawURL, true)
+}
+
+func safeFactoryURL(rawURL string, rejectAnyFragment bool) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return ""
@@ -1323,7 +1327,7 @@ func safeFactoryArtifactURL(rawURL string) string {
 			return ""
 		}
 	}
-	if factoryArtifactStringContainsSecretAssignment(parsed.Fragment) {
+	if parsed.Fragment != "" && (rejectAnyFragment || factoryArtifactStringContainsSecretAssignment(parsed.Fragment)) {
 		return ""
 	}
 	return parsed.String()

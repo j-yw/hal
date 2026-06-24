@@ -83,19 +83,50 @@ def clean_relative_parts(candidate):
         parts.append(part)
     return parts
 
+def clean_absolute_parts(candidate):
+    candidate = os.path.normpath(candidate)
+    if not candidate.startswith("/"):
+        sys.exit(44)
+    if candidate == "/":
+        return []
+    parts = []
+    for part in candidate.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            sys.exit(44)
+        parts.append(part)
+    return parts
+
 def open_base_dir(candidate):
     try:
-        fd = os.open(candidate, os.O_RDONLY | directory_flag | no_follow)
+        fd = os.open("/", os.O_RDONLY | directory_flag | no_follow)
     except OSError as err:
-        if err.errno == errno.ELOOP or is_symlink_path(candidate):
-            fail("sandbox workspace path is a symlink", 45)
         if err.errno in (errno.ENOENT, errno.ENOTDIR):
             sys.exit(44)
         raise
     try:
-        base_stat = os.fstat(fd)
-        if not stat.S_ISDIR(base_stat.st_mode):
+        root_stat = os.fstat(fd)
+        if not stat.S_ISDIR(root_stat.st_mode):
             sys.exit(44)
+        for name in clean_absolute_parts(candidate):
+            try:
+                child_fd = os.open(name, os.O_RDONLY | directory_flag | no_follow, dir_fd=fd)
+            except OSError as err:
+                if err.errno == errno.ELOOP or is_symlink_child(fd, name):
+                    fail("sandbox workspace path is a symlink", 45)
+                if err.errno in (errno.ENOENT, errno.ENOTDIR):
+                    sys.exit(44)
+                raise
+            try:
+                child_stat = os.fstat(child_fd)
+                if not stat.S_ISDIR(child_stat.st_mode):
+                    sys.exit(44)
+                os.close(fd)
+                fd = child_fd
+            except:
+                os.close(child_fd)
+                raise
         return fd
     except:
         os.close(fd)
@@ -185,19 +216,50 @@ def clean_relative_parts(candidate):
         parts.append(part)
     return parts
 
+def clean_absolute_parts(candidate):
+    candidate = os.path.normpath(candidate)
+    if not candidate.startswith("/"):
+        sys.exit(44)
+    if candidate == "/":
+        return []
+    parts = []
+    for part in candidate.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            sys.exit(44)
+        parts.append(part)
+    return parts
+
 def open_base_dir(candidate):
     try:
-        fd = os.open(candidate, os.O_RDONLY | directory_flag | no_follow)
+        fd = os.open("/", os.O_RDONLY | directory_flag | no_follow)
     except OSError as err:
-        if err.errno == errno.ELOOP or is_symlink_path(candidate):
-            fail("sandbox workspace path is a symlink", 45)
         if err.errno in (errno.ENOENT, errno.ENOTDIR):
             sys.exit(44)
         raise
     try:
-        base_stat = os.fstat(fd)
-        if not stat.S_ISDIR(base_stat.st_mode):
+        root_stat = os.fstat(fd)
+        if not stat.S_ISDIR(root_stat.st_mode):
             sys.exit(44)
+        for name in clean_absolute_parts(candidate):
+            try:
+                child_fd = os.open(name, os.O_RDONLY | directory_flag | no_follow, dir_fd=fd)
+            except OSError as err:
+                if err.errno == errno.ELOOP or is_symlink_child(fd, name):
+                    fail("sandbox workspace path is a symlink", 45)
+                if err.errno in (errno.ENOENT, errno.ENOTDIR):
+                    sys.exit(44)
+                raise
+            try:
+                child_stat = os.fstat(child_fd)
+                if not stat.S_ISDIR(child_stat.st_mode):
+                    sys.exit(44)
+                os.close(fd)
+                fd = child_fd
+            except:
+                os.close(child_fd)
+                raise
         return fd
     except:
         os.close(fd)
