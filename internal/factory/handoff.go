@@ -70,7 +70,7 @@ func NewHandoffSummary(store Store, record RunRecord) HandoffSummary {
 		Status:            strings.TrimSpace(record.Status),
 		ExecutorMode:      strings.TrimSpace(record.ExecutorMode),
 		InspectCommand:    HandoffInspectCommand(record.RunID),
-		RepoPath:          strings.TrimSpace(record.RepoPath),
+		RepoPath:          handoffSafeRepoPath(record.RepoPath),
 		BranchName:        strings.TrimSpace(record.BranchName),
 		SandboxName:       handoffSandboxName(record),
 		PullRequestURL:    handoffPullRequestURL(store, record),
@@ -165,6 +165,67 @@ func handoffSafeSandboxName(name string) string {
 		return ""
 	}
 	return name
+}
+
+func handoffSafeRepoPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || strings.ContainsAny(path, "\r\n") {
+		return ""
+	}
+	if handoffRepoPathLooksLikeURL(path) || strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, `//`) {
+		return ""
+	}
+	cleanPath := filepath.Clean(path)
+	if handoffRepoPathNeedsRedaction(cleanPath) {
+		return ""
+	}
+	return cleanPath
+}
+
+func handoffRepoPathLooksLikeURL(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return true
+	}
+	if parsed.Host != "" {
+		return true
+	}
+	if parsed.Scheme == "" {
+		return false
+	}
+	return !handoffRepoPathLooksLikeWindowsDrive(path)
+}
+
+func handoffRepoPathLooksLikeWindowsDrive(path string) bool {
+	if len(path) < 3 || path[1] != ':' {
+		return false
+	}
+	drive := path[0]
+	isDrive := (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')
+	return isDrive && (path[2] == '\\' || path[2] == '/')
+}
+
+func handoffRepoPathNeedsRedaction(path string) bool {
+	safePath := filepath.ToSlash(strings.ReplaceAll(path, `\`, "/"))
+	if handoffArtifactDisplayPathNeedsRedaction(safePath) {
+		return true
+	}
+	segments := strings.FieldsFunc(safePath, func(r rune) bool {
+		return r == '/'
+	})
+	for i, segment := range segments {
+		segment = handoffTrimRedactionField(segment)
+		if segment == "" || segment == "." {
+			continue
+		}
+		if handoffFieldHasSecretPrefix(segment) || handoffURLQueryValueLooksLikeSecret(segment) {
+			return true
+		}
+		if handoffStandaloneSecretKey(segment) && i+1 < len(segments) && handoffFieldLooksLikeSecretValue(segments[i+1]) {
+			return true
+		}
+	}
+	return false
 }
 
 func handoffSafeCommandToken(value string) bool {

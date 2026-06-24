@@ -96,6 +96,55 @@ func TestLoadHandoffSummaryFailedLocalRun(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryRedactsSensitiveRepoPath(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := RunRecord{
+		RunID:        "run-sensitive-repo-path",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		RepoPath:     "/workspace/token=secret-value/project",
+		Failure: &FailureSummary{
+			Step:        "ci",
+			Category:    FailureCategoryCI,
+			Message:     "ci gate blocked",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+	saveHandoffArtifact(t, store, record.RunID, ArtifactReference{
+		ID:   "auto-state",
+		Name: "auto-state",
+		Type: "json",
+		Path: ".hal/auto-state.json",
+	}, `{"step":"ci"}`)
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.RepoPath != "" {
+		t.Fatalf("RepoPath = %q, want empty for sensitive path", summary.RepoPath)
+	}
+	if summary.ResumeCommand != "" {
+		t.Fatalf("ResumeCommand = %q, want empty for sensitive repo path", summary.ResumeCommand)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.ID != "inspect_factory_run" || summary.NextAction.Type != NextActionTypeInspect {
+		t.Fatalf("NextAction = %#v, want inspect action", summary.NextAction)
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if strings.Contains(string(data), "token=secret-value") || strings.Contains(string(data), record.RepoPath) {
+		t.Fatalf("handoff summary should not expose sensitive repo path: %s", string(data))
+	}
+}
+
 func TestLoadHandoffSummaryDropsPullRequestURLWithSecretQueryValue(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := RunRecord{
