@@ -2,10 +2,13 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProviderFromConfig_Daytona(t *testing.T) {
@@ -124,6 +127,27 @@ func TestRunCmd_StderrCaptured(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "error-output") {
 		t.Errorf("output = %q, want to contain stderr %q", buf.String(), "error-output")
+	}
+}
+
+func TestRunCmdContext_CancelKillsCommand(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.Command("sleep", "10")
+	var buf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunCmdContext(ctx, cmd, &buf)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunCmdContext() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunCmdContext() did not return after cancellation")
 	}
 }
 

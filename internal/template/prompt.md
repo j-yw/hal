@@ -15,7 +15,7 @@ You are an autonomous coding agent working on a software project.
 7. Update AGENTS.md files if you discover reusable patterns (see below)
 8. Update `.hal/{{PRD_FILE}}` to set `passes: true` for the completed story
 9. Append your progress to `.hal/{{PROGRESS_FILE}}`
-10. If checks pass, commit ALL changes, including `.hal/{{PRD_FILE}}` and `.hal/{{PROGRESS_FILE}}`, with message: `feat: [Story ID] - [Story Title]`
+10. If checks pass, commit implementation changes with message: `feat: [Story ID] - [Story Title]`. Do not force-add ignored `.hal` runtime files; Hal records `.hal/{{PRD_FILE}}` and `.hal/{{PROGRESS_FILE}}` locally.
 
 ## Progress Report Format
 
@@ -108,8 +108,8 @@ A frontend story is complete when browser verification passes, or when it is exp
 After completing a user story, verify all of the following before signaling COMPLETE:
 
 1. Every story in `.hal/{{PRD_FILE}}` has `passes: true`
-2. `git status --short` is empty
-3. Your latest commit includes `.hal/{{PRD_FILE}}` and `.hal/{{PROGRESS_FILE}}`
+2. `git status --short` has no uncommitted implementation changes
+3. Your latest commit includes the implementation changes for the completed story
 
 If ALL stories are complete and passing, reply with:
 <promise>COMPLETE</promise>

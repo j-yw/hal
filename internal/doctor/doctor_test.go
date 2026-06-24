@@ -68,6 +68,43 @@ func installCommands(t *testing.T, dir string) {
 	}
 }
 
+func findCheck(t *testing.T, result DoctorResult, id string) Check {
+	t.Helper()
+	for _, c := range result.Checks {
+		if c.ID == id {
+			return c
+		}
+	}
+	t.Fatalf("check %q not found", id)
+	return Check{}
+}
+
+func setupHealthyDoctorProject(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	return dir
+}
+
+func linkCodexSkills(t *testing.T, dir string) {
+	t.Helper()
+	linker := skills.GetLinker("codex")
+	if linker == nil {
+		t.Fatal("codex linker not registered")
+	}
+	if err := linker.Link(dir, skills.ManagedSkillNames); err != nil {
+		t.Fatalf("link codex skills: %v", err)
+	}
+	if err := linker.LinkCommands(dir); err != nil {
+		t.Fatalf("link codex commands: %v", err)
+	}
+}
+
 func TestRun_NoHalDir(t *testing.T) {
 	dir := t.TempDir()
 
@@ -174,6 +211,63 @@ func TestRun_NoGitRepo(t *testing.T) {
 	}
 }
 
+func TestCheckGitRepo_AcceptsGitDirectoryAndFile(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(t *testing.T, dir string)
+		status string
+	}{
+		{
+			name: "git directory",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status: StatusPass,
+		},
+		{
+			name: "git file",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /tmp/worktree/.git\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status: StatusPass,
+		},
+		{
+			name:   "missing git metadata",
+			setup:  func(t *testing.T, dir string) {},
+			status: StatusWarn,
+		},
+		{
+			name: "invalid git file",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("not git metadata\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status: StatusWarn,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.setup(t, dir)
+
+			check := checkGitRepo(dir)
+
+			if check.Status != tt.status {
+				t.Fatalf("git_repo status = %q, want %q", check.Status, tt.status)
+			}
+		})
+	}
+}
+
 func TestRun_EngineAwareCodexSkip(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
@@ -196,6 +290,96 @@ func TestRun_EngineAwareCodexSkip(t *testing.T) {
 		if !found {
 			t.Fatalf("engine=%s: codex_global_links check not found", eng)
 		}
+	}
+}
+
+func TestRun_CodexGlobalLinksUseActiveCodexHome(t *testing.T) {
+	home := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	dir := setupHealthyDoctorProject(t)
+	linkCodexSkills(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "codex"})
+	check := findCheck(t, result, "codex_global_links")
+
+	if check.Status != StatusPass {
+		t.Fatalf("codex_global_links status = %q, want %q; message=%q", check.Status, StatusPass, check.Message)
+	}
+	linkPath := filepath.Join(codexHome, "skills", "prd")
+	if _, err := os.Lstat(linkPath); err != nil {
+		t.Fatalf("expected Codex link under CODEX_HOME at %s: %v", linkPath, err)
+	}
+	homeFallbackLink := filepath.Join(home, ".codex", "skills", "prd")
+	if _, err := os.Lstat(homeFallbackLink); !os.IsNotExist(err) {
+		t.Fatalf("HOME fallback link should not be required when CODEX_HOME is set; err=%v", err)
+	}
+}
+
+func TestRun_CodexGlobalLinksUseHomeFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	dir := setupHealthyDoctorProject(t)
+	linkCodexSkills(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "codex"})
+	check := findCheck(t, result, "codex_global_links")
+
+	if check.Status != StatusPass {
+		t.Fatalf("codex_global_links status = %q, want %q; message=%q", check.Status, StatusPass, check.Message)
+	}
+	linkPath := filepath.Join(home, ".codex", "skills", "prd")
+	if _, err := os.Lstat(linkPath); err != nil {
+		t.Fatalf("expected Codex link under HOME fallback at %s: %v", linkPath, err)
+	}
+}
+
+func TestRun_CodexGlobalLinksWarnsWhenCommandLinkMissing(t *testing.T) {
+	home := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	dir := setupHealthyDoctorProject(t)
+	linkCodexSkills(t, dir)
+	if err := os.Remove(skills.GetLinker("codex").CommandsDir()); err != nil {
+		t.Fatalf("remove codex command link: %v", err)
+	}
+
+	result := Run(Options{Dir: dir, Engine: "codex"})
+	check := findCheck(t, result, "codex_global_links")
+	if check.Status != StatusWarn {
+		t.Fatalf("codex_global_links status = %q, want %q; message=%q", check.Status, StatusWarn, check.Message)
+	}
+	if !strings.Contains(check.Message, "missing or stale") {
+		t.Fatalf("message = %q, want missing or stale", check.Message)
+	}
+}
+
+func TestRun_CodexGlobalLinksWarnsWhenCommandLinkTargetsOtherProject(t *testing.T) {
+	home := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	projectA := setupHealthyDoctorProject(t)
+	projectB := setupHealthyDoctorProject(t)
+	linkCodexSkills(t, projectA)
+	if err := skills.GetLinker("codex").LinkCommands(projectB); err != nil {
+		t.Fatalf("link codex commands to projectB: %v", err)
+	}
+
+	result := Run(Options{Dir: projectA, Engine: "codex"})
+	check := findCheck(t, result, "codex_global_links")
+	if check.Status != StatusWarn {
+		t.Fatalf("codex_global_links status = %q, want %q; message=%q", check.Status, StatusWarn, check.Message)
+	}
+	if !strings.Contains(check.Message, "different project") {
+		t.Fatalf("message = %q, want different project", check.Message)
 	}
 }
 

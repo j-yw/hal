@@ -160,12 +160,14 @@ func TestLightsailProvider_Exec_WithConnectInfoIP(t *testing.T) {
 		t.Fatalf("Exec() error: %v", err)
 	}
 
-	args := strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, "ubuntu@44.203.78.182") {
-		t.Errorf("Exec cmd should contain ubuntu@44.203.78.182, got: %s", args)
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "ubuntu@44.203.78.182", "'ls' '-la'"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
-	if !strings.Contains(args, "-- ls -la") {
-		t.Errorf("Exec cmd should contain '-- ls -la', got: %s", args)
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want)
+		}
 	}
 }
 

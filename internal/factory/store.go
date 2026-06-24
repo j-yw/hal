@@ -20,6 +20,7 @@ const (
 	timelinesDirName    = "timelines"
 	runRecordFileExt    = ".json"
 	storeTempFileExt    = ".tmp"
+	storeLockFileExt    = ".lock"
 	storeBackupFileExt  = ".bak"
 )
 
@@ -129,13 +130,9 @@ func (s Store) SaveRun(record *RunRecord) error {
 	}
 	data = append(data, '\n')
 
-	tmpPath := path + storeTempFileExt
-	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+	tmpPath, err := writeStoreTempFile(path, data)
+	if err != nil {
 		return fmt.Errorf("write factory run %q: %w", record.RunID, err)
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("chmod factory run %q: %w", record.RunID, err)
 	}
 	if err := saveStoreFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
@@ -182,6 +179,14 @@ func (s Store) AppendEvent(event *EventRecord) error {
 		return err
 	}
 
+	lock, err := lockStoreFile(path + storeLockFileExt)
+	if err != nil {
+		return fmt.Errorf("lock factory timeline %q: %w", event.RunID, err)
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
 	events, err := s.loadEvents(event.RunID, path)
 	if err != nil {
 		return err
@@ -194,13 +199,9 @@ func (s Store) AppendEvent(event *EventRecord) error {
 	}
 	data = append(data, '\n')
 
-	tmpPath := path + storeTempFileExt
-	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+	tmpPath, err := writeStoreTempFile(path, data)
+	if err != nil {
 		return fmt.Errorf("write factory timeline %q: %w", event.RunID, err)
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("chmod factory timeline %q: %w", event.RunID, err)
 	}
 	if err := saveStoreFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
@@ -363,6 +364,36 @@ func isCommittedStoreFile(name string) bool {
 		return false
 	}
 	return filepath.Ext(name) == runRecordFileExt
+}
+
+func writeStoreTempFile(path string, data []byte) (string, error) {
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*"+storeTempFileExt)
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmpFile.Name()
+
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return "", err
+	}
+	if err := tmpFile.Chmod(0o600); err != nil {
+		_ = tmpFile.Close()
+		return "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return "", err
+	}
+
+	cleanup = false
+	return tmpPath, nil
 }
 
 func saveStoreFile(tmpPath, path string) error {

@@ -8,7 +8,8 @@ Run local factory workflows and inspect durable factory run history stored
 under Hal's global config directory.
 
 Factory run wraps the local auto pipeline while list and status read the global factory store,
-which is separate from per-project .hal runtime state.
+which is separate from per-project .hal runtime state. Queue commands manage
+pending local factory work in the same global store.
 
 ### Examples
 
@@ -18,6 +19,7 @@ which is separate from per-project .hal runtime state.
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory queue list --json
 ```
 
 ### Options
@@ -30,6 +32,7 @@ which is separate from per-project .hal runtime state.
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
 * [hal factory list](hal_factory_list.md)	 - List stored factory runs
-* [hal factory run](hal_factory_run.md)	 - Run the local factory executor
+* [hal factory queue](hal_factory_queue.md)	 - Manage queued factory work
+* [hal factory run](hal_factory_run.md)	 - Run a factory executor
 * [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run
 

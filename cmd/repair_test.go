@@ -17,7 +17,7 @@ import (
 func setupHealthyDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	halDir := filepath.Join(dir, template.HalDir)
 	os.MkdirAll(halDir, 0755)
@@ -71,7 +71,7 @@ func TestRunRepairFn_HealthyJSON(t *testing.T) {
 
 func TestRunRepairFn_DryRun(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	// No .hal/ — needs init
 
 	var buf bytes.Buffer
@@ -90,7 +90,7 @@ func TestRunRepairFn_DryRun(t *testing.T) {
 
 func TestRunRepairFn_DryRunJSON(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 
 	var buf bytes.Buffer
 	if err := runRepairFn(dir, true, true, &buf); err != nil {
@@ -126,7 +126,7 @@ func TestRepairCmdHelp(t *testing.T) {
 
 func TestRunRepairFn_FixesUnhealthyRepo(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	// No .hal/ — repo is unhealthy
 
@@ -160,7 +160,7 @@ func TestRunRepairFn_FixesUnhealthyRepo(t *testing.T) {
 
 func TestRunRepairFn_ReRunsDoctor(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 
 	// First run: should apply hal init
