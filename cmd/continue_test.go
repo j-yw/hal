@@ -15,7 +15,7 @@ import (
 
 func setupHealthyContinueRepo(t *testing.T, dir string) string {
 	t.Helper()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	halDir := filepath.Join(dir, template.HalDir)
 	os.MkdirAll(halDir, 0755)
@@ -182,7 +182,7 @@ func TestContinueCmdHelp(t *testing.T) {
 
 func TestRunContinueFn_ReviewLoopComplete(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	halDir := filepath.Join(dir, template.HalDir)
 	reportsDir := filepath.Join(halDir, "reports")
@@ -218,7 +218,7 @@ func TestRunContinueFn_ReviewLoopComplete(t *testing.T) {
 
 func TestRunContinueFn_JSONContainsBothStatusAndDoctor(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 
 	var buf bytes.Buffer
 	if err := runContinueFn(dir, true, &buf); err != nil {
@@ -294,7 +294,7 @@ func TestRunContinueFn_ReadyField(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			setIsolatedCodexHomeFallback(t, dir)
 			tt.setup(dir)
 
 			var buf bytes.Buffer
@@ -314,7 +314,7 @@ func TestRunContinueFn_ReadyField(t *testing.T) {
 
 func TestRunContinueFn_WarningsDoNotBlockReadiness(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	halDir := filepath.Join(dir, template.HalDir)
@@ -358,7 +358,7 @@ func TestRunContinueFn_WarningsDoNotBlockReadiness(t *testing.T) {
 func TestRunContinueFn_NoRedundantThen(t *testing.T) {
 	// When doctor fix == workflow next, don't show "Then:"
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	// No .hal/ — fix is hal init, next is also hal init
 
 	var buf bytes.Buffer

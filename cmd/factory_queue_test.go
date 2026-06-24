@@ -234,8 +234,8 @@ func TestRunFactoryQueueAddWithDepsRestoresRunWhenTimelineAppendFails(t *testing
 	if err := store.SaveRun(&record); err != nil {
 		t.Fatalf("SaveRun() error: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(store.TimelinesDir(), record.RunID+".json.tmp"), 0o700); err != nil {
-		t.Fatalf("Mkdir(timeline temp path) error: %v", err)
+	if err := os.Mkdir(filepath.Join(store.TimelinesDir(), record.RunID+".json"), 0o700); err != nil {
+		t.Fatalf("Mkdir(timeline path) error: %v", err)
 	}
 
 	err := runFactoryQueueAddWithDeps(io.Discard, factoryQueueAddRequest{
@@ -245,8 +245,8 @@ func TestRunFactoryQueueAddWithDepsRestoresRunWhenTimelineAppendFails(t *testing
 	if err == nil {
 		t.Fatalf("runFactoryQueueAddWithDeps() error = nil, want timeline append error")
 	}
-	if !strings.Contains(err.Error(), `enqueue factory run "run-queue-add-timeline-failure": append factory timeline event "run-queue-add-timeline-failure"`) {
-		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want timeline append error", err.Error())
+	if !strings.Contains(err.Error(), `enqueue factory run "run-queue-add-timeline-failure": load factory timeline "run-queue-add-timeline-failure"`) {
+		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want timeline load error", err.Error())
 	}
 
 	entries, err := store.LoadQueue()
@@ -649,6 +649,7 @@ func TestRunFactoryQueueWorkWithDepsExecutesOneEntryAndRecordsRunState(t *testin
 		factory.EventTypeStepStarted,
 		factory.EventTypeCommandOutputSummary,
 		factory.EventTypeStepEnded,
+		factory.EventTypeStepEnded,
 	})
 	if events[0].Summary != "Factory run claimed" {
 		t.Fatalf("event summary = %q, want claim summary", events[0].Summary)
@@ -670,6 +671,9 @@ func TestRunFactoryQueueWorkWithDepsExecutesOneEntryAndRecordsRunState(t *testin
 	}
 	if events[3].Summary != "Local compound pipeline completed" {
 		t.Fatalf("final event summary = %q, want pipeline completed", events[3].Summary)
+	}
+	if events[4].Summary != "Factory queue work succeeded" {
+		t.Fatalf("queue success event summary = %q, want queue success", events[4].Summary)
 	}
 }
 
@@ -834,8 +838,8 @@ func TestRunFactoryQueueWorkWithDepsRequeuesRunWhenClaimTimelineAppendFails(t *t
 	}); err != nil {
 		t.Fatalf("SaveQueue() error: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(store.TimelinesDir(), record.RunID+".json.tmp"), 0o700); err != nil {
-		t.Fatalf("Mkdir(timeline temp path) error: %v", err)
+	if err := os.Mkdir(filepath.Join(store.TimelinesDir(), record.RunID+".json"), 0o700); err != nil {
+		t.Fatalf("Mkdir(timeline path) error: %v", err)
 	}
 
 	executorCalled := false
@@ -847,8 +851,8 @@ func TestRunFactoryQueueWorkWithDepsRequeuesRunWhenClaimTimelineAppendFails(t *t
 	if err == nil {
 		t.Fatalf("runFactoryQueueWorkWithDeps() error = nil, want timeline append error")
 	}
-	if !strings.Contains(err.Error(), `append factory timeline event "run-claim-timeline-failure"`) {
-		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want timeline append error", err.Error())
+	if !strings.Contains(err.Error(), `load factory timeline "run-claim-timeline-failure"`) {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want timeline load error", err.Error())
 	}
 	if executorCalled {
 		t.Fatal("executor was called after claim timeline append failed")
@@ -875,8 +879,8 @@ func TestRunFactoryQueueWorkWithDepsRequeuesRunWhenClaimTimelineAppendFails(t *t
 	if entries[0].Status != factory.QueueStatusQueued {
 		t.Fatalf("queue status = %q, want queued", entries[0].Status)
 	}
-	if !strings.Contains(entries[0].LastError, `append factory timeline event "run-claim-timeline-failure"`) {
-		t.Fatalf("queue lastError = %q, want timeline append error", entries[0].LastError)
+	if !strings.Contains(entries[0].LastError, `load factory timeline "run-claim-timeline-failure"`) {
+		t.Fatalf("queue lastError = %q, want timeline load error", entries[0].LastError)
 	}
 	if entries[0].ClaimedAt != nil {
 		t.Fatalf("queue claimedAt = %v, want nil", entries[0].ClaimedAt)
@@ -914,18 +918,33 @@ func TestRunFactoryQueueWorkWithDepsKeepsQueueSucceededWhenSuccessEventAppendFai
 		t.Fatalf("SaveQueue() error: %v", err)
 	}
 
-	var out bytes.Buffer
-	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
-		if err := os.Mkdir(filepath.Join(store.TimelinesDir(), record.RunID+".json.tmp"), 0o700); err != nil {
-			t.Fatalf("Mkdir(timeline temp path) error: %v", err)
-		}
+	poisonedTimeline := false
+	nowCalls := 0
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
 		return nil
-	}))
+	})
+	deps.now = func() time.Time {
+		nowCalls++
+		if nowCalls >= 5 && !poisonedTimeline {
+			poisonedTimeline = true
+			timelinePath := filepath.Join(store.TimelinesDir(), record.RunID+".json")
+			if err := os.Remove(timelinePath); err != nil {
+				t.Fatalf("Remove(timeline path) error: %v", err)
+			}
+			if err := os.Mkdir(timelinePath, 0o700); err != nil {
+				t.Fatalf("Mkdir(timeline path) error: %v", err)
+			}
+		}
+		return claimedAt
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps)
 	if err == nil {
 		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want success event append error")
 	}
-	if !strings.Contains(err.Error(), `append factory timeline event "run-success-event-failure"`) {
-		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want timeline append error", err.Error())
+	if !strings.Contains(err.Error(), `load factory timeline "run-success-event-failure"`) {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want timeline load error", err.Error())
 	}
 
 	var resp FactoryQueueWorkResponse
@@ -977,8 +996,8 @@ func TestExecuteClaimedFactoryQueueEntryMarksRunFailedWhenPipelineStartEventAppe
 	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
 		t.Fatalf("SaveQueue() error: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(store.TimelinesDir(), record.RunID+".json.tmp"), 0o700); err != nil {
-		t.Fatalf("Mkdir(timeline temp path) error: %v", err)
+	if err := os.Mkdir(filepath.Join(store.TimelinesDir(), record.RunID+".json"), 0o700); err != nil {
+		t.Fatalf("Mkdir(timeline path) error: %v", err)
 	}
 
 	finalEntry, err := executeClaimedFactoryQueueEntry(context.Background(), store, entry, queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
@@ -988,8 +1007,8 @@ func TestExecuteClaimedFactoryQueueEntryMarksRunFailedWhenPipelineStartEventAppe
 	if err == nil {
 		t.Fatal("executeClaimedFactoryQueueEntry() error = nil, want pipeline start event append error")
 	}
-	if !strings.Contains(err.Error(), `append factory timeline event "run-start-event-failure"`) {
-		t.Fatalf("executeClaimedFactoryQueueEntry() error = %q, want timeline append error", err.Error())
+	if !strings.Contains(err.Error(), `load factory timeline "run-start-event-failure"`) {
+		t.Fatalf("executeClaimedFactoryQueueEntry() error = %q, want timeline load error", err.Error())
 	}
 	if finalEntry.Status != factory.QueueStatusFailed {
 		t.Fatalf("final queue status = %q, want failed", finalEntry.Status)
@@ -1002,8 +1021,8 @@ func TestExecuteClaimedFactoryQueueEntryMarksRunFailedWhenPipelineStartEventAppe
 	if loaded.Status != factory.RunStatusFailed {
 		t.Fatalf("run status = %q, want failed", loaded.Status)
 	}
-	if loaded.Failure == nil || !strings.Contains(loaded.Failure.Message, `append factory timeline event "run-start-event-failure"`) {
-		t.Fatalf("run failure = %#v, want timeline append failure", loaded.Failure)
+	if loaded.Failure == nil || !strings.Contains(loaded.Failure.Message, `load factory timeline "run-start-event-failure"`) {
+		t.Fatalf("run failure = %#v, want timeline load failure", loaded.Failure)
 	}
 }
 
@@ -1369,8 +1388,8 @@ func TestRunFactoryQueueWorkWithDepsConcurrentClaimSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadEvents() error: %v", err)
 	}
-	if len(events) != 3 {
-		t.Fatalf("events len = %d, want 3: %#v", len(events), events)
+	if len(events) != 4 {
+		t.Fatalf("events len = %d, want 4: %#v", len(events), events)
 	}
 }
 
