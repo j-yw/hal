@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -152,10 +153,47 @@ type Provider interface {
 // exit error (if any). This is the standard way to run a Provider-returned
 // *exec.Cmd when you want streamed output rather than collected bytes.
 func RunCmd(cmd *exec.Cmd, out io.Writer) error {
+	return RunCmdContext(context.Background(), cmd, out)
+}
+
+// RunCmdContext executes cmd like RunCmd, but terminates the command if ctx is
+// canceled before it exits.
+func RunCmdContext(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	safeOut := synchronizedWriter(out)
 	cmd.Stdout = safeOut
 	cmd.Stderr = safeOut
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		return err
+	case <-ctx.Done():
+		if cmd.Cancel != nil {
+			if err := cmd.Cancel(); err != nil && cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		} else if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return errors.Join(ctx.Err(), <-waitCh)
+	}
 }
 
 // ProviderFromConfig returns the Provider implementation matching the given

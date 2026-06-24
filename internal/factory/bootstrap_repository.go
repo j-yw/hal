@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 const (
 	BootstrapStepCloneRepository = "clone_repository"
+	BootstrapStepSanitizeOrigin  = "sanitize_origin_url"
 	BootstrapStepFetchRepository = "fetch_repository"
 	BootstrapStepCheckoutBase    = "checkout_base"
 	BootstrapStepCheckLocalRun   = "check_local_run_branch"
@@ -201,6 +203,19 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 
 	commands := make([]bootstrapRepositoryCommand, 0, 2)
 	if exists {
+		if actualRemote, err := deps.repoRemoteURL(repoPath); err != nil {
+			return nil, fmt.Errorf("verify repository origin remote: %w", err)
+		} else if safeRepositoryURL, ok := bootstrapRepositoryCredentialFreeURL(actualRemote); ok {
+			commands = append(commands, bootstrapRepositoryCommand{
+				stepName: BootstrapStepSanitizeOrigin,
+				command: BootstrapCommand{
+					Name: "git",
+					Args: []string{"remote", "set-url", "origin", safeRepositoryURL},
+					Dir:  repoPath,
+					Env:  bootstrapGitEnv(),
+				},
+			})
+		}
 		commands = append(commands, bootstrapRepositoryCommand{
 			stepName: BootstrapStepFetchRepository,
 			command: BootstrapCommand{
@@ -223,12 +238,20 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 				Env:  bootstrapGitEnv(),
 			},
 		})
+		if safeRepositoryURL, ok := bootstrapRepositoryCredentialFreeURL(repositoryURL); ok {
+			commands = append(commands, bootstrapRepositoryCommand{
+				stepName: BootstrapStepSanitizeOrigin,
+				command: BootstrapCommand{
+					Name: "git",
+					Args: []string{"remote", "set-url", "origin", safeRepositoryURL},
+					Dir:  repoPath,
+					Env:  bootstrapGitEnv(),
+				},
+			})
+		}
 	}
 
-	checkoutArgs := []string{"checkout", baseBranch}
-	if exists {
-		checkoutArgs = []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
-	}
+	checkoutArgs := []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
 	commands = append(commands, bootstrapRepositoryCommand{
 		stepName: BootstrapStepCheckoutBase,
 		command: BootstrapCommand{
@@ -240,6 +263,30 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	})
 
 	return commands, nil
+}
+
+func bootstrapRepositoryCredentialFreeURL(repositoryURL string) (string, bool) {
+	repositoryURL = strings.TrimSpace(repositoryURL)
+	if !strings.Contains(repositoryURL, "://") {
+		return "", false
+	}
+
+	parsed, err := url.Parse(repositoryURL)
+	if err != nil || parsed.User == nil {
+		return "", false
+	}
+
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		parsed.User = nil
+		return parsed.String(), true
+	}
+
+	username := parsed.User.Username()
+	if _, hasPassword := parsed.User.Password(); !hasPassword || username == "" {
+		return "", false
+	}
+	parsed.User = url.User(username)
+	return parsed.String(), true
 }
 
 func (d BootstrapRepositoryDeps) validateExistingRepoRemote(repoPath string, repositoryURL string) error {
@@ -259,10 +306,101 @@ func (d BootstrapRepositoryDeps) validateExistingRepoRemote(repoPath string, rep
 	if actual == "" {
 		return fmt.Errorf("repository origin remote is empty; expected %q", sanitizeRemoteURL(repositoryURL))
 	}
-	if actual != repositoryURL {
+	if !bootstrapRepositoryRemoteMatches(actual, repositoryURL) {
 		return fmt.Errorf("repository origin remote %q does not match requested URL %q", sanitizeRemoteURL(actual), sanitizeRemoteURL(repositoryURL))
 	}
 	return nil
+}
+
+func bootstrapRepositoryRemoteMatches(actual, expected string) bool {
+	actual = strings.TrimSpace(actual)
+	expected = strings.TrimSpace(expected)
+	if actual == expected {
+		return true
+	}
+
+	actualCredentialFree, actualOK := normalizeBootstrapRemoteCredentials(actual)
+	expectedCredentialFree, expectedOK := normalizeBootstrapRemoteCredentials(expected)
+	if actualOK && expectedOK && actualCredentialFree == expectedCredentialFree {
+		return true
+	}
+
+	actualRepo, ok := normalizeBootstrapGitHubRemote(actual)
+	if !ok {
+		return false
+	}
+	expectedRepo, ok := normalizeBootstrapGitHubRemote(expected)
+	if !ok {
+		return false
+	}
+	return actualRepo == expectedRepo
+}
+
+func normalizeBootstrapRemoteCredentials(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" || !strings.Contains(remote, "://") {
+		return "", false
+	}
+
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	if parsed.User == nil {
+		return parsed.String(), true
+	}
+
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		parsed.User = nil
+		return parsed.String(), true
+	}
+
+	username := parsed.User.Username()
+	if _, hasPassword := parsed.User.Password(); hasPassword && username != "" {
+		parsed.User = url.User(username)
+	}
+	return parsed.String(), true
+}
+
+func normalizeBootstrapGitHubRemote(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", false
+	}
+
+	if strings.Contains(remote, "://") {
+		parsed, err := url.Parse(remote)
+		if err != nil || !strings.EqualFold(parsed.Hostname(), "github.com") {
+			return "", false
+		}
+		return normalizeBootstrapGitHubRemotePath(parsed.Path)
+	}
+
+	hostAndPath := strings.SplitN(remote, ":", 2)
+	if len(hostAndPath) != 2 || strings.Contains(hostAndPath[0], "/") {
+		return "", false
+	}
+	host := hostAndPath[0]
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if !strings.EqualFold(host, "github.com") {
+		return "", false
+	}
+	return normalizeBootstrapGitHubRemotePath(hostAndPath[1])
+}
+
+func normalizeBootstrapGitHubRemotePath(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimSuffix(path, "/")
+	path = strings.TrimSuffix(path, ".git")
+
+	segments := strings.Split(path, "/")
+	if len(segments) != 2 || segments[0] == "" || segments[1] == "" {
+		return "", false
+	}
+	return strings.ToLower(segments[0] + "/" + segments[1]), true
 }
 
 func (d BootstrapRepositoryDeps) repoRemoteURL(path string) (string, error) {
