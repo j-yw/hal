@@ -398,6 +398,8 @@ func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 	tests := []string{
 		"authentication failed for token ghp_xxx",
 		"authentication failed for token|ghp_xxx",
+		"authentication failed for AWS_SECRET_ACCESS_KEY ABC123456",
+		"authentication failed for GITHUB_TOKEN abc123456",
 		"authentication failed for token <ghp_xxx>",
 		"authentication failed for --token ghp_xxx",
 		"authentication failed for --api-key sk-secretvalue",
@@ -1020,6 +1022,16 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 		{
 			name: "secret query value",
 			raw:  "https://github.com/jywlabs/hal/pull/42?ref=ghp_secret",
+			want: "",
+		},
+		{
+			name: "secret query key",
+			raw:  "https://github.com/jywlabs/hal/pull/42?ghp_secret",
+			want: "",
+		},
+		{
+			name: "ip query key",
+			raw:  "https://github.com/jywlabs/hal/pull/42?203.0.113.10",
 			want: "",
 		},
 		{

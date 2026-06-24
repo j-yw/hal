@@ -1323,6 +1323,9 @@ func handoffStandaloneSecretKey(key string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
 	key = strings.Trim(key, "\"'<>[](){}.,;")
 	key = strings.TrimLeft(key, "-")
+	if handoffSecretKey(key) {
+		return true
+	}
 	switch key {
 	case "token", "secret", "password", "passwd", "credential", "credentials", "auth", "authorization", "key",
 		"api_key", "api-key", "apikey", "access_key", "access-key", "accesskey", "private_key", "private-key", "privatekey":
@@ -1368,7 +1371,7 @@ func handoffURLRawQueryContainsSecret(rawQuery string) bool {
 
 func handoffURLQueryContainsSecret(query url.Values) bool {
 	for key, values := range query {
-		if handoffSecretKey(key) {
+		if handoffSecretKey(key) || handoffURLQueryValueNeedsRedaction(key) {
 			return true
 		}
 		for _, value := range values {
