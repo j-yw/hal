@@ -467,6 +467,75 @@ func TestSaveArtifactFileCapsFlattenedArtifactFileNames(t *testing.T) {
 	}
 }
 
+func TestSaveArtifactFileErrorsDoNotLeakSourcePath(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-artifact-error-redaction")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	secretDir := filepath.Join(t.TempDir(), "secret-workspace")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatalf("create secret dir: %v", err)
+	}
+	missingPath := filepath.Join(secretDir, "missing-output.json")
+	directoryPath := filepath.Join(secretDir, "artifact-dir")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatalf("create artifact dir: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		sourcePath string
+	}{
+		{name: "missing", sourcePath: missingPath},
+		{name: "directory", sourcePath: directoryPath},
+	}
+	if runtime.GOOS != "windows" {
+		symlinkPath := filepath.Join(secretDir, "artifact-link")
+		if err := os.Symlink(missingPath, symlinkPath); err != nil {
+			t.Fatalf("create symlink: %v", err)
+		}
+		tests = append(tests, struct {
+			name       string
+			sourcePath string
+		}{name: "symlink", sourcePath: symlinkPath})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := store.SaveArtifactFile(record.RunID, ArtifactReference{
+				Name: "artifact",
+				Type: "json",
+			}, tt.sourcePath)
+			if err == nil {
+				t.Fatalf("SaveArtifactFile() expected error")
+			}
+			if strings.Contains(err.Error(), tt.sourcePath) {
+				t.Fatalf("SaveArtifactFile() error leaked source path: %v", err)
+			}
+		})
+	}
+}
+
+func TestCopyStoreFileErrorsDoNotLeakSourcePath(t *testing.T) {
+	secretDir := filepath.Join(t.TempDir(), "secret-workspace")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatalf("create secret dir: %v", err)
+	}
+	sourcePath := filepath.Join(secretDir, "missing-output.json")
+	destPath := filepath.Join(t.TempDir(), "artifact.json")
+
+	_, err := copyStoreFile(sourcePath, destPath, 0o600, nil)
+	if err == nil {
+		t.Fatalf("copyStoreFile() expected error")
+	}
+	if strings.Contains(err.Error(), sourcePath) {
+		t.Fatalf("copyStoreFile() error leaked source path: %v", err)
+	}
+}
+
 func TestSaveArtifactFileUpsertsMetadataByStoredPath(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-artifacts-upsert")

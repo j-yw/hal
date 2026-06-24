@@ -149,16 +149,16 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 
 	info, err := os.Lstat(sourcePath)
 	if err != nil {
-		return ArtifactReference{}, fmt.Errorf("stat artifact source %q: %w", sourcePath, err)
+		return ArtifactReference{}, fmt.Errorf("stat artifact source: %w", redactArtifactSourcePathError(err, sourcePath))
 	}
 	if info.IsDir() {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is a directory", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source is a directory")
 	}
 	if info.Mode()&fs.ModeSymlink != 0 {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is a symlink", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source is a symlink")
 	}
 	if !info.Mode().IsRegular() {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source is not a regular file")
 	}
 
 	artifact.Name = strings.TrimSpace(artifact.Name)
@@ -597,18 +597,18 @@ func isStoreRenameNoReplaceError(err error) bool {
 func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo) (fs.FileInfo, error) {
 	source, err := os.Open(sourcePath)
 	if err != nil {
-		return nil, err
+		return nil, redactArtifactSourcePathError(err, sourcePath)
 	}
 	defer source.Close()
 	sourceInfo, err := source.Stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stat artifact source: %w", redactArtifactSourcePathError(err, sourcePath))
 	}
 	if !sourceInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
+		return nil, fmt.Errorf("artifact source is not a regular file")
 	}
 	if expectedInfo != nil && !os.SameFile(expectedInfo, sourceInfo) {
-		return nil, fmt.Errorf("artifact source %q changed during copy", sourcePath)
+		return nil, fmt.Errorf("artifact source changed during copy")
 	}
 
 	dest, err := os.CreateTemp(filepath.Dir(destPath), ".artifact-*"+storeTempFileExt)
@@ -625,7 +625,7 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 
 	if _, err := io.Copy(dest, source); err != nil {
 		_ = dest.Close()
-		return nil, err
+		return nil, redactArtifactSourcePathError(err, sourcePath)
 	}
 	if err := dest.Chmod(mode); err != nil {
 		_ = dest.Close()
@@ -639,6 +639,21 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 	}
 	cleanup = false
 	return sourceInfo, nil
+}
+
+func redactArtifactSourcePathError(err error, sourcePath string) error {
+	if err == nil {
+		return nil
+	}
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathErr.Path == sourcePath {
+		return &fs.PathError{
+			Op:   pathErr.Op,
+			Path: "artifact source",
+			Err:  pathErr.Err,
+		}
+	}
+	return err
 }
 
 func artifactFileName(name, sourcePath string) string {
