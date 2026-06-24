@@ -258,9 +258,9 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 							"2. Run quality checks (test, lint, etc.)\n"+
 							"3. Edit `%s` to set `passes: true` for story %s\n"+
 							"4. Append `%s` with the completed work\n"+
-							"5. Commit implementation changes with message `feat: %s - %s`; do not force-add ignored `.hal` runtime files\n"+
+							"5. Ensure implementation changes are committed with message `feat: %s - %s`; commit only if there are new implementation changes, and do not force-add ignored `.hal` runtime files\n"+
 							"6. Run `git status --short` and confirm there are no uncommitted implementation changes\n\n"+
-							"If you believe the code already satisfies the criteria, you STILL must update the PRD file, append progress, and commit implementation changes.\n"+
+							"If you believe the code already satisfies the criteria, you STILL must update the PRD file, append progress, and ensure implementation changes are committed.\n"+
 							"If any story still has `passes: false`, end your response normally without <promise>COMPLETE</promise>.\n"+
 							"Do NOT output <promise>COMPLETE</promise> until there are zero pending stories and all six steps are done.\n",
 						i, story.ID, r.config.PRDFile, r.config.PRDFile, story.ID,
