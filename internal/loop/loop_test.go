@@ -448,6 +448,9 @@ func TestFalseCompleteInjectsFeedback(t *testing.T) {
 	if !strings.Contains(fe.prompts[1], "git status --short") {
 		t.Fatal("second prompt should require a clean git status before COMPLETE")
 	}
+	if !strings.Contains(fe.prompts[1], "do not force-add ignored `.hal` runtime files") {
+		t.Fatal("second prompt should keep ignored .hal runtime files local")
+	}
 	if !strings.Contains(fe.prompts[1], "end your response normally without <promise>COMPLETE</promise>") {
 		t.Fatal("second prompt should forbid COMPLETE while stories remain pending")
 	}
