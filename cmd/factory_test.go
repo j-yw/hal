@@ -578,6 +578,9 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			}
 			return nil
 		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
@@ -3007,6 +3010,9 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 			t.Fatal("runVerify called for sandbox run")
 			return nil, nil
 		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
@@ -3107,6 +3113,9 @@ func TestRunFactoryRunWithDepsPreservesSandboxRecordedBranchOnSuccess(t *testing
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
 			return nil
 		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
@@ -3175,6 +3184,9 @@ func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T)
 				return err
 			}
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
 			return nil
 		},
 	})
@@ -3276,6 +3288,9 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 				return err
 			}
 			return factorySandboxTestError("execute factory sandbox command: remote pipeline failed token=secret-token")
+		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return nil
 		},
 	})
 	if err == nil {

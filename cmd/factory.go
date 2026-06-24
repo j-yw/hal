@@ -1619,10 +1619,18 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 	if len(requests) == 0 {
 		return nil
 	}
-	if deps.sandboxCopier == nil {
-		return nil
+	copier := deps.sandboxCopier
+	if copier == nil {
+		if strings.TrimSpace(record.RepoPath) == "" {
+			return nil
+		}
+		defaultCopier, err := newFactorySandboxArtifactCopier(dir, record)
+		if err != nil {
+			return fmt.Errorf("create sandbox artifact copier: %w", err)
+		}
+		copier = defaultCopier
 	}
-	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, deps.sandboxCopier, requests); err != nil {
+	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, copier, requests); err != nil {
 		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 	}
 	return nil
