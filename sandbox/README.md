@@ -93,9 +93,10 @@ keys, sync the small local auth profile files after the sandbox is running:
 hal sandbox auth sync my-sandbox
 ```
 
-This copies selected files from `~/.codex` and `~/.pi` into `/root` over SSH.
-It does not copy logs, sessions, caches, or GitHub CLI credentials. GitHub auth
-is handled separately through `GITHUB_TOKEN`/`GH_TOKEN` and `gh auth setup-git`.
+This copies selected files from `~/.codex` and `~/.pi` into the remote exec
+user's home over SSH. It does not copy logs, sessions, caches, or GitHub CLI
+credentials. GitHub auth is handled separately through `GITHUB_TOKEN`/`GH_TOKEN`
+and `gh auth setup-git`.
 
 ## SSH from Phone
 

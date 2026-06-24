@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -156,12 +157,43 @@ func TestRunSandboxAuthSyncToTargetSkipsWhenNoAuthFiles(t *testing.T) {
 func TestSandboxAuthRemoteInstallScriptExtractsPrivateArchive(t *testing.T) {
 	script := sandboxAuthRemoteInstallScript()
 	for _, want := range []string{
-		"tar -C /root -xzf -",
+		"tar -C \"$HOME\" -xzf -",
 		"chmod -R go-rwx",
-		"export HOME=\"${HOME:-/root}\"",
+		"export HOME=\"$remote_home\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("sandboxAuthRemoteInstallScript() missing %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestSandboxAuthRemoteInstallScriptExtractsIntoExecUserHome(t *testing.T) {
+	localHome := t.TempDir()
+	writeSandboxAuthTestFile(t, localHome, ".codex/auth.json", "codex-auth")
+	writeSandboxAuthTestFile(t, localHome, ".pi/agent/auth.json", "pi-auth")
+
+	files, err := collectSandboxAuthFiles(localHome, sandboxAuthSyncOptions{})
+	if err != nil {
+		t.Fatalf("collectSandboxAuthFiles() error: %v", err)
+	}
+	archive, err := buildSandboxAuthArchive(files)
+	if err != nil {
+		t.Fatalf("buildSandboxAuthArchive() error: %v", err)
+	}
+
+	remoteHome := t.TempDir()
+	cmd := exec.Command("sh", "-lc", sandboxAuthRemoteInstallScript())
+	cmd.Env = append(os.Environ(), "HOME="+remoteHome)
+	cmd.Stdin = bytes.NewReader(archive)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("remote install script error: %v\n%s", err, output)
+	}
+
+	for _, rel := range []string{".codex/auth.json", ".pi/agent/auth.json"} {
+		path := filepath.Join(remoteHome, filepath.FromSlash(rel))
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected auth file under exec user home %s: %v", path, err)
 		}
 	}
 }

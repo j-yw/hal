@@ -1703,9 +1703,11 @@ func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *
 func TestFactorySandboxGitHubAuthScriptRepairsGhAndGitSSHRemotes(t *testing.T) {
 	script := factorySandboxGitHubAuthScript()
 	required := []string{
-		". /root/.env",
+		"load_env_file \"$HOME/.env\"",
+		"load_env_file /root/.env",
+		"sudo -n test -r /root/.env",
 		"${GITHUB_TOKEN:-${GH_TOKEN:-}}",
-		"export HOME=\"${HOME:-/root}\"",
+		"export HOME=\"$remote_home\"",
 		"gh auth login --with-token",
 		"env -u GITHUB_TOKEN -u GH_TOKEN",
 		"gh auth setup-git",
@@ -1719,6 +1721,130 @@ func TestFactorySandboxGitHubAuthScriptRepairsGhAndGitSSHRemotes(t *testing.T) {
 	}
 	if strings.Contains(script, "x-access-token:${token}") {
 		t.Fatalf("factorySandboxGitHubAuthScript() should not persist token in git config:\n%s", script)
+	}
+	if strings.Contains(script, "export HOME=\"${HOME:-/root}\"") {
+		t.Fatalf("factorySandboxGitHubAuthScript() should not force non-root exec users into /root:\n%s", script)
+	}
+}
+
+func TestFactorySandboxGitHubAuthScriptReadsTokenFromExecUserHome(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, home, ".env", "GITHUB_TOKEN='ghp_home'\n")
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	binDir := t.TempDir()
+	writeFactorySandboxGitHubAuthFakeTools(t, binDir, tokenPath, logPath)
+	writeFile(t, home, ".profile", "export PATH="+shellQuote(binDir)+":$PATH\n")
+
+	cmd := exec.Command("sh", "-lc", factorySandboxGitHubAuthScript())
+	cmd.Env = []string{
+		"HOME=" + home,
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("factory auth script error: %v\n%s\nfake calls:\n%s", err, output, readFactorySandboxFakeToolLog(t, logPath))
+	}
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read token captured by fake gh: %v\nfake calls:\n%s", err, readFactorySandboxFakeToolLog(t, logPath))
+	}
+	if got := strings.TrimSpace(string(data)); got != "ghp_home" {
+		t.Fatalf("gh token = %q, want ghp_home", got)
+	}
+}
+
+func TestFactorySandboxGitHubAuthScriptReadsRootEnvWithSudoFallback(t *testing.T) {
+	home := t.TempDir()
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	binDir := t.TempDir()
+	writeFactorySandboxGitHubAuthFakeTools(t, binDir, tokenPath, logPath)
+	writeFile(t, home, ".profile", "export PATH="+shellQuote(binDir)+":$PATH\n")
+	writeExecutableTestFile(t, binDir, "sudo", `#!/bin/sh
+if [ "$1" = "-n" ] && [ "$2" = "test" ] && [ "$3" = "-r" ] && [ "$4" = "/root/.env" ]; then
+  exit 0
+fi
+if [ "$1" = "-n" ] && [ "$2" = "sh" ] && [ "$3" = "-c" ]; then
+  printf '%s' 'ghp_sudo'
+  exit 0
+fi
+echo "unexpected sudo args: $*" >&2
+exit 1
+`)
+
+	cmd := exec.Command("sh", "-lc", factorySandboxGitHubAuthScript())
+	cmd.Env = []string{
+		"HOME=" + home,
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("factory auth script error: %v\n%s\nfake calls:\n%s", err, output, readFactorySandboxFakeToolLog(t, logPath))
+	}
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read token captured by fake gh: %v\nfake calls:\n%s", err, readFactorySandboxFakeToolLog(t, logPath))
+	}
+	if got := strings.TrimSpace(string(data)); got != "ghp_sudo" {
+		t.Fatalf("gh token = %q, want ghp_sudo", got)
+	}
+}
+
+func writeFactorySandboxGitHubAuthFakeTools(t *testing.T, dir, tokenPath, logPath string) {
+	t.Helper()
+	writeExecutableTestFile(t, dir, "env", fmt.Sprintf(`#!/bin/sh
+printf 'env args:' >> %s
+for arg in "$@"; do printf ' [%%s]' "$arg" >> %s; done
+printf '\n' >> %s
+while [ "${1:-}" = "-u" ]; do
+  shift
+  shift
+done
+exec "$@"
+`, shellQuote(logPath), shellQuote(logPath), shellQuote(logPath)))
+	writeExecutableTestFile(t, dir, "gh", fmt.Sprintf(`#!/bin/sh
+printf 'gh args:' >> %s
+for arg in "$@"; do printf ' [%%s]' "$arg" >> %s; done
+printf '\n' >> %s
+if [ "$1" = "auth" ] && [ "$2" = "login" ] && [ "$3" = "--with-token" ]; then
+  cat > %s
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "setup-git" ]; then
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`, shellQuote(logPath), shellQuote(logPath), shellQuote(logPath), shellQuote(tokenPath)))
+	writeExecutableTestFile(t, dir, "git", `#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "--global" ] && [ "$3" = "--get-all" ]; then
+  exit 1
+fi
+exit 0
+`)
+}
+
+func readFactorySandboxFakeToolLog(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("(unreadable fake tool log: %v)", err)
+	}
+	return string(data)
+}
+
+func writeExecutableTestFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod executable %s: %v", path, err)
 	}
 }
 

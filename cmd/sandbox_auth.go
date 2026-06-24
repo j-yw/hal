@@ -40,9 +40,10 @@ var sandboxAuthSyncCmd = &cobra.Command{
 	Args:  maxArgsValidation(1),
 	Long: `Sync local Codex and pi subscription-login auth files into a running sandbox.
 
-By default this copies selected files from ~/.codex and ~/.pi into /root using
-tar over the existing sandbox SSH transport. The command does not copy GitHub
-CLI credentials, caches, logs, sessions, or entire auth directories.
+By default this copies selected files from ~/.codex and ~/.pi into the remote
+exec user's home using tar over the existing sandbox SSH transport. The command
+does not copy GitHub CLI credentials, caches, logs, sessions, or entire auth
+directories.
 
 Use --include-claude to also copy known Claude Code auth/settings files when
 they exist locally.`,
@@ -358,10 +359,15 @@ func runSandboxAuthRemoteInstall(provider sandbox.Provider, info *sandbox.Connec
 func sandboxAuthRemoteInstallScript() string {
 	return strings.Join([]string{
 		"set -eu",
-		"export HOME=\"${HOME:-/root}\"",
-		"mkdir -p /root",
-		"tar -C /root -xzf -",
-		"chmod -R go-rwx /root/.codex /root/.pi /root/.claude /root/.claude.json 2>/dev/null || true",
+		"remote_home=\"${HOME:-}\"",
+		"if [ -z \"$remote_home\" ] && command -v getent >/dev/null 2>&1; then",
+		"  remote_home=\"$(getent passwd \"$(id -u)\" | cut -d: -f6)\"",
+		"fi",
+		"if [ -z \"$remote_home\" ]; then remote_home=\"$(pwd)\"; fi",
+		"export HOME=\"$remote_home\"",
+		"mkdir -p \"$HOME\"",
+		"tar -C \"$HOME\" -xzf -",
+		"chmod -R go-rwx \"$HOME/.codex\" \"$HOME/.pi\" \"$HOME/.claude\" \"$HOME/.claude.json\" 2>/dev/null || true",
 	}, "\n")
 }
 
