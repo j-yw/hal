@@ -42,3 +42,4 @@ hal sandbox auth sync [NAME] [flags]
 ### SEE ALSO
 
 * [hal sandbox auth](hal_sandbox_auth.md)	 - Manage sandbox agent auth profiles
+
