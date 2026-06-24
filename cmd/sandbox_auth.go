@@ -88,8 +88,10 @@ type sandboxAuthSyncDeps struct {
 }
 
 type sandboxAuthProfileSpec struct {
-	Name    string
-	Entries []string
+	Name        string
+	SourceRoot  func(home string) string
+	ArchiveRoot string
+	Entries     []string
 }
 
 type sandboxAuthFile struct {
@@ -200,12 +202,14 @@ func runSandboxAuthSyncToTarget(ctx context.Context, target *sandbox.SandboxStat
 func sandboxAuthProfileSpecs(opts sandboxAuthSyncOptions) []sandboxAuthProfileSpec {
 	specs := []sandboxAuthProfileSpec{
 		{
-			Name: "codex",
+			Name:        "codex",
+			SourceRoot:  sandboxAuthCodexRoot,
+			ArchiveRoot: ".codex",
 			Entries: []string{
-				".codex/auth.json",
-				".codex/config.toml",
-				".codex/version.json",
-				".codex/installation_id",
+				"auth.json",
+				"config.toml",
+				"version.json",
+				"installation_id",
 			},
 		},
 		{
@@ -244,13 +248,14 @@ func collectSandboxAuthFiles(home string, opts sandboxAuthSyncOptions) ([]sandbo
 			if cleanEntry == "." || strings.HasPrefix(cleanEntry, "../") || path.IsAbs(cleanEntry) {
 				return nil, fmt.Errorf("invalid auth sync entry %q", entry)
 			}
-			localPath := sandboxAuthLocalPath(home, spec, cleanEntry)
+			archivePath := sandboxAuthArchivePath(spec, cleanEntry)
+			localPath := filepath.Join(sandboxAuthSourceRoot(home, spec), filepath.FromSlash(cleanEntry))
 			info, err := os.Lstat(localPath)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
 				}
-				return nil, fmt.Errorf("stat auth file %s: %w", cleanEntry, err)
+				return nil, fmt.Errorf("stat auth file %s: %w", archivePath, err)
 			}
 			if !info.Mode().IsRegular() {
 				continue
@@ -258,7 +263,7 @@ func collectSandboxAuthFiles(home string, opts sandboxAuthSyncOptions) ([]sandbo
 			files = append(files, sandboxAuthFile{
 				Profile:     spec.Name,
 				LocalPath:   localPath,
-				ArchivePath: cleanEntry,
+				ArchivePath: archivePath,
 				Mode:        info.Mode().Perm(),
 				Size:        info.Size(),
 				ModTime:     info.ModTime(),
@@ -271,15 +276,25 @@ func collectSandboxAuthFiles(home string, opts sandboxAuthSyncOptions) ([]sandbo
 	return files, nil
 }
 
-func sandboxAuthLocalPath(home string, spec sandboxAuthProfileSpec, cleanEntry string) string {
-	if spec.Name == "codex" {
-		if rel, ok := strings.CutPrefix(cleanEntry, ".codex/"); ok {
-			if codexHome := os.Getenv("CODEX_HOME"); codexHome != "" {
-				return filepath.Join(codexHome, filepath.FromSlash(rel))
-			}
-		}
+func sandboxAuthSourceRoot(home string, spec sandboxAuthProfileSpec) string {
+	if spec.SourceRoot != nil {
+		return spec.SourceRoot(home)
 	}
-	return filepath.Join(home, filepath.FromSlash(cleanEntry))
+	return home
+}
+
+func sandboxAuthCodexRoot(home string) string {
+	if codexHome := os.Getenv("CODEX_HOME"); codexHome != "" {
+		return codexHome
+	}
+	return filepath.Join(home, ".codex")
+}
+
+func sandboxAuthArchivePath(spec sandboxAuthProfileSpec, cleanEntry string) string {
+	if strings.TrimSpace(spec.ArchiveRoot) == "" {
+		return cleanEntry
+	}
+	return path.Join(spec.ArchiveRoot, cleanEntry)
 }
 
 func buildSandboxAuthArchive(files []sandboxAuthFile) ([]byte, error) {

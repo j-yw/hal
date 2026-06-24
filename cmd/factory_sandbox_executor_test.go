@@ -180,12 +180,12 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
 
-	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "exec", "now", "event", "exec", "exec", "now", "event"}
+	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "now", "save", "exec", "now", "event", "exec", "exec", "now", "event"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
-	if len(savedRecords) != 2 {
-		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	if len(savedRecords) != 3 {
+		t.Fatalf("saved records = %d, want 3", len(savedRecords))
 	}
 	if savedRecords[0].ExecutorMode != factory.ExecutorModeSandbox {
 		t.Fatalf("saved executorMode = %q, want %q", savedRecords[0].ExecutorMode, factory.ExecutorModeSandbox)
@@ -204,6 +204,9 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	}
 	if savedRecords[1].Sandbox.Connection == nil || savedRecords[1].Sandbox.Connection.PublicIP != "127.0.0.1" {
 		t.Fatalf("saved sandbox connection = %#v", savedRecords[1].Sandbox.Connection)
+	}
+	if savedRecords[2].RepoPath != "/home/ubuntu/workspace/repo" {
+		t.Fatalf("saved repoPath = %q, want remote workspace", savedRecords[2].RepoPath)
 	}
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
@@ -1203,14 +1206,17 @@ func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTa
 	if !resolved {
 		t.Fatalf("resolveDefault was not called")
 	}
-	if len(savedRecords) != 2 {
-		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	if len(savedRecords) != 3 {
+		t.Fatalf("saved records = %d, want 3", len(savedRecords))
 	}
 	if savedRecords[1].SandboxName != "factory-only" {
 		t.Fatalf("saved sandboxName = %q, want factory-only", savedRecords[1].SandboxName)
 	}
 	if savedRecords[1].Sandbox == nil || savedRecords[1].Sandbox.Provider != "daytona" {
 		t.Fatalf("saved sandbox metadata = %#v", savedRecords[1].Sandbox)
+	}
+	if savedRecords[2].RepoPath != "/home/ubuntu/workspace/repo" {
+		t.Fatalf("saved repoPath = %q, want remote workspace", savedRecords[2].RepoPath)
 	}
 }
 
@@ -1658,10 +1664,10 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 	if !strings.Contains(err.Error(), "<address redacted>") {
 		t.Fatalf("returned error missing redaction marker: %v", err)
 	}
-	if len(savedRecords) != 3 {
-		t.Fatalf("saved records = %d, want 3", len(savedRecords))
+	if len(savedRecords) != 4 {
+		t.Fatalf("saved records = %d, want 4", len(savedRecords))
 	}
-	failed := savedRecords[2]
+	failed := savedRecords[3]
 	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "run" {
 		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
 	}
@@ -1843,6 +1849,44 @@ func TestFactorySandboxGitHubAuthScriptReadsTokenFromExecUserHome(t *testing.T) 
 		if !strings.Contains(log, want) {
 			t.Fatalf("fake tool log missing %q:\n%s", want, log)
 		}
+	}
+}
+
+func TestFactorySandboxGitHubAuthScriptConfiguresGitIdentityWithoutToken(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, home, ".env", "GIT_USER_NAME='No Token User'\nGIT_USER_EMAIL='no-token@example.com'\n")
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	binDir := t.TempDir()
+	writeFactorySandboxGitHubAuthFakeTools(t, binDir, tokenPath, logPath)
+	writeFile(t, home, ".profile", "export PATH="+shellQuote(binDir)+":$PATH\n")
+
+	cmd := exec.Command("sh", "-lc", factorySandboxGitHubAuthScript())
+	cmd.Env = []string{
+		"HOME=" + home,
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("factory auth script error: %v\n%s\nfake calls:\n%s", err, output, readFactorySandboxFakeToolLog(t, logPath))
+	}
+	if !strings.Contains(string(output), "GitHub token not present; skipping auth repair") {
+		t.Fatalf("factory auth script output = %q, want missing-token skip", output)
+	}
+	if data, err := os.ReadFile(tokenPath); err == nil && len(data) > 0 {
+		t.Fatalf("gh token was unexpectedly captured: %q", data)
+	}
+	log := readFactorySandboxFakeToolLog(t, logPath)
+	for _, want := range []string{
+		"git args: [config] [--global] [user.name] [No Token User]",
+		"git args: [config] [--global] [user.email] [no-token@example.com]",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("fake tool log missing %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "gh args:") {
+		t.Fatalf("gh should not run without a token:\n%s", log)
 	}
 }
 

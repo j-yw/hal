@@ -258,6 +258,10 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		return factorySandboxRecordedError("prepare factory sandbox workspace", target, err)
 	}
 	record.RepoPath = workspaceDir
+	record.UpdatedAt = deps.now().UTC()
+	if err := deps.saveRun(store, &record); err != nil {
+		return fmt.Errorf("record factory sandbox workspace: %w", err)
+	}
 	req.RunRecord = record
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.BootstrapRepositoryURL); ok {
@@ -961,13 +965,15 @@ func factorySandboxGitHubAuthScript() string {
 		"if [ -z \"${GIT_USER_EMAIL:-}\" ] && command -v sudo >/dev/null 2>&1 && sudo -n test -r /root/.env 2>/dev/null; then",
 		"  GIT_USER_EMAIL=\"$(sudo -n sh -c '. /root/.env; printf %s \"${GIT_USER_EMAIL:-}\"' 2>/dev/null || true)\"",
 		"fi",
+		"if command -v git >/dev/null 2>&1; then",
+		"  if [ -n \"${GIT_USER_NAME:-}\" ]; then git config --global user.name \"$GIT_USER_NAME\"; fi",
+		"  if [ -n \"${GIT_USER_EMAIL:-}\" ]; then git config --global user.email \"$GIT_USER_EMAIL\"; fi",
+		"fi",
 		"if [ -z \"$token\" ]; then echo \"GitHub token not present; skipping auth repair\"; exit 0; fi",
 		"if ! command -v gh >/dev/null 2>&1; then echo \"gh not installed; skipping auth repair\"; exit 0; fi",
 		"if ! printf '%s' \"$token\" | env -u GITHUB_TOKEN -u GH_TOKEN gh auth login --with-token >/dev/null 2>&1; then env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 || { echo \"gh auth unavailable after token login\"; exit 1; }; fi",
 		"env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 || { echo \"gh auth unavailable after token login\"; exit 1; }",
 		"env -u GITHUB_TOKEN -u GH_TOKEN gh auth setup-git >/dev/null 2>&1 || true",
-		"if [ -n \"${GIT_USER_NAME:-}\" ]; then git config --global user.name \"$GIT_USER_NAME\"; fi",
-		"if [ -n \"${GIT_USER_EMAIL:-}\" ]; then git config --global user.email \"$GIT_USER_EMAIL\"; fi",
 		"ensure_instead_of() { base=\"$1\"; value=\"$2\"; git config --global --get-all \"url.${base}.insteadOf\" 2>/dev/null | grep -Fx \"$value\" >/dev/null || git config --global --add \"url.${base}.insteadOf\" \"$value\"; }",
 		"ensure_instead_of https://github.com/ git@github.com:",
 		"ensure_instead_of https://github.com/ ssh://git@github.com/",
