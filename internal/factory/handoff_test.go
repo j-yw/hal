@@ -815,6 +815,63 @@ func TestHandoffArtifactLocationsSanitizeUnsafeStoredPaths(t *testing.T) {
 	}
 }
 
+func TestHandoffArtifactLocationsSanitizeUnsafeNames(t *testing.T) {
+	rawPath := filepath.Join(t.TempDir(), "external", "secret.json")
+	artifacts := []ArtifactReference{
+		{
+			Name:       "https://10.0.0.1/artifact.json?token=secret",
+			Type:       "json",
+			Path:       "artifact.json",
+			StoredPath: "artifacts/run-handoff/artifact.json",
+		},
+		{
+			Name: "token ghp_secret",
+			Type: "json",
+			Path: "secret.json",
+		},
+		{
+			Name:       "stderr\n" + rawPath,
+			Type:       "log",
+			Path:       "stderr.log",
+			StoredPath: "artifacts/run-handoff/stderr.log",
+		},
+	}
+
+	artifactLocations := handoffArtifactLocations("run-handoff", artifacts, false)
+	if len(artifactLocations) != 2 {
+		t.Fatalf("artifact locations len = %d, want 2: %#v", len(artifactLocations), artifactLocations)
+	}
+	for i, location := range artifactLocations {
+		if location.Name != "artifact" {
+			t.Fatalf("artifactLocations[%d].Name = %q, want artifact", i, location.Name)
+		}
+	}
+
+	logLocations := handoffArtifactLocations("run-handoff", artifacts, true)
+	if len(logLocations) != 1 {
+		t.Fatalf("log locations len = %d, want 1: %#v", len(logLocations), logLocations)
+	}
+	if logLocations[0].Name != "log" {
+		t.Fatalf("log location name = %q, want log", logLocations[0].Name)
+	}
+
+	data, err := json.Marshal(struct {
+		Artifacts []NextActionLocation `json:"artifacts"`
+		Logs      []NextActionLocation `json:"logs"`
+	}{
+		Artifacts: artifactLocations,
+		Logs:      logLocations,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, forbidden := range []string{"10.0.0.1", "token=secret", "ghp_secret", rawPath, "\n"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
+		}
+	}
+}
+
 func saveHandoffArtifact(t *testing.T, store Store, runID string, artifact ArtifactReference, content string) ArtifactReference {
 	t.Helper()
 	sourcePath := filepath.Join(t.TempDir(), strings.Trim(strings.ReplaceAll(artifact.Path, "/", "-"), "-"))

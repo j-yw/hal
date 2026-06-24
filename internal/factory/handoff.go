@@ -311,7 +311,7 @@ func handoffArtifactLocations(runID string, artifacts []ArtifactReference, logsO
 			continue
 		}
 		location := NextActionLocation{
-			Name:       strings.TrimSpace(artifact.Name),
+			Name:       handoffSafeLocationName(artifact.Name, logsOnly),
 			Path:       handoffSafeArtifactPath(artifact.Path),
 			StoredPath: handoffSafeStoredArtifactPath(runID, artifact.StoredPath),
 		}
@@ -327,6 +327,44 @@ func handoffArtifactLocations(runID string, artifacts []ArtifactReference, logsO
 		return nil
 	}
 	return locations
+}
+
+func handoffSafeLocationName(name string, logLocation bool) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if handoffLocationNameNeedsRedaction(name) {
+		if logLocation {
+			return "log"
+		}
+		return "artifact"
+	}
+	return name
+}
+
+func handoffLocationNameNeedsRedaction(name string) bool {
+	if strings.ContainsAny(name, "\r\n") {
+		return true
+	}
+	if handoffLocationNameContainsURLHost(name) {
+		return true
+	}
+	return handoffStringContainsBareSecretValue(name) ||
+		handoffStringNeedsRedaction(handoffNormalizeDocPlaceholders(name))
+}
+
+func handoffLocationNameContainsURLHost(name string) bool {
+	for _, field := range handoffRedactionFields(name) {
+		parsed, err := url.Parse(handoffTrimRedactionField(field))
+		if err != nil {
+			continue
+		}
+		if parsed.Scheme != "" && parsed.Host != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func handoffArtifactLooksLikeLog(artifact ArtifactReference) bool {
