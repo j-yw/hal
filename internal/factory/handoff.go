@@ -446,8 +446,10 @@ func handoffLocationNameNeedsRedaction(name string) bool {
 	if handoffStringContainsURLHost(name) {
 		return true
 	}
+	normalizedName := handoffNormalizeDocPlaceholders(name)
 	return handoffStringContainsBareSecretValue(name) ||
-		handoffStringNeedsRedaction(handoffNormalizeDocPlaceholders(name))
+		handoffStringNeedsRedaction(normalizedName) ||
+		handoffDisplayValueContainsBareDNSHost(normalizedName)
 }
 
 func handoffStringContainsURLHost(value string) bool {
@@ -663,7 +665,7 @@ func handoffArtifactDisplayPathNeedsRedaction(path string) bool {
 	if path == "" {
 		return false
 	}
-	if handoffStoredPathContainsSecret(path) {
+	if handoffPathStringNeedsRedaction(path) || handoffStoredPathContainsSecret(path) {
 		return true
 	}
 	for _, segment := range strings.Split(path, "/") {

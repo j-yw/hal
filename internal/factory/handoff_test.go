@@ -999,6 +999,11 @@ func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 			Path: ".hal/reports/token=ghp_secret.json",
 		},
 		{
+			Name: "dns-segment",
+			Type: "json",
+			Path: "reports/db.internal/output.json",
+		},
+		{
 			Name: "absolute-secret-base",
 			Type: "json",
 			Path: secretBasePath,
@@ -1015,8 +1020,8 @@ func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 		},
 	}, false)
 
-	if len(locations) != 7 {
-		t.Fatalf("locations len = %d, want 7: %#v", len(locations), locations)
+	if len(locations) != 8 {
+		t.Fatalf("locations len = %d, want 8: %#v", len(locations), locations)
 	}
 	if locations[0].Path != "secret.md" {
 		t.Fatalf("absolute path = %q, want basename", locations[0].Path)
@@ -1037,7 +1042,7 @@ func TestHandoffArtifactLocationsSanitizeUnsafeDisplayPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	for _, forbidden := range []string{rawPath, filepath.Dir(rawPath), "token=secret", "../private.md", "ghp_secret", "sk-secret", "10.0.0.1", "example-1.com"} {
+	for _, forbidden := range []string{rawPath, filepath.Dir(rawPath), "token=secret", "../private.md", "ghp_secret", "db.internal", "sk-secret", "10.0.0.1", "example-1.com"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
 		}
@@ -1122,16 +1127,26 @@ func TestHandoffArtifactLocationsSanitizeUnsafeNames(t *testing.T) {
 			Path: "secret.json",
 		},
 		{
+			Name: "runner.internal",
+			Type: "json",
+			Path: "dns-name.json",
+		},
+		{
 			Name:       "stderr\n" + rawPath,
 			Type:       "log",
 			Path:       "stderr.log",
 			StoredPath: "artifacts/run-handoff/stderr.log",
 		},
+		{
+			Name: "ci.internal.example.com",
+			Type: "log",
+			Path: "ci.log",
+		},
 	}
 
 	artifactLocations := handoffArtifactLocations("run-handoff", artifacts, false)
-	if len(artifactLocations) != 2 {
-		t.Fatalf("artifact locations len = %d, want 2: %#v", len(artifactLocations), artifactLocations)
+	if len(artifactLocations) != 3 {
+		t.Fatalf("artifact locations len = %d, want 3: %#v", len(artifactLocations), artifactLocations)
 	}
 	for i, location := range artifactLocations {
 		if location.Name != "artifact" {
@@ -1140,11 +1155,13 @@ func TestHandoffArtifactLocationsSanitizeUnsafeNames(t *testing.T) {
 	}
 
 	logLocations := handoffArtifactLocations("run-handoff", artifacts, true)
-	if len(logLocations) != 1 {
-		t.Fatalf("log locations len = %d, want 1: %#v", len(logLocations), logLocations)
+	if len(logLocations) != 2 {
+		t.Fatalf("log locations len = %d, want 2: %#v", len(logLocations), logLocations)
 	}
-	if logLocations[0].Name != "log" {
-		t.Fatalf("log location name = %q, want log", logLocations[0].Name)
+	for i, location := range logLocations {
+		if location.Name != "log" {
+			t.Fatalf("logLocations[%d].Name = %q, want log", i, location.Name)
+		}
 	}
 
 	data, err := json.Marshal(struct {
@@ -1157,7 +1174,7 @@ func TestHandoffArtifactLocationsSanitizeUnsafeNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	for _, forbidden := range []string{"10.0.0.1", "token=secret", "ghp_secret", rawPath, "\n"} {
+	for _, forbidden := range []string{"10.0.0.1", "runner.internal", "ci.internal.example.com", "token=secret", "ghp_secret", rawPath, "\n"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
 		}
