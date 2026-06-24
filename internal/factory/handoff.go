@@ -347,24 +347,38 @@ func handoffLocationNameNeedsRedaction(name string) bool {
 	if strings.ContainsAny(name, "\r\n") {
 		return true
 	}
-	if handoffLocationNameContainsURLHost(name) {
+	if handoffStringContainsURLHost(name) {
 		return true
 	}
 	return handoffStringContainsBareSecretValue(name) ||
 		handoffStringNeedsRedaction(handoffNormalizeDocPlaceholders(name))
 }
 
-func handoffLocationNameContainsURLHost(name string) bool {
-	for _, field := range handoffRedactionFields(name) {
+func handoffStringContainsURLHost(value string) bool {
+	for _, field := range handoffRedactionFields(value) {
 		parsed, err := url.Parse(handoffTrimRedactionField(field))
 		if err != nil {
 			continue
 		}
 		if parsed.Scheme != "" && parsed.Host != "" {
+			if handoffURLIsDocumentationPlaceholder(parsed) {
+				continue
+			}
 			return true
 		}
 	}
 	return false
+}
+
+func handoffURLIsDocumentationPlaceholder(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	if !strings.EqualFold(parsed.Hostname(), "github.com") {
+		return false
+	}
+	path := strings.Trim(filepath.ToSlash(parsed.EscapedPath()), "/")
+	return path == "placeholder/placeholder" || path == "placeholder/placeholder.git"
 }
 
 func handoffArtifactLooksLikeLog(artifact ArtifactReference) bool {
@@ -566,6 +580,9 @@ func handoffStringNeedsRedaction(value string) bool {
 		return true
 	}
 	if host, _, err := net.SplitHostPort(value); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return true
+	}
+	if handoffStringContainsURLHost(value) {
 		return true
 	}
 	if strings.Contains(value, "://") {
@@ -819,7 +836,6 @@ func handoffSSHHostLooksSensitive(host string) bool {
 		return false
 	}
 	labels := strings.Split(host, ".")
-	hasHostnameMarker := len(labels) > 1
 	for _, label := range labels {
 		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return false
@@ -827,15 +843,12 @@ func handoffSSHHostLooksSensitive(host string) bool {
 		for _, r := range label {
 			isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 			isDigit := r >= '0' && r <= '9'
-			if isDigit || r == '-' {
-				hasHostnameMarker = true
-			}
 			if !isAlpha && !isDigit && r != '-' {
 				return false
 			}
 		}
 	}
-	return hasHostnameMarker
+	return true
 }
 
 func handoffTrimRedactionField(field string) string {

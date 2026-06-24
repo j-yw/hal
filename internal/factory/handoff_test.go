@@ -234,6 +234,13 @@ func TestSanitizeHandoffFailureReasonRedactsSecretURLQueryValues(t *testing.T) {
 	}
 }
 
+func TestSanitizeHandoffFailureReasonRedactsURLHosts(t *testing.T) {
+	reason := "failed fetching https://runner.internal:8443/logs"
+	if got := SanitizeHandoffFailureReason(reason); got != "[redacted]" {
+		t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
+	}
+}
+
 func TestSanitizeHandoffFailureReasonRedactsSecretURLFragmentValues(t *testing.T) {
 	reason := "ci failed: https://example.com/callback#access_token=ghp_secret"
 	if got := SanitizeHandoffFailureReason(reason); got != "[redacted]" {
@@ -248,6 +255,8 @@ func TestSanitizeHandoffFailureReasonRedactsSSHHostnames(t *testing.T) {
 		"remote command failed: ssh sandbox.example.com failed",
 		"remote connection failed: ssh://sandbox.example.com",
 		"provider returned ubuntu@sandbox.example.com:22",
+		"provider returned deploy@prod",
+		"remote command failed: ssh prod failed",
 	}
 	for _, tt := range tests {
 		t.Run(tt, func(t *testing.T) {
