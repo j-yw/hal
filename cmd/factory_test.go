@@ -4046,6 +4046,28 @@ func TestRunFactoryOpenFailedLocalExecutesResumeWhenResumable(t *testing.T) {
 	}
 }
 
+func TestExecuteFactoryOpenCommandPreservesChildExitCode(t *testing.T) {
+	t.Setenv("HAL_FACTORY_OPEN_EXIT_HELPER", "1")
+
+	err := executeFactoryOpenCommand(context.Background(), factoryOpenExecRequest{
+		Args: []string{os.Args[0], "-test.run=TestFactoryOpenExecExitHelper"},
+	})
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("executeFactoryOpenCommand() error = %T %v, want ExitCodeError", err, err)
+	}
+	if exitErr.Code != 7 {
+		t.Fatalf("exit code = %d, want 7", exitErr.Code)
+	}
+}
+
+func TestFactoryOpenExecExitHelper(t *testing.T) {
+	if os.Getenv("HAL_FACTORY_OPEN_EXIT_HELPER") != "1" {
+		return
+	}
+	os.Exit(7)
+}
+
 func TestFactoryOpenExecRejectsResumeWithoutRepoPath(t *testing.T) {
 	_, err := factoryOpenExecRequestFromSummary(&factory.HandoffSummary{
 		RunID: "run-open-local-no-repo",

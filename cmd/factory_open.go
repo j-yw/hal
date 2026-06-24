@@ -359,5 +359,12 @@ func executeFactoryOpenCommand(ctx context.Context, req factoryOpenExecRequest) 
 	cmd.Stdin = req.Stdin
 	cmd.Stdout = req.Stdout
 	cmd.Stderr = req.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return &ExitCodeError{Code: exitErr.ExitCode(), Err: err}
+		}
+		return err
+	}
+	return nil
 }
