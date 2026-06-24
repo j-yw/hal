@@ -1224,7 +1224,7 @@ func handoffSSHHostLooksSensitive(host string) bool {
 
 func handoffTrimRedactionField(field string) string {
 	field = strings.TrimSpace(field)
-	return strings.Trim(field, "\"'<>[](){}.,;")
+	return strings.Trim(field, "\"'`<>[](){}.,;")
 }
 
 func handoffStringContainsSecretAssignment(value string) bool {
@@ -1510,7 +1510,7 @@ func handoffFieldLooksLikeTokenChars(value string) bool {
 func handoffRedactionFields(value string) []string {
 	return strings.FieldsFunc(value, func(r rune) bool {
 		switch r {
-		case ' ', '\t', '\n', '\r', ',', ';', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}', '?', '&', '|':
+		case ' ', '\t', '\n', '\r', ',', ';', '"', '\'', '`', '<', '>', '(', ')', '[', ']', '{', '}', '?', '&', '|':
 			return true
 		default:
 			return false

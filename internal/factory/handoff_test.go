@@ -405,6 +405,7 @@ func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 		"authentication failed for --api-key sk-secretvalue",
 		"authentication failed for Authorization Bearer ghp_xxx",
 		"provider returned ghp_xxx",
+		"provider returned `ghp_xxx`",
 		"provider returned status|ghp_xxx",
 		"provider returned <ghp_xxx>",
 		"engine returned sk-secretvalue",
