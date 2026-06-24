@@ -185,6 +185,46 @@ func TestLoadHandoffSummaryRedactsSensitiveBranchAndStep(t *testing.T) {
 	}
 }
 
+func TestLoadHandoffSummaryRedactsDelimitedSecretDisplayValues(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := RunRecord{
+		RunID:        "run-delimited-secret-handoff-context",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		BranchName:   "hal/ghp_secret",
+		CurrentStep:  "feature/sk-secretvalue",
+		Failure: &FailureSummary{
+			Step:        "ci/github_pat_secret",
+			Category:    FailureCategoryCI,
+			Message:     "ci gate blocked",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.BranchName != "[redacted]" {
+		t.Fatalf("BranchName = %q, want [redacted]", summary.BranchName)
+	}
+	if summary.CurrentStep != "[redacted]" {
+		t.Fatalf("CurrentStep = %q, want [redacted]", summary.CurrentStep)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.BranchName != "[redacted]" {
+		t.Fatalf("NextAction.BranchName = %q, want [redacted]", summary.NextAction.BranchName)
+	}
+	if summary.NextAction.CurrentStep != "[redacted]" {
+		t.Fatalf("NextAction.CurrentStep = %q, want [redacted]", summary.NextAction.CurrentStep)
+	}
+}
+
 func TestLoadHandoffSummaryRedactsAngleBracketedSecretDisplayValues(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := RunRecord{
@@ -479,6 +519,14 @@ func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
 		{
 			name:    "go dial tcp ipv6 address with trailing colon",
 			message: "dial tcp [2001:db8::1]:443: connect: refused",
+		},
+		{
+			name:    "bare ipv6 address with zone",
+			message: "connection failed to fe80::1%eth0",
+		},
+		{
+			name:    "bracketed ipv6 address with zone and port",
+			message: "connection failed to [fe80::1%eth0]:22",
 		},
 		{
 			name:    "go dial tcp dns hostname with trailing colon",
@@ -970,6 +1018,11 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 		{
 			name: "secret query value",
 			raw:  "https://github.com/jywlabs/hal/pull/42?ref=ghp_secret",
+			want: "",
+		},
+		{
+			name: "delimited secret query value",
+			raw:  "https://github.com/jywlabs/hal/pull/42?ref=feature/ghp_secret",
 			want: "",
 		},
 		{

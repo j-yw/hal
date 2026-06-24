@@ -538,7 +538,7 @@ func handoffSafeURL(rawURL string) string {
 		return ""
 	}
 	host := strings.TrimSpace(parsed.Hostname())
-	if host == "" || net.ParseIP(host) != nil {
+	if host == "" || handoffIPLiteral(host) {
 		return ""
 	}
 	if handoffBareDNSHostLooksSensitive(host, parsed.Port() != "") {
@@ -726,13 +726,13 @@ func handoffStringNeedsRedaction(value string) bool {
 	if value == "" {
 		return false
 	}
-	if net.ParseIP(strings.Trim(value, "[]")) != nil {
+	if handoffIPLiteral(value) {
 		return true
 	}
 	if handoffURLQueryValueLooksLikeSecret(value) {
 		return true
 	}
-	if host, _, err := net.SplitHostPort(value); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
+	if host, _, err := net.SplitHostPort(value); err == nil && handoffIPLiteral(host) {
 		return true
 	}
 	if handoffStringContainsURLHost(value) {
@@ -744,7 +744,7 @@ func handoffStringNeedsRedaction(value string) bool {
 			if parsed.User != nil {
 				return true
 			}
-			if host := strings.TrimSpace(parsed.Hostname()); host != "" && net.ParseIP(host) != nil {
+			if host := strings.TrimSpace(parsed.Hostname()); host != "" && handoffIPLiteral(host) {
 				return true
 			}
 			if handoffURLRawQueryContainsSecret(parsed.RawQuery) {
@@ -832,15 +832,15 @@ func handoffFieldContainsIP(field string) bool {
 		candidates = append(candidates, base)
 	}
 	for _, candidate := range candidates {
-		if net.ParseIP(strings.Trim(candidate, "[]")) != nil {
+		if handoffIPLiteral(candidate) {
 			return true
 		}
-		if host, _, err := net.SplitHostPort(candidate); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
+		if host, _, err := net.SplitHostPort(candidate); err == nil && handoffIPLiteral(host) {
 			return true
 		}
 		if idx := strings.LastIndex(candidate, ":"); idx > 0 {
 			host := candidate[:idx]
-			if strings.Count(host, ":") == 0 && net.ParseIP(strings.Trim(host, "[]")) != nil {
+			if strings.Count(host, ":") == 0 && handoffIPLiteral(host) {
 				return true
 			}
 		}
@@ -861,6 +861,21 @@ func handoffStripFilenameSuffix(value string) string {
 		return value
 	}
 	return value[:idx]
+}
+
+func handoffIPLiteral(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "[]")
+	if value == "" {
+		return false
+	}
+	if net.ParseIP(value) != nil {
+		return true
+	}
+	if idx := strings.LastIndexByte(value, '%'); idx > 0 {
+		return net.ParseIP(value[:idx]) != nil
+	}
+	return false
 }
 
 func handoffStringContainsIP(value string) bool {
@@ -945,7 +960,7 @@ func handoffBareDNSHostLooksSensitive(host string, hasPort bool) bool {
 	host = strings.TrimSpace(host)
 	host = strings.Trim(host, "[]")
 	host = strings.TrimSuffix(host, ".")
-	if host == "" || len(host) > 253 || net.ParseIP(host) != nil || strings.ContainsAny(host, `:/\@_`) {
+	if host == "" || len(host) > 253 || handoffIPLiteral(host) || strings.ContainsAny(host, `:/\@_`) {
 		return false
 	}
 	labels := strings.Split(host, ".")
@@ -1182,7 +1197,7 @@ func handoffSSHHostLooksSensitive(host string) bool {
 	if host == "" {
 		return false
 	}
-	if net.ParseIP(host) != nil {
+	if handoffIPLiteral(host) {
 		return true
 	}
 	if len(host) > 253 {
@@ -1425,14 +1440,34 @@ func handoffURLQueryValueLooksLikeSecret(value string) bool {
 		if field == "" {
 			continue
 		}
-		if handoffFieldHasSecretPrefix(field) {
-			return true
-		}
-		if len(field) >= 20 && handoffFieldLooksLikeTokenChars(field) {
-			return true
+		for _, candidate := range handoffTokenFieldCandidates(field) {
+			if handoffFieldHasSecretPrefix(candidate) {
+				return true
+			}
+			if len(candidate) >= 20 && handoffFieldLooksLikeTokenChars(candidate) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func handoffTokenFieldCandidates(field string) []string {
+	field = strings.TrimSpace(field)
+	field = strings.Trim(field, "\"'<>[](){}.,;")
+	if field == "" {
+		return nil
+	}
+	candidates := []string{field}
+	for _, candidate := range strings.FieldsFunc(field, func(r rune) bool {
+		return r == '/' || r == '\\' || r == '=' || r == ':' || r == '#' || r == '.'
+	}) {
+		candidate = handoffTrimRedactionField(candidate)
+		if candidate != "" {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
 }
 
 func handoffFieldHasSecretPrefix(value string) bool {
