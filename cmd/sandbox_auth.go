@@ -244,7 +244,7 @@ func collectSandboxAuthFiles(home string, opts sandboxAuthSyncOptions) ([]sandbo
 			if cleanEntry == "." || strings.HasPrefix(cleanEntry, "../") || path.IsAbs(cleanEntry) {
 				return nil, fmt.Errorf("invalid auth sync entry %q", entry)
 			}
-			localPath := filepath.Join(home, filepath.FromSlash(cleanEntry))
+			localPath := sandboxAuthLocalPath(home, spec, cleanEntry)
 			info, err := os.Lstat(localPath)
 			if err != nil {
 				if os.IsNotExist(err) {
@@ -269,6 +269,17 @@ func collectSandboxAuthFiles(home string, opts sandboxAuthSyncOptions) ([]sandbo
 		return files[i].ArchivePath < files[j].ArchivePath
 	})
 	return files, nil
+}
+
+func sandboxAuthLocalPath(home string, spec sandboxAuthProfileSpec, cleanEntry string) string {
+	if spec.Name == "codex" {
+		if rel, ok := strings.CutPrefix(cleanEntry, ".codex/"); ok {
+			if codexHome := os.Getenv("CODEX_HOME"); codexHome != "" {
+				return filepath.Join(codexHome, filepath.FromSlash(rel))
+			}
+		}
+	}
+	return filepath.Join(home, filepath.FromSlash(cleanEntry))
 }
 
 func buildSandboxAuthArchive(files []sandboxAuthFile) ([]byte, error) {

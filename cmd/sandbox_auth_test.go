@@ -17,6 +17,7 @@ import (
 )
 
 func TestCollectSandboxAuthFilesSelectsAuthProfilesOnly(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
 	home := t.TempDir()
 	writeSandboxAuthTestFile(t, home, ".codex/auth.json", "codex-auth")
 	writeSandboxAuthTestFile(t, home, ".codex/config.toml", "model = 'x'")
@@ -47,7 +48,51 @@ func TestCollectSandboxAuthFilesSelectsAuthProfilesOnly(t *testing.T) {
 	}
 }
 
+func TestCollectSandboxAuthFilesUsesCodexHomeForCodexSources(t *testing.T) {
+	home := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	writeSandboxAuthTestFile(t, home, ".codex/auth.json", "stale-default-home-auth")
+	writeSandboxAuthTestFile(t, codexHome, "auth.json", "active-codex-auth")
+	writeSandboxAuthTestFile(t, home, ".pi/agent/auth.json", "pi-auth")
+
+	files, err := collectSandboxAuthFiles(home, sandboxAuthSyncOptions{})
+	if err != nil {
+		t.Fatalf("collectSandboxAuthFiles() error: %v", err)
+	}
+	got := sandboxAuthArchivePaths(files)
+	want := []string{
+		".codex/auth.json",
+		".pi/agent/auth.json",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("paths = %#v, want %#v", got, want)
+	}
+
+	codexFile := findSandboxAuthFile(t, files, ".codex/auth.json")
+	if wantLocal := filepath.Join(codexHome, "auth.json"); codexFile.LocalPath != wantLocal {
+		t.Fatalf("codex local path = %q, want %q", codexFile.LocalPath, wantLocal)
+	}
+	piFile := findSandboxAuthFile(t, files, ".pi/agent/auth.json")
+	if wantLocal := filepath.Join(home, ".pi", "agent", "auth.json"); piFile.LocalPath != wantLocal {
+		t.Fatalf("pi local path = %q, want %q", piFile.LocalPath, wantLocal)
+	}
+
+	archive, err := buildSandboxAuthArchive(files)
+	if err != nil {
+		t.Fatalf("buildSandboxAuthArchive() error: %v", err)
+	}
+	headers := readSandboxAuthArchiveHeaders(t, archive)
+	if _, ok := headers[".codex/auth.json"]; !ok {
+		t.Fatalf("archive missing .codex/auth.json: %#v", headers)
+	}
+	if _, ok := headers[codexHome+"/auth.json"]; ok {
+		t.Fatalf("archive used local CODEX_HOME path: %#v", headers)
+	}
+}
+
 func TestCollectSandboxAuthFilesIncludesClaudeWhenRequested(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
 	home := t.TempDir()
 	writeSandboxAuthTestFile(t, home, ".claude.json", "{}")
 
@@ -61,6 +106,7 @@ func TestCollectSandboxAuthFilesIncludesClaudeWhenRequested(t *testing.T) {
 }
 
 func TestBuildSandboxAuthArchiveUsesRelativePrivatePaths(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
 	home := t.TempDir()
 	writeSandboxAuthTestFile(t, home, ".codex/auth.json", "codex-auth")
 	writeSandboxAuthTestFile(t, home, ".pi/agent/auth.json", "pi-auth")
@@ -92,6 +138,7 @@ func TestBuildSandboxAuthArchiveUsesRelativePrivatePaths(t *testing.T) {
 }
 
 func TestRunSandboxAuthSyncToTargetTransfersArchive(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
 	home := t.TempDir()
 	writeSandboxAuthTestFile(t, home, ".codex/auth.json", "codex-auth")
 	writeSandboxAuthTestFile(t, home, ".pi/agent/auth.json", "pi-auth")
@@ -129,6 +176,7 @@ func TestRunSandboxAuthSyncToTargetTransfersArchive(t *testing.T) {
 }
 
 func TestRunSandboxAuthSyncToTargetSkipsWhenNoAuthFiles(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
 	target := &sandbox.SandboxState{Name: "auth-box", Provider: "digitalocean", Status: sandbox.StatusRunning}
 	called := false
 	var out bytes.Buffer
@@ -168,6 +216,7 @@ func TestSandboxAuthRemoteInstallScriptExtractsPrivateArchive(t *testing.T) {
 }
 
 func TestSandboxAuthRemoteInstallScriptExtractsIntoExecUserHome(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
 	localHome := t.TempDir()
 	writeSandboxAuthTestFile(t, localHome, ".codex/auth.json", "codex-auth")
 	writeSandboxAuthTestFile(t, localHome, ".pi/agent/auth.json", "pi-auth")
@@ -198,6 +247,11 @@ func TestSandboxAuthRemoteInstallScriptExtractsIntoExecUserHome(t *testing.T) {
 	}
 }
 
+func clearSandboxAuthCodexHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("CODEX_HOME", "")
+}
+
 func writeSandboxAuthTestFile(t *testing.T, home, rel, content string) {
 	t.Helper()
 	path := filepath.Join(home, filepath.FromSlash(rel))
@@ -216,6 +270,17 @@ func sandboxAuthArchivePaths(files []sandboxAuthFile) []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+func findSandboxAuthFile(t *testing.T, files []sandboxAuthFile, archivePath string) sandboxAuthFile {
+	t.Helper()
+	for _, file := range files {
+		if file.ArchivePath == archivePath {
+			return file
+		}
+	}
+	t.Fatalf("missing auth file %q in %#v", archivePath, files)
+	return sandboxAuthFile{}
 }
 
 func readSandboxAuthArchiveHeaders(t *testing.T, data []byte) map[string]int64 {
