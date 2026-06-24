@@ -567,6 +567,89 @@ func TestSaveArtifactFileRejectsSymlinks(t *testing.T) {
 	}
 }
 
+func TestSaveArtifactFileDoesNotFollowPrecreatedTempSymlink(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-artifacts-temp-symlink")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "artifact.txt")
+	if err := os.WriteFile(sourcePath, []byte("artifact\n"), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, record.RunID, "artifact.txt"))
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, storedPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(absoluteStoredPath), 0o700); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	outsideTarget := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsideTarget, []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	if err := os.Symlink(outsideTarget, absoluteStoredPath+storeTempFileExt); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	got, err := store.SaveArtifactFile(record.RunID, ArtifactReference{Name: "artifact", Type: "text"}, sourcePath)
+	if err != nil {
+		t.Fatalf("SaveArtifactFile() unexpected error: %v", err)
+	}
+	if got.StoredPath != storedPath {
+		t.Fatalf("StoredPath = %q, want %q", got.StoredPath, storedPath)
+	}
+	outsideData, err := os.ReadFile(outsideTarget)
+	if err != nil {
+		t.Fatalf("read outside target: %v", err)
+	}
+	if string(outsideData) != "keep\n" {
+		t.Fatalf("outside target = %q, want unchanged", outsideData)
+	}
+	storedData, err := os.ReadFile(absoluteStoredPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	if string(storedData) != "artifact\n" {
+		t.Fatalf("stored artifact = %q, want artifact", storedData)
+	}
+}
+
+func TestSaveArtifactFileRejectsSymlinkedArtifactParent(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-artifacts-parent-symlink")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "artifact.txt")
+	if err := os.WriteFile(sourcePath, []byte("artifact\n"), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(store.ArtifactsDir(), record.RunID)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err := store.SaveArtifactFile(record.RunID, ArtifactReference{Name: "artifact", Type: "text"}, sourcePath)
+	if err == nil {
+		t.Fatalf("SaveArtifactFile() expected symlinked parent error")
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "artifact.txt")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("outside artifact should not be written, stat error = %v", err)
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() unexpected error: %v", err)
+	}
+	if len(loaded.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none after symlinked parent rejection", loaded.Artifacts)
+	}
+}
+
 func TestLoadRunMissingReturnsNotExist(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 

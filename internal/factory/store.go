@@ -175,7 +175,7 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 	if err != nil {
 		return ArtifactReference{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(absoluteStoredPath), 0o700); err != nil {
+	if err := ensureStoreDirectory(s.root, filepath.Dir(absoluteStoredPath), 0o700); err != nil {
 		return ArtifactReference{}, fmt.Errorf("create factory artifact dir: %w", err)
 	}
 	copiedInfo, err := copyStoreFile(sourcePath, absoluteStoredPath, 0o600, info)
@@ -511,6 +511,58 @@ func writeStoreTempFile(path string, data []byte) (string, error) {
 	return tmpPath, nil
 }
 
+func ensureStoreDirectory(root, dir string, mode fs.FileMode) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(absRoot, absDir)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("store directory %q is outside store root %q", dir, root)
+	}
+
+	current := absRoot
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		for {
+			info, err := os.Lstat(current)
+			if err == nil {
+				if info.Mode()&fs.ModeSymlink != 0 {
+					return fmt.Errorf("store directory %q is a symlink", current)
+				}
+				if !info.IsDir() {
+					return fmt.Errorf("store path %q is not a directory", current)
+				}
+				break
+			}
+			if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			if err := os.Mkdir(current, mode); err != nil {
+				if errors.Is(err, fs.ErrExist) || os.IsExist(err) {
+					continue
+				}
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
 func saveStoreFile(tmpPath, path string) error {
 	if err := os.Rename(tmpPath, path); err == nil {
 		return nil
@@ -557,28 +609,33 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 		return nil, fmt.Errorf("artifact source %q changed during copy", sourcePath)
 	}
 
-	tmpPath := destPath + storeTempFileExt
-	dest, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	dest, err := os.CreateTemp(filepath.Dir(destPath), ".artifact-*"+storeTempFileExt)
 	if err != nil {
 		return nil, err
 	}
+	tmpPath := dest.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
 	if _, err := io.Copy(dest, source); err != nil {
 		_ = dest.Close()
-		_ = os.Remove(tmpPath)
+		return nil, err
+	}
+	if err := dest.Chmod(mode); err != nil {
+		_ = dest.Close()
 		return nil, err
 	}
 	if err := dest.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, err
-	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		_ = os.Remove(tmpPath)
 		return nil, err
 	}
 	if err := saveStoreFile(tmpPath, destPath); err != nil {
-		_ = os.Remove(tmpPath)
 		return nil, err
 	}
+	cleanup = false
 	return sourceInfo, nil
 }
 
