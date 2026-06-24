@@ -291,7 +291,11 @@ func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
 	tests := []string{
 		"authentication failed for token ghp_xxx",
 		"authentication failed for token <ghp_xxx>",
+		"authentication failed for --token ghp_xxx",
+		"authentication failed for --api-key sk-secretvalue",
 		"authentication failed for Authorization Bearer ghp_xxx",
+		"provider returned ghp_xxx",
+		"engine returned sk-secretvalue",
 	}
 	for _, tt := range tests {
 		t.Run(tt, func(t *testing.T) {
@@ -335,6 +339,7 @@ func TestSanitizeHandoffFailureReasonRedactsBareDNSHostnames(t *testing.T) {
 		"dial tcp db.internal.example.com:5432: connect: refused",
 		"dial tcp runner.internal:8443: connect: refused",
 		"lookup ci.internal.example.com: no such host",
+		"failed to fetch runner.internal/logs",
 	}
 	for _, tt := range tests {
 		t.Run(tt, func(t *testing.T) {
@@ -360,6 +365,7 @@ func TestSanitizeHandoffFailureReasonRedactsSSHHostnames(t *testing.T) {
 		"remote connection failed: ssh://sandbox.example.com",
 		"provider returned ubuntu@sandbox.example.com:22",
 		"provider returned deploy@prod",
+		"provider returned git@runner.internal:org/repo.git",
 		"remote command failed: ssh prod failed",
 	}
 	for _, tt := range tests {
@@ -457,6 +463,53 @@ func TestLoadHandoffSummaryPreservesFailureReasonWithDocumentationPlaceholders(t
 	}
 	if summary.FailureReason != message {
 		t.Fatalf("FailureReason = %q, want original actionable message", summary.FailureReason)
+	}
+}
+
+func TestLoadHandoffSummaryIgnoresArchivedAutoStateArtifact(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 9, 10, 0, 0, time.UTC)
+	record := RunRecord{
+		RunID:        "run-archived-auto-state",
+		Status:       RunStatusFailed,
+		ExecutorMode: ExecutorModeLocal,
+		RepoPath:     "/workspace/hal",
+		CurrentStep:  "ci",
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt.Add(time.Minute),
+		Failure: &FailureSummary{
+			Step:        "ci",
+			Category:    FailureCategoryCI,
+			Message:     "ci gate blocked",
+			Recoverable: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	saveHandoffArtifact(t, store, record.RunID, ArtifactReference{
+		ID:   "archived-auto-state",
+		Name: "auto-state",
+		Type: "json",
+		Path: ".hal/archive/2026-06-21-factory/.hal/auto-state.json",
+	}, `{"step":"ci"}`)
+
+	summary, err := LoadHandoffSummary(store, record.RunID)
+	if err != nil {
+		t.Fatalf("LoadHandoffSummary() error = %v", err)
+	}
+	if summary.ResumeCommand != "" {
+		t.Fatalf("ResumeCommand = %q, want empty for archived auto-state", summary.ResumeCommand)
+	}
+	if summary.NextAction == nil {
+		t.Fatal("NextAction = nil, want inspect action")
+	}
+	if summary.NextAction.ID != handoffInspectActionID || summary.NextAction.Type != NextActionTypeInspect {
+		t.Fatalf("NextAction = %#v, want inspect action", summary.NextAction)
+	}
+	if summary.NextAction.Command != "hal factory status run-archived-auto-state --json" {
+		t.Fatalf("NextAction.Command = %q", summary.NextAction.Command)
 	}
 }
 
@@ -814,6 +867,21 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 			want: "",
 		},
 		{
+			name: "ip query value",
+			raw:  "https://github.com/jywlabs/hal/pull/42?runner=203.0.113.10:22",
+			want: "",
+		},
+		{
+			name: "ssh query value",
+			raw:  "https://github.com/jywlabs/hal/pull/42?target=git@runner.internal",
+			want: "",
+		},
+		{
+			name: "unparsable secret query",
+			raw:  "https://github.com/jywlabs/hal/pull/42?access_token=ghp_secret;foo=bar",
+			want: "",
+		},
+		{
 			name: "token fragment",
 			raw:  "https://github.com/jywlabs/hal/pull/42#token=secret",
 			want: "",
@@ -821,6 +889,16 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 		{
 			name: "secret fragment value",
 			raw:  "https://github.com/jywlabs/hal/pull/42#ref=ghp_secret",
+			want: "",
+		},
+		{
+			name: "ip fragment value",
+			raw:  "https://github.com/jywlabs/hal/pull/42#203.0.113.10",
+			want: "",
+		},
+		{
+			name: "ssh fragment value",
+			raw:  "https://github.com/jywlabs/hal/pull/42#git@runner.internal",
 			want: "",
 		},
 		{
@@ -841,6 +919,16 @@ func TestHandoffSafeURLRejectsSecretQuerySecrets(t *testing.T) {
 		{
 			name: "secret path segment value",
 			raw:  "https://github.com/jywlabs/hal/token/secret-value",
+			want: "",
+		},
+		{
+			name: "ip path segment",
+			raw:  "https://github.com/jywlabs/hal/203.0.113.10.log",
+			want: "",
+		},
+		{
+			name: "ssh path segment",
+			raw:  "https://github.com/jywlabs/hal/git@runner.internal/repo",
 			want: "",
 		},
 		{
@@ -957,10 +1045,22 @@ func TestHandoffArtifactLocationsSanitizeUnsafeStoredPaths(t *testing.T) {
 			Path:       "token.json",
 			StoredPath: "artifacts/run-handoff/token=ghp_secret.json",
 		},
+		{
+			Name:       "ip-stored-path",
+			Type:       "json",
+			Path:       "ip-stored-path.json",
+			StoredPath: "artifacts/run-handoff/203.0.113.10.json",
+		},
+		{
+			Name:       "ssh-stored-path",
+			Type:       "json",
+			Path:       "ssh-stored-path.json",
+			StoredPath: "artifacts/run-handoff/git@runner.internal:org-repo.json",
+		},
 	}, false)
 
-	if len(locations) != 4 {
-		t.Fatalf("locations len = %d, want 4: %#v", len(locations), locations)
+	if len(locations) != 6 {
+		t.Fatalf("locations len = %d, want 6: %#v", len(locations), locations)
 	}
 	if locations[0].Path != "[redacted]" || locations[0].StoredPath != "" {
 		t.Fatalf("url location = %#v, want redacted display without stored path", locations[0])
@@ -975,7 +1075,7 @@ func TestHandoffArtifactLocationsSanitizeUnsafeStoredPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	for _, forbidden := range []string{"https://example.com", "other-run", "../private", "ghp_secret"} {
+	for _, forbidden := range []string{"https://example.com", "other-run", "../private", "ghp_secret", "203.0.113.10", "runner.internal"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("locations should not expose %q: %s", forbidden, string(data))
 		}

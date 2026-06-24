@@ -515,13 +515,8 @@ func handoffArtifactLooksLikePR(artifact ArtifactReference) bool {
 }
 
 func handoffArtifactLooksLikeAutoState(artifact ArtifactReference) bool {
-	path := filepath.ToSlash(strings.TrimSpace(artifact.Path))
-	storedPath := filepath.ToSlash(strings.TrimSpace(artifact.StoredPath))
-	name := strings.ToLower(strings.TrimSpace(artifact.Name))
-	return path == ".hal/auto-state.json" ||
-		strings.HasSuffix(path, "/.hal/auto-state.json") ||
-		strings.HasSuffix(storedPath, "/auto-state.json") ||
-		strings.Contains(name, "auto-state")
+	path := filepath.ToSlash(filepath.Clean(strings.TrimSpace(artifact.Path)))
+	return path == ".hal/auto-state.json"
 }
 
 func handoffSafeURL(rawURL string) string {
@@ -540,7 +535,7 @@ func handoffSafeURL(rawURL string) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return ""
 	}
-	if handoffURLQueryContainsSecret(parsed.Query()) {
+	if handoffURLRawQueryContainsSecret(parsed.RawQuery) {
 		return ""
 	}
 	if handoffURLFragmentContainsSecret(parsed.Fragment) {
@@ -577,7 +572,7 @@ func handoffURLPathStringContainsSecret(path string) bool {
 	if handoffStringContainsSecretAssignment(path) ||
 		handoffStringContainsSecretValueAssignment(path) ||
 		handoffStringContainsBareSecretValue(path) ||
-		handoffURLQueryValueLooksLikeSecret(path) {
+		handoffPathStringNeedsRedaction(path) {
 		return true
 	}
 	segments := strings.FieldsFunc(path, func(r rune) bool {
@@ -590,7 +585,7 @@ func handoffURLPathStringContainsSecret(path string) bool {
 		}
 		if handoffStringContainsSecretAssignment(segment) ||
 			handoffStringContainsSecretValueAssignment(segment) ||
-			handoffURLQueryValueLooksLikeSecret(segment) {
+			handoffPathStringNeedsRedaction(segment) {
 			return true
 		}
 		if handoffStandaloneSecretKey(segment) && i+1 < len(segments) && handoffFieldLooksLikeSecretValue(segments[i+1]) {
@@ -683,7 +678,7 @@ func handoffStoredPathContainsSecret(storedPath string) bool {
 	for _, segment := range strings.Split(storedPath, "/") {
 		if handoffStringContainsSecretAssignment(segment) ||
 			handoffStringContainsSecretValueAssignment(segment) ||
-			handoffURLQueryValueLooksLikeSecret(segment) {
+			handoffPathStringNeedsRedaction(segment) {
 			return true
 		}
 	}
@@ -725,6 +720,9 @@ func handoffStringNeedsRedaction(value string) bool {
 	if net.ParseIP(strings.Trim(value, "[]")) != nil {
 		return true
 	}
+	if handoffURLQueryValueLooksLikeSecret(value) {
+		return true
+	}
 	if host, _, err := net.SplitHostPort(value); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
 		return true
 	}
@@ -740,7 +738,7 @@ func handoffStringNeedsRedaction(value string) bool {
 			if host := strings.TrimSpace(parsed.Hostname()); host != "" && net.ParseIP(host) != nil {
 				return true
 			}
-			if handoffURLQueryContainsSecret(parsed.Query()) {
+			if handoffURLRawQueryContainsSecret(parsed.RawQuery) {
 				return true
 			}
 			if handoffURLFragmentContainsSecret(parsed.Fragment) {
@@ -763,13 +761,8 @@ func handoffStringNeedsRedaction(value string) bool {
 	if handoffStringContainsSecretValueAssignment(value) {
 		return true
 	}
-	fields := strings.FieldsFunc(value, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '/' || r == ',' || r == ';' || r == '=' || r == '(' || r == ')' || r == '[' || r == ']'
-	})
-	for _, field := range fields {
-		if handoffFieldContainsIP(field) {
-			return true
-		}
+	if handoffStringContainsIP(value) {
+		return true
 	}
 	return false
 }
@@ -820,16 +813,62 @@ func handoffFieldContainsIP(field string) bool {
 	if field == "" {
 		return false
 	}
-	if net.ParseIP(strings.Trim(field, "[]")) != nil {
-		return true
-	}
-	if host, _, err := net.SplitHostPort(field); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
-		return true
-	}
-	if idx := strings.LastIndex(field, ":"); idx > 0 {
-		host := field[:idx]
-		if strings.Count(host, ":") == 0 && net.ParseIP(strings.Trim(host, "[]")) != nil {
+	if at := strings.LastIndexByte(field, '@'); at >= 0 && at+1 < len(field) {
+		if handoffFieldContainsIP(field[at+1:]) {
 			return true
+		}
+	}
+	candidates := []string{field}
+	if base := handoffStripFilenameSuffix(field); base != field {
+		candidates = append(candidates, base)
+	}
+	for _, candidate := range candidates {
+		if net.ParseIP(strings.Trim(candidate, "[]")) != nil {
+			return true
+		}
+		if host, _, err := net.SplitHostPort(candidate); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
+			return true
+		}
+		if idx := strings.LastIndex(candidate, ":"); idx > 0 {
+			host := candidate[:idx]
+			if strings.Count(host, ":") == 0 && net.ParseIP(strings.Trim(host, "[]")) != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func handoffStripFilenameSuffix(value string) string {
+	idx := strings.LastIndexByte(value, '.')
+	if idx <= 0 || idx+1 >= len(value) {
+		return value
+	}
+	suffix := value[idx+1:]
+	for _, r := range suffix {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			continue
+		}
+		return value
+	}
+	return value[:idx]
+}
+
+func handoffStringContainsIP(value string) bool {
+	for _, field := range handoffRedactionFields(value) {
+		field = handoffTrimRedactionField(field)
+		if field == "" {
+			continue
+		}
+		if handoffFieldContainsIP(field) {
+			return true
+		}
+		for _, segment := range strings.FieldsFunc(field, func(r rune) bool {
+			return r == '/' || r == '\\' || r == '#' || r == '='
+		}) {
+			if handoffFieldContainsIP(segment) {
+				return true
+			}
 		}
 	}
 	return false
@@ -843,6 +882,13 @@ func handoffStringContainsBareDNSHost(value string) bool {
 		}
 		if handoffFieldContainsBareDNSHost(field) {
 			return true
+		}
+		for _, segment := range strings.FieldsFunc(field, func(r rune) bool {
+			return r == '/' || r == '\\'
+		}) {
+			if handoffFieldContainsBareDNSHost(segment) {
+				return true
+			}
 		}
 	}
 	return false
@@ -1030,7 +1076,14 @@ func handoffFieldIsSSHUserHost(field string) bool {
 	if at <= 0 || at+1 >= len(field) {
 		return false
 	}
-	host, ok := handoffSplitSSHHostPort(field[at+1:])
+	target := field[at+1:]
+	if host, path, ok := handoffSplitSCPStyleSSHHost(target); ok {
+		if handoffSCPStyleDocumentationPlaceholder(host, path) {
+			return false
+		}
+		return handoffSSHHostLooksSensitive(host)
+	}
+	host, ok := handoffSplitSSHHostPort(target)
 	return ok && handoffSSHHostLooksSensitive(host)
 }
 
@@ -1062,6 +1115,28 @@ func handoffSplitSSHHostPort(value string) (string, bool) {
 		return host, true
 	}
 	return value, true
+}
+
+func handoffSplitSCPStyleSSHHost(value string) (string, string, bool) {
+	value = handoffTrimRedactionField(value)
+	idx := strings.IndexByte(value, ':')
+	if idx <= 0 || idx+1 >= len(value) {
+		return "", "", false
+	}
+	host := value[:idx]
+	path := value[idx+1:]
+	if strings.Contains(host, ":") || strings.ContainsAny(host, `/\`) || handoffStringIsDecimalPort(path) {
+		return "", "", false
+	}
+	return host, path, true
+}
+
+func handoffSCPStyleDocumentationPlaceholder(host, path string) bool {
+	if !strings.EqualFold(strings.TrimSpace(host), "github.com") {
+		return false
+	}
+	path = strings.Trim(strings.TrimSpace(filepath.ToSlash(path)), "/")
+	return path == "placeholder/placeholder" || path == "placeholder/placeholder.git"
 }
 
 func handoffSSHHostLooksSensitive(host string) bool {
@@ -1170,6 +1245,7 @@ func handoffFieldIsAuthScheme(value string) bool {
 func handoffStandaloneSecretKey(key string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
 	key = strings.Trim(key, "\"'<>[](){}.,;")
+	key = strings.TrimLeft(key, "-")
 	switch key {
 	case "token", "secret", "password", "passwd", "credential", "credentials", "auth", "authorization", "key",
 		"api_key", "api-key", "apikey", "access_key", "access-key", "accesskey", "private_key", "private-key", "privatekey":
@@ -1201,13 +1277,25 @@ func handoffFieldLooksLikeSecretValue(value string) bool {
 	return len(value) >= 16 && handoffFieldLooksLikeTokenChars(value)
 }
 
+func handoffURLRawQueryContainsSecret(rawQuery string) bool {
+	rawQuery = strings.TrimSpace(rawQuery)
+	if rawQuery == "" {
+		return false
+	}
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return true
+	}
+	return handoffURLQueryContainsSecret(query)
+}
+
 func handoffURLQueryContainsSecret(query url.Values) bool {
 	for key, values := range query {
 		if handoffSecretKey(key) {
 			return true
 		}
 		for _, value := range values {
-			if handoffURLQueryValueLooksLikeSecret(value) {
+			if handoffURLQueryValueNeedsRedaction(value) {
 				return true
 			}
 		}
@@ -1220,7 +1308,11 @@ func handoffURLFragmentContainsSecret(fragment string) bool {
 	if fragment == "" {
 		return false
 	}
-	if query, err := url.ParseQuery(fragment); err == nil && handoffURLQueryContainsSecret(query) {
+	if query, err := url.ParseQuery(fragment); err == nil {
+		if handoffURLQueryContainsSecret(query) {
+			return true
+		}
+	} else {
 		return true
 	}
 	if unescaped, err := url.QueryUnescape(fragment); err == nil {
@@ -1229,7 +1321,39 @@ func handoffURLFragmentContainsSecret(fragment string) bool {
 	return handoffStringContainsSecretAssignment(fragment) ||
 		handoffStringContainsSecretValueAssignment(fragment) ||
 		handoffStringContainsBareSecretValue(fragment) ||
-		handoffURLQueryValueLooksLikeSecret(fragment)
+		handoffURLQueryValueNeedsRedaction(fragment)
+}
+
+func handoffPathStringNeedsRedaction(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	normalizedValue := handoffNormalizeDocPlaceholders(value)
+	return handoffURLQueryValueLooksLikeSecret(value) ||
+		handoffStringContainsSecretAssignment(value) ||
+		handoffStringContainsSecretValueAssignment(value) ||
+		handoffStringContainsBareSecretValue(value) ||
+		handoffStringContainsIP(normalizedValue) ||
+		handoffStringContainsSSHHost(normalizedValue) ||
+		handoffDisplayValueContainsBareDNSHost(normalizedValue)
+}
+
+func handoffURLQueryValueNeedsRedaction(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	normalizedValue := handoffNormalizeDocPlaceholders(value)
+	return handoffURLQueryValueLooksLikeSecret(value) ||
+		handoffStringContainsSecretAssignment(value) ||
+		handoffStringContainsSecretValueAssignment(value) ||
+		handoffStringContainsBareSecretValue(value) ||
+		handoffStringContainsIP(normalizedValue) ||
+		handoffStringContainsSSHHost(normalizedValue) ||
+		handoffStringContainsAbsolutePath(normalizedValue) ||
+		handoffStringContainsURLHost(normalizedValue) ||
+		handoffDisplayValueContainsBareDNSHost(normalizedValue)
 }
 
 func handoffURLQueryValueLooksLikeSecret(value string) bool {
