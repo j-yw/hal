@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -3342,6 +3343,8 @@ func sanitizeFactoryArtifactValue(key string, value any) any {
 		return "[redacted]"
 	}
 	switch v := value.(type) {
+	case nil:
+		return nil
 	case string:
 		if factoryArtifactStringNeedsRedaction(v) {
 			return "[redacted]"
@@ -3362,8 +3365,38 @@ func sanitizeFactoryArtifactValue(key string, value any) any {
 		}
 		return out
 	default:
+		if normalized, ok := normalizeFactoryArtifactCompositeValue(value); ok {
+			return sanitizeFactoryArtifactValue(key, normalized)
+		}
 		return value
 	}
+}
+
+func normalizeFactoryArtifactCompositeValue(value any) (any, bool) {
+	if value == nil {
+		return nil, false
+	}
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.Struct:
+	default:
+		return nil, false
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var normalized any
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		return nil, false
+	}
+	return normalized, true
 }
 
 func factoryArtifactSecretKey(key string) bool {

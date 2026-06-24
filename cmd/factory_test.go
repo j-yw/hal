@@ -5125,6 +5125,55 @@ func TestSanitizeFactoryArtifactSummaryRedactsSignedURLStrings(t *testing.T) {
 	}
 }
 
+func TestSanitizeFactoryArtifactSummaryRedactsTypedContainers(t *testing.T) {
+	type nestedSummary struct {
+		Header string `json:"header"`
+		Token  string `json:"apiToken"`
+		Safe   string `json:"safe"`
+	}
+
+	summary := sanitizeFactoryArtifactSummary(map[string]any{
+		"headers": []string{
+			"Authorization: Bearer secret",
+			"cache-control: no-store",
+		},
+		"metadata": map[string][]string{
+			"links": {"https://storage.example.com/artifact.json?sig=abc123"},
+		},
+		"struct": nestedSummary{
+			Header: "Authorization: Bearer secret",
+			Token:  "secret-token",
+			Safe:   "ok",
+		},
+	})
+
+	headers, ok := summary["headers"].([]any)
+	if !ok {
+		t.Fatalf("typed string slice summary = %#v, want []any", summary["headers"])
+	}
+	if headers[0] != "[redacted]" || headers[1] != "cache-control: no-store" {
+		t.Fatalf("typed string slice summary = %#v, want first value redacted", headers)
+	}
+	metadata, ok := summary["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("typed map summary = %#v, want map[string]any", summary["metadata"])
+	}
+	links, ok := metadata["links"].([]any)
+	if !ok {
+		t.Fatalf("typed map string slice value = %#v, want []any", metadata["links"])
+	}
+	if links[0] != "[redacted]" {
+		t.Fatalf("typed map signed URL value = %#v, want [redacted]", links[0])
+	}
+	structValue, ok := summary["struct"].(map[string]any)
+	if !ok {
+		t.Fatalf("typed struct summary = %#v, want map[string]any", summary["struct"])
+	}
+	if structValue["header"] != "[redacted]" || structValue["apiToken"] != "[redacted]" || structValue["safe"] != "ok" {
+		t.Fatalf("typed struct summary = %#v, want secret fields redacted", structValue)
+	}
+}
+
 func TestSafeFactoryPRURLRejectsSecretURLParts(t *testing.T) {
 	tests := []struct {
 		name string
