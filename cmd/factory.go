@@ -857,20 +857,38 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	if err != nil {
 		return factory.RunRecord{}, err
 	}
-	outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir, record.CreatedAt, snapshot)
-	if outcomeCleanup != nil {
-		defer outcomeCleanup()
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir, record.CreatedAt, snapshot)
+		if outcomeCleanup != nil {
+			defer outcomeCleanup()
+		}
+		if err != nil {
+			return factory.RunRecord{}, err
+		}
+		snapshots = append(snapshots, outcomes...)
 	}
-	if err != nil {
-		return factory.RunRecord{}, err
-	}
-	snapshots = append(snapshots, outcomes...)
 
 	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot, snapshots); err != nil {
 		return factory.RunRecord{}, err
 	}
 	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, *record, deps); err != nil {
 		return factory.RunRecord{}, err
+	}
+	if record.ExecutorMode == factory.ExecutorModeSandbox {
+		sandboxRecord, err := store.LoadRun(runID)
+		if err != nil {
+			return factory.RunRecord{}, fmt.Errorf("reload sandbox factory run artifacts: %w", err)
+		}
+		outcomes, outcomeCleanup, err := materializeFactorySandboxOutcomeArtifacts(store, *sandboxRecord)
+		if outcomeCleanup != nil {
+			defer outcomeCleanup()
+		}
+		if err != nil {
+			return factory.RunRecord{}, err
+		}
+		if err := storeFactoryOutcomeArtifacts(store, *sandboxRecord, outcomes); err != nil {
+			return factory.RunRecord{}, err
+		}
 	}
 	record, err = store.LoadRun(runID)
 	if err != nil {
@@ -1066,6 +1084,18 @@ func materializeFactorySnapshotArtifacts(dir string, deps factoryRunExecutionDep
 
 func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time, snapshot factoryArtifactSnapshot) ([]factory.ArtifactReference, func(), error) {
 	state := factoryOutcomePipelineState(dir, startedAt, snapshot)
+	return materializeFactoryOutcomeArtifactsFromState(state)
+}
+
+func materializeFactorySandboxOutcomeArtifacts(store factory.Store, record factory.RunRecord) ([]factory.ArtifactReference, func(), error) {
+	state, err := factorySandboxOutcomePipelineState(store, record)
+	if err != nil {
+		return nil, nil, err
+	}
+	return materializeFactoryOutcomeArtifactsFromState(state)
+}
+
+func materializeFactoryOutcomeArtifactsFromState(state *compound.PipelineState) ([]factory.ArtifactReference, func(), error) {
 	if state == nil || state.CI == nil {
 		return []factory.ArtifactReference{
 			missingFactoryOutcomeArtifact("pr-outcome", "factory/pr-outcome.json", "PR outcome data was unavailable"),
@@ -1128,6 +1158,37 @@ func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time, snapsho
 	return artifacts, cleanup, nil
 }
 
+func factorySandboxOutcomePipelineState(store factory.Store, record factory.RunRecord) (*compound.PipelineState, error) {
+	for _, artifact := range record.Artifacts {
+		if strings.TrimSpace(artifact.ID) == "sandbox-auto-state" || strings.TrimSpace(artifact.Name) == "sandbox-auto-state" {
+			return loadFactoryRunStoredPipelineState(store, record, artifact)
+		}
+	}
+
+	autoStatePath := filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile))
+	for _, artifact := range record.Artifacts {
+		if filepath.ToSlash(strings.TrimSpace(artifact.Path)) == autoStatePath {
+			return loadFactoryRunStoredPipelineState(store, record, artifact)
+		}
+	}
+	return nil, nil
+}
+
+func loadFactoryRunStoredPipelineState(store factory.Store, record factory.RunRecord, artifact factory.ArtifactReference) (*compound.PipelineState, error) {
+	if artifact.Partial || strings.TrimSpace(artifact.StoredPath) == "" {
+		return nil, nil
+	}
+	path, err := store.ResolveArtifactPath(record.RunID, artifact.StoredPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox auto-state artifact: %w", err)
+	}
+	state, ok := loadFactoryRunPipelineState(path)
+	if !ok {
+		return nil, nil
+	}
+	return state, nil
+}
+
 func factoryOutcomePipelineState(dir string, startedAt time.Time, snapshot factoryArtifactSnapshot) *compound.PipelineState {
 	autoStatePath := filepath.Join(template.HalDir, template.AutoStateFile)
 	liveState, ok := loadFactoryRunPipelineState(filepath.Join(dir, autoStatePath))
@@ -1155,6 +1216,42 @@ func factoryPipelineStateHasOutcomeData(state *compound.PipelineState) bool {
 		return false
 	}
 	return safeFactoryPRURL(state.CI.PRURL) != "" || strings.TrimSpace(state.CI.Status) != ""
+}
+
+func storeFactoryOutcomeArtifacts(store factory.Store, record factory.RunRecord, artifacts []factory.ArtifactReference) error {
+	missingArtifacts := make([]factory.ArtifactReference, 0)
+	for _, artifact := range artifacts {
+		artifact.ID = factoryArtifactID(artifact)
+		if artifact.Partial && artifact.SourcePath == "" {
+			missingArtifacts = append(missingArtifacts, artifact)
+			continue
+		}
+		sourcePath := artifact.SourcePath
+		if strings.TrimSpace(sourcePath) == "" {
+			sourcePath = artifact.Path
+		}
+		if strings.TrimSpace(sourcePath) == "" {
+			continue
+		}
+		if _, err := store.SaveArtifactFile(record.RunID, artifact, sourcePath); err != nil {
+			return fmt.Errorf("store factory outcome artifact %q from %s: %w", artifact.Name, artifact.Path, err)
+		}
+	}
+	if len(missingArtifacts) == 0 {
+		return nil
+	}
+
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return fmt.Errorf("load factory run for missing outcome artifact warnings: %w", err)
+	}
+	for _, missing := range missingArtifacts {
+		updatedRecord.Artifacts = upsertFactoryRunArtifact(updatedRecord.Artifacts, missing)
+	}
+	if err := store.SaveRun(updatedRecord); err != nil {
+		return fmt.Errorf("record missing factory outcome artifact warnings: %w", err)
+	}
+	return nil
 }
 
 func materializeFactoryJSONArtifact(name, displayPath string, payload any, summary map[string]any) (factory.ArtifactReference, string, error) {
@@ -2944,6 +3041,15 @@ func sanitizeFactoryArtifactPath(path string) string {
 	if path == "" {
 		return ""
 	}
+	if strings.Contains(path, "://") {
+		if safeURL := safeFactoryArtifactURL(path); safeURL != "" {
+			return safeURL
+		}
+		return "[redacted]"
+	}
+	if factoryArtifactStringContainsSecretAssignment(path) {
+		return "[redacted]"
+	}
 	cleanPath := filepath.Clean(path)
 	if factoryArtifactLooksLikeWindowsAbsolutePath(path) || factoryArtifactLooksLikeWindowsAbsolutePath(cleanPath) {
 		return "[redacted]"
@@ -3061,14 +3167,14 @@ func renderFactoryArtifactsTable(out io.Writer, record factory.RunRecord) {
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tTYPE\tPATH\tSTORED PATH\tSUMMARY\tWARNINGS")
-	for _, artifact := range record.Artifacts {
+	for _, artifact := range newFactoryStatusArtifactSummaries(record.Artifacts) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			artifact.Name,
 			artifact.Type,
-			factoryArtifactDisplayPath(artifact),
-			artifact.StoredPath,
+			factoryArtifactSummaryDisplayPath(artifact),
+			sanitizeFactoryArtifactPath(artifact.StoredPath),
 			formatFactoryArtifactSummary(artifact.Summary),
-			formatFactoryArtifactWarnings(artifact),
+			formatFactoryArtifactSummaryWarnings(artifact.Warnings, artifact.Partial),
 		)
 	}
 	_ = w.Flush()
@@ -3079,6 +3185,19 @@ func factoryArtifactDisplayPath(artifact factory.ArtifactReference) string {
 		return path
 	}
 	if path := strings.TrimSpace(artifact.StoredPath); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(artifact.URL); path != "" {
+		return path
+	}
+	return "-"
+}
+
+func factoryArtifactSummaryDisplayPath(artifact FactoryArtifactSummary) string {
+	if path := strings.TrimSpace(artifact.Path); path != "" {
+		return path
+	}
+	if path := sanitizeFactoryArtifactPath(artifact.StoredPath); path != "" {
 		return path
 	}
 	if path := strings.TrimSpace(artifact.URL); path != "" {
@@ -3111,8 +3230,12 @@ func formatFactoryArtifactSummary(summary map[string]any) string {
 }
 
 func formatFactoryArtifactWarnings(artifact factory.ArtifactReference) string {
-	warnings := append([]string(nil), artifact.Warnings...)
-	if artifact.Partial && len(warnings) == 0 {
+	return formatFactoryArtifactSummaryWarnings(artifact.Warnings, artifact.Partial)
+}
+
+func formatFactoryArtifactSummaryWarnings(warnings []string, partial bool) string {
+	warnings = append([]string(nil), warnings...)
+	if partial && len(warnings) == 0 {
 		warnings = append(warnings, "partial")
 	}
 	if len(warnings) == 0 {

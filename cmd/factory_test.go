@@ -1681,7 +1681,20 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	times := []time.Time{createdAt, startedAt, completedAt}
 	copier := &fakeFactorySandboxArtifactCopier{
 		files: map[string]string{
-			"/workspace/.hal/auto-state.json": `{"step":"done"}` + "\n",
+			"/workspace/.hal/auto-state.json": `{
+  "step": "done",
+  "branchName": "hal/factory",
+  "ci": {
+    "status": "passed",
+    "prUrl": "https://github.com/acme/hal/pull/77",
+    "prNumber": 77,
+    "prTitle": "Sandbox factory artifacts",
+    "prHeadRef": "hal/factory",
+    "prBaseRef": "main",
+    "fixAttempts": 2,
+    "fixesApplied": 1
+  }
+}` + "\n",
 		},
 		dirs: map[string]map[string]string{
 			"/workspace/.hal/reports": {
@@ -1801,6 +1814,17 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	}
 	if autoState.Summary["sandboxName"] != "factory-sandbox" {
 		t.Fatalf("sandbox artifact summary = %#v", autoState.Summary)
+	}
+	prArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/pr-outcome.json")
+	if prArtifact.Summary["pullRequestUrl"] != "https://github.com/acme/hal/pull/77" {
+		t.Fatalf("sandbox PR outcome summary = %#v", prArtifact.Summary)
+	}
+	ciArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/ci-outcome.json")
+	if ciArtifact.Summary["status"] != "passed" {
+		t.Fatalf("sandbox CI outcome summary = %#v", ciArtifact.Summary)
+	}
+	if got := readStoredFactoryArtifact(t, store, record.RunID, ciArtifact); !strings.Contains(got, `"fixAttempts": 2`) {
+		t.Fatalf("sandbox CI outcome payload missing remote state data:\n%s", got)
 	}
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/status-snapshot.json")
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/doctor-snapshot.json")
@@ -4787,6 +4811,65 @@ func TestRunFactoryArtifactsListsCollectedArtifacts(t *testing.T) {
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRunFactoryArtifactsTableEmitsSafeArtifactMetadata(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 8, 5, 0, 0, time.UTC)
+	rawPath := filepath.Join(t.TempDir(), "workspace", "secret-report.md")
+	record := testFactoryRunRecord("run-artifact-table-safe", base, base.Add(time.Minute))
+	record.Artifacts = []factory.ArtifactReference{
+		{
+			ID:         "unsafe-report",
+			Name:       "unsafe-report",
+			Type:       "markdown",
+			Path:       rawPath,
+			StoredPath: rawPath,
+			Summary: map[string]any{
+				"apiToken": "secret-token",
+				"endpoint": "http://192.0.2.10/status",
+			},
+			Warnings: []string{"optional artifact not found at 198.51.100.2"},
+			Partial:  true,
+		},
+		{
+			ID:      "unsafe-url",
+			Name:    "unsafe-url",
+			Type:    "link",
+			URL:     "https://example.com/artifact?token=secret",
+			Partial: true,
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryArtifactsWithDeps(&buf, record.RunID, false, factoryArtifactsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryArtifactsWithDeps() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	for _, leaked := range []string{
+		rawPath,
+		filepath.Dir(rawPath),
+		"secret-token",
+		"192.0.2.10",
+		"198.51.100.2",
+		"token=secret",
+	} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("artifact table leaked %q:\n%s", leaked, output)
+		}
+	}
+	for _, want := range []string{"secret-report.md", "[redacted]", "apiToken=\"[redacted]\"", "endpoint=\"[redacted]\""} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("artifact table missing %q:\n%s", want, output)
 		}
 	}
 }
