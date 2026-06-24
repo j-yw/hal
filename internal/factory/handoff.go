@@ -299,7 +299,8 @@ func SanitizeHandoffFailureReason(reason string) string {
 		return ""
 	}
 	normalizedReason := handoffNormalizeDocPlaceholders(reason)
-	if handoffStringContainsBareSecretValue(reason) ||
+	if strings.ContainsAny(reason, "\r\n") ||
+		handoffStringContainsBareSecretValue(reason) ||
 		handoffStringNeedsRedaction(normalizedReason) ||
 		handoffStringContainsBareDNSHost(normalizedReason) {
 		return handoffRedactedLocation
