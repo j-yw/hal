@@ -54,6 +54,14 @@ def fail(message, code):
         os.write(2, (message + "\n").encode("utf-8"))
     sys.exit(code)
 
+def write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written == 0:
+            raise OSError("os.write returned 0 bytes")
+        view = view[written:]
+
 no_follow = getattr(os, "O_NOFOLLOW", None)
 directory_flag = getattr(os, "O_DIRECTORY", 0)
 if no_follow is None:
@@ -169,7 +177,7 @@ try:
         chunk = os.read(fd, 1024 * 1024)
         if not chunk:
             break
-        os.write(1, chunk)
+        write_all(1, chunk)
 finally:
     os.close(fd)`
 
