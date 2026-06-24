@@ -1623,6 +1623,52 @@ func TestCollectAndStoreFactoryRunArtifactsRejectsUntrustedPathOutsideProject(t 
 	if !strings.Contains(err.Error(), "resolves outside project directory") {
 		t.Fatalf("collectAndStoreFactoryRunArtifacts() error = %q, want outside project rejection", err.Error())
 	}
+	for _, leaked := range []string{outsidePath, outsideDir, dir} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("collectAndStoreFactoryRunArtifacts() error leaked local path %q: %q", leaked, err.Error())
+		}
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if len(loaded.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none after outside project rejection", loaded.Artifacts)
+	}
+}
+
+func TestCollectAndStoreFactoryVerificationArtifactsRejectsUntrustedPathOutsideProjectWithoutLeakingPaths(t *testing.T) {
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "verify-secret.log")
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("WriteFile(outsidePath) error: %v", err)
+	}
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 12, 50, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-outside-verification-artifact-path", createdAt, createdAt)
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, []verify.ArtifactReference{{
+		CheckID: "test",
+		Kind:    verify.ArtifactKindStdout,
+		Path:    outsidePath,
+	}})
+	if err == nil {
+		t.Fatal("collectAndStoreFactoryVerificationArtifacts() error = nil, want outside project rejection")
+	}
+	if !strings.Contains(err.Error(), "resolves outside project directory") {
+		t.Fatalf("collectAndStoreFactoryVerificationArtifacts() error = %q, want outside project rejection", err.Error())
+	}
+	for _, leaked := range []string{outsidePath, outsideDir, dir} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("collectAndStoreFactoryVerificationArtifacts() error leaked local path %q: %q", leaked, err.Error())
+		}
+	}
 	loaded, err := store.LoadRun(record.RunID)
 	if err != nil {
 		t.Fatalf("LoadRun() error: %v", err)

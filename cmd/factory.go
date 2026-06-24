@@ -1729,12 +1729,12 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		}
 		absoluteSourcePath, err := resolveFactoryArtifactSourcePath(dir, sourcePath, allowExternalSourcePath)
 		if err != nil {
-			return fmt.Errorf("resolve factory artifact %q from %s: %w", artifact.Name, artifact.Path, err)
+			return fmt.Errorf("resolve factory artifact %q from %s: %w", artifact.Name, factoryArtifactErrorPath(artifact.Path), err)
 		}
 		if factoryArtifactFileExists(absoluteSourcePath) {
 			artifact.ID = factoryArtifactID(artifact)
 			if _, err := store.SaveArtifactFile(record.RunID, artifact, absoluteSourcePath); err != nil {
-				return fmt.Errorf("store factory artifact %q from %s: %w", artifact.Name, artifact.Path, err)
+				return fmt.Errorf("store factory artifact %q from %s: %w", artifact.Name, factoryArtifactErrorPath(artifact.Path), err)
 			}
 			continue
 		}
@@ -1789,7 +1789,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 		ref.ID = factoryArtifactID(ref)
 		sourcePath, err := resolveFactoryArtifactSourcePath(dir, path, false)
 		if err != nil {
-			return fmt.Errorf("resolve factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
+			return fmt.Errorf("resolve factory verification artifact %q from %s: %w", ref.Name, factoryArtifactErrorPath(ref.Path), err)
 		}
 		if !factoryArtifactFileExists(sourcePath) {
 			missing := ref
@@ -1802,7 +1802,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 			continue
 		}
 		if _, err := store.SaveArtifactFile(runID, ref, sourcePath); err != nil {
-			return fmt.Errorf("store factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
+			return fmt.Errorf("store factory verification artifact %q from %s: %w", ref.Name, factoryArtifactErrorPath(ref.Path), err)
 		}
 	}
 	if len(missingArtifacts) > 0 {
@@ -1843,7 +1843,7 @@ func resolveFactoryArtifactSourcePath(dir, sourcePath string, allowExternal bool
 	absoluteDir = filepath.Clean(absoluteDir)
 	withinProject := factoryArtifactPathWithinDir(absoluteDir, absoluteSourcePath)
 	if !withinProject && !allowExternal {
-		return "", fmt.Errorf("artifact source path %q resolves outside project directory %q", sourcePath, absoluteDir)
+		return "", fmt.Errorf("artifact source path resolves outside project directory")
 	}
 	if !filepath.IsAbs(sourcePath) || withinProject {
 		if err := rejectFactoryArtifactSymlinkParents(absoluteDir, absoluteSourcePath); err != nil {
@@ -1881,16 +1881,32 @@ func rejectFactoryArtifactSymlinkParents(dir, sourcePath string) error {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("inspect artifact source parent %q: %w", current, err)
+			return fmt.Errorf("inspect artifact source parent %q: %w", factoryArtifactSourceParentErrorPath(dir, current), err)
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("artifact source parent %q is a symlink", current)
+			return fmt.Errorf("artifact source parent %q is a symlink", factoryArtifactSourceParentErrorPath(dir, current))
 		}
 		if !info.IsDir() {
 			return nil
 		}
 	}
 	return nil
+}
+
+func factoryArtifactErrorPath(path string) string {
+	path = sanitizeFactoryArtifactPath(path)
+	if strings.TrimSpace(path) == "" {
+		return "[redacted]"
+	}
+	return path
+}
+
+func factoryArtifactSourceParentErrorPath(dir, path string) string {
+	rel, err := filepath.Rel(dir, path)
+	if err == nil && rel != "." && !factoryArtifactPathIsParentRelative(rel) && !filepath.IsAbs(rel) {
+		return factoryArtifactErrorPath(rel)
+	}
+	return factoryArtifactErrorPath(path)
 }
 
 func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunExecutionDeps) error {
