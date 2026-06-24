@@ -575,11 +575,53 @@ func factorySandboxArtifactCopyError(remotePath, stderr string, err error) error
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 44 {
 		return factory.ErrSandboxArtifactNotFound
 	}
-	stderr = strings.TrimSpace(stderr)
-	if stderr != "" {
-		return fmt.Errorf("copy sandbox artifact %q: %w: %s", remotePath, err, stderr)
+	reason := factorySandboxArtifactCopyErrorReason(err)
+	if summary := factorySandboxArtifactCopyStderrSummary(remotePath, stderr); summary != "" {
+		return fmt.Errorf("copy sandbox artifact: %s: %s", reason, summary)
 	}
-	return fmt.Errorf("copy sandbox artifact %q: %w", remotePath, err)
+	return fmt.Errorf("copy sandbox artifact: %s", reason)
+}
+
+func factorySandboxArtifactCopyErrorReason(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return fmt.Sprintf("exit status %d", exitErr.ExitCode())
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled.Error()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded.Error()
+	}
+	return "failed"
+}
+
+func factorySandboxArtifactCopyStderrSummary(remotePath, stderr string) string {
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return ""
+	}
+	switch stderr {
+	case "sandbox workspace path is a symlink",
+		"sandbox artifact path is a symlink",
+		"python3 is required to copy sandbox artifacts without following symlinks",
+		"O_NOFOLLOW is required to copy sandbox artifacts without following symlinks":
+		return stderr
+	}
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		switch line {
+		case "sandbox workspace path is a symlink",
+			"sandbox artifact path is a symlink",
+			"python3 is required to copy sandbox artifacts without following symlinks",
+			"O_NOFOLLOW is required to copy sandbox artifacts without following symlinks":
+			return line
+		}
+	}
+	if remotePath != "" && !strings.Contains(stderr, remotePath) {
+		return "stderr omitted"
+	}
+	return "stderr omitted"
 }
 
 func extractFactorySandboxArtifactTar(tarPath, localPath string) error {

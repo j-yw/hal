@@ -436,6 +436,33 @@ func requireSymlinkSandboxArtifactCopyError(t *testing.T, err error) {
 	}
 }
 
+func TestFactorySandboxArtifactCopyErrorSanitizesRemoteDetails(t *testing.T) {
+	err := factorySandboxArtifactCopyError(
+		"/workspace/.hal/reports/private.log",
+		"Traceback (most recent call last):\nopen('/workspace/.hal/reports/private.log')\ntoken=secret",
+		errors.New("failed to copy /workspace/.hal/reports/private.log with token=secret"),
+	)
+	if err == nil {
+		t.Fatal("copy error = nil, want sanitized error")
+	}
+	message := err.Error()
+	if strings.Contains(message, "/workspace/") || strings.Contains(message, "token=secret") {
+		t.Fatalf("copy error leaked remote details: %q", message)
+	}
+	if !strings.Contains(message, "stderr omitted") {
+		t.Fatalf("copy error = %q, want redacted stderr summary", message)
+	}
+
+	err = factorySandboxArtifactCopyError(
+		"/workspace/.hal/progress.txt",
+		"sandbox artifact path is a symlink",
+		errors.New("exit status 45"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("copy error = %v, want safe symlink summary", err)
+	}
+}
+
 func requireLocalSandboxArtifactCopierRuntime(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
