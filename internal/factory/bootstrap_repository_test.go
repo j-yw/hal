@@ -76,6 +76,101 @@ func TestBootstrapRepositoryCheckoutClonesMissingRepoAndChecksOutBase(t *testing
 	}
 }
 
+func TestBootstrapRepositoryCheckoutSanitizesCredentialedOriginAfterClone(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "repository cloned"},
+			{ExitCode: 0, OutputSummary: "origin sanitized"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+		},
+	}
+
+	req := BootstrapRequest{
+		RepositoryURL: "https://oauth2:ghp_repository_url_secret_value@github.com/jywlabs/hal.git",
+		BaseBranch:    "develop",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 5, 0, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return false, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+
+	wantCalls := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"clone", req.RepositoryURL, "/workspace/hal"},
+			Dir:  "/workspace",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"remote", "set-url", "origin", "https://github.com/jywlabs/hal.git"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "-B", "develop", "origin/develop"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls, wantCalls) {
+		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
+	}
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCloneRepository, BootstrapStepSanitizeOrigin, BootstrapStepCheckoutBase})
+}
+
+func TestBootstrapRepositoryCheckoutPreservesSSHOriginUsernameAfterClone(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "repository cloned"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+		},
+	}
+
+	req := BootstrapRequest{
+		RepositoryURL: "ssh://git@github.com/jywlabs/hal.git",
+		BaseBranch:    "develop",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 6, 21, 5, 6, 0, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return false, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+
+	wantCalls := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"clone", req.RepositoryURL, "/workspace/hal"},
+			Dir:  "/workspace",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "-B", "develop", "origin/develop"},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls, wantCalls) {
+		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
+	}
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCloneRepository, BootstrapStepCheckoutBase})
+}
+
 func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{

@@ -15,6 +15,7 @@ import (
 
 const (
 	BootstrapStepCloneRepository = "clone_repository"
+	BootstrapStepSanitizeOrigin  = "sanitize_origin_url"
 	BootstrapStepFetchRepository = "fetch_repository"
 	BootstrapStepCheckoutBase    = "checkout_base"
 	BootstrapStepCheckLocalRun   = "check_local_run_branch"
@@ -224,6 +225,17 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 				Env:  bootstrapGitEnv(),
 			},
 		})
+		if safeRepositoryURL, ok := bootstrapRepositoryCredentialFreeURL(repositoryURL); ok {
+			commands = append(commands, bootstrapRepositoryCommand{
+				stepName: BootstrapStepSanitizeOrigin,
+				command: BootstrapCommand{
+					Name: "git",
+					Args: []string{"remote", "set-url", "origin", safeRepositoryURL},
+					Dir:  repoPath,
+					Env:  bootstrapGitEnv(),
+				},
+			})
+		}
 	}
 
 	checkoutArgs := []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
@@ -238,6 +250,30 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	})
 
 	return commands, nil
+}
+
+func bootstrapRepositoryCredentialFreeURL(repositoryURL string) (string, bool) {
+	repositoryURL = strings.TrimSpace(repositoryURL)
+	if !strings.Contains(repositoryURL, "://") {
+		return "", false
+	}
+
+	parsed, err := url.Parse(repositoryURL)
+	if err != nil || parsed.User == nil {
+		return "", false
+	}
+
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		parsed.User = nil
+		return parsed.String(), true
+	}
+
+	username := parsed.User.Username()
+	if _, hasPassword := parsed.User.Password(); !hasPassword || username == "" {
+		return "", false
+	}
+	parsed.User = url.User(username)
+	return parsed.String(), true
 }
 
 func (d BootstrapRepositoryDeps) validateExistingRepoRemote(repoPath string, repositoryURL string) error {

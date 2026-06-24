@@ -383,7 +383,17 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, recordErr); eventErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory failure event: %w", eventErr))
 		}
-		if failedRecord.Failure != nil {
+		skipFailureClassification := false
+		if req.Sandbox {
+			classified, classifyErr := factoryRunHasFailureClassificationEvent(store, failedRecord.RunID)
+			if classifyErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("inspect factory failure classification events: %w", classifyErr))
+				skipFailureClassification = true
+			} else {
+				skipFailureClassification = classified
+			}
+		}
+		if failedRecord.Failure != nil && !skipFailureClassification {
 			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
@@ -1261,6 +1271,19 @@ func recordFactoryRunFailureClassified(store factory.Store, runID string, now ti
 		Summary:   "Failure classified",
 		Metadata:  metadata,
 	})
+}
+
+func factoryRunHasFailureClassificationEvent(store factory.Store, runID string) (bool, error) {
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		return false, fmt.Errorf("load factory timeline %q: %w", runID, err)
+	}
+	for _, event := range events {
+		if event.EventType == factory.EventTypeFailureClassification {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent) error {

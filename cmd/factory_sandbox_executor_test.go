@@ -547,7 +547,13 @@ func TestRunFactorySandboxExecutorWithDepsSanitizesBootstrapFailureBeforeRecordi
 			return fakeFactorySandboxProvider{}, nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
-			return factory.BootstrapResult{}, fmt.Errorf("repository origin remote %q does not match requested URL %q", credentialedRemote, requestedRemote)
+			return factory.BootstrapResult{
+				Failure: &factory.BootstrapFailure{
+					Step:     factory.BootstrapStepCloneRepository,
+					Category: factory.BootstrapFailureCategoryAuth,
+					Message:  "authentication failed while running git clone",
+				},
+			}, fmt.Errorf("repository origin remote %q does not match requested URL %q", credentialedRemote, requestedRemote)
 		},
 		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
 			return nil
@@ -576,6 +582,9 @@ func TestRunFactorySandboxExecutorWithDepsSanitizesBootstrapFailureBeforeRecordi
 	failed := savedRecords[len(savedRecords)-1]
 	if failed.Failure == nil {
 		t.Fatalf("failure summary = nil")
+	}
+	if failed.Failure.Category != factory.BootstrapFailureCategoryAuth {
+		t.Fatalf("failure category = %q, want %q", failed.Failure.Category, factory.BootstrapFailureCategoryAuth)
 	}
 	if strings.Contains(failed.Failure.Message, secret) || strings.Contains(failed.Failure.Message, "token:"+secret) {
 		t.Fatalf("failure message leaked credential: %#v", failed.Failure)
@@ -1432,13 +1441,13 @@ func TestRunFactorySandboxExecutorWithDepsRecordsProvisionFailure(t *testing.T) 
 	if failed.SandboxName != "factory-new" || failed.Sandbox == nil || failed.Sandbox.Handoff != "Sandbox was not provisioned; inspect factory status for details." {
 		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)
 	}
-	if failed.Failure == nil || failed.Failure.Category != factory.FailureCategoryPipeline || failed.Failure.Message != provisionErr.Error() {
+	if failed.Failure == nil || failed.Failure.Category != factory.FailureCategoryUnknown || failed.Failure.Message != provisionErr.Error() {
 		t.Fatalf("failed failure summary = %#v", failed.Failure)
 	}
 	if failed.Failure.SuggestedCommand != "hal factory status run-provision-failure --json" {
 		t.Fatalf("suggested command = %q", failed.Failure.SuggestedCommand)
 	}
-	if len(events) != 1 || events[0].Sequence != 8 || events[0].EventType != factory.EventTypeFailureClassification || events[0].Metadata["step"] != "provision" {
+	if len(events) != 1 || events[0].Sequence != 8 || events[0].EventType != factory.EventTypeFailureClassification || events[0].Metadata["step"] != "provision" || events[0].Metadata["category"] != factory.FailureCategoryUnknown {
 		t.Fatalf("failure events = %#v", events)
 	}
 }

@@ -288,7 +288,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		}
 		if bootstrapErr != nil {
 			sanitizedErr := factorySandboxSanitizedBootstrapError(bootstrapReq, target, bootstrapErr)
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", sanitizedErr)
+			_ = recordFactorySandboxBootstrapFailure(store, deps, &record, target, bootstrapResult.Failure, sanitizedErr)
 			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, sanitizedErr)
 		}
 	}
@@ -1131,6 +1131,14 @@ func credentialStrippedGitRemote(remote string) string {
 }
 
 func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error) error {
+	return recordFactorySandboxFailureWithBootstrapFailure(store, deps, record, target, step, nil, failureErr)
+}
+
+func recordFactorySandboxBootstrapFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, bootstrapFailure *factory.BootstrapFailure, failureErr error) error {
+	return recordFactorySandboxFailureWithBootstrapFailure(store, deps, record, target, "bootstrap", bootstrapFailure, failureErr)
+}
+
+func recordFactorySandboxFailureWithBootstrapFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, bootstrapFailure *factory.BootstrapFailure, failureErr error) error {
 	if record == nil {
 		return nil
 	}
@@ -1150,7 +1158,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	}
 	failure := factory.FailureSummary{
 		Step:             step,
-		Category:         factory.FailureCategoryPipeline,
+		Category:         factorySandboxFailureCategory(step, failureErr, bootstrapFailure),
 		Message:          message,
 		Recoverable:      true,
 		SuggestedCommand: factorySandboxFailureSuggestedCommand(record, target, step, message),
@@ -1162,6 +1170,11 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	events, err := store.LoadEvents(record.RunID)
 	if err != nil {
 		return fmt.Errorf("load factory sandbox timeline %q: %w", record.RunID, err)
+	}
+	for _, event := range events {
+		if event.EventType == factory.EventTypeFailureClassification {
+			return nil
+		}
 	}
 	return deps.appendEvent(store, &factory.EventRecord{
 		Sequence:  nextFactoryRunEventSequence(events),
@@ -1177,6 +1190,35 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 			"source":      "remote_sandbox",
 		},
 	})
+}
+
+func factorySandboxFailureCategory(step string, failureErr error, bootstrapFailure *factory.BootstrapFailure) string {
+	if bootstrapFailure != nil {
+		if category := strings.TrimSpace(bootstrapFailure.Category); category != "" {
+			return category
+		}
+	}
+
+	step = strings.TrimSpace(step)
+	message := strings.ToLower(strings.TrimSpace(factorySandboxSanitizedError(nil, failureErr)))
+	switch step {
+	case "github_auth", "agent_auth":
+		return factory.BootstrapFailureCategoryAuth
+	case "refresh_branch":
+		return factory.FailureCategoryGit
+	}
+	if factoryFailureMessageContains(message, "api key", "token", "credential", "authentication", "unauthorized", "permission denied") {
+		return factory.BootstrapFailureCategoryAuth
+	}
+	if factoryFailureMessageContains(message, "command not found", "executable file not found", "not installed") {
+		return factory.BootstrapFailureCategoryDependency
+	}
+
+	category := classifyFactoryRunFailure(failureErr)
+	if step != "run" && category == factory.FailureCategoryPipeline {
+		return factory.FailureCategoryUnknown
+	}
+	return category
 }
 
 func factorySandboxSanitizedError(target *sandbox.SandboxState, err error) string {
