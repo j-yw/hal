@@ -1,0 +1,12 @@
+{
+  "contractVersion": "factory-queue-add-v1",
+  "entry": {
+    "queueId": "queue-20260620-0001",
+    "runId": "run-20260620-002",
+    "executorMode": "local",
+    "status": "queued",
+    "createdAt": "2026-06-20T17:00:00Z",
+    "attemptCount": 0
+  },
+  "summary": "queued run run-20260620-002"
+}

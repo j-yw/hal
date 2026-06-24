@@ -123,7 +123,7 @@ func TestDoctorFixFlag(t *testing.T) {
 
 func TestDoctorFix_DelegatesToRepair(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
 	// No .hal/ — needs repair
 

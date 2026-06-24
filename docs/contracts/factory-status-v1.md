@@ -24,6 +24,7 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 |-------|------|-------------|
 | `runId` | string | Stable factory run identifier |
 | `status` | string | Run lifecycle status; see status values below |
+| `executorMode` | string | Factory executor mode that produced the run record |
 | `source` | object | Input source metadata for the run |
 | `repoPath` | string | Repository path recorded for the run |
 | `repoRemote` | string | Repository remote recorded for the run |
@@ -40,11 +41,42 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | Field | Type | Description |
 |-------|------|-------------|
 | `sandboxName` | string | Sandbox name used for the run |
-| `executorMode` | string | Factory executor mode that produced the run record |
+| `sandbox` | object | Redaction-safe sandbox execution metadata for sandbox-backed runs |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
 | `artifacts` | array | Safe artifact summaries associated with the run |
 | `verification` | object | Verification summary and artifact references recorded from `hal verify --json` |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
+
+`sandboxName` is retained as a compatibility summary field. New consumers
+should read `sandbox.name` when the `sandbox` object is present.
+
+## Sandbox Metadata
+
+When `sandbox` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Sandbox registry name used for the run |
+| `provider` | string | yes | Sandbox provider identifier |
+| `status` | string | yes | Final known sandbox lifecycle status, such as `running`, `stopped`, or `unknown` |
+| `connection` | object | no | Safe connection display fields |
+| `sshCommand` | string | no | Suggested local command for interactive inspection |
+| `cleanupCommand` | string | no | Suggested local command for sandbox cleanup |
+| `handoff` | string | no | Human-readable diagnostic or continuation guidance |
+
+Sandbox metadata is safe for durable local records. It must not include tokens,
+private keys, secret environment values, raw credentials, API keys, or unsafe
+environment values.
+
+When `sandbox.connection` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `address` | string | no | Preferred safe display address for the sandbox |
+| `publicIp` | string | no | Public IP address when safe to display |
+| `tailscaleIp` | string | no | Tailscale IP address when available |
+| `tailscaleHostname` | string | no | Tailscale hostname when available |
+| `tailscaleLockdown` | boolean | no | Whether provider access expects Tailscale-only connectivity |
 
 ## Source Metadata
 
@@ -132,6 +164,7 @@ When `failure` is present:
 | Mode | Meaning |
 |------|---------|
 | `local` | Run was executed by the local factory executor wrapping the local auto pipeline |
+| `sandbox` | Run was executed by a sandbox-backed factory executor wrapping the remote auto pipeline |
 
 ## Timeline
 

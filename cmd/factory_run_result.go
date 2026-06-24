@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -69,6 +70,29 @@ func renderFactoryRunJSON(out io.Writer, resp FactoryRunResponse) error {
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func renderFactoryRunValidationErrorJSON(out io.Writer, err error) error {
+	message := strings.TrimSpace(err.Error())
+	var exitErr *ExitCodeError
+	if errors.As(err, &exitErr) && exitErr.Err != nil {
+		message = strings.TrimSpace(exitErr.Err.Error())
+	}
+	if message == "" {
+		message = "factory run validation failed"
+	}
+
+	return renderFactoryRunJSON(out, FactoryRunResponse{
+		ContractVersion: FactoryRunContractVersion,
+		Version:         Version,
+		Status:          factory.RunStatusFailed,
+		Artifacts:       []FactoryRunArtifactReference{},
+		EventSummary:    FactoryRunEventSummary{ByType: map[string]int{}},
+		Failure: &FactoryRunFailure{
+			Classification: factory.FailureCategoryValidation,
+			ErrorMessage:   message,
+		},
+	})
 }
 
 func renderFactoryRunSummary(out io.Writer, resp FactoryRunResponse) error {
@@ -157,12 +181,8 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 	if record.Failure == nil {
 		return nil
 	}
-	classification := strings.TrimSpace(record.Failure.Category)
-	if classification == "" {
-		classification = factory.FailureCategoryUnknown
-	}
 	failure := &FactoryRunFailure{
-		Classification: classification,
+		Classification: factoryRunFailureClassification(record.Failure.Category),
 		ErrorMessage:   record.Failure.Message,
 	}
 	if suggested := strings.TrimSpace(record.Failure.SuggestedCommand); suggested != "" {
@@ -171,6 +191,29 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 		failure.SuggestedCommand = nextAction.Command
 	}
 	return failure
+}
+
+func factoryRunFailureClassification(category string) string {
+	switch strings.TrimSpace(category) {
+	case factory.FailureCategoryValidation:
+		return factory.FailureCategoryValidation
+	case factory.FailureCategoryPipeline:
+		return factory.FailureCategoryPipeline
+	case factory.FailureCategoryEngine:
+		return factory.FailureCategoryEngine
+	case factory.FailureCategoryGit:
+		return factory.FailureCategoryGit
+	case factory.FailureCategoryCI:
+		return factory.FailureCategoryCI
+	case factory.BootstrapFailureCategoryRepo:
+		return factory.FailureCategoryGit
+	case factory.BootstrapFailureCategoryAuth, factory.BootstrapFailureCategoryDependency:
+		return factory.FailureCategoryValidation
+	case factory.BootstrapFailureCategoryEngineSetup:
+		return factory.FailureCategoryEngine
+	default:
+		return factory.FailureCategoryUnknown
+	}
 }
 
 func factoryRunInspectCommand(runID string) string {

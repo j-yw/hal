@@ -19,6 +19,7 @@ Side effects:
   resources and update the global sandbox registry.
 
 Subcommands:
+  auth        Manage sandbox agent auth profiles
   setup       Configure provider, credentials, and environment
   create      Provision a new sandbox
   start       Start a stopped sandbox
@@ -32,6 +33,7 @@ Subcommands:
 ```
   hal sandbox setup
   hal sandbox create
+  hal sandbox auth sync my-sandbox
   hal sandbox start my-sandbox
   hal sandbox status
 ```
@@ -46,6 +48,7 @@ Subcommands:
 ### SEE ALSO
 
 * [hal](hal.md)	 - Hal - Autonomous task executor using AI coding agents
+* [hal sandbox auth](hal_sandbox_auth.md)	 - Manage sandbox agent auth profiles
 * [hal sandbox create](hal_sandbox_create.md)	 - Provision a new sandbox
 * [hal sandbox delete](hal_sandbox_delete.md)	 - Delete one or more sandboxes permanently
 * [hal sandbox list](hal_sandbox_list.md)	 - List all sandboxes

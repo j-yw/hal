@@ -14,7 +14,7 @@ import (
 
 func TestRunLinksStatusFn_JSONOutput(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	halDir := filepath.Join(dir, template.HalDir)
 	skillsDir := filepath.Join(halDir, "skills")
 	os.MkdirAll(skillsDir, 0755)
@@ -53,7 +53,7 @@ func TestRunLinksStatusFn_JSONOutput(t *testing.T) {
 
 func TestRunLinksStatusFn_HumanOutput(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	halDir := filepath.Join(dir, template.HalDir)
 	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
 
@@ -73,7 +73,7 @@ func TestRunLinksStatusFn_HumanOutput(t *testing.T) {
 
 func TestRunLinksStatusFn_DetectsMissing(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	halDir := filepath.Join(dir, template.HalDir)
 	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
 	// Create engine dirs but no links
@@ -116,7 +116,7 @@ func TestLinksCmdHelp(t *testing.T) {
 
 func TestRunLinksStatusFn_DetectsBroken(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	halDir := filepath.Join(dir, template.HalDir)
 	os.MkdirAll(filepath.Join(halDir, "skills"), 0755)
 
@@ -197,7 +197,7 @@ func TestRunLinksClean_NothingToClean(t *testing.T) {
 
 func TestRunLinksRefresh_CreatesLinks(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() { os.Chdir(origDir) })
@@ -238,7 +238,7 @@ func TestRunLinksRefresh_CreatesLinks(t *testing.T) {
 
 func TestRunLinksRefresh_SpecificEngine(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() { os.Chdir(origDir) })
@@ -262,6 +262,162 @@ func TestRunLinksRefresh_SpecificEngine(t *testing.T) {
 	}
 }
 
+func TestRunLinksRefreshFn_CodexIsolatesActiveHomesAcrossProjects(t *testing.T) {
+	home := t.TempDir()
+	setIsolatedCodexHomeFallback(t, home)
+
+	projectA := newLinksRefreshProject(t)
+	projectB := newLinksRefreshProject(t)
+	codexHomeA := t.TempDir()
+	codexHomeB := t.TempDir()
+
+	t.Setenv("CODEX_HOME", codexHomeA)
+	var outA bytes.Buffer
+	if err := runLinksRefreshFn(projectA, []string{"codex"}, &outA); err != nil {
+		t.Fatalf("runLinksRefreshFn(projectA, codex) error = %v", err)
+	}
+	if !strings.Contains(outA.String(), "codex") {
+		t.Fatalf("output should mention codex\n%s", outA.String())
+	}
+
+	assertCodexRefreshTargets(t, codexHomeA, projectA)
+	assertMissingLink(t, filepath.Join(codexHomeB, "skills", "prd"))
+	assertMissingLink(t, filepath.Join(codexHomeB, "commands", "hal"))
+	targetsBeforeB := snapshotCodexTargets(t, codexHomeA)
+
+	t.Setenv("CODEX_HOME", codexHomeB)
+	var outB bytes.Buffer
+	if err := runLinksRefreshFn(projectB, []string{"codex"}, &outB); err != nil {
+		t.Fatalf("runLinksRefreshFn(projectB, codex) error = %v", err)
+	}
+	if !strings.Contains(outB.String(), "codex") {
+		t.Fatalf("output should mention codex\n%s", outB.String())
+	}
+
+	assertCodexRefreshTargets(t, codexHomeB, projectB)
+	targetsAfterB := snapshotCodexTargets(t, codexHomeA)
+	if !sameStringMap(targetsBeforeB, targetsAfterB) {
+		t.Fatalf("refreshing projectB mutated Codex home A\nbefore: %#v\nafter: %#v", targetsBeforeB, targetsAfterB)
+	}
+}
+
+func TestRunLinksStatusFn_CodexUsesActiveCodexHome(t *testing.T) {
+	home := t.TempDir()
+	projectDir := newLinksRefreshProject(t)
+	codexHomeA := t.TempDir()
+	codexHomeB := t.TempDir()
+	setIsolatedCodexHomeFallback(t, home)
+
+	t.Setenv("CODEX_HOME", codexHomeA)
+	var refreshOut bytes.Buffer
+	if err := runLinksRefreshFn(projectDir, []string{"codex"}, &refreshOut); err != nil {
+		t.Fatalf("runLinksRefreshFn(projectDir, codex) error = %v", err)
+	}
+
+	statusA := runLinksStatusForEngine(t, projectDir, "codex")
+	if statusA.Status != "pass" {
+		t.Fatalf("codex status with CODEX_HOME A = %q, want pass; issues=%v", statusA.Status, statusA.Issues)
+	}
+	if statusA.SkillsDir != filepath.Join(codexHomeA, "skills") {
+		t.Fatalf("codex skillsDir with CODEX_HOME A = %q, want %q", statusA.SkillsDir, filepath.Join(codexHomeA, "skills"))
+	}
+	if statusA.CommandsDir != filepath.Join(codexHomeA, "commands", "hal") {
+		t.Fatalf("codex commandsDir with CODEX_HOME A = %q, want %q", statusA.CommandsDir, filepath.Join(codexHomeA, "commands", "hal"))
+	}
+
+	t.Setenv("CODEX_HOME", codexHomeB)
+	statusB := runLinksStatusForEngine(t, projectDir, "codex")
+	if statusB.Status != "warn" {
+		t.Fatalf("codex status with empty CODEX_HOME B = %q, want warn", statusB.Status)
+	}
+	if statusB.SkillsDir != filepath.Join(codexHomeB, "skills") {
+		t.Fatalf("codex skillsDir with CODEX_HOME B = %q, want %q", statusB.SkillsDir, filepath.Join(codexHomeB, "skills"))
+	}
+	for _, link := range statusB.Links {
+		if strings.HasPrefix(link.Link, codexHomeA) {
+			t.Fatalf("status under CODEX_HOME B reported link from CODEX_HOME A: %#v", link)
+		}
+		if !strings.HasPrefix(link.Link, filepath.Join(codexHomeB, "skills")) {
+			t.Fatalf("status under CODEX_HOME B reported link outside CODEX_HOME B: %#v", link)
+		}
+	}
+}
+
+func TestRunLinksStatusFn_CodexDetectsOtherProjectTargets(t *testing.T) {
+	home := t.TempDir()
+	projectA := newLinksRefreshProject(t)
+	projectB := newLinksRefreshProject(t)
+	codexHome := t.TempDir()
+	setIsolatedCodexHomeFallback(t, home)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	var refreshOut bytes.Buffer
+	if err := runLinksRefreshFn(projectB, []string{"codex"}, &refreshOut); err != nil {
+		t.Fatalf("runLinksRefreshFn(projectB, codex) error = %v", err)
+	}
+
+	status := runLinksStatusForEngine(t, projectA, "codex")
+	if status.Status != "warn" {
+		t.Fatalf("codex status with links to another project = %q, want warn", status.Status)
+	}
+	for _, link := range status.Links {
+		if link.Status != "stale" {
+			t.Fatalf("link %s status = %q, want stale", link.Name, link.Status)
+		}
+	}
+	if len(status.Issues) == 0 || !strings.Contains(status.Issues[0], "not this project") {
+		t.Fatalf("issues = %v, want not-this-project warning", status.Issues)
+	}
+}
+
+func TestRunLinksStatusFn_CodexDetectsMissingCommandLink(t *testing.T) {
+	home := t.TempDir()
+	projectDir := newLinksRefreshProject(t)
+	codexHome := t.TempDir()
+	setIsolatedCodexHomeFallback(t, home)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	var refreshOut bytes.Buffer
+	if err := runLinksRefreshFn(projectDir, []string{"codex"}, &refreshOut); err != nil {
+		t.Fatalf("runLinksRefreshFn(projectDir, codex) error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(codexHome, "commands", "hal")); err != nil {
+		t.Fatalf("remove codex command link: %v", err)
+	}
+
+	status := runLinksStatusForEngine(t, projectDir, "codex")
+	if status.Status != "warn" {
+		t.Fatalf("codex status with missing command link = %q, want warn", status.Status)
+	}
+	if !containsIssue(status.Issues, "commands link missing") {
+		t.Fatalf("issues = %v, want missing commands warning", status.Issues)
+	}
+}
+
+func TestRunLinksStatusFn_CodexUsesHomeFallback(t *testing.T) {
+	home := t.TempDir()
+	projectDir := newLinksRefreshProject(t)
+	setIsolatedCodexHomeFallback(t, home)
+
+	var refreshOut bytes.Buffer
+	if err := runLinksRefreshFn(projectDir, []string{"codex"}, &refreshOut); err != nil {
+		t.Fatalf("runLinksRefreshFn(projectDir, codex) error = %v", err)
+	}
+
+	status := runLinksStatusForEngine(t, projectDir, "codex")
+	if status.Status != "pass" {
+		t.Fatalf("codex status with HOME fallback = %q, want pass; issues=%v", status.Status, status.Issues)
+	}
+	wantSkills := filepath.Join(home, ".codex", "skills")
+	if status.SkillsDir != wantSkills {
+		t.Fatalf("codex skillsDir with HOME fallback = %q, want %q", status.SkillsDir, wantSkills)
+	}
+	wantCommands := filepath.Join(home, ".codex", "commands", "hal")
+	if status.CommandsDir != wantCommands {
+		t.Fatalf("codex commandsDir with HOME fallback = %q, want %q", status.CommandsDir, wantCommands)
+	}
+}
+
 func TestRunLinksRefresh_UnknownEngine(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
@@ -282,7 +438,7 @@ func TestRunLinksRefresh_UnknownEngine(t *testing.T) {
 
 func TestRunLinksStatusFn_EngineFilter(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
 
 	var buf bytes.Buffer
@@ -303,7 +459,7 @@ func TestRunLinksStatusFn_EngineFilter(t *testing.T) {
 
 func TestRunLinksStatusFn_NoFilter(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setIsolatedCodexHomeFallback(t, dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
 
 	var buf bytes.Buffer
@@ -317,4 +473,134 @@ func TestRunLinksStatusFn_NoFilter(t *testing.T) {
 	if len(result.Engines) < 3 {
 		t.Fatalf("expected at least 3 engines without filter, got %d", len(result.Engines))
 	}
+}
+
+func runLinksStatusForEngine(t *testing.T, projectDir, engine string) LinkStatus {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := runLinksStatusFn(projectDir, true, engine, &buf); err != nil {
+		t.Fatalf("runLinksStatusFn(%q) error = %v", engine, err)
+	}
+
+	var result LinksResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("JSON unmarshal error: %v\noutput: %s", err, buf.String())
+	}
+	if len(result.Engines) != 1 {
+		t.Fatalf("expected 1 engine for filter %q, got %d", engine, len(result.Engines))
+	}
+	if result.Engines[0].Engine != engine {
+		t.Fatalf("engine = %q, want %q", result.Engines[0].Engine, engine)
+	}
+	return result.Engines[0]
+}
+
+func containsIssue(issues []string, want string) bool {
+	for _, issue := range issues {
+		if strings.Contains(issue, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func newLinksRefreshProject(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	for _, name := range skills.ManagedSkillNames {
+		skillDir := filepath.Join(dir, template.HalDir, "skills", name)
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			t.Fatalf("failed to create skill dir %s: %v", skillDir, err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# "+name), 0644); err != nil {
+			t.Fatalf("failed to write skill file for %s: %v", name, err)
+		}
+	}
+
+	commandsDir := filepath.Join(dir, template.HalDir, template.CommandsDir)
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatalf("failed to create commands dir %s: %v", commandsDir, err)
+	}
+	return dir
+}
+
+func assertCodexRefreshTargets(t *testing.T, codexHome, projectDir string) {
+	t.Helper()
+
+	absProjectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q) error = %v", projectDir, err)
+	}
+
+	for _, name := range skills.ManagedSkillNames {
+		assertLinkTarget(t,
+			filepath.Join(codexHome, "skills", name),
+			filepath.Join(absProjectDir, template.HalDir, "skills", name),
+		)
+	}
+	assertLinkTarget(t,
+		filepath.Join(codexHome, "commands", "hal"),
+		filepath.Join(absProjectDir, template.HalDir, template.CommandsDir),
+	)
+}
+
+func snapshotCodexTargets(t *testing.T, codexHome string) map[string]string {
+	t.Helper()
+
+	targets := make(map[string]string)
+	for _, name := range skills.ManagedSkillNames {
+		link := filepath.Join(codexHome, "skills", name)
+		targets[link] = readLinkTarget(t, link)
+	}
+	commandLink := filepath.Join(codexHome, "commands", "hal")
+	targets[commandLink] = readLinkTarget(t, commandLink)
+	return targets
+}
+
+func assertLinkTarget(t *testing.T, link, wantTarget string) {
+	t.Helper()
+
+	target := readLinkTarget(t, link)
+	if target != wantTarget {
+		t.Fatalf("Readlink(%s) = %q, want %q", link, target, wantTarget)
+	}
+}
+
+func readLinkTarget(t *testing.T, link string) string {
+	t.Helper()
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("expected symlink at %s: %v", link, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink", link)
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("Readlink(%s) error = %v", link, err)
+	}
+	return target
+}
+
+func assertMissingLink(t *testing.T, link string) {
+	t.Helper()
+
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("%s should not exist; err=%v", link, err)
+	}
+}
+
+func sameStringMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }

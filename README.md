@@ -139,6 +139,7 @@ Stable JSON contracts for agent integration:
 - [`docs/contracts/ci-status-v1.md`](docs/contracts/ci-status-v1.md) — `hal ci status` output contract
 - [`docs/contracts/ci-fix-v1.md`](docs/contracts/ci-fix-v1.md) — `hal ci fix` output contract
 - [`docs/contracts/ci-merge-v1.md`](docs/contracts/ci-merge-v1.md) — `hal ci merge` output contract
+- [`docs/contracts/factory-trigger-v1.md`](docs/contracts/factory-trigger-v1.md) — `hal factory trigger --json` output contract
 - [`docs/contracts/verify-v1.md`](docs/contracts/verify-v1.md) — `hal verify --json` output contract
 - [`docs/contracts/factory-artifacts-v1.md`](docs/contracts/factory-artifacts-v1.md) — `hal factory artifacts <run-id> --json` output contract
 
@@ -233,6 +234,18 @@ Archive command details:
 - `hal archive` is the create alias
 - `--name/-n` is only valid for `hal archive` and `hal archive create`
 - If no name is provided and stdin is non-interactive, the command fails and asks for `--name/-n`
+
+### Factory Workflow
+
+| Command | Description |
+|---------|-------------|
+| `hal factory run [prd-path] [--report path] [--json]` | Run the local factory executor immediately |
+| `hal factory trigger --repo path (--prd path\|--report path\|--discover-report) [--json]` | Create a queued factory run from a trigger payload |
+| `hal factory queue add <run-id> <executor-mode> [--json]` | Add an existing pending factory run to the queue |
+| `hal factory queue list [--json]` | List durable factory queue entries |
+| `hal factory queue work [--json]` | Claim and process at most one queued factory run |
+| `hal factory list [--json]` | List stored factory runs |
+| `hal factory status <run-id> [--json]` | Inspect a stored factory run and timeline |
 
 ### Utilities
 
