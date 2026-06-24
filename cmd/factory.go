@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -1692,7 +1693,7 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		missing := artifact
 		missing.ID = factoryArtifactID(missing)
 		missing.Partial = true
-		missing.Warnings = append(missing.Warnings, fmt.Sprintf("optional artifact not found: %s", artifact.Path))
+		missing.Warnings = append(missing.Warnings, factoryMissingArtifactWarning("optional artifact not found", artifact.Path))
 		missing.Summary = mergeFactoryArtifactSummary(missing.Summary, map[string]any{
 			"collectionStatus": "missing",
 		})
@@ -1744,7 +1745,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 		if !factoryArtifactFileExists(sourcePath) {
 			missing := ref
 			missing.Partial = true
-			missing.Warnings = append(missing.Warnings, fmt.Sprintf("verification artifact not found: %s", ref.Path))
+			missing.Warnings = append(missing.Warnings, factoryMissingArtifactWarning("verification artifact not found", ref.Path))
 			missing.Summary = mergeFactoryArtifactSummary(missing.Summary, map[string]any{
 				"collectionStatus": "missing",
 			})
@@ -3129,13 +3130,15 @@ func sanitizeFactoryArtifactPath(path string) string {
 	return filepath.ToSlash(cleanPath)
 }
 
-func factoryArtifactPathIsParentRelative(path string) bool {
-	path = filepath.ToSlash(path)
-	if path == ".." || strings.HasPrefix(path, "../") {
+func factoryArtifactPathIsParentRelative(value string) bool {
+	value = strings.TrimSpace(value)
+	value = filepath.ToSlash(value)
+	value = strings.ReplaceAll(value, `\`, "/")
+	value = pathpkg.Clean(value)
+	if value == ".." || strings.HasPrefix(value, "../") {
 		return true
 	}
-	windowsPath := strings.ReplaceAll(path, `\`, "/")
-	return windowsPath == ".." || strings.HasPrefix(windowsPath, "../")
+	return false
 }
 
 func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, jsonMode bool) error {
@@ -3306,6 +3309,14 @@ func formatFactoryArtifactSummaryWarnings(warnings []string, partial bool) strin
 	return strings.Join(warnings, "; ")
 }
 
+func factoryMissingArtifactWarning(message, artifactPath string) string {
+	displayPath := sanitizeFactoryArtifactPath(artifactPath)
+	if displayPath == "" {
+		return message
+	}
+	return fmt.Sprintf("%s: %s", message, displayPath)
+}
+
 func sanitizeFactoryArtifactSummary(summary map[string]any) map[string]any {
 	if len(summary) == 0 {
 		return nil
@@ -3472,6 +3483,12 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 	if factoryArtifactStringContainsAbsolutePath(value) {
 		return true
 	}
+	if factoryArtifactStringContainsParentRelativePath(value) {
+		return true
+	}
+	if factoryArtifactStringContainsUnsafeURL(value) {
+		return true
+	}
 	if factoryArtifactStringContainsSecretAssignment(value) {
 		return true
 	}
@@ -3480,6 +3497,48 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 	})
 	for _, field := range fields {
 		if net.ParseIP(strings.Trim(field, "[]")) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func factoryArtifactStringContainsParentRelativePath(value string) bool {
+	for _, field := range factoryArtifactRedactionFields(value) {
+		if factoryArtifactFieldIsParentRelativePath(field) {
+			return true
+		}
+		if strings.Contains(field, "://") {
+			continue
+		}
+		for _, sep := range []string{"=", ":"} {
+			if idx := strings.Index(field, sep); idx >= 0 && idx+1 < len(field) {
+				if factoryArtifactFieldIsParentRelativePath(field[idx+1:]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func factoryArtifactFieldIsParentRelativePath(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'<>[](){}.,;")
+	if value == "" {
+		return false
+	}
+	return factoryArtifactPathIsParentRelative(value)
+}
+
+func factoryArtifactStringContainsUnsafeURL(value string) bool {
+	for _, field := range factoryArtifactRedactionFields(value) {
+		field = strings.TrimSpace(field)
+		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if !strings.Contains(field, "://") {
+			continue
+		}
+		if safeFactoryArtifactURL(field) == "" {
 			return true
 		}
 	}

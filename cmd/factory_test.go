@@ -5125,6 +5125,56 @@ func TestSanitizeFactoryArtifactSummaryRedactsSignedURLStrings(t *testing.T) {
 	}
 }
 
+func TestFactoryMissingArtifactWarningSanitizesPath(t *testing.T) {
+	rawPath := filepath.Join(t.TempDir(), "private", "secret-report.md")
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "absolute path",
+			path: rawPath,
+			want: "optional artifact not found: secret-report.md",
+		},
+		{
+			name: "parent relative path",
+			path: "../private/secret-report.md",
+			want: "optional artifact not found: [redacted]",
+		},
+		{
+			name: "unsafe URL",
+			path: "ssh://example.com/private/secret-report.md",
+			want: "optional artifact not found: [redacted]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := factoryMissingArtifactWarning("optional artifact not found", tt.path); got != tt.want {
+				t.Fatalf("factoryMissingArtifactWarning() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeFactoryArtifactWarningsRedactsPathLikeValues(t *testing.T) {
+	warnings := sanitizeFactoryArtifactWarnings([]string{
+		"optional artifact not found: ../private/secret-report.md",
+		"optional artifact not found: ssh://example.com/private/secret-report.md",
+	})
+
+	if len(warnings) != 2 {
+		t.Fatalf("warnings length = %d, want 2: %#v", len(warnings), warnings)
+	}
+	for _, warning := range warnings {
+		if warning != "[redacted]" {
+			t.Fatalf("warning = %q, want [redacted]", warning)
+		}
+	}
+}
+
 func TestSanitizeFactoryArtifactSummaryRedactsTypedContainers(t *testing.T) {
 	type nestedSummary struct {
 		Header string `json:"header"`
