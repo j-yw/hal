@@ -312,7 +312,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return fmt.Errorf("open factory store: %w", err)
 	}
-	record, err := newFactoryRunRecord(dir, req, deps)
+	record, bootstrapRepositoryURL, err := newFactoryRunRecord(dir, req, deps)
 	if err != nil {
 		return err
 	}
@@ -348,10 +348,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 			remoteOutput = io.Discard
 		}
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
-			ProjectDir:   dir,
-			RunRecord:    runningRecord,
-			RemoteAuto:   factoryRunAutoRequestFromFactoryRequest(req),
-			RemoteOutput: remoteOutput,
+			ProjectDir:             dir,
+			BootstrapRepositoryURL: bootstrapRepositoryURL,
+			RunRecord:              runningRecord,
+			RemoteAuto:             factoryRunAutoRequestFromFactoryRequest(req),
+			RemoteOutput:           remoteOutput,
 		})
 	} else {
 		runErr = deps.runPipeline(ctx, pipelineReq)
@@ -442,19 +443,19 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	return deps
 }
 
-func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps) (factory.RunRecord, error) {
+func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps) (factory.RunRecord, string, error) {
 	runID, err := deps.newRunID()
 	if err != nil {
-		return factory.RunRecord{}, fmt.Errorf("create factory run ID: %w", err)
+		return factory.RunRecord{}, "", fmt.Errorf("create factory run ID: %w", err)
 	}
 	now := deps.now().UTC()
 	repoPath, err := deps.workingDir()
 	if err != nil {
-		return factory.RunRecord{}, fmt.Errorf("resolve repository path: %w", err)
+		return factory.RunRecord{}, "", fmt.Errorf("resolve repository path: %w", err)
 	}
 	branchName, err := deps.currentBranch(dir)
 	if err != nil {
-		return factory.RunRecord{}, fmt.Errorf("resolve current branch: %w", err)
+		return factory.RunRecord{}, "", fmt.Errorf("resolve current branch: %w", err)
 	}
 	baseBranch := strings.TrimSpace(req.BaseBranch)
 	if req.Sandbox && baseBranch == "" {
@@ -462,8 +463,9 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 	}
 	repoRemote, err := deps.repoRemote(dir)
 	if err != nil {
-		return factory.RunRecord{}, fmt.Errorf("resolve repository remote: %w", err)
+		return factory.RunRecord{}, "", fmt.Errorf("resolve repository remote: %w", err)
 	}
+	persistedRepoRemote := credentialStrippedGitRemote(repoRemote)
 
 	return factory.RunRecord{
 		RunID:        runID,
@@ -471,13 +473,13 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		ExecutorMode: factoryExecutorModeFromRequest(req),
 		Source:       factoryRunSourceFromRequest(req),
 		RepoPath:     repoPath,
-		RepoRemote:   repoRemote,
+		RepoRemote:   persistedRepoRemote,
 		BranchName:   branchName,
 		BaseBranch:   baseBranch,
 		CurrentStep:  factory.RunStatusPending,
 		CreatedAt:    now,
 		UpdatedAt:    now,
-	}, nil
+	}, repoRemote, nil
 }
 
 func factoryExecutorModeFromRequest(req factoryRunRequest) string {

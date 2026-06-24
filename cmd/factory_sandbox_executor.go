@@ -31,11 +31,12 @@ type factorySandboxProvisionRequest struct {
 }
 
 type factorySandboxExecutorRequest struct {
-	ProjectDir   string
-	SandboxName  string
-	RunRecord    factory.RunRecord
-	RemoteAuto   factoryRunAutoRequest
-	RemoteOutput io.Writer
+	ProjectDir             string
+	SandboxName            string
+	BootstrapRepositoryURL string
+	RunRecord              factory.RunRecord
+	RemoteAuto             factoryRunAutoRequest
+	RemoteOutput           io.Writer
 }
 
 type factorySandboxExecutorDeps struct {
@@ -224,7 +225,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		return factorySandboxRecordedError("sync factory sandbox agent auth", target, err)
 	}
 
-	if bootstrapReq, ok := factorySandboxBootstrapRequest(record); ok {
+	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.BootstrapRepositoryURL); ok {
 		connectInfo := sandbox.ConnectInfoFromState(target)
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
@@ -532,9 +533,12 @@ func sortedStringMapKeys(values map[string]string) []string {
 	return keys
 }
 
-func factorySandboxBootstrapRequest(record factory.RunRecord) (factory.BootstrapRequest, bool) {
+func factorySandboxBootstrapRequest(record factory.RunRecord, repositoryURL string) (factory.BootstrapRequest, bool) {
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
-	repoRemote := strings.TrimSpace(record.RepoRemote)
+	repoRemote := strings.TrimSpace(repositoryURL)
+	if repoRemote == "" {
+		repoRemote = strings.TrimSpace(record.RepoRemote)
+	}
 	baseBranch := strings.TrimSpace(record.BaseBranch)
 	if workspaceDir == "" || repoRemote == "" || baseBranch == "" {
 		return factory.BootstrapRequest{}, false
@@ -941,6 +945,31 @@ func credentialStrippedRepoLabel(remote string) string {
 		}
 	}
 	return repositoryNameFromRemote(remote)
+}
+
+func credentialStrippedGitRemote(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User == nil {
+		return remote
+	}
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		parsed.User = nil
+		return parsed.String()
+	}
+	if _, hasPassword := parsed.User.Password(); !hasPassword {
+		return remote
+	}
+	username := parsed.User.Username()
+	if username == "" {
+		parsed.User = nil
+	} else {
+		parsed.User = url.User(username)
+	}
+	return parsed.String()
 }
 
 func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error) error {

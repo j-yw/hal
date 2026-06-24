@@ -591,6 +591,66 @@ func TestRunFactoryRunWithDepsCreatesMarkdownRunRecordBeforePipeline(t *testing.
 	}
 }
 
+func TestRunFactoryRunWithDepsStripsCredentialsFromPersistedRepoRemote(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 20, 20, 30, 0, 0, time.UTC)
+	rawRemote := "https://token-user:super-secret@github.com/example/private.git"
+	wantRemote := "https://github.com/example/private.git"
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "develop",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-redacted-remote", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return "/workspace/private", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return rawRemote, nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			loaded, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("pipeline LoadRun() error: %v", err)
+			}
+			if loaded.RepoRemote != wantRemote {
+				t.Fatalf("pipeline repoRemote = %q, want %q", loaded.RepoRemote, wantRemote)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	loaded, err := store.LoadRun("run-redacted-remote")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.RepoRemote != wantRemote {
+		t.Fatalf("persisted repoRemote = %q, want %q", loaded.RepoRemote, wantRemote)
+	}
+
+	var listBuf bytes.Buffer
+	if err := runFactoryListWithDeps(&listBuf, true, factoryListDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	}); err != nil {
+		t.Fatalf("runFactoryListWithDeps() unexpected error: %v", err)
+	}
+	assertFactoryOutputExcludesRemoteCredentials(t, listBuf.String(), wantRemote)
+
+	var statusBuf bytes.Buffer
+	if err := runFactoryStatusWithDeps(&statusBuf, "run-redacted-remote", true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	}); err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+	assertFactoryOutputExcludesRemoteCredentials(t, statusBuf.String(), wantRemote)
+}
+
 func TestRunFactoryRunWithDepsCreatesReportRunRecordBeforePipeline(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	now := time.Date(2026, 6, 20, 21, 0, 0, 0, time.UTC)
@@ -2913,6 +2973,19 @@ func assertFactoryRunRecordReadyForPipeline(t *testing.T, record factory.RunReco
 	}
 	if record.CurrentStep != "run" {
 		t.Fatalf("currentStep = %q, want run", record.CurrentStep)
+	}
+}
+
+func assertFactoryOutputExcludesRemoteCredentials(t *testing.T, output, wantRemote string) {
+	t.Helper()
+
+	if !strings.Contains(output, wantRemote) {
+		t.Fatalf("output missing sanitized remote %q\n%s", wantRemote, output)
+	}
+	for _, secret := range []string{"token-user", "super-secret"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("output contains credential %q\n%s", secret, output)
+		}
 	}
 }
 
