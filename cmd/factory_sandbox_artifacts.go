@@ -378,6 +378,10 @@ func extractFactorySandboxArtifactTar(tarPath, localPath string) error {
 	if err := os.MkdirAll(localPath, 0o700); err != nil {
 		return fmt.Errorf("create sandbox artifact directory: %w", err)
 	}
+	localPathAbs, err := filepath.Abs(localPath)
+	if err != nil {
+		return fmt.Errorf("resolve sandbox artifact directory: %w", err)
+	}
 
 	reader := tar.NewReader(file)
 	for {
@@ -393,7 +397,10 @@ func extractFactorySandboxArtifactTar(tarPath, localPath string) error {
 		if relPath == "" {
 			continue
 		}
-		targetPath := filepath.Join(localPath, filepath.FromSlash(relPath))
+		targetPath, err := resolveFactorySandboxArtifactTarTarget(localPath, localPathAbs, relPath)
+		if err != nil {
+			return err
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(targetPath, 0o700); err != nil {
@@ -408,6 +415,36 @@ func extractFactorySandboxArtifactTar(tarPath, localPath string) error {
 			}
 		}
 	}
+}
+
+func resolveFactorySandboxArtifactTarTarget(localPath, localPathAbs, relPath string) (string, error) {
+	localRel := filepath.FromSlash(relPath)
+	if filepath.IsAbs(localRel) || filepath.VolumeName(localRel) != "" || hasWindowsDriveVolume(relPath) {
+		return "", fmt.Errorf("unsafe sandbox artifact archive path %q", relPath)
+	}
+
+	targetPath := filepath.Join(localPath, localRel)
+	targetPathAbs, err := filepath.Abs(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve sandbox artifact archive path %q: %w", relPath, err)
+	}
+	targetRel, err := filepath.Rel(localPathAbs, targetPathAbs)
+	if err != nil {
+		return "", fmt.Errorf("resolve sandbox artifact archive path %q: %w", relPath, err)
+	}
+	if targetRel == ".." || strings.HasPrefix(targetRel, ".."+string(os.PathSeparator)) || filepath.IsAbs(targetRel) {
+		return "", fmt.Errorf("unsafe sandbox artifact archive path %q", relPath)
+	}
+
+	return targetPath, nil
+}
+
+func hasWindowsDriveVolume(name string) bool {
+	if len(name) < 2 || name[1] != ':' {
+		return false
+	}
+	drive := name[0]
+	return ('a' <= drive && drive <= 'z') || ('A' <= drive && drive <= 'Z')
 }
 
 func cleanFactorySandboxArtifactTarPath(name string) string {

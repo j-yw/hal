@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"archive/tar"
 	"context"
 	"errors"
 	"io"
@@ -192,6 +193,47 @@ func TestFactorySandboxArtifactCopierResolveRemotePathRequiresWorkspaceContainme
 				t.Fatalf("resolveRemotePath() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractFactorySandboxArtifactTarRejectsWindowsDrivePath(t *testing.T) {
+	tarPath := filepath.Join(t.TempDir(), "artifact.tar")
+	file, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatalf("Create(tar) error = %v", err)
+	}
+	tw := tar.NewWriter(file)
+	payload := []byte("escape")
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "C:/escape.txt",
+		Typeflag: tar.TypeReg,
+		Mode:     0o600,
+		Size:     int64(len(payload)),
+	}); err != nil {
+		t.Fatalf("WriteHeader() error = %v", err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close(tar writer) error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close(tar file) error = %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "extract")
+	err = extractFactorySandboxArtifactTar(tarPath, localPath)
+	if err == nil {
+		t.Fatal("extractFactorySandboxArtifactTar() error = nil, want unsafe path rejection")
+	}
+	if !strings.Contains(err.Error(), `unsafe sandbox artifact archive path "C:/escape.txt"`) {
+		t.Fatalf("extractFactorySandboxArtifactTar() error = %v, want unsafe path details", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(localPath, "C:", "escape.txt")); statErr == nil {
+		t.Fatalf("extractFactorySandboxArtifactTar() wrote Windows drive path under local root")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("Stat(extracted drive path) error = %v, want not exist", statErr)
 	}
 }
 
