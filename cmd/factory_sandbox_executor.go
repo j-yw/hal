@@ -81,6 +81,7 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 
 var factorySandboxURLUserinfoPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
 var factorySandboxEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var factorySandboxWorkspaceComponentPattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	customRunProviderExec := deps.runProviderExec != nil
@@ -1028,7 +1029,31 @@ func factorySandboxRemoteWorkspacePath(record factory.RunRecord, remoteHome stri
 }
 
 func factorySandboxRemoteWorkspaceName(record factory.RunRecord) string {
-	return repositoryNameFromRemote(record.RepoRemote)
+	return sanitizeFactorySandboxRemoteWorkspaceName(credentialStrippedRepoLabel(record.RepoRemote))
+}
+
+func sanitizeFactorySandboxRemoteWorkspaceName(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	rawComponents := strings.FieldsFunc(remote, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	components := make([]string, 0, len(rawComponents))
+	for _, component := range rawComponents {
+		component = strings.ToLower(strings.TrimSpace(component))
+		component = factorySandboxWorkspaceComponentPattern.ReplaceAllString(component, "-")
+		component = strings.Trim(component, ".-_")
+		if component == "" || component == "." || component == ".." {
+			continue
+		}
+		components = append(components, component)
+	}
+	if len(components) == 0 {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Join(components...))
 }
 
 func repositoryNameFromRemote(remote string) string {
