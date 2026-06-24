@@ -918,26 +918,21 @@ func TestRunFactoryQueueWorkWithDepsKeepsQueueSucceededWhenSuccessEventAppendFai
 		t.Fatalf("SaveQueue() error: %v", err)
 	}
 
-	pipelineFinished := false
-	completionNowSeen := false
 	poisonedTimeline := false
 	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
-		pipelineFinished = true
 		return nil
 	})
 	deps.now = func() time.Time {
-		if pipelineFinished && !completionNowSeen {
-			completionNowSeen = true
-			return claimedAt
-		}
-		if pipelineFinished && completionNowSeen && !poisonedTimeline {
-			poisonedTimeline = true
-			timelinePath := filepath.Join(store.TimelinesDir(), record.RunID+".json")
-			if err := os.Remove(timelinePath); err != nil {
-				t.Fatalf("Remove(timeline path) error: %v", err)
-			}
-			if err := os.Mkdir(timelinePath, 0o700); err != nil {
-				t.Fatalf("Mkdir(timeline path) error: %v", err)
+		if !poisonedTimeline {
+			if loaded, err := store.LoadRun(record.RunID); err == nil && loaded.Status == factory.RunStatusSucceeded {
+				poisonedTimeline = true
+				timelinePath := filepath.Join(store.TimelinesDir(), record.RunID+".json")
+				if err := os.Remove(timelinePath); err != nil {
+					t.Fatalf("Remove(timeline path) error: %v", err)
+				}
+				if err := os.Mkdir(timelinePath, 0o700); err != nil {
+					t.Fatalf("Mkdir(timeline path) error: %v", err)
+				}
 			}
 		}
 		return claimedAt

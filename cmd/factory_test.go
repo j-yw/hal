@@ -18,6 +18,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/verify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -1341,6 +1342,251 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulStatusAndResult(t *testing.T) {
 	requireFactoryArtifactPath(t, resp.Artifacts, ".hal/prd.json")
 }
 
+func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verifiedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+	verifyCfg := &verify.Config{
+		Checks: []verify.ShellCheck{
+			{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
+		},
+	}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-verification-record", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return verifiedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadVerify: func(gotDir string) (*verify.Config, error) {
+			if gotDir != dir {
+				t.Fatalf("loadVerify dir = %q, want %q", gotDir, dir)
+			}
+			return verifyCfg, nil
+		},
+		runVerify: func(_ context.Context, gotCfg *verify.Config) (*verify.Result, error) {
+			if gotCfg != verifyCfg {
+				t.Fatalf("runVerify cfg = %#v, want fixture", gotCfg)
+			}
+			record, err := store.LoadRun("run-verification-record")
+			if err != nil {
+				t.Fatalf("LoadRun() during verification error: %v", err)
+			}
+			if record.CurrentStep != "verify" {
+				t.Fatalf("currentStep during verification = %q, want verify", record.CurrentStep)
+			}
+			if !record.UpdatedAt.Equal(verifyingAt) {
+				t.Fatalf("updatedAt during verification = %s, want %s", record.UpdatedAt, verifyingAt)
+			}
+			return &verify.Result{
+				Status: verify.StatusPass,
+				Summary: verify.Summary{
+					Total:  1,
+					Passed: 1,
+				},
+				Artifacts: []verify.ArtifactReference{
+					{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+
+	record, err := store.LoadRun("run-verification-record")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Verification == nil {
+		t.Fatal("verification should be persisted")
+	}
+	if record.Verification.Summary.Total != 1 || record.Verification.Summary.Passed != 1 {
+		t.Fatalf("verification summary = %#v", record.Verification.Summary)
+	}
+	if got := len(record.Verification.Artifacts); got != 1 {
+		t.Fatalf("verification artifacts len = %d, want 1", got)
+	}
+	if record.Verification.Artifacts[0].Path != ".hal/reports/verify/test-stdout.txt" {
+		t.Fatalf("verification artifact path = %q", record.Verification.Artifacts[0].Path)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(verifiedAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, verifiedAt)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeVerificationResult,
+		factory.EventTypeStepEnded,
+	})
+	if events[2].Summary != "Verification passed" {
+		t.Fatalf("verification event summary = %q", events[2].Summary)
+	}
+	if !events[2].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification event timestamp = %s, want %s", events[2].Timestamp, verifiedAt)
+	}
+	if events[2].Metadata["status"] != verify.StatusPass {
+		t.Fatalf("verification event status metadata = %#v", events[2].Metadata)
+	}
+	if !events[3].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("completion event timestamp = %s, want %s", events[3].Timestamp, verifiedAt)
+	}
+}
+
+func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 10, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verifiedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-verification-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return verifiedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return &verify.Config{Checks: []verify.ShellCheck{
+				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
+			}}, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			record, err := store.LoadRun("run-verification-failed")
+			if err != nil {
+				t.Fatalf("LoadRun() during verification error: %v", err)
+			}
+			if record.CurrentStep != "verify" {
+				t.Fatalf("currentStep during verification = %q, want verify", record.CurrentStep)
+			}
+			if !record.UpdatedAt.Equal(verifyingAt) {
+				t.Fatalf("updatedAt during verification = %s, want %s", record.UpdatedAt, verifyingAt)
+			}
+			return &verify.Result{
+				Status: verify.StatusFail,
+				Summary: verify.Summary{
+					Total:  1,
+					Failed: 1,
+				},
+			}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "verification failed") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want verification failure", err)
+	}
+
+	record, err := store.LoadRun("run-verification-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	if record.Verification == nil || record.Verification.Summary.Failed != 1 {
+		t.Fatalf("verification = %#v", record.Verification)
+	}
+	if record.Failure == nil {
+		t.Fatal("failure summary should be persisted")
+	}
+	if record.Failure.Step != "verify" {
+		t.Fatalf("failure step = %q, want verify", record.Failure.Step)
+	}
+	if record.Failure.Category != factory.FailureCategoryValidation {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryValidation)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(verifiedAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, verifiedAt)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeVerificationResult,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	if events[3].Metadata["step"] != "verify" {
+		t.Fatalf("verification failure event step = %#v, want verify", events[3].Metadata["step"])
+	}
+	if events[3].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("verification failure event status = %#v, want %q", events[3].Metadata["status"], factory.RunStatusFailed)
+	}
+	if !events[2].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification result timestamp = %s, want %s", events[2].Timestamp, verifiedAt)
+	}
+	if !events[3].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification failure timestamp = %s, want %s", events[3].Timestamp, verifiedAt)
+	}
+	if got, ok := events[3].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
+		t.Fatalf("verification failure event error = %#v, want verification failure", events[3].Metadata["error"])
+	}
+}
+
 func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -1434,6 +1680,14 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 			}
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
 			return nil
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			t.Fatal("loadVerify called for sandbox run")
+			return nil, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			t.Fatal("runVerify called for sandbox run")
+			return nil, nil
 		},
 	})
 	if err != nil {

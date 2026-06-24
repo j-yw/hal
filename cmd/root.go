@@ -41,6 +41,7 @@ Review / reporting:
 Status / health:
   hal status [--json]
   hal doctor [--json]
+  hal verify [--json]
   hal continue [--json]
   hal repair [--dry-run] [--json]
 
