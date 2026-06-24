@@ -225,10 +225,7 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 		})
 	}
 
-	checkoutArgs := []string{"checkout", baseBranch}
-	if exists {
-		checkoutArgs = []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
-	}
+	checkoutArgs := []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
 	commands = append(commands, bootstrapRepositoryCommand{
 		stepName: BootstrapStepCheckoutBase,
 		command: BootstrapCommand{

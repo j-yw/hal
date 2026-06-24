@@ -11,7 +11,7 @@ Portable dev environment you can spin up anywhere — Daytona, any VPS, GitHub C
 | **gh** | latest | GitHub CLI (authenticated via GITHUB_TOKEN) |
 | **Claude Code** | 2.1.42 | AI coding assistant |
 | **Pi** | 0.52.10 | Coding agent harness |
-| **Codex** | 0.101.0 | OpenAI Codex CLI |
+| **Codex** | latest | OpenAI Codex CLI |
 | **hal** | built from source | This project |
 | **tmux** | latest | Terminal multiplexer (keep sessions alive) |
 | **ripgrep** | latest | Fast search |
@@ -84,6 +84,19 @@ cp sandbox/.env.example sandbox/.env
 # Edit sandbox/.env with your values
 ```
 
+## Subscription Auth Sync
+
+If you use Codex or pi through an interactive subscription login instead of API
+keys, sync the small local auth profile files after the sandbox is running:
+
+```bash
+hal sandbox auth sync my-sandbox
+```
+
+This copies selected files from `~/.codex` and `~/.pi` into `/root` over SSH.
+It does not copy logs, sessions, caches, or GitHub CLI credentials. GitHub auth
+is handled separately through `GITHUB_TOKEN`/`GH_TOKEN` and `gh auth setup-git`.
+
 ## SSH from Phone
 
 1. **Create a VPS** or Daytona sandbox
@@ -104,19 +117,25 @@ cp sandbox/.env.example sandbox/.env
 daytona ssh my-dev
 ```
 
-## Version Pinning
+## Version Defaults
 
-Tool versions are pinned in `setup.sh` and can be overridden via env vars:
+Tool versions are set in `setup.sh` and can be overridden via env vars. Codex defaults to `latest` so new sandboxes stay compatible with current OpenAI model support:
 
 ```bash
-GO_VERSION=1.25.7 NODE_MAJOR=22 ./sandbox/setup.sh
+GO_VERSION=1.25.7 NODE_MAJOR=22 CODEX_VERSION=latest ./sandbox/setup.sh
+```
+
+To build `hal` from a non-default branch during sandbox setup, set `HAL_REPO_REF`:
+
+```bash
+HAL_REPO_REF=test/factory-remote ./sandbox/setup.sh
 ```
 
 The Dockerfile passes these as build args but delegates installation to `setup.sh` — **one source of truth**.
 
 ## Updating Tools
 
-1. Edit the version pins at the top of `sandbox/setup.sh`
+1. Edit the version defaults at the top of `sandbox/setup.sh`
 2. For VPS: re-run `setup.sh` (it's idempotent)
 3. For Daytona: rebuild the snapshot:
    ```bash

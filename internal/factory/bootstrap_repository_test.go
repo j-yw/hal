@@ -58,7 +58,7 @@ func TestBootstrapRepositoryCheckoutClonesMissingRepoAndChecksOutBase(t *testing
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "develop"},
+			Args: []string{"checkout", "-B", "develop", "origin/develop"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -302,7 +302,7 @@ func TestBootstrapRepositoryCheckoutClonesIntoEmptyExistingDirectory(t *testing.
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "main"},
+			Args: []string{"checkout", "-B", "main", "origin/main"},
 			Dir:  workspaceDir,
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},

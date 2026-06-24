@@ -159,7 +159,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 			calls = append(calls, "exec")
 			execCalls++
 			gotExecInfo = info
-			if execCalls == 2 {
+			if execCalls == 3 {
 				gotExecArgs = append([]string(nil), args...)
 			}
 			return nil
@@ -179,7 +179,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
 
-	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "now", "event", "exec", "exec", "now", "event"}
+	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "exec", "now", "event", "exec", "exec", "now", "event"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
@@ -207,7 +207,8 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
-	if !reflect.DeepEqual(gotExecArgs, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '.hal/prd.md'"}) {
+	wantExecArgs := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd.md'"}
+	if !reflect.DeepEqual(gotExecArgs, wantExecArgs) {
 		t.Fatalf("exec args = %#v", gotExecArgs)
 	}
 	if appendedEvent.RunID != "run-sandbox" || appendedEvent.EventType != factory.EventTypeStepEnded || appendedEvent.Metadata["executorMode"] != factory.ExecutorModeSandbox {
@@ -277,8 +278,8 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if !reflect.DeepEqual(calls, []string{"provider", "bootstrap", "exec", "exec"}) {
-		t.Fatalf("calls = %#v, want provider/bootstrap/exec/branch-probe", calls)
+	if !reflect.DeepEqual(calls, []string{"provider", "exec", "bootstrap", "exec", "exec"}) {
+		t.Fatalf("calls = %#v, want provider/auth/bootstrap/exec/branch-probe", calls)
 	}
 	if bootstrapReq.RepositoryURL != "git@github.com:example/repo.git" || bootstrapReq.BaseBranch != "main" || bootstrapReq.RunBranch != "hal/feature" || bootstrapReq.WorkspaceDir != "/workspace/repo" {
 		t.Fatalf("bootstrap request = %#v", bootstrapReq)
@@ -300,6 +301,63 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	}
 	if events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 {
 		t.Fatalf("event sequences = %d/%d/%d, want 1/2/3", events[0].Sequence, events[1].Sequence, events[2].Sequence)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsSyncsAgentAuthBeforeBootstrap(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	var calls []string
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-agent-auth",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+			BaseBranch: "main",
+			BranchName: "hal/feature",
+		},
+		RemoteOutput: io.Discard,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		loadSandbox:  func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ io.Writer) error {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "gh auth login --with-token"):
+				calls = append(calls, "github_auth")
+			case strings.Contains(joined, "exec 'hal' 'auto'"):
+				calls = append(calls, "remote_run")
+			case reflect.DeepEqual(args, []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}):
+				calls = append(calls, "branch_probe")
+			}
+			return nil
+		},
+		syncAgentAuth: func(context.Context, sandbox.Provider, *sandbox.SandboxState, io.Writer) error {
+			calls = append(calls, "agent_auth")
+			return nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			calls = append(calls, "bootstrap")
+			return factory.BootstrapResult{}, nil
+		},
+		saveRun:     func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	want := []string{"github_auth", "agent_auth", "bootstrap", "remote_run", "branch_probe"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}
 }
 
@@ -367,17 +425,20 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceWithRemoteRepositor
 	if !bootstrapCalled {
 		t.Fatalf("bootstrap was not called")
 	}
-	if len(execArgs) != 4 {
-		t.Fatalf("exec calls = %d, want repo exists probe, remote URL probe, remote execution, remote branch probe: %#v", len(execArgs), execArgs)
+	if len(execArgs) != 5 {
+		t.Fatalf("exec calls = %d, want auth repair, repo exists probe, remote URL probe, remote execution, remote branch probe: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "p='/workspace/repo'") {
-		t.Fatalf("repo exists probe args = %#v", execArgs[0])
+	if !strings.Contains(execArgs[0][2], "gh auth login --with-token") {
+		t.Fatalf("github auth repair args = %#v", execArgs[0])
 	}
-	if !reflect.DeepEqual(execArgs[1], []string{"git", "-C", "/workspace/repo", "remote", "get-url", "origin"}) {
-		t.Fatalf("repo remote probe args = %#v", execArgs[1])
+	if !strings.Contains(execArgs[1][2], "p='/workspace/repo'") {
+		t.Fatalf("repo exists probe args = %#v", execArgs[1])
 	}
-	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
-		t.Fatalf("repo branch probe args = %#v", execArgs[3])
+	if !reflect.DeepEqual(execArgs[2], []string{"git", "-C", "/workspace/repo", "remote", "get-url", "origin"}) {
+		t.Fatalf("repo remote probe args = %#v", execArgs[2])
+	}
+	if !reflect.DeepEqual(execArgs[4], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
+		t.Fatalf("repo branch probe args = %#v", execArgs[4])
 	}
 }
 
@@ -425,9 +486,9 @@ func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStre
 				Timeline: []factory.BootstrapTimelineEvent{factory.BootstrapTimelineEventFromStep(req, step, commandResult, failure)},
 			}, err
 		},
-		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
 			execCalls++
-			if execCalls == 1 {
+			if strings.Contains(strings.Join(args, "\x00"), "\x00git\x00clone\x00") {
 				_, err := io.WriteString(out, "cloning with "+secret+"\n")
 				return err
 			}
@@ -483,6 +544,9 @@ func TestRunFactorySandboxExecutorWithDepsSanitizesBootstrapFailureBeforeRecordi
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, fmt.Errorf("repository origin remote %q does not match requested URL %q", credentialedRemote, requestedRemote)
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
 		},
 		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
 			savedRecords = append(savedRecords, *record)
@@ -561,18 +625,21 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if len(execArgs) != 3 {
-		t.Fatalf("exec calls = %d, want copy, remote execution, remote branch probe: %#v", len(execArgs), execArgs)
+	if len(execArgs) != 4 {
+		t.Fatalf("exec calls = %d, want auth repair, copy, remote execution, remote branch probe: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/prd-feature.md'") {
-		t.Fatalf("copy exec args = %#v", execArgs[0])
+	if !strings.Contains(execArgs[0][2], "gh auth login --with-token") {
+		t.Fatalf("github auth repair args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
-	if !reflect.DeepEqual(execArgs[1], wantRemote) {
-		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
+	if !strings.Contains(execArgs[1][2], "base64 -d > '/workspace/repo/.hal/prd-feature.md'") {
+		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	if !reflect.DeepEqual(execArgs[2], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
-		t.Fatalf("remote branch probe args = %#v", execArgs[2])
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
+	if !reflect.DeepEqual(execArgs[2], wantRemote) {
+		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
+	}
+	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
+		t.Fatalf("remote branch probe args = %#v", execArgs[3])
 	}
 }
 
@@ -616,18 +683,21 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if len(execArgs) != 3 {
-		t.Fatalf("exec calls = %d, want copy, remote execution, remote branch probe: %#v", len(execArgs), execArgs)
+	if len(execArgs) != 4 {
+		t.Fatalf("exec calls = %d, want auth repair, copy, remote execution, remote branch probe: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/factory-inputs/analysis.md'") {
-		t.Fatalf("copy exec args = %#v", execArgs[0])
+	if !strings.Contains(execArgs[0][2], "gh auth login --with-token") {
+		t.Fatalf("github auth repair args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
-	if !reflect.DeepEqual(execArgs[1], wantRemote) {
-		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
+	if !strings.Contains(execArgs[1][2], "base64 -d > '/workspace/repo/.hal/factory-inputs/analysis.md'") {
+		t.Fatalf("copy exec args = %#v", execArgs[1])
 	}
-	if !reflect.DeepEqual(execArgs[2], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
-		t.Fatalf("remote branch probe args = %#v", execArgs[2])
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
+	if !reflect.DeepEqual(execArgs[2], wantRemote) {
+		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
+	}
+	if !reflect.DeepEqual(execArgs[3], []string{"git", "-C", "/workspace/repo", "branch", "--show-current"}) {
+		t.Fatalf("remote branch probe args = %#v", execArgs[3])
 	}
 }
 
@@ -720,7 +790,7 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 		BaseBranch: " hal/factory-remote-workspace-bootstrap ",
 	})
 
-	want := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
+	want := []string{"sh", "-lc", "cd '/workspace/hal' && { for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; 'git' 'clean' '-fd' '--' '.claude' '.pi' '.hal/commands' >/dev/null 2>&1 || true; } && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
 	}
@@ -909,7 +979,10 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if !strings.Contains(strings.Join(args, " "), "exec 'hal' 'auto'") {
+				return nil
+			}
 			if _, err := io.WriteString(out, "Step: run\nconnecting to 203.0."); err != nil {
 				return err
 			}
@@ -1315,14 +1388,70 @@ func TestRunFactorySandboxExecutorWithDepsRecordsProvisionFailure(t *testing.T) 
 	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "provision" {
 		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
 	}
-	if failed.SandboxName != "factory-new" || failed.Sandbox == nil || failed.Sandbox.Handoff != "Inspect sandbox with `hal sandbox ssh factory-new`." {
+	if failed.SandboxName != "factory-new" || failed.Sandbox == nil || failed.Sandbox.Handoff != "Sandbox was not provisioned; inspect factory status for details." {
 		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)
 	}
 	if failed.Failure == nil || failed.Failure.Category != factory.FailureCategoryPipeline || failed.Failure.Message != provisionErr.Error() {
 		t.Fatalf("failed failure summary = %#v", failed.Failure)
 	}
+	if failed.Failure.SuggestedCommand != "hal factory status run-provision-failure --json" {
+		t.Fatalf("suggested command = %q", failed.Failure.SuggestedCommand)
+	}
 	if len(events) != 1 || events[0].Sequence != 8 || events[0].EventType != factory.EventTypeFailureClassification || events[0].Metadata["step"] != "provision" {
 		t.Fatalf("failure events = %#v", events)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRecordsProvisionSetupGuidance(t *testing.T) {
+	now := time.Date(2026, 6, 21, 10, 20, 0, 0, time.UTC)
+	provisionErr := factorySandboxTestError("sandbox creation failed: daytona API key is required; run `hal sandbox setup` to configure daytona.apiKey")
+	store := factory.NewStore(t.TempDir())
+	var savedRecords []factory.RunRecord
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir: "/repo",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-provision-setup",
+			Status:     factory.RunStatusRunning,
+			BranchName: "hal/factory-sandbox-executor",
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return nil, "", errNoFactorySandbox
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return nil, errFactorySandboxNotExist
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			return nil, provisionErr
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "daytona API key is required") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(savedRecords) != 2 {
+		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	}
+	failed := savedRecords[1]
+	if failed.Sandbox == nil {
+		t.Fatalf("sandbox metadata = nil")
+	}
+	if failed.Sandbox.SSHCommand != "" || failed.Sandbox.CleanupCommand != "" {
+		t.Fatalf("sandbox metadata has commands for unprovisioned sandbox: %#v", failed.Sandbox)
+	}
+	if failed.Sandbox.Handoff != "Configure sandbox provider with `hal sandbox setup`." {
+		t.Fatalf("sandbox handoff = %q", failed.Sandbox.Handoff)
+	}
+	if failed.Failure == nil || failed.Failure.SuggestedCommand != "hal sandbox setup" {
+		t.Fatalf("failure summary = %#v", failed.Failure)
 	}
 }
 
@@ -1467,7 +1596,10 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if !strings.Contains(strings.Join(args, " "), "exec 'hal' 'auto'") {
+				return nil
+			}
 			if _, err := io.WriteString(out, "remote stderr mentions 203.0.113.42\n"); err != nil {
 				return err
 			}
@@ -1524,6 +1656,69 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 	}
 	if strings.Contains(events[2].Message, "203.0.113.42") {
 		t.Fatalf("failure event leaked address: %q", events[2].Message)
+	}
+}
+
+func TestFactorySandboxBootstrapExecutorPreservesExitCode(t *testing.T) {
+	exitCmd := exec.Command("sh", "-c", "exit 7")
+	exitErr := exitCmd.Run()
+	if exitErr == nil {
+		t.Fatal("exit command error = nil, want non-zero exit")
+	}
+
+	executor := &factorySandboxBootstrapExecutor{
+		provider:    fakeFactorySandboxProvider{},
+		connectInfo: &sandbox.ConnectInfo{Name: "factory-remote"},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return exitErr
+		},
+	}
+	result, err := executor.Run(context.Background(), factory.BootstrapCommand{
+		Name: "git",
+		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/remote"},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want exit error")
+	}
+	if result.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", result.ExitCode)
+	}
+}
+
+func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *testing.T) {
+	got := factorySandboxBootstrapCommandArgs(factory.BootstrapCommand{
+		Name: "git",
+		Args: []string{"clone", "git@github.com:example/repo.git", "/workspace/repo"},
+		Dir:  "/workspace",
+		Env: map[string]string{
+			"GIT_TERMINAL_PROMPT": "0",
+		},
+	})
+	want := []string{"sh", "-lc", "mkdir -p '/workspace' && cd '/workspace' && exec 'env' 'GIT_TERMINAL_PROMPT=0' 'git' 'clone' 'git@github.com:example/repo.git' '/workspace/repo'"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bootstrap args = %#v, want %#v", got, want)
+	}
+}
+
+func TestFactorySandboxGitHubAuthScriptRepairsGhAndGitSSHRemotes(t *testing.T) {
+	script := factorySandboxGitHubAuthScript()
+	required := []string{
+		". /root/.env",
+		"${GITHUB_TOKEN:-${GH_TOKEN:-}}",
+		"export HOME=\"${HOME:-/root}\"",
+		"gh auth login --with-token",
+		"env -u GITHUB_TOKEN -u GH_TOKEN",
+		"gh auth setup-git",
+		"ensure_instead_of https://github.com/ git@github.com:",
+		"ensure_instead_of https://github.com/ ssh://git@github.com/",
+	}
+	for _, needle := range required {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("factorySandboxGitHubAuthScript() missing %q:\n%s", needle, script)
+		}
+	}
+	if strings.Contains(script, "x-access-token:${token}") {
+		t.Fatalf("factorySandboxGitHubAuthScript() should not persist token in git config:\n%s", script)
 	}
 }
 

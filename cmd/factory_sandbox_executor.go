@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -46,6 +47,7 @@ type factorySandboxExecutorDeps struct {
 	startSandbox    func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider func(string) (sandbox.Provider, error)
 	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	syncAgentAuth   func(context.Context, sandbox.Provider, *sandbox.SandboxState, io.Writer) error
 	bootstrap       func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	saveRun         func(factory.Store, *factory.RunRecord) error
 	appendEvent     func(factory.Store, *factory.EventRecord) error
@@ -62,6 +64,7 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 		return resolveProviderWithFallback(".", providerName)
 	},
 	runProviderExec: runFactorySandboxProviderExec,
+	syncAgentAuth:   syncFactorySandboxAgentAuth,
 	bootstrap:       factory.BootstrapWorkspace,
 	saveRun:         saveFactorySandboxRunRecord,
 	appendEvent:     appendFactorySandboxTimelineEvent,
@@ -97,6 +100,11 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
+	}
+	if deps.syncAgentAuth == nil {
+		deps.syncAgentAuth = func(context.Context, sandbox.Provider, *sandbox.SandboxState, io.Writer) error {
+			return nil
+		}
 	}
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultFactorySandboxExecutorDeps.bootstrap
@@ -204,6 +212,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if err != nil {
 		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err)
 		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err)
+	}
+
+	if err := factorySandboxEnsureGitHubAuth(ctx, provider, target, remoteOutput, deps); err != nil {
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "github_auth", err)
+		return factorySandboxRecordedError("configure factory sandbox GitHub auth", target, err)
+	}
+
+	if err := deps.syncAgentAuth(ctx, provider, target, remoteOutput); err != nil {
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "agent_auth", err)
+		return factorySandboxRecordedError("sync factory sandbox agent auth", target, err)
 	}
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record); ok {
@@ -478,7 +496,13 @@ func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command facto
 		out = io.MultiWriter(e.out, &summary)
 	}
 	err := e.runProviderExec(ctx, e.provider, e.connectInfo, factorySandboxBootstrapCommandArgs(command), out)
+	exitCode := 0
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		exitCode = exitErr.ExitCode()
+	}
 	return factory.BootstrapCommandResult{
+		ExitCode:      exitCode,
 		OutputSummary: strings.TrimSpace(summary.String()),
 	}, err
 }
@@ -491,7 +515,8 @@ func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []stri
 	args = append(args, strings.TrimSpace(command.Name))
 	args = append(args, command.Args...)
 	if dir := strings.TrimSpace(command.Dir); dir != "" {
-		return []string{"sh", "-lc", "cd " + shellQuote(dir) + " && exec " + shellCommand(args)}
+		quotedDir := shellQuote(dir)
+		return []string{"sh", "-lc", "mkdir -p " + quotedDir + " && cd " + quotedDir + " && exec " + shellCommand(args)}
 	}
 	return args
 }
@@ -762,6 +787,39 @@ func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath,
 	return remotePath, true, nil
 }
 
+func factorySandboxEnsureGitHubAuth(ctx context.Context, provider sandbox.Provider, target *sandbox.SandboxState, out io.Writer, deps factorySandboxExecutorDeps) error {
+	if provider == nil {
+		return fmt.Errorf("sandbox provider is required")
+	}
+	if target == nil {
+		return fmt.Errorf("sandbox target is required")
+	}
+	return deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), []string{"sh", "-lc", factorySandboxGitHubAuthScript()}, out)
+}
+
+func syncFactorySandboxAgentAuth(ctx context.Context, provider sandbox.Provider, target *sandbox.SandboxState, out io.Writer) error {
+	_, err := runSandboxAuthSyncToTarget(ctx, target, provider, sandboxAuthSyncOptions{}, out, sandboxAuthSyncDeps{})
+	return err
+}
+
+func factorySandboxGitHubAuthScript() string {
+	return strings.Join([]string{
+		"set -eu",
+		"export HOME=\"${HOME:-/root}\"",
+		"if [ -f /root/.env ]; then set -a; . /root/.env; set +a; fi",
+		"token=\"${GITHUB_TOKEN:-${GH_TOKEN:-}}\"",
+		"if [ -z \"$token\" ]; then echo \"GitHub token not present; skipping auth repair\"; exit 0; fi",
+		"if ! command -v gh >/dev/null 2>&1; then echo \"gh not installed; skipping auth repair\"; exit 0; fi",
+		"if ! printf '%s' \"$token\" | env -u GITHUB_TOKEN -u GH_TOKEN gh auth login --with-token >/dev/null 2>&1; then env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 || { echo \"gh auth unavailable after token login\"; exit 1; }; fi",
+		"env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1 || { echo \"gh auth unavailable after token login\"; exit 1; }",
+		"env -u GITHUB_TOKEN -u GH_TOKEN gh auth setup-git >/dev/null 2>&1 || true",
+		"ensure_instead_of() { base=\"$1\"; value=\"$2\"; git config --global --get-all \"url.${base}.insteadOf\" 2>/dev/null | grep -Fx \"$value\" >/dev/null || git config --global --add \"url.${base}.insteadOf\" \"$value\"; }",
+		"ensure_instead_of https://github.com/ git@github.com:",
+		"ensure_instead_of https://github.com/ ssh://git@github.com/",
+		"echo \"GitHub auth configured from token\"",
+	}, "\n")
+}
+
 func factorySandboxRemoteInputPath(localPath string) string {
 	cleaned := filepath.ToSlash(filepath.Clean(strings.TrimSpace(localPath)))
 	if cleaned == "." || cleaned == "" {
@@ -783,7 +841,12 @@ func factorySandboxRemoteCommandArgs(record factory.RunRecord, req factoryRunAut
 	if workspaceDir == "" {
 		return autoArgs
 	}
-	return []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && exec " + shellCommand(autoArgs)}
+	return []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && " + factorySandboxRemoteBootstrapCleanupScript() + " && exec " + shellCommand(autoArgs)}
+}
+
+func factorySandboxRemoteBootstrapCleanupScript() string {
+	cleanArgs := []string{"git", "clean", "-fd", "--", ".claude", ".pi", ".hal/commands"}
+	return "{ for p in .hal/config.yaml .claude .pi .hal/commands; do git checkout -- \"$p\" >/dev/null 2>&1 || true; done; " + shellCommand(cleanArgs) + " >/dev/null 2>&1 || true; }"
 }
 
 func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
@@ -885,12 +948,15 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	record.UpdatedAt = failedAt
 	record.FinishedAt = &failedAt
 	message := factorySandboxSanitizedError(target, failureErr)
+	if target == nil && step == "provision" {
+		record.Sandbox = factorySandboxProvisionFailureMetadata(record.SandboxName, message)
+	}
 	failure := factory.FailureSummary{
 		Step:             step,
 		Category:         factory.FailureCategoryPipeline,
 		Message:          message,
 		Recoverable:      true,
-		SuggestedCommand: factorySandboxFailureSuggestedCommand(record),
+		SuggestedCommand: factorySandboxFailureSuggestedCommand(record, target, step, message),
 	}
 	record.Failure = &failure
 	if err := deps.saveRun(store, record); err != nil {
@@ -935,9 +1001,15 @@ func factorySandboxRecordedError(prefix string, target *sandbox.SandboxState, er
 	return fmt.Errorf("%s: %s", prefix, factorySandboxSanitizedError(target, err))
 }
 
-func factorySandboxFailureSuggestedCommand(record *factory.RunRecord) string {
+func factorySandboxFailureSuggestedCommand(record *factory.RunRecord, target *sandbox.SandboxState, step, message string) string {
 	if record == nil {
 		return ""
+	}
+	if target == nil && step == "provision" {
+		if factoryFailureMessageContains(message, "hal sandbox setup", "sandbox setup") {
+			return "hal sandbox setup"
+		}
+		return factoryRunInspectCommand(record.RunID)
 	}
 	if record.Sandbox != nil {
 		if command := strings.TrimSpace(record.Sandbox.SSHCommand); command != "" {
@@ -948,6 +1020,22 @@ func factorySandboxFailureSuggestedCommand(record *factory.RunRecord) string {
 		return fmt.Sprintf("hal sandbox ssh %s", name)
 	}
 	return factoryRunInspectCommand(record.RunID)
+}
+
+func factorySandboxProvisionFailureMetadata(name, message string) *factory.SandboxMetadata {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	handoff := "Sandbox was not provisioned; inspect factory status for details."
+	if factoryFailureMessageContains(message, "hal sandbox setup", "sandbox setup") {
+		handoff = "Configure sandbox provider with `hal sandbox setup`."
+	}
+	return &factory.SandboxMetadata{
+		Name:    name,
+		Status:  sandbox.StatusUnknown,
+		Handoff: handoff,
+	}
 }
 
 func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *factory.SandboxMetadata) {

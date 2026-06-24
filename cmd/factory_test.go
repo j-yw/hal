@@ -232,6 +232,48 @@ func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunJSONValidationErrorEmitsPayload(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := &cobra.Command{Use: "run"}
+	cmd.SetOut(&buf)
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().Bool("json", true, "")
+	cmd.Flags().Bool("sandbox", true, "")
+
+	err := runFactoryRun(cmd, []string{".hal/prd-feature.md"})
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("runFactoryRun() error = %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeValidation {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+	}
+
+	var resp FactoryRunResponse
+	if jsonErr := json.Unmarshal(buf.Bytes(), &resp); jsonErr != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", jsonErr, buf.String())
+	}
+	if resp.ContractVersion != FactoryRunContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
+	}
+	if resp.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", resp.Status, factory.RunStatusFailed)
+	}
+	if resp.Failure == nil {
+		t.Fatal("failure = nil, want validation failure")
+	}
+	if resp.Failure.Classification != factory.FailureCategoryValidation {
+		t.Fatalf("failure.classification = %q, want %q", resp.Failure.Classification, factory.FailureCategoryValidation)
+	}
+	if resp.Failure.ErrorMessage != "--base is required when --sandbox is set" {
+		t.Fatalf("failure.errorMessage = %q", resp.Failure.ErrorMessage)
+	}
+	if resp.Artifacts == nil || len(resp.Artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want empty non-nil array", resp.Artifacts)
+	}
+}
+
 func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *testing.T) {
 	cmd := &cobra.Command{Use: "run", Args: validateFactoryRunArgs}
 	cmd.Flags().String("report", "", "")
@@ -252,6 +294,25 @@ func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *t
 	}
 	if !strings.Contains(err.Error(), "--report cannot be used with a positional PRD markdown path") {
 		t.Fatalf("Args() error = %q", err.Error())
+	}
+}
+
+func TestSuppressFactoryJSONRenderedErrorReturnsSilentExitAfterPayload(t *testing.T) {
+	writer := newFactoryCountingWriter(io.Discard)
+	if _, err := writer.Write([]byte(`{"contractVersion":"factory-run-v1"}`)); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+
+	err := suppressFactoryJSONRenderedError(errors.New("pipeline failed"), true, writer)
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("error = %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != 1 {
+		t.Fatalf("exit code = %d, want 1", exitErr.Code)
+	}
+	if exitErr.Err != nil {
+		t.Fatalf("exit error payload = %v, want nil for silent stderr", exitErr.Err)
 	}
 }
 

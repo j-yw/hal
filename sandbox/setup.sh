@@ -23,7 +23,7 @@ GO_VERSION="${GO_VERSION:-1.25.7}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.42}"
 PI_CODING_AGENT_VERSION="${PI_CODING_AGENT_VERSION:-0.52.10}"
-CODEX_VERSION="${CODEX_VERSION:-0.101.0}"
+CODEX_VERSION="${CODEX_VERSION:-latest}"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -37,8 +37,46 @@ ok()    { echo -e "  ${GREEN}✓${NC} $1"; }
 fail()  { echo -e "  ${RED}✗${NC} $1"; }
 
 HAL_REPO="${HAL_REPO:-ReScienceLab/hal}"
+HAL_REPO_REF="${HAL_REPO_REF:-}"
 HAL_REPO_URL_EXPLICIT="${HAL_REPO_URL+x}"
 HAL_REPO_URL="${HAL_REPO_URL:-https://github.com/${HAL_REPO}.git}"
+
+github_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    printf '%s' "$GITHUB_TOKEN"
+  elif [ -n "${GH_TOKEN:-}" ]; then
+    printf '%s' "$GH_TOKEN"
+  fi
+}
+
+ensure_git_instead_of() {
+  local base="$1"
+  local value="$2"
+  if ! git config --global --get-all "url.${base}.insteadOf" 2>/dev/null | grep -Fx "$value" >/dev/null; then
+    git config --global --add "url.${base}.insteadOf" "$value"
+  fi
+}
+
+configure_github_auth() {
+  local token
+  token="$(github_token)"
+  if [ -z "$token" ]; then
+    return 0
+  fi
+
+  if command -v gh &>/dev/null; then
+    if ! printf '%s' "$token" | env -u GITHUB_TOKEN -u GH_TOKEN gh auth login --with-token 2>/dev/null; then
+      env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1
+    fi
+    env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1
+    env -u GITHUB_TOKEN -u GH_TOKEN gh auth setup-git 2>/dev/null || true
+  fi
+
+  # Factory bootstrap may clone SSH-style GitHub remotes. Rewrite those to
+  # HTTPS so gh's credential helper can provide the token non-interactively.
+  ensure_git_instead_of "https://github.com/" "git@github.com:"
+  ensure_git_instead_of "https://github.com/" "ssh://git@github.com/"
+}
 
 is_github_https_repo_url() {
   case "$1" in
@@ -50,18 +88,24 @@ is_github_https_repo_url() {
 clone_hal_repo() {
   local dest="$1"
   shift || true
+  local clone_args=("$@")
+  if [ -n "$HAL_REPO_REF" ]; then
+    clone_args+=(--branch "$HAL_REPO_REF")
+  fi
+  local token
+  token="$(github_token)"
 
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
+  if [ -n "$token" ]; then
+    configure_github_auth
+
     if [ -z "$HAL_REPO_URL_EXPLICIT" ] && command -v gh &>/dev/null; then
-      echo "$GITHUB_TOKEN" | gh auth login --with-token 2>/dev/null || true
-      gh auth setup-git 2>/dev/null || true
-      if gh repo clone "$HAL_REPO" "$dest" -- "$@" 2>/dev/null; then
+      if gh repo clone "$HAL_REPO" "$dest" -- "${clone_args[@]}" 2>/dev/null; then
         return 0
       fi
     fi
 
     if ! is_github_https_repo_url "$HAL_REPO_URL"; then
-      git clone "$@" "$HAL_REPO_URL" "$dest"
+      git clone "${clone_args[@]}" "$HAL_REPO_URL" "$dest"
       return $?
     fi
 
@@ -75,7 +119,7 @@ case "$1" in
   *) printf '%s\n' "$GITHUB_TOKEN" ;;
 esac
 EOF
-    if GITHUB_TOKEN="$GITHUB_TOKEN" GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone "$@" "$HAL_REPO_URL" "$dest"; then
+    if GITHUB_TOKEN="$token" GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone "${clone_args[@]}" "$HAL_REPO_URL" "$dest"; then
       status=0
     else
       status=$?
@@ -84,7 +128,7 @@ EOF
     return "$status"
   fi
 
-  git clone "$@" "$HAL_REPO_URL" "$dest"
+  git clone "${clone_args[@]}" "$HAL_REPO_URL" "$dest"
 }
 
 # ── Detect environment ───────────────────────────────────────────────────────
@@ -94,11 +138,16 @@ if [ -f /.dockerenv ]; then
 fi
 
 ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
-HOME_DIR="${HOME:-/root}"
+export HOME="${HOME:-/root}"
+HOME_DIR="$HOME"
 # SCRIPT_DIR can be overridden (e.g. in Docker) to point at the config source.
 # Resolve it before any cd so relative local invocations keep pointing at this repo.
 if [ -z "${SCRIPT_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  else
+    SCRIPT_DIR="$(pwd)"
+  fi
 fi
 
 # ── System packages ─────────────────────────────────────────────────────────
@@ -255,8 +304,10 @@ if [ -n "${GIT_USER_EMAIL:-}" ]; then
 fi
 
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-  echo "$GITHUB_TOKEN" | gh auth login --with-token 2>/dev/null || true
-  gh auth setup-git 2>/dev/null || true
+  configure_github_auth
+  ok "gh authenticated"
+elif [ -n "${GH_TOKEN:-}" ]; then
+  configure_github_auth
   ok "gh authenticated"
 fi
 

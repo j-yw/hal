@@ -534,8 +534,8 @@ func TestDigitalOceanProvider_Exec_WithConnectInfoIP(t *testing.T) {
 	if !strings.Contains(args, "root@10.20.30.40") {
 		t.Errorf("Exec cmd should contain root@10.20.30.40, got: %s", args)
 	}
-	if !strings.Contains(args, "-- ls -la") {
-		t.Errorf("Exec cmd should contain '-- ls -la', got: %s", args)
+	if !strings.Contains(args, "-- 'ls' '-la'") {
+		t.Errorf("Exec cmd should contain quoted remote command, got: %s", args)
 	}
 }
 

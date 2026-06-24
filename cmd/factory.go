@@ -157,7 +157,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	repoRemote:    readGitRemoteOptionalInDir,
 	runPipeline:   runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
-		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
+		return runFactorySandboxExecutorWithDeps(ctx, req, defaultFactorySandboxExecutorDeps)
 	},
 }
 
@@ -248,6 +248,16 @@ func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
 func runFactoryRun(cmd *cobra.Command, args []string) error {
 	req, err := factoryRunRequestFromCommand(cmd, args)
 	if err != nil {
+		if factoryRunJSONRequested(cmd) {
+			out := io.Writer(os.Stdout)
+			if cmd != nil {
+				out = cmd.OutOrStdout()
+			}
+			if renderErr := renderFactoryRunValidationErrorJSON(out, err); renderErr != nil {
+				return renderErr
+			}
+			return &ExitCodeError{Code: factoryRenderedJSONExitCode(err)}
+		}
 		return err
 	}
 
@@ -260,7 +270,17 @@ func runFactoryRun(cmd *cobra.Command, args []string) error {
 		out = cmd.OutOrStdout()
 	}
 
-	return runFactoryRunWithDeps(ctx, ".", req, out, defaultFactoryRunDeps)
+	countingOut := newFactoryCountingWriter(out)
+	err = runFactoryRunWithDeps(ctx, ".", req, countingOut, defaultFactoryRunDeps)
+	return suppressFactoryJSONRenderedError(err, req.JSON, countingOut)
+}
+
+func factoryRunJSONRequested(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Flags().Lookup("json") == nil {
+		return false
+	}
+	value, err := cmd.Flags().GetBool("json")
+	return err == nil && value
 }
 
 func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, deps factoryRunDeps) error {

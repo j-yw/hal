@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -123,6 +124,33 @@ exit 1
 	}
 	if result.Success {
 		t.Fatal("Execute() success = true, want false when canceled")
+	}
+}
+
+func TestRunCommandWithInactivityWatchStopsExecuteStream(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process group cleanup fixture is unix-only")
+	}
+
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", `printf '{"type":"thread.started"}\n'; sleep 5`)
+	cmd.SysProcAttr = newSysProcAttr()
+	setupProcessCleanup(cmd)
+
+	handler := &streamHandler{
+		parser:       NewParser(),
+		lastActivity: time.Now(),
+	}
+	var stderr bytes.Buffer
+	cmd.Stdout = handler
+	cmd.Stderr = &stderr
+
+	start := time.Now()
+	err := runCommandWithInactivityWatch(cmd, handler, 50*time.Millisecond)
+	if !errors.Is(err, errStreamStalled) {
+		t.Fatalf("runCommandWithInactivityWatch() error = %v, want errStreamStalled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("runCommandWithInactivityWatch() took %s, want prompt stall termination", elapsed)
 	}
 }
 
