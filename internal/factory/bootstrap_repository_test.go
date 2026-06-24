@@ -405,6 +405,72 @@ func TestBootstrapRepositoryCheckoutRejectsExistingRepoWithUnexpectedRemote(t *t
 	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCloneRepository})
 }
 
+func TestBootstrapRepositoryCheckoutRedactsCredentialsInUnexpectedRemoteError(t *testing.T) {
+	requestedURL := "https://oauth2:ghp_requested_secret@github.com/jywlabs/hal.git"
+	actualURL := "https://oauth2:ghp_actual_secret@github.com/other/project.git"
+	req := BootstrapRequest{
+		RepositoryURL: requestedURL,
+		BaseBranch:    "main",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	_, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Now: incrementingClock(t, time.Date(2026, 6, 21, 5, 10, 35, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		RepoRemoteURL: func(path string) (string, error) {
+			return actualURL, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("BootstrapRepositoryCheckout() error = nil, want remote mismatch")
+	}
+
+	message := err.Error()
+	if !strings.Contains(message, "does not match requested URL") {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	for _, leaked := range []string{"ghp_requested_secret", "ghp_actual_secret", "oauth2:ghp_requested_secret", "oauth2:ghp_actual_secret"} {
+		if strings.Contains(message, leaked) {
+			t.Fatalf("remote mismatch error leaked credentials %q: %v", leaked, err)
+		}
+	}
+	if !strings.Contains(message, bootstrapRedactedValue) {
+		t.Fatalf("remote mismatch error did not redact credentials: %v", err)
+	}
+}
+
+func TestBootstrapRepositoryCheckoutRedactsCredentialsInEmptyRemoteError(t *testing.T) {
+	req := BootstrapRequest{
+		RepositoryURL: "https://ghp_requested_secret@github.com/jywlabs/hal.git",
+		BaseBranch:    "main",
+		WorkspaceDir:  "/workspace/hal",
+	}
+	_, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Now: incrementingClock(t, time.Date(2026, 6, 21, 5, 10, 40, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		RepoRemoteURL: func(path string) (string, error) {
+			return "", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("BootstrapRepositoryCheckout() error = nil, want empty remote error")
+	}
+
+	message := err.Error()
+	if !strings.Contains(message, "repository origin remote is empty") {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if strings.Contains(message, "ghp_requested_secret") {
+		t.Fatalf("empty remote error leaked credentials: %v", err)
+	}
+	if !strings.Contains(message, bootstrapRedactedValue) {
+		t.Fatalf("empty remote error did not redact credentials: %v", err)
+	}
+}
+
 func TestBootstrapRepositoryCheckoutValidatesInjectedExistingRepoRemoteFromGitConfig(t *testing.T) {
 	workspaceDir := filepath.Join(t.TempDir(), "hal")
 	gitDir := filepath.Join(workspaceDir, ".git")
