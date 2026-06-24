@@ -129,6 +129,20 @@ func TestLoadHandoffSummaryRedactsSensitiveFailureReason(t *testing.T) {
 	}
 }
 
+func TestSanitizeHandoffFailureReasonRedactsBareSecretValues(t *testing.T) {
+	tests := []string{
+		"authentication failed for token ghp_xxx",
+		"authentication failed for token <ghp_xxx>",
+	}
+	for _, tt := range tests {
+		t.Run(tt, func(t *testing.T) {
+			if got := SanitizeHandoffFailureReason(tt); got != "[redacted]" {
+				t.Fatalf("SanitizeHandoffFailureReason() = %q, want [redacted]", got)
+			}
+		})
+	}
+}
+
 func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := RunRecord{

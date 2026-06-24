@@ -206,7 +206,7 @@ func SanitizeHandoffFailureReason(reason string) string {
 	if reason == "" {
 		return ""
 	}
-	if handoffStringNeedsRedaction(handoffNormalizeDocPlaceholders(reason)) {
+	if handoffStringContainsBareSecretValue(reason) || handoffStringNeedsRedaction(handoffNormalizeDocPlaceholders(reason)) {
 		return handoffRedactedLocation
 	}
 	return reason
@@ -597,6 +597,79 @@ func handoffStringContainsSecretAssignment(value string) bool {
 		}
 	}
 	return false
+}
+
+func handoffStringContainsBareSecretValue(value string) bool {
+	fields := handoffRedactionFields(value)
+	for i, field := range fields {
+		field = strings.TrimSpace(field)
+		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if !handoffStandaloneSecretKey(field) || i+1 >= len(fields) {
+			continue
+		}
+		if handoffFieldLooksLikeSecretValue(fields[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffStandaloneSecretKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.Trim(key, "\"'<>[](){}.,;")
+	switch key {
+	case "token", "secret", "password", "passwd", "credential", "credentials", "auth", "authorization", "key",
+		"api_key", "api-key", "apikey", "access_key", "access-key", "accesskey", "private_key", "private-key", "privatekey":
+		return true
+	default:
+		return false
+	}
+}
+
+func handoffFieldLooksLikeSecretValue(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'<>[](){}.,;")
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	knownPrefixes := []string{
+		"ghp_",
+		"github_pat_",
+		"gho_",
+		"ghu_",
+		"ghs_",
+		"ghr_",
+		"sk-",
+		"xoxb-",
+		"xoxp-",
+	}
+	for _, prefix := range knownPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	if len(value) >= 6 && strings.ContainsAny(value, "_-./+=") {
+		return true
+	}
+	if len(value) >= 6 {
+		for _, r := range value {
+			if r >= '0' && r <= '9' {
+				return true
+			}
+		}
+	}
+	return len(value) >= 16 && handoffFieldLooksLikeTokenChars(value)
+}
+
+func handoffFieldLooksLikeTokenChars(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func handoffRedactionFields(value string) []string {
