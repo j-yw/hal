@@ -35,6 +35,7 @@ Side effects:
   resources and update the global sandbox registry.
 
 Subcommands:
+  auth        Manage sandbox agent auth profiles
   setup       Configure provider, credentials, and environment
   create      Provision a new sandbox
   start       Start a stopped sandbox
@@ -44,6 +45,7 @@ Subcommands:
   ssh         Open an interactive shell or run a remote command`,
 	Example: `  hal sandbox setup
   hal sandbox create
+  hal sandbox auth sync my-sandbox
   hal sandbox start my-sandbox
   hal sandbox status`,
 }

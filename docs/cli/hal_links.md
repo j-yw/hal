@@ -13,12 +13,16 @@ each AI engine can discover project skills. These links are:
     .claude/skills/  → .hal/skills/   (Claude Code)
     .pi/skills/      → .hal/skills/   (Pi)
 
-  Global (single-active-repo):
-    ~/.codex/skills/  → .hal/skills/  (Codex)
+  Global (active Codex home):
+    $CODEX_HOME/skills/  → .hal/skills/  (Codex, when CODEX_HOME is set)
+    ~/.codex/skills/     → .hal/skills/  (Codex default)
+
+Set CODEX_HOME per worktree to isolate Codex global skill and command links.
+When CODEX_HOME is unset, Hal uses ~/.codex.
 
 Side effects:
 - refresh creates or replaces engine skill and command symlinks in .claude/,
-  .pi/, and ~/.codex for Codex.
+  .pi/, and the active Codex home for Codex.
 - clean removes deprecated or broken engine skill symlinks.
 
 Use 'hal links status' to inspect link health.

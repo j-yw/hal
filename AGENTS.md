@@ -37,6 +37,18 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
+
+- Factory bootstrap command execution belongs behind `internal/factory.BootstrapCommandExecutor`; use `RunBootstrapStep` with injected fake executors and deterministic clocks in tests instead of spawning git, Hal, or engine CLIs directly.
+- Tooling verification bootstrap belongs in `internal/factory.BootstrapVerifyTooling`; configure Hal and engine checks with `BootstrapToolingCheck`, and use `InstallCommand` only with `BootstrapOptions.InstallMissingCLIs` so missing executables classify as `dependency` while failed setup commands classify as `engine_setup`.
+- Repository checkout bootstrap belongs in `internal/factory.BootstrapRepositoryCheckout`; inject `RepoExists`, executor, and clock dependencies so tests assert deterministic git clone/fetch/checkout commands without touching real repositories.
+- Run branch preparation also belongs in `BootstrapRepositoryCheckout` after base checkout; inject `LocalBranchExists`/`RemoteBranchExists` probes so tests can cover local retry, remote resume, and first-run branch creation without real git refs.
+- Hal template, standards, managed skill, and engine-link setup belongs in `internal/factory.BootstrapRefreshHal`; run `hal init`/`hal init --refresh-templates` and `hal links refresh` through the executor boundary instead of duplicating template or skill install logic.
+- Bootstrap request environment values belong on `BootstrapRequest.Env` and flow through `BootstrapStepDeps.Request`; call `RunBootstrapStep` so env injection, command-summary sanitization, and command-result sanitization stay centralized.
+- Bootstrap command/timeline persistence should use `NewBootstrapSanitizer` or `SanitizeBootstrapCommand*` helpers so sensitive env key names and configured secret values are redacted before serialization.
+- Bootstrap callers should record step outcomes through `recordBootstrapStepResult` / `BootstrapTimelineEventFromStep` so `BootstrapResult.Steps` and `BootstrapResult.Timeline` stay one-to-one with sanitized command summaries, output metadata, and failure category metadata.
+- High-level remote workspace setup should enter through `internal/factory.BootstrapWorkspace` with one `BootstrapDeps` value; it composes repository checkout, tooling verification, Hal refresh, and final checks while preserving shared executor, clock, branch probes, env injection, and first-failure stop behavior.
+
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
 - For runtime directory renames, use template.HalDir in Go code but separately sweep hardcoded user-facing strings in cmd/* and prompt templates (e.g., config.go, explode.go) so paths like .hal stay consistent.
@@ -178,8 +190,13 @@
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
 - Workflow state classification lives in `internal/status` — a pure filesystem package with no engine or config dependencies. The `cmd/status.go` wrapper adds engine from config.
 - Health/readiness checks live in `internal/doctor` — each check has `scope` (repo/engine_local/engine_global/migration) and `applicability` (required/optional/not_applicable) fields. The check order is locked by `TestRun_CheckCount`.
+- Doctor `git_repo` readiness must treat both `.git/` directories and regular `.git` worktree metadata files as valid; keep tests covering directory, file, and missing metadata cases.
 - For doctor checks that depend on GitHub context (`github_auth`), treat non-git directories, missing `origin`, and non-GitHub remotes as `status=skip` + `applicability=not_applicable`; only emit a warning with remediation `gh auth login` (`Safe=false`) when a valid GitHub remote lacks authentication.
-- The Codex linker uses `codexHome()` which prefers `$HOME` over `os.UserHomeDir()` so tests can isolate global link operations via `t.Setenv("HOME", tmpDir)`. All init tests must use `t.Setenv("HOME", dir)`.
+- The Codex linker centralizes global path resolution in `codexHome()`: `$CODEX_HOME` is the Codex root when set, otherwise use `$HOME/.codex`, then `os.UserHomeDir()/.codex`. Tests that assert HOME fallback must clear `CODEX_HOME`.
+- Codex linker tests should cover both path getters and actual symlink creation for skills and commands; command links live under `<codexHome>/commands/hal`.
+- Command tests for `hal links refresh codex` should use `runLinksRefreshFn(projectDir, []string{"codex"}, out)` with temp `CODEX_HOME` roots so multiple project/Codex-home pairs can be validated without cwd coupling.
+- Command tests for `hal links status --json --engine codex` should parse `LinksResult` from `runLinksStatusFn(projectDir, true, "codex", out)` and assert `SkillsDir`/`CommandsDir` under temp `CODEX_HOME` or `HOME/.codex` roots.
+- Doctor tests for `codex_global_links` should create links through `skills.GetLinker("codex").Link` after setting temp `CODEX_HOME`/`HOME`, then inspect the check from `doctor.Run`.
 - Tests that walk the shared global `Root()` Cobra command tree must NOT use `t.Parallel()` (race condition on Cobra command state).
 - The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor, blocks readiness only on doctor failures, and keeps warning-only doctor output advisory.
 - Status auto-state semantics are single-pipeline: emit `state=auto_active` when `.hal/auto-state.json` exists with `step != done`, emit `state=auto_inactive` when `step == done`, and normalize legacy step names (`prd/explode/loop/pr`) to unified step names before rendering status detail.
@@ -418,3 +435,37 @@
 
 - When adding or changing `hal ci` command surfaces, update the README command tables and machine-contract links together so human docs stay aligned with generated and machine-readable docs.
 - Regenerate CLI docs with `make docs-cli` and verify with `make docs-check`; commit both new command pages (`docs/cli/hal_ci*.md`) and any updated parent pages (for example `docs/cli/hal.md`).
+
+## Patterns from hal/factory-store-paths (2026-06-20)
+
+- Factory persistent state belongs in `internal/factory.Store`, rooted at `sandbox.GlobalDir()/factory`; do not put factory run records under per-project `.hal/`.
+- Use `Store.Ensure` or `EnsureStoreDir` to create `factory/`, `factory/runs/`, and `factory/timelines/` with `0700` permissions, and keep read-only list paths empty-state when directories are missing.
+- Persist factory run records through `Store.SaveRun` and load them through `Store.LoadRun`; committed records live at `factory/runs/<runID>.json`, writes use `0600` temp files plus rename, and missing loads should remain compatible with `errors.Is(err, fs.ErrNotExist)`.
+- Use `Store.ListRuns` when callers need full run records ordered newest-first by latest created/updated timestamp with run ID tie-breaking; keep `Store.ListRunIDs` for lexicographic ID-only listings.
+- Persist factory timeline events through `Store.AppendEvent` and read them through `Store.LoadEvents`; committed timelines live at `factory/timelines/<runID>.json` as ordered JSON arrays, writes use the same `0600` temp-file-plus-rename path, and missing timelines should load as empty event lists.
+- Keep factory read/list paths scoped to committed `*.json` artifacts via the shared committed-file predicate; stale `*.tmp` and `*.bak` files must remain invisible to run and timeline reads.
+
+## Patterns from hal/factory-list-json-command (2026-06-21)
+
+- Factory CLI surfaces live in `cmd/factory.go`; keep command logic behind injectable deps so tests can use isolated `factory.Store` roots instead of global config state.
+- `hal factory list --json` uses `FactoryListContractVersion` (`factory-list-v1`) and emits `runs` as summaries from `Store.ListRuns`; omit full `artifacts` and timeline events from list output, using `artifactCount` for compact history inspection.
+- `hal factory status <run-id> --json` uses `FactoryStatusContractVersion` (`factory-status-v1`) and emits full `run` plus append-ordered `timeline`; load the run before the timeline so missing run IDs return an error without writing a JSON payload.
+- Factory JSON contract changes should update exact top-level key locks in `cmd/machine_contracts_test.go`, docs/example sync in `cmd/contracts_doc_test.go`, and internal DTO round-trip tests in `internal/factory/types_test.go`.
+- Adding a new factory command page requires command metadata coverage plus `make docs-cli`/`make docs-check`, because generated `docs/cli/hal_factory*.md` files are part of CI drift checks.
+
+## Patterns from hal/local-factory-run-executor-wrapping-hal-auto (2026-06-21)
+
+- `hal factory run` command execution is wired through `factoryRunDeps` in `cmd/factory.go`; keep local pipeline invocation behind `runPipeline` so tests can avoid real engines, git/GitHub CLIs, network calls, and long-running `hal auto` work.
+- Create a pending `factory.RunRecord`, persist it through `factory.Store.SaveRun`, then persist the `running` transition before invoking the pipeline dependency; command tests should verify ordering by loading the injected `factory.NewStore(t.TempDir())` inside the pipeline stub.
+- `factory.RunRecord` now includes `executorMode` and source kind constants; when adding or renaming durable run fields, update `internal/factory/types_test.go`, `cmd/factory_test.go`, `cmd/contracts_doc_test.go`, and `docs/contracts/examples/factory-status-v1.json` together.
+- Factory run lifecycle timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use `factoryRunPipelineRequest.RecordProgress` for injected progress events and keep terminal lifecycle event recording outside the wrapped `hal auto` implementation.
+- Factory run artifact references are collected in the `cmd/factory.go` wrapper after the injected pipeline returns; preserve explicit source paths, use `template` constants for canonical `.hal` files, include the factory store run-record path, and keep missing optional `.hal` artifacts non-fatal.
+- Factory run result payloads and non-JSON summaries should be built from the saved `factory.RunRecord` and `Store.LoadEvents` after terminal status is persisted, so `hal factory run` output reflects durable state rather than transient in-memory state.
+- On factory run failures, render the JSON or human result before returning the original pipeline error; this preserves actionable output while keeping non-zero CLI exit behavior.
+- Factory run failure categories are constants in `internal/factory/types.go`; classify wrapped pipeline errors in `cmd/factory.go` from explicit exit codes, canonical `step <name> failed:` auto errors, and conservative message fragments, defaulting to `unknown` when context is insufficient.
+
+## Patterns from hal/factory-remote-workspace-bootstrap (2026-06-21)
+
+- Factory bootstrap request/result DTOs live in `internal/factory` alongside durable run/timeline records; keep them independent of command/runtime dependencies, and lock exported machine-readable fields with explicit JSON tags, raw-key assertions, and round-trip tests in `internal/factory/types_test.go`.
+- Bootstrap failure classification uses bootstrap-specific categories (`repo`, `auth`, `dependency`, `engine_setup`, `unknown`) in `internal/factory/bootstrap_failure.go`; keep this separate from generic factory run categories and avoid putting raw command output into timeline-ready failure messages.
+- Tooling verification bootstrap belongs in `internal/factory.BootstrapVerifyTooling`; configure Hal and engine checks with `BootstrapToolingCheck`, and use `InstallCommand` only with `BootstrapOptions.InstallMissingCLIs` so missing executables classify as `dependency` while failed setup commands classify as `engine_setup`.

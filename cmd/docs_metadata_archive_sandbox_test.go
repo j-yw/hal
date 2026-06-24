@@ -45,6 +45,11 @@ func TestCommandFamiliesHaveCompleteMetadata(t *testing.T) {
 			family:   "prd",
 			required: true,
 		},
+		{
+			name:     "factory command family",
+			family:   "factory",
+			required: true,
+		},
 	}
 
 	for _, tt := range tests {

@@ -80,6 +80,7 @@ Quick start:
 * [hal convert](hal_convert.md)	 - Convert markdown PRD to JSON
 * [hal doctor](hal_doctor.md)	 - Check Hal readiness and environment health
 * [hal explode](hal_explode.md)	 - Deprecated shim for 'hal convert --granular'
+* [hal factory](hal_factory.md)	 - Run and inspect factory workflows
 * [hal init](hal_init.md)	 - Initialize .hal/ directory
 * [hal links](hal_links.md)	 - Manage engine skill links
 * [hal plan](hal_plan.md)	 - Generate a PRD interactively
