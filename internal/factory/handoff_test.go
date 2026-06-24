@@ -229,6 +229,7 @@ func TestSanitizeHandoffFailureReasonRedactsSecretURLFragmentValues(t *testing.T
 func TestSanitizeHandoffFailureReasonRedactsSSHHostnames(t *testing.T) {
 	tests := []string{
 		"remote command failed: ssh ubuntu@sandbox.example.com:22 failed",
+		"remote command failed: ssh -o StrictHostKeyChecking=no ubuntu@sandbox.example.com failed",
 		"remote command failed: ssh sandbox.example.com failed",
 		"remote connection failed: ssh://sandbox.example.com",
 		"provider returned ubuntu@sandbox.example.com:22",

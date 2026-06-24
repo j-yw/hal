@@ -641,9 +641,11 @@ func handoffStringContainsSSHHost(value string) bool {
 			if strings.HasPrefix(next, "-") {
 				continue
 			}
-			return handoffSSHURLContainsHost(next) ||
+			if handoffSSHURLContainsHost(next) ||
 				handoffFieldIsSSHUserHost(next) ||
-				handoffFieldIsSSHBareHost(next)
+				handoffFieldIsSSHBareHost(next) {
+				return true
+			}
 		}
 	}
 	return false
