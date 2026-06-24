@@ -22,17 +22,18 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 	deps := normalizeFactorySandboxExecutorDeps(factorySandboxExecutorDeps{})
 
 	checks := map[string]any{
-		"defaultStore":    deps.defaultStore,
-		"now":             deps.now,
-		"resolveDefault":  deps.resolveDefault,
-		"loadSandbox":     deps.loadSandbox,
-		"provision":       deps.provision,
-		"startSandbox":    deps.startSandbox,
-		"resolveProvider": deps.resolveProvider,
-		"runProviderExec": deps.runProviderExec,
-		"bootstrap":       deps.bootstrap,
-		"saveRun":         deps.saveRun,
-		"appendEvent":     deps.appendEvent,
+		"defaultStore":             deps.defaultStore,
+		"now":                      deps.now,
+		"resolveDefault":           deps.resolveDefault,
+		"loadSandbox":              deps.loadSandbox,
+		"provision":                deps.provision,
+		"startSandbox":             deps.startSandbox,
+		"resolveProvider":          deps.resolveProvider,
+		"runProviderExec":          deps.runProviderExec,
+		"runProviderExecWithInput": deps.runProviderExecWithInput,
+		"bootstrap":                deps.bootstrap,
+		"saveRun":                  deps.saveRun,
+		"appendEvent":              deps.appendEvent,
 	}
 	for name, fn := range checks {
 		if reflect.ValueOf(fn).IsNil() {
@@ -488,7 +489,7 @@ func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStre
 		},
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
 			execCalls++
-			if strings.Contains(strings.Join(args, "\x00"), "\x00git\x00clone\x00") {
+			if strings.Contains(strings.Join(args, "\x00"), "git\x00clone\x00") {
 				_, err := io.WriteString(out, "cloning with "+secret+"\n")
 				return err
 			}
@@ -1707,17 +1708,42 @@ func TestFactorySandboxBootstrapExecutorPreservesExitCode(t *testing.T) {
 }
 
 func TestFactorySandboxBootstrapCommandArgsCreatesWorkingDirectoryBeforeExec(t *testing.T) {
-	got := factorySandboxBootstrapCommandArgs(factory.BootstrapCommand{
+	invocation := factorySandboxBootstrapCommandInvocation(factory.BootstrapCommand{
 		Name: "git",
 		Args: []string{"clone", "git@github.com:example/repo.git", "/workspace/repo"},
 		Dir:  "/workspace",
 		Env: map[string]string{
+			"GITHUB_TOKEN":        "super-secret-token",
 			"GIT_TERMINAL_PROMPT": "0",
 		},
 	})
-	want := []string{"sh", "-lc", "mkdir -p '/workspace' && cd '/workspace' && exec 'env' 'GIT_TERMINAL_PROMPT=0' 'git' 'clone' 'git@github.com:example/repo.git' '/workspace/repo'"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("bootstrap args = %#v, want %#v", got, want)
+	want := []string{"sh", "-s", "--", "git", "clone", "git@github.com:example/repo.git", "/workspace/repo"}
+	if !reflect.DeepEqual(invocation.args, want) {
+		t.Fatalf("bootstrap args = %#v, want %#v", invocation.args, want)
+	}
+	joinedArgs := strings.Join(invocation.args, " ")
+	if strings.Contains(joinedArgs, "super-secret-token") || strings.Contains(joinedArgs, "GITHUB_TOKEN=") {
+		t.Fatalf("bootstrap args leaked environment: %#v", invocation.args)
+	}
+	if invocation.input == nil {
+		t.Fatal("bootstrap input = nil, want stdin script")
+	}
+	input, err := io.ReadAll(invocation.input)
+	if err != nil {
+		t.Fatalf("ReadAll() error: %v", err)
+	}
+	script := string(input)
+	required := []string{
+		"export GITHUB_TOKEN='super-secret-token'",
+		"export GIT_TERMINAL_PROMPT='0'",
+		"mkdir -p '/workspace'",
+		"cd '/workspace'",
+		"exec \"$@\"",
+	}
+	for _, wantLine := range required {
+		if !strings.Contains(script, wantLine) {
+			t.Fatalf("bootstrap input missing %q in:\n%s", wantLine, script)
+		}
 	}
 }
 

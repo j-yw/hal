@@ -40,18 +40,19 @@ type factorySandboxExecutorRequest struct {
 }
 
 type factorySandboxExecutorDeps struct {
-	defaultStore    func() (factory.Store, error)
-	now             func() time.Time
-	resolveDefault  func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
-	loadSandbox     func(string) (*sandbox.SandboxState, error)
-	provision       func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
-	startSandbox    func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
-	resolveProvider func(string) (sandbox.Provider, error)
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	syncAgentAuth   func(context.Context, sandbox.Provider, *sandbox.SandboxState, io.Writer) error
-	bootstrap       func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
-	saveRun         func(factory.Store, *factory.RunRecord) error
-	appendEvent     func(factory.Store, *factory.EventRecord) error
+	defaultStore             func() (factory.Store, error)
+	now                      func() time.Time
+	resolveDefault           func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
+	loadSandbox              func(string) (*sandbox.SandboxState, error)
+	provision                func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	startSandbox             func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
+	resolveProvider          func(string) (sandbox.Provider, error)
+	runProviderExec          func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithInput func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Reader, io.Writer) error
+	syncAgentAuth            func(context.Context, sandbox.Provider, *sandbox.SandboxState, io.Writer) error
+	bootstrap                func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	saveRun                  func(factory.Store, *factory.RunRecord) error
+	appendEvent              func(factory.Store, *factory.EventRecord) error
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
@@ -64,11 +65,12 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
-	runProviderExec: runFactorySandboxProviderExec,
-	syncAgentAuth:   syncFactorySandboxAgentAuth,
-	bootstrap:       factory.BootstrapWorkspace,
-	saveRun:         saveFactorySandboxRunRecord,
-	appendEvent:     appendFactorySandboxTimelineEvent,
+	runProviderExec:          runFactorySandboxProviderExec,
+	runProviderExecWithInput: runFactorySandboxProviderExecWithInput,
+	syncAgentAuth:            syncFactorySandboxAgentAuth,
+	bootstrap:                factory.BootstrapWorkspace,
+	saveRun:                  saveFactorySandboxRunRecord,
+	appendEvent:              appendFactorySandboxTimelineEvent,
 }
 
 var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
@@ -78,6 +80,7 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 var factorySandboxURLUserinfoPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	customRunProviderExec := deps.runProviderExec != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
 	}
@@ -101,6 +104,15 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
+	}
+	if deps.runProviderExecWithInput == nil {
+		if customRunProviderExec {
+			deps.runProviderExecWithInput = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, _ io.Reader, out io.Writer) error {
+				return deps.runProviderExec(ctx, provider, info, args, out)
+			}
+		} else {
+			deps.runProviderExecWithInput = defaultFactorySandboxExecutorDeps.runProviderExecWithInput
+		}
 	}
 	if deps.syncAgentAuth == nil {
 		deps.syncAgentAuth = func(context.Context, sandbox.Provider, *sandbox.SandboxState, io.Writer) error {
@@ -229,9 +241,10 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		connectInfo := sandbox.ConnectInfoFromState(target)
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
-				provider:        provider,
-				connectInfo:     connectInfo,
-				runProviderExec: deps.runProviderExec,
+				provider:                 provider,
+				connectInfo:              connectInfo,
+				runProviderExec:          deps.runProviderExec,
+				runProviderExecWithInput: deps.runProviderExecWithInput,
 				// Bootstrap timelines are persisted from sanitized BootstrapResult
 				// events; stream raw command output only to the caller-facing writer.
 				out: req.RemoteOutput,
@@ -481,14 +494,15 @@ func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summ
 }
 
 type factorySandboxBootstrapExecutor struct {
-	provider        sandbox.Provider
-	connectInfo     *sandbox.ConnectInfo
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	out             io.Writer
+	provider                 sandbox.Provider
+	connectInfo              *sandbox.ConnectInfo
+	runProviderExec          func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithInput func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Reader, io.Writer) error
+	out                      io.Writer
 }
 
 func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command factory.BootstrapCommand) (factory.BootstrapCommandResult, error) {
-	if e == nil || e.runProviderExec == nil {
+	if e == nil || (e.runProviderExec == nil && e.runProviderExecWithInput == nil) {
 		return factory.BootstrapCommandResult{}, fmt.Errorf("sandbox bootstrap executor is required")
 	}
 	var summary bytes.Buffer
@@ -496,7 +510,21 @@ func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command facto
 	if e.out != nil {
 		out = io.MultiWriter(e.out, &summary)
 	}
-	err := e.runProviderExec(ctx, e.provider, e.connectInfo, factorySandboxBootstrapCommandArgs(command), out)
+	invocation := factorySandboxBootstrapCommandInvocation(command)
+	var err error
+	if invocation.input != nil {
+		runWithInput := e.runProviderExecWithInput
+		if runWithInput == nil {
+			runWithInput = runFactorySandboxProviderExecWithInput
+		}
+		err = runWithInput(ctx, e.provider, e.connectInfo, invocation.args, invocation.input, out)
+	} else {
+		if e.runProviderExec != nil {
+			err = e.runProviderExec(ctx, e.provider, e.connectInfo, invocation.args, out)
+		} else {
+			err = e.runProviderExecWithInput(ctx, e.provider, e.connectInfo, invocation.args, nil, out)
+		}
+	}
 	exitCode := 0
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -508,18 +536,50 @@ func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command facto
 	}, err
 }
 
+type factorySandboxBootstrapInvocation struct {
+	args  []string
+	input io.Reader
+}
+
 func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []string {
-	args := []string{"env"}
-	for _, key := range sortedStringMapKeys(command.Env) {
-		args = append(args, key+"="+command.Env[key])
-	}
-	args = append(args, strings.TrimSpace(command.Name))
+	return factorySandboxBootstrapCommandInvocation(command).args
+}
+
+func factorySandboxBootstrapCommandInvocation(command factory.BootstrapCommand) factorySandboxBootstrapInvocation {
+	args := []string{strings.TrimSpace(command.Name)}
 	args = append(args, command.Args...)
-	if dir := strings.TrimSpace(command.Dir); dir != "" {
-		quotedDir := shellQuote(dir)
-		return []string{"sh", "-lc", "mkdir -p " + quotedDir + " && cd " + quotedDir + " && exec " + shellCommand(args)}
+	if len(command.Env) == 0 && strings.TrimSpace(command.Dir) == "" {
+		return factorySandboxBootstrapInvocation{args: args}
 	}
-	return args
+
+	script := factorySandboxBootstrapStdinScript(command)
+	scriptArgs := []string{"sh", "-s", "--", strings.TrimSpace(command.Name)}
+	scriptArgs = append(scriptArgs, command.Args...)
+	return factorySandboxBootstrapInvocation{
+		args:  scriptArgs,
+		input: strings.NewReader(script),
+	}
+}
+
+func factorySandboxBootstrapStdinScript(command factory.BootstrapCommand) string {
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	for _, key := range sortedStringMapKeys(command.Env) {
+		script.WriteString("export ")
+		script.WriteString(key)
+		script.WriteString("=")
+		script.WriteString(shellQuote(command.Env[key]))
+		script.WriteString("\n")
+	}
+	if dir := strings.TrimSpace(command.Dir); dir != "" {
+		script.WriteString("mkdir -p ")
+		script.WriteString(shellQuote(dir))
+		script.WriteString("\ncd ")
+		script.WriteString(shellQuote(dir))
+		script.WriteString("\n")
+	}
+	script.WriteString("exec \"$@\"\n")
+	return script.String()
 }
 
 func sortedStringMapKeys(values map[string]string) []string {
@@ -1175,12 +1235,19 @@ func startFactorySandbox(ctx context.Context, instance *sandbox.SandboxState, ou
 }
 
 func runFactorySandboxProviderExec(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+	return runFactorySandboxProviderExecWithInput(ctx, provider, info, args, nil, out)
+}
+
+func runFactorySandboxProviderExecWithInput(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, input io.Reader, out io.Writer) error {
 	if provider == nil {
 		return fmt.Errorf("sandbox provider is required")
 	}
 	cmd, err := provider.Exec(info, args)
 	if err != nil {
 		return err
+	}
+	if input != nil {
+		cmd.Stdin = input
 	}
 	return sandbox.RunCmdContext(ctx, cmd, out)
 }
