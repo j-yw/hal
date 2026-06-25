@@ -19,6 +19,7 @@ const (
 	factoryStoreDirName = "factory"
 	runsDirName         = "runs"
 	timelinesDirName    = "timelines"
+	logsDirName         = "logs"
 	artifactsDirName    = "artifacts"
 	runRecordFileExt    = ".json"
 	storeTempFileExt    = ".tmp"
@@ -95,6 +96,14 @@ func (s Store) ArtifactsDir() string {
 	return filepath.Join(s.root, artifactsDirName)
 }
 
+// LogsDir returns the directory containing committed run log chunks.
+func (s Store) LogsDir() string {
+	if s.root == "" {
+		return ""
+	}
+	return filepath.Join(s.root, logsDirName)
+}
+
 // Ensure creates the store root and known subdirectories using restrictive
 // permissions consistent with the global sandbox registry.
 func (s Store) Ensure() error {
@@ -109,6 +118,7 @@ func (s Store) Ensure() error {
 		{name: "factory store", path: s.root},
 		{name: "factory runs", path: s.RunsDir()},
 		{name: "factory timelines", path: s.TimelinesDir()},
+		{name: "factory logs", path: s.LogsDir()},
 		{name: "factory artifacts", path: s.ArtifactsDir()},
 	}
 
@@ -320,6 +330,50 @@ func (s Store) AppendEvent(event *EventRecord) error {
 	return nil
 }
 
+// AppendLogChunk durably appends a log chunk to a run's stored logs.
+func (s Store) AppendLogChunk(chunk *LogChunk) error {
+	if chunk == nil {
+		return fmt.Errorf("factory log chunk is required")
+	}
+
+	path, err := s.logPath(chunk.RunID)
+	if err != nil {
+		return err
+	}
+	if err := s.Ensure(); err != nil {
+		return err
+	}
+
+	chunks, err := s.loadLogChunks(chunk.RunID, path)
+	if err != nil {
+		return err
+	}
+	record := *chunk
+	record.Sequence = nextLogChunkSequence(chunks)
+	chunks = append(chunks, record)
+
+	data, err := json.MarshalIndent(chunks, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory logs %q: %w", chunk.RunID, err)
+	}
+	data = append(data, '\n')
+
+	tmpPath := path + storeTempFileExt
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return fmt.Errorf("write factory logs %q: %w", chunk.RunID, err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod factory logs %q: %w", chunk.RunID, err)
+	}
+	if err := saveStoreFile(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("save factory logs %q: %w", chunk.RunID, err)
+	}
+
+	return nil
+}
+
 // LoadEvents loads a run's committed timeline events in append order.
 func (s Store) LoadEvents(runID string) ([]EventRecord, error) {
 	path, err := s.timelinePath(runID)
@@ -327,6 +381,15 @@ func (s Store) LoadEvents(runID string) ([]EventRecord, error) {
 		return nil, err
 	}
 	return s.loadEvents(runID, path)
+}
+
+// LoadLogChunks loads a run's committed log chunks in append order.
+func (s Store) LoadLogChunks(runID string) ([]LogChunk, error) {
+	path, err := s.logPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	return s.loadLogChunks(runID, path)
 }
 
 // ListRuns returns committed run records ordered newest-first by their latest
@@ -427,6 +490,20 @@ func (s Store) timelinePath(runID string) (string, error) {
 	return filepath.Join(timelinesDir, runID+runRecordFileExt), nil
 }
 
+func (s Store) logPath(runID string) (string, error) {
+	logsDir := s.LogsDir()
+	if logsDir == "" {
+		return "", errStoreDirUnavailable
+	}
+
+	runID, err := validateRunID(runID)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(logsDir, runID+runRecordFileExt), nil
+}
+
 func validateRunID(runID string) (string, error) {
 	trimmedRunID := strings.TrimSpace(runID)
 	if trimmedRunID == "" {
@@ -458,6 +535,33 @@ func (s Store) loadEvents(runID, path string) ([]EventRecord, error) {
 	}
 
 	return events, nil
+}
+
+func (s Store) loadLogChunks(runID, path string) ([]LogChunk, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read factory logs %q: %w", runID, err)
+	}
+
+	var chunks []LogChunk
+	if err := json.Unmarshal(data, &chunks); err != nil {
+		return nil, fmt.Errorf("parse factory logs %q: %w", runID, err)
+	}
+
+	return chunks, nil
+}
+
+func nextLogChunkSequence(chunks []LogChunk) int64 {
+	var maxSequence int64
+	for _, chunk := range chunks {
+		if chunk.Sequence > maxSequence {
+			maxSequence = chunk.Sequence
+		}
+	}
+	return maxSequence + 1
 }
 
 func runRecordListTimestamp(record RunRecord) time.Time {

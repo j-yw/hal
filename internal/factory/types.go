@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 )
 
@@ -67,12 +68,74 @@ const (
 
 // Failure category values.
 const (
-	FailureCategoryValidation = "validation"
-	FailureCategoryPipeline   = "pipeline"
-	FailureCategoryEngine     = "engine"
-	FailureCategoryGit        = "git"
-	FailureCategoryCI         = "ci"
-	FailureCategoryUnknown    = "unknown"
+	FailureCategorySetup        = "setup"
+	FailureCategoryEngine       = "engine"
+	FailureCategoryPRD          = "PRD"
+	FailureCategoryRun          = "run"
+	FailureCategoryReview       = "review"
+	FailureCategoryVerification = "verification"
+	FailureCategoryCI           = "CI"
+	FailureCategorySandbox      = "sandbox"
+	FailureCategoryQueue        = "queue"
+	FailureCategoryUnknown      = "unknown"
+)
+
+// SupportedFailureCategories returns the stable failure category contract in
+// display order.
+func SupportedFailureCategories() []string {
+	return []string{
+		FailureCategorySetup,
+		FailureCategoryEngine,
+		FailureCategoryPRD,
+		FailureCategoryRun,
+		FailureCategoryReview,
+		FailureCategoryVerification,
+		FailureCategoryCI,
+		FailureCategorySandbox,
+		FailureCategoryQueue,
+		FailureCategoryUnknown,
+	}
+}
+
+// NormalizeFailureCategory resolves missing or unsupported categories to the
+// stable unknown category.
+func NormalizeFailureCategory(category string) string {
+	trimmedCategory := strings.TrimSpace(category)
+	for _, supportedCategory := range SupportedFailureCategories() {
+		if trimmedCategory == supportedCategory {
+			return trimmedCategory
+		}
+	}
+	return FailureCategoryUnknown
+}
+
+// NormalizeFailureCategoryForContractV1 maps detailed failure categories onto
+// the legacy factory v1 contract category set.
+func NormalizeFailureCategoryForContractV1(category string) string {
+	switch strings.TrimSpace(category) {
+	case FailureCategoryPRD, FailureCategoryVerification, "validation":
+		return "validation"
+	case FailureCategoryRun, FailureCategoryReview, FailureCategorySandbox, FailureCategoryQueue, "pipeline":
+		return "pipeline"
+	case FailureCategoryEngine:
+		return "engine"
+	case FailureCategorySetup, "git":
+		return "git"
+	case FailureCategoryCI, "ci":
+		return "ci"
+	case FailureCategoryUnknown:
+		return FailureCategoryUnknown
+	default:
+		return FailureCategoryUnknown
+	}
+}
+
+// Next action type values.
+const (
+	NextActionTypeInspect   = "inspect"
+	NextActionTypeTakeover  = "takeover"
+	NextActionTypeContinue  = "continue"
+	NextActionTypeCompleted = "completed"
 )
 
 // Timeline event type values.
@@ -104,6 +167,52 @@ const (
 	PolicyOutcomeBlocked  = "blocked"
 )
 
+// Log stream values.
+const (
+	LogStreamStdout  = "stdout"
+	LogStreamStderr  = "stderr"
+	LogStreamSummary = "summary"
+)
+
+// Log source values.
+const (
+	LogSourceLocalFactory  = "local_factory"
+	LogSourceRemoteSandbox = "remote_sandbox"
+	LogSourceEngine        = "engine"
+)
+
+// Run duration step values. These are the only lifecycle step names used for
+// derived per-step duration telemetry.
+const (
+	RunDurationStepSetup            = "setup"
+	RunDurationStepQueueClaim       = "queue_claim"
+	RunDurationStepSandboxProvision = "sandbox_provision"
+	RunDurationStepSandboxStart     = "sandbox_start"
+	RunDurationStepEngineRun        = "engine_run"
+	RunDurationStepReview           = "review"
+	RunDurationStepVerification     = "verification"
+	RunDurationStepCI               = "ci"
+	RunDurationStepArtifactCollect  = "artifact_collection"
+	RunDurationStepFinalization     = "finalization"
+)
+
+// SupportedRunDurationSteps returns the stable step names that can produce
+// derived per-step duration telemetry.
+func SupportedRunDurationSteps() []string {
+	return []string{
+		RunDurationStepSetup,
+		RunDurationStepQueueClaim,
+		RunDurationStepSandboxProvision,
+		RunDurationStepSandboxStart,
+		RunDurationStepEngineRun,
+		RunDurationStepReview,
+		RunDurationStepVerification,
+		RunDurationStepCI,
+		RunDurationStepArtifactCollect,
+		RunDurationStepFinalization,
+	}
+}
+
 // RunRecord captures persisted state for one factory run.
 type RunRecord struct {
 	RunID        string              `json:"runId"`
@@ -124,6 +233,7 @@ type RunRecord struct {
 	FinishedAt   *time.Time          `json:"finishedAt,omitempty"`
 	Artifacts    []ArtifactReference `json:"artifacts,omitempty"`
 	Verification *VerificationRecord `json:"verification,omitempty"`
+	Telemetry    *RunTelemetry       `json:"telemetry,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
 }
 
@@ -132,6 +242,7 @@ type RunRecord struct {
 type SandboxMetadata struct {
 	Name           string                     `json:"name"`
 	Provider       string                     `json:"provider"`
+	Size           string                     `json:"size,omitempty"`
 	Status         string                     `json:"status"`
 	Connection     *SandboxConnectionMetadata `json:"connection,omitempty"`
 	SSHCommand     string                     `json:"sshCommand,omitempty"`
@@ -179,6 +290,46 @@ type VerificationRecord struct {
 	Artifacts []verify.ArtifactReference `json:"artifacts,omitempty"`
 }
 
+// RunTelemetry captures optional observability fields for factory run summaries.
+// Population is best-effort and additive so older records can omit it entirely.
+type RunTelemetry struct {
+	TotalDurationMs      *int64               `json:"totalDurationMs,omitempty"`
+	StepDurations        []RunStepDuration    `json:"stepDurations,omitempty"`
+	Engine               *EngineTelemetry     `json:"engine,omitempty"`
+	Sandbox              *RunSandboxTelemetry `json:"sandbox,omitempty"`
+	EstimatedSandboxCost *SandboxCostEstimate `json:"estimatedSandboxCost,omitempty"`
+	CIOutcome            string               `json:"ciOutcome,omitempty"`
+	VerificationOutcome  string               `json:"verificationOutcome,omitempty"`
+	ArtifactCount        *int                 `json:"artifactCount,omitempty"`
+	FailureCategory      string               `json:"failureCategory,omitempty"`
+}
+
+// RunStepDuration captures derived timing for one factory lifecycle step.
+type RunStepDuration struct {
+	Step       string    `json:"step"`
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt"`
+	DurationMs int64     `json:"durationMs"`
+}
+
+// EngineTelemetry captures the engine execution context when known.
+type EngineTelemetry struct {
+	Name  string `json:"name,omitempty"`
+	Model string `json:"model,omitempty"`
+}
+
+// RunSandboxTelemetry captures sandbox execution resources when known.
+type RunSandboxTelemetry struct {
+	Provider string `json:"provider,omitempty"`
+	Size     string `json:"size,omitempty"`
+}
+
+// SandboxCostEstimate captures an estimated sandbox cost when pricing is known.
+type SandboxCostEstimate struct {
+	AmountUSD float64 `json:"amountUsd"`
+	Estimated bool    `json:"estimated"`
+}
+
 // FailureSummary records the terminal failure context for a run.
 type FailureSummary struct {
 	Step             string `json:"step"`
@@ -187,6 +338,33 @@ type FailureSummary struct {
 	Recoverable      bool   `json:"recoverable"`
 	SuggestedCommand string `json:"suggestedCommand,omitempty"`
 	ExitCode         int    `json:"exitCode,omitempty"`
+}
+
+// NextAction is the shared factory handoff guidance model. It intentionally
+// carries only durable run context and safe local commands; sandbox connection
+// addresses and other network endpoints do not belong here.
+type NextAction struct {
+	ID                string               `json:"id"`
+	Type              string               `json:"type"`
+	Command           string               `json:"command"`
+	Description       string               `json:"description"`
+	RunID             string               `json:"runId,omitempty"`
+	SandboxName       string               `json:"sandboxName,omitempty"`
+	RepoPath          string               `json:"repoPath,omitempty"`
+	BranchName        string               `json:"branchName,omitempty"`
+	PullRequestURL    string               `json:"pullRequestUrl,omitempty"`
+	CurrentStep       string               `json:"currentStep,omitempty"`
+	FailureReason     string               `json:"failureReason,omitempty"`
+	ArtifactLocations []NextActionLocation `json:"artifactLocations,omitempty"`
+	LogLocations      []NextActionLocation `json:"logLocations,omitempty"`
+}
+
+// NextActionLocation identifies a safe local or store-backed location relevant
+// to next-action handoff output.
+type NextActionLocation struct {
+	Name       string `json:"name,omitempty"`
+	Path       string `json:"path,omitempty"`
+	StoredPath string `json:"storedPath,omitempty"`
 }
 
 // QueueEntry captures one durable factory queue item.
@@ -239,4 +417,339 @@ func (m PolicyDecisionMetadata) EventMetadata() map[string]any {
 		"outcome":     strings.TrimSpace(m.Outcome),
 		"reason":      strings.TrimSpace(m.Reason),
 	}
+}
+
+// LogChunk captures one durable factory log chunk or summarized output line.
+type LogChunk struct {
+	Sequence  int64     `json:"sequence"`
+	RunID     string    `json:"runId"`
+	Stream    string    `json:"stream,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	Text      string    `json:"text,omitempty"`
+	Summary   string    `json:"summary,omitempty"`
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+}
+
+// DeriveRunTelemetry returns a copy of the record telemetry enriched with
+// timing fields derivable from the durable run record and timeline.
+func DeriveRunTelemetry(record RunRecord, events []EventRecord) *RunTelemetry {
+	telemetry := cloneRunTelemetry(record.Telemetry)
+
+	if totalDurationMs, ok := deriveRunTotalDuration(record); ok {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.TotalDurationMs == nil {
+			telemetry.TotalDurationMs = &totalDurationMs
+		}
+	}
+
+	stepDurations := DeriveRunStepDurations(events)
+	if len(stepDurations) > 0 {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if len(telemetry.StepDurations) == 0 {
+			telemetry.StepDurations = stepDurations
+		}
+	}
+
+	if sandboxTelemetry := deriveSandboxTelemetry(record); sandboxTelemetry != nil {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.Sandbox == nil {
+			telemetry.Sandbox = sandboxTelemetry
+		}
+	}
+
+	if costEstimate := deriveSandboxCostEstimate(record, telemetry); costEstimate != nil {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.EstimatedSandboxCost == nil {
+			telemetry.EstimatedSandboxCost = costEstimate
+		}
+	}
+
+	if ciOutcome := deriveOutcome(record, events, "ci"); ciOutcome != "" {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if strings.TrimSpace(telemetry.CIOutcome) == "" {
+			telemetry.CIOutcome = ciOutcome
+		}
+	}
+
+	if verificationOutcome := deriveOutcome(record, events, "verification"); verificationOutcome != "" {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if strings.TrimSpace(telemetry.VerificationOutcome) == "" {
+			telemetry.VerificationOutcome = verificationOutcome
+		}
+	}
+
+	if len(record.Artifacts) > 0 {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		if telemetry.ArtifactCount == nil {
+			artifactCount := len(record.Artifacts)
+			telemetry.ArtifactCount = &artifactCount
+		}
+	}
+
+	if telemetry != nil && strings.TrimSpace(telemetry.FailureCategory) != "" {
+		telemetry.FailureCategory = NormalizeFailureCategoryForContractV1(telemetry.FailureCategory)
+	}
+	if record.Failure != nil {
+		if telemetry == nil {
+			telemetry = &RunTelemetry{}
+		}
+		telemetry.FailureCategory = NormalizeFailureCategoryForContractV1(record.Failure.Category)
+	}
+
+	return telemetry
+}
+
+// DeriveRunStepDurations derives valid step duration pairs from timeline
+// events. Partial, unsupported, or out-of-order pairs are skipped.
+func DeriveRunStepDurations(events []EventRecord) []RunStepDuration {
+	startedAtByStep := map[string]time.Time{}
+	durations := []RunStepDuration{}
+
+	for _, event := range events {
+		step := eventDurationStep(event)
+		if step == "" || event.Timestamp.IsZero() {
+			continue
+		}
+
+		switch event.EventType {
+		case EventTypeStepStarted:
+			startedAtByStep[step] = event.Timestamp
+		case EventTypeStepEnded:
+			startedAt, ok := startedAtByStep[step]
+			if !ok || startedAt.IsZero() || event.Timestamp.Before(startedAt) {
+				continue
+			}
+			durations = append(durations, RunStepDuration{
+				Step:       step,
+				StartedAt:  startedAt,
+				FinishedAt: event.Timestamp,
+				DurationMs: event.Timestamp.Sub(startedAt).Milliseconds(),
+			})
+			delete(startedAtByStep, step)
+		}
+	}
+
+	return durations
+}
+
+func deriveRunTotalDuration(record RunRecord) (int64, bool) {
+	if record.CreatedAt.IsZero() || record.FinishedAt == nil || record.FinishedAt.IsZero() {
+		return 0, false
+	}
+	if record.FinishedAt.Before(record.CreatedAt) {
+		return 0, false
+	}
+	return record.FinishedAt.Sub(record.CreatedAt).Milliseconds(), true
+}
+
+func deriveSandboxTelemetry(record RunRecord) *RunSandboxTelemetry {
+	if record.Sandbox == nil {
+		return nil
+	}
+	telemetry := &RunSandboxTelemetry{
+		Provider: strings.TrimSpace(record.Sandbox.Provider),
+		Size:     strings.TrimSpace(record.Sandbox.Size),
+	}
+	if telemetry.Provider == "" && telemetry.Size == "" {
+		return nil
+	}
+	return telemetry
+}
+
+func deriveSandboxCostEstimate(record RunRecord, telemetry *RunTelemetry) *SandboxCostEstimate {
+	if telemetry == nil || telemetry.Sandbox == nil || record.CreatedAt.IsZero() {
+		return nil
+	}
+	if telemetry.TotalDurationMs == nil {
+		return nil
+	}
+	provider := strings.TrimSpace(telemetry.Sandbox.Provider)
+	size := strings.TrimSpace(telemetry.Sandbox.Size)
+	if provider == "" || size == "" {
+		return nil
+	}
+	finishedAt := record.CreatedAt.Add(time.Duration(*telemetry.TotalDurationMs) * time.Millisecond)
+	instance := &sandbox.SandboxState{
+		Provider:  provider,
+		Size:      size,
+		CreatedAt: record.CreatedAt,
+	}
+	cost := sandbox.EstimatedCost(instance, func() time.Time { return finishedAt })
+	if cost < 0 {
+		return nil
+	}
+	return &SandboxCostEstimate{
+		AmountUSD: cost,
+		Estimated: true,
+	}
+}
+
+func deriveOutcome(record RunRecord, events []EventRecord, kind string) string {
+	if record.Telemetry != nil {
+		switch kind {
+		case "ci":
+			if outcome := strings.TrimSpace(record.Telemetry.CIOutcome); outcome != "" {
+				return outcome
+			}
+		case "verification":
+			if outcome := strings.TrimSpace(record.Telemetry.VerificationOutcome); outcome != "" {
+				return outcome
+			}
+		}
+	}
+	if outcome := deriveOutcomeFromArtifacts(record.Artifacts, kind); outcome != "" {
+		return outcome
+	}
+	return deriveOutcomeFromEvents(events, kind)
+}
+
+func deriveOutcomeFromArtifacts(artifacts []ArtifactReference, kind string) string {
+	for _, artifact := range artifacts {
+		if artifact.Summary == nil {
+			continue
+		}
+		outcomeKind, _ := artifact.Summary["outcomeKind"].(string)
+		if strings.TrimSpace(outcomeKind) != kind {
+			continue
+		}
+		if status, _ := artifact.Summary["status"].(string); strings.TrimSpace(status) != "" {
+			return strings.TrimSpace(status)
+		}
+	}
+	return ""
+}
+
+func deriveOutcomeFromEvents(events []EventRecord, kind string) string {
+	if kind == "verification" {
+		if outcome := deriveVerificationOutcomeFromResultEvents(events); outcome != "" {
+			return outcome
+		}
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Metadata == nil {
+			continue
+		}
+		step, _ := event.Metadata["step"].(string)
+		if strings.TrimSpace(step) != kind {
+			continue
+		}
+		status, _ := event.Metadata["status"].(string)
+		status = strings.TrimSpace(status)
+		switch status {
+		case RunStatusSucceeded:
+			return "passed"
+		case RunStatusFailed:
+			return "failed"
+		case "skipped":
+			return "skipped"
+		}
+	}
+	return ""
+}
+
+func deriveVerificationOutcomeFromResultEvents(events []EventRecord) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.EventType != EventTypeVerificationResult || event.Metadata == nil {
+			continue
+		}
+		status, _ := event.Metadata["status"].(string)
+		return normalizeVerificationOutcome(status)
+	}
+	return ""
+}
+
+func normalizeVerificationOutcome(status string) string {
+	switch strings.TrimSpace(status) {
+	case verify.StatusPass, RunStatusSucceeded:
+		return "passed"
+	case verify.StatusFail, RunStatusFailed:
+		return "failed"
+	case verify.StatusWarn:
+		return verify.StatusWarn
+	case "skipped":
+		return "skipped"
+	default:
+		return strings.TrimSpace(status)
+	}
+}
+
+func eventDurationStep(event EventRecord) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	step, ok := event.Metadata["step"].(string)
+	if !ok {
+		return ""
+	}
+	step = strings.TrimSpace(step)
+	if !isSupportedRunDurationStep(step) {
+		return ""
+	}
+	return step
+}
+
+func isSupportedRunDurationStep(step string) bool {
+	switch step {
+	case RunDurationStepSetup,
+		RunDurationStepQueueClaim,
+		RunDurationStepSandboxProvision,
+		RunDurationStepSandboxStart,
+		RunDurationStepEngineRun,
+		RunDurationStepReview,
+		RunDurationStepVerification,
+		RunDurationStepCI,
+		RunDurationStepArtifactCollect,
+		RunDurationStepFinalization:
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneRunTelemetry(src *RunTelemetry) *RunTelemetry {
+	if src == nil {
+		return nil
+	}
+
+	dst := *src
+	if src.TotalDurationMs != nil {
+		totalDurationMs := *src.TotalDurationMs
+		dst.TotalDurationMs = &totalDurationMs
+	}
+	if len(src.StepDurations) > 0 {
+		dst.StepDurations = append([]RunStepDuration(nil), src.StepDurations...)
+	}
+	if src.Engine != nil {
+		engine := *src.Engine
+		dst.Engine = &engine
+	}
+	if src.Sandbox != nil {
+		sandbox := *src.Sandbox
+		dst.Sandbox = &sandbox
+	}
+	if src.EstimatedSandboxCost != nil {
+		estimatedSandboxCost := *src.EstimatedSandboxCost
+		dst.EstimatedSandboxCost = &estimatedSandboxCost
+	}
+	if src.ArtifactCount != nil {
+		artifactCount := *src.ArtifactCount
+		dst.ArtifactCount = &artifactCount
+	}
+	return &dst
 }

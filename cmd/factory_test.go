@@ -46,6 +46,7 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 				"hal factory list",
 				"hal factory list --json",
 				"hal factory status <run-id> --json",
+				"hal factory open <run-id>",
 				"hal factory artifacts <run-id>",
 				"hal factory trigger --repo . --prd .hal/prd-feature.md --json",
 				"hal factory queue list --json",
@@ -99,6 +100,25 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 			requiredExampleLines: []string{
 				"hal factory status run-20260620-001",
 				"hal factory status run-20260620-001 --json",
+			},
+		},
+		{
+			name: "factory open command",
+			cmd:  factoryOpenCmd,
+			requiredLongPhrases: []string{
+				"handoff guidance",
+				"global factory",
+				"prints the best inspection",
+				"Failed sandbox runs",
+				"Failed local runs",
+				"--exec",
+				"--json",
+				"factory-open-v1 contract",
+			},
+			requiredExampleLines: []string{
+				"hal factory open run-20260620-001",
+				"hal factory open run-20260620-001 --exec",
+				"hal factory open run-20260620-001 --json",
 			},
 		},
 		{
@@ -537,8 +557,8 @@ func TestRunFactoryRunWithDepsRejectsLocalWhenPolicyRequiresSandbox(t *testing.T
 	if record.Failure == nil {
 		t.Fatal("failure summary is nil")
 	}
-	if record.Failure.Category != factory.FailureCategoryValidation {
-		t.Fatalf("failure category = %q, want validation", record.Failure.Category)
+	if record.Failure.Category != factory.FailureCategoryPRD {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryPRD)
 	}
 
 	events, err := store.LoadEvents("run-policy-sandbox-required")
@@ -627,8 +647,8 @@ func TestRunFactoryRunWithDepsRejectsDisallowedPolicyEngineBeforeSandboxExecutio
 	if record.CurrentStep != "policy" {
 		t.Fatalf("currentStep = %q, want policy", record.CurrentStep)
 	}
-	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryValidation {
-		t.Fatalf("failure = %#v, want validation failure", record.Failure)
+	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryPRD {
+		t.Fatalf("failure = %#v, want PRD validation failure", record.Failure)
 	}
 
 	events, err := store.LoadEvents("run-policy-disallowed-engine")
@@ -711,8 +731,8 @@ func TestRunFactoryRunWithDepsRecordsAttemptLimitPolicyDecision(t *testing.T) {
 	if record.CurrentStep != "policy" {
 		t.Fatalf("currentStep = %q, want policy", record.CurrentStep)
 	}
-	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryValidation {
-		t.Fatalf("failure = %#v, want validation failure", record.Failure)
+	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryPRD {
+		t.Fatalf("failure = %#v, want PRD validation failure", record.Failure)
 	}
 
 	events, err := store.LoadEvents("run-policy-attempt-limit")
@@ -1056,7 +1076,7 @@ func TestRunFactoryRunWithDepsRecordsTimelineEventsForFailure(t *testing.T) {
 	if events[3].Summary != "Failure classified" {
 		t.Fatalf("classification summary = %q", events[3].Summary)
 	}
-	if events[3].Metadata["category"] != factory.FailureCategoryPipeline {
+	if events[3].Metadata["category"] != factory.FailureCategoryRun {
 		t.Fatalf("classification category metadata = %#v", events[3].Metadata)
 	}
 }
@@ -2235,27 +2255,48 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	assertFactoryEventTypes(t, events, []string{
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
 		factory.EventTypePolicyDecision,
 		factory.EventTypeStepEnded,
 	})
-	if events[2].Summary != "Verification passed" {
-		t.Fatalf("verification event summary = %q", events[2].Summary)
+	if events[1].Metadata["step"] != factory.RunDurationStepEngineRun {
+		t.Fatalf("pipeline start event step = %#v, want %q", events[1].Metadata["step"], factory.RunDurationStepEngineRun)
 	}
-	if !events[2].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("verification event timestamp = %s, want %s", events[2].Timestamp, verifiedAt)
+	if events[2].Metadata["step"] != factory.RunDurationStepEngineRun {
+		t.Fatalf("pipeline completion event step = %#v, want %q", events[2].Metadata["step"], factory.RunDurationStepEngineRun)
 	}
-	if events[2].Metadata["status"] != verify.StatusPass {
-		t.Fatalf("verification event status metadata = %#v", events[2].Metadata)
+	if events[3].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification start event step = %#v, want %q", events[3].Metadata["step"], factory.RunDurationStepVerification)
 	}
-	assertPolicyDecisionMetadata(t, events[3].Metadata, factory.PolicyDecisionMetadata{
+	if events[4].Summary != "Verification passed" {
+		t.Fatalf("verification event summary = %q", events[4].Summary)
+	}
+	if !events[4].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification event timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
+	}
+	if events[4].Metadata["status"] != verify.StatusPass {
+		t.Fatalf("verification event status metadata = %#v", events[4].Metadata)
+	}
+	assertPolicyDecisionMetadata(t, events[5].Metadata, factory.PolicyDecisionMetadata{
 		PolicyField: "factory.policy.verificationRequired",
 		Decision:    factory.PolicyDecisionPassedGate,
 		Outcome:     factory.PolicyOutcomePassed,
 		Reason:      "verification passed",
 	})
-	if !events[4].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("completion event timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
+	if events[6].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification completion event step = %#v, want %q", events[6].Metadata["step"], factory.RunDurationStepVerification)
+	}
+	if !events[6].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("completion event timestamp = %s, want %s", events[6].Timestamp, verifiedAt)
+	}
+	telemetry := factory.DeriveRunTelemetry(*record, events)
+	if telemetry == nil || len(telemetry.StepDurations) != 2 {
+		t.Fatalf("derived telemetry stepDurations = %#v, want engine and verification durations", telemetry)
+	}
+	if telemetry.StepDurations[0].Step != factory.RunDurationStepEngineRun || telemetry.StepDurations[1].Step != factory.RunDurationStepVerification {
+		t.Fatalf("derived telemetry steps = %#v, want engine_run then verification", telemetry.StepDurations)
 	}
 }
 
@@ -2582,8 +2623,8 @@ func TestRunFactoryRunWithDepsBlocksWhenVerificationRequiredAndMissing(t *testin
 	if record.Failure.Step != "verify" {
 		t.Fatalf("failure step = %q, want verify", record.Failure.Step)
 	}
-	if record.Failure.Category != factory.FailureCategoryValidation {
-		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryValidation)
+	if record.Failure.Category != factory.FailureCategoryVerification {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryVerification)
 	}
 	if record.FinishedAt == nil || !record.FinishedAt.Equal(missingAt) {
 		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, missingAt)
@@ -2596,27 +2637,31 @@ func TestRunFactoryRunWithDepsBlocksWhenVerificationRequiredAndMissing(t *testin
 	assertFactoryEventTypes(t, events, []string{
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
 		factory.EventTypePolicyDecision,
 		factory.EventTypeStepEnded,
 		factory.EventTypeFailureClassification,
 	})
-	assertPolicyDecisionMetadata(t, events[2].Metadata, factory.PolicyDecisionMetadata{
+	if events[2].Metadata["step"] != factory.RunDurationStepEngineRun {
+		t.Fatalf("pipeline completion event step = %#v, want %q", events[2].Metadata["step"], factory.RunDurationStepEngineRun)
+	}
+	assertPolicyDecisionMetadata(t, events[3].Metadata, factory.PolicyDecisionMetadata{
 		PolicyField: "factory.policy.verificationRequired",
 		Decision:    factory.PolicyDecisionBlockedGate,
 		Outcome:     factory.PolicyOutcomeBlocked,
 		Reason:      "verification required but no checks configured",
 	})
-	if !events[2].Timestamp.Equal(missingAt) {
-		t.Fatalf("policy event timestamp = %s, want %s", events[2].Timestamp, missingAt)
+	if !events[3].Timestamp.Equal(missingAt) {
+		t.Fatalf("policy event timestamp = %s, want %s", events[3].Timestamp, missingAt)
 	}
-	if events[3].Metadata["step"] != "verify" {
-		t.Fatalf("verification failure event step = %#v, want verify", events[3].Metadata["step"])
+	if events[4].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification failure event step = %#v, want %q", events[4].Metadata["step"], factory.RunDurationStepVerification)
 	}
-	if events[3].Metadata["status"] != factory.RunStatusFailed {
-		t.Fatalf("verification failure event status = %#v, want %q", events[3].Metadata["status"], factory.RunStatusFailed)
+	if events[4].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("verification failure event status = %#v, want %q", events[4].Metadata["status"], factory.RunStatusFailed)
 	}
-	if got, ok := events[3].Metadata["error"].(string); !ok || !strings.Contains(got, "verification required") {
-		t.Fatalf("verification failure event error = %#v, want verification required", events[3].Metadata["error"])
+	if got, ok := events[4].Metadata["error"].(string); !ok || !strings.Contains(got, "verification required") {
+		t.Fatalf("verification failure event error = %#v, want verification required", events[4].Metadata["error"])
 	}
 }
 
@@ -2710,8 +2755,8 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 	if record.Failure.Step != "verify" {
 		t.Fatalf("failure step = %q, want verify", record.Failure.Step)
 	}
-	if record.Failure.Category != factory.FailureCategoryValidation {
-		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryValidation)
+	if record.Failure.Category != factory.FailureCategoryVerification {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryVerification)
 	}
 	if record.FinishedAt == nil || !record.FinishedAt.Equal(verifiedAt) {
 		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, verifiedAt)
@@ -2735,31 +2780,43 @@ func TestRunFactoryRunWithDepsFailsWhenVerificationFails(t *testing.T) {
 	assertFactoryEventTypes(t, events, []string{
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
 		factory.EventTypePolicyDecision,
 		factory.EventTypeStepEnded,
 		factory.EventTypeFailureClassification,
 	})
-	assertPolicyDecisionMetadata(t, events[3].Metadata, factory.PolicyDecisionMetadata{
+	if events[3].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification start event step = %#v, want %q", events[3].Metadata["step"], factory.RunDurationStepVerification)
+	}
+	if !events[4].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification result timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
+	}
+	if events[4].Metadata["status"] != verify.StatusFail {
+		t.Fatalf("verification result status = %#v, want %q", events[4].Metadata["status"], verify.StatusFail)
+	}
+	assertPolicyDecisionMetadata(t, events[5].Metadata, factory.PolicyDecisionMetadata{
 		PolicyField: "factory.policy.verificationRequired",
 		Decision:    factory.PolicyDecisionBlockedGate,
 		Outcome:     factory.PolicyOutcomeBlocked,
 		Reason:      "verification failed",
 	})
-	if events[4].Metadata["step"] != "verify" {
-		t.Fatalf("verification failure event step = %#v, want verify", events[4].Metadata["step"])
+	if events[6].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("verification failure event step = %#v, want %q", events[6].Metadata["step"], factory.RunDurationStepVerification)
 	}
-	if events[4].Metadata["status"] != factory.RunStatusFailed {
-		t.Fatalf("verification failure event status = %#v, want %q", events[4].Metadata["status"], factory.RunStatusFailed)
+	if events[6].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("verification failure event status = %#v, want %q", events[6].Metadata["status"], factory.RunStatusFailed)
 	}
-	if !events[2].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("verification result timestamp = %s, want %s", events[2].Timestamp, verifiedAt)
+	if !events[6].Timestamp.Equal(verifiedAt) {
+		t.Fatalf("verification failure timestamp = %s, want %s", events[6].Timestamp, verifiedAt)
 	}
-	if !events[4].Timestamp.Equal(verifiedAt) {
-		t.Fatalf("verification failure timestamp = %s, want %s", events[4].Timestamp, verifiedAt)
+	if got, ok := events[6].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
+		t.Fatalf("verification failure event error = %#v, want verification failure", events[6].Metadata["error"])
 	}
-	if got, ok := events[4].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
-		t.Fatalf("verification failure event error = %#v, want verification failure", events[4].Metadata["error"])
+	telemetry := factory.DeriveRunTelemetry(*record, events)
+	if telemetry == nil || len(telemetry.StepDurations) != 2 {
+		t.Fatalf("derived telemetry stepDurations = %#v, want engine and verification durations", telemetry)
 	}
 }
 
@@ -2843,11 +2900,15 @@ func TestRunFactoryRunWithDepsTreatsVerificationFailureAsAdvisoryByDefault(t *te
 	assertFactoryEventTypes(t, events, []string{
 		factory.EventTypeRunCreated,
 		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
 		factory.EventTypePolicyDecision,
-		factory.EventTypeStepEnded,
 	})
-	assertPolicyDecisionMetadata(t, events[3].Metadata, factory.PolicyDecisionMetadata{
+	if events[4].Metadata["status"] != verify.StatusFail {
+		t.Fatalf("verification result status = %#v, want %q", events[4].Metadata["status"], verify.StatusFail)
+	}
+	assertPolicyDecisionMetadata(t, events[5].Metadata, factory.PolicyDecisionMetadata{
 		PolicyField: "factory.policy.verificationRequired",
 		Decision:    factory.PolicyDecisionAllowedExecution,
 		Outcome:     factory.PolicyOutcomeAllowed,
@@ -3141,7 +3202,7 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 			record.CurrentStep = "run"
 			record.Failure = &factory.FailureSummary{
 				Step:             "run",
-				Category:         factory.FailureCategoryPipeline,
+				Category:         factory.FailureCategoryRun,
 				Message:          "remote pipeline failed",
 				Recoverable:      true,
 				SuggestedCommand: "hal sandbox ssh factory-remote",
@@ -3384,8 +3445,8 @@ func TestRunFactoryRunWithDepsEmitsFailureJSONForMarkdownAndReportFlows(t *testi
 			if resp.Failure == nil {
 				t.Fatal("failure should be emitted")
 			}
-			if resp.Failure.Classification != factory.FailureCategoryCI {
-				t.Fatalf("failure.classification = %q, want %q", resp.Failure.Classification, factory.FailureCategoryCI)
+			if resp.Failure.Classification != "ci" {
+				t.Fatalf("failure.classification = %q, want %q", resp.Failure.Classification, "ci")
 			}
 			if resp.Failure.ErrorMessage != pipelineErr.Error() {
 				t.Fatalf("failure.errorMessage = %q, want %q", resp.Failure.ErrorMessage, pipelineErr.Error())
@@ -3529,6 +3590,32 @@ func TestRunFactoryRunWithDepsRendersHumanSummaryForFailure(t *testing.T) {
 	}
 }
 
+func TestRenderFactoryStatusTelemetryPreservesLegacyFailureCategory(t *testing.T) {
+	tests := []string{"validation", "pipeline", "git", "ci"}
+
+	for _, category := range tests {
+		category := category
+		t.Run(category, func(t *testing.T) {
+			var buf bytes.Buffer
+			renderFactoryStatusTelemetry(&buf, factory.RunRecord{
+				RunID: "run-legacy-failure",
+				Failure: &factory.FailureSummary{
+					Category: category,
+					Message:  "failed",
+				},
+			}, nil)
+
+			output := buf.String()
+			if !strings.Contains(output, "Failure category: "+category+"\n") {
+				t.Fatalf("legacy failure category not preserved in output:\n%s", output)
+			}
+			if strings.Contains(output, "Failure category: "+factory.FailureCategoryUnknown+"\n") {
+				t.Fatalf("legacy failure category rendered as unknown:\n%s", output)
+			}
+		})
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -3601,8 +3688,8 @@ func TestRunFactoryRunWithDepsRecordsReportArtifactsOnFailure(t *testing.T) {
 	if record.Failure == nil {
 		t.Fatal("failure summary should be persisted")
 	}
-	if record.Failure.Category != factory.FailureCategoryPipeline {
-		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryPipeline)
+	if record.Failure.Category != factory.FailureCategoryRun {
+		t.Fatalf("failure category = %q, want %q", record.Failure.Category, factory.FailureCategoryRun)
 	}
 	if record.Failure.Message != pipelineErr.Error() {
 		t.Fatalf("failure message = %q, want %q", record.Failure.Message, pipelineErr.Error())
@@ -3722,12 +3809,12 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		{
 			name: "validation exit code",
 			err:  exitWithCode(nil, ExitCodeValidation, errors.New("invalid input")),
-			want: factory.FailureCategoryValidation,
+			want: factory.FailureCategoryPRD,
 		},
 		{
 			name: "validate step",
 			err:  errors.New("step validate failed: invalid PRD"),
-			want: factory.FailureCategoryValidation,
+			want: factory.FailureCategoryPRD,
 		},
 		{
 			name: "ci step",
@@ -3737,7 +3824,7 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		{
 			name: "branch step",
 			err:  errors.New("step branch failed: git checkout failed"),
-			want: factory.FailureCategoryGit,
+			want: factory.FailureCategorySetup,
 		},
 		{
 			name: "engine message",
@@ -3747,7 +3834,7 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		{
 			name: "pipeline message",
 			err:  errors.New("pipeline failed"),
-			want: factory.FailureCategoryPipeline,
+			want: factory.FailureCategoryRun,
 		},
 		{
 			name: "unknown message",
@@ -3761,6 +3848,74 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := classifyFactoryRunFailure(tt.err); got != tt.want {
 				t.Fatalf("classifyFactoryRunFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewFactoryRunFailureNormalizesClassification(t *testing.T) {
+	tests := []struct {
+		category string
+		want     string
+	}{
+		{category: factory.FailureCategorySetup, want: "git"},
+		{category: factory.FailureCategoryEngine, want: "engine"},
+		{category: factory.FailureCategoryPRD, want: "validation"},
+		{category: factory.FailureCategoryRun, want: "pipeline"},
+		{category: factory.FailureCategoryReview, want: "pipeline"},
+		{category: factory.FailureCategoryVerification, want: "validation"},
+		{category: factory.FailureCategoryCI, want: "ci"},
+		{category: factory.FailureCategorySandbox, want: "pipeline"},
+		{category: factory.FailureCategoryQueue, want: "pipeline"},
+		{category: factory.FailureCategoryUnknown, want: factory.FailureCategoryUnknown},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.category, func(t *testing.T) {
+			record := factory.RunRecord{
+				RunID: "run-normalize-category",
+				Failure: &factory.FailureSummary{
+					Category: tt.category,
+					Message:  "failed",
+				},
+			}
+
+			failure := newFactoryRunFailure(record)
+			if failure == nil {
+				t.Fatal("newFactoryRunFailure() = nil, want failure")
+			}
+			if failure.Classification != tt.want {
+				t.Fatalf("classification = %q, want %q", failure.Classification, tt.want)
+			}
+		})
+	}
+
+	invalidTests := []struct {
+		name     string
+		category string
+	}{
+		{name: "empty", category: ""},
+		{name: "invalid", category: "database"},
+	}
+
+	for _, tt := range invalidTests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			record := factory.RunRecord{
+				RunID: "run-normalize-category",
+				Failure: &factory.FailureSummary{
+					Category: tt.category,
+					Message:  "failed",
+				},
+			}
+
+			failure := newFactoryRunFailure(record)
+			if failure == nil {
+				t.Fatal("newFactoryRunFailure() = nil, want failure")
+			}
+			if failure.Classification != factory.FailureCategoryUnknown {
+				t.Fatalf("classification = %q, want %q", failure.Classification, factory.FailureCategoryUnknown)
 			}
 		})
 	}
@@ -3876,6 +4031,89 @@ func TestFactoryRunAutoCommandKeepsEmptyEngineImplicit(t *testing.T) {
 	}
 	if cmd.Flags().Changed("engine") {
 		t.Fatal("engine flag should remain unchanged when factory has no engine snapshot")
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsUsesInjectedClockForLogChunks(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	startedAt := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(2 * time.Minute)
+	times := []time.Time{startedAt, completedAt}
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-clock",
+		Store: store,
+		Now: func() time.Time {
+			if len(times) == 0 {
+				t.Fatal("unexpected clock call")
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-clock")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if !chunks[0].CreatedAt.Equal(startedAt) {
+		t.Fatalf("start chunk createdAt = %s, want %s", chunks[0].CreatedAt, startedAt)
+	}
+	if !chunks[1].CreatedAt.Equal(completedAt) {
+		t.Fatalf("completion chunk createdAt = %s, want %s", chunks[1].CreatedAt, completedAt)
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsUsesInjectedClockForFailureLogChunk(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	startedAt := time.Date(2026, 6, 21, 11, 5, 0, 0, time.UTC)
+	failedAt := startedAt.Add(30 * time.Second)
+	times := []time.Time{startedAt, failedAt}
+	wantErr := errors.New("auto failed")
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-clock-failure",
+		Store: store,
+		Now: func() time.Time {
+			if len(times) == 0 {
+				t.Fatal("unexpected clock call")
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-clock-failure")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if !chunks[0].CreatedAt.Equal(startedAt) {
+		t.Fatalf("start chunk createdAt = %s, want %s", chunks[0].CreatedAt, startedAt)
+	}
+	if !chunks[1].CreatedAt.Equal(failedAt) {
+		t.Fatalf("failure chunk createdAt = %s, want %s", chunks[1].CreatedAt, failedAt)
 	}
 }
 
@@ -4081,10 +4319,27 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	base := time.Date(2026, 6, 20, 16, 0, 0, 0, time.UTC)
 	older := testFactoryRunRecord("run-old", base.Add(1*time.Minute), base.Add(2*time.Minute))
 	newer := testFactoryRunRecord("run-new", base.Add(3*time.Minute), base.Add(5*time.Minute))
+	totalDurationMs := int64(720000)
+	artifactCount := 2
 	newer.SandboxName = "factory-sandbox"
 	newer.Artifacts = []factory.ArtifactReference{
 		{Name: "report", Type: "markdown", Path: ".hal/reports/run-new.md"},
 		{Name: "log", Type: "text", Path: ".hal/reports/run-new.log"},
+	}
+	newer.Telemetry = &factory.RunTelemetry{
+		TotalDurationMs: &totalDurationMs,
+		Engine: &factory.EngineTelemetry{
+			Name:  "codex",
+			Model: "gpt-5",
+		},
+		Sandbox: &factory.RunSandboxTelemetry{
+			Provider: "hetzner",
+			Size:     "cx22",
+		},
+		CIOutcome:       "failed",
+		ArtifactCount:   &artifactCount,
+		FailureCategory: factory.FailureCategoryCI,
+		StepDurations:   []factory.RunStepDuration{{Step: "run", StartedAt: base.Add(4 * time.Minute), FinishedAt: base.Add(5 * time.Minute), DurationMs: 60000}},
 	}
 	newer.Failure = &factory.FailureSummary{
 		Step:        "ci",
@@ -4135,6 +4390,9 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	if resp.Runs[0].Failure == nil || resp.Runs[0].Failure.Step != "ci" {
 		t.Fatalf("failure summary missing from first run: %#v", resp.Runs[0].Failure)
 	}
+	if resp.Runs[0].Telemetry == nil || resp.Runs[0].Telemetry.TotalDurationMs == nil || *resp.Runs[0].Telemetry.TotalDurationMs != totalDurationMs {
+		t.Fatalf("telemetry missing from first run: %#v", resp.Runs[0].Telemetry)
+	}
 
 	var raw map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
@@ -4151,7 +4409,15 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	requireFactoryFields(t, "factory list run", first, []string{
 		"runId", "status", "source", "repoPath", "repoRemote", "branchName",
 		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-		"artifactCount", "failure",
+		"artifactCount", "telemetry", "failure",
+	})
+	telemetry, ok := first["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("factory list telemetry should be an object, got %T", first["telemetry"])
+	}
+	requireFactoryFields(t, "factory list telemetry", telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"ciOutcome", "artifactCount", "failureCategory",
 	})
 	for _, omitted := range []string{"artifacts", "events", "timeline"} {
 		if _, ok := first[omitted]; ok {
@@ -4160,8 +4426,48 @@ func TestRunFactoryListJSONOrdersAndSummarizesRuns(t *testing.T) {
 	}
 }
 
+func TestRunFactoryListJSONDerivesTotalDuration(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(9 * time.Minute)
+	record := testFactoryRunRecord("run-list-derived-duration", base, finishedAt)
+	record.Status = factory.RunStatusSucceeded
+	record.FinishedAt = &finishedAt
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryListWithDeps(&buf, true, factoryListDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryListWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryListResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if len(resp.Runs) != 1 {
+		t.Fatalf("runs len = %d, want 1", len(resp.Runs))
+	}
+	telemetry := resp.Runs[0].Telemetry
+	if telemetry == nil || telemetry.TotalDurationMs == nil {
+		t.Fatalf("telemetry = %#v, want derived total duration", telemetry)
+	}
+	if *telemetry.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *telemetry.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(telemetry.StepDurations) != 0 {
+		t.Fatalf("list telemetry stepDurations = %#v, want none without timeline load", telemetry.StepDurations)
+	}
+}
+
 func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	base := time.Date(2026, 6, 20, 18, 30, 0, 0, time.UTC)
+	totalDurationMs := int64(900000)
+	artifactCount := 1
 	events := []factory.EventRecord{
 		{
 			Sequence:  1,
@@ -4200,8 +4506,35 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 			},
 		},
 		EventSummary: newFactoryRunEventSummary(events),
+		Telemetry: &factory.RunTelemetry{
+			TotalDurationMs: &totalDurationMs,
+			StepDurations: []factory.RunStepDuration{
+				{
+					Step:       "ci",
+					StartedAt:  base.Add(1 * time.Minute),
+					FinishedAt: base.Add(2 * time.Minute),
+					DurationMs: 60000,
+				},
+			},
+			Engine: &factory.EngineTelemetry{
+				Name:  "codex",
+				Model: "gpt-5",
+			},
+			Sandbox: &factory.RunSandboxTelemetry{
+				Provider: "digitalocean",
+				Size:     "s-2vcpu-4gb",
+			},
+			EstimatedSandboxCost: &factory.SandboxCostEstimate{
+				AmountUSD: 0.12,
+				Estimated: true,
+			},
+			CIOutcome:           "failed",
+			VerificationOutcome: "passed",
+			ArtifactCount:       &artifactCount,
+			FailureCategory:     factory.FailureCategoryCI,
+		},
 		Failure: &FactoryRunFailure{
-			Classification:   "ci",
+			Classification:   factory.FailureCategoryCI,
 			ErrorMessage:     "unit tests failed",
 			SuggestedCommand: "hal factory status run-json-contract --json",
 		},
@@ -4232,14 +4565,14 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	}
 	requireExactKeys(t, raw, []string{
 		"contractVersion", "version", "runId", "status", "nextAction",
-		"artifacts", "eventSummary", "failure",
+		"artifacts", "telemetry", "eventSummary", "failure",
 	})
 
 	nextAction, ok := raw["nextAction"].(map[string]any)
 	if !ok {
 		t.Fatalf("nextAction should be an object, got %T", raw["nextAction"])
 	}
-	requireFactoryFields(t, "factory run nextAction", nextAction, []string{"id", "command", "description"})
+	requireExactKeys(t, nextAction, []string{"id", "command", "description"})
 
 	artifacts, ok := raw["artifacts"].([]any)
 	if !ok || len(artifacts) != 1 {
@@ -4260,11 +4593,275 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	}
 	requireFactoryFields(t, "factory run eventSummary", eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
 
+	telemetry, ok := raw["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry should be an object, got %T", raw["telemetry"])
+	}
+	requireFactoryFields(t, "factory run telemetry", telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"estimatedSandboxCost", "ciOutcome", "verificationOutcome",
+		"artifactCount", "failureCategory",
+	})
+
 	failure, ok := raw["failure"].(map[string]any)
 	if !ok {
 		t.Fatalf("failure should be an object, got %T", raw["failure"])
 	}
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
+}
+
+func TestNewFactoryRunResponseDerivesTelemetryDurations(t *testing.T) {
+	base := time.Date(2026, 6, 21, 13, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(15 * time.Minute)
+	record := testFactoryRunRecord("run-result-derived-duration", base, finishedAt)
+	record.Status = factory.RunStatusSucceeded
+	record.FinishedAt = &finishedAt
+	events := []factory.EventRecord{
+		{
+			Sequence:  1,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepStarted,
+			Timestamp: base.Add(2 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepEngineRun},
+		},
+		{
+			Sequence:  2,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(7 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepEngineRun},
+		},
+		{
+			Sequence:  3,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(8 * time.Minute),
+			Metadata:  map[string]any{"step": "run"},
+		},
+	}
+
+	resp := newFactoryRunResponse(record, events)
+	if resp.Telemetry == nil || resp.Telemetry.TotalDurationMs == nil {
+		t.Fatalf("telemetry = %#v, want derived durations", resp.Telemetry)
+	}
+	if *resp.Telemetry.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *resp.Telemetry.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(resp.Telemetry.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(resp.Telemetry.StepDurations), resp.Telemetry.StepDurations)
+	}
+	duration := resp.Telemetry.StepDurations[0]
+	if duration.Step != factory.RunDurationStepEngineRun {
+		t.Fatalf("step = %q, want %q", duration.Step, factory.RunDurationStepEngineRun)
+	}
+	if duration.DurationMs != 300000 {
+		t.Fatalf("durationMs = %d, want 300000", duration.DurationMs)
+	}
+}
+
+func TestNewFactoryRunNextActionUsesInspectCommandForSandboxFailures(t *testing.T) {
+	record := factory.RunRecord{
+		RunID:        "run-handoff",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoPath:     "/workspace/hal",
+		BranchName:   "hal/factory-handoff",
+		SandboxName:  "fallback-sandbox",
+		Sandbox: &factory.SandboxMetadata{
+			Name:       "factory-handoff",
+			Provider:   "daytona",
+			Status:     sandbox.StatusRunning,
+			SSHCommand: "ssh root@203.0.113.10",
+			Connection: &factory.SandboxConnectionMetadata{
+				Address:           "100.64.0.10",
+				PublicIP:          "203.0.113.10",
+				TailscaleIP:       "100.64.0.10",
+				TailscaleHostname: "factory-handoff.tailnet.ts.net",
+			},
+		},
+		CurrentStep: "ci",
+		Artifacts: []factory.ArtifactReference{
+			{
+				Name:       "prd",
+				Type:       "json",
+				Path:       ".hal/prd.json",
+				StoredPath: "artifacts/run-handoff/hal-prd.json",
+			},
+			{
+				Name:       "ci-log",
+				Type:       "text",
+				Path:       ".hal/reports/ci-output.log",
+				StoredPath: "artifacts/run-handoff/hal-reports-ci-output.log",
+			},
+			{
+				Name: "pr-outcome",
+				Type: "json",
+				Path: "factory/pr-outcome.json",
+				Summary: map[string]any{
+					"pullRequestUrl": "https://github.com/jywlabs/hal/pull/42",
+				},
+			},
+		},
+		Failure: &factory.FailureSummary{
+			Step:    "ci",
+			Message: "unit tests failed",
+		},
+	}
+
+	action := newFactoryRunNextAction(record)
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+	if action.ID != "inspect_factory_run" {
+		t.Fatalf("id = %q, want inspect_factory_run", action.ID)
+	}
+	if action.Command != "hal factory status run-handoff --json" {
+		t.Fatalf("command = %q", action.Command)
+	}
+
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	raw := parseFactoryJSON(t, data)
+	requireExactKeys(t, raw, []string{"id", "command", "description"})
+	for _, forbidden := range []string{"203.0.113.10", "100.64.0.10", "tailnet.ts.net", "root@"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("nextAction should not expose %q: %s", forbidden, string(data))
+		}
+	}
+}
+
+func TestNewFactoryRunNextActionDoesNotExposeFailureReason(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:        "run-sensitive-handoff",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory-handoff",
+		Failure: &factory.FailureSummary{
+			Step:    "ci",
+			Message: "remote failed at 203.0.113.10 with token=secret-value",
+		},
+	})
+
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	raw := parseFactoryJSON(t, data)
+	requireExactKeys(t, raw, []string{"id", "command", "description"})
+	for _, forbidden := range []string{"203.0.113.10", "token=secret-value", "remote failed"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("nextAction should not expose %q: %s", forbidden, string(data))
+		}
+	}
+}
+
+func TestNewFactoryRunNextActionRejectsUnsafeCommandInputs(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:        "run-handoff",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory;rm",
+		Failure: &factory.FailureSummary{
+			Message: "remote execution failed",
+		},
+	})
+	if action == nil {
+		t.Fatal("next action should fall back to inspect")
+	}
+	if action.ID != "inspect_factory_run" || action.Command != "hal factory status run-handoff --json" {
+		t.Fatalf("action = %#v, want inspect fallback", action)
+	}
+
+	action = newFactoryRunNextAction(factory.RunRecord{
+		RunID:  "run;rm",
+		Status: factory.RunStatusSucceeded,
+	})
+	if action != nil {
+		t.Fatalf("next action = %#v, want nil for unsafe run ID", action)
+	}
+}
+
+func TestNewFactoryRunNextActionFallsBackToInspectWhenSandboxNotRunning(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:        "run-stopped-sandbox",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory-handoff",
+		Sandbox: &factory.SandboxMetadata{
+			Name:   "factory-handoff",
+			Status: sandbox.StatusStopped,
+		},
+		Failure: &factory.FailureSummary{
+			Message: "remote execution failed",
+		},
+	})
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+	if action.ID != "inspect_factory_run" || action.Command != "hal factory status run-stopped-sandbox --json" {
+		t.Fatalf("action = %#v, want inspect fallback", action)
+	}
+}
+
+func TestNewFactoryRunNextActionUsesCompletedDescriptionForSucceededRuns(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:       "run-complete",
+		Status:      factory.RunStatusSucceeded,
+		CurrentStep: "done",
+	})
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+	if action.ID != "inspect_factory_run" {
+		t.Fatalf("id = %q, want inspect_factory_run", action.ID)
+	}
+	if action.Command != "hal factory status run-complete --json" {
+		t.Fatalf("command = %q", action.Command)
+	}
+	if action.Description != "Inspect the completed durable run record and timeline." {
+		t.Fatalf("description = %q", action.Description)
+	}
+}
+
+func TestNewFactoryRunNextActionDoesNotExposeArtifactLocations(t *testing.T) {
+	action := newFactoryRunNextAction(factory.RunRecord{
+		RunID:  "run-url-locations",
+		Status: factory.RunStatusFailed,
+		Artifacts: []factory.ArtifactReference{
+			{
+				Name:       "report",
+				Type:       "json",
+				Path:       "http://192.0.2.42/report.json?token=secret",
+				StoredPath: "artifacts/run-url-locations/report.json",
+			},
+			{
+				Name:       "stderr-log",
+				Type:       "text",
+				Path:       "https://example.com/stderr.log?api_key=secret",
+				StoredPath: "artifacts/run-url-locations/stderr.log",
+			},
+		},
+	})
+	if action == nil {
+		t.Fatal("next action should be present")
+	}
+
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	raw := parseFactoryJSON(t, data)
+	requireExactKeys(t, raw, []string{"id", "command", "description"})
+	for _, forbidden := range []string{"192.0.2.42", "token=secret", "api_key=secret", "https://example.com"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("nextAction should not expose %q: %s", forbidden, string(data))
+		}
+	}
 }
 
 func TestFactoryListCommandRegisteredWithJSONFlag(t *testing.T) {
@@ -4284,6 +4881,8 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)
 	finishedAt := base.Add(20 * time.Minute)
+	totalDurationMs := int64(finishedAt.Sub(base).Milliseconds())
+	artifactCount := 2
 	record := testFactoryRunRecord("run-status", base, base.Add(10*time.Minute))
 	record.Status = factory.RunStatusSucceeded
 	record.SandboxName = "factory-status"
@@ -4301,9 +4900,36 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 			URL:  "http://192.0.2.42/pull/1",
 		},
 	}
+	record.Telemetry = &factory.RunTelemetry{
+		TotalDurationMs: &totalDurationMs,
+		StepDurations: []factory.RunStepDuration{
+			{
+				Step:       "run",
+				StartedAt:  base.Add(1 * time.Minute),
+				FinishedAt: base.Add(3 * time.Minute),
+				DurationMs: 120000,
+			},
+		},
+		Engine: &factory.EngineTelemetry{
+			Name:  "codex",
+			Model: "gpt-5",
+		},
+		Sandbox: &factory.RunSandboxTelemetry{
+			Provider: "daytona",
+			Size:     "medium",
+		},
+		EstimatedSandboxCost: &factory.SandboxCostEstimate{
+			AmountUSD: 0.42,
+			Estimated: true,
+		},
+		CIOutcome:           "skipped",
+		VerificationOutcome: "passed",
+		ArtifactCount:       &artifactCount,
+		FailureCategory:     factory.FailureCategoryReview,
+	}
 	record.Failure = &factory.FailureSummary{
 		Step:     "review",
-		Category: "validation",
+		Category: factory.FailureCategoryReview,
 		Message:  "review found issues",
 	}
 	if err := store.SaveRun(&record); err != nil {
@@ -4356,6 +4982,9 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	if len(resp.Run.Artifacts) != 2 {
 		t.Fatalf("run.artifacts len = %d, want 2", len(resp.Run.Artifacts))
 	}
+	if resp.Run.Telemetry == nil || resp.Run.Telemetry.Engine == nil || resp.Run.Telemetry.Engine.Name != "codex" {
+		t.Fatalf("run.telemetry = %#v, want engine metadata", resp.Run.Telemetry)
+	}
 	gotSequence := make([]int64, 0, len(resp.Timeline))
 	for _, event := range resp.Timeline {
 		gotSequence = append(gotSequence, event.Sequence)
@@ -4377,8 +5006,20 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	requireFactoryFields(t, "factory status run", run, []string{
 		"runId", "status", "executorMode", "source", "repoPath", "repoRemote", "branchName",
 		"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-		"finishedAt", "artifacts", "failure",
+		"finishedAt", "artifacts", "telemetry", "failure",
 	})
+	telemetry, ok := run["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("run.telemetry should be an object, got %T", run["telemetry"])
+	}
+	requireFactoryFields(t, "factory status telemetry", telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"estimatedSandboxCost", "ciOutcome", "verificationOutcome",
+		"artifactCount", "failureCategory",
+	})
+	if _, ok := run["handoff"]; ok {
+		t.Fatalf("run.handoff should be omitted when there is no actionable handoff: %#v", run["handoff"])
+	}
 	artifacts, ok := run["artifacts"].([]any)
 	if !ok || len(artifacts) != 2 {
 		t.Fatalf("run.artifacts should be an array of 2, got %T len %d", run["artifacts"], len(resp.Run.Artifacts))
@@ -4413,6 +5054,205 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	})
 }
 
+func TestRunFactoryStatusJSONDerivesTelemetryDurations(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 14, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(30 * time.Minute)
+	record := testFactoryRunRecord("run-status-derived-duration", base, base.Add(12*time.Minute))
+	record.Status = factory.RunStatusSucceeded
+	record.FinishedAt = &finishedAt
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	events := []factory.EventRecord{
+		{
+			Sequence:  1,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepStarted,
+			Timestamp: base.Add(4 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepVerification},
+		},
+		{
+			Sequence:  2,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(6 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepVerification},
+		},
+		{
+			Sequence:  3,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepStarted,
+			Timestamp: base.Add(8 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepCI},
+		},
+		{
+			Sequence:  4,
+			RunID:     record.RunID,
+			EventType: factory.EventTypeStepEnded,
+			Timestamp: base.Add(7 * time.Minute),
+			Metadata:  map[string]any{"step": factory.RunDurationStepCI},
+		},
+	}
+	for _, event := range events {
+		event := event
+		if err := store.AppendEvent(&event); err != nil {
+			t.Fatalf("AppendEvent(%d) error: %v", event.Sequence, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryStatusResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	telemetry := resp.Run.Telemetry
+	if telemetry == nil || telemetry.TotalDurationMs == nil {
+		t.Fatalf("telemetry = %#v, want derived durations", telemetry)
+	}
+	if *telemetry.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *telemetry.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(telemetry.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(telemetry.StepDurations), telemetry.StepDurations)
+	}
+	if telemetry.StepDurations[0].Step != factory.RunDurationStepVerification {
+		t.Fatalf("stepDurations[0].step = %q, want %q", telemetry.StepDurations[0].Step, factory.RunDurationStepVerification)
+	}
+	if telemetry.StepDurations[0].DurationMs != 120000 {
+		t.Fatalf("stepDurations[0].durationMs = %d, want 120000", telemetry.StepDurations[0].DurationMs)
+	}
+}
+
+func TestRunFactoryStatusJSONIncludesStructuredHandoffNextAction(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-status-handoff", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusFailed
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.BranchName = "hal/factory-handoff"
+	record.SandboxName = "factory-remote"
+	record.Sandbox = &factory.SandboxMetadata{
+		Name:       "factory-remote",
+		Status:     sandbox.StatusRunning,
+		SSHCommand: "ssh root@203.0.113.10",
+		Connection: &factory.SandboxConnectionMetadata{
+			Address:  "203.0.113.10",
+			PublicIP: "203.0.113.10",
+		},
+	}
+	record.CurrentStep = "run"
+	record.Failure = &factory.FailureSummary{
+		Step:        "run",
+		Category:    factory.FailureCategoryRun,
+		Message:     "remote execution failed",
+		Recoverable: true,
+	}
+	record.Artifacts = []factory.ArtifactReference{
+		{Name: "sandbox-report", Type: "markdown", Path: ".hal/reports/factory.md"},
+		{Name: "sandbox-log", Type: "text", Path: ".hal/reports/stdout.log", StoredPath: "artifacts/run-status-handoff/stdout.log"},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryStatusResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Run.Handoff == nil || resp.Run.Handoff.NextAction == nil {
+		t.Fatalf("handoff nextAction missing: %#v", resp.Run.Handoff)
+	}
+	if resp.Run.Handoff.NextAction.Type != factory.NextActionTypeTakeover {
+		t.Fatalf("nextAction.type = %q, want takeover", resp.Run.Handoff.NextAction.Type)
+	}
+	if resp.Run.Handoff.NextAction.Command != "hal sandbox ssh factory-remote" {
+		t.Fatalf("nextAction.command = %q", resp.Run.Handoff.NextAction.Command)
+	}
+	if len(resp.Run.Handoff.ArtifactLocations) != 1 || len(resp.Run.Handoff.LogLocations) != 1 {
+		t.Fatalf("handoff locations = artifacts %#v logs %#v", resp.Run.Handoff.ArtifactLocations, resp.Run.Handoff.LogLocations)
+	}
+	handoffJSON, err := json.Marshal(resp.Run.Handoff)
+	if err != nil {
+		t.Fatalf("json.Marshal(handoff) error: %v", err)
+	}
+	for _, forbidden := range []string{"203.0.113.10", "root@"} {
+		if strings.Contains(string(handoffJSON), forbidden) {
+			t.Fatalf("status handoff should not expose %q:\n%s", forbidden, string(handoffJSON))
+		}
+	}
+}
+
+func TestRunFactoryStatusHumanIncludesHandoffDetails(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 9, 30, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-status-human-handoff", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusFailed
+	record.ExecutorMode = factory.ExecutorModeLocal
+	record.RepoPath = "/workspace/hal"
+	record.BranchName = "hal/factory-handoff"
+	record.CurrentStep = "ci"
+	record.Failure = &factory.FailureSummary{
+		Step:        "ci",
+		Category:    factory.FailureCategoryCI,
+		Message:     "ci failed",
+		Recoverable: true,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	saveFactoryCommandArtifact(t, store, record.RunID, factory.ArtifactReference{
+		ID:   "auto-state",
+		Name: "auto-state",
+		Type: "json",
+		Path: ".hal/auto-state.json",
+	}, `{"step":"ci"}`)
+	saveFactoryCommandArtifact(t, store, record.RunID, factory.ArtifactReference{
+		ID:   "ci-log",
+		Name: "ci-log",
+		Type: "text",
+		Path: ".hal/reports/ci.log",
+	}, "ci failed")
+
+	var buf bytes.Buffer
+	err := runFactoryStatusWithDeps(&buf, record.RunID, false, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+	output := buf.String()
+	for _, want := range []string{
+		"Handoff required: true",
+		"Repo path: /workspace/hal",
+		"Branch: hal/factory-handoff",
+		"Current step: ci",
+		"Failure reason: ci failed",
+		"Suggested command: hal auto --resume",
+		"Logs:",
+		".hal/reports/ci.log",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("status output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestRunFactoryStatusJSONMissingRunReturnsErrorWithoutPayload(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	var buf bytes.Buffer
@@ -4441,6 +5281,367 @@ func TestFactoryStatusCommandRegisteredWithJSONFlag(t *testing.T) {
 	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory status missing metadata fields: %v", missing)
+	}
+}
+
+func TestRunFactoryLogsEmptyState(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 7, 45, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-no-logs", base, base.Add(time.Minute))
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryLogsWithDeps(&buf, record.RunID, false, factoryLogsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryLogsWithDeps() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Run ID: run-no-logs") {
+		t.Fatalf("output missing run ID:\n%s", output)
+	}
+	if !strings.Contains(output, "No logs stored for factory run run-no-logs.") {
+		t.Fatalf("output missing empty-state message:\n%s", output)
+	}
+
+	buf.Reset()
+	err = runFactoryLogsWithDeps(&buf, record.RunID, true, factoryLogsDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryLogsWithDeps() JSON unexpected error: %v", err)
+	}
+
+	var resp FactoryLogsResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.ContractVersion != FactoryLogsContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryLogsContractVersion)
+	}
+	if resp.RunID != record.RunID {
+		t.Fatalf("runId = %q, want %q", resp.RunID, record.RunID)
+	}
+	if resp.Chunks == nil || len(resp.Chunks) != 0 {
+		t.Fatalf("chunks = %#v, want empty non-nil array", resp.Chunks)
+	}
+}
+
+func TestFactoryOpenCommandRegistered(t *testing.T) {
+	cmd, err := commandAtPath(Root(), "factory", "open")
+	if err != nil {
+		t.Fatalf("factory open command missing: %v", err)
+	}
+	if cmd.Flags().Lookup("exec") == nil {
+		t.Fatal("factory open should expose --exec flag")
+	}
+	if cmd.Flags().Lookup("json") == nil {
+		t.Fatal("factory open should expose --json flag")
+	}
+	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
+		t.Fatalf("factory open missing metadata fields: %v", missing)
+	}
+}
+
+func TestRunFactoryOpenFailedSandboxPrintsSSHCommand(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-open-sandbox", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusFailed
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.BranchName = "hal/factory-handoff"
+	record.SandboxName = "factory-remote"
+	record.Sandbox = &factory.SandboxMetadata{
+		Name:       "factory-remote",
+		Status:     sandbox.StatusRunning,
+		SSHCommand: "ssh root@203.0.113.10",
+		Connection: &factory.SandboxConnectionMetadata{
+			Address:  "203.0.113.10",
+			PublicIP: "203.0.113.10",
+		},
+	}
+	record.CurrentStep = "run"
+	record.Failure = &factory.FailureSummary{
+		Step:        "run",
+		Category:    factory.FailureCategoryRun,
+		Message:     "remote execution failed",
+		Recoverable: true,
+	}
+	record.Artifacts = []factory.ArtifactReference{
+		{Name: "sandbox-report", Type: "markdown", Path: ".hal/reports/factory.md"},
+		{Name: "sandbox-log", Type: "text", Path: ".hal/reports/stdout.log", StoredPath: "artifacts/run-open-sandbox/stdout.log"},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryOpenWithDeps(context.Background(), nil, &buf, io.Discard, record.RunID, false, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryOpenWithDeps() unexpected error: %v", err)
+	}
+	output := buf.String()
+	for _, want := range []string{
+		"Run ID: run-open-sandbox",
+		"Handoff required: true",
+		"Sandbox: factory-remote",
+		"Branch: hal/factory-handoff",
+		"Failure reason: remote execution failed",
+		"Suggested command: hal sandbox ssh factory-remote",
+		"Artifacts:",
+		".hal/reports/factory.md",
+		"Logs:",
+		".hal/reports/stdout.log",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("open output missing %q:\n%s", want, output)
+		}
+	}
+	for _, forbidden := range []string{"203.0.113.10", "root@"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("open output should not expose %q:\n%s", forbidden, output)
+		}
+	}
+}
+
+func TestRunFactoryOpenJSONEmitsHandoffSummary(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-open-json", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusFailed
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.BranchName = "hal/factory-handoff"
+	record.SandboxName = "factory-remote"
+	record.Sandbox = &factory.SandboxMetadata{
+		Name:   "factory-remote",
+		Status: sandbox.StatusRunning,
+	}
+	record.Failure = &factory.FailureSummary{
+		Step:        "run",
+		Category:    factory.FailureCategoryRun,
+		Message:     "remote execution failed",
+		Recoverable: true,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryOpenWithOptions(context.Background(), nil, &buf, io.Discard, factoryOpenRequest{
+		RunID: record.RunID,
+		JSON:  true,
+	}, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryOpenWithOptions() unexpected error: %v", err)
+	}
+
+	var resp FactoryOpenResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.ContractVersion != FactoryOpenContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryOpenContractVersion)
+	}
+	if resp.Handoff == nil || resp.Handoff.NextAction == nil {
+		t.Fatalf("handoff nextAction missing: %#v", resp.Handoff)
+	}
+	if resp.Handoff.NextAction.Command != "hal sandbox ssh factory-remote" {
+		t.Fatalf("nextAction command = %q", resp.Handoff.NextAction.Command)
+	}
+}
+
+func TestRunFactoryOpenJSONMissingRunReturnsJSONError(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	var buf bytes.Buffer
+	err := runFactoryOpenWithOptions(context.Background(), nil, &buf, io.Discard, factoryOpenRequest{
+		RunID: "missing-run",
+		JSON:  true,
+	}, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) || exitErr.Code != ExitCodeExpectedNonZero {
+		t.Fatalf("runFactoryOpenWithOptions() error = %v, want silent non-zero exit", err)
+	}
+
+	var resp FactoryOpenResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Error != `factory run "missing-run" not found` {
+		t.Fatalf("error = %q", resp.Error)
+	}
+}
+
+func TestRunFactoryOpenFailedLocalExecutesResumeWhenResumable(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 10, 30, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-open-local", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusFailed
+	record.ExecutorMode = factory.ExecutorModeLocal
+	record.RepoPath = "/workspace/hal"
+	record.BranchName = "hal/factory-handoff"
+	record.CurrentStep = "review"
+	record.Failure = &factory.FailureSummary{
+		Step:        "review",
+		Category:    factory.FailureCategoryReview,
+		Message:     "review gate blocked",
+		Recoverable: true,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	saveFactoryCommandArtifact(t, store, record.RunID, factory.ArtifactReference{
+		ID:   "auto-state",
+		Name: "auto-state",
+		Type: "json",
+		Path: ".hal/auto-state.json",
+	}, `{"step":"review"}`)
+
+	var gotReq factoryOpenExecRequest
+	var buf bytes.Buffer
+	stdin := strings.NewReader("takeover\n")
+	err := runFactoryOpenWithDeps(context.Background(), stdin, &buf, io.Discard, record.RunID, true, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		execute: func(_ context.Context, req factoryOpenExecRequest) error {
+			gotReq = req
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryOpenWithDeps() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(gotReq.Args, []string{"hal", "auto", "--resume"}) {
+		t.Fatalf("exec args = %#v", gotReq.Args)
+	}
+	if gotReq.Stdin != stdin {
+		t.Fatalf("exec stdin = %#v, want injected stdin", gotReq.Stdin)
+	}
+	if gotReq.Dir != "/workspace/hal" {
+		t.Fatalf("exec dir = %q, want /workspace/hal", gotReq.Dir)
+	}
+	output := buf.String()
+	for _, want := range []string{
+		"Repo path: /workspace/hal",
+		"Branch: hal/factory-handoff",
+		"Suggested command: hal auto --resume",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("open output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestExecuteFactoryOpenCommandPreservesChildExitCode(t *testing.T) {
+	t.Setenv("HAL_FACTORY_OPEN_EXIT_HELPER", "1")
+
+	err := executeFactoryOpenCommand(context.Background(), factoryOpenExecRequest{
+		Args: []string{os.Args[0], "-test.run=TestFactoryOpenExecExitHelper"},
+	})
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("executeFactoryOpenCommand() error = %T %v, want ExitCodeError", err, err)
+	}
+	if exitErr.Code != 7 {
+		t.Fatalf("exit code = %d, want 7", exitErr.Code)
+	}
+}
+
+func TestFactoryOpenExecExitHelper(t *testing.T) {
+	if os.Getenv("HAL_FACTORY_OPEN_EXIT_HELPER") != "1" {
+		return
+	}
+	os.Exit(7)
+}
+
+func TestFactoryOpenExecRejectsResumeWithoutRepoPath(t *testing.T) {
+	_, err := factoryOpenExecRequestFromSummary(&factory.HandoffSummary{
+		RunID: "run-open-local-no-repo",
+		NextAction: &factory.NextAction{
+			Type:    factory.NextActionTypeContinue,
+			Command: "hal auto --resume",
+		},
+	}, nil, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("factoryOpenExecRequestFromSummary() error = nil, want missing repo path error")
+	}
+	if !strings.Contains(err.Error(), "cannot resume without a recorded repo path") {
+		t.Fatalf("error = %q, want missing repo path message", err.Error())
+	}
+}
+
+func TestRunFactoryOpenCompletedRunHasNoTakeoverCommand(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-open-complete", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusSucceeded
+	record.CurrentStep = "done"
+	record.Failure = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryOpenWithDeps(context.Background(), nil, &buf, io.Discard, record.RunID, false, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryOpenWithDeps() unexpected error: %v", err)
+	}
+	output := buf.String()
+	for _, want := range []string{
+		"Status: succeeded",
+		"Handoff required: false",
+		"Handoff: no takeover required.",
+		"Inspection command: hal factory status run-open-complete --json",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("completed open output missing %q:\n%s", want, output)
+		}
+	}
+	for _, forbidden := range []string{"hal sandbox ssh", "hal auto --resume", "Suggested command:"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("completed open output should not contain %q:\n%s", forbidden, output)
+		}
+	}
+}
+
+func TestRunFactoryOpenExecCompletedRunExecutesInspectionCommand(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 6, 21, 11, 30, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-open-complete-exec", base, base.Add(time.Minute))
+	record.Status = factory.RunStatusSucceeded
+	record.CurrentStep = "done"
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var gotReq factoryOpenExecRequest
+	err := runFactoryOpenWithDeps(context.Background(), nil, io.Discard, io.Discard, record.RunID, true, factoryOpenDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		execute: func(_ context.Context, req factoryOpenExecRequest) error {
+			gotReq = req
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryOpenWithDeps() unexpected error: %v", err)
+	}
+	wantArgs := []string{"hal", "factory", "status", "run-open-complete-exec", "--json"}
+	if !reflect.DeepEqual(gotReq.Args, wantArgs) {
+		t.Fatalf("exec args = %#v, want %#v", gotReq.Args, wantArgs)
+	}
+	if gotReq.Dir != "" {
+		t.Fatalf("exec dir = %q, want empty", gotReq.Dir)
 	}
 }
 
@@ -4687,7 +5888,7 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 
 	payloads := map[string]any{
 		"factory-run":       newFactoryRunResponse(record, nil),
-		"factory-status":    FactoryStatusResponse{ContractVersion: FactoryStatusContractVersion, Run: newFactoryStatusRun(record, []factory.EventRecord{}), Timeline: []factory.EventRecord{}},
+		"factory-status":    FactoryStatusResponse{ContractVersion: FactoryStatusContractVersion, Run: newFactoryStatusRun(record, []factory.EventRecord{}, nil), Timeline: []factory.EventRecord{}},
 		"factory-artifacts": newFactoryArtifactsResponse(record),
 	}
 	for name, payload := range payloads {
@@ -4832,6 +6033,7 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 				"[hal factory run](hal_factory_run.md)",
 				"[hal factory list](hal_factory_list.md)",
 				"[hal factory status](hal_factory_status.md)",
+				"[hal factory open](hal_factory_open.md)",
 				"[hal factory queue](hal_factory_queue.md)",
 			},
 		},
@@ -4890,6 +6092,15 @@ func TestFactoryGeneratedCLIReferenceLinks(t *testing.T) {
 				"[hal factory](hal_factory.md)",
 			},
 		},
+		{
+			name: "factory open cli reference links parent",
+			path: "../docs/cli/hal_factory_open.md",
+			wantFragments: []string{
+				"handoff guidance",
+				"--exec",
+				"[hal factory](hal_factory.md)",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -4923,6 +6134,22 @@ func testFactoryRunRecord(runID string, createdAt, updatedAt time.Time) factory.
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
 	}
+}
+
+func saveFactoryCommandArtifact(t *testing.T, store factory.Store, runID string, artifact factory.ArtifactReference, content string) factory.ArtifactReference {
+	t.Helper()
+	sourcePath := filepath.Join(t.TempDir(), strings.Trim(strings.ReplaceAll(artifact.Path, "/", "-"), "-"))
+	if sourcePath == filepath.Dir(sourcePath) {
+		sourcePath = filepath.Join(t.TempDir(), "artifact")
+	}
+	if err := os.WriteFile(sourcePath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error: %v", sourcePath, err)
+	}
+	stored, err := store.SaveArtifactFile(runID, artifact, sourcePath)
+	if err != nil {
+		t.Fatalf("SaveArtifactFile(%s) error: %v", artifact.Name, err)
+	}
+	return stored
 }
 
 func assertFactoryRunRecordReadyForPipeline(t *testing.T, record factory.RunRecord, wantSource factory.SourceMetadata) {
@@ -5124,6 +6351,15 @@ func requireExactKeys(t *testing.T, got map[string]any, want []string) {
 		t.Fatalf("keys = %v, want exactly %v", mapKeys(got), want)
 	}
 	requireFactoryFields(t, "object", got, want)
+}
+
+func parseFactoryJSON(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(raw) error: %v\nraw: %s", err, string(data))
+	}
+	return raw
 }
 
 func requireFactoryFields(t *testing.T, label string, got map[string]any, want []string) {

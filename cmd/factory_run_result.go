@@ -18,6 +18,7 @@ type FactoryRunResponse struct {
 	Status          string                        `json:"status"`
 	NextAction      *FactoryRunNextAction         `json:"nextAction"`
 	Artifacts       []FactoryRunArtifactReference `json:"artifacts"`
+	Telemetry       *factory.RunTelemetry         `json:"telemetry,omitempty"`
 	EventSummary    FactoryRunEventSummary        `json:"eventSummary"`
 	Failure         *FactoryRunFailure            `json:"failure"`
 }
@@ -115,6 +116,7 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		Status:          record.Status,
 		NextAction:      newFactoryRunNextAction(record),
 		Artifacts:       newFactoryRunArtifactReferences(record.Artifacts),
+		Telemetry:       factory.DeriveRunTelemetry(record, events),
 		EventSummary:    newFactoryRunEventSummary(events),
 		Failure:         newFactoryRunFailure(record),
 	}
@@ -146,10 +148,16 @@ func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
 	if command == "" {
 		return nil
 	}
+	actionID := "inspect_factory_run"
+	description := "Inspect the durable run record and timeline."
+	if record.Status == factory.RunStatusSucceeded {
+		description = "Inspect the completed durable run record and timeline."
+	}
+
 	return &FactoryRunNextAction{
-		ID:          "inspect_factory_run",
+		ID:          actionID,
 		Command:     command,
-		Description: "Inspect the durable run record and timeline.",
+		Description: description,
 	}
 }
 
@@ -157,10 +165,7 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 	if record.Failure == nil {
 		return nil
 	}
-	classification := strings.TrimSpace(record.Failure.Category)
-	if classification == "" {
-		classification = factory.FailureCategoryUnknown
-	}
+	classification := factory.NormalizeFailureCategoryForContractV1(record.Failure.Category)
 	failure := &FactoryRunFailure{
 		Classification: classification,
 		ErrorMessage:   record.Failure.Message,
@@ -174,11 +179,7 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 }
 
 func factoryRunInspectCommand(runID string) string {
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return ""
-	}
-	return fmt.Sprintf("hal factory status %s --json", runID)
+	return factory.HandoffInspectCommand(runID)
 }
 
 func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {

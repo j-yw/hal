@@ -17,7 +17,8 @@
     "sandboxName": "factory-run-records",
     "sandbox": {
       "name": "factory-run-records",
-      "provider": "daytona",
+      "provider": "digitalocean",
+      "size": "s-2vcpu-4gb",
       "status": "running",
       "connection": {
         "address": "100.64.0.10",
@@ -74,6 +75,39 @@
         }
       ]
     },
+    "telemetry": {
+      "totalDurationMs": 1980000,
+      "stepDurations": [
+        {
+          "step": "run",
+          "startedAt": "2026-06-20T16:02:00Z",
+          "finishedAt": "2026-06-20T16:18:00Z",
+          "durationMs": 960000
+        },
+        {
+          "step": "ci",
+          "startedAt": "2026-06-20T16:30:00Z",
+          "finishedAt": "2026-06-20T16:33:00Z",
+          "durationMs": 180000
+        }
+      ],
+      "engine": {
+        "name": "codex",
+        "model": "gpt-5"
+      },
+      "sandbox": {
+        "provider": "digitalocean",
+        "size": "s-2vcpu-4gb"
+      },
+      "estimatedSandboxCost": {
+        "amountUsd": 0.0198,
+        "estimated": true
+      },
+      "ciOutcome": "failing",
+      "verificationOutcome": "fail",
+      "artifactCount": 3,
+      "failureCategory": "ci"
+    },
     "failure": {
       "step": "ci",
       "category": "ci",
@@ -81,6 +115,65 @@
       "recoverable": true,
       "suggestedCommand": "hal factory status run-20260620-002 --json",
       "exitCode": 1
+    },
+    "handoff": {
+      "runId": "run-20260620-002",
+      "status": "failed",
+      "executorMode": "sandbox",
+      "handoffRequired": true,
+      "nextAction": {
+        "id": "takeover_sandbox",
+        "type": "takeover",
+        "command": "hal sandbox ssh factory-run-records",
+        "description": "Open an interactive shell in the sandbox for manual takeover.",
+        "runId": "run-20260620-002",
+        "sandboxName": "factory-run-records",
+        "branchName": "hal/factory-run-records",
+        "pullRequestUrl": "https://github.com/jywlabs/hal/pull/42",
+        "currentStep": "ci",
+        "failureReason": "unit tests failed",
+        "artifactLocations": [
+          {
+            "name": "prd",
+            "path": ".hal/prd.json"
+          },
+          {
+            "name": "review-report",
+            "path": ".hal/reports/review-loop-20260620.md"
+          }
+        ],
+        "logLocations": [
+          {
+            "name": "ci-log",
+            "path": ".hal/reports/ci-output.log",
+            "storedPath": "artifacts/run-20260620-002/hal-reports-ci-output.log"
+          }
+        ]
+      },
+      "inspectCommand": "hal factory status run-20260620-002 --json",
+      "sshCommand": "hal sandbox ssh factory-run-records",
+      "branchName": "hal/factory-run-records",
+      "sandboxName": "factory-run-records",
+      "pullRequestUrl": "https://github.com/jywlabs/hal/pull/42",
+      "currentStep": "ci",
+      "failureReason": "unit tests failed",
+      "artifactLocations": [
+        {
+          "name": "prd",
+          "path": ".hal/prd.json"
+        },
+        {
+          "name": "review-report",
+          "path": ".hal/reports/review-loop-20260620.md"
+        }
+      ],
+      "logLocations": [
+        {
+          "name": "ci-log",
+          "path": ".hal/reports/ci-output.log",
+          "storedPath": "artifacts/run-20260620-002/hal-reports-ci-output.log"
+        }
+      ]
     }
   },
   "timeline": [
