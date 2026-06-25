@@ -681,7 +681,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	completedRecord, err = cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx, store, dir, req, out, completedRecord, deps, policy)
+	completedRecord, cleanedUp, err := cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx, store, dir, req, out, completedRecord, deps, policy)
 	if err != nil {
 		failedAt := deps.now()
 		failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, failedAt, err)
@@ -707,7 +707,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
+	finishedAt := completedAt
+	if cleanedUp {
+		finishedAt = deps.now()
+	}
+	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, finishedAt)
 	if err != nil {
 		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
@@ -1007,27 +1011,27 @@ func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
 	return policy.VerificationRequired && strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorOnSuccess
 }
 
-func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, error) {
+func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
 	if !req.Sandbox || !factoryRunDefersSandboxSuccessCleanup(policy) {
-		return record, nil
+		return record, false, nil
 	}
 	name := strings.TrimSpace(record.SandboxName)
 	if name == "" && record.Sandbox != nil {
 		name = strings.TrimSpace(record.Sandbox.Name)
 	}
 	if name == "" {
-		return record, nil
+		return record, false, nil
 	}
 	target, err := deps.loadSandbox(name)
 	if err != nil {
-		return record, fmt.Errorf("load factory sandbox for success cleanup %q: %w", name, err)
+		return record, false, fmt.Errorf("load factory sandbox for success cleanup %q: %w", name, err)
 	}
 	if target == nil {
-		return record, nil
+		return record, false, nil
 	}
 	provider, err := deps.resolveProvider(dir, target.Provider)
 	if err != nil {
-		return record, fmt.Errorf("resolve sandbox provider %q for success cleanup: %w", target.Provider, err)
+		return record, false, fmt.Errorf("resolve sandbox provider %q for success cleanup: %w", target.Provider, err)
 	}
 	cleanupOut := out
 	if req.JSON {
@@ -1038,15 +1042,15 @@ func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store fac
 		Provider: provider,
 		Out:      cleanupOut,
 	}); err != nil {
-		return record, fmt.Errorf("cleanup factory sandbox after verified success: %w", err)
+		return record, false, fmt.Errorf("cleanup factory sandbox after verified success: %w", err)
 	}
 	if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
 		now:     deps.now,
 		saveRun: saveFactorySandboxRunRecord,
 	}, &record, target); err != nil {
-		return record, err
+		return record, false, err
 	}
-	return record, nil
+	return record, true, nil
 }
 
 func autoFactoryAttemptPolicyFromFactoryPolicy(policy factory.FactoryPolicy) autoFactoryAttemptPolicy {

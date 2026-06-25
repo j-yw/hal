@@ -2314,7 +2314,9 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	artifactAt := createdAt.Add(2 * time.Minute)
 	verifyingAt := createdAt.Add(3 * time.Minute)
 	verifiedAt := createdAt.Add(4 * time.Minute)
-	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt}
+	cleanedAt := createdAt.Add(5 * time.Minute)
+	succeededAt := createdAt.Add(6 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verifiedAt, cleanedAt, succeededAt}
 	policy := factory.DefaultFactoryPolicy()
 	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
 	policy.VerificationRequired = true
@@ -2439,6 +2441,9 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 	if record.Status != factory.RunStatusSucceeded {
 		t.Fatalf("status = %q, want succeeded", record.Status)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(succeededAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, succeededAt)
 	}
 	if record.Sandbox == nil {
 		t.Fatal("sandbox metadata = nil, want cleaned metadata")
