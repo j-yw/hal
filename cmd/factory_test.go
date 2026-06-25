@@ -731,8 +731,8 @@ func TestRunFactoryRunWithDepsRecordsAttemptLimitPolicyDecision(t *testing.T) {
 	if record.CurrentStep != "policy" {
 		t.Fatalf("currentStep = %q, want policy", record.CurrentStep)
 	}
-	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryPRD {
-		t.Fatalf("failure = %#v, want PRD validation failure", record.Failure)
+	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryRun {
+		t.Fatalf("failure = %#v, want run failure", record.Failure)
 	}
 
 	events, err := store.LoadEvents("run-policy-attempt-limit")
@@ -3837,6 +3837,46 @@ func TestClassifyFactoryRunFailure(t *testing.T) {
 			name: "validate step",
 			err:  errors.New("step validate failed: invalid PRD"),
 			want: factory.FailureCategoryPRD,
+		},
+		{
+			name: "policy limit validate step",
+			err: &compound.PolicyLimitError{
+				PolicyField: "factory.policy.maxValidationFixAttempts",
+				Step:        compound.StepValidate,
+				Attempts:    1,
+				Limit:       1,
+			},
+			want: factory.FailureCategoryPRD,
+		},
+		{
+			name: "policy limit run step",
+			err: &compound.PolicyLimitError{
+				PolicyField: "factory.policy.maxRunAttempts",
+				Step:        compound.StepRun,
+				Attempts:    1,
+				Limit:       1,
+			},
+			want: factory.FailureCategoryRun,
+		},
+		{
+			name: "policy limit review step",
+			err: &compound.PolicyLimitError{
+				PolicyField: "factory.policy.maxReviewFixAttempts",
+				Step:        compound.StepReview,
+				Attempts:    1,
+				Limit:       1,
+			},
+			want: factory.FailureCategoryReview,
+		},
+		{
+			name: "policy limit ci step",
+			err: &compound.PolicyLimitError{
+				PolicyField: "factory.policy.maxCiFixAttempts",
+				Step:        compound.StepCI,
+				Attempts:    1,
+				Limit:       1,
+			},
+			want: factory.FailureCategoryCI,
 		},
 		{
 			name: "ci step",

@@ -1645,7 +1645,10 @@ func classifyFactoryRunFailure(err error) string {
 		return factory.FailureCategoryPRD
 	}
 	var policyLimitErr *compound.PolicyLimitError
-	if errors.As(err, &policyLimitErr) {
+	if errors.As(err, &policyLimitErr) && policyLimitErr != nil {
+		if category, ok := factoryFailureCategoryForAutoStep(policyLimitErr.Step); ok {
+			return category
+		}
 		return factory.FailureCategoryPRD
 	}
 
@@ -1655,17 +1658,8 @@ func classifyFactoryRunFailure(err error) string {
 	}
 
 	step := autoFailedStep(err)
-	switch step {
-	case compound.StepSpec, compound.StepConvert, compound.StepValidate:
-		return factory.FailureCategoryPRD
-	case compound.StepRun:
-		return factory.FailureCategoryRun
-	case compound.StepReview:
-		return factory.FailureCategoryReview
-	case compound.StepCI:
-		return factory.FailureCategoryCI
-	case compound.StepBranch:
-		return factory.FailureCategorySetup
+	if category, ok := factoryFailureCategoryForAutoStep(step); ok {
+		return category
 	}
 
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
@@ -1690,6 +1684,23 @@ func classifyFactoryRunFailure(err error) string {
 		return factory.FailureCategoryRun
 	default:
 		return factory.FailureCategoryUnknown
+	}
+}
+
+func factoryFailureCategoryForAutoStep(step string) (string, bool) {
+	switch step {
+	case compound.StepSpec, compound.StepConvert, compound.StepValidate:
+		return factory.FailureCategoryPRD, true
+	case compound.StepRun:
+		return factory.FailureCategoryRun, true
+	case compound.StepReview:
+		return factory.FailureCategoryReview, true
+	case compound.StepCI:
+		return factory.FailureCategoryCI, true
+	case compound.StepBranch:
+		return factory.FailureCategorySetup, true
+	default:
+		return "", false
 	}
 }
 
