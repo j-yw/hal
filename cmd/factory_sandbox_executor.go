@@ -325,6 +325,14 @@ func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecu
 	}
 	if req.BeforeCleanup != nil {
 		if err := req.BeforeCleanup(ctx, record); err != nil {
+			cleanupErr := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+				Target:   target,
+				Provider: provider,
+				Out:      out,
+			})
+			if cleanupErr != nil {
+				return errors.Join(fmt.Errorf("prepare factory sandbox cleanup: %w", err), cleanupErr)
+			}
 			return fmt.Errorf("prepare factory sandbox cleanup: %w", err)
 		}
 	}

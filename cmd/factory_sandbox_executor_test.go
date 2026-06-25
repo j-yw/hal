@@ -203,6 +203,46 @@ func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 	}
 }
 
+func TestCleanupFactorySandboxAfterRunAlwaysAttemptsCleanupAfterBeforeCleanupError(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	beforeErr := fmt.Errorf("copy artifacts failed")
+	cleanupErr := fmt.Errorf("delete sandbox failed")
+	cleanupCalls := 0
+
+	err := cleanupFactorySandboxAfterRun(context.Background(), factorySandboxExecutorDeps{
+		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if req.Target != target {
+				t.Fatalf("cleanup target = %#v, want fixture target", req.Target)
+			}
+			if req.Provider == nil {
+				t.Fatal("cleanup provider = nil")
+			}
+			return cleanupErr
+		},
+	}, factorySandboxExecutorRequest{
+		BeforeCleanup: func(context.Context, factory.RunRecord) error {
+			return beforeErr
+		},
+	}, factory.RunRecord{}, target, fakeFactorySandboxProvider{}, io.Discard, factory.CleanupBehaviorAlways, false)
+
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls)
+	}
+	if err == nil {
+		t.Fatal("cleanupFactorySandboxAfterRun() error = nil, want joined error")
+	}
+	for _, want := range []string{"prepare factory sandbox cleanup: copy artifacts failed", "delete sandbox failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("cleanupFactorySandboxAfterRun() error = %q, want containing %q", err.Error(), want)
+		}
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsDefersOnSuccessCleanup(t *testing.T) {
 	store := factory.NewStore(t.TempDir())
 	projectDir := t.TempDir()
