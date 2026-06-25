@@ -452,6 +452,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.RunStatusFailed,
 				factory.RunStatusCanceled,
 				factory.EventTypeRunCreated,
+				factory.EventTypePolicyDecision,
 				factory.EventTypeFailureClassification,
 			}, factoryV1FailureCategories...),
 		},
@@ -480,12 +481,15 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			path:          "../docs/contracts/factory-status-v1.md",
 			contractValue: FactoryStatusContractVersion,
 			requiredFields: []string{
-				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
-				"branchName", "baseBranch", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
+				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "engine", "source", "repoPath", "repoRemote",
+				"branchName", "baseBranch", "policy", "policyDecisions", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
 				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
+				"sandboxRequired", "allowedEngines", "maxRunAttempts", "maxReviewFixAttempts", "maxCiFixAttempts",
+				"verificationRequired", "prCreationAllowed", "mergeAllowed", "cleanupBehavior",
+				"policyField", "decision", "outcome", "reason",
 				"handoffRequired", "nextAction", "inspectCommand", "resumeCommand", "artifactLocations",
 				"logLocations", "type", "command", "description", "runId", "pullRequestUrl",
 				"failureReason", "storedPath",
@@ -498,6 +502,17 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.RunStatusCanceled,
 				verify.ArtifactKindStdout,
 				verify.ArtifactKindStderr,
+				factory.CleanupBehaviorPreserve,
+				factory.CleanupBehaviorOnSuccess,
+				factory.CleanupBehaviorAlways,
+				factory.PolicyDecisionAllowedExecution,
+				factory.PolicyDecisionRejectedExecution,
+				factory.PolicyDecisionPassedGate,
+				factory.PolicyDecisionBlockedGate,
+				factory.PolicyOutcomeAllowed,
+				factory.PolicyOutcomeRejected,
+				factory.PolicyOutcomePassed,
+				factory.PolicyOutcomeBlocked,
 				"sandbox",
 			}, factoryV1FailureCategories...),
 		},
@@ -571,6 +586,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.EventTypeVerificationResult,
 				factory.EventTypeCIState,
 				factory.EventTypeArtifactSync,
+				factory.EventTypePolicyDecision,
 				factory.EventTypeFailureClassification,
 			},
 		},
@@ -580,7 +596,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			contractValue: FactoryTriggerContractVersion,
 			requiredFields: []string{
 				"contractVersion", "runId", "run", "entry", "summary",
-				"repoPath", "source", "queueId", "executorMode", "factory-queue-entry-v1",
+				"repoPath", "source", "queueId", "executorMode", "engine", "factory-queue-entry-v1",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -897,6 +913,9 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if resp.RunID == "" || resp.Run.RunID != resp.RunID {
 			t.Fatalf("factory trigger example run IDs = response %q run %q", resp.RunID, resp.Run.RunID)
+		}
+		if resp.Entry == nil {
+			t.Fatal("factory trigger example should include an entry")
 		}
 		if resp.Entry.QueueID == "" {
 			t.Fatal("factory trigger example should include a queue ID")

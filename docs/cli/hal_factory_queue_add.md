@@ -8,7 +8,8 @@ Add an existing factory run to the durable factory queue.
 
 Provide the run ID to enqueue and the executor mode that the worker should use
 when processing it. Use --json for machine-readable output following the
-factory-queue-add-v1 contract.
+factory-queue-add-v1 contract. Sandbox executor mode requires the run record to
+include a base branch.
 
 ```
 hal factory queue add <run-id> <executor-mode> [flags]
@@ -19,6 +20,7 @@ hal factory queue add <run-id> <executor-mode> [flags]
 ```
   hal factory queue add run-20260620-001 local
   hal factory queue add run-20260620-001 local --json
+  hal factory queue add run-20260620-001 sandbox
 ```
 
 ### Options

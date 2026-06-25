@@ -262,6 +262,7 @@ func TestEventTypeConstants(t *testing.T) {
 		{name: "ci_state", got: EventTypeCIState, want: "ci_state"},
 		{name: "artifact_sync", got: EventTypeArtifactSync, want: "artifact_sync"},
 		{name: "failure_classification", got: EventTypeFailureClassification, want: "failure_classification"},
+		{name: "policy_decision", got: EventTypePolicyDecision, want: "policy_decision"},
 	}
 
 	for _, tt := range tests {
@@ -630,6 +631,8 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(QueueEntry{}),
 		reflect.TypeOf(QueueClaim{}),
 		reflect.TypeOf(EventRecord{}),
+		reflect.TypeOf(PolicyDecisionMetadata{}),
+		reflect.TypeOf(FactoryPolicy{}),
 		reflect.TypeOf(LogChunk{}),
 		reflect.TypeOf(BootstrapRequest{}),
 		reflect.TypeOf(BootstrapOptions{}),
@@ -865,6 +868,7 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 			RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
 			Status:       RunStatusFailed,
 			ExecutorMode: ExecutorModeLocal,
+			Engine:       PolicyEngineCodex,
 			Source: SourceMetadata{
 				Kind:       SourceKindMarkdown,
 				Path:       ".hal/prd-factory.md",
@@ -1084,6 +1088,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
 		Status:       RunStatusFailed,
 		ExecutorMode: ExecutorModeLocal,
+		Engine:       PolicyEngineCodex,
 		Source: SourceMetadata{
 			Kind:       SourceKindMarkdown,
 			Path:       ".hal/prd-factory.md",
@@ -1208,6 +1213,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"runId",
 		"status",
 		"executorMode",
+		"engine",
 		"source",
 		"repoPath",
 		"repoRemote",
@@ -1677,7 +1683,7 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "telemetry", "failure"} {
+	for _, key := range []string{"engine", "sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "telemetry", "failure"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional field %q in %s", key, string(data))
 		}
@@ -1826,6 +1832,51 @@ func TestEventRecordJSONFields(t *testing.T) {
 	}
 
 	var decoded EventRecord
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestPolicyDecisionMetadataJSONFields(t *testing.T) {
+	original := PolicyDecisionMetadata{
+		PolicyField: "factory.policy.verificationRequired",
+		Decision:    PolicyDecisionBlockedGate,
+		Outcome:     PolicyOutcomeBlocked,
+		Reason:      "latest verification result failed",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	for _, key := range []string{"policyField", "decision", "outcome", "reason"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing policy decision metadata JSON field %q", key)
+		}
+	}
+	for _, forbidden := range []string{"token", "secret", "credential", "env", "sourcePath", "provider", "apiKey"} {
+		if _, ok := raw[forbidden]; ok {
+			t.Errorf("unsafe policy decision metadata field %q should not be serialized", forbidden)
+		}
+	}
+
+	metadata := original.EventMetadata()
+	for _, key := range []string{"policyField", "decision", "outcome", "reason"} {
+		if _, ok := metadata[key]; !ok {
+			t.Errorf("missing policy decision event metadata key %q", key)
+		}
+	}
+
+	var decoded PolicyDecisionMetadata
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
 	}

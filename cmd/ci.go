@@ -13,6 +13,7 @@ import (
 
 	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/spf13/cobra"
 )
 
@@ -208,12 +209,14 @@ type ciMergeDeps struct {
 	mergePR       func(context.Context, ci.MergeOptions) (ci.MergeResult, error)
 	currentBranch func(context.Context) (string, error)
 	findOpenPR    func(context.Context, string) (*ci.PullRequest, error)
+	loadPolicy    func(string) (*factory.FactoryPolicy, error)
 }
 
 var defaultCIMergeDeps = ciMergeDeps{
 	mergePR:       ci.MergePR,
 	currentBranch: ciCurrentBranch,
 	findOpenPR:    ci.FindOpenPullRequestForBranch,
+	loadPolicy:    factory.LoadPolicyConfig,
 }
 
 type ciMergeRunOptions struct {
@@ -852,10 +855,29 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 			return nil, nil
 		}
 	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultCIMergeDeps.loadPolicy
+		if deps.loadPolicy == nil {
+			deps.loadPolicy = factory.LoadPolicyConfig
+		}
+	}
 
 	strategy, err := ci.NormalizeMergeStrategy(opts.Strategy)
 	if err != nil {
 		return err
+	}
+	if !opts.DryRun {
+		policy, policyErr := deps.loadPolicy(".")
+		if policyErr != nil {
+			return fmt.Errorf("load factory policy: %w", policyErr)
+		}
+		if policy == nil {
+			defaultPolicy := factory.DefaultFactoryPolicy()
+			policy = &defaultPolicy
+		}
+		if !policy.MergeAllowed {
+			return fmt.Errorf("ci merge blocked by factory.policy.mergeAllowed=false")
+		}
 	}
 
 	if !opts.JSON {

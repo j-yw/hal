@@ -31,6 +31,7 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 		"resolveProvider": deps.resolveProvider,
 		"runProviderExec": deps.runProviderExec,
 		"bootstrap":       deps.bootstrap,
+		"cleanupSandbox":  deps.cleanupSandbox,
 		"saveRun":         deps.saveRun,
 		"appendEvent":     deps.appendEvent,
 	}
@@ -80,6 +81,412 @@ func TestFactorySandboxConnectionMetadataFromStatePrefersTailscaleAddress(t *tes
 			}
 			if got.PublicIP != tt.wantPublic {
 				t.Fatalf("PublicIP = %q, want %q", got.PublicIP, tt.wantPublic)
+			}
+		})
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		behavior    string
+		execErr     error
+		wantCleanup bool
+		wantErr     bool
+	}{
+		{
+			name:     "preserve leaves successful sandbox available",
+			behavior: factory.CleanupBehaviorPreserve,
+		},
+		{
+			name:        "on success cleans up successful sandbox",
+			behavior:    factory.CleanupBehaviorOnSuccess,
+			wantCleanup: true,
+		},
+		{
+			name:        "on success preserves failed sandbox",
+			behavior:    factory.CleanupBehaviorOnSuccess,
+			execErr:     fmt.Errorf("remote failed"),
+			wantCleanup: false,
+			wantErr:     true,
+		},
+		{
+			name:        "always cleans up successful sandbox",
+			behavior:    factory.CleanupBehaviorAlways,
+			wantCleanup: true,
+		},
+		{
+			name:        "always cleans up failed sandbox",
+			behavior:    factory.CleanupBehaviorAlways,
+			execErr:     fmt.Errorf("remote failed"),
+			wantCleanup: true,
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := factory.NewStore(t.TempDir())
+			projectDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0755); err != nil {
+				t.Fatalf("MkdirAll() error: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(projectDir, ".hal", "prd.md"), []byte("# PRD\n"), 0644); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+			policy := factory.DefaultFactoryPolicy()
+			policy.CleanupBehavior = tt.behavior
+			target := &sandbox.SandboxState{
+				Name:     "factory-dev",
+				Provider: "daytona",
+				Status:   sandbox.StatusRunning,
+				IP:       "127.0.0.1",
+			}
+
+			var execCalls int
+			var cleanupCalls int
+			err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+				ProjectDir:  projectDir,
+				SandboxName: "factory-dev",
+				RunRecord: factory.RunRecord{
+					RunID:      "run-sandbox",
+					RepoRemote: "git@github.com:example/repo.git",
+					Policy:     &policy,
+				},
+				RemoteAuto:   factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
+				RemoteOutput: io.Discard,
+			}, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) {
+					return store, nil
+				},
+				now: func() time.Time {
+					return time.Date(2026, 6, 21, 9, 30, 0, 0, time.UTC)
+				},
+				loadSandbox: func(string) (*sandbox.SandboxState, error) {
+					return target, nil
+				},
+				resolveProvider: func(string) (sandbox.Provider, error) {
+					return fakeFactorySandboxProvider{}, nil
+				},
+				runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+					execCalls++
+					if execCalls == 2 {
+						return tt.execErr
+					}
+					return nil
+				},
+				cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+					cleanupCalls++
+					if req.Target == nil || req.Target.Name != "factory-dev" {
+						t.Fatalf("cleanup target = %#v, want factory-dev", req.Target)
+					}
+					if req.Provider == nil {
+						t.Fatalf("cleanup provider = nil")
+					}
+					return nil
+				},
+			})
+			if tt.wantErr && err == nil {
+				t.Fatalf("runFactorySandboxExecutorWithDeps() error = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+			}
+			wantCleanupCalls := 0
+			if tt.wantCleanup {
+				wantCleanupCalls = 1
+			}
+			if cleanupCalls != wantCleanupCalls {
+				t.Fatalf("cleanup calls = %d, want %d", cleanupCalls, wantCleanupCalls)
+			}
+			saved, err := store.LoadRun("run-sandbox")
+			if err != nil {
+				t.Fatalf("LoadRun() error: %v", err)
+			}
+			if tt.wantCleanup {
+				if saved.Sandbox == nil {
+					t.Fatal("saved sandbox metadata = nil, want cleaned metadata")
+				}
+				if saved.Sandbox.Status != sandbox.StatusUnknown {
+					t.Fatalf("saved sandbox status = %q, want unknown after cleanup", saved.Sandbox.Status)
+				}
+				if saved.Sandbox.Connection != nil || saved.Sandbox.SSHCommand != "" || saved.Sandbox.CleanupCommand != "" || saved.Sandbox.Handoff != "" {
+					t.Fatalf("saved sandbox handoff metadata = %#v, want cleared after cleanup", saved.Sandbox)
+				}
+				if tt.wantErr {
+					if saved.Failure == nil {
+						t.Fatal("saved failure = nil, want sandbox failure")
+					}
+					if saved.Failure.SuggestedCommand != factoryRunInspectCommand(saved.RunID) {
+						t.Fatalf("failure suggested command = %q, want inspect command", saved.Failure.SuggestedCommand)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCleanupFactorySandboxAfterRunAlwaysAttemptsCleanupAfterBeforeCleanupError(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	beforeErr := fmt.Errorf("copy artifacts failed")
+	cleanupErr := fmt.Errorf("delete sandbox failed")
+	cleanupCalls := 0
+
+	cleaned, err := cleanupFactorySandboxAfterRun(context.Background(), factorySandboxExecutorDeps{
+		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if req.Target != target {
+				t.Fatalf("cleanup target = %#v, want fixture target", req.Target)
+			}
+			if req.Provider == nil {
+				t.Fatal("cleanup provider = nil")
+			}
+			return cleanupErr
+		},
+	}, factorySandboxExecutorRequest{
+		BeforeCleanup: func(context.Context, factory.RunRecord) error {
+			return beforeErr
+		},
+	}, factory.RunRecord{}, target, fakeFactorySandboxProvider{}, io.Discard, factory.CleanupBehaviorAlways, false)
+
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls)
+	}
+	if cleaned {
+		t.Fatal("cleanupFactorySandboxAfterRun() cleaned = true, want false when cleanup fails")
+	}
+	if err == nil {
+		t.Fatal("cleanupFactorySandboxAfterRun() error = nil, want joined error")
+	}
+	for _, want := range []string{"prepare factory sandbox cleanup: copy artifacts failed", "delete sandbox failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("cleanupFactorySandboxAfterRun() error = %q, want containing %q", err.Error(), want)
+		}
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsDefersOnSuccessCleanup(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".hal", "prd.md"), []byte("# PRD\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+
+	var cleanupCalls int
+	var beforeCleanupCalls int
+	if err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:          projectDir,
+		SandboxName:         "factory-dev",
+		RunRecord:           factory.RunRecord{RunID: "run-sandbox-defer-cleanup", RepoRemote: "git@github.com:example/repo.git", Policy: &policy},
+		RemoteAuto:          factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
+		RemoteOutput:        io.Discard,
+		DeferSuccessCleanup: true,
+		BeforeCleanup: func(context.Context, factory.RunRecord) error {
+			beforeCleanupCalls++
+			return nil
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) {
+			return store, nil
+		},
+		now: func() time.Time {
+			return time.Date(2026, 6, 21, 9, 35, 0, 0, time.UTC)
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 when success cleanup is deferred", cleanupCalls)
+	}
+	if beforeCleanupCalls != 0 {
+		t.Fatalf("BeforeCleanup calls = %d, want 0 when cleanup is deferred", beforeCleanupCalls)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsDefersAlwaysCleanupAfterSuccess(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".hal", "prd.md"), []byte("# PRD\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorAlways
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+
+	var cleanupCalls int
+	var beforeCleanupCalls int
+	if err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:          projectDir,
+		SandboxName:         "factory-dev",
+		RunRecord:           factory.RunRecord{RunID: "run-sandbox-defer-always-cleanup", RepoRemote: "git@github.com:example/repo.git", Policy: &policy},
+		RemoteAuto:          factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
+		RemoteOutput:        io.Discard,
+		DeferSuccessCleanup: true,
+		BeforeCleanup: func(context.Context, factory.RunRecord) error {
+			beforeCleanupCalls++
+			return nil
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) {
+			return store, nil
+		},
+		now: func() time.Time {
+			return time.Date(2026, 6, 21, 9, 36, 0, 0, time.UTC)
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 when always cleanup is deferred after successful execution", cleanupCalls)
+	}
+	if beforeCleanupCalls != 0 {
+		t.Fatalf("BeforeCleanup calls = %d, want 0 when always cleanup is deferred after successful execution", beforeCleanupCalls)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsCleansUpEarlyFailureWhenPolicyAlways(t *testing.T) {
+	tests := []struct {
+		name       string
+		record     factory.RunRecord
+		remoteAuto factoryRunAutoRequest
+		bootstrap  func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+		wantErr    string
+	}{
+		{
+			name: "bootstrap failure",
+			record: factory.RunRecord{
+				RunID:      "run-bootstrap-cleanup",
+				RepoRemote: "git@github.com:example/repo.git",
+				BaseBranch: "main",
+				BranchName: "hal/feature",
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				return factory.BootstrapResult{}, fmt.Errorf("bootstrap failed")
+			},
+			wantErr: "bootstrap factory sandbox workspace: bootstrap failed",
+		},
+		{
+			name: "prepare inputs failure",
+			record: factory.RunRecord{
+				RunID:      "run-prepare-cleanup",
+				RepoRemote: "git@github.com:example/repo.git",
+			},
+			remoteAuto: factoryRunAutoRequest{Args: []string{".hal/missing.md"}},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				t.Fatalf("bootstrap should not run without a base branch")
+				return factory.BootstrapResult{}, nil
+			},
+			wantErr: "prepare factory sandbox inputs: read sandbox input \".hal/missing.md\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := factory.NewStore(t.TempDir())
+			projectDir := t.TempDir()
+			policy := factory.DefaultFactoryPolicy()
+			policy.CleanupBehavior = factory.CleanupBehaviorAlways
+			record := tt.record
+			record.Policy = &policy
+			target := &sandbox.SandboxState{
+				Name:     "factory-dev",
+				Provider: "daytona",
+				Status:   sandbox.StatusRunning,
+			}
+
+			var beforeCleanupCalls int
+			var cleanupCalls int
+			var execCalls int
+			err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+				ProjectDir:   projectDir,
+				SandboxName:  "factory-dev",
+				RunRecord:    record,
+				RemoteAuto:   tt.remoteAuto,
+				RemoteOutput: io.Discard,
+				BeforeCleanup: func(context.Context, factory.RunRecord) error {
+					beforeCleanupCalls++
+					return nil
+				},
+			}, factorySandboxExecutorDeps{
+				defaultStore:    func() (factory.Store, error) { return store, nil },
+				loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+				resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+				bootstrap:       tt.bootstrap,
+				runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+					execCalls++
+					return nil
+				},
+				cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+					cleanupCalls++
+					if beforeCleanupCalls != cleanupCalls {
+						t.Fatalf("cleanup ran before BeforeCleanup")
+					}
+					if req.Target == nil || req.Target.Name != "factory-dev" {
+						t.Fatalf("cleanup target = %#v, want factory-dev", req.Target)
+					}
+					if req.Provider == nil {
+						t.Fatalf("cleanup provider = nil")
+					}
+					return nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want containing %q", err, tt.wantErr)
+			}
+			if beforeCleanupCalls != 1 || cleanupCalls != 1 {
+				t.Fatalf("BeforeCleanup/cleanup calls = %d/%d, want 1/1", beforeCleanupCalls, cleanupCalls)
+			}
+			if execCalls != 0 {
+				t.Fatalf("remote execution calls = %d, want 0", execCalls)
 			}
 		})
 	}
@@ -207,7 +614,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
-	if !reflect.DeepEqual(gotExecArgs, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '.hal/prd.md'"}) {
+	if !reflect.DeepEqual(gotExecArgs, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd.md'"}) {
 		t.Fatalf("exec args = %#v", gotExecArgs)
 	}
 	if appendedEvent.RunID != "run-sandbox" || appendedEvent.EventType != factory.EventTypeStepEnded || appendedEvent.Metadata["executorMode"] != factory.ExecutorModeSandbox {
@@ -422,7 +829,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/prd-feature.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[1], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
 	}
@@ -474,7 +881,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/factory-inputs/analysis.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[1], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
 	}
@@ -517,6 +924,16 @@ func TestFactorySandboxCopyInputToRemoteSplitsLargeInputCommands(t *testing.T) {
 }
 
 func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testing.T) {
+	withAttemptPolicyEnv := func(maxRun, maxReviewFix, maxCIFix int, args ...string) []string {
+		env := []string{
+			"env",
+			fmt.Sprintf("HAL_FACTORY_MAX_RUN_ATTEMPTS=%d", maxRun),
+			fmt.Sprintf("HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=%d", maxReviewFix),
+			fmt.Sprintf("HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=%d", maxCIFix),
+		}
+		return append(env, args...)
+	}
+
 	tests := []struct {
 		name string
 		req  factoryRunAutoRequest
@@ -525,7 +942,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 		{
 			name: "auto discovery",
 			req:  factoryRunAutoRequest{},
-			want: []string{"hal", "auto"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto"),
 		},
 		{
 			name: "markdown with base",
@@ -533,7 +950,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 				Args:       []string{" .hal/prd-feature.md "},
 				BaseBranch: " main ",
 			},
-			want: []string{"hal", "auto", ".hal/prd-feature.md", "--base", "main"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", ".hal/prd-feature.md", "--base", "main"),
 		},
 		{
 			name: "report with base",
@@ -541,14 +958,33 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 				ReportPath: " .hal/reports/analysis.md ",
 				BaseBranch: " develop ",
 			},
-			want: []string{"hal", "auto", "--report", ".hal/reports/analysis.md", "--base", "develop"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", "--report", ".hal/reports/analysis.md", "--base", "develop"),
+		},
+		{
+			name: "engine",
+			req: factoryRunAutoRequest{
+				Engine: " Claude ",
+			},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", "--engine", "claude"),
 		},
 		{
 			name: "empty args are omitted",
 			req: factoryRunAutoRequest{
 				Args: []string{"", "  ", ".hal/prd-feature.md"},
 			},
-			want: []string{"hal", "auto", ".hal/prd-feature.md"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", ".hal/prd-feature.md"),
+		},
+		{
+			name: "attempt policy env",
+			req: factoryRunAutoRequest{
+				BaseBranch: "main",
+				AttemptPolicy: autoFactoryAttemptPolicy{
+					MaxRunAttempts:       1,
+					MaxReviewFixAttempts: 2,
+					MaxCIFixAttempts:     3,
+				},
+			},
+			want: withAttemptPolicyEnv(1, 2, 3, "hal", "auto", "--base", "main"),
 		},
 	}
 
@@ -569,7 +1005,7 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 		BaseBranch: " hal/factory-remote-workspace-bootstrap ",
 	})
 
-	want := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
+	want := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
 	}
@@ -1094,15 +1530,18 @@ func TestRunFactorySandboxExecutorWithDepsRecordsProvisionFailure(t *testing.T) 
 	}
 }
 
-func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata(t *testing.T) {
+func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadataAndAlwaysCleanup(t *testing.T) {
 	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
 	startErr := factorySandboxTestError("start failed")
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorAlways
 	target := &sandbox.SandboxState{
 		Name:     "factory-stopped",
 		Provider: "hetzner",
 		Status:   sandbox.StatusStopped,
 	}
 	var savedRecords []factory.RunRecord
+	var cleanupCalls int
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		SandboxName: "factory-stopped",
@@ -1111,6 +1550,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 			Status:      factory.RunStatusRunning,
 			CurrentStep: "run",
 			RepoRemote:  "git@github.com:example/repo.git",
+			Policy:      &policy,
 		},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
@@ -1121,6 +1561,22 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
 			return nil, startErr
 		},
+		resolveProvider: func(providerName string) (sandbox.Provider, error) {
+			if providerName != "hetzner" {
+				t.Fatalf("providerName = %q, want hetzner", providerName)
+			}
+			return fakeFactorySandboxProvider{}, nil
+		},
+		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if req.Target == nil || req.Target.Name != "factory-stopped" {
+				t.Fatalf("cleanup target = %#v, want factory-stopped", req.Target)
+			}
+			if req.Provider == nil {
+				t.Fatalf("cleanup provider = nil")
+			}
+			return nil
+		},
 		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
 			savedRecords = append(savedRecords, *record)
 			return nil
@@ -1130,8 +1586,8 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	if err == nil || err.Error() != "start factory sandbox \"factory-stopped\": start failed" {
 		t.Fatalf("error = %v", err)
 	}
-	if len(savedRecords) != 2 {
-		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	if len(savedRecords) != 3 {
+		t.Fatalf("saved records = %d, want 3", len(savedRecords))
 	}
 	failed := savedRecords[1]
 	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "start" {
@@ -1142,6 +1598,19 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	}
 	if failed.Sandbox.SSHCommand != "hal sandbox ssh factory-stopped" {
 		t.Fatalf("ssh command = %q", failed.Sandbox.SSHCommand)
+	}
+	cleaned := savedRecords[2]
+	if cleaned.SandboxName != "factory-stopped" || cleaned.Sandbox == nil || cleaned.Sandbox.Provider != "hetzner" || cleaned.Sandbox.Status != sandbox.StatusUnknown {
+		t.Fatalf("cleaned sandbox metadata = %#v", cleaned.Sandbox)
+	}
+	if cleaned.Sandbox.SSHCommand != "" || cleaned.Sandbox.CleanupCommand != "" || cleaned.Sandbox.Handoff != "" {
+		t.Fatalf("cleaned sandbox commands not cleared: %#v", cleaned.Sandbox)
+	}
+	if cleaned.Failure == nil || cleaned.Failure.SuggestedCommand != factoryRunInspectCommand("run-start-failure") {
+		t.Fatalf("cleaned failure suggested command = %#v", cleaned.Failure)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls)
 	}
 }
 

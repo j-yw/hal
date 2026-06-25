@@ -429,6 +429,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		RunID:        "run-contract",
 		Status:       factory.RunStatusFailed,
 		ExecutorMode: factory.ExecutorModeLocal,
+		Engine:       factory.PolicyEngineCodex,
 		Source:       factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-factory.md", Title: "Factory"},
 		RepoPath:     "/workspace/hal",
 		RepoRemote:   "git@github.com:jywlabs/hal.git",
@@ -766,7 +767,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			ContractVersion: FactoryTriggerContractVersion,
 			RunID:           triggerRun.RunID,
 			Run:             triggerRun,
-			Entry:           queueEntry,
+			Entry:           &queueEntry,
 			Summary:         "queued triggered run run-contract as queue-contract-001",
 		})
 		if err != nil {
@@ -784,7 +785,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			t.Fatalf("run should be object, got %T", raw["run"])
 		}
 		requireExactKeys(t, run, []string{
-			"runId", "status", "executorMode", "source", "repoPath", "repoRemote",
+			"runId", "status", "executorMode", "engine", "source", "repoPath", "repoRemote",
 			"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt",
 			"updatedAt", "artifacts", "failure",
 		})

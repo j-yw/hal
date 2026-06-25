@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 func TestFactoryQueueAddArgsValidationRejectsMissingOperands(t *testing.T) {
@@ -246,6 +248,45 @@ func TestRunFactoryQueueAddWithDepsRejectsInvalidExecutorMode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unsupported factory executor mode "remote" (supported: local, sandbox)`) {
 		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want unsupported mode", err.Error())
+	}
+
+	entries, loadErr := store.LoadQueue()
+	if loadErr != nil {
+		t.Fatalf("LoadQueue() error: %v", loadErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
+	events, loadErr := store.LoadEvents(record.RunID)
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events len = %d, want 0: %#v", len(events), events)
+	}
+}
+
+func TestRunFactoryQueueAddWithDepsRejectsSandboxRunWithoutBaseBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 14, 5, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-sandbox-no-base", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.RunStatusPending
+	record.BaseBranch = ""
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	err := runFactoryQueueAddWithDeps(io.Discard, factoryQueueAddRequest{
+		RunID:        record.RunID,
+		ExecutorMode: factory.ExecutorModeSandbox,
+	}, queueAddTestDeps(store, createdAt, "queue-sandbox-no-base"))
+	if err == nil {
+		t.Fatal("runFactoryQueueAddWithDeps() error = nil, want missing base branch rejection")
+	}
+	wantErr := `factory run "run-sandbox-no-base" must have baseBranch set before using sandbox executor`
+	if err.Error() != wantErr {
+		t.Fatalf("runFactoryQueueAddWithDeps() error = %q, want %q", err.Error(), wantErr)
 	}
 
 	entries, loadErr := store.LoadQueue()
@@ -589,6 +630,448 @@ func TestRunFactoryQueueWorkWithDepsExecutesOneEntryAndRecordsRunState(t *testin
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 15, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox", PID: 5357, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-sandbox", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = "main"
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-001", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	target := &sandbox.SandboxState{
+		Name:     "factory-queue-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline should not be called for sandbox queue entries")
+		return nil
+	})
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+	deps.loadEngine = func(string) (string, error) {
+		return factory.PolicyEngineCodex, nil
+	}
+	var gotSandboxReq factorySandboxExecutorRequest
+	deps.runSandbox = func(_ context.Context, req factorySandboxExecutorRequest) error {
+		gotSandboxReq = req
+		record := req.RunRecord
+		record.ExecutorMode = factory.ExecutorModeSandbox
+		record.SandboxName = target.Name
+		record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+		return store.SaveRun(&record)
+	}
+	deps.loadSandbox = func(name string) (*sandbox.SandboxState, error) {
+		if name != target.Name {
+			t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+		}
+		return target, nil
+	}
+	deps.resolveProvider = func(string, string) (sandbox.Provider, error) {
+		return fakeFactorySandboxProvider{}, nil
+	}
+	deps.runProviderExec = func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+		data, err := json.Marshal(verify.Result{
+			SchemaVersion: verify.SchemaVersion,
+			Status:        verify.StatusPass,
+			Summary:       verify.Summary{},
+			Checks:        []verify.CheckResult{},
+		})
+		if err != nil {
+			t.Fatalf("Marshal(verify result) error: %v", err)
+		}
+		if _, err := out.Write(append(data, '\n')); err != nil {
+			t.Fatalf("write remote verify JSON error: %v", err)
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	if gotSandboxReq.RunRecord.RunID != record.RunID {
+		t.Fatalf("sandbox runID = %q, want %q", gotSandboxReq.RunRecord.RunID, record.RunID)
+	}
+	if gotSandboxReq.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("sandbox executorMode = %q, want %q", gotSandboxReq.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	if len(gotSandboxReq.RemoteAuto.Args) != 1 || gotSandboxReq.RemoteAuto.Args[0] != ".hal/prd-queue-sandbox.md" {
+		t.Fatalf("sandbox args = %#v, want queued markdown source", gotSandboxReq.RemoteAuto.Args)
+	}
+	if gotSandboxReq.RemoteAuto.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("sandbox engine = %q, want %q", gotSandboxReq.RemoteAuto.Engine, factory.PolicyEngineCodex)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsRejectsLegacySandboxEntryWithoutBaseBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 20, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox-no-base", PID: 5358, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-sandbox-no-base", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = ""
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-no-base", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline should not be called for sandbox queue entries")
+		return nil
+	})
+	deps.runSandbox = func(context.Context, factorySandboxExecutorRequest) error {
+		t.Fatal("runSandbox should not be called when sandbox queued run has no base branch")
+		return nil
+	}
+
+	err := runFactoryQueueWorkWithDeps(context.Background(), io.Discard, factoryQueueWorkRequest{}, deps)
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want missing base branch rejection")
+	}
+	wantErr := `factory run "run-queue-sandbox-no-base" must have baseBranch set before using sandbox executor`
+	if err.Error() != wantErr {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want %q", err.Error(), wantErr)
+	}
+
+	entries, loadErr := store.LoadQueue()
+	if loadErr != nil {
+		t.Fatalf("LoadQueue() error: %v", loadErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
+	}
+	if entries[0].Status != factory.QueueStatusFailed {
+		t.Fatalf("queue status = %q, want failed", entries[0].Status)
+	}
+	if entries[0].LastError != wantErr {
+		t.Fatalf("queue lastError = %q, want %q", entries[0].LastError, wantErr)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsRejectsCreationPolicyBeforeExecution(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 30, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-policy", PID: 5354, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-policy", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-policy-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline should not be called when creation policy rejects queued work")
+		return nil
+	})
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+	deps.loadEngine = func(string) (string, error) {
+		return factory.PolicyEngineCodex, nil
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps)
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want policy rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.sandboxRequired") {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want sandboxRequired rejection", err.Error())
+	}
+
+	var resp FactoryQueueWorkResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v\n%s", err, out.String())
+	}
+	if resp.Entry == nil || resp.Entry.Status != factory.QueueStatusFailed {
+		t.Fatalf("entry = %#v, want failed queue entry", resp.Entry)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", loaded.Status)
+	}
+	if loaded.Failure == nil || loaded.Failure.Step != "policy" {
+		t.Fatalf("run failure = %+v, want policy failure", loaded.Failure)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	foundPolicyDecision := false
+	for _, event := range events {
+		if event.EventType == factory.EventTypePolicyDecision && event.Metadata["policyField"] == "factory.policy.sandboxRequired" {
+			foundPolicyDecision = true
+			break
+		}
+	}
+	if !foundPolicyDecision {
+		t.Fatalf("events = %#v, want sandboxRequired policy decision", events)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsUsesStoredPolicySnapshot(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 40, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-policy-snapshot", PID: 5356, Hostname: "factory-host"}
+	policySnapshot := factory.DefaultFactoryPolicy()
+	policySnapshot.AllowedEngines = []string{factory.PolicyEngineCodex}
+	policySnapshot.MaxRunAttempts = 3
+	record := testFactoryRunRecord("run-queue-policy-snapshot", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Policy = &policySnapshot
+	record.Engine = factory.PolicyEngineCodex
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-policy-snapshot.md"}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-policy-snapshot-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var gotPipelineReq factoryRunPipelineRequest
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(_ context.Context, req factoryRunPipelineRequest) error {
+		gotPipelineReq = req
+		return nil
+	})
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		t.Fatal("loadPolicy should not be called when run record already has a policy snapshot")
+		return nil, nil
+	}
+	deps.loadEngine = func(string) (string, error) {
+		t.Fatal("loadEngine should not be called when run record already has an engine snapshot")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	if gotPipelineReq.AttemptPolicy.MaxRunAttempts != 3 {
+		t.Fatalf("pipeline max run attempts = %d, want snapshot value 3", gotPipelineReq.AttemptPolicy.MaxRunAttempts)
+	}
+	if gotPipelineReq.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("pipeline engine = %q, want stored snapshot %q", gotPipelineReq.Engine, factory.PolicyEngineCodex)
+	}
+	if gotPipelineReq.Record.Policy == nil || gotPipelineReq.Record.Policy.MaxRunAttempts != 3 {
+		t.Fatalf("pipeline record policy = %#v, want stored snapshot", gotPipelineReq.Record.Policy)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Policy == nil || loaded.Policy.MaxRunAttempts != 3 {
+		t.Fatalf("loaded policy = %#v, want stored snapshot", loaded.Policy)
+	}
+	if loaded.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("loaded engine = %q, want stored snapshot %q", loaded.Engine, factory.PolicyEngineCodex)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsRunsPostRunVerificationAndArtifacts(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	projectDir := t.TempDir()
+	createdAt := time.Date(2026, 6, 21, 18, 42, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-post-run", PID: 5357, Hostname: "factory-host"}
+	policySnapshot := factory.DefaultFactoryPolicy()
+	policySnapshot.VerificationRequired = true
+	record := testFactoryRunRecord("run-queue-post-run", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Policy = &policySnapshot
+	record.Engine = factory.PolicyEngineCodex
+	record.RepoPath = projectDir
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-post-run.md"}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-post-run-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	statusSnapshotCalls := 0
+	doctorSnapshotCalls := 0
+	loadVerifyCalls := 0
+	runVerifyCalls := 0
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		return nil
+	})
+	deps.statusSnapshot = func(gotDir string) (factorySnapshotArtifact, error) {
+		statusSnapshotCalls++
+		if gotDir != projectDir {
+			t.Fatalf("statusSnapshot dir = %q, want %q", gotDir, projectDir)
+		}
+		return factorySnapshotArtifact{
+			Name: "queue-status-snapshot",
+			Path: "factory/queue-status-snapshot.json",
+			Data: []byte(`{"status":"ok"}`),
+		}, nil
+	}
+	deps.doctorSnapshot = func(gotDir string) (factorySnapshotArtifact, error) {
+		doctorSnapshotCalls++
+		if gotDir != projectDir {
+			t.Fatalf("doctorSnapshot dir = %q, want %q", gotDir, projectDir)
+		}
+		return factorySnapshotArtifact{
+			Name: "queue-doctor-snapshot",
+			Path: "factory/queue-doctor-snapshot.json",
+			Data: []byte(`{"doctor":"ok"}`),
+		}, nil
+	}
+	deps.loadVerify = func(gotDir string) (*verify.Config, error) {
+		loadVerifyCalls++
+		if gotDir != projectDir {
+			t.Fatalf("loadVerify dir = %q, want %q", gotDir, projectDir)
+		}
+		return &verify.Config{
+			ProjectRoot: projectDir,
+			Checks: []verify.ShellCheck{{
+				ID:       "post-run",
+				Name:     "Post-run",
+				Command:  "true",
+				Required: true,
+			}},
+		}, nil
+	}
+	deps.runVerify = func(_ context.Context, cfg *verify.Config) (*verify.Result, error) {
+		runVerifyCalls++
+		if cfg == nil || len(cfg.Checks) != 1 || cfg.Checks[0].ID != "post-run" {
+			t.Fatalf("runVerify config = %#v, want post-run check", cfg)
+		}
+		return &verify.Result{
+			SchemaVersion: verify.SchemaVersion,
+			GeneratedAt:   claimedAt,
+			Status:        verify.StatusPass,
+			Summary:       verify.Summary{Total: 1, Passed: 1},
+		}, nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	for name, got := range map[string]int{
+		"statusSnapshot": statusSnapshotCalls,
+		"doctorSnapshot": doctorSnapshotCalls,
+		"loadVerify":     loadVerifyCalls,
+		"runVerify":      runVerifyCalls,
+	} {
+		if got != 1 {
+			t.Fatalf("%s calls = %d, want 1", name, got)
+		}
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusSucceeded {
+		t.Fatalf("run status = %q, want succeeded", loaded.Status)
+	}
+	if loaded.Verification == nil || loaded.Verification.Summary.Passed != 1 {
+		t.Fatalf("verification = %#v, want passing verification", loaded.Verification)
+	}
+	requireStoredFactoryArtifactPath(t, store, loaded.RunID, loaded.Artifacts, "factory/queue-status-snapshot.json")
+	requireStoredFactoryArtifactPath(t, store, loaded.RunID, loaded.Artifacts, "factory/queue-doctor-snapshot.json")
+}
+
+func TestRunFactoryQueueWorkWithDepsMarksRunFailedWhenPolicyLoadFails(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 45, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-policy-load", PID: 5355, Hostname: "factory-host"}
+	record := testFactoryRunRecord("run-queue-policy-load", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-policy-load-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		t.Fatal("runPipeline should not be called when policy loading fails")
+		return nil
+	})
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return nil, errors.New("policy config unreadable")
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps)
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want policy load error")
+	}
+	if !strings.Contains(err.Error(), "load factory policy: policy config unreadable") {
+		t.Fatalf("runFactoryQueueWorkWithDeps() error = %q, want policy load context", err.Error())
+	}
+
+	var resp FactoryQueueWorkResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v\n%s", err, out.String())
+	}
+	if resp.Entry == nil || resp.Entry.Status != factory.QueueStatusFailed {
+		t.Fatalf("entry = %#v, want failed queue entry", resp.Entry)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", loaded.Status)
+	}
+	if loaded.Failure == nil || !strings.Contains(loaded.Failure.Message, "load factory policy: policy config unreadable") {
+		t.Fatalf("run failure = %+v, want policy load failure", loaded.Failure)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsClaimsFIFOEntry(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 19, 0, 0, 0, time.UTC)
@@ -896,6 +1379,9 @@ func queueWorkTestDepsWithExecutor(store factory.Store, now time.Time, claim fac
 		now:          func() time.Time { return now },
 		claim:        &claim,
 		runPipeline:  runPipeline,
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			return nil
+		},
 	}
 }
 

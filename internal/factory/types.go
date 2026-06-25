@@ -148,6 +148,23 @@ const (
 	EventTypeCIState               = "ci_state"
 	EventTypeArtifactSync          = "artifact_sync"
 	EventTypeFailureClassification = "failure_classification"
+	EventTypePolicyDecision        = "policy_decision"
+)
+
+// Policy decision values recorded in policy decision timeline events.
+const (
+	PolicyDecisionAllowedExecution  = "allowed_execution"
+	PolicyDecisionRejectedExecution = "rejected_execution"
+	PolicyDecisionPassedGate        = "passed_gate"
+	PolicyDecisionBlockedGate       = "blocked_gate"
+)
+
+// Policy decision outcome values recorded in policy decision timeline events.
+const (
+	PolicyOutcomeAllowed  = "allowed"
+	PolicyOutcomeRejected = "rejected"
+	PolicyOutcomePassed   = "passed"
+	PolicyOutcomeBlocked  = "blocked"
 )
 
 // Log stream values.
@@ -201,11 +218,13 @@ type RunRecord struct {
 	RunID        string              `json:"runId"`
 	Status       string              `json:"status"`
 	ExecutorMode string              `json:"executorMode"`
+	Engine       string              `json:"engine,omitempty"`
 	Source       SourceMetadata      `json:"source"`
 	RepoPath     string              `json:"repoPath"`
 	RepoRemote   string              `json:"repoRemote"`
 	BranchName   string              `json:"branchName"`
 	BaseBranch   string              `json:"baseBranch"`
+	Policy       *FactoryPolicy      `json:"policy,omitempty"`
 	SandboxName  string              `json:"sandboxName,omitempty"`
 	Sandbox      *SandboxMetadata    `json:"sandbox,omitempty"`
 	CurrentStep  string              `json:"currentStep"`
@@ -378,6 +397,26 @@ type EventRecord struct {
 	Message   string         `json:"message,omitempty"`
 	Summary   string         `json:"summary,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// PolicyDecisionMetadata is the safe, whitelisted metadata shape for policy
+// decision timeline events. It must not grow raw config values, environment
+// values, source paths, provider internals, or credentials.
+type PolicyDecisionMetadata struct {
+	PolicyField string `json:"policyField"`
+	Decision    string `json:"decision"`
+	Outcome     string `json:"outcome"`
+	Reason      string `json:"reason"`
+}
+
+// EventMetadata returns the map representation stored in EventRecord.Metadata.
+func (m PolicyDecisionMetadata) EventMetadata() map[string]any {
+	return map[string]any{
+		"policyField": strings.TrimSpace(m.PolicyField),
+		"decision":    strings.TrimSpace(m.Decision),
+		"outcome":     strings.TrimSpace(m.Outcome),
+		"reason":      strings.TrimSpace(m.Reason),
+	}
 }
 
 // LogChunk captures one durable factory log chunk or summarized output line.
