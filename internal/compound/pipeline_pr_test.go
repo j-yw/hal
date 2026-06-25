@@ -608,6 +608,53 @@ func TestRunPRStep_DefaultCIFixAttemptsDoNotCarryAcrossResume(t *testing.T) {
 	}
 }
 
+func TestRunPRStep_MaxCIFixAttemptsAllowsPolicyBoundResume(t *testing.T) {
+	stubCIWaitAlwaysFailing(t)
+
+	var attempts []int
+	origFix := fixWithEngineInDirFn
+	fixWithEngineInDirFn = func(_ context.Context, _ string, _ ci.StatusResult, opts ci.FixOptions) (ci.FixResult, error) {
+		attempts = append(attempts, opts.Attempt)
+		return ci.FixResult{
+			Applied:      true,
+			Attempt:      opts.Attempt,
+			FilesChanged: []string{"main.go"},
+			Pushed:       true,
+		}, nil
+	}
+	t.Cleanup(func() {
+		fixWithEngineInDirFn = origFix
+	})
+
+	pipeline, _ := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+		CI: &CIState{
+			FixAttempts: maxCIFixAttempts,
+		},
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{MaxCIFixAttempts: 5})
+	var limitErr *PolicyLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("runPRStep() error = %v, want PolicyLimitError", err)
+	}
+	if got, want := fmt.Sprint(attempts), "[4 5]"; got != want {
+		t.Fatalf("fix attempts = %s, want %s", got, want)
+	}
+	if limitErr.Attempts != 5 || limitErr.Limit != 5 {
+		t.Fatalf("limit error = %+v, want attempts/limit 5", limitErr)
+	}
+	if state.CI.Status != "policy_blocked" || state.CI.FixAttempts != 5 {
+		t.Fatalf("state.CI = %+v, want policy_blocked at attempt 5", state.CI)
+	}
+}
+
 func TestRunPRStep_MaxCIFixAttemptsBlocksBeforeNextFix(t *testing.T) {
 	stubCIWaitAlwaysFailing(t)
 

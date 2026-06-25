@@ -1550,7 +1550,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	// 4. If failing, attempt engine-driven fixes.
 	if status.Status == ci.StatusFailing {
-		maxFixAttempts := ciFixMaxAttemptsForRun(opts)
+		maxFixAttempts := ciFixMaxAttemptsForRun(state, opts)
 		p.display.ShowInfo("   CI checks failing; attempting auto-fix (up to %d attempts)\n", maxFixAttempts)
 
 		firstFixAttempt := 1
@@ -1671,9 +1671,17 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	return fmt.Errorf("ci gate blocked: CI status is %s; wait for checks to complete and rerun with --resume, or rerun with --no-ci", status.Status)
 }
 
-func ciFixMaxAttemptsForRun(opts RunOptions) int {
-	if opts.MaxCIFixAttempts > 0 && opts.MaxCIFixAttempts < maxCIFixAttempts {
-		return opts.MaxCIFixAttempts
+func ciFixMaxAttemptsForRun(state *PipelineState, opts RunOptions) int {
+	if opts.MaxCIFixAttempts > 0 {
+		previousAttempts := 0
+		if state != nil && state.CI != nil {
+			previousAttempts = state.CI.FixAttempts
+		}
+		maxAttempts := previousAttempts + maxCIFixAttempts
+		if maxAttempts > opts.MaxCIFixAttempts {
+			return opts.MaxCIFixAttempts
+		}
+		return maxAttempts
 	}
 	return maxCIFixAttempts
 }
