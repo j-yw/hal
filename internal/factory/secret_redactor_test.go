@@ -1,6 +1,10 @@
 package factory
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jywlabs/hal/internal/verify"
+)
 
 func TestRunSecretRedactorRedactsSingleValue(t *testing.T) {
 	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
@@ -156,6 +160,32 @@ func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 	}
 	if got.Secrets[0] != wantSecret {
 		t.Fatalf("Secrets[0] = %#v, want %#v", got.Secrets[0], wantSecret)
+	}
+}
+
+func TestRunSecretRedactorRedactsVerificationArtifactIdentifiers(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "RUN_SECRET", Source: RunSecretSourceEnv, Required: true, Value: "secret-fragment"},
+	})
+
+	got := redactor.RedactRunRecord(RunRecord{
+		Verification: &VerificationRecord{
+			Artifacts: []verify.ArtifactReference{{
+				CheckID: "check-secret-fragment",
+				Kind:    "kind-secret-fragment",
+				Path:    ".hal/reports/secret-fragment.txt",
+			}},
+		},
+	})
+
+	if got.Verification.Artifacts[0].CheckID != "check-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Verification.Artifacts[0].CheckID = %q, want redacted", got.Verification.Artifacts[0].CheckID)
+	}
+	if got.Verification.Artifacts[0].Kind != "kind-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Verification.Artifacts[0].Kind = %q, want redacted", got.Verification.Artifacts[0].Kind)
+	}
+	if got.Verification.Artifacts[0].Path != ".hal/reports/"+RunSecretRedactionPlaceholder+".txt" {
+		t.Fatalf("Verification.Artifacts[0].Path = %q, want redacted", got.Verification.Artifacts[0].Path)
 	}
 }
 

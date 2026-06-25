@@ -146,8 +146,8 @@ func (r RunSecretRedactor) redactVerificationRecord(verification *VerificationRe
 		safe.Artifacts = make([]verify.ArtifactReference, len(verification.Artifacts))
 		for i, artifact := range verification.Artifacts {
 			safe.Artifacts[i] = verify.ArtifactReference{
-				CheckID: artifact.CheckID,
-				Kind:    artifact.Kind,
+				CheckID: r.RedactString(artifact.CheckID),
+				Kind:    r.RedactString(artifact.Kind),
 				Path:    r.RedactString(artifact.Path),
 			}
 		}
