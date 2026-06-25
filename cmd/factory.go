@@ -677,10 +677,13 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
-		if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "verification failure"); cleanupErr != nil {
-			recordErrs = append(recordErrs, cleanupErr)
-		} else if cleanedUp {
+		if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "verification failure"); cleanedUp {
 			failedRecord = cleanupRecord
+			if cleanupErr != nil {
+				recordErrs = append(recordErrs, cleanupErr)
+			}
+		} else if cleanupErr != nil {
+			recordErrs = append(recordErrs, cleanupErr)
 		}
 		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
 			recordErrs = append(recordErrs, artifactErr)
@@ -1142,10 +1145,13 @@ func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store fac
 			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 		}
 	}
-	if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "artifact collection failure"); cleanupErr != nil {
-		recordErrs = append(recordErrs, cleanupErr)
-	} else if cleanedUp {
+	if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "artifact collection failure"); cleanedUp {
 		failedRecord = cleanupRecord
+		if cleanupErr != nil {
+			recordErrs = append(recordErrs, cleanupErr)
+		}
+	} else if cleanupErr != nil {
+		recordErrs = append(recordErrs, cleanupErr)
 	}
 	if artifactRecord, recordArtifactErr := recordFactoryRunRecordArtifact(store, failedRecord); recordArtifactErr != nil {
 		recordErrs = append(recordErrs, recordArtifactErr)
