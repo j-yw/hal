@@ -4905,6 +4905,36 @@ func sanitizeCredentialedRemote(remote string) string {
 	return prefix + userinfo + "@" + strings.TrimPrefix(withoutUser, prefix)
 }
 
+func sanitizeCredentialedRemoteReferences(value string) string {
+	if !strings.Contains(value, "://") || !strings.Contains(value, "@") {
+		return value
+	}
+	var out strings.Builder
+	for i := 0; i < len(value); {
+		if strings.HasPrefix(value[i:], "https://") || strings.HasPrefix(value[i:], "http://") {
+			end := i
+			for end < len(value) && !factoryCredentialedRemoteReferenceSeparator(value[end]) {
+				end++
+			}
+			out.WriteString(sanitizeCredentialedRemote(value[i:end]))
+			i = end
+			continue
+		}
+		out.WriteByte(value[i])
+		i++
+	}
+	return out.String()
+}
+
+func factoryCredentialedRemoteReferenceSeparator(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
 func sanitizeCredentialedRemoteAuthority(remote string) (string, bool) {
 	schemeIndex := strings.Index(remote, "://")
 	if schemeIndex < 0 {

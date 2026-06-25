@@ -1197,6 +1197,125 @@ func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsRedactsSecretsWhenSandboxRemoteRefreshFails(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 55, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox-remote-fail", PID: 5360, Hostname: "factory-host"}
+	secret := "ghp_queue_failure_secret_456"
+	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
+	redactedRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
+	policy := factory.DefaultFactoryPolicy()
+	record := testFactoryRunRecord("run-queue-sandbox-remote-fail", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = "main"
+	record.Engine = "codex"
+	record.Policy = &policy
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.RepoRemote = redactedRemote
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-remote-fail", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	deps := queueWorkTestDepsWithExecutors(store, claimedAt, claim,
+		func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called for sandbox queue entry")
+			return nil
+		},
+		func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("runSandbox called after sandbox remote refresh failure")
+			return nil
+		},
+	)
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name == "GITHUB_TOKEN" {
+			return secret, true
+		}
+		return "", false
+	}
+	deps.repoRemote = func(string) (string, error) {
+		return "", errors.New("git remote failed for " + rawRemote + " using " + secret)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps)
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want sandbox remote refresh error")
+	}
+	for _, leaked := range []string{secret, rawRemote} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("returned error leaked %q: %v", leaked, err)
+		}
+		if strings.Contains(out.String(), leaked) {
+			t.Fatalf("queue work JSON leaked %q: %s", leaked, out.String())
+		}
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Status != factory.QueueStatusFailed {
+		t.Fatalf("queue entries = %#v, want one failed entry", entries)
+	}
+	if strings.Contains(entries[0].LastError, secret) || strings.Contains(entries[0].LastError, rawRemote) {
+		t.Fatalf("queue lastError leaked secret: %q", entries[0].LastError)
+	}
+	if !strings.Contains(entries[0].LastError, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("queue lastError = %q, want redaction placeholder", entries[0].LastError)
+	}
+	if strings.Contains(entries[0].LastError, "https://x:") {
+		t.Fatalf("queue lastError retained credentialed userinfo: %q", entries[0].LastError)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Failure == nil {
+		t.Fatal("run failure = nil, want failure summary")
+	}
+	if strings.Contains(loaded.Failure.Message, secret) || strings.Contains(loaded.Failure.Message, rawRemote) {
+		t.Fatalf("run failure message leaked secret: %q", loaded.Failure.Message)
+	}
+	if !strings.Contains(loaded.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("run failure message = %q, want redaction placeholder", loaded.Failure.Message)
+	}
+	if strings.Contains(loaded.Failure.Message, "https://x:") {
+		t.Fatalf("run failure message retained credentialed userinfo: %q", loaded.Failure.Message)
+	}
+}
+
+func TestSanitizeFactoryQueueFailureMessageRedactsEmbeddedCredentialedRemoteWithoutSecrets(t *testing.T) {
+	secret := "ghp_queue_failure_no_metadata_789"
+	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
+
+	got := sanitizeFactoryQueueFailureMessage("refresh failed for "+rawRemote+" before worker secret resolution", factory.RunSecretRedactor{})
+
+	if strings.Contains(got, secret) || strings.Contains(got, rawRemote) {
+		t.Fatalf("sanitized message leaked credentialed remote: %q", got)
+	}
+	if strings.Contains(got, "https://x:") {
+		t.Fatalf("sanitized message retained credentialed userinfo: %q", got)
+	}
+	if !strings.Contains(got, "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/example/repo.git") {
+		t.Fatalf("sanitized message = %q, want redacted remote", got)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsClaimsFIFOEntry(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 19, 0, 0, 0, time.UTC)
