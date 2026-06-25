@@ -526,7 +526,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
-	if !reflect.DeepEqual(gotExecArgs, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '.hal/prd.md'"}) {
+	if !reflect.DeepEqual(gotExecArgs, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd.md'"}) {
 		t.Fatalf("exec args = %#v", gotExecArgs)
 	}
 	if appendedEvent.RunID != "run-sandbox" || appendedEvent.EventType != factory.EventTypeStepEnded || appendedEvent.Metadata["executorMode"] != factory.ExecutorModeSandbox {
@@ -741,7 +741,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/prd-feature.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[1], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
 	}
@@ -793,7 +793,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/factory-inputs/analysis.md'") {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
+	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
 	if !reflect.DeepEqual(execArgs[1], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
 	}
@@ -836,6 +836,16 @@ func TestFactorySandboxCopyInputToRemoteSplitsLargeInputCommands(t *testing.T) {
 }
 
 func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testing.T) {
+	withAttemptPolicyEnv := func(maxRun, maxReviewFix, maxCIFix int, args ...string) []string {
+		env := []string{
+			"env",
+			fmt.Sprintf("HAL_FACTORY_MAX_RUN_ATTEMPTS=%d", maxRun),
+			fmt.Sprintf("HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=%d", maxReviewFix),
+			fmt.Sprintf("HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=%d", maxCIFix),
+		}
+		return append(env, args...)
+	}
+
 	tests := []struct {
 		name string
 		req  factoryRunAutoRequest
@@ -844,7 +854,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 		{
 			name: "auto discovery",
 			req:  factoryRunAutoRequest{},
-			want: []string{"hal", "auto"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto"),
 		},
 		{
 			name: "markdown with base",
@@ -852,7 +862,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 				Args:       []string{" .hal/prd-feature.md "},
 				BaseBranch: " main ",
 			},
-			want: []string{"hal", "auto", ".hal/prd-feature.md", "--base", "main"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", ".hal/prd-feature.md", "--base", "main"),
 		},
 		{
 			name: "report with base",
@@ -860,21 +870,21 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 				ReportPath: " .hal/reports/analysis.md ",
 				BaseBranch: " develop ",
 			},
-			want: []string{"hal", "auto", "--report", ".hal/reports/analysis.md", "--base", "develop"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", "--report", ".hal/reports/analysis.md", "--base", "develop"),
 		},
 		{
 			name: "engine",
 			req: factoryRunAutoRequest{
 				Engine: " Claude ",
 			},
-			want: []string{"hal", "auto", "--engine", "claude"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", "--engine", "claude"),
 		},
 		{
 			name: "empty args are omitted",
 			req: factoryRunAutoRequest{
 				Args: []string{"", "  ", ".hal/prd-feature.md"},
 			},
-			want: []string{"hal", "auto", ".hal/prd-feature.md"},
+			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", ".hal/prd-feature.md"),
 		},
 		{
 			name: "attempt policy env",
@@ -886,16 +896,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 					MaxCIFixAttempts:     3,
 				},
 			},
-			want: []string{
-				"env",
-				"HAL_FACTORY_MAX_RUN_ATTEMPTS=1",
-				"HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=2",
-				"HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=3",
-				"hal",
-				"auto",
-				"--base",
-				"main",
-			},
+			want: withAttemptPolicyEnv(1, 2, 3, "hal", "auto", "--base", "main"),
 		},
 	}
 
@@ -916,7 +917,7 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 		BaseBranch: " hal/factory-remote-workspace-bootstrap ",
 	})
 
-	want := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
+	want := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
 	}

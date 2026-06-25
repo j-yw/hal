@@ -696,23 +696,15 @@ func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 	if req.SkipCI {
 		args = append(args, "--no-ci")
 	}
-	if env := factorySandboxRemoteAutoEnv(req.AttemptPolicy); len(env) > 0 {
-		return append(append([]string{"env"}, env...), args...)
-	}
-	return args
+	env := factorySandboxRemoteAutoEnv(req.AttemptPolicy)
+	return append(append([]string{"env"}, env...), args...)
 }
 
 func factorySandboxRemoteAutoEnv(policy autoFactoryAttemptPolicy) []string {
 	env := make([]string, 0, 3)
-	if policy.MaxRunAttempts > 0 {
-		env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxRunAttemptsEnv, policy.MaxRunAttempts))
-	}
-	if policy.MaxReviewFixAttempts > 0 {
-		env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxReviewFixAttemptsEnv, policy.MaxReviewFixAttempts))
-	}
-	if policy.MaxCIFixAttempts > 0 {
-		env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxCIFixAttemptsEnv, policy.MaxCIFixAttempts))
-	}
+	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxRunAttemptsEnv, policy.MaxRunAttempts))
+	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxReviewFixAttemptsEnv, policy.MaxReviewFixAttempts))
+	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxCIFixAttemptsEnv, policy.MaxCIFixAttempts))
 	return env
 }
 
