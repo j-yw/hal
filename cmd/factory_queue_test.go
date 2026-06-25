@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 )
 
@@ -650,6 +651,12 @@ func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testin
 
 	policy := factory.DefaultFactoryPolicy()
 	policy.SandboxRequired = true
+	target := &sandbox.SandboxState{
+		Name:     "factory-queue-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
 	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
 		t.Fatal("runPipeline should not be called for sandbox queue entries")
 		return nil
@@ -663,6 +670,34 @@ func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testin
 	var gotSandboxReq factorySandboxExecutorRequest
 	deps.runSandbox = func(_ context.Context, req factorySandboxExecutorRequest) error {
 		gotSandboxReq = req
+		record := req.RunRecord
+		record.ExecutorMode = factory.ExecutorModeSandbox
+		record.SandboxName = target.Name
+		record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+		return store.SaveRun(&record)
+	}
+	deps.loadSandbox = func(name string) (*sandbox.SandboxState, error) {
+		if name != target.Name {
+			t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+		}
+		return target, nil
+	}
+	deps.resolveProvider = func(string, string) (sandbox.Provider, error) {
+		return fakeFactorySandboxProvider{}, nil
+	}
+	deps.runProviderExec = func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+		data, err := json.Marshal(verify.Result{
+			SchemaVersion: verify.SchemaVersion,
+			Status:        verify.StatusPass,
+			Summary:       verify.Summary{},
+			Checks:        []verify.CheckResult{},
+		})
+		if err != nil {
+			t.Fatalf("Marshal(verify result) error: %v", err)
+		}
+		if _, err := out.Write(append(data, '\n')); err != nil {
+			t.Fatalf("write remote verify JSON error: %v", err)
+		}
 		return nil
 	}
 

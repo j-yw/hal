@@ -221,6 +221,7 @@ type factoryRunDeps struct {
 	runVerify        func(context.Context, *verify.Config) (*verify.Result, error)
 	loadSandbox      func(string) (*sandbox.SandboxState, error)
 	resolveProvider  func(string, string) (sandbox.Provider, error)
+	runProviderExec  func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	cleanupSandbox   func(context.Context, factorySandboxCleanupRequest) error
 	statusSnapshot   func(string) (factorySnapshotArtifact, error)
 	doctorSnapshot   func(string) (factorySnapshotArtifact, error)
@@ -258,6 +259,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	runVerify:       verify.Run,
 	loadSandbox:     sandbox.LoadActiveInstance,
 	resolveProvider: resolveProviderWithFallback,
+	runProviderExec: runFactorySandboxProviderExec,
 	cleanupSandbox:  cleanupFactorySandbox,
 	statusSnapshot:  defaultFactoryStatusSnapshot,
 	doctorSnapshot:  defaultFactoryDoctorSnapshot,
@@ -778,6 +780,9 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactoryRunDeps.resolveProvider
 	}
+	if deps.runProviderExec == nil {
+		deps.runProviderExec = defaultFactoryRunDeps.runProviderExec
+	}
 	if deps.cleanupSandbox == nil {
 		deps.cleanupSandbox = defaultFactoryRunDeps.cleanupSandbox
 	}
@@ -1233,6 +1238,15 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, deps.now(), fmt.Errorf("mark factory run verifying: %w", err)
 	}
 
+	if factoryRunUsesSandboxVerification(record) {
+		result, err := runFactorySandboxRemoteVerification(ctx, dir, record, deps)
+		finishedAt := deps.now()
+		if err != nil {
+			return record, finishedAt, fmt.Errorf("run remote sandbox verification: %w", err)
+		}
+		return recordFactoryRunVerificationOutcome(store, dir, record, startedAt, finishedAt, result, policy, false)
+	}
+
 	cfg, err := deps.loadVerify(dir)
 	if err != nil {
 		return record, deps.now(), fmt.Errorf("load verification config: %w", err)
@@ -1264,6 +1278,34 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	}
 	if result == nil {
 		return record, finishedAt, fmt.Errorf("run verification: no result")
+	}
+
+	return recordFactoryRunVerificationOutcome(store, dir, record, startedAt, finishedAt, result, policy, true)
+}
+
+func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record factory.RunRecord, startedAt, finishedAt time.Time, result *verify.Result, policy factory.FactoryPolicy, startedRecorded bool) (factory.RunRecord, time.Time, error) {
+	if result == nil {
+		return record, finishedAt, fmt.Errorf("run verification: no result")
+	}
+	if factoryVerificationResultHasNoChecks(result) {
+		if policy.VerificationRequired {
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionBlockedGate,
+				Outcome:     factory.PolicyOutcomeBlocked,
+				Reason:      "verification required but no checks configured",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			return record, finishedAt, fmt.Errorf("verification required but no checks configured")
+		}
+		return record, finishedAt, nil
+	}
+	if !startedRecorded {
+		if err := recordFactoryRunVerificationStarted(store, record.RunID, startedAt); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification start event: %w", err)
+		}
 	}
 
 	record.Verification = &factory.VerificationRecord{
@@ -1327,6 +1369,80 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("record factory verification completion event: %w", err)
 	}
 	return record, finishedAt, nil
+}
+
+func factoryVerificationResultHasNoChecks(result *verify.Result) bool {
+	if result == nil {
+		return true
+	}
+	return result.Summary.Total == 0 && len(result.Checks) == 0
+}
+
+func factoryRunUsesSandboxVerification(record factory.RunRecord) bool {
+	return strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox
+}
+
+func runFactorySandboxRemoteVerification(ctx context.Context, dir string, record factory.RunRecord, deps factoryRunDeps) (*verify.Result, error) {
+	sandboxName := factoryRunSandboxName(record)
+	if sandboxName == "" {
+		return nil, fmt.Errorf("sandbox verification requires sandbox metadata")
+	}
+	target, err := deps.loadSandbox(sandboxName)
+	if err != nil {
+		return nil, fmt.Errorf("load sandbox %q for verification: %w", sandboxName, err)
+	}
+	if target == nil {
+		return nil, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
+	}
+	provider, err := deps.resolveProvider(dir, target.Provider)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
+	}
+	args, err := factorySandboxRemoteVerifyArgs(record)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	execErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), args, &out)
+	result, parseErr := parseFactorySandboxVerifyResult(out.Bytes())
+	if parseErr != nil {
+		if execErr != nil {
+			return nil, fmt.Errorf("remote verify command failed (%w) and output was not valid verify JSON: %v", execErr, parseErr)
+		}
+		return nil, parseErr
+	}
+	return result, nil
+}
+
+func factoryRunSandboxName(record factory.RunRecord) string {
+	if name := strings.TrimSpace(record.SandboxName); name != "" {
+		return name
+	}
+	if record.Sandbox != nil {
+		return strings.TrimSpace(record.Sandbox.Name)
+	}
+	return ""
+}
+
+func factorySandboxRemoteVerifyArgs(record factory.RunRecord) ([]string, error) {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" {
+		return nil, errFactorySandboxWorkspaceRequired
+	}
+	verifyCommand := shellCommand([]string{"hal", "verify", "--json"}) + " 2>/tmp/hal-factory-verify-stderr"
+	return []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && exec " + verifyCommand}, nil
+}
+
+func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("parse remote sandbox verify JSON: empty output")
+	}
+	var result verify.Result
+	if err := json.Unmarshal(trimmed, &result); err != nil {
+		return nil, fmt.Errorf("parse remote sandbox verify JSON: %w", err)
+	}
+	return &result, nil
 }
 
 func defaultFactoryStatusSnapshot(dir string) (factorySnapshotArtifact, error) {

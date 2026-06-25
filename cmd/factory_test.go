@@ -435,6 +435,12 @@ func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testi
 
 func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	target := &sandbox.SandboxState{
+		Name:     "factory-selected",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
 	sandboxCalled := false
 
 	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
@@ -474,6 +480,34 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			}
 			if !reflect.DeepEqual(req.RemoteAuto, wantAuto) {
 				t.Fatalf("remote auto request = %#v, want %#v", req.RemoteAuto, wantAuto)
+			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			return store.SaveRun(&record)
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{},
+				Checks:        []verify.CheckResult{},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
 			}
 			return nil
 		},
@@ -1555,6 +1589,12 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 			},
 		},
 	}
+	target := &sandbox.SandboxState{
+		Name:     "factory-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
 	requestCalls := 0
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{}, io.Discard, factoryRunDeps{
@@ -1581,9 +1621,33 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 				t.Fatalf("LoadRun() during pipeline error: %v", err)
 			}
 			record.ExecutorMode = factory.ExecutorModeSandbox
-			record.SandboxName = "factory-sandbox"
+			record.SandboxName = target.Name
 			if err := req.Store.SaveRun(record); err != nil {
 				t.Fatalf("SaveRun() sandbox record error: %v", err)
+			}
+			return nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{},
+				Checks:        []verify.CheckResult{},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
 			}
 			return nil
 		},
@@ -1674,6 +1738,12 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *te
 			"/workspace/.hal/auto-state.json": `{"step":"done"}` + "\n",
 		},
 	}
+	target := &sandbox.SandboxState{
+		Name:     "factory-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
 	cleanupStarted := false
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{Sandbox: true}, io.Discard, factoryRunDeps{
@@ -1697,7 +1767,7 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *te
 		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 			record := req.RunRecord
 			record.ExecutorMode = factory.ExecutorModeSandbox
-			record.SandboxName = "factory-sandbox"
+			record.SandboxName = target.Name
 			if err := store.SaveRun(&record); err != nil {
 				return err
 			}
@@ -1709,6 +1779,30 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *te
 			}
 			cleanupStarted = true
 			delete(copier.files, "/workspace/.hal/auto-state.json")
+			return nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{},
+				Checks:        []verify.CheckResult{},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
+			}
 			return nil
 		},
 		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
@@ -2547,6 +2641,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 		IP:       "127.0.0.1",
 	}
 	var verificationCalled bool
+	var remoteVerifyArgs []string
 	var cleanupCalls int
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
@@ -2595,19 +2690,12 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 			return store.SaveRun(&record)
 		},
 		loadVerify: func(string) (*verify.Config, error) {
-			return &verify.Config{Checks: []verify.ShellCheck{
-				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
-			}}, nil
+			t.Fatal("loadVerify should not run for sandbox verification")
+			return nil, nil
 		},
 		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
-			verificationCalled = true
-			return &verify.Result{
-				Status: verify.StatusPass,
-				Summary: verify.Summary{
-					Total:  1,
-					Passed: 1,
-				},
-			}, nil
+			t.Fatal("runVerify should not run for sandbox verification")
+			return nil, nil
 		},
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			if name != target.Name {
@@ -2617,6 +2705,34 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 		},
 		resolveProvider: func(string, string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			verificationCalled = true
+			remoteVerifyArgs = append([]string(nil), args...)
+			if info == nil || info.Name != target.Name || info.IP != target.IP {
+				t.Fatalf("connect info = %#v, want sandbox %q at %q", info, target.Name, target.IP)
+			}
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary: verify.Summary{
+					Total:  1,
+					Passed: 1,
+				},
+				Checks: []verify.CheckResult{{
+					ID:       "remote-test",
+					Name:     "Remote tests",
+					Status:   verify.CheckStatusPass,
+					Required: true,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
+			}
+			return nil
 		},
 		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
 			cleanupCalls++
@@ -2649,6 +2765,10 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 	if cleanupCalls != 1 {
 		t.Fatalf("cleanup calls = %d, want 1 after verification passes", cleanupCalls)
+	}
+	wantArgs := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'hal' 'verify' '--json' 2>/tmp/hal-factory-verify-stderr"}
+	if !reflect.DeepEqual(remoteVerifyArgs, wantArgs) {
+		t.Fatalf("remote verify args = %#v, want %#v", remoteVerifyArgs, wantArgs)
 	}
 	record, err := store.LoadRun("run-sandbox-deferred-cleanup")
 	if err != nil {
@@ -2703,6 +2823,7 @@ func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVeri
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
+	var remoteVerified bool
 	var cleanupCalls int
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
@@ -2748,6 +2869,11 @@ func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVeri
 			return store.SaveRun(&record)
 		},
 		loadVerify: func(string) (*verify.Config, error) {
+			t.Fatal("loadVerify should not run for sandbox verification")
+			return nil, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			t.Fatal("runVerify should not run for sandbox verification")
 			return nil, nil
 		},
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
@@ -2759,8 +2885,27 @@ func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVeri
 		resolveProvider: func(string, string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			remoteVerified = true
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{},
+				Checks:        []verify.CheckResult{},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
+			}
+			return nil
+		},
 		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
 			cleanupCalls++
+			if !remoteVerified {
+				t.Fatal("cleanup ran before remote verification completed")
+			}
 			if len(copier.fileCalls) != 1 {
 				t.Fatalf("cleanup ran before sandbox artifact collection; fileCalls = %#v", copier.fileCalls)
 			}
@@ -2868,24 +3013,41 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 			return store.SaveRun(&record)
 		},
 		loadVerify: func(string) (*verify.Config, error) {
-			return &verify.Config{Checks: []verify.ShellCheck{
-				{ID: "test", Name: "Go tests", Command: "go test ./cmd", TimeoutSeconds: 120, Required: true},
-			}}, nil
+			t.Fatal("loadVerify should not run for sandbox verification")
+			return nil, nil
 		},
 		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
-			return &verify.Result{
-				Status: verify.StatusFail,
-				Summary: verify.Summary{
-					Total:  1,
-					Failed: 1,
-				},
-			}, nil
+			t.Fatal("runVerify should not run for sandbox verification")
+			return nil, nil
 		},
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
 		resolveProvider: func(string, string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusFail,
+				Summary: verify.Summary{
+					Total:  1,
+					Failed: 1,
+				},
+				Checks: []verify.CheckResult{{
+					ID:       "remote-test",
+					Name:     "Remote tests",
+					Status:   verify.CheckStatusFail,
+					Required: true,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
+			}
+			return errors.New("remote verify exited 1")
 		},
 		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
 			cleanupCalls++
@@ -2906,6 +3068,126 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 	}
 	if record.Status != factory.RunStatusFailed {
 		t.Fatalf("status = %q, want failed", record.Status)
+	}
+	if record.Failure == nil || record.Failure.Step != "verify" {
+		t.Fatalf("failure = %#v, want verify failure", record.Failure)
+	}
+	if record.Verification == nil || record.Verification.Summary.Failed != 1 {
+		t.Fatalf("verification = %#v, want persisted remote failure result", record.Verification)
+	}
+}
+
+func TestRunFactoryRunWithDepsBlocksRequiredSandboxVerificationWithNoRemoteChecks(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 6, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	missingAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, missingAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
+	policy.VerificationRequired = true
+	target := &sandbox.SandboxState{
+		Name:     "factory-no-remote-checks",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	var cleanupCalls int
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-no-remote-checks", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return missingAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			if !req.DeferSuccessCleanup {
+				t.Fatal("DeferSuccessCleanup = false, want true for on_success cleanup with required verification")
+			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			return store.SaveRun(&record)
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			t.Fatal("loadVerify should not run for sandbox verification")
+			return nil, nil
+		},
+		runVerify: func(context.Context, *verify.Config) (*verify.Result, error) {
+			t.Fatal("runVerify should not run for sandbox verification")
+			return nil, nil
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{},
+				Checks:        []verify.CheckResult{},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
+			}
+			return nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "verification required but no checks configured") {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want missing verification gate failure", err)
+	}
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 when required verification has no checks", cleanupCalls)
+	}
+	record, err := store.LoadRun("run-sandbox-no-remote-checks")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", record.Status)
+	}
+	if record.Verification != nil {
+		t.Fatalf("verification = %#v, want nil for no configured checks", record.Verification)
 	}
 	if record.Failure == nil || record.Failure.Step != "verify" {
 		t.Fatalf("failure = %#v, want verify failure", record.Failure)
@@ -3317,6 +3599,12 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	startedAt := createdAt.Add(1 * time.Minute)
 	completedAt := createdAt.Add(2 * time.Minute)
 	times := []time.Time{createdAt, startedAt, completedAt}
+	target := &sandbox.SandboxState{
+		Name:     "factory-remote",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "203.0.113.42",
+	}
 	var buf bytes.Buffer
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
@@ -3343,15 +3631,15 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
 			record := req.RunRecord
 			record.ExecutorMode = factory.ExecutorModeSandbox
-			record.SandboxName = "factory-remote"
+			record.SandboxName = target.Name
 			record.Sandbox = &factory.SandboxMetadata{
-				Name:           "factory-remote",
-				Provider:       "daytona",
-				Status:         sandbox.StatusRunning,
-				Connection:     &factory.SandboxConnectionMetadata{PublicIP: "203.0.113.42"},
-				SSHCommand:     "hal sandbox ssh factory-remote",
-				CleanupCommand: "hal sandbox delete factory-remote",
-				Handoff:        "Inspect sandbox with `hal sandbox ssh factory-remote`.",
+				Name:           target.Name,
+				Provider:       target.Provider,
+				Status:         target.Status,
+				Connection:     &factory.SandboxConnectionMetadata{PublicIP: target.IP},
+				SSHCommand:     "hal sandbox ssh " + target.Name,
+				CleanupCommand: "hal sandbox delete " + target.Name,
+				Handoff:        "Inspect sandbox with `hal sandbox ssh " + target.Name + "`.",
 			}
 			if err := store.SaveRun(&record); err != nil {
 				return err
@@ -3396,6 +3684,30 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 				return err
 			}
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{},
+				Checks:        []verify.CheckResult{},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
+			}
 			return nil
 		},
 	})
@@ -3474,6 +3786,12 @@ func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T)
 	startedAt := createdAt.Add(1 * time.Minute)
 	completedAt := createdAt.Add(2 * time.Minute)
 	times := []time.Time{createdAt, startedAt, completedAt}
+	target := &sandbox.SandboxState{
+		Name:     "factory-json",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
 	var buf bytes.Buffer
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
@@ -3512,7 +3830,38 @@ func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T)
 			}); err != nil {
 				return err
 			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
 			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{},
+				Checks:        []verify.CheckResult{},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			if _, err := out.Write(append(data, '\n')); err != nil {
+				t.Fatalf("write remote verify JSON error: %v", err)
+			}
 			return nil
 		},
 	})

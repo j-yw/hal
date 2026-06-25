@@ -43,6 +43,7 @@ type factoryQueueWorkDeps struct {
 	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
 	loadSandbox     func(string) (*sandbox.SandboxState, error)
 	resolveProvider func(string, string) (sandbox.Provider, error)
+	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	cleanupSandbox  func(context.Context, factorySandboxCleanupRequest) error
 	statusSnapshot  func(string) (factorySnapshotArtifact, error)
 	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
@@ -84,6 +85,7 @@ var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
 	runVerify:       defaultFactoryRunDeps.runVerify,
 	loadSandbox:     defaultFactoryRunDeps.loadSandbox,
 	resolveProvider: defaultFactoryRunDeps.resolveProvider,
+	runProviderExec: defaultFactoryRunDeps.runProviderExec,
 	cleanupSandbox:  defaultFactoryRunDeps.cleanupSandbox,
 	statusSnapshot:  defaultFactoryRunDeps.statusSnapshot,
 	doctorSnapshot:  defaultFactoryRunDeps.doctorSnapshot,
@@ -578,6 +580,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactoryQueueWorkDeps.resolveProvider
 	}
+	if deps.runProviderExec == nil {
+		deps.runProviderExec = defaultFactoryQueueWorkDeps.runProviderExec
+	}
 	if deps.cleanupSandbox == nil {
 		deps.cleanupSandbox = defaultFactoryQueueWorkDeps.cleanupSandbox
 	}
@@ -606,6 +611,7 @@ func factoryRunDepsFromQueueWorkDeps(store factory.Store, deps factoryQueueWorkD
 		runVerify:       deps.runVerify,
 		loadSandbox:     deps.loadSandbox,
 		resolveProvider: deps.resolveProvider,
+		runProviderExec: deps.runProviderExec,
 		cleanupSandbox:  deps.cleanupSandbox,
 		statusSnapshot:  deps.statusSnapshot,
 		doctorSnapshot:  deps.doctorSnapshot,
