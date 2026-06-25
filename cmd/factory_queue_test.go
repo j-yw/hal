@@ -1510,6 +1510,145 @@ func TestExecuteClaimedFactoryQueueEntryMarksMissingRunFailed(t *testing.T) {
 	}
 }
 
+func TestExecuteClaimedFactoryQueueEntryRedactsScopedSecretsFromPreflightFailure(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 20, 35, 0, 0, time.UTC)
+	completedAt := createdAt.Add(5 * time.Minute)
+	secretName := "FACTORY_TOKEN"
+	secretValue := "queue_preflight_secret_12345"
+	record := testFactoryRunRecord("run-queue-preflight-secret", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     secretName,
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-preflight-secret", record.RunID, factory.QueueStatusClaimed, createdAt)
+	entry.AttemptCount = 1
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	finalEntry, err := executeClaimedFactoryQueueEntry(context.Background(), store, entry, factoryQueueWorkDeps{
+		now: func() time.Time { return completedAt },
+		lookupEnv: func(name string) (string, bool) {
+			if name == secretName {
+				return secretValue, true
+			}
+			return "", false
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return nil, errors.New("load policy with token " + secretValue)
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called after preflight failure")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("executeClaimedFactoryQueueEntry() error = nil, want preflight error")
+	}
+	for name, text := range map[string]string{
+		"error":      err.Error(),
+		"last error": finalEntry.LastError,
+	} {
+		if strings.Contains(text, secretValue) {
+			t.Fatalf("%s contains secret: %q", name, text)
+		}
+		if !strings.Contains(text, factory.RunSecretRedactionPlaceholder) {
+			t.Fatalf("%s = %q, want redaction placeholder", name, text)
+		}
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Failure == nil {
+		t.Fatal("run failure = nil, want failure summary")
+	}
+	if strings.Contains(loaded.Failure.Message, secretValue) {
+		t.Fatalf("run failure contains secret: %q", loaded.Failure.Message)
+	}
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	for _, event := range events {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("json.Marshal(event) error: %v", err)
+		}
+		if strings.Contains(string(payload), secretValue) {
+			t.Fatalf("event contains secret: %s", payload)
+		}
+	}
+}
+
+func TestFailClaimedFactoryQueueEntryRedactsExistingFailedRun(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 20, 40, 0, 0, time.UTC)
+	completedAt := createdAt.Add(5 * time.Minute)
+	secretName := "FACTORY_TOKEN"
+	secretValue := "queue_existing_failure_secret_12345"
+	record := testFactoryRunRecord("run-queue-existing-secret", createdAt, createdAt)
+	record.Status = factory.RunStatusFailed
+	record.CurrentStep = factory.FailureCategoryRun
+	record.Failure = &factory.FailureSummary{
+		Step:     factory.FailureCategoryRun,
+		Category: factory.FailureCategoryRun,
+		Message:  "existing failure with token " + secretValue,
+	}
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     secretName,
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-existing-secret", record.RunID, factory.QueueStatusClaimed, createdAt)
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	finalEntry, err := failClaimedFactoryQueueEntry(store, entry, errors.New("queue failed with token "+secretValue), factoryQueueWorkDeps{
+		now: func() time.Time { return completedAt },
+		lookupEnv: func(name string) (string, bool) {
+			if name == secretName {
+				return secretValue, true
+			}
+			return "", false
+		},
+	})
+	if err == nil {
+		t.Fatal("failClaimedFactoryQueueEntry() error = nil, want failure")
+	}
+	if finalEntry.Status != factory.QueueStatusFailed {
+		t.Fatalf("finalEntry.status = %q, want failed", finalEntry.Status)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Failure == nil {
+		t.Fatal("run failure = nil, want failure summary")
+	}
+	if strings.Contains(loaded.Failure.Message, secretValue) {
+		t.Fatalf("run failure contains secret: %q", loaded.Failure.Message)
+	}
+	if !strings.Contains(loaded.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("run failure = %q, want redaction placeholder", loaded.Failure.Message)
+	}
+}
+
 func TestFactoryRunRequestFromQueueRecordPreservesSecretRequirements(t *testing.T) {
 	record := testFactoryRunRecord("run-secret-queue", time.Date(2026, 6, 21, 20, 45, 0, 0, time.UTC), time.Date(2026, 6, 21, 20, 45, 0, 0, time.UTC))
 	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-secret-queue.md"}
