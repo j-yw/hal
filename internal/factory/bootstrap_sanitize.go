@@ -66,15 +66,38 @@ func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string
 	}
 
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.User == nil {
+	if err != nil {
 		return
 	}
 
-	if userinfo := parsed.User.String(); userinfo != "" {
-		addBootstrapRedactionValue(valueSet, userinfo)
+	if parsed.User != nil {
+		if userinfo := parsed.User.String(); userinfo != "" {
+			addBootstrapRedactionValue(valueSet, userinfo)
+		}
+		if password, ok := parsed.User.Password(); ok && password != "" {
+			addBootstrapRedactionValue(valueSet, password)
+		}
 	}
-	if password, ok := parsed.User.Password(); ok && password != "" {
-		addBootstrapRedactionValue(valueSet, password)
+	addURLCredentialParameterRedactionTokens(valueSet, parsed.RawQuery)
+	addURLCredentialParameterRedactionTokens(valueSet, parsed.Fragment)
+}
+
+func addURLCredentialParameterRedactionTokens(valueSet map[string]struct{}, rawParameters string) {
+	rawParameters = strings.TrimSpace(rawParameters)
+	if rawParameters == "" {
+		return
+	}
+	values, err := url.ParseQuery(rawParameters)
+	if err != nil {
+		return
+	}
+	for key, params := range values {
+		if !isSensitiveBootstrapEnvKey(key) {
+			continue
+		}
+		for _, value := range params {
+			addBootstrapRedactionValue(valueSet, value)
+		}
 	}
 }
 

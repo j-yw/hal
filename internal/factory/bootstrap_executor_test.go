@@ -271,6 +271,41 @@ func TestBootstrapSanitizersRedactEncodedSecretValues(t *testing.T) {
 	}
 }
 
+func TestBootstrapSanitizersRedactCredentialedRepositoryURLParameters(t *testing.T) {
+	querySecret := "ghp_query_repository_secret_12345"
+	fragmentSecret := "ghp_fragment_repository_secret_67890"
+	repositoryURL := "https://github.com/org/repo.git?access_token=" + querySecret + "&ref=main#client_secret=" + fragmentSecret
+	request := BootstrapRequest{
+		RepositoryURL: repositoryURL,
+	}
+
+	command := SanitizeBootstrapCommand(request, BootstrapCommand{
+		Name: "git",
+		Args: []string{"clone", repositoryURL, "/workspace/repo"},
+	})
+	event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+		CommandSummary: "git clone " + repositoryURL + " /workspace/repo",
+	})
+
+	commandData, err := json.Marshal(command)
+	if err != nil {
+		t.Fatalf("json.Marshal(command) error = %v", err)
+	}
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal(event) error = %v", err)
+	}
+	for name, data := range map[string][]byte{"command": commandData, "event": eventData} {
+		payload := string(data)
+		if strings.Contains(payload, querySecret) || strings.Contains(payload, fragmentSecret) {
+			t.Fatalf("%s leaked repository URL credential parameter: %s", name, payload)
+		}
+		if !strings.Contains(payload, bootstrapRedactedValue) {
+			t.Fatalf("%s = %s, want redaction placeholder", name, payload)
+		}
+	}
+}
+
 func TestRunBootstrapStepRedactsResolvedRunSecretValuesFromRecords(t *testing.T) {
 	secret := "ghp_run_scoped_bootstrap_secret_12345"
 	request := BootstrapRequestWithResolvedSecrets(BootstrapRequest{}, []ResolvedRunSecret{{

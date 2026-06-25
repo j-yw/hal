@@ -4724,7 +4724,7 @@ func sanitizeFactoryLogText(value string) string {
 	if factoryArtifactStringNeedsRedaction(value) || factoryLogContainsSecretAssignment(value) {
 		return "[redacted]"
 	}
-	return value
+	return sanitizeCredentialedRemoteReferences(value)
 }
 
 func factoryLogContainsSecretAssignment(value string) bool {

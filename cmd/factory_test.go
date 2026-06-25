@@ -5857,6 +5857,38 @@ func TestRunFactoryRunPipelineWithDepsRedactsResolvedSecretsFromFailureLogChunk(
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsRedactsCredentialedRemoteFromFailureLogChunk(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	credential := "ghp_local_remote_credential_12345"
+	wantErr := errors.New("auto failed cloning https://x:" + credential + "@github.com/org/repo.git")
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-credentialed-remote-failure",
+		Store: store,
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-credentialed-remote-failure")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if strings.Contains(chunks[1].Text, credential) {
+		t.Fatalf("failure log chunk text contains credential: %q", chunks[1].Text)
+	}
+	if !strings.Contains(chunks[1].Text, "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/org/repo.git") {
+		t.Fatalf("failure log chunk text = %q, want credentialed remote redaction", chunks[1].Text)
+	}
+}
+
 func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	chdirTemp(t)
 
