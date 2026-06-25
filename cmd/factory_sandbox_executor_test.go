@@ -1864,6 +1864,49 @@ func TestFactorySandboxBootstrapExecutorReportsRemoteExitCode(t *testing.T) {
 	}
 }
 
+func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
+	exitError := func(code int) error {
+		return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	}
+
+	tests := []struct {
+		name      string
+		err       error
+		want      bool
+		wantError string
+	}{
+		{name: "git checkout exists", want: true},
+		{name: "missing or empty path", err: exitError(1), want: false},
+		{name: "non git non empty path", err: exitError(2), wantError: "repository path exists but is not a git checkout and is not empty"},
+		{name: "unexpected remote error", err: exitError(127), wantError: "exit status 127"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotArgs []string
+			got, err := factorySandboxRemoteRepoExists(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ io.Writer) error {
+				gotArgs = append([]string(nil), args...)
+				return tt.err
+			}, "/workspace/hal")
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("factorySandboxRemoteRepoExists() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("exists = %v, want %v", got, tt.want)
+			}
+			if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-lc" || !strings.Contains(gotArgs[2], "repo='/workspace/hal'") {
+				t.Fatalf("remote repo check args = %#v", gotArgs)
+			}
+		})
+	}
+}
+
 func TestFactorySandboxEnvExecScriptRejectsInvalidEnvNames(t *testing.T) {
 	_, err := factorySandboxEnvExecScript([]string{"hal", "auto"}, map[string]string{
 		"BAD-NAME": "secret",

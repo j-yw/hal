@@ -273,10 +273,12 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}()
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.ResolvedSecrets); ok {
+		connectInfo := sandbox.ConnectInfoFromState(target)
+		runProviderExec := deps.runProviderExec
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
 				provider:               provider,
-				connectInfo:            sandbox.ConnectInfoFromState(target),
+				connectInfo:            connectInfo,
 				runProviderExecWithEnv: deps.runProviderExecWithEnv,
 				// Bootstrap timelines are persisted from sanitized BootstrapResult
 				// events; stream redacted command output to the caller-facing writer.
@@ -284,6 +286,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				outputRedact: factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
 			},
 			Now: deps.now,
+			RepoExists: func(path string) (bool, error) {
+				return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, runProviderExec, path)
+			},
 		})
 		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult); appendErr != nil {
 			return fmt.Errorf("record sandbox bootstrap timeline: %w", appendErr)
@@ -750,6 +755,35 @@ func factorySandboxExecExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 0
+}
+
+func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error, repoPath string) (bool, error) {
+	if runProviderExec == nil {
+		return false, fmt.Errorf("sandbox exec dependency is required")
+	}
+	repoPath = filepath.ToSlash(filepath.Clean(strings.TrimSpace(repoPath)))
+	if repoPath == "" || repoPath == "." {
+		return false, errFactorySandboxWorkspaceRequired
+	}
+	script := strings.Join([]string{
+		"repo=" + shellQuote(repoPath),
+		"if [ -e \"$repo/.git\" ]; then exit 0; fi",
+		"if [ ! -e \"$repo\" ]; then exit 1; fi",
+		"if [ -d \"$repo\" ] && [ -z \"$(find \"$repo\" -mindepth 1 -maxdepth 1 -print -quit)\" ]; then exit 1; fi",
+		"exit 2",
+	}, "\n")
+	err := runProviderExec(ctx, provider, info, []string{"sh", "-lc", script}, io.Discard)
+	if err == nil {
+		return true, nil
+	}
+	switch factorySandboxExecExitCode(err) {
+	case 1:
+		return false, nil
+	case 2:
+		return false, fmt.Errorf("repository path exists but is not a git checkout and is not empty")
+	default:
+		return false, err
+	}
 }
 
 type factorySandboxBootstrapOutputWriter struct {
