@@ -459,6 +459,84 @@ func TestSaveArtifactFileWithRedactorRedactsStoredPayload(t *testing.T) {
 	}
 }
 
+func TestSaveArtifactFileWithRedactorUsesRedactedStoredPath(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	secretValue := "secret_extension_123"
+	sourcePath := filepath.Join(t.TempDir(), "verify-stdout."+secretValue)
+	if err := os.WriteFile(sourcePath, []byte("artifact payload\n"), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-artifacts-redacted-path")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "OUTPUT_EXTENSION", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "verify-stdout",
+		Name: "verification stdout",
+		Type: "text",
+	}, sourcePath, redactor)
+	if err != nil {
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
+	}
+	if strings.Contains(got.StoredPath, secretValue) {
+		t.Fatalf("StoredPath contains raw secret: %q", got.StoredPath)
+	}
+
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	if _, err := os.Stat(absoluteStoredPath); err != nil {
+		t.Fatalf("stored artifact path %q should exist: %v", got.StoredPath, err)
+	}
+}
+
+func TestSaveArtifactFileWithRedactorRedactsPayloadAcrossCopyBoundaries(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	sourcePath := filepath.Join(t.TempDir(), "large-stdout.txt")
+	secretValue := "cross_boundary_secret_123"
+	sourceData := strings.Repeat("a", 32*1024-3) + secretValue + "\n"
+	if err := os.WriteFile(sourcePath, []byte(sourceData), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-artifacts-boundary-redaction")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "BOUNDARY_SECRET", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "large-stdout",
+		Name: "large stdout",
+		Type: "text",
+	}, sourcePath, redactor)
+	if err != nil {
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
+	}
+
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	storedData, err := os.ReadFile(absoluteStoredPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	storedPayload := string(storedData)
+	if strings.Contains(storedPayload, secretValue) {
+		t.Fatalf("stored artifact payload contains raw secret")
+	}
+	if !strings.Contains(storedPayload, RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored artifact payload missing redaction placeholder")
+	}
+}
+
 func TestSaveArtifactFileUpsertsMetadataByStoredPath(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-artifacts-upsert")

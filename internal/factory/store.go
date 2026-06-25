@@ -186,7 +186,8 @@ func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, source
 	}
 	artifact = redactor.RedactArtifactReference(artifact)
 
-	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifactFileBaseName(artifact), sourcePath)))
+	redactedSourcePath := redactor.RedactString(sourcePath)
+	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifactFileBaseName(artifact), redactedSourcePath)))
 	absoluteStoredPath, err := s.ResolveArtifactPath(runID, storedPath)
 	if err != nil {
 		return ArtifactReference{}, err
@@ -201,8 +202,8 @@ func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, source
 
 	size := copiedInfo.Size()
 	createdAt := copiedInfo.ModTime().UTC()
-	artifact.SourcePath = redactor.RedactString(sourcePath)
-	artifact.StoredPath = redactor.RedactString(storedPath)
+	artifact.SourcePath = redactedSourcePath
+	artifact.StoredPath = storedPath
 	artifact.SizeBytes = &size
 	artifact.CreatedAt = &createdAt
 
@@ -675,15 +676,129 @@ func copyStoreFilePayload(dest *os.File, source *os.File, redactor RunSecretReda
 		_, err := io.Copy(dest, source)
 		return err
 	}
-	payload, err := io.ReadAll(source)
-	if err != nil {
+	secrets, maxSecretLen := storeRedactionSecrets(redactor.secretValues)
+	if len(secrets) == 0 {
+		_, err := io.Copy(dest, source)
 		return err
 	}
-	for _, secret := range redactor.secretValues {
-		payload = bytes.ReplaceAll(payload, []byte(secret), []byte(RunSecretRedactionPlaceholder))
+	return copyStoreFilePayloadRedacted(dest, source, secrets, maxSecretLen)
+}
+
+func storeRedactionSecrets(secretValues []string) ([][]byte, int) {
+	secrets := make([][]byte, 0, len(secretValues))
+	maxSecretLen := 0
+	for _, secret := range secretValues {
+		if secret == "" {
+			continue
+		}
+		token := []byte(secret)
+		secrets = append(secrets, token)
+		if len(token) > maxSecretLen {
+			maxSecretLen = len(token)
+		}
 	}
-	_, err = dest.Write(payload)
-	return err
+	return secrets, maxSecretLen
+}
+
+func copyStoreFilePayloadRedacted(dest io.Writer, source io.Reader, secrets [][]byte, maxSecretLen int) error {
+	const bufferSize = 32 * 1024
+
+	buffer := make([]byte, bufferSize)
+	pending := make([]byte, 0, bufferSize+maxSecretLen)
+	for {
+		n, readErr := source.Read(buffer)
+		if n > 0 {
+			pending = append(pending, buffer[:n]...)
+			if err := writeStoreRedactedPending(dest, &pending, secrets, maxSecretLen, false); err != nil {
+				return err
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				return readErr
+			}
+			break
+		}
+	}
+	return writeStoreRedactedPending(dest, &pending, secrets, maxSecretLen, true)
+}
+
+func writeStoreRedactedPending(dest io.Writer, pending *[]byte, secrets [][]byte, maxSecretLen int, flush bool) error {
+	data := *pending
+	for len(data) > 0 {
+		processLimit := len(data)
+		if !flush {
+			processLimit = len(data) - (maxSecretLen - 1)
+			if processLimit < 0 {
+				processLimit = 0
+			}
+		}
+
+		matchIndex, secret := firstStoreRedactionMatch(data, secrets)
+		if matchIndex >= 0 && (flush || matchIndex < processLimit) {
+			if matchIndex > 0 {
+				if err := writeStoreBytes(dest, data[:matchIndex]); err != nil {
+					return err
+				}
+			}
+			if err := writeStoreBytes(dest, []byte(RunSecretRedactionPlaceholder)); err != nil {
+				return err
+			}
+			data = data[matchIndex+len(secret):]
+			continue
+		}
+
+		if flush {
+			if err := writeStoreBytes(dest, data); err != nil {
+				return err
+			}
+			data = data[:0]
+			break
+		}
+		if processLimit > 0 {
+			if err := writeStoreBytes(dest, data[:processLimit]); err != nil {
+				return err
+			}
+			data = data[processLimit:]
+			continue
+		}
+		break
+	}
+
+	remaining := (*pending)[:0]
+	remaining = append(remaining, data...)
+	*pending = remaining
+	return nil
+}
+
+func firstStoreRedactionMatch(data []byte, secrets [][]byte) (int, []byte) {
+	bestIndex := -1
+	var bestSecret []byte
+	for _, secret := range secrets {
+		index := bytes.Index(data, secret)
+		if index < 0 {
+			continue
+		}
+		if bestIndex == -1 || index < bestIndex {
+			bestIndex = index
+			bestSecret = secret
+		}
+	}
+	return bestIndex, bestSecret
+}
+
+func writeStoreBytes(dest io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := dest.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
 }
 
 func artifactFileName(name, sourcePath string) string {
