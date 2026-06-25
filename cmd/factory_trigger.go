@@ -34,7 +34,6 @@ type factoryTriggerDeps struct {
 	now                  func() time.Time
 	currentBranch        func(string) (string, error)
 	repoRemote           func(string) (string, error)
-	lookupEnv            func(string) (string, bool)
 	loadConfig           func(string) (*compound.AutoConfig, error)
 	loadPolicy           func(string) (*factory.FactoryPolicy, error)
 	loadEngine           func(string) (string, error)
@@ -69,7 +68,6 @@ var defaultFactoryTriggerDeps = factoryTriggerDeps{
 	now:                  time.Now,
 	currentBranch:        compound.CurrentBranchOptionalInDir,
 	repoRemote:           readGitRemoteOptionalInDir,
-	lookupEnv:            os.LookupEnv,
 	loadConfig:           compound.LoadConfig,
 	loadPolicy:           factory.LoadPolicyConfig,
 	loadEngine:           compound.LoadDefaultEngine,
@@ -259,7 +257,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		return err
 	}
 	record.ExecutorMode = executorMode
-	triggerRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
+	triggerRedactor := factory.RunSecretRedactor{}
 	safeRecord := redactFactoryRunRecordForStorage(record, triggerRedactor)
 
 	if err := createFactoryRunRecord(store, safeRecord); err != nil {
@@ -370,9 +368,6 @@ func normalizeFactoryTriggerDeps(deps factoryTriggerDeps) factoryTriggerDeps {
 	}
 	if deps.repoRemote == nil {
 		deps.repoRemote = defaultFactoryTriggerDeps.repoRemote
-	}
-	if deps.lookupEnv == nil {
-		deps.lookupEnv = defaultFactoryTriggerDeps.lookupEnv
 	}
 	if deps.loadConfig == nil {
 		deps.loadConfig = defaultFactoryTriggerDeps.loadConfig
