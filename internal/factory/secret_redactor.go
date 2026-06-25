@@ -165,14 +165,7 @@ func (r RunSecretRedactor) redactSecretMetadata(secrets []RunSecretMetadata) []R
 		return nil
 	}
 	safe := make([]RunSecretMetadata, len(secrets))
-	for i, secret := range secrets {
-		safe[i] = RunSecretMetadata{
-			Name:     r.RedactString(secret.Name),
-			Source:   r.RedactString(secret.Source),
-			Required: secret.Required,
-			Present:  secret.Present,
-		}
-	}
+	copy(safe, secrets)
 	return safe
 }
 

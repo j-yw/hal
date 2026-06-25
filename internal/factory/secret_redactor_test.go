@@ -129,3 +129,32 @@ func TestRunSecretRedactorRedactsArtifactSummaryTypedCollections(t *testing.T) {
 		t.Fatalf("nested value = %q, want redacted", nestedValues[0])
 	}
 }
+
+func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "env", Source: RunSecretSourceEnv, Required: true, Value: "env"},
+	})
+
+	got := redactor.RedactRunRecord(RunRecord{
+		BranchName: "branch-env",
+		Secrets: []RunSecretMetadata{{
+			Name:     "env",
+			Source:   RunSecretSourceEnv,
+			Required: true,
+			Present:  true,
+		}},
+	})
+
+	if got.BranchName != "branch-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("BranchName = %q, want redacted secret value", got.BranchName)
+	}
+	wantSecret := RunSecretMetadata{
+		Name:     "env",
+		Source:   RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}
+	if got.Secrets[0] != wantSecret {
+		t.Fatalf("Secrets[0] = %#v, want %#v", got.Secrets[0], wantSecret)
+	}
+}
