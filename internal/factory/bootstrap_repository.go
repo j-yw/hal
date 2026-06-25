@@ -14,6 +14,7 @@ import (
 
 const (
 	BootstrapStepCloneRepository = "clone_repository"
+	BootstrapStepEnsureWorkspace = "ensure_workspace_root"
 	BootstrapStepFetchRepository = "fetch_repository"
 	BootstrapStepCheckoutBase    = "checkout_base"
 	BootstrapStepCheckLocalRun   = "check_local_run_branch"
@@ -185,12 +186,20 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 		if repositoryURL == "" {
 			return nil, errBootstrapRepositoryURLRequired
 		}
+		workspaceRoot := filepath.Dir(repoPath)
+		commands = append(commands, bootstrapRepositoryCommand{
+			stepName: BootstrapStepEnsureWorkspace,
+			command: BootstrapCommand{
+				Name: "mkdir",
+				Args: []string{"-p", workspaceRoot},
+			},
+		})
 		commands = append(commands, bootstrapRepositoryCommand{
 			stepName: BootstrapStepCloneRepository,
 			command: BootstrapCommand{
 				Name: "git",
 				Args: []string{"clone", repositoryURL, repoPath},
-				Dir:  filepath.Dir(repoPath),
+				Dir:  workspaceRoot,
 				Env:  bootstrapGitEnv(),
 			},
 		})

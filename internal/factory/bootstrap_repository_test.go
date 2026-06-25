@@ -16,6 +16,7 @@ func TestBootstrapRepositoryCheckoutClonesMissingRepoAndChecksOutBase(t *testing
 	now := incrementingClock(t, startedAt)
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "workspace root created"},
 			{ExitCode: 0, OutputSummary: "repository cloned"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 		},
@@ -51,6 +52,10 @@ func TestBootstrapRepositoryCheckoutClonesMissingRepoAndChecksOutBase(t *testing
 
 	wantCalls := []BootstrapCommand{
 		{
+			Name: "mkdir",
+			Args: []string{"-p", "/workspace"},
+		},
+		{
 			Name: "git",
 			Args: []string{"clone", "git@github.com:jywlabs/hal.git", "/workspace/hal"},
 			Dir:  "/workspace",
@@ -67,7 +72,7 @@ func TestBootstrapRepositoryCheckoutClonesMissingRepoAndChecksOutBase(t *testing
 		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
 	}
 
-	wantSteps := []string{BootstrapStepCloneRepository, BootstrapStepCheckoutBase}
+	wantSteps := []string{BootstrapStepEnsureWorkspace, BootstrapStepCloneRepository, BootstrapStepCheckoutBase}
 	assertBootstrapStepNames(t, result.Steps, wantSteps)
 	for _, step := range result.Steps {
 		if step.Status != RunStatusSucceeded {
@@ -134,6 +139,7 @@ func TestBootstrapRepositoryCheckoutClonesIntoEmptyExistingDirectory(t *testing.
 
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "workspace root created"},
 			{ExitCode: 0, OutputSummary: "repository cloned"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 		},
@@ -154,6 +160,10 @@ func TestBootstrapRepositoryCheckoutClonesIntoEmptyExistingDirectory(t *testing.
 
 	wantCalls := []BootstrapCommand{
 		{
+			Name: "mkdir",
+			Args: []string{"-p", filepath.Dir(workspaceDir)},
+		},
+		{
 			Name: "git",
 			Args: []string{"clone", "git@github.com:jywlabs/hal.git", workspaceDir},
 			Dir:  filepath.Dir(workspaceDir),
@@ -169,7 +179,7 @@ func TestBootstrapRepositoryCheckoutClonesIntoEmptyExistingDirectory(t *testing.
 	if !reflect.DeepEqual(executor.calls, wantCalls) {
 		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
 	}
-	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCloneRepository, BootstrapStepCheckoutBase})
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepEnsureWorkspace, BootstrapStepCloneRepository, BootstrapStepCheckoutBase})
 }
 
 func TestBootstrapRepositoryCheckoutRejectsNonEmptyNonGitDirectory(t *testing.T) {
@@ -569,7 +579,7 @@ func TestBootstrapRepositoryCheckoutDryRunPlansCommandsWithoutExecutor(t *testin
 		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
 	}
 
-	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCloneRepository, BootstrapStepCheckoutBase})
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepEnsureWorkspace, BootstrapStepCloneRepository, BootstrapStepCheckoutBase})
 	for _, step := range result.Steps {
 		if step.Status != RunStatusPending {
 			t.Fatalf("planned step %q status = %q, want %q", step.Name, step.Status, RunStatusPending)
@@ -584,12 +594,13 @@ func TestBootstrapRepositoryCheckoutClassifiesRepositoryFailure(t *testing.T) {
 	executorErr := errors.New("exit status 128")
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "workspace root created"},
 			{
 				ExitCode:      128,
 				StderrSummary: "fatal: repository unavailable",
 			},
 		},
-		errs: []error{executorErr},
+		errs: []error{nil, executorErr},
 	}
 
 	req := BootstrapRequest{
@@ -621,12 +632,13 @@ func TestBootstrapRepositoryCheckoutClassifiesRepositoryFailure(t *testing.T) {
 func TestBootstrapRepositoryCheckoutClassifiesAuthFailure(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "workspace root created"},
 			{
 				ExitCode:      128,
 				StderrSummary: "remote: Authentication failed",
 			},
 		},
-		errs: []error{errors.New("exit status 128")},
+		errs: []error{nil, errors.New("exit status 128")},
 	}
 
 	req := BootstrapRequest{
