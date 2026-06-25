@@ -37,6 +37,7 @@ type factorySandboxExecutorRequest struct {
 	ProjectDir          string
 	SandboxName         string
 	RunRecord           factory.RunRecord
+	ResolvedSecrets     []factory.ResolvedRunSecret
 	RemoteAuto          factoryRunAutoRequest
 	RemoteOutput        io.Writer
 	BeforeCleanup       func(context.Context, factory.RunRecord) error
@@ -44,19 +45,20 @@ type factorySandboxExecutorRequest struct {
 }
 
 type factorySandboxExecutorDeps struct {
-	defaultStore    func() (factory.Store, error)
-	now             func() time.Time
-	resolveDefault  func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
-	loadSandbox     func(string) (*sandbox.SandboxState, error)
-	provision       func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
-	startSandbox    func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
-	resolveProvider func(string) (sandbox.Provider, error)
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	bootstrap       func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
-	cleanupSandbox  func(context.Context, factorySandboxCleanupRequest) error
-	saveRun         func(factory.Store, *factory.RunRecord) error
-	appendEvent     func(factory.Store, *factory.EventRecord) error
-	appendLog       func(factory.Store, *factory.LogChunk) error
+	defaultStore           func() (factory.Store, error)
+	now                    func() time.Time
+	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
+	resolveProvider        func(string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
+	saveRun                func(factory.Store, *factory.RunRecord) error
+	appendEvent            func(factory.Store, *factory.EventRecord) error
+	appendLog              func(factory.Store, *factory.LogChunk) error
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
@@ -69,12 +71,13 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
-	runProviderExec: runFactorySandboxProviderExec,
-	bootstrap:       factory.BootstrapWorkspace,
-	cleanupSandbox:  cleanupFactorySandbox,
-	saveRun:         saveFactorySandboxRunRecord,
-	appendEvent:     appendFactorySandboxTimelineEvent,
-	appendLog:       appendFactorySandboxLogChunk,
+	runProviderExec:        runFactorySandboxProviderExec,
+	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	bootstrap:              factory.BootstrapWorkspace,
+	cleanupSandbox:         cleanupFactorySandbox,
+	saveRun:                saveFactorySandboxRunRecord,
+	appendEvent:            appendFactorySandboxTimelineEvent,
+	appendLog:              appendFactorySandboxLogChunk,
 }
 
 var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
@@ -82,6 +85,7 @@ var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory
 const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	customRunProviderExec := deps.runProviderExec != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
 	}
@@ -106,6 +110,16 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
 	}
+	if deps.runProviderExecWithEnv == nil {
+		if customRunProviderExec {
+			runProviderExec := deps.runProviderExec
+			deps.runProviderExecWithEnv = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, _ map[string]string, out io.Writer) error {
+				return runProviderExec(ctx, provider, info, args, out)
+			}
+		} else {
+			deps.runProviderExecWithEnv = defaultFactorySandboxExecutorDeps.runProviderExecWithEnv
+		}
+	}
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultFactorySandboxExecutorDeps.bootstrap
 	}
@@ -129,6 +143,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 
 	store, err := deps.defaultStore()
 	if err != nil {
@@ -138,13 +153,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	record := req.RunRecord
 	record.ExecutorMode = factory.ExecutorModeSandbox
 	record.UpdatedAt = deps.now().UTC()
-	if err := deps.saveRun(store, &record); err != nil {
+	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 		return fmt.Errorf("save sandbox factory run: %w", err)
 	}
+	// Sandbox create persists Repo as an informational label; bootstrap uses
+	// record.RepoRemote directly for the actual clone.
+	provisionRepo := redactFactorySandboxProvisionRepo(record, secretRedactor)
 
 	if factorySandboxRemoteWorkspaceDir(record) == "" {
-		_ = recordFactorySandboxFailure(store, deps, &record, nil, "prepare_inputs", errFactorySandboxWorkspaceRequired)
-		return factorySandboxRecordedError("prepare factory sandbox inputs", nil, errFactorySandboxWorkspaceRequired)
+		_ = recordFactorySandboxFailure(store, deps, &record, nil, "prepare_inputs", errFactorySandboxWorkspaceRequired, secretRedactor)
+		return factorySandboxRecordedError("prepare factory sandbox inputs", nil, errFactorySandboxWorkspaceRequired, secretRedactor)
 	}
 
 	var target *sandbox.SandboxState
@@ -159,12 +177,12 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				ProjectDir: req.ProjectDir,
 				Name:       name,
 				BranchName: record.BranchName,
-				Repo:       record.RepoRemote,
+				Repo:       provisionRepo,
 				Out:        req.RemoteOutput,
 			})
 			if err != nil {
-				_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err)
-				return factorySandboxRecordedError("provision factory sandbox", nil, err)
+				_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err, secretRedactor)
+				return factorySandboxRecordedError("provision factory sandbox", nil, err, secretRedactor)
 			}
 		}
 	} else {
@@ -184,12 +202,12 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 					ProjectDir: req.ProjectDir,
 					Name:       name,
 					BranchName: record.BranchName,
-					Repo:       record.RepoRemote,
+					Repo:       provisionRepo,
 					Out:        req.RemoteOutput,
 				})
 				if err != nil {
-					_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err)
-					return factorySandboxRecordedError("provision factory sandbox", nil, err)
+					_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err, secretRedactor)
+					return factorySandboxRecordedError("provision factory sandbox", nil, err, secretRedactor)
 				}
 			}
 		}
@@ -201,10 +219,10 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if target.Status != sandbox.StatusRunning {
 		startedTarget, err := deps.startSandbox(ctx, target, req.RemoteOutput)
 		if err != nil {
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "start", err)
-			startErr := factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", target.Name), target, err)
+			_ = recordFactorySandboxFailure(store, deps, &record, target, "start", err, secretRedactor)
+			startErr := factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", target.Name), target, err, secretRedactor)
 			if cleanupErr := cleanupFactorySandboxAfterFailedStart(ctx, store, deps, req, record, target); cleanupErr != nil {
-				sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr)))
+				sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr), secretRedactor))
 				return errors.Join(startErr, sanitizedCleanupErr)
 			}
 			return startErr
@@ -214,15 +232,15 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 
 	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 	record.UpdatedAt = deps.now().UTC()
-	if err := deps.saveRun(store, &record); err != nil {
+	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 		return fmt.Errorf("record factory sandbox metadata: %w", err)
 	}
 
-	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput)
+	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
 	provider, err := deps.resolveProvider(target.Provider)
 	if err != nil {
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err)
-		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err, secretRedactor)
+		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err, secretRedactor)
 	}
 	cleanupBehavior := factorySandboxCleanupBehavior(record)
 	if req.DeferSuccessCleanup && cleanupBehavior == factory.CleanupBehaviorOnSuccess {
@@ -236,7 +254,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		}
 		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
 		if cleaned {
-			if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target); recordErr != nil {
+			if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
 				if cleanupErr != nil {
 					cleanupErr = errors.Join(cleanupErr, recordErr)
 				} else {
@@ -245,7 +263,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			}
 		}
 		if cleanupErr != nil {
-			sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr)))
+			sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr), secretRedactor))
 			if returnErr != nil {
 				returnErr = errors.Join(returnErr, sanitizedCleanupErr)
 				return
@@ -254,15 +272,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		}
 	}()
 
-	if bootstrapReq, ok := factorySandboxBootstrapRequest(record); ok {
+	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.ResolvedSecrets); ok {
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
-				provider:        provider,
-				connectInfo:     sandbox.ConnectInfoFromState(target),
-				runProviderExec: deps.runProviderExec,
+				provider:               provider,
+				connectInfo:            sandbox.ConnectInfoFromState(target),
+				runProviderExecWithEnv: deps.runProviderExecWithEnv,
 				// Bootstrap timelines are persisted from sanitized BootstrapResult
-				// events; stream raw command output only to the caller-facing writer.
-				out: req.RemoteOutput,
+				// events; stream redacted command output to the caller-facing writer.
+				out:          req.RemoteOutput,
+				outputRedact: factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
 			},
 			Now: deps.now,
 		})
@@ -273,15 +292,15 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return fmt.Errorf("sync sandbox timeline sequence: %w", syncErr)
 		}
 		if bootstrapErr != nil {
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr)
-			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, bootstrapErr)
+			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr, secretRedactor)
+			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, bootstrapErr, secretRedactor)
 		}
 	}
 
 	remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, target, remoteOutput, deps)
 	if err != nil {
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err)
-		return factorySandboxRecordedError("prepare factory sandbox inputs", target, err)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err, secretRedactor)
+		return factorySandboxRecordedError("prepare factory sandbox inputs", target, err, secretRedactor)
 	}
 
 	remoteArgs := factorySandboxRemoteCommandArgs(record, remoteAuto)
@@ -291,14 +310,14 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}); err != nil {
 		return fmt.Errorf("record remote sandbox start: %w", err)
 	}
-	runErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, remoteOutput)
+	runErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, factorySandboxResolvedSecretEnv(req.ResolvedSecrets), remoteOutput)
 	flushErr := remoteOutput.Flush()
 	if runErr != nil {
 		if flushErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
 		}
-		sanitizedErr := factorySandboxSanitizedError(target, runErr)
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", fmt.Errorf("%s", sanitizedErr))
+		sanitizedErr := factorySandboxSanitizedError(target, runErr, secretRedactor)
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", runErr, secretRedactor)
 		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
 	}
 	if flushErr != nil {
@@ -366,13 +385,14 @@ func cleanupFactorySandboxAfterFailedStart(ctx context.Context, store factory.St
 	if factorySandboxCleanupBehavior(record) != factory.CleanupBehaviorAlways {
 		return nil
 	}
+	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	provider, err := deps.resolveProvider(target.Provider)
 	if err != nil {
 		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
 	}
 	cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factory.CleanupBehaviorAlways, false)
 	if cleaned {
-		if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target); recordErr != nil {
+		if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
 			if cleanupErr != nil {
 				cleanupErr = errors.Join(cleanupErr, recordErr)
 			} else {
@@ -391,12 +411,13 @@ type factorySandboxTimelineWriter struct {
 	runID        string
 	sandboxName  string
 	provider     string
-	redact       func(string) string
+	eventRedact  func(string) string
+	outputRedact func(string) string
 	pending      string
 	nextSequence int64
 }
 
-func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, dst io.Writer) *factorySandboxTimelineWriter {
+func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, dst io.Writer, secrets []factory.ResolvedRunSecret) *factorySandboxTimelineWriter {
 	if dst == nil {
 		dst = io.Discard
 	}
@@ -416,6 +437,13 @@ func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExe
 		nextSequence = nextFactoryRunEventSequence(events)
 	}
 	redactor := sandboxRedactor(false, nil, target)
+	secretRedactor := factory.NewRunSecretRedactor(secrets)
+	redactOutput := func(value string) string {
+		return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(redactor.Redact(value)))
+	}
+	redactEvent := func(value string) string {
+		return sanitizeFactoryLogText(redactOutput(value))
+	}
 	return &factorySandboxTimelineWriter{
 		dst:          dst,
 		store:        store,
@@ -423,7 +451,8 @@ func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExe
 		runID:        runID,
 		sandboxName:  sandboxName,
 		provider:     provider,
-		redact:       redactor.Redact,
+		eventRedact:  redactEvent,
+		outputRedact: redactOutput,
 		nextSequence: nextSequence,
 	}
 }
@@ -436,11 +465,6 @@ func (w *factorySandboxTimelineWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.dst != nil {
-		if _, err := w.dst.Write(p); err != nil {
-			return 0, err
-		}
-	}
 	w.pending += string(p)
 	if err := w.flushCompleteLinesLocked(); err != nil {
 		return 0, err
@@ -460,9 +484,16 @@ func (w *factorySandboxTimelineWriter) Flush() error {
 		return err
 	}
 	line := strings.TrimSpace(w.pending)
+	rawLine := w.pending
 	w.pending = ""
 	if line == "" {
+		if rawLine != "" {
+			return w.writeOutputLocked(rawLine)
+		}
 		return nil
+	}
+	if err := w.writeOutputLocked(rawLine); err != nil {
+		return err
 	}
 	return w.appendLineLocked(line)
 }
@@ -511,7 +542,11 @@ func (w *factorySandboxTimelineWriter) flushCompleteLinesLocked() error {
 			return nil
 		}
 		line := strings.TrimSpace(w.pending[:idx])
+		rawLine := w.pending[:idx+1]
 		w.pending = w.pending[idx+1:]
+		if err := w.writeOutputLocked(rawLine); err != nil {
+			return err
+		}
 		if line == "" {
 			continue
 		}
@@ -521,12 +556,23 @@ func (w *factorySandboxTimelineWriter) flushCompleteLinesLocked() error {
 	}
 }
 
+func (w *factorySandboxTimelineWriter) writeOutputLocked(line string) error {
+	if w.dst == nil || line == "" {
+		return nil
+	}
+	if w.outputRedact != nil {
+		line = w.outputRedact(line)
+	}
+	_, err := w.dst.Write([]byte(line))
+	return err
+}
+
 func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 	if strings.TrimSpace(w.runID) == "" {
 		return nil
 	}
-	if w.redact != nil {
-		line = w.redact(line)
+	if w.eventRedact != nil {
+		line = w.eventRedact(line)
 	}
 	event := factory.EventRecord{
 		Sequence:  w.nextSequence,
@@ -577,8 +623,8 @@ func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summ
 		RunID:     w.runID,
 		EventType: eventType,
 		Timestamp: w.deps.now().UTC(),
-		Summary:   summary,
-		Metadata:  eventMetadata,
+		Summary:   w.redactExecutorEventString(summary),
+		Metadata:  w.redactExecutorEventMetadataWithRaw(eventMetadata),
 	}
 	if err := w.deps.appendEvent(w.store, &event); err != nil {
 		return err
@@ -587,34 +633,157 @@ func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summ
 	return nil
 }
 
+func (w *factorySandboxTimelineWriter) redactExecutorEventString(value string) string {
+	if w.eventRedact == nil {
+		return value
+	}
+	return w.eventRedact(value)
+}
+
+func (w *factorySandboxTimelineWriter) redactExecutorEventMetadata(metadata map[string]any) map[string]any {
+	return w.redactExecutorEventMetadataWithRaw(metadata)
+}
+
+func (w *factorySandboxTimelineWriter) redactExecutorEventMetadataWithRaw(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		redactedKey := w.redactExecutorEventString(key)
+		redactedValue := w.redactExecutorEventValue(value)
+		if key == "command" {
+			redactedValue = w.preserveRedactedCommandMarker(value, redactedValue)
+		}
+		out[redactedKey] = redactedValue
+	}
+	return out
+}
+
+func (w *factorySandboxTimelineWriter) preserveRedactedCommandMarker(rawValue any, redactedValue any) any {
+	redactedString, ok := redactedValue.(string)
+	if !ok || redactedString != "[redacted]" || w.outputRedact == nil {
+		return redactedValue
+	}
+	rawString, ok := rawValue.(string)
+	if !ok {
+		return redactedValue
+	}
+	outputRedacted := strings.TrimSpace(w.outputRedact(rawString))
+	if strings.Contains(outputRedacted, factory.RunSecretRedactionPlaceholder) {
+		return outputRedacted
+	}
+	return redactedValue
+}
+
+func (w *factorySandboxTimelineWriter) redactExecutorEventValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		return w.redactExecutorEventString(v)
+	case []string:
+		out := make([]string, len(v))
+		for i, item := range v {
+			out[i] = w.redactExecutorEventString(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = w.redactExecutorEventValue(item)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for key, item := range v {
+			out[w.redactExecutorEventString(key)] = w.redactExecutorEventString(item)
+		}
+		return out
+	case map[string]any:
+		return w.redactExecutorEventMetadata(v)
+	default:
+		return value
+	}
+}
+
 type factorySandboxBootstrapExecutor struct {
-	provider        sandbox.Provider
-	connectInfo     *sandbox.ConnectInfo
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	out             io.Writer
+	provider               sandbox.Provider
+	connectInfo            *sandbox.ConnectInfo
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	out                    io.Writer
+	outputRedact           func(string) string
 }
 
 func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command factory.BootstrapCommand) (factory.BootstrapCommandResult, error) {
-	if e == nil || e.runProviderExec == nil {
+	if e == nil || e.runProviderExecWithEnv == nil {
 		return factory.BootstrapCommandResult{}, fmt.Errorf("sandbox bootstrap executor is required")
 	}
 	var summary bytes.Buffer
 	out := io.Writer(&summary)
+	var streamOut *factorySandboxBootstrapOutputWriter
 	if e.out != nil {
-		out = io.MultiWriter(e.out, &summary)
+		streamOut = &factorySandboxBootstrapOutputWriter{
+			dst:    e.out,
+			redact: e.outputRedact,
+		}
+		out = io.MultiWriter(streamOut, &summary)
 	}
-	err := e.runProviderExec(ctx, e.provider, e.connectInfo, factorySandboxBootstrapCommandArgs(command), out)
+	err := e.runProviderExecWithEnv(ctx, e.provider, e.connectInfo, factorySandboxBootstrapCommandArgs(command), command.Env, out)
+	if streamOut != nil {
+		if flushErr := streamOut.Flush(); err == nil && flushErr != nil {
+			err = flushErr
+		}
+	}
 	return factory.BootstrapCommandResult{
 		OutputSummary: strings.TrimSpace(summary.String()),
 	}, err
 }
 
-func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []string {
-	args := []string{"env"}
-	for _, key := range sortedStringMapKeys(command.Env) {
-		args = append(args, key+"="+command.Env[key])
+type factorySandboxBootstrapOutputWriter struct {
+	dst     io.Writer
+	redact  func(string) string
+	pending string
+}
+
+func (w *factorySandboxBootstrapOutputWriter) Write(p []byte) (int, error) {
+	if w == nil {
+		return len(p), nil
 	}
-	args = append(args, strings.TrimSpace(command.Name))
+	w.pending += string(p)
+	for {
+		idx := strings.IndexByte(w.pending, '\n')
+		if idx < 0 {
+			return len(p), nil
+		}
+		line := w.pending[:idx+1]
+		w.pending = w.pending[idx+1:]
+		if err := w.write(line); err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (w *factorySandboxBootstrapOutputWriter) Flush() error {
+	if w == nil || w.pending == "" {
+		return nil
+	}
+	line := w.pending
+	w.pending = ""
+	return w.write(line)
+}
+
+func (w *factorySandboxBootstrapOutputWriter) write(line string) error {
+	if w.dst == nil || line == "" {
+		return nil
+	}
+	if w.redact != nil {
+		line = w.redact(line)
+	}
+	_, err := w.dst.Write([]byte(line))
+	return err
+}
+
+func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []string {
+	args := []string{strings.TrimSpace(command.Name)}
 	args = append(args, command.Args...)
 	if dir := strings.TrimSpace(command.Dir); dir != "" {
 		return []string{"sh", "-lc", "cd " + shellQuote(dir) + " && exec " + shellCommand(args)}
@@ -633,22 +802,60 @@ func sortedStringMapKeys(values map[string]string) []string {
 	return keys
 }
 
-func factorySandboxBootstrapRequest(record factory.RunRecord) (factory.BootstrapRequest, bool) {
+func factorySandboxBootstrapRequest(record factory.RunRecord, secrets []factory.ResolvedRunSecret) (factory.BootstrapRequest, bool) {
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	repoRemote := strings.TrimSpace(record.RepoRemote)
 	baseBranch := strings.TrimSpace(record.BaseBranch)
 	if workspaceDir == "" || repoRemote == "" || baseBranch == "" {
 		return factory.BootstrapRequest{}, false
 	}
-	return factory.BootstrapRequest{
-		RepositoryURL: repoRemote,
-		BaseBranch:    baseBranch,
-		RunBranch:     strings.TrimSpace(record.BranchName),
-		WorkspaceDir:  workspaceDir,
+	request := factory.BootstrapRequest{
+		RepositoryURL:   repoRemote,
+		BaseBranch:      baseBranch,
+		RunBranch:       strings.TrimSpace(record.BranchName),
+		WorkspaceDir:    workspaceDir,
+		RequiredEnvKeys: factorySandboxBootstrapRequiredEnvKeys(record.Secrets),
+		Env:             factorySandboxResolvedSecretEnv(secrets),
 		Options: factory.BootstrapOptions{
 			RefreshHal: true,
 		},
-	}, true
+	}
+	return factory.BootstrapRequestWithResolvedSecrets(request, secrets), true
+}
+
+func factorySandboxBootstrapRequiredEnvKeys(secrets []factory.RunSecretMetadata) []string {
+	keys := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		if !secret.Required || strings.TrimSpace(secret.Source) != factory.RunSecretSourceEnv {
+			continue
+		}
+		if name := strings.TrimSpace(secret.Name); name != "" {
+			keys = append(keys, name)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func factorySandboxResolvedSecretEnv(secrets []factory.ResolvedRunSecret) map[string]string {
+	env := make(map[string]string, len(secrets))
+	for _, secret := range secrets {
+		if strings.TrimSpace(secret.Source) != factory.RunSecretSourceEnv {
+			continue
+		}
+		name := strings.TrimSpace(secret.Name)
+		if name == "" || strings.TrimSpace(secret.Value) == "" {
+			continue
+		}
+		env[name] = secret.Value
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, result factory.BootstrapResult) error {
@@ -888,7 +1095,7 @@ func factorySandboxProvisionName(record factory.RunRecord) string {
 	return sandbox.SandboxNameFromBranch(record.BranchName)
 }
 
-func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error) error {
+func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, step string, failureErr error, secretRedactor factory.RunSecretRedactor) error {
 	if record == nil {
 		return nil
 	}
@@ -905,7 +1112,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	record.CurrentStep = step
 	record.UpdatedAt = failedAt
 	record.FinishedAt = &failedAt
-	message := factorySandboxSanitizedError(target, failureErr)
+	message := factorySandboxSanitizedError(target, failureErr, secretRedactor)
 	failure := factory.FailureSummary{
 		Step:             step,
 		Category:         factory.FailureCategorySandbox,
@@ -914,7 +1121,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 		SuggestedCommand: factorySandboxFailureSuggestedCommand(record),
 	}
 	record.Failure = &failure
-	if err := deps.saveRun(store, record); err != nil {
+	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, record, secretRedactor); err != nil {
 		return err
 	}
 	events, err := store.LoadEvents(record.RunID)
@@ -937,7 +1144,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	})
 }
 
-func recordFactorySandboxCleanedUp(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState) error {
+func recordFactorySandboxCleanedUp(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, secretRedactor factory.RunSecretRedactor) error {
 	if record == nil || strings.TrimSpace(record.RunID) == "" {
 		return nil
 	}
@@ -959,10 +1166,11 @@ func recordFactorySandboxCleanedUp(store factory.Store, deps factorySandboxExecu
 		stored.Failure.SuggestedCommand = factoryRunInspectCommand(stored.RunID)
 	}
 	stored.UpdatedAt = deps.now().UTC()
-	if err := deps.saveRun(store, stored); err != nil {
+	safeRecord := redactFactoryRunRecordForStorage(*stored, secretRedactor)
+	if err := deps.saveRun(store, &safeRecord); err != nil {
 		return fmt.Errorf("record factory sandbox cleanup metadata: %w", err)
 	}
-	*record = *stored
+	*record = safeRecord
 	return nil
 }
 
@@ -1004,7 +1212,7 @@ func factorySandboxCleanedMetadata(record factory.RunRecord, target *sandbox.San
 	return name, metadata
 }
 
-func factorySandboxSanitizedError(target *sandbox.SandboxState, err error) string {
+func factorySandboxSanitizedError(target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) string {
 	if err == nil {
 		return "sandbox factory executor failed"
 	}
@@ -1013,14 +1221,14 @@ func factorySandboxSanitizedError(target *sandbox.SandboxState, err error) strin
 		message = "sandbox factory executor failed"
 	}
 	if target == nil {
-		return message
+		return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(message))
 	}
 	redactor := sandboxRedactor(false, nil, target)
-	return redactor.Redact(message)
+	return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(redactor.Redact(message)))
 }
 
-func factorySandboxRecordedError(prefix string, target *sandbox.SandboxState, err error) error {
-	return fmt.Errorf("%s: %s", prefix, factorySandboxSanitizedError(target, err))
+func factorySandboxRecordedError(prefix string, target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) error {
+	return fmt.Errorf("%s: %s", prefix, factorySandboxSanitizedError(target, err, secretRedactor))
 }
 
 func factorySandboxFailureSuggestedCommand(record *factory.RunRecord) string {
@@ -1155,11 +1363,105 @@ func runFactorySandboxProviderExec(ctx context.Context, provider sandbox.Provide
 	if err != nil {
 		return err
 	}
+	if cmd == nil {
+		return fmt.Errorf("sandbox provider returned nil exec command")
+	}
 	return sandbox.RunCmd(cmd, out)
+}
+
+func runFactorySandboxProviderExecWithEnv(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
+	if len(factorySandboxSortedEnvAssignments(env)) == 0 {
+		return runFactorySandboxProviderExec(ctx, provider, info, args, out)
+	}
+	if provider == nil {
+		return fmt.Errorf("sandbox provider is required")
+	}
+	cmd, err := provider.Exec(info, []string{"sh", "-s"})
+	if err != nil {
+		return err
+	}
+	if cmd == nil {
+		return fmt.Errorf("sandbox provider returned nil exec command")
+	}
+	script, err := factorySandboxEnvExecScript(args, env)
+	if err != nil {
+		return err
+	}
+	cmd.Stdin = strings.NewReader(script)
+	return sandbox.RunCmd(cmd, out)
+}
+
+func factorySandboxEnvExecScript(args []string, env map[string]string) (string, error) {
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	for _, key := range sortedStringMapKeys(env) {
+		if strings.TrimSpace(env[key]) == "" {
+			continue
+		}
+		if !isShellIdentifier(key) {
+			return "", fmt.Errorf("invalid sandbox environment variable name %q", key)
+		}
+		script.WriteString("export ")
+		script.WriteString(key)
+		script.WriteString("=")
+		script.WriteString(shellQuote(env[key]))
+		script.WriteString("\n")
+	}
+	script.WriteString("exec ")
+	script.WriteString(shellCommand(args))
+	script.WriteString("\n")
+	return script.String(), nil
+}
+
+func factorySandboxSortedEnvAssignments(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := sortedStringMapKeys(env)
+	assignments := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if strings.TrimSpace(env[key]) == "" {
+			continue
+		}
+		assignments = append(assignments, key+"="+env[key])
+	}
+	return assignments
+}
+
+func isShellIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if i == 0 {
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' {
+				continue
+			}
+			return false
+		}
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func saveFactorySandboxRunRecord(store factory.Store, record *factory.RunRecord) error {
 	return store.SaveRun(record)
+}
+
+func saveFactorySandboxRunRecordWithRedactor(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, redactor factory.RunSecretRedactor) error {
+	if record == nil {
+		return deps.saveRun(store, record)
+	}
+	safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
+	return deps.saveRun(store, &safeRecord)
+}
+
+func redactFactorySandboxProvisionRepo(record factory.RunRecord, redactor factory.RunSecretRedactor) string {
+	return redactFactoryRunRecordForStorage(record, redactor).RepoRemote
 }
 
 func appendFactorySandboxTimelineEvent(store factory.Store, event *factory.EventRecord) error {

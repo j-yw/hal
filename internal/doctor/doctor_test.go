@@ -174,6 +174,32 @@ func TestRun_NoGitRepo(t *testing.T) {
 	}
 }
 
+func TestRun_GitWorktreeFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /tmp/example/worktrees/feature\n"), 0644); err != nil {
+		t.Fatalf("write .git file: %v", err)
+	}
+	setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	found := false
+	for _, c := range result.Checks {
+		if c.ID != "git_repo" {
+			continue
+		}
+		found = true
+		if c.Status != StatusPass {
+			t.Fatalf("git_repo status = %q, want %q", c.Status, StatusPass)
+		}
+	}
+	if !found {
+		t.Fatal("git_repo check not found")
+	}
+}
+
 func TestRun_EngineAwareCodexSkip(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)

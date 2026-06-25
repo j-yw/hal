@@ -35,6 +35,14 @@
     "createdAt": "2026-06-20T16:00:00Z",
     "updatedAt": "2026-06-20T16:32:00Z",
     "finishedAt": "2026-06-20T16:33:00Z",
+    "secrets": [
+      {
+        "name": "GITHUB_TOKEN",
+        "source": "env",
+        "required": true,
+        "present": true
+      }
+    ],
     "artifacts": [
       {
         "name": "prd",

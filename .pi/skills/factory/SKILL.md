@@ -11,6 +11,7 @@ Use machine contracts (`--json`) for all decisions.
 
 ## Non-Negotiable Rules
 
+0. If the active prompt is a review-loop/static-analyzer contract that asks for strict JSON (`Review Output Schema`, `Fix Validation Output Schema`, or "Return ONLY valid JSON"), do not operate the factory FSM. Follow that review-loop prompt exactly and do not run any `hal` commands.
 1. Always run `hal doctor --json` and `hal status --json` before workflow actions.
 2. If uncertain, run `hal continue --json` and execute `nextCommand`.
 3. Never hand-edit `.hal/prd.json`, `.hal/auto-state.json`, or `.hal/progress.txt`.

@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -134,6 +135,16 @@ func (s Store) Ensure() error {
 // artifact metadata on the run record. The stored path is deterministic and
 // scoped under artifacts/<run-id>/.
 func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, sourcePath string) (ArtifactReference, error) {
+	return s.saveArtifactFile(runID, artifact, sourcePath, RunSecretRedactor{})
+}
+
+// SaveArtifactFileWithRedactor copies a source file into the store and records
+// artifact metadata after removing run-scoped secret values.
+func (s Store) SaveArtifactFileWithRedactor(runID string, artifact ArtifactReference, sourcePath string, redactor RunSecretRedactor) (ArtifactReference, error) {
+	return s.saveArtifactFile(runID, artifact, sourcePath, redactor)
+}
+
+func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, sourcePath string, redactor RunSecretRedactor) (ArtifactReference, error) {
 	runID, err := validateRunID(runID)
 	if err != nil {
 		return ArtifactReference{}, err
@@ -142,6 +153,7 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 	if sourcePath == "" {
 		return ArtifactReference{}, fmt.Errorf("artifact source path is required")
 	}
+	redactedSourcePath := redactor.RedactString(sourcePath)
 
 	record, err := s.LoadRun(runID)
 	if err != nil {
@@ -153,16 +165,16 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 
 	info, err := os.Lstat(sourcePath)
 	if err != nil {
-		return ArtifactReference{}, fmt.Errorf("stat artifact source %q: %w", sourcePath, err)
+		return ArtifactReference{}, fmt.Errorf("stat artifact source %q: %w", redactedSourcePath, redactFactoryPathError(err, redactor))
 	}
 	if info.IsDir() {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is a directory", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is a directory", redactedSourcePath)
 	}
 	if info.Mode()&fs.ModeSymlink != 0 {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is a symlink", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is a symlink", redactedSourcePath)
 	}
 	if !info.Mode().IsRegular() {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is not a regular file", redactedSourcePath)
 	}
 
 	artifact.Name = strings.TrimSpace(artifact.Name)
@@ -173,8 +185,9 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 	if artifact.Type == "" {
 		return ArtifactReference{}, fmt.Errorf("artifact type is required")
 	}
+	artifact = redactor.RedactArtifactReference(artifact)
 
-	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifactFileBaseName(artifact), sourcePath)))
+	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifactFileBaseName(artifact), redactedSourcePath)))
 	absoluteStoredPath, err := s.ResolveArtifactPath(runID, storedPath)
 	if err != nil {
 		return ArtifactReference{}, err
@@ -182,14 +195,14 @@ func (s Store) SaveArtifactFile(runID string, artifact ArtifactReference, source
 	if err := os.MkdirAll(filepath.Dir(absoluteStoredPath), 0o700); err != nil {
 		return ArtifactReference{}, fmt.Errorf("create factory artifact dir: %w", err)
 	}
-	copiedInfo, err := copyStoreFile(sourcePath, absoluteStoredPath, 0o600, info)
+	copiedInfo, err := copyStoreFileWithRedactor(sourcePath, absoluteStoredPath, 0o600, info, redactor)
 	if err != nil {
 		return ArtifactReference{}, fmt.Errorf("write factory artifact %q: %w", artifact.Name, err)
 	}
 
 	size := copiedInfo.Size()
 	createdAt := copiedInfo.ModTime().UTC()
-	artifact.SourcePath = sourcePath
+	artifact.SourcePath = redactedSourcePath
 	artifact.StoredPath = storedPath
 	artifact.SizeBytes = &size
 	artifact.CreatedAt = &createdAt
@@ -609,20 +622,25 @@ func isStoreRenameNoReplaceError(err error) bool {
 }
 
 func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo) (fs.FileInfo, error) {
+	return copyStoreFileWithRedactor(sourcePath, destPath, mode, expectedInfo, RunSecretRedactor{})
+}
+
+func copyStoreFileWithRedactor(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo, redactor RunSecretRedactor) (fs.FileInfo, error) {
+	redactedSourcePath := redactor.RedactString(sourcePath)
 	source, err := os.Open(sourcePath)
 	if err != nil {
-		return nil, err
+		return nil, redactFactoryPathError(err, redactor)
 	}
 	defer source.Close()
 	sourceInfo, err := source.Stat()
 	if err != nil {
-		return nil, err
+		return nil, redactFactoryPathError(err, redactor)
 	}
 	if !sourceInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
+		return nil, fmt.Errorf("artifact source %q is not a regular file", redactedSourcePath)
 	}
 	if expectedInfo != nil && !os.SameFile(expectedInfo, sourceInfo) {
-		return nil, fmt.Errorf("artifact source %q changed during copy", sourcePath)
+		return nil, fmt.Errorf("artifact source %q changed during copy", redactedSourcePath)
 	}
 
 	tmpPath := destPath + storeTempFileExt
@@ -630,7 +648,7 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(dest, source); err != nil {
+	if err := copyStoreFilePayload(dest, source, redactor); err != nil {
 		_ = dest.Close()
 		_ = os.Remove(tmpPath)
 		return nil, err
@@ -647,7 +665,151 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 		_ = os.Remove(tmpPath)
 		return nil, err
 	}
-	return sourceInfo, nil
+	storedInfo, err := os.Stat(destPath)
+	if err != nil {
+		return nil, err
+	}
+	return storedInfo, nil
+}
+
+func redactFactoryPathError(err error, redactor RunSecretRedactor) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		safe := *pathErr
+		safe.Path = redactor.RedactString(safe.Path)
+		return &safe
+	}
+	return err
+}
+
+func copyStoreFilePayload(dest *os.File, source *os.File, redactor RunSecretRedactor) error {
+	if len(redactor.secretValues) == 0 {
+		_, err := io.Copy(dest, source)
+		return err
+	}
+	secrets, maxSecretLen := storeRedactionSecrets(redactor.secretValues)
+	if len(secrets) == 0 {
+		_, err := io.Copy(dest, source)
+		return err
+	}
+	return copyStoreFilePayloadRedacted(dest, source, secrets, maxSecretLen)
+}
+
+func storeRedactionSecrets(secretValues []string) ([][]byte, int) {
+	secrets := make([][]byte, 0, len(secretValues))
+	maxSecretLen := 0
+	for _, secret := range secretValues {
+		if secret == "" {
+			continue
+		}
+		token := []byte(secret)
+		secrets = append(secrets, token)
+		if len(token) > maxSecretLen {
+			maxSecretLen = len(token)
+		}
+	}
+	return secrets, maxSecretLen
+}
+
+func copyStoreFilePayloadRedacted(dest io.Writer, source io.Reader, secrets [][]byte, maxSecretLen int) error {
+	const bufferSize = 32 * 1024
+
+	buffer := make([]byte, bufferSize)
+	pending := make([]byte, 0, bufferSize+maxSecretLen)
+	for {
+		n, readErr := source.Read(buffer)
+		if n > 0 {
+			pending = append(pending, buffer[:n]...)
+			if err := writeStoreRedactedPending(dest, &pending, secrets, maxSecretLen, false); err != nil {
+				return err
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				return readErr
+			}
+			break
+		}
+	}
+	return writeStoreRedactedPending(dest, &pending, secrets, maxSecretLen, true)
+}
+
+func writeStoreRedactedPending(dest io.Writer, pending *[]byte, secrets [][]byte, maxSecretLen int, flush bool) error {
+	data := *pending
+	for len(data) > 0 {
+		processLimit := len(data)
+		if !flush {
+			processLimit = len(data) - (maxSecretLen - 1)
+			if processLimit < 0 {
+				processLimit = 0
+			}
+		}
+
+		matchIndex, secret := firstStoreRedactionMatch(data, secrets)
+		if matchIndex >= 0 && (flush || matchIndex < processLimit) {
+			if matchIndex > 0 {
+				if err := writeStoreBytes(dest, data[:matchIndex]); err != nil {
+					return err
+				}
+			}
+			if err := writeStoreBytes(dest, []byte(RunSecretRedactionPlaceholder)); err != nil {
+				return err
+			}
+			data = data[matchIndex+len(secret):]
+			continue
+		}
+
+		if flush {
+			if err := writeStoreBytes(dest, data); err != nil {
+				return err
+			}
+			data = data[:0]
+			break
+		}
+		if processLimit > 0 {
+			if err := writeStoreBytes(dest, data[:processLimit]); err != nil {
+				return err
+			}
+			data = data[processLimit:]
+			continue
+		}
+		break
+	}
+
+	remaining := (*pending)[:0]
+	remaining = append(remaining, data...)
+	*pending = remaining
+	return nil
+}
+
+func firstStoreRedactionMatch(data []byte, secrets [][]byte) (int, []byte) {
+	bestIndex := -1
+	var bestSecret []byte
+	for _, secret := range secrets {
+		index := bytes.Index(data, secret)
+		if index < 0 {
+			continue
+		}
+		if bestIndex == -1 || index < bestIndex {
+			bestIndex = index
+			bestSecret = secret
+		}
+	}
+	return bestIndex, bestSecret
+}
+
+func writeStoreBytes(dest io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := dest.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
 }
 
 func artifactFileName(name, sourcePath string) string {

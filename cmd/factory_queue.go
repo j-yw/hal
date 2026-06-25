@@ -32,23 +32,26 @@ type factoryQueueListDeps struct {
 }
 
 type factoryQueueWorkDeps struct {
-	defaultStore    func() (factory.Store, error)
-	now             func() time.Time
-	claim           *factory.QueueClaim
-	loadPolicy      func(string) (*factory.FactoryPolicy, error)
-	loadEngine      func(string) (string, error)
-	runPipeline     func(context.Context, factoryRunPipelineRequest) error
-	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
-	loadVerify      func(string) (*verify.Config, error)
-	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
-	loadSandbox     func(string) (*sandbox.SandboxState, error)
-	resolveProvider func(string, string) (sandbox.Provider, error)
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	cleanupSandbox  func(context.Context, factorySandboxCleanupRequest) error
-	statusSnapshot  func(string) (factorySnapshotArtifact, error)
-	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
-	sandboxCopier   factory.SandboxArtifactCopier
-	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	defaultStore           func() (factory.Store, error)
+	now                    func() time.Time
+	claim                  *factory.QueueClaim
+	lookupEnv              func(string) (string, bool)
+	repoRemote             func(string) (string, error)
+	loadPolicy             func(string) (*factory.FactoryPolicy, error)
+	loadEngine             func(string) (string, error)
+	runPipeline            func(context.Context, factoryRunPipelineRequest) error
+	runSandbox             func(context.Context, factorySandboxExecutorRequest) error
+	loadVerify             func(string) (*verify.Config, error)
+	runVerify              func(context.Context, *verify.Config) (*verify.Result, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	resolveProvider        func(string, string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
+	statusSnapshot         func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot         func(string) (factorySnapshotArtifact, error)
+	sandboxCopier          factory.SandboxArtifactCopier
+	sandboxRequests        func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryQueueAddRequest struct {
@@ -75,21 +78,24 @@ var defaultFactoryQueueListDeps = factoryQueueListDeps{
 }
 
 var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
-	defaultStore:    factory.DefaultStore,
-	now:             time.Now,
-	loadPolicy:      factory.LoadPolicyConfig,
-	loadEngine:      compound.LoadDefaultEngine,
-	runPipeline:     runFactoryRunPipeline,
-	runSandbox:      defaultFactoryRunDeps.runSandbox,
-	loadVerify:      defaultFactoryRunDeps.loadVerify,
-	runVerify:       defaultFactoryRunDeps.runVerify,
-	loadSandbox:     defaultFactoryRunDeps.loadSandbox,
-	resolveProvider: defaultFactoryRunDeps.resolveProvider,
-	runProviderExec: defaultFactoryRunDeps.runProviderExec,
-	cleanupSandbox:  defaultFactoryRunDeps.cleanupSandbox,
-	statusSnapshot:  defaultFactoryRunDeps.statusSnapshot,
-	doctorSnapshot:  defaultFactoryRunDeps.doctorSnapshot,
-	sandboxRequests: defaultFactorySandboxArtifactRequests,
+	defaultStore:           factory.DefaultStore,
+	now:                    time.Now,
+	lookupEnv:              os.LookupEnv,
+	repoRemote:             readGitRemoteOptionalInDir,
+	loadPolicy:             factory.LoadPolicyConfig,
+	loadEngine:             compound.LoadDefaultEngine,
+	runPipeline:            runFactoryRunPipeline,
+	runSandbox:             defaultFactoryRunDeps.runSandbox,
+	loadVerify:             defaultFactoryRunDeps.loadVerify,
+	runVerify:              defaultFactoryRunDeps.runVerify,
+	loadSandbox:            defaultFactoryRunDeps.loadSandbox,
+	resolveProvider:        defaultFactoryRunDeps.resolveProvider,
+	runProviderExec:        defaultFactoryRunDeps.runProviderExec,
+	runProviderExecWithEnv: defaultFactoryRunDeps.runProviderExecWithEnv,
+	cleanupSandbox:         defaultFactoryRunDeps.cleanupSandbox,
+	statusSnapshot:         defaultFactoryRunDeps.statusSnapshot,
+	doctorSnapshot:         defaultFactoryRunDeps.doctorSnapshot,
+	sandboxRequests:        defaultFactorySandboxArtifactRequests,
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -360,7 +366,7 @@ func runFactoryQueueWorkWithDeps(ctx context.Context, out io.Writer, req factory
 			claimedAt = *entry.ClaimedAt
 		}
 		if err := recordFactoryRunClaimed(store, *entry, claimedAt); err != nil {
-			finalEntry, failErr := failClaimedFactoryQueueEntry(store, *entry, err, deps.now)
+			finalEntry, failErr := failClaimedFactoryQueueEntry(store, *entry, err, deps)
 			if failErr != nil {
 				return failErr
 			}
@@ -385,17 +391,18 @@ func runFactoryQueueWorkWithDeps(ctx context.Context, out io.Writer, req factory
 func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, entry factory.QueueEntry, deps factoryQueueWorkDeps) (factory.QueueEntry, error) {
 	deps = normalizeFactoryQueueWorkDeps(deps)
 	if _, err := factory.ValidateExecutorMode(entry.ExecutorMode); err != nil {
-		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
 	}
 
 	record, err := store.LoadRun(entry.RunID)
 	if err != nil {
-		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err), deps.now)
+		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err), deps)
 	}
 	record.ExecutorMode = entry.ExecutorMode
 	if err := validateFactoryQueueSandboxBaseBranch(*record, entry.ExecutorMode); err != nil {
-		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
 	}
+	redactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(factoryRunSecretInputsFromMetadata(record.Secrets), deps.lookupEnv))
 
 	runDir := factoryQueueRunDir(*record)
 	runDeps := factoryRunDepsFromQueueWorkDeps(store, deps)
@@ -403,13 +410,13 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	if policy == nil {
 		loadedPolicy, err := loadFactoryRunPolicy(runDir, runDeps)
 		if err != nil {
-			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
-			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), fmt.Errorf("load factory policy: %w", err), nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
 		}
-		persistedRecord, err := persistFactoryRunPolicySnapshot(store, *record, loadedPolicy)
+		persistedRecord, err := persistFactoryRunPolicySnapshotWithRedactor(store, *record, loadedPolicy, redactor)
 		if err != nil {
-			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
-			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), err, nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
 		}
 		record = &persistedRecord
 		policy = factoryPolicySnapshotFromRecord(record)
@@ -419,23 +426,28 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 		var err error
 		engineName, err = resolveFactoryRunEngine(runDir, runDeps)
 		if err != nil {
-			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
-			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), err, nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
 		}
-		persistedRecord, err := persistFactoryRunEngineSnapshot(store, *record, engineName)
+		persistedRecord, err := persistFactoryRunEngineSnapshotWithRedactor(store, *record, engineName, redactor)
 		if err != nil {
-			runErr := failFactoryRunCreation(store, *record, io.Discard, false, deps.now(), err, nil)
-			return failClaimedFactoryQueueEntry(store, entry, runErr, deps.now)
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), err, nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
 		}
 		record = &persistedRecord
 	}
-	if err := enforceFactoryRunCreationPolicy(store, *record, io.Discard, false, runDeps, *policy, engineName); err != nil {
-		return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
+	if err := enforceFactoryRunCreationPolicyWithRedactor(store, *record, io.Discard, false, runDeps, *policy, engineName, redactor); err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
 	}
 
-	_, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), io.Discard, store, *record, runDeps, *policy, engineName)
+	execRecord, err := rehydrateQueuedSandboxRunRecord(*record, deps)
+	if err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
+	}
+
+	_, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(execRecord), io.Discard, store, execRecord, runDeps, *policy, engineName)
 	if execErr != nil {
-		return failClaimedFactoryQueueEntry(store, entry, execErr, deps.now)
+		return failClaimedFactoryQueueEntry(store, entry, execErr, deps)
 	}
 
 	completedEntry, err := store.MarkQueueEntrySucceeded(entry.QueueID, factory.QueueOperationOptions{
@@ -447,21 +459,52 @@ func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, e
 	return completedEntry, nil
 }
 
-func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time) (factory.QueueEntry, error) {
+func rehydrateQueuedSandboxRunRecord(record factory.RunRecord, deps factoryQueueWorkDeps) (factory.RunRecord, error) {
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		return record, nil
+	}
+	if !queuedSandboxRepoRemoteNeedsRefresh(record.RepoRemote) {
+		return record, nil
+	}
+	if deps.repoRemote == nil {
+		return record, nil
+	}
+	remote, err := deps.repoRemote(factoryQueueRunDir(record))
+	if err != nil {
+		return record, fmt.Errorf("refresh queued sandbox repository remote: %w", err)
+	}
+	if strings.TrimSpace(remote) != "" {
+		record.RepoRemote = strings.TrimSpace(remote)
+	}
+	return record, nil
+}
+
+func queuedSandboxRepoRemoteNeedsRefresh(remote string) bool {
+	if strings.Contains(remote, factory.RunSecretRedactionPlaceholder) {
+		return true
+	}
+	escapedPlaceholder := strings.NewReplacer("[", "%5B", "]", "%5D").Replace(factory.RunSecretRedactionPlaceholder)
+	return strings.Contains(strings.ToLower(remote), strings.ToLower(escapedPlaceholder))
+}
+
+func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, cause error, deps factoryQueueWorkDeps) (factory.QueueEntry, error) {
+	deps = normalizeFactoryQueueWorkDeps(deps)
 	if cause == nil {
 		cause = fmt.Errorf("factory queue work failed")
 	}
-	runErr := markFactoryQueueRunFailed(store, entry, cause, now)
-	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, cause.Error(), factory.QueueOperationOptions{
-		Now: now,
+	redactor := factoryQueueFailureRedactor(store, entry, deps.lookupEnv)
+	safeCause := redactFactoryQueueFailureCause(cause, redactor)
+	runErr := markFactoryQueueRunFailed(store, entry, safeCause, deps.now, redactor)
+	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, safeCause.Error(), factory.QueueOperationOptions{
+		Now: deps.now,
 	})
 	if markErr != nil {
-		return entry, errors.Join(cause, runErr, markErr)
+		return entry, errors.Join(safeCause, runErr, markErr)
 	}
 	if runErr != nil {
-		return failedEntry, errors.Join(cause, runErr)
+		return failedEntry, errors.Join(safeCause, runErr)
 	}
-	return failedEntry, cause
+	return failedEntry, safeCause
 }
 
 func validateFactoryQueueSandboxBaseBranch(record factory.RunRecord, executorMode string) error {
@@ -471,7 +514,7 @@ func validateFactoryQueueSandboxBaseBranch(record factory.RunRecord, executorMod
 	return nil
 }
 
-func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time) error {
+func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time, redactor factory.RunSecretRedactor) error {
 	if strings.TrimSpace(entry.RunID) == "" {
 		return nil
 	}
@@ -480,6 +523,13 @@ func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, ca
 		return fmt.Errorf("load factory queue run %q for failure marking: %w", entry.RunID, err)
 	}
 	if record.Status == factory.RunStatusFailed && record.Failure != nil {
+		safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
+		if safeRecord.Failure == nil || strings.TrimSpace(safeRecord.Failure.Message) == strings.TrimSpace(record.Failure.Message) {
+			return nil
+		}
+		if err := store.SaveRun(&safeRecord); err != nil {
+			return err
+		}
 		return nil
 	}
 	if now == nil {
@@ -500,10 +550,45 @@ func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, ca
 	if record.Failure.Message == "" {
 		record.Failure.Message = "factory queue work failed"
 	}
-	if err := store.SaveRun(record); err != nil {
+	safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return err
 	}
-	return recordFactoryRunFailureClassified(store, record.RunID, failedAt, *record.Failure)
+	return recordFactoryRunFailureClassified(store, safeRecord.RunID, failedAt, *safeRecord.Failure)
+}
+
+func factoryQueueFailureRedactor(store factory.Store, entry factory.QueueEntry, lookupEnv func(string) (string, bool)) factory.RunSecretRedactor {
+	if strings.TrimSpace(entry.RunID) == "" {
+		return factory.RunSecretRedactor{}
+	}
+	record, err := store.LoadRun(entry.RunID)
+	if err != nil {
+		return factory.RunSecretRedactor{}
+	}
+	return factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(factoryRunSecretInputsFromMetadata(record.Secrets), lookupEnv))
+}
+
+func redactFactoryQueueFailureCause(cause error, redactor factory.RunSecretRedactor) error {
+	if cause == nil {
+		cause = fmt.Errorf("factory queue work failed")
+	}
+	message := sanitizeFactoryQueueFailureMessage(cause.Error(), redactor)
+	if message == strings.TrimSpace(cause.Error()) {
+		return cause
+	}
+	return factoryRunRedactedError{
+		message: message,
+		cause:   cause,
+	}
+}
+
+func sanitizeFactoryQueueFailureMessage(message string, redactor factory.RunSecretRedactor) string {
+	message = strings.TrimSpace(redactor.RedactString(message))
+	message = sanitizeCredentialedRemoteReferences(message)
+	if strings.TrimSpace(message) == "" {
+		return "factory queue work failed"
+	}
+	return message
 }
 
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {
@@ -512,6 +597,7 @@ func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunReques
 	req := factoryRunRequest{
 		BaseBranch: baseBranch,
 		Sandbox:    executorMode == factory.ExecutorModeSandbox,
+		Secrets:    factoryRunSecretInputsFromMetadata(record.Secrets),
 	}
 	switch record.Source.Kind {
 	case factory.SourceKindMarkdown:
@@ -523,6 +609,21 @@ func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunReques
 		}
 	}
 	return req
+}
+
+func factoryRunSecretInputsFromMetadata(metadata []factory.RunSecretMetadata) []factory.RunSecretInput {
+	if len(metadata) == 0 {
+		return nil
+	}
+	inputs := make([]factory.RunSecretInput, 0, len(metadata))
+	for _, secret := range metadata {
+		inputs = append(inputs, factory.RunSecretInput{
+			Name:     secret.Name,
+			Source:   secret.Source,
+			Required: secret.Required,
+		})
+	}
+	return inputs
 }
 
 func factoryQueueRunDir(record factory.RunRecord) string {
@@ -550,11 +651,18 @@ func normalizeFactoryQueueListDeps(deps factoryQueueListDeps) factoryQueueListDe
 }
 
 func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDeps {
+	customRunProviderExec := deps.runProviderExec != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryQueueWorkDeps.defaultStore
 	}
 	if deps.now == nil {
 		deps.now = defaultFactoryQueueWorkDeps.now
+	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = defaultFactoryQueueWorkDeps.lookupEnv
+	}
+	if deps.repoRemote == nil {
+		deps.repoRemote = defaultFactoryQueueWorkDeps.repoRemote
 	}
 	if deps.loadPolicy == nil {
 		deps.loadPolicy = defaultFactoryQueueWorkDeps.loadPolicy
@@ -583,6 +691,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactoryQueueWorkDeps.runProviderExec
 	}
+	if deps.runProviderExecWithEnv == nil && !customRunProviderExec {
+		deps.runProviderExecWithEnv = defaultFactoryQueueWorkDeps.runProviderExecWithEnv
+	}
 	if deps.cleanupSandbox == nil {
 		deps.cleanupSandbox = defaultFactoryQueueWorkDeps.cleanupSandbox
 	}
@@ -601,22 +712,25 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 func factoryRunDepsFromQueueWorkDeps(store factory.Store, deps factoryQueueWorkDeps) factoryRunDeps {
 	deps = normalizeFactoryQueueWorkDeps(deps)
 	return normalizeFactoryRunDeps(factoryRunDeps{
-		defaultStore:    func() (factory.Store, error) { return store, nil },
-		now:             deps.now,
-		loadPolicy:      deps.loadPolicy,
-		loadEngine:      deps.loadEngine,
-		runPipeline:     deps.runPipeline,
-		runSandbox:      deps.runSandbox,
-		loadVerify:      deps.loadVerify,
-		runVerify:       deps.runVerify,
-		loadSandbox:     deps.loadSandbox,
-		resolveProvider: deps.resolveProvider,
-		runProviderExec: deps.runProviderExec,
-		cleanupSandbox:  deps.cleanupSandbox,
-		statusSnapshot:  deps.statusSnapshot,
-		doctorSnapshot:  deps.doctorSnapshot,
-		sandboxCopier:   deps.sandboxCopier,
-		sandboxRequests: deps.sandboxRequests,
+		defaultStore:           func() (factory.Store, error) { return store, nil },
+		now:                    deps.now,
+		lookupEnv:              deps.lookupEnv,
+		repoRemote:             deps.repoRemote,
+		loadPolicy:             deps.loadPolicy,
+		loadEngine:             deps.loadEngine,
+		runPipeline:            deps.runPipeline,
+		runSandbox:             deps.runSandbox,
+		loadVerify:             deps.loadVerify,
+		runVerify:              deps.runVerify,
+		loadSandbox:            deps.loadSandbox,
+		resolveProvider:        deps.resolveProvider,
+		runProviderExec:        deps.runProviderExec,
+		runProviderExecWithEnv: deps.runProviderExecWithEnv,
+		cleanupSandbox:         deps.cleanupSandbox,
+		statusSnapshot:         deps.statusSnapshot,
+		doctorSnapshot:         deps.doctorSnapshot,
+		sandboxCopier:          deps.sandboxCopier,
+		sandboxRequests:        deps.sandboxRequests,
 	})
 }
 

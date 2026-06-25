@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,18 +23,20 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 	deps := normalizeFactorySandboxExecutorDeps(factorySandboxExecutorDeps{})
 
 	checks := map[string]any{
-		"defaultStore":    deps.defaultStore,
-		"now":             deps.now,
-		"resolveDefault":  deps.resolveDefault,
-		"loadSandbox":     deps.loadSandbox,
-		"provision":       deps.provision,
-		"startSandbox":    deps.startSandbox,
-		"resolveProvider": deps.resolveProvider,
-		"runProviderExec": deps.runProviderExec,
-		"bootstrap":       deps.bootstrap,
-		"cleanupSandbox":  deps.cleanupSandbox,
-		"saveRun":         deps.saveRun,
-		"appendEvent":     deps.appendEvent,
+		"defaultStore":           deps.defaultStore,
+		"now":                    deps.now,
+		"resolveDefault":         deps.resolveDefault,
+		"loadSandbox":            deps.loadSandbox,
+		"provision":              deps.provision,
+		"startSandbox":           deps.startSandbox,
+		"resolveProvider":        deps.resolveProvider,
+		"runProviderExec":        deps.runProviderExec,
+		"runProviderExecWithEnv": deps.runProviderExecWithEnv,
+		"bootstrap":              deps.bootstrap,
+		"cleanupSandbox":         deps.cleanupSandbox,
+		"saveRun":                deps.saveRun,
+		"appendEvent":            deps.appendEvent,
+		"appendLog":              deps.appendLog,
 	}
 	for name, fn := range checks {
 		if reflect.ValueOf(fn).IsNil() {
@@ -771,12 +774,730 @@ func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStre
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if !strings.Contains(userOut.String(), secret) {
-		t.Fatalf("user output = %q, want raw bootstrap stream", userOut.String())
+	if strings.Contains(userOut.String(), secret) {
+		t.Fatalf("user output leaked bootstrap secret: %q", userOut.String())
+	}
+	if !strings.Contains(userOut.String(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("user output missing redaction marker: %q", userOut.String())
 	}
 	for _, event := range events {
 		if strings.Contains(fmt.Sprintf("%#v", event), secret) {
 			t.Fatalf("persisted event leaked bootstrap secret: %#v", event)
+		}
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromBootstrapTimeline(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 10, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	secret := "ghp_sandbox_bootstrap_secret_12345"
+
+	var events []factory.EventRecord
+	var bootstrapReq factory.BootstrapRequest
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-bootstrap-secret",
+			RepoRemote: "git@github.com:example/repo.git",
+			BaseBranch: "main",
+			BranchName: "hal/feature",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    secret,
+		}},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		bootstrap: func(_ context.Context, req factory.BootstrapRequest, _ factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			bootstrapReq = req
+			finishedAt := now.Add(time.Second)
+			step := factory.BootstrapStepResult{
+				Name:           factory.BootstrapStepCloneRepository,
+				Status:         factory.RunStatusSucceeded,
+				CommandSummary: "git clone https://" + secret + "@github.com/example/repo.git /workspace/repo",
+				StartedAt:      now,
+				FinishedAt:     &finishedAt,
+			}
+			commandResult := factory.BootstrapCommandResult{
+				ExitCode:      0,
+				OutputSummary: "bootstrap cloned with " + secret,
+				Metadata: map[string]string{
+					"remote": "https://" + secret + "@github.com/example/repo.git",
+				},
+			}
+			return factory.BootstrapResult{
+				Timeline: []factory.BootstrapTimelineEvent{
+					factory.BootstrapTimelineEventFromStep(req, step, commandResult, nil),
+				},
+			}, nil
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		saveRun: func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString(secret) == secret {
+		t.Fatalf("bootstrap request did not carry resolved secret values for sanitization")
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want bootstrap/start/completion events: %#v", len(events), events)
+	}
+	bootstrapEvent := events[0]
+	for _, value := range []string{bootstrapEvent.Message, bootstrapEvent.Summary} {
+		if strings.Contains(value, secret) {
+			t.Fatalf("bootstrap event leaked secret in %q: %#v", value, bootstrapEvent)
+		}
+	}
+	for key, value := range bootstrapEvent.Metadata {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(text, secret) {
+			t.Fatalf("bootstrap event metadata %q leaked secret in %q: %#v", key, text, bootstrapEvent)
+		}
+	}
+	if command, ok := bootstrapEvent.Metadata["command"].(string); !ok || !strings.Contains(command, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("bootstrap event command missing redaction marker: %#v", bootstrapEvent.Metadata["command"])
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnvironment(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 20, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	requiredSecret := "ghp_bootstrap_env_secret_12345"
+	optionalSecret := "npm_bootstrap_env_secret_67890"
+
+	type execCall struct {
+		args []string
+		env  map[string]string
+	}
+	var execCalls []execCall
+	var bootstrapReq factory.BootstrapRequest
+	var bootstrapStep factory.BootstrapStepResult
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-bootstrap-env",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "https://x:" + requiredSecret + "@github.com/example/repo.git",
+			BaseBranch: "main",
+			BranchName: "hal/feature",
+			Secrets: []factory.RunSecretMetadata{{
+				Name:     "GITHUB_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: true,
+				Present:  true,
+			}, {
+				Name:     "OPTIONAL_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: false,
+				Present:  true,
+			}},
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    requiredSecret,
+		}, {
+			Name:     "OPTIONAL_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: false,
+			Value:    optionalSecret,
+		}},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		bootstrap: func(ctx context.Context, req factory.BootstrapRequest, deps factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			bootstrapReq = req
+			step, commandResult, failure, runErr := factory.RunBootstrapStep(ctx, factory.BootstrapStepDeps{
+				Executor: deps.Executor,
+				Now:      func() time.Time { return now },
+				Request:  req,
+			}, "secret_bootstrap", factory.BootstrapCommand{
+				Name: "hal",
+				Args: []string{"init"},
+			})
+			bootstrapStep = step
+			return factory.BootstrapResult{
+				Timeline: []factory.BootstrapTimelineEvent{
+					factory.BootstrapTimelineEventFromStep(req, step, commandResult, failure),
+				},
+			}, runErr
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, env map[string]string, _ io.Writer) error {
+			envCopy := map[string]string{}
+			for key, value := range env {
+				envCopy[key] = value
+			}
+			execCalls = append(execCalls, execCall{
+				args: append([]string(nil), args...),
+				env:  envCopy,
+			})
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(bootstrapReq.RequiredEnvKeys, []string{"GITHUB_TOKEN"}) {
+		t.Fatalf("required env keys = %#v, want GITHUB_TOKEN", bootstrapReq.RequiredEnvKeys)
+	}
+	if bootstrapReq.RepositoryURL != "https://x:"+requiredSecret+"@github.com/example/repo.git" {
+		t.Fatalf("bootstrap repository URL = %q, want raw in-memory remote", bootstrapReq.RepositoryURL)
+	}
+	if bootstrapReq.Env["GITHUB_TOKEN"] != requiredSecret || bootstrapReq.Env["OPTIONAL_TOKEN"] != optionalSecret {
+		t.Fatalf("bootstrap env = %#v, want resolved secrets", bootstrapReq.Env)
+	}
+	if len(execCalls) != 2 {
+		t.Fatalf("exec calls = %d, want bootstrap and remote execution: %#v", len(execCalls), execCalls)
+	}
+	if execCalls[0].env["GITHUB_TOKEN"] != requiredSecret || execCalls[0].env["OPTIONAL_TOKEN"] != optionalSecret {
+		t.Fatalf("bootstrap exec env = %#v, want resolved secret env", execCalls[0].env)
+	}
+	argText := strings.Join(execCalls[0].args, " ")
+	if strings.Contains(argText, requiredSecret) || strings.Contains(argText, optionalSecret) || strings.Contains(argText, "GITHUB_TOKEN=") || strings.Contains(argText, "OPTIONAL_TOKEN=") {
+		t.Fatalf("bootstrap exec args leaked secret env data: %#v", execCalls[0].args)
+	}
+	if !reflect.DeepEqual(execCalls[0].args, []string{"hal", "init"}) {
+		t.Fatalf("bootstrap exec args = %#v, want hal init", execCalls[0].args)
+	}
+	if strings.Contains(bootstrapStep.CommandSummary, requiredSecret) || strings.Contains(bootstrapStep.CommandSummary, "GITHUB_TOKEN") {
+		t.Fatalf("bootstrap command summary leaked secret data: %q", bootstrapStep.CommandSummary)
+	}
+
+	storedRun, loadErr := store.LoadRun("run-bootstrap-env")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	runData, err := json.Marshal(storedRun)
+	if err != nil {
+		t.Fatalf("json.Marshal(run) error: %v", err)
+	}
+	if strings.Contains(string(runData), requiredSecret) || strings.Contains(string(runData), optionalSecret) {
+		t.Fatalf("stored run leaked secret values: %s", string(runData))
+	}
+	if storedRun.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/example/repo.git" {
+		t.Fatalf("stored repo remote = %q, want redacted secret value", storedRun.RepoRemote)
+	}
+	events, loadErr := store.LoadEvents("run-bootstrap-env")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	eventData, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	if strings.Contains(string(eventData), requiredSecret) || strings.Contains(string(eventData), optionalSecret) {
+		t.Fatalf("stored events leaked secret values: %s", string(eventData))
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecutionEnvironment(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	requiredSecret := "ghp_remote_env_secret_12345"
+	optionalSecret := "npm_remote_env_secret_67890"
+
+	var gotArgs []string
+	var gotEnv map[string]string
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-env",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+			BranchName: "hal/feature",
+			Secrets: []factory.RunSecretMetadata{{
+				Name:     "GITHUB_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: true,
+				Present:  true,
+			}, {
+				Name:     "OPTIONAL_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: false,
+				Present:  true,
+			}},
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    requiredSecret,
+		}, {
+			Name:     "OPTIONAL_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: false,
+			Value:    optionalSecret,
+		}},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, env map[string]string, _ io.Writer) error {
+			gotArgs = append([]string(nil), args...)
+			gotEnv = map[string]string{}
+			for key, value := range env {
+				gotEnv[key] = value
+			}
+			return nil
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if gotEnv["GITHUB_TOKEN"] != requiredSecret || gotEnv["OPTIONAL_TOKEN"] != optionalSecret {
+		t.Fatalf("remote exec env = %#v, want resolved secrets", gotEnv)
+	}
+	argText := strings.Join(gotArgs, " ")
+	if strings.Contains(argText, requiredSecret) || strings.Contains(argText, optionalSecret) {
+		t.Fatalf("remote exec args leaked secret values: %#v", gotArgs)
+	}
+	if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-lc" {
+		t.Fatalf("remote exec args = %#v", gotArgs)
+	}
+	command := gotArgs[2]
+	for _, want := range []string{"cd '/workspace/repo'", "'env'", "'HAL_FACTORY_MAX_RUN_ATTEMPTS=0'", "'hal' 'auto' '--base' 'main'"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("remote exec command = %q, want fragment %q", command, want)
+		}
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want start/completion: %#v", len(events), events)
+	}
+	eventCommand, _ := events[0].Metadata["command"].(string)
+	if strings.Contains(eventCommand, requiredSecret) || strings.Contains(eventCommand, optionalSecret) {
+		t.Fatalf("remote start command leaked secret values: %q", eventCommand)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromRemoteOutput(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 45, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	secret := "ghp_remote_output_secret_12345"
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-secret",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:   "GITHUB_TOKEN",
+			Source: factory.RunSecretSourceEnv,
+			Value:  secret,
+		}},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, out io.Writer) error {
+			if env["GITHUB_TOKEN"] != secret {
+				t.Fatalf("GITHUB_TOKEN env = %q, want secret", env["GITHUB_TOKEN"])
+			}
+			if _, err := io.WriteString(out, "using "+secret[:12]); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(out, secret[12:]+"\n"); err != nil {
+				return err
+			}
+			_, err := io.WriteString(out, "finished\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("remote output leaked secret: %q", out.String())
+	}
+	if !strings.Contains(out.String(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("remote output missing redaction marker: %q", out.String())
+	}
+	foundRedactedEvent := false
+	for _, event := range events {
+		text := fmt.Sprintf("%#v", event)
+		if strings.Contains(text, secret) {
+			t.Fatalf("remote event leaked secret: %#v", event)
+		}
+		if strings.Contains(text, factory.RunSecretRedactionPlaceholder) {
+			foundRedactedEvent = true
+		}
+	}
+	if !foundRedactedEvent {
+		t.Fatalf("remote events missing redaction marker: %#v", events)
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRedactsCredentialedRemoteURLsFromRemoteOutput(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 46, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	credential := "ghp_remote_url_credential_12345"
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-credentialed-url",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			_, err := io.WriteString(out, "fatal: unable to access https://x:"+credential+"@github.com/example/repo.git\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	for name, text := range map[string]string{
+		"remote output": out.String(),
+		"events":        fmt.Sprintf("%#v", events),
+	} {
+		if strings.Contains(text, credential) {
+			t.Fatalf("%s leaked credentialed remote: %q", name, text)
+		}
+		if !strings.Contains(text, factory.RunSecretRedactionPlaceholder) {
+			t.Fatalf("%s missing redaction marker: %q", name, text)
+		}
+	}
+	chunks, err := store.LoadLogChunks("run-remote-output-credentialed-url")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() error: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("LoadLogChunks() returned no remote output chunks")
+	}
+	chunkData, err := json.Marshal(chunks)
+	if err != nil {
+		t.Fatalf("json.Marshal(chunks) error: %v", err)
+	}
+	if strings.Contains(string(chunkData), credential) {
+		t.Fatalf("remote log chunks leaked credentialed remote: %s", string(chunkData))
+	}
+	if !strings.Contains(string(chunkData), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("remote log chunks missing redaction marker: %s", string(chunkData))
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRedactsSecretAssignmentsFromRemoteTimeline(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 46, 30, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-secret-assignment",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			_, err := io.WriteString(out, "TOKEN=undeclared_remote_secret\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "TOKEN=undeclared_remote_secret") {
+		t.Fatalf("remote output = %q, want unsanitized user-visible output", out.String())
+	}
+	foundRedactedEvent := false
+	for _, event := range events {
+		if strings.Contains(event.Message, "TOKEN=undeclared_remote_secret") {
+			t.Fatalf("remote event leaked secret assignment: %#v", event)
+		}
+		if event.Message == "[redacted]" {
+			foundRedactedEvent = true
+		}
+	}
+	if !foundRedactedEvent {
+		t.Fatalf("remote events missing redacted command output: %#v", events)
+	}
+	chunks, err := store.LoadLogChunks("run-remote-output-secret-assignment")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() error: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("LoadLogChunks() returned no remote output chunks")
+	}
+	for _, chunk := range chunks {
+		if strings.Contains(chunk.Text, "TOKEN=undeclared_remote_secret") {
+			t.Fatalf("remote log chunk leaked secret assignment: %#v", chunk)
+		}
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRedactsMultilineSecretsFromRemoteOutput(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 47, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	fragments := []string{
+		"line_one_multiline_secret_fragment_12345",
+		"line_two_multiline_secret_fragment_67890",
+	}
+	secret := strings.Join(fragments, "\n")
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-multiline-secret",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:   "PRIVATE_KEY",
+			Source: factory.RunSecretSourceEnv,
+			Value:  secret,
+		}},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, out io.Writer) error {
+			if env["PRIVATE_KEY"] != secret {
+				t.Fatalf("PRIVATE_KEY env = %q, want secret", env["PRIVATE_KEY"])
+			}
+			if _, err := io.WriteString(out, "first "+fragments[0]+"\n"); err != nil {
+				return err
+			}
+			_, err := io.WriteString(out, "second "+fragments[1]+"\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	for _, fragment := range fragments {
+		if strings.Contains(out.String(), fragment) {
+			t.Fatalf("remote output leaked multiline secret fragment %q: %q", fragment, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("remote output missing redaction marker: %q", out.String())
+	}
+	for _, event := range events {
+		text := fmt.Sprintf("%#v", event)
+		for _, fragment := range fragments {
+			if strings.Contains(text, fragment) {
+				t.Fatalf("remote event leaked multiline secret fragment %q: %#v", fragment, event)
+			}
+		}
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromFailureRecords(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 50, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	secret := "ghp_remote_failure_secret_12345"
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-failure-secret",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:   "GITHUB_TOKEN",
+			Source: factory.RunSecretSourceEnv,
+			Value:  secret,
+		}},
+		RemoteOutput: io.Discard,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, _ io.Writer) error {
+			if env["GITHUB_TOKEN"] != secret {
+				t.Fatalf("GITHUB_TOKEN env = %q, want secret", env["GITHUB_TOKEN"])
+			}
+			return fmt.Errorf("remote failed with token %s", secret)
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactorySandboxExecutorWithDeps() error = nil, want remote failure")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("returned error leaked secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("returned error missing redaction marker: %v", err)
+	}
+
+	storedRun, loadErr := store.LoadRun("run-remote-failure-secret")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	runData, err := json.Marshal(storedRun)
+	if err != nil {
+		t.Fatalf("json.Marshal(run) error: %v", err)
+	}
+	if strings.Contains(string(runData), secret) {
+		t.Fatalf("stored run leaked secret values: %s", string(runData))
+	}
+	if !strings.Contains(string(runData), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored run missing redaction marker: %s", string(runData))
+	}
+
+	events, loadErr := store.LoadEvents("run-remote-failure-secret")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	eventData, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	if strings.Contains(string(eventData), secret) {
+		t.Fatalf("stored events leaked secret values: %s", string(eventData))
+	}
+	if !strings.Contains(string(eventData), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored events missing redaction marker: %s", string(eventData))
+	}
+}
+
+func TestRecordFactorySandboxFailureRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 52, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	credential := "ghp_sandbox_failure_url_12345"
+	record := factory.RunRecord{
+		RunID:  "run-sandbox-credentialed-failure",
+		Status: factory.RunStatusRunning,
+	}
+
+	err := recordFactorySandboxFailure(store, factorySandboxExecutorDeps{
+		now:         func() time.Time { return now },
+		saveRun:     saveFactorySandboxRunRecord,
+		appendEvent: appendFactorySandboxTimelineEvent,
+	}, &record, nil, "provision", fmt.Errorf("provider failed cloning https://x:%s@github.com/example/repo.git", credential), factory.RunSecretRedactor{})
+	if err != nil {
+		t.Fatalf("recordFactorySandboxFailure() unexpected error: %v", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	for name, value := range map[string]any{"run": loaded, "events": events} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("json.Marshal(%s) error: %v", name, err)
+		}
+		payload := string(data)
+		if strings.Contains(payload, credential) {
+			t.Fatalf("%s leaked credentialed remote: %s", name, payload)
+		}
+		if !strings.Contains(payload, factory.RunSecretRedactionPlaceholder) {
+			t.Fatalf("%s missing redaction marker: %s", name, payload)
 		}
 	}
 }
@@ -1086,6 +1807,53 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 	}
 }
 
+func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t *testing.T) {
+	secret := "ghp_provider_exec_secret_12345"
+	provider := &capturingFactorySandboxProvider{
+		cmd: exec.Command("sh", "-c", "cat"),
+	}
+
+	var out bytes.Buffer
+	err := runFactorySandboxProviderExecWithEnv(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto'"}, map[string]string{
+		"GITHUB_TOKEN": secret,
+		"EMPTY_TOKEN":  "",
+	}, &out)
+	if err != nil {
+		t.Fatalf("runFactorySandboxProviderExecWithEnv() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(provider.args, []string{"sh", "-s"}) {
+		t.Fatalf("provider args = %#v, want shell stdin execution", provider.args)
+	}
+	if strings.Contains(strings.Join(provider.args, " "), secret) {
+		t.Fatalf("provider args leaked secret value: %#v", provider.args)
+	}
+	script := out.String()
+	if !strings.Contains(script, "export GITHUB_TOKEN='"+secret+"'") {
+		t.Fatalf("stdin script did not export secret env assignment: %q", script)
+	}
+	if strings.Contains(script, "EMPTY_TOKEN") {
+		t.Fatalf("stdin script included empty secret assignment: %q", script)
+	}
+	if strings.Contains(script, "exec 'env'") {
+		t.Fatalf("stdin script used env argv assignment wrapper: %q", script)
+	}
+	if !strings.Contains(script, "exec 'sh' '-lc'") {
+		t.Fatalf("stdin script did not exec remote command: %q", script)
+	}
+}
+
+func TestFactorySandboxEnvExecScriptRejectsInvalidEnvNames(t *testing.T) {
+	_, err := factorySandboxEnvExecScript([]string{"hal", "auto"}, map[string]string{
+		"BAD-NAME": "secret",
+	})
+	if err == nil {
+		t.Fatal("factorySandboxEnvExecScript() error = nil, want invalid name error")
+	}
+	if !strings.Contains(err.Error(), `invalid sandbox environment variable name "BAD-NAME"`) {
+		t.Fatalf("factorySandboxEnvExecScript() error = %v", err)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *testing.T) {
 	now := time.Date(2026, 6, 21, 10, 15, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
@@ -1125,8 +1893,11 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if out.String() != "Step: run\nconnecting to 203.0.113.42\n" {
-		t.Fatalf("remote output writer = %q", out.String())
+	if strings.Contains(out.String(), "203.0.113.42") {
+		t.Fatalf("remote output writer leaked address: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "<address redacted>") {
+		t.Fatalf("remote output writer missing redaction marker: %q", out.String())
 	}
 	if len(events) != 4 {
 		t.Fatalf("events = %d, want 4: %#v", len(events), events)
@@ -1168,8 +1939,64 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromExecutorEvents(t *testing.T) {
+	now := time.Date(2026, 6, 21, 10, 20, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{Name: "factory-remote", Provider: "daytona", Status: sandbox.StatusRunning}
+	secret := "ghp_remote_command_secret_12345"
+
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-remote",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-command-secret",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    secret,
+		}},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "release-" + secret},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		saveRun: func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want start/end events: %#v", len(events), events)
+	}
+	eventData, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	if strings.Contains(string(eventData), secret) {
+		t.Fatalf("executor events leaked resolved secret: %s", string(eventData))
+	}
+	if !strings.Contains(string(eventData), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("executor events missing redaction marker: %s", string(eventData))
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testing.T) {
 	store := factory.NewStore(t.TempDir())
+	secret := "ghp_provision_repo_secret_12345"
+	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
+	redactedRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
 	provisioned := &sandbox.SandboxState{
 		Name:     "factory-new",
 		Provider: "hetzner",
@@ -1186,8 +2013,12 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 		SandboxName: "factory-new",
 		RunRecord: factory.RunRecord{
 			RunID:      "run-provision",
-			RepoRemote: "git@github.com:example/repo.git",
+			RepoRemote: rawRemote,
 		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:  "GITHUB_TOKEN",
+			Value: secret,
+		}},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
@@ -1221,8 +2052,11 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if provisionReq.ProjectDir != "/repo" || provisionReq.Name != "factory-new" || provisionReq.Repo != "git@github.com:example/repo.git" {
+	if provisionReq.ProjectDir != "/repo" || provisionReq.Name != "factory-new" || provisionReq.Repo != redactedRemote {
 		t.Fatalf("provision request = %#v", provisionReq)
+	}
+	if strings.Contains(provisionReq.Repo, secret) {
+		t.Fatalf("provision repo label leaked secret: %q", provisionReq.Repo)
 	}
 	if provisionReq.BranchName != "" {
 		t.Fatalf("provision branchName = %q, want empty", provisionReq.BranchName)
@@ -1804,5 +2638,39 @@ func (fakeFactorySandboxProvider) Exec(*sandbox.ConnectInfo, []string) (*exec.Cm
 }
 
 func (fakeFactorySandboxProvider) Status(context.Context, *sandbox.ConnectInfo, io.Writer) error {
+	return nil
+}
+
+type capturingFactorySandboxProvider struct {
+	args []string
+	cmd  *exec.Cmd
+}
+
+func (p *capturingFactorySandboxProvider) Create(context.Context, string, map[string]string, io.Writer) (*sandbox.SandboxResult, error) {
+	return nil, nil
+}
+
+func (p *capturingFactorySandboxProvider) Stop(context.Context, *sandbox.ConnectInfo, io.Writer) error {
+	return nil
+}
+
+func (p *capturingFactorySandboxProvider) Start(context.Context, *sandbox.ConnectInfo, io.Writer) (*sandbox.LifecycleResult, error) {
+	return &sandbox.LifecycleResult{Status: sandbox.StatusRunning}, nil
+}
+
+func (p *capturingFactorySandboxProvider) Delete(context.Context, *sandbox.ConnectInfo, io.Writer) error {
+	return nil
+}
+
+func (p *capturingFactorySandboxProvider) SSH(*sandbox.ConnectInfo) (*exec.Cmd, error) {
+	return nil, nil
+}
+
+func (p *capturingFactorySandboxProvider) Exec(_ *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
+	p.args = append([]string(nil), args...)
+	return p.cmd, nil
+}
+
+func (p *capturingFactorySandboxProvider) Status(context.Context, *sandbox.ConnectInfo, io.Writer) error {
 	return nil
 }

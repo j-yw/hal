@@ -240,8 +240,8 @@ Archive command details:
 
 | Command | Description |
 |---------|-------------|
-| `hal factory run [prd-path] [--report path] [--json]` | Run the local factory executor immediately |
-| `hal factory trigger --repo path (--prd path\|--report path\|--discover-report) [--json]` | Create a queued factory run from a trigger payload |
+| `hal factory run [prd-path] [--report path] [--secret-env NAME] [--json]` | Run the local factory executor immediately |
+| `hal factory trigger --repo path (--prd path\|--report path\|--discover-report) [--secret-env NAME] [--json]` | Create a queued factory run from a trigger payload |
 | `hal factory queue add <run-id> <executor-mode> [--json]` | Add an existing pending factory run to the queue |
 | `hal factory queue list [--json]` | List durable factory queue entries |
 | `hal factory queue work [--json]` | Claim and process at most one queued factory run |

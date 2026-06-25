@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -711,6 +712,9 @@ func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testin
 	if gotSandboxReq.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
 		t.Fatalf("sandbox executorMode = %q, want %q", gotSandboxReq.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
 	}
+	if gotSandboxReq.RemoteAuto.BaseBranch != "main" {
+		t.Fatalf("sandbox base branch = %q, want main", gotSandboxReq.RemoteAuto.BaseBranch)
+	}
 	if len(gotSandboxReq.RemoteAuto.Args) != 1 || gotSandboxReq.RemoteAuto.Args[0] != ".hal/prd-queue-sandbox.md" {
 		t.Fatalf("sandbox args = %#v, want queued markdown source", gotSandboxReq.RemoteAuto.Args)
 	}
@@ -1072,6 +1076,311 @@ func TestRunFactoryQueueWorkWithDepsMarksRunFailedWhenPolicyLoadFails(t *testing
 	}
 }
 
+func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 50, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox-remote", PID: 5359, Hostname: "factory-host"}
+	secret := "ghp_factory_secret_value_123"
+	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
+	redactedRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
+	record := testFactoryRunRecord("run-queue-sandbox-redacted-remote", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = "main"
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.RepoRemote = redactedRemote
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-redacted-remote", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	target := &sandbox.SandboxState{
+		Name:     "factory-queue-sandbox",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	var gotSandboxReq factorySandboxExecutorRequest
+	deps := queueWorkTestDepsWithExecutors(store, claimedAt, claim,
+		func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called for sandbox queue entry")
+			return nil
+		},
+		func(_ context.Context, req factorySandboxExecutorRequest) error {
+			gotSandboxReq = req
+			record := req.RunRecord
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatalf("SaveRun(sandbox metadata) error: %v", err)
+			}
+			return nil
+		},
+	)
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name == "GITHUB_TOKEN" {
+			return secret, true
+		}
+		return "", false
+	}
+	deps.repoRemote = func(dir string) (string, error) {
+		if dir != record.RepoPath {
+			t.Fatalf("repoRemote dir = %q, want %q", dir, record.RepoPath)
+		}
+		return rawRemote, nil
+	}
+	deps.loadSandbox = func(name string) (*sandbox.SandboxState, error) {
+		if name != target.Name {
+			t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+		}
+		return target, nil
+	}
+	deps.resolveProvider = func(string, string) (sandbox.Provider, error) {
+		return fakeFactorySandboxProvider{}, nil
+	}
+	var gotVerifyEnv map[string]string
+	deps.runProviderExecWithEnv = func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
+		if info == nil || info.Name != target.Name || info.IP != target.IP {
+			t.Fatalf("connect info = %#v, want sandbox %q at %q", info, target.Name, target.IP)
+		}
+		gotVerifyEnv = map[string]string{}
+		for key, value := range env {
+			gotVerifyEnv[key] = value
+		}
+		command := strings.Join(args, " ")
+		if !strings.Contains(command, "'hal' 'verify' '--json'") {
+			t.Fatalf("remote verify args = %#v, want hal verify command", args)
+		}
+		data, err := json.Marshal(verify.Result{
+			SchemaVersion: verify.SchemaVersion,
+			Status:        verify.StatusPass,
+			Summary:       verify.Summary{},
+			Checks:        []verify.CheckResult{},
+		})
+		if err != nil {
+			t.Fatalf("Marshal(verify result) error: %v", err)
+		}
+		if _, err := out.Write(append(data, '\n')); err != nil {
+			t.Fatalf("write remote verify JSON error: %v", err)
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	if gotSandboxReq.RunRecord.RepoRemote != rawRemote {
+		t.Fatalf("sandbox repo remote = %q, want raw remote", gotSandboxReq.RunRecord.RepoRemote)
+	}
+	if gotVerifyEnv["GITHUB_TOKEN"] != secret {
+		t.Fatalf("remote verify GITHUB_TOKEN env = %q, want resolved secret", gotVerifyEnv["GITHUB_TOKEN"])
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("queue work JSON leaked secret value: %s", out.String())
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.RepoRemote != redactedRemote {
+		t.Fatalf("stored repo remote = %q, want redacted remote", loaded.RepoRemote)
+	}
+}
+
+func TestRehydrateQueuedSandboxRunRecordRefreshesEscapedRedactedRemote(t *testing.T) {
+	rawRemote := "https://x:ghp_factory_secret_value_123@github.com/example/repo.git"
+	record := factory.RunRecord{
+		RunID:        "run-queue-sandbox-escaped-redacted-remote",
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoPath:     "/tmp/example-repo",
+		RepoRemote:   "https://%5BREDACTED%5D@github.com/example/repo.git",
+	}
+	called := false
+	got, err := rehydrateQueuedSandboxRunRecord(record, factoryQueueWorkDeps{
+		repoRemote: func(dir string) (string, error) {
+			called = true
+			if dir != record.RepoPath {
+				t.Fatalf("repoRemote dir = %q, want %q", dir, record.RepoPath)
+			}
+			return rawRemote, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("rehydrateQueuedSandboxRunRecord() error: %v", err)
+	}
+	if !called {
+		t.Fatal("repoRemote was not called")
+	}
+	if got.RepoRemote != rawRemote {
+		t.Fatalf("RepoRemote = %q, want %q", got.RepoRemote, rawRemote)
+	}
+}
+
+func TestRunFactoryQueueWorkWithDepsRedactsSecretsWhenSandboxRemoteRefreshFails(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 18, 55, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-sandbox-remote-fail", PID: 5360, Hostname: "factory-host"}
+	secret := "ghp_queue_failure_secret_456"
+	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
+	redactedRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
+	policy := factory.DefaultFactoryPolicy()
+	record := testFactoryRunRecord("run-queue-sandbox-remote-fail", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
+	record.BaseBranch = "main"
+	record.Engine = "codex"
+	record.Policy = &policy
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.RepoRemote = redactedRemote
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-sandbox-remote-fail", record.RunID, factory.QueueStatusQueued, createdAt)
+	entry.ExecutorMode = factory.ExecutorModeSandbox
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	deps := queueWorkTestDepsWithExecutors(store, claimedAt, claim,
+		func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called for sandbox queue entry")
+			return nil
+		},
+		func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("runSandbox called after sandbox remote refresh failure")
+			return nil
+		},
+	)
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name == "GITHUB_TOKEN" {
+			return secret, true
+		}
+		return "", false
+	}
+	deps.repoRemote = func(string) (string, error) {
+		return "", errors.New("git remote failed for " + rawRemote + " using " + secret)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps)
+	if err == nil {
+		t.Fatal("runFactoryQueueWorkWithDeps() error = nil, want sandbox remote refresh error")
+	}
+	for _, leaked := range []string{secret, rawRemote} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("returned error leaked %q: %v", leaked, err)
+		}
+		if strings.Contains(out.String(), leaked) {
+			t.Fatalf("queue work JSON leaked %q: %s", leaked, out.String())
+		}
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Status != factory.QueueStatusFailed {
+		t.Fatalf("queue entries = %#v, want one failed entry", entries)
+	}
+	if strings.Contains(entries[0].LastError, secret) || strings.Contains(entries[0].LastError, rawRemote) {
+		t.Fatalf("queue lastError leaked secret: %q", entries[0].LastError)
+	}
+	if !strings.Contains(entries[0].LastError, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("queue lastError = %q, want redaction placeholder", entries[0].LastError)
+	}
+	if strings.Contains(entries[0].LastError, "https://x:") {
+		t.Fatalf("queue lastError retained credentialed userinfo: %q", entries[0].LastError)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Failure == nil {
+		t.Fatal("run failure = nil, want failure summary")
+	}
+	if strings.Contains(loaded.Failure.Message, secret) || strings.Contains(loaded.Failure.Message, rawRemote) {
+		t.Fatalf("run failure message leaked secret: %q", loaded.Failure.Message)
+	}
+	if !strings.Contains(loaded.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("run failure message = %q, want redaction placeholder", loaded.Failure.Message)
+	}
+	if strings.Contains(loaded.Failure.Message, "https://x:") {
+		t.Fatalf("run failure message retained credentialed userinfo: %q", loaded.Failure.Message)
+	}
+}
+
+func TestSanitizeFactoryQueueFailureMessageRedactsEmbeddedCredentialedRemoteWithoutSecrets(t *testing.T) {
+	secret := "ghp_queue_failure_no_metadata_789"
+	tests := []struct {
+		name             string
+		rawRemote        string
+		userinfoFragment string
+		wantRemote       string
+	}{
+		{
+			name:             "https",
+			rawRemote:        "https://x:" + secret + "@github.com/example/repo.git",
+			userinfoFragment: "https://x:",
+			wantRemote:       "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git",
+		},
+		{
+			name:             "ssh",
+			rawRemote:        "ssh://x:" + secret + "@github.com/example/repo.git",
+			userinfoFragment: "ssh://x:",
+			wantRemote:       "ssh://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git",
+		},
+		{
+			name:             "git plus https",
+			rawRemote:        "git+https://x:" + secret + "@github.com/example/repo.git",
+			userinfoFragment: "git+https://x:",
+			wantRemote:       "git+https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeFactoryQueueFailureMessage("refresh failed for "+tt.rawRemote+" before worker secret resolution", factory.RunSecretRedactor{})
+
+			if strings.Contains(got, secret) || strings.Contains(got, tt.rawRemote) {
+				t.Fatalf("sanitized message leaked credentialed remote: %q", got)
+			}
+			if strings.Contains(got, tt.userinfoFragment) {
+				t.Fatalf("sanitized message retained credentialed userinfo: %q", got)
+			}
+			if !strings.Contains(got, tt.wantRemote) {
+				t.Fatalf("sanitized message = %q, want redacted remote", got)
+			}
+		})
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsClaimsFIFOEntry(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 19, 0, 0, 0, time.UTC)
@@ -1258,6 +1567,171 @@ func TestExecuteClaimedFactoryQueueEntryMarksMissingRunFailed(t *testing.T) {
 	}
 }
 
+func TestExecuteClaimedFactoryQueueEntryRedactsScopedSecretsFromPreflightFailure(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 20, 35, 0, 0, time.UTC)
+	completedAt := createdAt.Add(5 * time.Minute)
+	secretName := "FACTORY_TOKEN"
+	secretValue := "queue_preflight_secret_12345"
+	record := testFactoryRunRecord("run-queue-preflight-secret", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     secretName,
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-preflight-secret", record.RunID, factory.QueueStatusClaimed, createdAt)
+	entry.AttemptCount = 1
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	finalEntry, err := executeClaimedFactoryQueueEntry(context.Background(), store, entry, factoryQueueWorkDeps{
+		now: func() time.Time { return completedAt },
+		lookupEnv: func(name string) (string, bool) {
+			if name == secretName {
+				return secretValue, true
+			}
+			return "", false
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return nil, errors.New("load policy with token " + secretValue)
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("runPipeline called after preflight failure")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("executeClaimedFactoryQueueEntry() error = nil, want preflight error")
+	}
+	for name, text := range map[string]string{
+		"error":      err.Error(),
+		"last error": finalEntry.LastError,
+	} {
+		if strings.Contains(text, secretValue) {
+			t.Fatalf("%s contains secret: %q", name, text)
+		}
+		if !strings.Contains(text, factory.RunSecretRedactionPlaceholder) {
+			t.Fatalf("%s = %q, want redaction placeholder", name, text)
+		}
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Failure == nil {
+		t.Fatal("run failure = nil, want failure summary")
+	}
+	if strings.Contains(loaded.Failure.Message, secretValue) {
+		t.Fatalf("run failure contains secret: %q", loaded.Failure.Message)
+	}
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	for _, event := range events {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("json.Marshal(event) error: %v", err)
+		}
+		if strings.Contains(string(payload), secretValue) {
+			t.Fatalf("event contains secret: %s", payload)
+		}
+	}
+}
+
+func TestFailClaimedFactoryQueueEntryRedactsExistingFailedRun(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 20, 40, 0, 0, time.UTC)
+	completedAt := createdAt.Add(5 * time.Minute)
+	secretName := "FACTORY_TOKEN"
+	secretValue := "queue_existing_failure_secret_12345"
+	record := testFactoryRunRecord("run-queue-existing-secret", createdAt, createdAt)
+	record.Status = factory.RunStatusFailed
+	record.CurrentStep = factory.FailureCategoryRun
+	record.Failure = &factory.FailureSummary{
+		Step:     factory.FailureCategoryRun,
+		Category: factory.FailureCategoryRun,
+		Message:  "existing failure with token " + secretValue,
+	}
+	record.Secrets = []factory.RunSecretMetadata{{
+		Name:     secretName,
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  true,
+	}}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	entry := testFactoryQueueEntry("queue-existing-secret", record.RunID, factory.QueueStatusClaimed, createdAt)
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	finalEntry, err := failClaimedFactoryQueueEntry(store, entry, errors.New("queue failed with token "+secretValue), factoryQueueWorkDeps{
+		now: func() time.Time { return completedAt },
+		lookupEnv: func(name string) (string, bool) {
+			if name == secretName {
+				return secretValue, true
+			}
+			return "", false
+		},
+	})
+	if err == nil {
+		t.Fatal("failClaimedFactoryQueueEntry() error = nil, want failure")
+	}
+	if finalEntry.Status != factory.QueueStatusFailed {
+		t.Fatalf("finalEntry.status = %q, want failed", finalEntry.Status)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Failure == nil {
+		t.Fatal("run failure = nil, want failure summary")
+	}
+	if strings.Contains(loaded.Failure.Message, secretValue) {
+		t.Fatalf("run failure contains secret: %q", loaded.Failure.Message)
+	}
+	if !strings.Contains(loaded.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("run failure = %q, want redaction placeholder", loaded.Failure.Message)
+	}
+}
+
+func TestFactoryRunRequestFromQueueRecordPreservesSecretRequirements(t *testing.T) {
+	record := testFactoryRunRecord("run-secret-queue", time.Date(2026, 6, 21, 20, 45, 0, 0, time.UTC), time.Date(2026, 6, 21, 20, 45, 0, 0, time.UTC))
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-secret-queue.md"}
+	record.BaseBranch = "main"
+	record.Secrets = []factory.RunSecretMetadata{
+		{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true, Present: true},
+	}
+
+	req := factoryRunRequestFromQueueRecord(record)
+	if req.MarkdownPath != ".hal/prd-secret-queue.md" {
+		t.Fatalf("markdown path = %q, want queue record source", req.MarkdownPath)
+	}
+	if req.BaseBranch != "main" {
+		t.Fatalf("base branch = %q, want main", req.BaseBranch)
+	}
+	wantSecrets := []factory.RunSecretInput{
+		{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+	}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+	if len(req.ResolvedSecrets) != 0 {
+		t.Fatalf("resolved secrets = %#v, want none from durable queue record", req.ResolvedSecrets)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsRecordsExecutorFailure(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 21, 0, 0, 0, time.UTC)
@@ -1374,14 +1848,21 @@ func queueWorkTestDeps(store factory.Store, now time.Time, claim factory.QueueCl
 }
 
 func queueWorkTestDepsWithExecutor(store factory.Store, now time.Time, claim factory.QueueClaim, runPipeline func(context.Context, factoryRunPipelineRequest) error) factoryQueueWorkDeps {
+	return queueWorkTestDepsWithExecutors(store, now, claim, runPipeline, nil)
+}
+
+func queueWorkTestDepsWithExecutors(store factory.Store, now time.Time, claim factory.QueueClaim, runPipeline func(context.Context, factoryRunPipelineRequest) error, runSandbox func(context.Context, factorySandboxExecutorRequest) error) factoryQueueWorkDeps {
+	if runSandbox == nil {
+		runSandbox = func(context.Context, factorySandboxExecutorRequest) error {
+			return nil
+		}
+	}
 	return factoryQueueWorkDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		now:          func() time.Time { return now },
 		claim:        &claim,
 		runPipeline:  runPipeline,
-		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
-			return nil
-		},
+		runSandbox:   runSandbox,
 	}
 }
 

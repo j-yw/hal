@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -28,6 +29,10 @@ const (
 	reviewPromptMaxRetries         = 2
 	reviewPromptBaseBackoff        = 2 * time.Second
 )
+
+// ReviewLoopActiveEnv is set while Hal is prompting an engine from inside
+// `hal review`, allowing nested `hal review` invocations to fail fast.
+const ReviewLoopActiveEnv = "HAL_REVIEW_LOOP_ACTIVE"
 
 var errNoJSONObject = errors.New("no JSON object found in response")
 
@@ -594,6 +599,12 @@ func promptWithRetry(ctx context.Context, deps reviewIterationDeps, prompt strin
 		attempts = 1
 	}
 
+	restoreEnv, err := setReviewLoopActiveEnv()
+	if err != nil {
+		return "", err
+	}
+	defer restoreEnv()
+
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		response, err := deps.prompt(ctx, prompt)
@@ -613,6 +624,21 @@ func promptWithRetry(ctx context.Context, deps reviewIterationDeps, prompt strin
 	}
 
 	return "", lastErr
+}
+
+func setReviewLoopActiveEnv() (func(), error) {
+	previous, hadPrevious := os.LookupEnv(ReviewLoopActiveEnv)
+	if err := os.Setenv(ReviewLoopActiveEnv, "1"); err != nil {
+		return nil, fmt.Errorf("set %s: %w", ReviewLoopActiveEnv, err)
+	}
+
+	return func() {
+		if hadPrevious {
+			_ = os.Setenv(ReviewLoopActiveEnv, previous)
+			return
+		}
+		_ = os.Unsetenv(ReviewLoopActiveEnv)
+	}, nil
 }
 
 func parseReviewResponseWithRepair(ctx context.Context, deps reviewIterationDeps, response string) (*reviewLoopResponse, error) {
@@ -1195,7 +1221,7 @@ Rules:
 - Use repository tools and shell commands to inspect code and validate findings.
 - Keep analysis diff-driven: start with changed files, then inspect only directly related code paths as needed.
 - Hard limit for this step: at most 8 total tool/command calls.
-- Do not run hal commands or go run . commands.
+- Do not run hal, go run ., or any command that invokes this CLI. You are already inside hal review; nested Hal runs are forbidden.
 - Avoid broad or expensive commands (for example: avoid full-repo sweeps and go test ./...).
 - If tests are needed, run at most one focused test command for a specific package/file.
 - In this review step, do not edit or write files.
@@ -1300,7 +1326,7 @@ func buildReviewLoopFixPrompt(baseBranch, currentBranch string, issues []reviewL
 - Use repository tools and shell commands as needed to validate or reproduce each issue.
 - Keep validation targeted to files/functions tied to each issue.
 - Hard limit for this step: at most 12 total tool/command calls.
-- Do not run hal commands or go run . commands.
+- Do not run hal, go run ., or any command that invokes this CLI. You are already inside hal review; nested Hal runs are forbidden.
 - Avoid broad or expensive commands (for example: avoid go test ./...).
 - Apply code changes only for valid issues.
 - Invalid issues must not be fixed.

@@ -343,13 +343,61 @@ func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "sandbox", "json"} {
+	for _, flagName := range []string{"report", "base", "secret-env", "sandbox", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
 	}
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("factory run missing metadata fields: %v", missing)
+	}
+}
+
+func TestFactoryRunRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+	if err := cmd.Flags().Set("secret-env", "NPM_TOKEN"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+
+	wantSecrets := []factory.RunSecretInput{
+		{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+		{Name: "NPM_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+	}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestFactoryRunRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN=ghp_secret"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	_, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err == nil {
+		t.Fatal("factoryRunRequestFromCommand() expected error")
+	}
+	if strings.Contains(err.Error(), "ghp_secret") || strings.Contains(err.Error(), "GITHUB_TOKEN=ghp_secret") {
+		t.Fatalf("error should not echo secret-env value: %v", err)
 	}
 }
 
@@ -526,6 +574,546 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	}
 	if record.ExecutorMode != factory.ExecutorModeSandbox {
 		t.Fatalf("persisted executorMode = %q, want %q", record.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+}
+
+func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	secretValue := "ghp_factory_secret_value_123"
+	pipelineCalled := false
+	policy := factory.DefaultFactoryPolicy()
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Secrets: []factory.RunSecretInput{
+			{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+		},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-secret-success", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 30, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "https://x:" + secretValue + "@github.com/jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name != "GITHUB_TOKEN" {
+				t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+			}
+			return secretValue, true
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			pipelineCalled = true
+			if len(req.Request.ResolvedSecrets) != 1 {
+				t.Fatalf("resolved secrets = %#v, want one", req.Request.ResolvedSecrets)
+			}
+			if req.Request.ResolvedSecrets[0].Value != secretValue {
+				t.Fatalf("resolved secret value = %q, want injected value", req.Request.ResolvedSecrets[0].Value)
+			}
+			loaded, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() error: %v", err)
+			}
+			wantMetadata := []factory.RunSecretMetadata{{
+				Name:     "GITHUB_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: true,
+				Present:  true,
+			}}
+			if !reflect.DeepEqual(loaded.Secrets, wantMetadata) {
+				t.Fatalf("stored secrets = %#v, want %#v", loaded.Secrets, wantMetadata)
+			}
+			data, err := json.Marshal(loaded)
+			if err != nil {
+				t.Fatalf("json.Marshal(run record) error: %v", err)
+			}
+			if strings.Contains(string(data), secretValue) {
+				t.Fatalf("run record JSON leaked secret value: %s", string(data))
+			}
+			if loaded.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+				t.Fatalf("stored repo remote = %q, want redacted secret value", loaded.RepoRemote)
+			}
+			return nil
+		},
+		loadVerify:     func(string) (*verify.Config, error) { return nil, nil },
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !pipelineCalled {
+		t.Fatal("pipeline dependency was not invoked")
+	}
+	record, err := store.LoadRun("run-secret-success")
+	if err != nil {
+		t.Fatalf("LoadRun() final record error: %v", err)
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal(final run record) error: %v", err)
+	}
+	if strings.Contains(string(data), secretValue) {
+		t.Fatalf("final run record JSON leaked secret value: %s", string(data))
+	}
+	if record.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+		t.Fatalf("final repo remote = %q, want redacted secret value", record.RepoRemote)
+	}
+}
+
+func TestRunFactoryRunWithDepsRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	credential := "ghp_factory_remote_credential_123"
+	wantRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/jywlabs/hal.git"
+	pipelineCalled := false
+	policy := factory.DefaultFactoryPolicy()
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-credentialed-remote", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 35, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "https://x:" + credential + "@github.com/jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			t.Fatalf("lookupEnv(%q) called without declared secrets", name)
+			return "", false
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			pipelineCalled = true
+			loaded, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() error: %v", err)
+			}
+			data, err := json.Marshal(loaded)
+			if err != nil {
+				t.Fatalf("json.Marshal(run record) error: %v", err)
+			}
+			if strings.Contains(string(data), credential) {
+				t.Fatalf("run record JSON leaked credentialed remote secret: %s", string(data))
+			}
+			if loaded.RepoRemote != wantRemote {
+				t.Fatalf("stored repo remote = %q, want %q", loaded.RepoRemote, wantRemote)
+			}
+			return nil
+		},
+		loadVerify:     func(string) (*verify.Config, error) { return nil, nil },
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !pipelineCalled {
+		t.Fatal("pipeline dependency was not invoked")
+	}
+	record, err := store.LoadRun("run-credentialed-remote")
+	if err != nil {
+		t.Fatalf("LoadRun() final record error: %v", err)
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal(final run record) error: %v", err)
+	}
+	if strings.Contains(string(data), credential) {
+		t.Fatalf("final run record JSON leaked credentialed remote secret: %s", string(data))
+	}
+	if record.RepoRemote != wantRemote {
+		t.Fatalf("final repo remote = %q, want %q", record.RepoRemote, wantRemote)
+	}
+	if len(record.Secrets) != 0 {
+		t.Fatalf("secrets metadata = %#v, want none", record.Secrets)
+	}
+}
+
+func TestSanitizeCredentialedRemoteRedactsCredentialQueryAndFragmentValues(t *testing.T) {
+	placeholder := factory.RunSecretRedactionPlaceholder
+	tests := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{
+			name:   "query token",
+			remote: "https://github.com/org/repo.git?token=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?token=" + placeholder + "&ref=main",
+		},
+		{
+			name:   "query auth",
+			remote: "https://github.com/org/repo.git?auth=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?auth=" + placeholder + "&ref=main",
+		},
+		{
+			name:   "query access key",
+			remote: "https://github.com/org/repo.git?access_key=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?access_key=" + placeholder + "&ref=main",
+		},
+		{
+			name:   "query private key",
+			remote: "https://github.com/org/repo.git?private_key=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?private_key=" + placeholder + "&ref=main",
+		},
+		{
+			name:   "fragment credential",
+			remote: "https://github.com/org/repo.git?ref=main#access_token=ghp_secret_123",
+			want:   "https://github.com/org/repo.git?ref=main#access_token=" + placeholder,
+		},
+		{
+			name:   "userinfo and query credential",
+			remote: "https://x:ghp_secret_123@github.com/org/repo.git?api_key=abc123",
+			want:   "https://" + placeholder + "@github.com/org/repo.git?api_key=" + placeholder,
+		},
+		{
+			name:   "non credential query",
+			remote: "https://github.com/org/repo.git?ref=main#readme",
+			want:   "https://github.com/org/repo.git?ref=main#readme",
+		},
+		{
+			name:   "scp style credential user",
+			remote: "token@github.com:org/repo.git",
+			want:   placeholder + "@github.com:org/repo.git",
+		},
+		{
+			name:   "scp style git ssh user",
+			remote: "git@github.com:org/repo.git",
+			want:   "git@github.com:org/repo.git",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeCredentialedRemote(tt.remote); got != tt.want {
+				t.Fatalf("sanitizeCredentialedRemote() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMarkFactoryRunInProgressRedactsSCPStyleCredentialedRemoteForStorage(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	now := time.Date(2026, 6, 21, 11, 15, 0, 0, time.UTC)
+	credential := "token"
+	record := factory.RunRecord{
+		RunID:      "run-scp-credentialed-remote",
+		RepoRemote: credential + "@github.com:org/repo.git",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	if _, err := markFactoryRunInProgressWithRedactor(store, record, now, factory.RunSecretRedactor{}); err != nil {
+		t.Fatalf("markFactoryRunInProgressWithRedactor() error: %v", err)
+	}
+
+	loaded, err := store.LoadRun("run-scp-credentialed-remote")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	wantRemote := factory.RunSecretRedactionPlaceholder + "@github.com:org/repo.git"
+	if loaded.RepoRemote != wantRemote {
+		t.Fatalf("stored repo remote = %q, want %q", loaded.RepoRemote, wantRemote)
+	}
+	data, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatalf("json.Marshal(run record) error: %v", err)
+	}
+	if strings.Contains(string(data), credential+"@github.com") {
+		t.Fatalf("run record JSON leaked credentialed remote secret: %s", string(data))
+	}
+}
+
+func TestSanitizeFactoryLogTextRedactsJSONEscapedCredentialedRemote(t *testing.T) {
+	credential := "ghp_factory_json_escaped_credential_123"
+	got := sanitizeFactoryLogText(`{"remote":"https:\/\/x:` + credential + `@github.com/org/repo.git"}`)
+	if strings.Contains(got, credential) {
+		t.Fatalf("sanitizeFactoryLogText() leaked credentialed remote: %q", got)
+	}
+	if !strings.Contains(got, "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/org/repo.git") {
+		t.Fatalf("sanitizeFactoryLogText() = %q, want credential redaction marker", got)
+	}
+}
+
+func TestRedactFactoryRunErrorRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	credential := "ghp_factory_error_credential_123"
+	err := errors.New("clone failed: https://x:" + credential + "@github.com/jywlabs/hal.git")
+
+	safeErr := redactFactoryRunError(err, factory.RunSecretRedactor{})
+	if safeErr == nil {
+		t.Fatal("redactFactoryRunError() = nil, want redacted error")
+	}
+	if strings.Contains(safeErr.Error(), credential) {
+		t.Fatalf("redactFactoryRunError() leaked credential: %s", safeErr.Error())
+	}
+	if !strings.Contains(safeErr.Error(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("redactFactoryRunError() = %q, want redaction placeholder", safeErr.Error())
+	}
+	if !errors.Is(safeErr, err) {
+		t.Fatalf("redactFactoryRunError() did not preserve original cause")
+	}
+}
+
+func TestRedactFactoryRunErrorAndTimelineRedactSCPStyleCredentialedRemote(t *testing.T) {
+	credential := "token"
+	remote := credential + "@github.com:org/repo.git"
+	wantRemote := factory.RunSecretRedactionPlaceholder + "@github.com:org/repo.git"
+	err := errors.New("clone failed: " + remote)
+
+	safeErr := redactFactoryRunError(err, factory.RunSecretRedactor{})
+	if safeErr == nil {
+		t.Fatal("redactFactoryRunError() = nil, want redacted error")
+	}
+	if strings.Contains(safeErr.Error(), credential+"@github.com") {
+		t.Fatalf("redactFactoryRunError() leaked credential: %s", safeErr.Error())
+	}
+	if !strings.Contains(safeErr.Error(), wantRemote) {
+		t.Fatalf("redactFactoryRunError() = %q, want %q", safeErr.Error(), wantRemote)
+	}
+
+	event := redactFactoryTimelineEvent(factoryTimelineEvent{
+		Message: "clone failed: " + remote,
+		Summary: "remote " + remote,
+		Metadata: map[string]any{
+			"remote": remote,
+		},
+	}, factory.RunSecretRedactor{})
+	data, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal(event) error: %v", marshalErr)
+	}
+	if strings.Contains(string(data), credential+"@github.com") {
+		t.Fatalf("timeline event leaked credentialed remote: %s", string(data))
+	}
+	if !strings.Contains(string(data), wantRemote) {
+		t.Fatalf("timeline event = %s, want redacted remote %q", string(data), wantRemote)
+	}
+}
+
+func TestRedactFactoryRunJoinedErrorRedactsSecondaryErrors(t *testing.T) {
+	secret := "factory-secondary-secret-123"
+	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+		Name:  "FACTORY_TOKEN",
+		Value: secret,
+	}})
+	primary := errors.New("pipeline failed")
+	secondary := errors.New("record factory artifacts: failed to save " + secret)
+
+	err := redactFactoryRunJoinedError(primary, []error{secondary}, redactor)
+	if err == nil {
+		t.Fatal("redactFactoryRunJoinedError() = nil, want error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("redactFactoryRunJoinedError() leaked secondary secret: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("redactFactoryRunJoinedError() = %q, want redaction placeholder", err.Error())
+	}
+	if !errors.Is(err, secondary) {
+		t.Fatalf("redactFactoryRunJoinedError() did not preserve secondary cause")
+	}
+}
+
+func TestMarkFactoryRunFailedRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 10, 40, 0, 0, time.UTC)
+	credential := "ghp_factory_failure_credential_123"
+
+	record, err := markFactoryRunFailedWithRedactor(store, factory.RunRecord{
+		RunID:        "run-credentialed-failure",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeLocal,
+		CurrentStep:  "run",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, now, errors.New("git fetch failed: https://x:"+credential+"@github.com/jywlabs/hal.git"), factory.RunSecretRedactor{})
+	if err != nil {
+		t.Fatalf("markFactoryRunFailedWithRedactor() unexpected error: %v", err)
+	}
+	if record.Failure == nil {
+		t.Fatal("record.Failure = nil, want failure summary")
+	}
+	if strings.Contains(record.Failure.Message, credential) {
+		t.Fatalf("failure message leaked credential: %s", record.Failure.Message)
+	}
+	if !strings.Contains(record.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("failure message = %q, want redaction placeholder", record.Failure.Message)
+	}
+
+	loaded, err := store.LoadRun("run-credentialed-failure")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	data, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatalf("json.Marshal(run record) error: %v", err)
+	}
+	if strings.Contains(string(data), credential) {
+		t.Fatalf("stored run record leaked credential: %s", string(data))
+	}
+}
+
+func TestAppendFactoryRunTimelineEventRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	credential := "ghp_factory_timeline_credential_123"
+
+	if err := appendFactoryRunTimelineEvent(store, "run-credentialed-timeline", time.Date(2026, 6, 21, 10, 41, 0, 0, time.UTC), factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory run failed",
+		Metadata: map[string]any{
+			"error": "clone failed: https://x:" + credential + "@github.com/jywlabs/hal.git",
+		},
+	}); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEvent() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents("run-credentialed-timeline")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	data, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, credential) {
+		t.Fatalf("timeline event leaked credential: %s", payload)
+	}
+	if !strings.Contains(payload, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("timeline event missing redaction placeholder: %s", payload)
+	}
+}
+
+func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
+	credential := "factory-secret-12345"
+	presentSecret := "npm_factory_secret_value"
+	policy := factory.DefaultFactoryPolicy()
+
+	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main-" + presentSecret,
+		Sandbox:      true,
+		Secrets: []factory.RunSecretInput{
+			{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+			{Name: "NPM_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+		},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-secret-missing", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "https://" + credential + ":x-oauth-basic@github.com/jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			switch name {
+			case "GITHUB_TOKEN":
+				return " \t ", true
+			case "NPM_TOKEN":
+				return presentSecret, true
+			default:
+				t.Fatalf("lookup env name = %q, want configured secret env", name)
+			}
+			return "", false
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called when required secret is missing")
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not be called when required secret is missing")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want missing secret error")
+	}
+	if !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Fatalf("runFactoryRunWithDeps() error = %q, want env var name", err.Error())
+	}
+
+	record, loadErr := store.LoadRun("run-secret-missing")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("record status = %q, want failed", record.Status)
+	}
+	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryPRD {
+		t.Fatalf("record failure = %#v, want PRD validation failure", record.Failure)
+	}
+	data, marshalErr := json.Marshal(record)
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal(run record) error: %v", marshalErr)
+	}
+	for _, leaked := range []string{credential, presentSecret} {
+		if strings.Contains(string(data), leaked) {
+			t.Fatalf("run record JSON leaked secret %q: %s", leaked, string(data))
+		}
+	}
+	if record.BaseBranch != "main-"+factory.RunSecretRedactionPlaceholder {
+		t.Fatalf("base branch = %q, want redacted secret", record.BaseBranch)
+	}
+	if record.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+		t.Fatalf("repo remote = %q, want redacted credential", record.RepoRemote)
+	}
+	wantMetadata := []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  false,
+	}, {
+		Name:     "NPM_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  false,
+	}}
+	if !reflect.DeepEqual(record.Secrets, wantMetadata) {
+		t.Fatalf("stored secrets = %#v, want %#v", record.Secrets, wantMetadata)
+	}
+
+	events, loadErr := store.LoadEvents("run-secret-missing")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	for _, event := range events {
+		if event.EventType == factory.EventTypeStepStarted {
+			t.Fatalf("unexpected step-started event before secret resolution: %#v", events)
+		}
 	}
 }
 
@@ -1176,6 +1764,85 @@ func TestRecordFactoryPolicyDecisionRecordsAllowedAndBlockedEvents(t *testing.T)
 	assertPolicyDecisionMetadata(t, events[2].Metadata, blocked)
 }
 
+func TestAppendFactoryRunTimelineEventWithRedactorRedactsStructMetadata(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-struct-redaction"
+	secret := "ghp_struct_timeline_secret_12345"
+	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+		Name:  "GITHUB_TOKEN",
+		Value: secret,
+	}})
+
+	if err := appendFactoryRunTimelineEventWithRedactor(store, runID, time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC), factoryTimelineEvent{
+		EventType: factory.EventTypeVerificationResult,
+		Summary:   "Verification completed",
+		Metadata: map[string]any{
+			"checks": []verify.CheckResult{{
+				ID:      "checkout",
+				Command: "git fetch https://" + secret + "@github.com/example/repo.git",
+				Message: "checkout failed with token " + secret,
+			}},
+		},
+	}, redactor); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEventWithRedactor() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	data, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("Marshal(events) error: %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, secret) {
+		t.Fatalf("timeline event leaked struct metadata secret: %s", payload)
+	}
+	if !strings.Contains(payload, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("timeline event missing redaction placeholder: %s", payload)
+	}
+}
+
+func TestRecordFactoryRunVerificationAdvisoryFailedWithRedactorRedactsError(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-advisory-verification-redaction"
+	secret := "ghp_advisory_verification_secret_12345"
+	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+		Name:  "GITHUB_TOKEN",
+		Value: secret,
+	}})
+
+	err := recordFactoryRunVerificationAdvisoryFailedWithRedactor(
+		store,
+		runID,
+		time.Date(2026, 6, 21, 10, 5, 0, 0, time.UTC),
+		errors.New("verification failed with token "+secret),
+		redactor,
+	)
+	if err != nil {
+		t.Fatalf("recordFactoryRunVerificationAdvisoryFailedWithRedactor() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events length = %d, want 1", len(events))
+	}
+	got, ok := events[0].Metadata["error"].(string)
+	if !ok {
+		t.Fatalf("advisory error metadata = %#v, want string", events[0].Metadata["error"])
+	}
+	if strings.Contains(got, secret) {
+		t.Fatalf("advisory verification error leaked secret: %q", got)
+	}
+	if !strings.Contains(got, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("advisory verification error missing redaction placeholder: %q", got)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -1747,7 +2414,7 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *te
 	}
 	cleanupStarted := false
 
-	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{Sandbox: true}, io.Discard, factoryRunDeps{
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{BaseBranch: "main", Sandbox: true}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		newRunID:     func() (string, error) { return "run-sandbox-cleanup-order", nil },
 		now: func() time.Time {
@@ -2155,6 +2822,11 @@ func TestRunFactoryRunWithDepsPreservesOnSuccessSandboxWhenArtifactCollectionFai
 		t.Fatalf("MkdirAll(halDir) error: %v", err)
 	}
 	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+	localVerifyDir := filepath.Join(halDir, "reports", "verify")
+	if err := os.MkdirAll(localVerifyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(localVerifyDir) error: %v", err)
+	}
+	writeFile(t, localVerifyDir, "remote-test-stdout.txt", "local stale verification stdout\n")
 
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 3, 16, 0, 0, time.UTC)
@@ -2176,6 +2848,7 @@ func TestRunFactoryRunWithDepsPreservesOnSuccessSandboxWhenArtifactCollectionFai
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -2670,6 +3343,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -2847,6 +3521,15 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	if got := readStoredFactoryArtifact(t, store, record.RunID, verificationArtifact); got != "verification stdout\n" {
 		t.Fatalf("stored verification artifact = %q", got)
 	}
+	var verificationArtifactCount int
+	for _, artifact := range record.Artifacts {
+		if artifact.Path == ".hal/reports/verify/remote-test-stdout.txt" {
+			verificationArtifactCount++
+		}
+	}
+	if verificationArtifactCount != 1 {
+		t.Fatalf("verification artifact count = %d, want 1; artifacts = %#v", verificationArtifactCount, record.Artifacts)
+	}
 }
 
 func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCleanup(t *testing.T) {
@@ -2876,7 +3559,7 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 
 	var copied bool
 	var cleanupCalls int
-	updated, cleaned, err := cleanupFactoryRunDeferredSandbox(context.Background(), store, dir, factoryRunRequest{Sandbox: true}, io.Discard, record, factoryRunDeps{
+	updated, cleaned, err := cleanupFactoryRunDeferredSandbox(context.Background(), store, dir, factoryRunRequest{BaseBranch: "main", Sandbox: true}, io.Discard, record, factoryRunDeps{
 		now: func() time.Time {
 			return time.Date(2026, 6, 21, 1, 8, 0, 0, time.UTC)
 		},
@@ -2976,6 +3659,7 @@ func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVeri
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -3128,6 +3812,7 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -3225,6 +3910,103 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 	}
 }
 
+func TestRunFactorySandboxRemoteVerificationUsesResolvedSecretsAndRedactsArtifacts(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	secret := "ghp_verify_secret_12345"
+	record := factory.RunRecord{
+		RunID:        "run-sandbox-verify-secrets",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoRemote:   "git@github.com:example/hal.git",
+		SandboxName:  "factory-secret-verify",
+		CreatedAt:    time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
+		UpdatedAt:    time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	target := &sandbox.SandboxState{
+		Name:     record.SandboxName,
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	resolvedSecrets := []factory.ResolvedRunSecret{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Value:    secret,
+	}}
+	var gotEnv map[string]string
+	deps := factoryRunDeps{
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, out io.Writer) error {
+			gotEnv = map[string]string{}
+			for key, value := range env {
+				gotEnv[key] = value
+			}
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{Total: 1, Passed: 1},
+				Checks: []verify.CheckResult{{
+					ID:       "remote-secret-check",
+					Name:     "Remote secret check",
+					Status:   verify.CheckStatusPass,
+					Required: true,
+				}},
+				Artifacts: []verify.ArtifactReference{{
+					CheckID: "remote-secret-check",
+					Kind:    "stdout",
+					Path:    ".hal/reports/verify-secret.txt",
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			_, err = out.Write(append(data, '\n'))
+			return err
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			_, err := out.Write([]byte(base64.StdEncoding.EncodeToString([]byte("token=" + secret + "\n"))))
+			return err
+		},
+	}
+
+	result, updated, err := runFactorySandboxRemoteVerification(context.Background(), store, ".", record, deps, resolvedSecrets, factory.NewRunSecretRedactor(resolvedSecrets))
+	if err != nil {
+		t.Fatalf("runFactorySandboxRemoteVerification() unexpected error: %v", err)
+	}
+	if gotEnv["GITHUB_TOKEN"] != secret {
+		t.Fatalf("GITHUB_TOKEN env = %q, want secret", gotEnv["GITHUB_TOKEN"])
+	}
+	if result == nil || result.Status != verify.StatusPass {
+		t.Fatalf("result = %#v, want pass", result)
+	}
+	if len(updated.Artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, want one verification artifact", updated.Artifacts)
+	}
+	artifactPath, err := store.ResolveArtifactPath(record.RunID, updated.Artifacts[0].StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() error: %v", err)
+	}
+	payload, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", artifactPath, err)
+	}
+	if strings.Contains(string(payload), secret) {
+		t.Fatalf("stored verification artifact payload contains raw secret")
+	}
+	if !strings.Contains(string(payload), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored verification artifact payload = %q, want redaction placeholder", payload)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -3254,6 +4036,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -3412,6 +4195,7 @@ func TestRunFactoryRunWithDepsBlocksRequiredSandboxVerificationWithNoRemoteCheck
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -3916,6 +4700,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, &buf, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -4103,6 +4888,7 @@ func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T)
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 		JSON:         true,
 	}, &buf, factoryRunDeps{
@@ -4211,6 +4997,7 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
 		Sandbox:      true,
 	}, &buf, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -5198,6 +5985,78 @@ func TestRunFactoryRunPipelineWithDepsUsesInjectedClockForFailureLogChunk(t *tes
 	}
 	if !chunks[1].CreatedAt.Equal(failedAt) {
 		t.Fatalf("failure chunk createdAt = %s, want %s", chunks[1].CreatedAt, failedAt)
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsRedactsResolvedSecretsFromFailureLogChunk(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	secretValue := "ghp_local_pipeline_secret_12345"
+	wantErr := errors.New("auto failed with token " + secretValue)
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-secret-failure",
+		Store: store,
+		Request: factoryRunRequest{
+			ResolvedSecrets: []factory.ResolvedRunSecret{{
+				Name:     "GITHUB_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: true,
+				Value:    secretValue,
+			}},
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-secret-failure")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if strings.Contains(chunks[1].Text, secretValue) {
+		t.Fatalf("failure log chunk text contains secret: %q", chunks[1].Text)
+	}
+	if !strings.Contains(chunks[1].Text, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("failure log chunk text = %q, want redaction placeholder", chunks[1].Text)
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsRedactsCredentialedRemoteFromFailureLogChunk(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	credential := "ghp_local_remote_credential_12345"
+	wantErr := errors.New("auto failed cloning https://x:" + credential + "@github.com/org/repo.git")
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-credentialed-remote-failure",
+		Store: store,
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-credentialed-remote-failure")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if strings.Contains(chunks[1].Text, credential) {
+		t.Fatalf("failure log chunk text contains credential: %q", chunks[1].Text)
+	}
+	if !strings.Contains(chunks[1].Text, "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/org/repo.git") {
+		t.Fatalf("failure log chunk text = %q, want credentialed remote redaction", chunks[1].Text)
 	}
 }
 

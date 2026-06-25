@@ -203,6 +203,44 @@ func TestCollectSandboxArtifactsFailsRequiredCopyErrors(t *testing.T) {
 	}
 }
 
+func TestCollectSandboxArtifactsRedactsRequiredCopyErrors(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	record := testRunRecord("run-sandbox-copy-error-redacted")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+	secret := "sandbox-copy-secret-123"
+	copyErr := errors.New("provider failed reading /workspace/" + secret + "/factory.log")
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{
+		Name:  "SANDBOX_TOKEN",
+		Value: secret,
+	}})
+
+	_, err := CollectSandboxArtifactsWithRedactor(context.Background(), store, record.RunID, &fakeSandboxArtifactCopier{
+		fileErrs: map[string]error{
+			"/workspace/" + secret + "/factory.log": copyErr,
+		},
+	}, []SandboxArtifactRequest{
+		{
+			ID:         "factory-log",
+			Name:       "factory-log-" + secret,
+			Type:       "text",
+			RemotePath: "/workspace/" + secret + "/factory.log",
+			Path:       ".hal/reports/factory.log",
+		},
+	}, redactor)
+	if !errors.Is(err, copyErr) {
+		t.Fatalf("CollectSandboxArtifactsWithRedactor() error = %v, want wrapped copy error", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("CollectSandboxArtifactsWithRedactor() leaked secret: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), RunSecretRedactionPlaceholder) {
+		t.Fatalf("CollectSandboxArtifactsWithRedactor() error = %q, want redaction placeholder", err.Error())
+	}
+}
+
 func TestCollectSandboxArtifactsSanitizesSavedArtifactBeforeLaterFailure(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-sandbox-later-copy-error")
@@ -285,7 +323,7 @@ func TestStoreSandboxArtifactDirSkipsSymlinks(t *testing.T) {
 		Name: "verify",
 		Type: "directory",
 		Path: ".hal/reports/verify",
-	}, localDir)
+	}, localDir, RunSecretRedactor{})
 	if err != nil {
 		t.Fatalf("storeSandboxArtifactDir() unexpected error: %v", err)
 	}

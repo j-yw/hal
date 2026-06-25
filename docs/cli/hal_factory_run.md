@@ -11,8 +11,10 @@ Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
 base branch to the executor. Sandbox mode requires --base so the remote
-workspace can be checked out deterministically. Use --sandbox for remote
-sandbox-backed execution, and --json for machine-readable factory-run-v1 output.
+workspace can be checked out deterministically. Use --secret-env to declare
+required environment variables that should be resolved only for this run. Use
+--sandbox for remote sandbox-backed execution, and --json for machine-readable
+factory-run-v1 output.
 
 ```
 hal factory run [prd-path] [flags]
@@ -23,6 +25,7 @@ hal factory run [prd-path] [flags]
 ```
   hal factory run .hal/prd-feature.md
   hal factory run --report .hal/reports/analysis.md
+  hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
   hal factory run .hal/prd-feature.md --sandbox --base main
 ```
@@ -30,11 +33,12 @@ hal factory run [prd-path] [flags]
 ### Options
 
 ```
-      --base string     Target base branch for follow-up review or CI
-  -h, --help            help for run
-      --json            Output machine-readable JSON (factory-run-v1 contract)
-      --report string   Start from an analysis report path
-      --sandbox         Run the factory executor in a managed sandbox
+      --base string              Target base branch for follow-up review or CI
+  -h, --help                     help for run
+      --json                     Output machine-readable JSON (factory-run-v1 contract)
+      --report string            Start from an analysis report path
+      --sandbox                  Run the factory executor in a managed sandbox
+      --secret-env stringArray   Required environment variable secret for the run (repeatable)
 ```
 
 ### SEE ALSO

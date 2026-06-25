@@ -51,6 +51,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `telemetry` | object | Derived observability summary including durations, engine, sandbox, outcomes, artifact count, cost estimate, and failure classification |
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
 | `handoff` | object | Redaction-safe human handoff and next-action guidance for failed runs with actionable follow-up |
+| `secrets` | array | Redaction-safe run-scoped secret metadata; raw values are never stored |
 
 `sandboxName` is retained as a compatibility summary field. New consumers
 should read `sandbox.name` when the `sandbox` object is present.
@@ -80,6 +81,21 @@ When `policyDecisions` is present, each entry contains:
 | `outcome` | string | yes | Outcome value: `allowed`, `rejected`, `passed`, or `blocked` |
 | `reason` | string | yes | Safe human-readable reason for the decision |
 
+## Run Secret Metadata
+
+When `secrets` is present, each entry describes one run-scoped secret
+requirement without storing its value:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Secret identifier; for env-backed secrets this is the environment variable name |
+| `source` | string | yes | Secret source type, currently env for environment variables |
+| `required` | boolean | yes | Whether setup must fail when the secret is missing or empty |
+| `present` | boolean | yes | Whether a value was resolved during setup |
+
+Raw secret values, tokens, API keys, and credential material must not appear in
+run records, timeline events, artifact summaries, or factory JSON outputs.
+
 ## Sandbox Metadata
 
 When `sandbox` is present:
@@ -97,7 +113,7 @@ When `sandbox` is present:
 
 Sandbox metadata is safe for durable local records. It must not include tokens,
 private keys, secret environment values, raw credentials, API keys, or unsafe
-environment values.
+environment details.
 
 When `sandbox.connection` is present:
 

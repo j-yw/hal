@@ -150,6 +150,24 @@ func TestSourceKindConstants(t *testing.T) {
 	}
 }
 
+func TestRunSecretSourceConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "env", got: RunSecretSourceEnv, want: "env"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("run secret source = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFailureCategoryConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -614,6 +632,8 @@ func TestDeriveRunTelemetryPrefersVerificationResultOutcome(t *testing.T) {
 func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	types := []reflect.Type{
 		reflect.TypeOf(RunRecord{}),
+		reflect.TypeOf(RunSecretInput{}),
+		reflect.TypeOf(RunSecretMetadata{}),
 		reflect.TypeOf(SandboxMetadata{}),
 		reflect.TypeOf(SandboxConnectionMetadata{}),
 		reflect.TypeOf(SourceMetadata{}),
@@ -952,6 +972,9 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 				SuggestedCommand: "hal factory status 01975515-52ad-7f20-8f10-b35c07051b9f --json",
 				ExitCode:         1,
 			},
+			Secrets: []RunSecretMetadata{
+				{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Present: true},
+			},
 		}
 
 		var decoded RunRecord
@@ -975,6 +998,29 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 		}
 
 		var decoded RunRecord
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("run secret input", func(t *testing.T) {
+		original := RunSecretInput{
+			Name:     "GITHUB_TOKEN",
+			Source:   RunSecretSourceEnv,
+			Required: true,
+		}
+
+		var decoded RunSecretInput
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("run secret metadata", func(t *testing.T) {
+		original := RunSecretMetadata{
+			Name:     "GITHUB_TOKEN",
+			Source:   RunSecretSourceEnv,
+			Required: true,
+			Present:  true,
+		}
+
+		var decoded RunSecretMetadata
 		requireJSONRoundTrip(t, original, &decoded)
 	})
 
@@ -1197,6 +1243,10 @@ func TestRunRecordJSONFields(t *testing.T) {
 			SuggestedCommand: "hal factory status 01975515-52ad-7f20-8f10-b35c07051b9f --json",
 			ExitCode:         1,
 		},
+		Secrets: []RunSecretMetadata{
+			{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Present: true},
+			{Name: "NPM_TOKEN", Source: RunSecretSourceEnv, Required: false, Present: false},
+		},
 	}
 
 	data, err := json.Marshal(original)
@@ -1229,6 +1279,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"verification",
 		"telemetry",
 		"failure",
+		"secrets",
 	} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("missing run record JSON field %q", key)
@@ -1376,6 +1427,39 @@ func TestRunRecordJSONFields(t *testing.T) {
 		}
 	}
 
+	secrets, ok := raw["secrets"].([]any)
+	if !ok {
+		t.Fatalf("secrets should be an array, got %T", raw["secrets"])
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("secrets length = %d, want 2", len(secrets))
+	}
+	firstSecret, ok := secrets[0].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets[0] should be an object, got %T", secrets[0])
+	}
+	requireExactJSONKeys(t, firstSecret, []string{"name", "source", "required", "present"})
+	if firstSecret["name"] != "GITHUB_TOKEN" {
+		t.Fatalf("secret name = %v, want GITHUB_TOKEN", firstSecret["name"])
+	}
+	if firstSecret["source"] != RunSecretSourceEnv {
+		t.Fatalf("secret source = %v, want %s", firstSecret["source"], RunSecretSourceEnv)
+	}
+	if firstSecret["required"] != true {
+		t.Fatalf("secret required = %v, want true", firstSecret["required"])
+	}
+	if firstSecret["present"] != true {
+		t.Fatalf("secret present = %v, want true", firstSecret["present"])
+	}
+	secondSecret, ok := secrets[1].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets[1] should be an object, got %T", secrets[1])
+	}
+	requireExactJSONKeys(t, secondSecret, []string{"name", "source", "required", "present"})
+	if secondSecret["present"] != false {
+		t.Fatalf("optional secret present = %v, want false", secondSecret["present"])
+	}
+
 	var decoded RunRecord
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
@@ -1490,6 +1574,61 @@ func TestNextActionOptionalFieldsOmitted(t *testing.T) {
 	requireExactJSONKeys(t, raw, []string{"id", "type", "command", "description"})
 }
 
+func TestRunRecordSecretMetadataDoesNotSerializeSecretValues(t *testing.T) {
+	now := time.Date(2026, 6, 20, 10, 45, 0, 0, time.UTC)
+	secretValue := "ghp_factory_secret_value_123"
+	secret := RunSecretInput{
+		Name:     "GITHUB_TOKEN",
+		Source:   RunSecretSourceEnv,
+		Required: true,
+	}
+	record := RunRecord{
+		RunID:        "run-secret-safe",
+		Status:       RunStatusPending,
+		ExecutorMode: ExecutorModeSandbox,
+		Source:       SourceMetadata{Kind: SourceKindPRD},
+		RepoPath:     "/work/hal",
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
+		BranchName:   "hal/factory-run-secrets",
+		BaseBranch:   "main",
+		CurrentStep:  RunStatusPending,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Secrets: []RunSecretMetadata{
+			secret.Metadata(secretValue != ""),
+		},
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, secretValue) {
+		t.Fatalf("run record JSON contains raw secret value: %s", payload)
+	}
+	if strings.Contains(payload, "value") {
+		t.Fatalf("run record JSON contains a value field: %s", payload)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+	secrets, ok := raw["secrets"].([]any)
+	if !ok || len(secrets) != 1 {
+		t.Fatalf("secrets = %#v, want one secret metadata entry", raw["secrets"])
+	}
+	metadata, ok := secrets[0].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets[0] should be an object, got %T", secrets[0])
+	}
+	requireExactJSONKeys(t, metadata, []string{"name", "source", "required", "present"})
+	if metadata["present"] != true {
+		t.Fatalf("secret present = %v, want true", metadata["present"])
+	}
+}
+
 func TestQueueEntryJSONFields(t *testing.T) {
 	createdAt := time.Date(2026, 6, 20, 11, 30, 0, 0, time.UTC)
 	claimedAt := createdAt.Add(3 * time.Minute)
@@ -1600,6 +1739,9 @@ func TestRunRecordLoadsWithoutArtifacts(t *testing.T) {
 	if decoded.Telemetry != nil {
 		t.Fatalf("telemetry = %#v, want nil for omitted legacy field", decoded.Telemetry)
 	}
+	if decoded.Secrets != nil {
+		t.Fatalf("secrets = %#v, want nil for omitted legacy field", decoded.Secrets)
+	}
 }
 
 func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
@@ -1683,7 +1825,7 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"engine", "sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "telemetry", "failure"} {
+	for _, key := range []string{"engine", "sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "telemetry", "failure", "secrets"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional field %q in %s", key, string(data))
 		}
