@@ -44,8 +44,9 @@ type RunState struct {
 
 // ReviewState stores review-step telemetry in pipeline state.
 type ReviewState struct {
-	Status      string `json:"status,omitempty"`
-	FixAttempts int    `json:"fixAttempts,omitempty"`
+	Status       string `json:"status,omitempty"`
+	FixAttempts  int    `json:"fixAttempts,omitempty"`
+	PendingFixes bool   `json:"pendingFixes,omitempty"`
 }
 
 // CIState stores ci-step telemetry in pipeline state.

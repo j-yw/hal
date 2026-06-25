@@ -1171,7 +1171,6 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 
 	cleanStreak := 0
 	lastValidIssues := 0
-	fixesAppliedDuringReview := false
 	for cycle := 1; cycle <= maxCycles; cycle++ {
 		atReviewFixLimit := opts.MaxReviewFixAttempts > 0 && state.Review.FixAttempts >= opts.MaxReviewFixAttempts
 		fixAttemptsBeforeCycle := state.Review.FixAttempts
@@ -1236,14 +1235,18 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 			}
 		}
 		if iteration.FixesApplied > 0 {
-			fixesAppliedDuringReview = true
+			state.Review.PendingFixes = true
+			state.Step = StepReview
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to persist pending review fixes: %w", saveErr)
+			}
 		}
 
 		if iteration.ValidIssues == 0 {
 			cleanStreak++
 			p.display.ShowInfo("   Review cycle %d clean (%d/%d required)\n", cycle, cleanStreak, cleanStreakRequired)
 			if cleanStreak >= cleanStreakRequired {
-				if fixesAppliedDuringReview {
+				if state.Review.PendingFixes {
 					if err := p.finalizeReviewFixes(ctx); err != nil {
 						state.Review.Status = "failed"
 						if saveErr := p.saveState(state); saveErr != nil {
@@ -1251,6 +1254,7 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 						}
 						return fmt.Errorf("review gate blocked: finalize review fixes failed: %w", err)
 					}
+					state.Review.PendingFixes = false
 				}
 				if err := p.runFinalVerification(ctx, state); err != nil {
 					state.Review.Status = "failed"
