@@ -231,6 +231,8 @@ func TestParseReviewRequest(t *testing.T) {
 }
 
 func TestRunReviewUsesCommandContextAndFlags(t *testing.T) {
+	t.Setenv(compound.ReviewLoopActiveEnv, "")
+
 	originalDeps := defaultReviewDeps
 	t.Cleanup(func() { defaultReviewDeps = originalDeps })
 
@@ -338,6 +340,8 @@ func TestRunReviewRejectsNestedReviewLoop(t *testing.T) {
 }
 
 func TestRunReviewAliasWarnsOnce(t *testing.T) {
+	t.Setenv(compound.ReviewLoopActiveEnv, "")
+
 	originalDeps := defaultReviewDeps
 	t.Cleanup(func() { defaultReviewDeps = originalDeps })
 

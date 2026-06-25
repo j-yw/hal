@@ -3576,6 +3576,103 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 	}
 }
 
+func TestRunFactorySandboxRemoteVerificationUsesResolvedSecretsAndRedactsArtifacts(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	secret := "ghp_verify_secret_12345"
+	record := factory.RunRecord{
+		RunID:        "run-sandbox-verify-secrets",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoRemote:   "git@github.com:example/hal.git",
+		SandboxName:  "factory-secret-verify",
+		CreatedAt:    time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
+		UpdatedAt:    time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	target := &sandbox.SandboxState{
+		Name:     record.SandboxName,
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	resolvedSecrets := []factory.ResolvedRunSecret{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Value:    secret,
+	}}
+	var gotEnv map[string]string
+	deps := factoryRunDeps{
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, out io.Writer) error {
+			gotEnv = map[string]string{}
+			for key, value := range env {
+				gotEnv[key] = value
+			}
+			data, err := json.Marshal(verify.Result{
+				SchemaVersion: verify.SchemaVersion,
+				Status:        verify.StatusPass,
+				Summary:       verify.Summary{Total: 1, Passed: 1},
+				Checks: []verify.CheckResult{{
+					ID:       "remote-secret-check",
+					Name:     "Remote secret check",
+					Status:   verify.CheckStatusPass,
+					Required: true,
+				}},
+				Artifacts: []verify.ArtifactReference{{
+					CheckID: "remote-secret-check",
+					Kind:    "stdout",
+					Path:    ".hal/reports/verify-secret.txt",
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Marshal(verify result) error: %v", err)
+			}
+			_, err = out.Write(append(data, '\n'))
+			return err
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			_, err := out.Write([]byte(base64.StdEncoding.EncodeToString([]byte("token=" + secret + "\n"))))
+			return err
+		},
+	}
+
+	result, updated, err := runFactorySandboxRemoteVerification(context.Background(), store, ".", record, deps, resolvedSecrets, factory.NewRunSecretRedactor(resolvedSecrets))
+	if err != nil {
+		t.Fatalf("runFactorySandboxRemoteVerification() unexpected error: %v", err)
+	}
+	if gotEnv["GITHUB_TOKEN"] != secret {
+		t.Fatalf("GITHUB_TOKEN env = %q, want secret", gotEnv["GITHUB_TOKEN"])
+	}
+	if result == nil || result.Status != verify.StatusPass {
+		t.Fatalf("result = %#v, want pass", result)
+	}
+	if len(updated.Artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, want one verification artifact", updated.Artifacts)
+	}
+	artifactPath, err := store.ResolveArtifactPath(record.RunID, updated.Artifacts[0].StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() error: %v", err)
+	}
+	payload, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", artifactPath, err)
+	}
+	if strings.Contains(string(payload), secret) {
+		t.Fatalf("stored verification artifact payload contains raw secret")
+	}
+	if !strings.Contains(string(payload), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored verification artifact payload = %q, want redaction placeholder", payload)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")

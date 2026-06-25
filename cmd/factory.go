@@ -217,28 +217,29 @@ var defaultFactoryLogsDeps = factoryLogsDeps{
 }
 
 type factoryRunDeps struct {
-	defaultStore     func() (factory.Store, error)
-	newRunID         func() (string, error)
-	now              func() time.Time
-	workingDir       func() (string, error)
-	currentBranch    func(string) (string, error)
-	repoRemote       func(string) (string, error)
-	lookupEnv        func(string) (string, bool)
-	loadPolicy       func(string) (*factory.FactoryPolicy, error)
-	loadEngine       func(string) (string, error)
-	loadEngineConfig func(string, string) *engine.EngineConfig
-	runPipeline      func(context.Context, factoryRunPipelineRequest) error
-	runSandbox       func(context.Context, factorySandboxExecutorRequest) error
-	loadVerify       func(string) (*verify.Config, error)
-	runVerify        func(context.Context, *verify.Config) (*verify.Result, error)
-	loadSandbox      func(string) (*sandbox.SandboxState, error)
-	resolveProvider  func(string, string) (sandbox.Provider, error)
-	runProviderExec  func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	cleanupSandbox   func(context.Context, factorySandboxCleanupRequest) error
-	statusSnapshot   func(string) (factorySnapshotArtifact, error)
-	doctorSnapshot   func(string) (factorySnapshotArtifact, error)
-	sandboxCopier    factory.SandboxArtifactCopier
-	sandboxRequests  func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	defaultStore           func() (factory.Store, error)
+	newRunID               func() (string, error)
+	now                    func() time.Time
+	workingDir             func() (string, error)
+	currentBranch          func(string) (string, error)
+	repoRemote             func(string) (string, error)
+	lookupEnv              func(string) (string, bool)
+	loadPolicy             func(string) (*factory.FactoryPolicy, error)
+	loadEngine             func(string) (string, error)
+	loadEngineConfig       func(string, string) *engine.EngineConfig
+	runPipeline            func(context.Context, factoryRunPipelineRequest) error
+	runSandbox             func(context.Context, factorySandboxExecutorRequest) error
+	loadVerify             func(string) (*verify.Config, error)
+	runVerify              func(context.Context, *verify.Config) (*verify.Result, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	resolveProvider        func(string, string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
+	statusSnapshot         func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot         func(string) (factorySnapshotArtifact, error)
+	sandboxCopier          factory.SandboxArtifactCopier
+	sandboxRequests        func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryRunPipelineRequest struct {
@@ -268,14 +269,15 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
 	},
-	loadVerify:      verify.LoadConfig,
-	runVerify:       verify.Run,
-	loadSandbox:     sandbox.LoadActiveInstance,
-	resolveProvider: resolveProviderWithFallback,
-	runProviderExec: runFactorySandboxProviderExec,
-	cleanupSandbox:  cleanupFactorySandbox,
-	statusSnapshot:  defaultFactoryStatusSnapshot,
-	doctorSnapshot:  defaultFactoryDoctorSnapshot,
+	loadVerify:             verify.LoadConfig,
+	runVerify:              verify.Run,
+	loadSandbox:            sandbox.LoadActiveInstance,
+	resolveProvider:        resolveProviderWithFallback,
+	runProviderExec:        runFactorySandboxProviderExec,
+	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	cleanupSandbox:         cleanupFactorySandbox,
+	statusSnapshot:         defaultFactoryStatusSnapshot,
+	doctorSnapshot:         defaultFactoryDoctorSnapshot,
 }
 
 type factoryRunRequest struct {
@@ -688,7 +690,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if err != nil {
 		return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, runningRecord, deps, policy, err)
 	}
-	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, policy, redactor)
+	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, policy, req.ResolvedSecrets, redactor)
 	if err != nil {
 		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, completedAt, err, redactor)
 		var recordErrs []error
@@ -775,6 +777,7 @@ func normalizeFactoryRunExecutionDeps(deps factoryRunExecutionDeps) factoryRunEx
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
+	customRunProviderExec := deps.runProviderExec != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryRunDeps.defaultStore
 	}
@@ -825,6 +828,16 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	}
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactoryRunDeps.runProviderExec
+	}
+	if deps.runProviderExecWithEnv == nil {
+		if customRunProviderExec {
+			runProviderExec := deps.runProviderExec
+			deps.runProviderExecWithEnv = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, _ map[string]string, out io.Writer) error {
+				return runProviderExec(ctx, provider, info, args, out)
+			}
+		} else {
+			deps.runProviderExecWithEnv = defaultFactoryRunDeps.runProviderExecWithEnv
+		}
 	}
 	if deps.cleanupSandbox == nil {
 		deps.cleanupSandbox = defaultFactoryRunDeps.cleanupSandbox
@@ -1435,7 +1448,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	return safeRecord, nil
 }
 
-func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor) (factory.RunRecord, time.Time, error) {
+func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, policy factory.FactoryPolicy, resolvedSecrets []factory.ResolvedRunSecret, redactor factory.RunSecretRedactor) (factory.RunRecord, time.Time, error) {
 	startedAt := deps.now()
 	record.CurrentStep = "verify"
 	record.UpdatedAt = startedAt.UTC()
@@ -1445,7 +1458,7 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	}
 
 	if factoryRunUsesSandboxVerification(record) {
-		result, updatedRecord, err := runFactorySandboxRemoteVerification(ctx, store, dir, record, deps)
+		result, updatedRecord, err := runFactorySandboxRemoteVerification(ctx, store, dir, record, deps, resolvedSecrets, redactor)
 		finishedAt := deps.now()
 		if err != nil {
 			return record, finishedAt, fmt.Errorf("run remote sandbox verification: %w", err)
@@ -1590,7 +1603,7 @@ func factoryRunUsesSandboxVerification(record factory.RunRecord) bool {
 	return strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox
 }
 
-func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) (*verify.Result, factory.RunRecord, error) {
+func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps, resolvedSecrets []factory.ResolvedRunSecret, redactor factory.RunSecretRedactor) (*verify.Result, factory.RunRecord, error) {
 	sandboxName := factoryRunSandboxName(record)
 	if sandboxName == "" {
 		return nil, record, fmt.Errorf("sandbox verification requires sandbox metadata")
@@ -1611,7 +1624,7 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 		return nil, record, err
 	}
 	var out bytes.Buffer
-	execErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), args, &out)
+	execErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(resolvedSecrets), &out)
 	result, parseErr := parseFactorySandboxVerifyResult(out.Bytes())
 	if parseErr != nil {
 		if execErr != nil {
@@ -1619,7 +1632,7 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 		}
 		return nil, record, parseErr
 	}
-	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, record, result.Artifacts, target, provider, deps); err != nil {
+	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, record, result.Artifacts, target, provider, deps, redactor); err != nil {
 		return nil, record, err
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
@@ -1660,7 +1673,7 @@ func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
 	return &result, nil
 }
 
-func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps) error {
+func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps, redactor factory.RunSecretRedactor) error {
 	if len(artifacts) == 0 {
 		return nil
 	}
@@ -1708,7 +1721,7 @@ func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, sto
 		connectInfo:     sandbox.ConnectInfoFromState(target),
 		runProviderExec: deps.runProviderExec,
 	}
-	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, &copier, requests); err != nil {
+	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
 		return fmt.Errorf("collect sandbox verification artifacts: %w", err)
 	}
 	return nil
