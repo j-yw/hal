@@ -2053,6 +2053,116 @@ func TestRunFactoryRunWithDepsMarksRunFailedWhenArtifactCollectionFails(t *testi
 	}
 }
 
+func TestRunFactoryRunWithDepsPreservesOnSuccessSandboxWhenArtifactCollectionFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 3, 16, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	pipelineCompletedAt := createdAt.Add(2 * time.Minute)
+	failedAt := createdAt.Add(3 * time.Minute)
+	times := []time.Time{createdAt, startedAt, pipelineCompletedAt, failedAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
+	policy.VerificationRequired = true
+	artifactErr := errors.New("status snapshot unavailable")
+	target := &sandbox.SandboxState{
+		Name:     "factory-artifact-failed",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	var cleanupCalls int
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-artifact-collection-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			if !req.DeferSuccessCleanup {
+				t.Fatal("DeferSuccessCleanup = false, want true for on_success cleanup")
+			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:           target.Name,
+				Provider:       target.Provider,
+				Status:         target.Status,
+				Connection:     &factory.SandboxConnectionMetadata{Address: target.IP, PublicIP: target.IP},
+				SSHCommand:     "hal sandbox ssh " + target.Name,
+				CleanupCommand: "hal sandbox delete " + target.Name,
+				Handoff:        "Inspect sandbox with `hal sandbox ssh " + target.Name + "`.",
+			}
+			return store.SaveRun(&record)
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{}, artifactErr
+		},
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) {
+			t.Fatal("doctor snapshot should not run after status snapshot fails")
+			return factorySnapshotArtifact{}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), artifactErr.Error()) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want artifact error", err)
+	}
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 for on_success artifact failure", cleanupCalls)
+	}
+	record, err := store.LoadRun("run-sandbox-artifact-collection-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", record.Status)
+	}
+	if record.Sandbox == nil {
+		t.Fatal("sandbox metadata = nil, want preserved metadata")
+	}
+	if record.Sandbox.Status != sandbox.StatusRunning || record.Sandbox.SSHCommand == "" || record.Sandbox.CleanupCommand == "" || record.Sandbox.Handoff == "" {
+		t.Fatalf("sandbox metadata = %#v, want preserved running handoff", record.Sandbox)
+	}
+	if record.Failure == nil || record.Failure.Step != factory.RunDurationStepArtifactCollect {
+		t.Fatalf("failure = %#v, want artifact collection failure", record.Failure)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMissingOptionalArtifactWarnings(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -2555,6 +2665,141 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 	if record.Sandbox.Status != sandbox.StatusUnknown {
 		t.Fatalf("sandbox status = %q, want unknown after cleanup", record.Sandbox.Status)
+	}
+	if record.Sandbox.Connection != nil || record.Sandbox.SSHCommand != "" || record.Sandbox.CleanupCommand != "" || record.Sandbox.Handoff != "" {
+		t.Fatalf("sandbox handoff metadata = %#v, want cleared after cleanup", record.Sandbox)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+}
+
+func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVerification(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 1, 4, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	artifactAt := createdAt.Add(2 * time.Minute)
+	verifyingAt := createdAt.Add(3 * time.Minute)
+	verificationDoneAt := createdAt.Add(4 * time.Minute)
+	cleanedAt := createdAt.Add(5 * time.Minute)
+	succeededAt := createdAt.Add(6 * time.Minute)
+	times := []time.Time{createdAt, startedAt, artifactAt, verifyingAt, verificationDoneAt, cleanedAt, succeededAt}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
+	policy.VerificationRequired = false
+	copier := &fakeFactorySandboxArtifactCopier{
+		files: map[string]string{
+			"/workspace/.hal/auto-state.json": `{"step":"done"}` + "\n",
+		},
+	}
+	target := &sandbox.SandboxState{
+		Name:     "factory-final-success",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	var cleanupCalls int
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		Sandbox:      true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-final-success-cleanup", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return succeededAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			if !req.DeferSuccessCleanup {
+				t.Fatal("DeferSuccessCleanup = false, want true for on_success cleanup until final success")
+			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:           target.Name,
+				Provider:       target.Provider,
+				Status:         target.Status,
+				Connection:     &factory.SandboxConnectionMetadata{Address: target.IP, PublicIP: target.IP},
+				SSHCommand:     "hal sandbox ssh " + target.Name,
+				CleanupCommand: "hal sandbox delete " + target.Name,
+				Handoff:        "Inspect sandbox with `hal sandbox ssh " + target.Name + "`.",
+			}
+			return store.SaveRun(&record)
+		},
+		loadVerify: func(string) (*verify.Config, error) {
+			return nil, nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if len(copier.fileCalls) != 1 {
+				t.Fatalf("cleanup ran before sandbox artifact collection; fileCalls = %#v", copier.fileCalls)
+			}
+			if req.Target == nil || req.Target.Name != target.Name {
+				t.Fatalf("cleanup target = %#v, want %q", req.Target, target.Name)
+			}
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxCopier:  copier,
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-auto-state",
+				Name:       "sandbox-auto-state",
+				Type:       "json",
+				RemotePath: "/workspace/.hal/auto-state.json",
+				Path:       ".hal/auto-state.json",
+			}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1 after final factory success", cleanupCalls)
+	}
+	record, err := store.LoadRun("run-sandbox-final-success-cleanup")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", record.Status)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(succeededAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, succeededAt)
+	}
+	if record.Sandbox == nil || record.Sandbox.Status != sandbox.StatusUnknown {
+		t.Fatalf("sandbox metadata = %#v, want cleaned unknown status", record.Sandbox)
 	}
 	if record.Sandbox.Connection != nil || record.Sandbox.SSHCommand != "" || record.Sandbox.CleanupCommand != "" || record.Sandbox.Handoff != "" {
 		t.Fatalf("sandbox handoff metadata = %#v, want cleared after cleanup", record.Sandbox)

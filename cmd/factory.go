@@ -997,15 +997,11 @@ func factoryPolicySkipsCI(policy factory.FactoryPolicy) bool {
 }
 
 func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
-	return policy.VerificationRequired && strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorOnSuccess
+	return strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorOnSuccess
 }
 
 func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
 	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, "success")
-}
-
-func cleanupFactoryRunSandboxAfterArtifactCollectionFailure(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
-	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, "artifact collection failure")
 }
 
 func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
@@ -1063,12 +1059,6 @@ func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store fac
 		failedRecord = *currentRecord
 	}
 	failedRecord.CurrentStep = factory.RunDurationStepArtifactCollect
-
-	if cleanupRecord, _, err := cleanupFactoryRunSandboxAfterArtifactCollectionFailure(ctx, store, dir, req, out, failedRecord, deps, policy); err != nil {
-		recordErrs = append(recordErrs, fmt.Errorf("cleanup factory sandbox after artifact collection failure: %w", err))
-	} else {
-		failedRecord = cleanupRecord
-	}
 	failedRecord.CurrentStep = factory.RunDurationStepArtifactCollect
 
 	failedAt := deps.now()
