@@ -63,7 +63,7 @@ func TestBootstrapRepositoryCheckoutClonesMissingRepoAndChecksOutBase(t *testing
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "develop"},
+			Args: []string{"checkout", "-f", "develop"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -84,6 +84,7 @@ func TestBootstrapRepositoryCheckoutClonesMissingRepoAndChecksOutBase(t *testing
 func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 		},
@@ -107,6 +108,12 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 
 	wantCalls := []BootstrapCommand{
 		{
+			Name: "sh",
+			Args: []string{"-lc", bootstrapCleanEngineLinksScript},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
 			Name: "git",
 			Args: []string{"fetch", "--prune", "origin"},
 			Dir:  "/workspace/hal",
@@ -114,7 +121,7 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "-B", "main", "origin/main"},
+			Args: []string{"checkout", "-f", "-B", "main", "origin/main"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -123,7 +130,7 @@ func TestBootstrapRepositoryCheckoutFetchesExistingRepoInsteadOfRecloning(t *tes
 		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
 	}
 
-	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepFetchRepository, BootstrapStepCheckoutBase})
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepCleanEngineLinks, BootstrapStepFetchRepository, BootstrapStepCheckoutBase})
 	for _, call := range executor.calls {
 		if call.Args[0] == "clone" {
 			t.Fatalf("existing repository should not be recloned: %#v", executor.calls)
@@ -171,7 +178,7 @@ func TestBootstrapRepositoryCheckoutClonesIntoEmptyExistingDirectory(t *testing.
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "main"},
+			Args: []string{"checkout", "-f", "main"},
 			Dir:  workspaceDir,
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -208,6 +215,7 @@ func TestBootstrapRepositoryCheckoutRejectsNonEmptyNonGitDirectory(t *testing.T)
 func TestBootstrapRepositoryCheckoutCreatesMissingRunBranchFromBase(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "run branch created"},
@@ -248,6 +256,12 @@ func TestBootstrapRepositoryCheckoutCreatesMissingRunBranchFromBase(t *testing.T
 
 	wantCalls := []BootstrapCommand{
 		{
+			Name: "sh",
+			Args: []string{"-lc", bootstrapCleanEngineLinksScript},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
 			Name: "git",
 			Args: []string{"fetch", "--prune", "origin"},
 			Dir:  "/workspace/hal",
@@ -255,13 +269,13 @@ func TestBootstrapRepositoryCheckoutCreatesMissingRunBranchFromBase(t *testing.T
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "-B", "main", "origin/main"},
+			Args: []string{"checkout", "-f", "-B", "main", "origin/main"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "-b", "hal/factory-remote-workspace-bootstrap", "main"},
+			Args: []string{"checkout", "-f", "-b", "hal/factory-remote-workspace-bootstrap", "main"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -271,6 +285,7 @@ func TestBootstrapRepositoryCheckoutCreatesMissingRunBranchFromBase(t *testing.T
 	}
 
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCreateRunBranch,
@@ -280,6 +295,7 @@ func TestBootstrapRepositoryCheckoutCreatesMissingRunBranchFromBase(t *testing.T
 func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "run branch checked out"},
@@ -318,6 +334,12 @@ func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 
 	wantCalls := []BootstrapCommand{
 		{
+			Name: "sh",
+			Args: []string{"-lc", bootstrapCleanEngineLinksScript},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
 			Name: "git",
 			Args: []string{"fetch", "--prune", "origin"},
 			Dir:  "/workspace/hal",
@@ -325,13 +347,13 @@ func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "-B", "main", "origin/main"},
+			Args: []string{"checkout", "-f", "-B", "main", "origin/main"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "hal/factory-remote-workspace-bootstrap"},
+			Args: []string{"checkout", "-f", "hal/factory-remote-workspace-bootstrap"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -341,6 +363,7 @@ func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 	}
 
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCheckoutRun,
@@ -350,6 +373,7 @@ func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "remote run branch fetched"},
@@ -391,6 +415,12 @@ func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 
 	wantCalls := []BootstrapCommand{
 		{
+			Name: "sh",
+			Args: []string{"-lc", bootstrapCleanEngineLinksScript},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
 			Name: "git",
 			Args: []string{"fetch", "--prune", "origin"},
 			Dir:  "/workspace/hal",
@@ -398,7 +428,7 @@ func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "-B", "main", "origin/main"},
+			Args: []string{"checkout", "-f", "-B", "main", "origin/main"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -410,7 +440,7 @@ func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "--track", "origin/hal/factory-remote-workspace-bootstrap"},
+			Args: []string{"checkout", "-f", "--track", "origin/hal/factory-remote-workspace-bootstrap"},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -420,6 +450,7 @@ func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 	}
 
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepFetchRunBranch,
@@ -430,6 +461,7 @@ func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 func TestBootstrapRepositoryCheckoutRecordsDefaultRunBranchProbeSteps(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 1, OutputSummary: "local run branch missing"},
@@ -457,6 +489,7 @@ func TestBootstrapRepositoryCheckoutRecordsDefaultRunBranchProbeSteps(t *testing
 	}
 
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCheckLocalRun,
@@ -464,14 +497,14 @@ func TestBootstrapRepositoryCheckoutRecordsDefaultRunBranchProbeSteps(t *testing
 		BootstrapStepFetchRunBranch,
 		BootstrapStepCheckoutRun,
 	})
-	if result.Steps[2].Status != RunStatusSucceeded {
-		t.Fatalf("local probe status = %q, want %q", result.Steps[2].Status, RunStatusSucceeded)
-	}
-	if result.Steps[2].ExitCode != 1 {
-		t.Fatalf("local probe exit code = %d, want 1", result.Steps[2].ExitCode)
-	}
 	if result.Steps[3].Status != RunStatusSucceeded {
-		t.Fatalf("remote probe status = %q, want %q", result.Steps[3].Status, RunStatusSucceeded)
+		t.Fatalf("local probe status = %q, want %q", result.Steps[3].Status, RunStatusSucceeded)
+	}
+	if result.Steps[3].ExitCode != 1 {
+		t.Fatalf("local probe exit code = %d, want 1", result.Steps[3].ExitCode)
+	}
+	if result.Steps[4].Status != RunStatusSucceeded {
+		t.Fatalf("remote probe status = %q, want %q", result.Steps[4].Status, RunStatusSucceeded)
 	}
 	if len(result.Timeline) != len(result.Steps) {
 		t.Fatalf("timeline events = %d, want %d", len(result.Timeline), len(result.Steps))
@@ -491,8 +524,8 @@ func TestBootstrapRepositoryCheckoutRecordsDefaultRunBranchProbeSteps(t *testing
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
 	}
-	if !reflect.DeepEqual(executor.calls[2:4], wantProbeCalls) {
-		t.Fatalf("probe calls mismatch\n got: %#v\nwant: %#v", executor.calls[2:4], wantProbeCalls)
+	if !reflect.DeepEqual(executor.calls[3:5], wantProbeCalls) {
+		t.Fatalf("probe calls mismatch\n got: %#v\nwant: %#v", executor.calls[3:5], wantProbeCalls)
 	}
 }
 
@@ -671,6 +704,7 @@ func TestBootstrapRepositoryCheckoutClassifiesRunBranchProbeFailure(t *testing.T
 	probeErr := errors.New("probe failed")
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 		},
@@ -705,6 +739,7 @@ func TestBootstrapRepositoryCheckoutClassifiesRunBranchProbeFailure(t *testing.T
 		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryRepo)
 	}
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCheckLocalRun,

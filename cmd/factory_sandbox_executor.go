@@ -33,6 +33,11 @@ type factorySandboxCleanupRequest struct {
 	Out      io.Writer
 }
 
+type factorySandboxAuthFile struct {
+	SourcePath string
+	RemotePath string
+}
+
 type factorySandboxExecutorRequest struct {
 	ProjectDir          string
 	SandboxName         string
@@ -53,7 +58,9 @@ type factorySandboxExecutorDeps struct {
 	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
 	saveRun                func(factory.Store, *factory.RunRecord) error
@@ -72,7 +79,9 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 		return resolveProviderWithFallback(".", providerName)
 	},
 	runProviderExec:        runFactorySandboxProviderExec,
+	runProviderScript:      runFactorySandboxProviderScript,
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	engineAuthFiles:        factorySandboxEngineAuthFiles,
 	bootstrap:              factory.BootstrapWorkspace,
 	cleanupSandbox:         cleanupFactorySandbox,
 	saveRun:                saveFactorySandboxRunRecord,
@@ -86,6 +95,8 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	customRunProviderExec := deps.runProviderExec != nil
+	customRunProviderScript := deps.runProviderScript != nil
+	customRunProviderExecWithEnv := deps.runProviderExecWithEnv != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
 	}
@@ -110,6 +121,16 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
 	}
+	if deps.runProviderScript == nil {
+		if customRunProviderExec {
+			runProviderExec := deps.runProviderExec
+			deps.runProviderScript = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, script string, out io.Writer) error {
+				return runProviderExec(ctx, provider, info, []string{"sh", "-lc", script}, out)
+			}
+		} else {
+			deps.runProviderScript = defaultFactorySandboxExecutorDeps.runProviderScript
+		}
+	}
 	if deps.runProviderExecWithEnv == nil {
 		if customRunProviderExec {
 			runProviderExec := deps.runProviderExec
@@ -118,6 +139,13 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 			}
 		} else {
 			deps.runProviderExecWithEnv = defaultFactorySandboxExecutorDeps.runProviderExecWithEnv
+		}
+	}
+	if deps.engineAuthFiles == nil {
+		if customRunProviderExec || customRunProviderScript || customRunProviderExecWithEnv {
+			deps.engineAuthFiles = func() []factorySandboxAuthFile { return nil }
+		} else {
+			deps.engineAuthFiles = defaultFactorySandboxExecutorDeps.engineAuthFiles
 		}
 	}
 	if deps.bootstrap == nil {
@@ -274,7 +302,6 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 
 	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.ResolvedSecrets); ok {
 		connectInfo := sandbox.ConnectInfoFromState(target)
-		runProviderExec := deps.runProviderExec
 		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 			Executor: &factorySandboxBootstrapExecutor{
 				provider:               provider,
@@ -287,7 +314,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			},
 			Now: deps.now,
 			RepoExists: func(path string) (bool, error) {
-				return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, runProviderExec, path)
+				return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path)
 			},
 		})
 		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult); appendErr != nil {
@@ -300,6 +327,11 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr, secretRedactor)
 			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, bootstrapErr, secretRedactor)
 		}
+	}
+
+	if err := factorySandboxSyncEngineAuth(ctx, provider, target, remoteOutput, deps); err != nil {
+		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_auth", err, secretRedactor)
+		return factorySandboxRecordedError("prepare factory sandbox auth", target, err, secretRedactor)
 	}
 
 	remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, target, remoteOutput, deps)
@@ -757,8 +789,8 @@ func factorySandboxExecExitCode(err error) int {
 	return 0
 }
 
-func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error, repoPath string) (bool, error) {
-	if runProviderExec == nil {
+func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, runProviderScript func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error, repoPath string) (bool, error) {
+	if runProviderScript == nil {
 		return false, fmt.Errorf("sandbox exec dependency is required")
 	}
 	repoPath = filepath.ToSlash(filepath.Clean(strings.TrimSpace(repoPath)))
@@ -773,7 +805,7 @@ func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provid
 		"if [ -d " + quotedRepoPath + " ] && [ -z \"$(find " + quotedRepoPath + " -mindepth 1 -maxdepth 1 -print -quit)\" ]; then exit 10; fi",
 		"exit 11",
 	}, "\n")
-	err := runProviderExec(ctx, provider, info, []string{"sh", "-lc", script}, io.Discard)
+	err := runProviderScript(ctx, provider, info, script, io.Discard)
 	if err == nil {
 		return true, nil
 	}
@@ -1021,7 +1053,97 @@ func factorySandboxPrepareRemoteInputs(ctx context.Context, req factorySandboxEx
 	return remoteReq, nil
 }
 
+func factorySandboxSyncEngineAuth(ctx context.Context, provider sandbox.Provider, target *sandbox.SandboxState, out io.Writer, deps factorySandboxExecutorDeps) error {
+	deps = normalizeFactorySandboxExecutorDeps(deps)
+	if deps.engineAuthFiles == nil {
+		return nil
+	}
+	connectInfo := sandbox.ConnectInfoFromState(target)
+	for _, authFile := range deps.engineAuthFiles() {
+		sourcePath := strings.TrimSpace(authFile.SourcePath)
+		remotePath := strings.TrimSpace(authFile.RemotePath)
+		if sourcePath == "" || remotePath == "" {
+			continue
+		}
+		content, err := os.ReadFile(sourcePath)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read sandbox engine auth %q: %w", filepath.Base(sourcePath), err)
+		}
+		if err := factorySandboxCopyContentToRemote(ctx, content, remotePath, "0600", provider, connectInfo, out, deps); err != nil {
+			return fmt.Errorf("sync sandbox engine auth %q: %w", filepath.Base(sourcePath), err)
+		}
+	}
+	return nil
+}
+
+func factorySandboxEngineAuthFiles() []factorySandboxAuthFile {
+	candidates := []factorySandboxAuthFile{}
+	if codexHome := factorySandboxCodexHome(); codexHome != "" {
+		candidates = append(candidates,
+			factorySandboxAuthFile{SourcePath: filepath.Join(codexHome, "auth.json"), RemotePath: "/root/.codex/auth.json"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(codexHome, "config.toml"), RemotePath: "/root/.codex/config.toml"},
+		)
+	}
+	candidates = append(candidates, factorySandboxPiAuthFileCandidates()...)
+
+	files := make([]factorySandboxAuthFile, 0, len(candidates))
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		sourcePath := strings.TrimSpace(candidate.SourcePath)
+		remotePath := strings.TrimSpace(candidate.RemotePath)
+		if sourcePath == "" || remotePath == "" || seen[sourcePath+"=>"+remotePath] {
+			continue
+		}
+		info, err := os.Stat(sourcePath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		files = append(files, factorySandboxAuthFile{SourcePath: sourcePath, RemotePath: remotePath})
+		seen[sourcePath+"=>"+remotePath] = true
+	}
+	return files
+}
+
+func factorySandboxCodexHome() string {
+	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
+		return home
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return filepath.Join(home, ".codex")
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".codex")
+	}
+	return ""
+}
+
+func factorySandboxPiAuthFileCandidates() []factorySandboxAuthFile {
+	dirs := []string{}
+	if piHome := strings.TrimSpace(os.Getenv("PI_HOME")); piHome != "" {
+		dirs = append(dirs, piHome, filepath.Join(piHome, "agent"))
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		dirs = append(dirs, filepath.Join(home, ".pi", "agent"))
+	} else if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		dirs = append(dirs, filepath.Join(home, ".pi", "agent"))
+	}
+
+	files := make([]factorySandboxAuthFile, 0, len(dirs)*3)
+	for _, dir := range dirs {
+		files = append(files,
+			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "auth.json"), RemotePath: "/root/.pi/agent/auth.json"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "settings.json"), RemotePath: "/root/.pi/agent/settings.json"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "trust.json"), RemotePath: "/root/.pi/agent/trust.json"},
+		)
+	}
+	return files
+}
+
 func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath, workspaceDir string, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer, deps factorySandboxExecutorDeps) (string, bool, error) {
+	deps = normalizeFactorySandboxExecutorDeps(deps)
 	localPath = strings.TrimSpace(localPath)
 	if localPath == "" {
 		return localPath, false, nil
@@ -1036,15 +1158,32 @@ func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath,
 	}
 	remotePath := factorySandboxRemoteInputPath(localPath)
 	remoteAbsPath := filepath.ToSlash(filepath.Join(workspaceDir, remotePath))
+	if err := factorySandboxCopyContentToRemote(ctx, content, remoteAbsPath, "", provider, connectInfo, out, deps); err != nil {
+		return localPath, false, fmt.Errorf("copy sandbox input %q to %q: %w", localPath, remotePath, err)
+	}
+	return remotePath, true, nil
+}
+
+func factorySandboxCopyContentToRemote(ctx context.Context, content []byte, remoteAbsPath, mode string, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer, deps factorySandboxExecutorDeps) error {
+	deps = normalizeFactorySandboxExecutorDeps(deps)
 	encoded := base64.StdEncoding.EncodeToString(content)
+	remoteAbsPath = filepath.ToSlash(filepath.Clean(strings.TrimSpace(remoteAbsPath)))
+	if remoteAbsPath == "" || remoteAbsPath == "." {
+		return fmt.Errorf("remote path is required")
+	}
 	remoteDir := shellQuote(filepath.ToSlash(filepath.Dir(remoteAbsPath)))
 	remoteFile := shellQuote(remoteAbsPath)
 	if encoded == "" {
-		args := []string{"sh", "-lc", "mkdir -p " + remoteDir + " && : > " + remoteFile}
-		if err := deps.runProviderExec(ctx, provider, connectInfo, args, out); err != nil {
-			return localPath, false, fmt.Errorf("copy sandbox input %q to %q: %w", localPath, remotePath, err)
+		script := "mkdir -p " + remoteDir + " && : > " + remoteFile
+		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
+			return err
 		}
-		return remotePath, true, nil
+		if strings.TrimSpace(mode) != "" {
+			if err := deps.runProviderScript(ctx, provider, connectInfo, "chmod "+shellQuote(mode)+" "+remoteFile, out); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	for offset := 0; offset < len(encoded); offset += factorySandboxCopyInputChunkEncodedBytes {
 		end := offset + factorySandboxCopyInputChunkEncodedBytes
@@ -1057,12 +1196,17 @@ func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath,
 			redirect = ">"
 			prefix = "mkdir -p " + remoteDir + " && "
 		}
-		args := []string{"sh", "-lc", prefix + "printf %s " + shellQuote(encoded[offset:end]) + " | base64 -d " + redirect + " " + remoteFile}
-		if err := deps.runProviderExec(ctx, provider, connectInfo, args, out); err != nil {
-			return localPath, false, fmt.Errorf("copy sandbox input %q to %q: %w", localPath, remotePath, err)
+		script := prefix + "printf %s " + shellQuote(encoded[offset:end]) + " | base64 -d " + redirect + " " + remoteFile
+		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
+			return err
 		}
 	}
-	return remotePath, true, nil
+	if strings.TrimSpace(mode) != "" {
+		if err := deps.runProviderScript(ctx, provider, connectInfo, "chmod "+shellQuote(mode)+" "+remoteFile, out); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func factorySandboxRemoteInputPath(localPath string) string {
@@ -1425,10 +1569,8 @@ func factorySandboxProviderExecArgs(args []string) []string {
 	return []string{"sh", "-lc", shellCommand(args)}
 }
 
-func runFactorySandboxProviderExecWithEnv(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
-	if len(factorySandboxSortedEnvAssignments(env)) == 0 {
-		return runFactorySandboxProviderExec(ctx, provider, info, args, out)
-	}
+func runFactorySandboxProviderScript(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, script string, out io.Writer) error {
+	_ = ctx
 	if provider == nil {
 		return fmt.Errorf("sandbox provider is required")
 	}
@@ -1439,12 +1581,16 @@ func runFactorySandboxProviderExecWithEnv(ctx context.Context, provider sandbox.
 	if cmd == nil {
 		return fmt.Errorf("sandbox provider returned nil exec command")
 	}
+	cmd.Stdin = strings.NewReader(script)
+	return sandbox.RunCmd(cmd, out)
+}
+
+func runFactorySandboxProviderExecWithEnv(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
 	script, err := factorySandboxEnvExecScript(args, env)
 	if err != nil {
 		return err
 	}
-	cmd.Stdin = strings.NewReader(script)
-	return sandbox.RunCmd(cmd, out)
+	return runFactorySandboxProviderScript(ctx, provider, info, script, out)
 }
 
 func factorySandboxEnvExecScript(args []string, env map[string]string) (string, error) {

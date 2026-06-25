@@ -249,6 +249,35 @@ func TestFactoryCommandHelpMetadata(t *testing.T) {
 	}
 }
 
+func TestNewFactoryRunRecordUsesMarkdownBranchName(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "prd-feature.md"), []byte("# PRD: Factory Remote Sandbox E2E Smoke\n\nbranchName: hal/factory-remote-sandbox-e2e-smoke\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(PRD) error: %v", err)
+	}
+
+	now := time.Date(2026, 6, 25, 17, 15, 0, 0, time.UTC)
+	record, err := newFactoryRunRecord(dir, factoryRunRequest{MarkdownPath: ".hal/prd-feature.md"}, factoryRunDeps{
+		newRunID:   func() (string, error) { return "run-markdown-branch", nil },
+		now:        func() time.Time { return now },
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			t.Fatal("currentBranch should not be called for markdown PRD runs")
+			return "", nil
+		},
+		repoRemote: func(string) (string, error) { return "git@github.com:example/hal.git", nil },
+	})
+	if err != nil {
+		t.Fatalf("newFactoryRunRecord() error = %v", err)
+	}
+	if record.BranchName != "hal/factory-remote-sandbox-e2e-smoke" {
+		t.Fatalf("BranchName = %q, want markdown branch", record.BranchName)
+	}
+}
+
 func TestParseFactoryRunRequest(t *testing.T) {
 	tests := []struct {
 		name       string

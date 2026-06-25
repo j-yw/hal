@@ -27,6 +27,7 @@ import (
 	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
@@ -915,9 +916,9 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("resolve repository path: %w", err)
 	}
-	branchName, err := deps.currentBranch(dir)
+	branchName, err := resolveFactoryRunBranchName(dir, req, deps)
 	if err != nil {
-		return factory.RunRecord{}, fmt.Errorf("resolve current branch: %w", err)
+		return factory.RunRecord{}, err
 	}
 	repoRemote, err := deps.repoRemote(dir)
 	if err != nil {
@@ -939,6 +940,36 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		UpdatedAt:    now,
 		Telemetry:    factoryRunEngineTelemetry(dir, deps),
 	}, nil
+}
+
+func resolveFactoryRunBranchName(dir string, req factoryRunRequest, deps factoryRunDeps) (string, error) {
+	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
+		resolvedPath := markdownPath
+		if !filepath.IsAbs(resolvedPath) {
+			resolvedPath = filepath.Join(dir, resolvedPath)
+		}
+		absPath, err := filepath.Abs(resolvedPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve markdown PRD path %s: %w", markdownPath, err)
+		}
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return "", fmt.Errorf("read markdown PRD %s: %w", markdownPath, err)
+			}
+		} else {
+			branchName := prd.ResolveMarkdownBranchName(string(content), absPath)
+			if branchName != "" {
+				return branchName, nil
+			}
+		}
+	}
+
+	branchName, err := deps.currentBranch(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve current branch: %w", err)
+	}
+	return branchName, nil
 }
 
 type factoryPolicyRejectionError struct {

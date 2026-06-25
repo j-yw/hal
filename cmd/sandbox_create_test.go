@@ -2813,7 +2813,13 @@ func TestRunSandboxCreate_RegistryReadErrorStopsCreate(t *testing.T) {
 func TestRunSingleCreate_RegistrationFailureRollsBackCreatedSandbox(t *testing.T) {
 	dir := t.TempDir()
 	setupCreateTest(t, dir)
-	makeSandboxesDirReadOnly(t)
+	originalSave := saveSandboxInstance
+	saveSandboxInstance = func(*sandbox.SandboxState) error {
+		return fmt.Errorf("registry unavailable")
+	}
+	t.Cleanup(func() {
+		saveSandboxInstance = originalSave
+	})
 
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{
@@ -3285,7 +3291,13 @@ func TestRunBatchCreate_ProgressLinePerTarget(t *testing.T) {
 func TestCreateBatchTarget_RegistrationFailureRollsBackCreatedSandbox(t *testing.T) {
 	dir := t.TempDir()
 	setupCreateTest(t, dir)
-	makeSandboxesDirReadOnly(t)
+	originalSave := saveSandboxInstance
+	saveSandboxInstance = func(*sandbox.SandboxState) error {
+		return fmt.Errorf("registry unavailable")
+	}
+	t.Cleanup(func() {
+		saveSandboxInstance = originalSave
+	})
 
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{

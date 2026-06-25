@@ -31,7 +31,9 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 		"startSandbox":           deps.startSandbox,
 		"resolveProvider":        deps.resolveProvider,
 		"runProviderExec":        deps.runProviderExec,
+		"runProviderScript":      deps.runProviderScript,
 		"runProviderExecWithEnv": deps.runProviderExecWithEnv,
+		"engineAuthFiles":        deps.engineAuthFiles,
 		"bootstrap":              deps.bootstrap,
 		"cleanupSandbox":         deps.cleanupSandbox,
 		"saveRun":                deps.saveRun,
@@ -1644,6 +1646,98 @@ func TestFactorySandboxCopyInputToRemoteSplitsLargeInputCommands(t *testing.T) {
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsSyncsEngineAuthBeforeRemoteExecution(t *testing.T) {
+	projectDir := t.TempDir()
+	authPath := filepath.Join(projectDir, "codex-auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"tokens":true}`), 0600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
+	var calls []string
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:  projectDir,
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-sync-auth",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+			BaseBranch: "main",
+		},
+		RemoteAuto:   factoryRunAutoRequest{BaseBranch: "main"},
+		RemoteOutput: io.Discard,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return []factorySandboxAuthFile{{SourcePath: authPath, RemotePath: "/root/.codex/auth.json"}}
+		},
+		runProviderScript: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, _ io.Writer) error {
+			calls = append(calls, "script:"+script)
+			return nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, _ io.Writer) error {
+			calls = append(calls, "remote-auto")
+			return nil
+		},
+		saveRun:     func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("calls = %#v, want auth write, chmod, remote auto", calls)
+	}
+	if !strings.Contains(calls[0], "base64 -d > '/root/.codex/auth.json'") {
+		t.Fatalf("auth copy call = %q", calls[0])
+	}
+	if calls[1] != "script:chmod '0600' '/root/.codex/auth.json'" {
+		t.Fatalf("auth chmod call = %q", calls[1])
+	}
+	if calls[2] != "remote-auto" {
+		t.Fatalf("final call = %q, want remote auto", calls[2])
+	}
+}
+
+func TestFactorySandboxEngineAuthFilesDiscoversCodexAndPiFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("PI_HOME", "")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+		t.Fatalf("MkdirAll(.codex) error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".pi", "agent"), 0700); err != nil {
+		t.Fatalf("MkdirAll(.pi/agent) error: %v", err)
+	}
+	writeFile(t, filepath.Join(home, ".codex"), "auth.json", "{}")
+	writeFile(t, filepath.Join(home, ".codex"), "config.toml", "model = \"gpt-5\"\n")
+	writeFile(t, filepath.Join(home, ".pi", "agent"), "auth.json", "{}")
+	writeFile(t, filepath.Join(home, ".pi", "agent"), "settings.json", "{}")
+	writeFile(t, filepath.Join(home, ".pi", "agent"), "trust.json", "{}")
+
+	files := factorySandboxEngineAuthFiles()
+	got := make(map[string]string, len(files))
+	for _, file := range files {
+		got[file.RemotePath] = file.SourcePath
+	}
+	want := map[string]string{
+		"/root/.codex/auth.json":        filepath.Join(home, ".codex", "auth.json"),
+		"/root/.codex/config.toml":      filepath.Join(home, ".codex", "config.toml"),
+		"/root/.pi/agent/auth.json":     filepath.Join(home, ".pi", "agent", "auth.json"),
+		"/root/.pi/agent/settings.json": filepath.Join(home, ".pi", "agent", "settings.json"),
+		"/root/.pi/agent/trust.json":    filepath.Join(home, ".pi", "agent", "trust.json"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("auth files = %#v, want %#v", got, want)
+	}
+}
+
 func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testing.T) {
 	withAttemptPolicyEnv := func(maxRun, maxReviewFix, maxCIFix int, args ...string) []string {
 		env := []string{
@@ -1842,6 +1936,43 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 	}
 }
 
+func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutEnv(t *testing.T) {
+	provider := &capturingFactorySandboxProvider{
+		cmd: exec.Command("sh", "-c", "cat"),
+	}
+
+	var out bytes.Buffer
+	err := runFactorySandboxProviderExecWithEnv(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"git", "fetch", "--prune", "origin"}, nil, &out)
+	if err != nil {
+		t.Fatalf("runFactorySandboxProviderExecWithEnv() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(provider.args, []string{"sh", "-s"}) {
+		t.Fatalf("provider args = %#v, want shell stdin execution", provider.args)
+	}
+	script := out.String()
+	if !strings.Contains(script, "exec 'git' 'fetch' '--prune' 'origin'") {
+		t.Fatalf("stdin script did not exec command args: %q", script)
+	}
+}
+
+func TestRunFactorySandboxProviderScriptUsesStdin(t *testing.T) {
+	provider := &capturingFactorySandboxProvider{
+		cmd: exec.Command("sh", "-c", "cat"),
+	}
+
+	var out bytes.Buffer
+	err := runFactorySandboxProviderScript(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, "printf %s ok > /tmp/probe\n", &out)
+	if err != nil {
+		t.Fatalf("runFactorySandboxProviderScript() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(provider.args, []string{"sh", "-s"}) {
+		t.Fatalf("provider args = %#v, want shell stdin execution", provider.args)
+	}
+	if got := out.String(); got != "printf %s ok > /tmp/probe\n" {
+		t.Fatalf("stdin script = %q", got)
+	}
+}
+
 func TestRunFactorySandboxProviderExecShellQuotesRemoteArgs(t *testing.T) {
 	provider := &capturingFactorySandboxProvider{
 		cmd: exec.Command("true"),
@@ -1899,9 +2030,9 @@ func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var gotArgs []string
-			got, err := factorySandboxRemoteRepoExists(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ io.Writer) error {
-				gotArgs = append([]string(nil), args...)
+			var gotScript string
+			got, err := factorySandboxRemoteRepoExists(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, _ io.Writer) error {
+				gotScript = script
 				return tt.err
 			}, "/workspace/hal")
 			if tt.wantError != "" {
@@ -1916,8 +2047,8 @@ func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("exists = %v, want %v", got, tt.want)
 			}
-			if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-lc" || !strings.Contains(gotArgs[2], "[ -e '/workspace/hal/.git' ]") {
-				t.Fatalf("remote repo check args = %#v", gotArgs)
+			if !strings.Contains(gotScript, "[ -e '/workspace/hal/.git' ]") {
+				t.Fatalf("remote repo check script = %q", gotScript)
 			}
 		})
 	}

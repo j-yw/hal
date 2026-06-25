@@ -9,6 +9,8 @@ import (
 const (
 	BootstrapStepSetupHalTemplates = "setup_hal_templates"
 	BootstrapStepRefreshHalSkills  = "refresh_hal_skills"
+
+	bootstrapInstallHalScript = `tmp="$(mktemp /tmp/hal-bootstrap.XXXXXX)" && trap 'rm -f "$tmp"' EXIT && go build -o "$tmp" . && install -m 0755 "$tmp" /usr/local/bin/hal && hal version`
 )
 
 // BootstrapHalDeps holds injectable dependencies for refreshing Hal-managed
@@ -23,9 +25,9 @@ type bootstrapHalCommand struct {
 	command  BootstrapCommand
 }
 
-// BootstrapRefreshHal initializes or refreshes Hal templates, managed skills,
-// standards, and engine links in the prepared workspace by delegating to the
-// existing Hal CLI ownership paths.
+// BootstrapRefreshHal installs the checked-out Hal binary, then initializes or
+// refreshes Hal templates, managed skills, standards, and engine links in the
+// prepared workspace by delegating to the existing Hal CLI ownership paths.
 func BootstrapRefreshHal(ctx context.Context, request BootstrapRequest, deps BootstrapHalDeps) (BootstrapResult, error) {
 	repoPath, err := normalizeBootstrapRepoPath(request.WorkspaceDir)
 	if err != nil {
@@ -67,6 +69,14 @@ func bootstrapHalCommands(request BootstrapRequest, repoPath string) []bootstrap
 	}
 
 	return []bootstrapHalCommand{
+		{
+			stepName: BootstrapStepInstallHal,
+			command: BootstrapCommand{
+				Name: "sh",
+				Args: []string{"-lc", bootstrapInstallHalScript},
+				Dir:  repoPath,
+			},
+		},
 		{
 			stepName: BootstrapStepSetupHalTemplates,
 			command: BootstrapCommand{

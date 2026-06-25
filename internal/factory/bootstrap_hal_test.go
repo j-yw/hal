@@ -12,6 +12,7 @@ import (
 func TestBootstrapRefreshHalRefreshesTemplatesAndSkillLinks(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "hal installed from checkout"},
 			{ExitCode: 0, OutputSummary: "hal templates refreshed"},
 			{ExitCode: 0, OutputSummary: "hal skill links refreshed"},
 		},
@@ -39,6 +40,11 @@ func TestBootstrapRefreshHalRefreshesTemplatesAndSkillLinks(t *testing.T) {
 
 	wantCalls := []BootstrapCommand{
 		{
+			Name: "sh",
+			Args: []string{"-lc", bootstrapInstallHalScript},
+			Dir:  "/workspace/hal",
+		},
+		{
 			Name: "hal",
 			Args: []string{"init", "--refresh-templates"},
 			Dir:  "/workspace/hal",
@@ -53,7 +59,7 @@ func TestBootstrapRefreshHalRefreshesTemplatesAndSkillLinks(t *testing.T) {
 		t.Fatalf("executor calls mismatch\n got: %#v\nwant: %#v", executor.calls, wantCalls)
 	}
 
-	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepSetupHalTemplates, BootstrapStepRefreshHalSkills})
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepInstallHal, BootstrapStepSetupHalTemplates, BootstrapStepRefreshHalSkills})
 	for _, step := range result.Steps {
 		if step.Status != RunStatusSucceeded {
 			t.Fatalf("step %q status = %q, want %q", step.Name, step.Status, RunStatusSucceeded)
@@ -69,6 +75,7 @@ func TestBootstrapRefreshHalInitializesWithoutRefreshFlagByDefault(t *testing.T)
 		results: []BootstrapCommandResult{
 			{ExitCode: 0},
 			{ExitCode: 0},
+			{ExitCode: 0},
 		},
 	}
 
@@ -81,6 +88,11 @@ func TestBootstrapRefreshHalInitializesWithoutRefreshFlagByDefault(t *testing.T)
 	}
 
 	wantCalls := []BootstrapCommand{
+		{
+			Name: "sh",
+			Args: []string{"-lc", bootstrapInstallHalScript},
+			Dir:  "/workspace/hal",
+		},
 		{
 			Name: "hal",
 			Args: []string{"init"},
@@ -115,25 +127,28 @@ func TestBootstrapRefreshHalDryRunPlansCommandsWithoutExecutor(t *testing.T) {
 	if result.Failure != nil {
 		t.Fatalf("failure = %#v, want nil", result.Failure)
 	}
-	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepSetupHalTemplates, BootstrapStepRefreshHalSkills})
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepInstallHal, BootstrapStepSetupHalTemplates, BootstrapStepRefreshHalSkills})
 	for _, step := range result.Steps {
 		if step.Status != RunStatusPending {
 			t.Fatalf("step %q status = %q, want %q", step.Name, step.Status, RunStatusPending)
 		}
 	}
-	if result.Steps[0].CommandSummary != "hal init --refresh-templates" {
+	if result.Steps[0].CommandSummary != "sh -lc "+bootstrapInstallHalScript {
 		t.Fatalf("first command summary = %q", result.Steps[0].CommandSummary)
 	}
-	if result.Steps[1].CommandSummary != "hal links refresh" {
+	if result.Steps[1].CommandSummary != "hal init --refresh-templates" {
 		t.Fatalf("second command summary = %q", result.Steps[1].CommandSummary)
+	}
+	if result.Steps[2].CommandSummary != "hal links refresh" {
+		t.Fatalf("third command summary = %q", result.Steps[2].CommandSummary)
 	}
 }
 
-func TestBootstrapRefreshHalClassifiesSetupFailureAsEngineSetup(t *testing.T) {
+func TestBootstrapRefreshHalClassifiesInstallFailureAsEngineSetup(t *testing.T) {
 	setupErr := errors.New("exit status 1")
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
-			{ExitCode: 1, StderrSummary: "failed to migrate templates"},
+			{ExitCode: 1, StderrSummary: "failed to install hal"},
 		},
 		errs: []error{setupErr},
 	}
@@ -151,19 +166,20 @@ func TestBootstrapRefreshHalClassifiesSetupFailureAsEngineSetup(t *testing.T) {
 	if result.Failure.Category != BootstrapFailureCategoryEngineSetup {
 		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryEngineSetup)
 	}
-	if result.Failure.Message != "Hal or engine setup failed while running hal init" {
+	if result.Failure.Message != "Hal or engine setup failed while running sh" {
 		t.Fatalf("failure message = %q", result.Failure.Message)
 	}
-	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepSetupHalTemplates})
+	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepInstallHal})
 }
 
 func TestBootstrapRefreshHalClassifiesMissingHalAsDependency(t *testing.T) {
 	missingHal := &exec.Error{Name: "hal", Err: exec.ErrNotFound}
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "hal installed"},
 			{ExitCode: 0, StderrSummary: "executable file not found"},
 		},
-		errs: []error{missingHal},
+		errs: []error{nil, missingHal},
 	}
 
 	result, err := BootstrapRefreshHal(context.Background(), BootstrapRequest{WorkspaceDir: "/workspace/hal"}, BootstrapHalDeps{

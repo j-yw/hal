@@ -13,15 +13,18 @@ import (
 )
 
 const (
-	BootstrapStepCloneRepository = "clone_repository"
-	BootstrapStepEnsureWorkspace = "ensure_workspace_root"
-	BootstrapStepFetchRepository = "fetch_repository"
-	BootstrapStepCheckoutBase    = "checkout_base"
-	BootstrapStepCheckLocalRun   = "check_local_run_branch"
-	BootstrapStepCheckRemoteRun  = "check_remote_run_branch"
-	BootstrapStepFetchRunBranch  = "fetch_run_branch"
-	BootstrapStepCheckoutRun     = "checkout_run_branch"
-	BootstrapStepCreateRunBranch = "create_run_branch"
+	BootstrapStepCloneRepository  = "clone_repository"
+	BootstrapStepEnsureWorkspace  = "ensure_workspace_root"
+	BootstrapStepCleanEngineLinks = "clean_engine_links"
+	BootstrapStepFetchRepository  = "fetch_repository"
+	BootstrapStepCheckoutBase     = "checkout_base"
+	BootstrapStepCheckLocalRun    = "check_local_run_branch"
+	BootstrapStepCheckRemoteRun   = "check_remote_run_branch"
+	BootstrapStepFetchRunBranch   = "fetch_run_branch"
+	BootstrapStepCheckoutRun      = "checkout_run_branch"
+	BootstrapStepCreateRunBranch  = "create_run_branch"
+
+	bootstrapCleanEngineLinksScript = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
 )
 
 var (
@@ -174,6 +177,15 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	commands := make([]bootstrapRepositoryCommand, 0, 2)
 	if exists {
 		commands = append(commands, bootstrapRepositoryCommand{
+			stepName: BootstrapStepCleanEngineLinks,
+			command: BootstrapCommand{
+				Name: "sh",
+				Args: []string{"-lc", bootstrapCleanEngineLinksScript},
+				Dir:  repoPath,
+				Env:  bootstrapGitEnv(),
+			},
+		})
+		commands = append(commands, bootstrapRepositoryCommand{
 			stepName: BootstrapStepFetchRepository,
 			command: BootstrapCommand{
 				Name: "git",
@@ -205,9 +217,9 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 		})
 	}
 
-	checkoutArgs := []string{"checkout", baseBranch}
+	checkoutArgs := []string{"checkout", "-f", baseBranch}
 	if exists {
-		checkoutArgs = []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
+		checkoutArgs = []string{"checkout", "-f", "-B", baseBranch, "origin/" + baseBranch}
 	}
 	commands = append(commands, bootstrapRepositoryCommand{
 		stepName: BootstrapStepCheckoutBase,
@@ -239,7 +251,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 				stepName: BootstrapStepCheckoutRun,
 				command: BootstrapCommand{
 					Name: "git",
-					Args: []string{"checkout", runBranch},
+					Args: []string{"checkout", "-f", runBranch},
 					Dir:  repoPath,
 					Env:  bootstrapGitEnv(),
 				},
@@ -266,7 +278,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 				stepName: BootstrapStepCheckoutRun,
 				command: BootstrapCommand{
 					Name: "git",
-					Args: []string{"checkout", "--track", "origin/" + runBranch},
+					Args: []string{"checkout", "-f", "--track", "origin/" + runBranch},
 					Dir:  repoPath,
 					Env:  bootstrapGitEnv(),
 				},
@@ -279,7 +291,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 			stepName: BootstrapStepCreateRunBranch,
 			command: BootstrapCommand{
 				Name: "git",
-				Args: []string{"checkout", "-b", runBranch, baseBranch},
+				Args: []string{"checkout", "-f", "-b", runBranch, baseBranch},
 				Dir:  repoPath,
 				Env:  bootstrapGitEnv(),
 			},

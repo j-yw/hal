@@ -12,11 +12,13 @@ import (
 func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "run branch created"},
 			{ExitCode: 0, OutputSummary: "hal found"},
 			{ExitCode: 0, OutputSummary: "codex found"},
+			{ExitCode: 0, OutputSummary: "hal installed from checkout"},
 			{ExitCode: 0, OutputSummary: "hal refreshed"},
 			{ExitCode: 0, OutputSummary: "links refreshed"},
 			{ExitCode: 0, OutputSummary: "doctor passed"},
@@ -75,11 +77,13 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 	}
 
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCreateRunBranch,
 		BootstrapStepVerifyHal,
 		"verify_engine_codex",
+		BootstrapStepInstallHal,
 		BootstrapStepSetupHalTemplates,
 		BootstrapStepRefreshHalSkills,
 		BootstrapStepFinalCheckHalDoctor,
@@ -90,11 +94,13 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 
 	gotSummaries := bootstrapCommandSummaries(executor.calls)
 	wantSummaries := []string{
+		"sh -lc " + bootstrapCleanEngineLinksScript,
 		"git fetch --prune origin",
-		"git checkout -B main origin/main",
-		"git checkout -b hal/factory-remote-workspace-bootstrap main",
+		"git checkout -f -B main origin/main",
+		"git checkout -f -b hal/factory-remote-workspace-bootstrap main",
 		"hal version",
 		"codex --version",
+		"sh -lc " + bootstrapInstallHalScript,
 		"hal init --refresh-templates",
 		"hal links refresh",
 		"hal doctor --json",
@@ -143,7 +149,7 @@ func TestBootstrapWorkspaceIsIdempotentForPreparedFakeWorkspace(t *testing.T) {
 	if !containsCommandSummary(firstCalls, "git clone git@github.com:jywlabs/hal.git /workspace/hal") {
 		t.Fatalf("first bootstrap did not clone missing repo: %#v", firstCalls)
 	}
-	if !containsCommandSummary(firstCalls, "git checkout -b hal/factory-remote-workspace-bootstrap main") {
+	if !containsCommandSummary(firstCalls, "git checkout -f -b hal/factory-remote-workspace-bootstrap main") {
 		t.Fatalf("first bootstrap did not create run branch: %#v", firstCalls)
 	}
 	if first.CheckedOutBranch != "hal/factory-remote-workspace-bootstrap" {
@@ -159,13 +165,13 @@ func TestBootstrapWorkspaceIsIdempotentForPreparedFakeWorkspace(t *testing.T) {
 	if containsCommandPrefix(secondCalls, "git clone ") {
 		t.Fatalf("second bootstrap recloned existing repo: %#v", secondCalls)
 	}
-	if containsCommandSummary(secondCalls, "git checkout -b hal/factory-remote-workspace-bootstrap main") {
+	if containsCommandSummary(secondCalls, "git checkout -f -b hal/factory-remote-workspace-bootstrap main") {
 		t.Fatalf("second bootstrap recreated local run branch: %#v", secondCalls)
 	}
 	if !containsCommandSummary(secondCalls, "git fetch --prune origin") {
 		t.Fatalf("second bootstrap did not fetch existing repo: %#v", secondCalls)
 	}
-	if !containsCommandSummary(secondCalls, "git checkout hal/factory-remote-workspace-bootstrap") {
+	if !containsCommandSummary(secondCalls, "git checkout -f hal/factory-remote-workspace-bootstrap") {
 		t.Fatalf("second bootstrap did not reuse local run branch: %#v", secondCalls)
 	}
 	if second.CheckedOutBranch != "hal/factory-remote-workspace-bootstrap" {
@@ -177,13 +183,14 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 	engineErr := errors.New("exit status 1")
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "run branch created"},
 			{ExitCode: 0, OutputSummary: "hal found"},
 			{ExitCode: 1, StderrSummary: "codex setup failed"},
 		},
-		errs: []error{nil, nil, nil, nil, engineErr},
+		errs: []error{nil, nil, nil, nil, nil, engineErr},
 	}
 	request := BootstrapRequest{
 		RepositoryURL: "git@github.com:jywlabs/hal.git",
@@ -225,6 +232,7 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryEngineSetup)
 	}
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCreateRunBranch,
@@ -371,8 +379,11 @@ func (f *statefulBootstrapExecutor) Run(_ context.Context, command BootstrapComm
 		case "clone":
 			*f.repoExists = true
 		case "checkout":
-			if len(command.Args) >= 4 && command.Args[1] == "-b" {
-				f.localBranches[command.Args[2]] = true
+			for i, arg := range command.Args {
+				if arg == "-b" && i+1 < len(command.Args) {
+					f.localBranches[command.Args[i+1]] = true
+					break
+				}
 			}
 		}
 	}
