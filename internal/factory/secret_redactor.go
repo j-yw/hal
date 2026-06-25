@@ -110,6 +110,7 @@ func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *Sand
 		return nil
 	}
 	safe := *sandbox
+	safe.Name = r.RedactString(safe.Name)
 	safe.Size = r.RedactString(safe.Size)
 	safe.Connection = r.redactSandboxConnectionMetadata(safe.Connection)
 	safe.SSHCommand = r.RedactString(safe.SSHCommand)

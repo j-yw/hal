@@ -281,8 +281,8 @@ func TestRunSecretRedactorPreservesRunRecordControlFields(t *testing.T) {
 	if got.Policy.CleanupBehavior != "sandbox" {
 		t.Fatalf("Policy.CleanupBehavior = %q, want control field preserved", got.Policy.CleanupBehavior)
 	}
-	if got.Sandbox.Name != "sandbox" {
-		t.Fatalf("Sandbox.Name = %q, want control field preserved", got.Sandbox.Name)
+	if got.Sandbox.Name != RunSecretRedactionPlaceholder {
+		t.Fatalf("Sandbox.Name = %q, want redacted sandbox name", got.Sandbox.Name)
 	}
 	if got.Sandbox.Provider != "codex" {
 		t.Fatalf("Sandbox.Provider = %q, want control field preserved", got.Sandbox.Provider)
@@ -322,5 +322,31 @@ func TestRunSecretRedactorPreservesRunRecordControlFields(t *testing.T) {
 	}
 	if got.Failure.Message != "failed with "+RunSecretRedactionPlaceholder {
 		t.Fatalf("Failure.Message = %q, want redacted output", got.Failure.Message)
+	}
+}
+
+func TestRunSecretRedactorRedactsSandboxMetadataName(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "SANDBOX_SECRET", Source: RunSecretSourceEnv, Required: true, Value: "secret-sandbox"},
+	})
+
+	got := redactor.RedactRunRecord(RunRecord{
+		SandboxName: "factory-secret-sandbox",
+		Sandbox: &SandboxMetadata{
+			Name:       "factory-secret-sandbox",
+			Provider:   "daytona",
+			Status:     "running",
+			SSHCommand: "hal sandbox ssh factory-secret-sandbox",
+		},
+	})
+
+	if got.SandboxName != "factory-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("SandboxName = %q, want redacted sandbox name", got.SandboxName)
+	}
+	if got.Sandbox.Name != "factory-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Sandbox.Name = %q, want redacted sandbox metadata name", got.Sandbox.Name)
+	}
+	if got.Sandbox.SSHCommand != "hal sandbox ssh factory-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Sandbox.SSHCommand = %q, want redacted sandbox command", got.Sandbox.SSHCommand)
 	}
 }
