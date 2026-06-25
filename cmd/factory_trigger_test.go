@@ -480,6 +480,62 @@ func TestRunFactoryTriggerWithDepsRedactsCredentialedRemoteWhenSecretValueMissin
 	}
 }
 
+func TestRunFactoryTriggerWithDepsRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 4, 0, 0, time.UTC)
+	credential := "factory-trigger-remote-token"
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-credentialed-remote", "queue-trigger-credentialed-remote")
+	deps.repoRemote = func(string) (string, error) {
+		return "https://" + credential + ":x-oauth-basic@github.com/ReScienceLab/hal.git", nil
+	}
+	deps.lookupEnv = func(name string) (string, bool) {
+		t.Fatalf("lookupEnv(%q) called without declared secrets", name)
+		return "", false
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		ExecutorMode: factory.ExecutorModeLocal,
+		JSON:         true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), credential) {
+		t.Fatalf("trigger JSON leaked credentialed remote secret: %s", out.String())
+	}
+
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	wantRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/ReScienceLab/hal.git"
+	if resp.Run.RepoRemote != wantRemote {
+		t.Fatalf("response repo remote = %q, want %q", resp.Run.RepoRemote, wantRemote)
+	}
+
+	record, err := store.LoadRun("run-trigger-credentialed-remote")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.RepoRemote != wantRemote {
+		t.Fatalf("stored repo remote = %q, want %q", record.RepoRemote, wantRemote)
+	}
+	if len(record.Secrets) != 0 {
+		t.Fatalf("secrets metadata = %#v, want none", record.Secrets)
+	}
+}
+
 func TestRunFactoryTriggerWithDepsMarksRunFailedWhenEnqueueFails(t *testing.T) {
 	repoDir := t.TempDir()
 	halDir := filepath.Join(repoDir, ".hal")

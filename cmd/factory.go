@@ -4872,9 +4872,6 @@ func readGitRemoteOptionalInDir(dir string) (string, error) {
 }
 
 func sanitizeFactoryRunRecordCredentialedRemote(record factory.RunRecord) factory.RunRecord {
-	if len(record.Secrets) == 0 {
-		return record
-	}
 	record.RepoRemote = sanitizeCredentialedRemote(record.RepoRemote)
 	return record
 }

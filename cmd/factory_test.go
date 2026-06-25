@@ -650,6 +650,83 @@ func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testin
 	}
 }
 
+func TestRunFactoryRunWithDepsRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	credential := "ghp_factory_remote_credential_123"
+	wantRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/jywlabs/hal.git"
+	pipelineCalled := false
+	policy := factory.DefaultFactoryPolicy()
+
+	err := runFactoryRunWithDeps(context.Background(), ".", factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-credentialed-remote", nil },
+		now:          func() time.Time { return time.Date(2026, 6, 21, 10, 35, 0, 0, time.UTC) },
+		workingDir:   func() (string, error) { return "/workspace/hal", nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "https://x:" + credential + "@github.com/jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			t.Fatalf("lookupEnv(%q) called without declared secrets", name)
+			return "", false
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			pipelineCalled = true
+			loaded, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() error: %v", err)
+			}
+			data, err := json.Marshal(loaded)
+			if err != nil {
+				t.Fatalf("json.Marshal(run record) error: %v", err)
+			}
+			if strings.Contains(string(data), credential) {
+				t.Fatalf("run record JSON leaked credentialed remote secret: %s", string(data))
+			}
+			if loaded.RepoRemote != wantRemote {
+				t.Fatalf("stored repo remote = %q, want %q", loaded.RepoRemote, wantRemote)
+			}
+			return nil
+		},
+		loadVerify:     func(string) (*verify.Config, error) { return nil, nil },
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !pipelineCalled {
+		t.Fatal("pipeline dependency was not invoked")
+	}
+	record, err := store.LoadRun("run-credentialed-remote")
+	if err != nil {
+		t.Fatalf("LoadRun() final record error: %v", err)
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal(final run record) error: %v", err)
+	}
+	if strings.Contains(string(data), credential) {
+		t.Fatalf("final run record JSON leaked credentialed remote secret: %s", string(data))
+	}
+	if record.RepoRemote != wantRemote {
+		t.Fatalf("final repo remote = %q, want %q", record.RepoRemote, wantRemote)
+	}
+	if len(record.Secrets) != 0 {
+		t.Fatalf("secrets metadata = %#v, want none", record.Secrets)
+	}
+}
+
 func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
