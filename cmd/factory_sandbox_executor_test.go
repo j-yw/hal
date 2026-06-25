@@ -331,6 +331,68 @@ func TestRunFactorySandboxExecutorWithDepsDefersOnSuccessCleanup(t *testing.T) {
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsDefersAlwaysCleanupAfterSuccess(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".hal", "prd.md"), []byte("# PRD\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorAlways
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+
+	var cleanupCalls int
+	var beforeCleanupCalls int
+	if err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:          projectDir,
+		SandboxName:         "factory-dev",
+		RunRecord:           factory.RunRecord{RunID: "run-sandbox-defer-always-cleanup", RepoRemote: "git@github.com:example/repo.git", Policy: &policy},
+		RemoteAuto:          factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
+		RemoteOutput:        io.Discard,
+		DeferSuccessCleanup: true,
+		BeforeCleanup: func(context.Context, factory.RunRecord) error {
+			beforeCleanupCalls++
+			return nil
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) {
+			return store, nil
+		},
+		now: func() time.Time {
+			return time.Date(2026, 6, 21, 9, 36, 0, 0, time.UTC)
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 when always cleanup is deferred after successful execution", cleanupCalls)
+	}
+	if beforeCleanupCalls != 0 {
+		t.Fatalf("BeforeCleanup calls = %d, want 0 when always cleanup is deferred after successful execution", beforeCleanupCalls)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsCleansUpEarlyFailureWhenPolicyAlways(t *testing.T) {
 	tests := []struct {
 		name       string

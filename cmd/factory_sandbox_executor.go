@@ -230,7 +230,11 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 	cleanupSucceeded := false
 	defer func() {
-		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, cleanupBehavior, cleanupSucceeded)
+		deferredCleanupBehavior := cleanupBehavior
+		if req.DeferSuccessCleanup && returnErr == nil && cleanupBehavior == factory.CleanupBehaviorAlways {
+			deferredCleanupBehavior = factory.CleanupBehaviorPreserve
+		}
+		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
 		if cleaned {
 			if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target); recordErr != nil {
 				if cleanupErr != nil {

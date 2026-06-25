@@ -673,6 +673,11 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
+		if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "verification failure"); cleanupErr != nil {
+			recordErrs = append(recordErrs, cleanupErr)
+		} else if cleanedUp {
+			failedRecord = cleanupRecord
+		}
 		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
 			recordErrs = append(recordErrs, artifactErr)
 		} else {
@@ -1002,11 +1007,27 @@ func factoryPolicySkipsCI(policy factory.FactoryPolicy) bool {
 }
 
 func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
-	return strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorOnSuccess
+	switch strings.TrimSpace(policy.CleanupBehavior) {
+	case factory.CleanupBehaviorOnSuccess, factory.CleanupBehaviorAlways:
+		return true
+	default:
+		return false
+	}
+}
+
+func factoryRunCleansSandboxAfterFailure(policy factory.FactoryPolicy) bool {
+	return strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorAlways
 }
 
 func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
 	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, "success")
+}
+
+func cleanupFactoryRunSandboxAfterFailedRun(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
+	if !factoryRunCleansSandboxAfterFailure(policy) {
+		return record, false, nil
+	}
+	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, cleanupContext)
 }
 
 func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
@@ -1078,6 +1099,11 @@ func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store fac
 		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 		}
+	}
+	if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "artifact collection failure"); cleanupErr != nil {
+		recordErrs = append(recordErrs, cleanupErr)
+	} else if cleanedUp {
+		failedRecord = cleanupRecord
 	}
 	if artifactRecord, recordArtifactErr := recordFactoryRunRecordArtifact(store, failedRecord); recordArtifactErr != nil {
 		recordErrs = append(recordErrs, recordArtifactErr)

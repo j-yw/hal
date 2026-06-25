@@ -2257,6 +2257,28 @@ func TestRunFactoryRunWithDepsPreservesOnSuccessSandboxWhenArtifactCollectionFai
 	}
 }
 
+func TestFactoryRunDefersSandboxSuccessCleanup(t *testing.T) {
+	tests := []struct {
+		name     string
+		behavior string
+		want     bool
+	}{
+		{name: "preserve", behavior: factory.CleanupBehaviorPreserve},
+		{name: "on success", behavior: factory.CleanupBehaviorOnSuccess, want: true},
+		{name: "always", behavior: factory.CleanupBehaviorAlways, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := factory.DefaultFactoryPolicy()
+			policy.CleanupBehavior = tt.behavior
+			if got := factoryRunDefersSandboxSuccessCleanup(policy); got != tt.want {
+				t.Fatalf("factoryRunDefersSandboxSuccessCleanup() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMissingOptionalArtifactWarnings(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
