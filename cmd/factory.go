@@ -5025,6 +5025,9 @@ func sanitizeCredentialedRemote(remote string) string {
 }
 
 func sanitizeCredentialedRemoteReferences(value string) string {
+	if strings.Contains(value, `:\/\/`) {
+		value = strings.ReplaceAll(value, `\/`, `/`)
+	}
 	if !strings.Contains(value, "://") {
 		return value
 	}

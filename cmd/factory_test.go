@@ -785,6 +785,17 @@ func TestSanitizeCredentialedRemoteRedactsCredentialQueryAndFragmentValues(t *te
 	}
 }
 
+func TestSanitizeFactoryLogTextRedactsJSONEscapedCredentialedRemote(t *testing.T) {
+	credential := "ghp_factory_json_escaped_credential_123"
+	got := sanitizeFactoryLogText(`{"remote":"https:\/\/x:` + credential + `@github.com/org/repo.git"}`)
+	if strings.Contains(got, credential) {
+		t.Fatalf("sanitizeFactoryLogText() leaked credentialed remote: %q", got)
+	}
+	if !strings.Contains(got, "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/org/repo.git") {
+		t.Fatalf("sanitizeFactoryLogText() = %q, want credential redaction marker", got)
+	}
+}
+
 func TestRedactFactoryRunErrorRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
 	credential := "ghp_factory_error_credential_123"
 	err := errors.New("clone failed: https://x:" + credential + "@github.com/jywlabs/hal.git")
