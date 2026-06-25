@@ -70,8 +70,12 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 		return record
 	}
 	record.Source = r.redactSourceMetadata(record.Source)
+	record.Engine = r.RedactString(record.Engine)
 	record.RepoPath = r.RedactString(record.RepoPath)
 	record.RepoRemote = r.RedactString(record.RepoRemote)
+	record.BranchName = r.RedactString(record.BranchName)
+	record.BaseBranch = r.RedactString(record.BaseBranch)
+	record.SandboxName = r.RedactString(record.SandboxName)
 	record.Policy = r.redactFactoryPolicy(record.Policy)
 	record.Sandbox = r.redactSandboxMetadata(record.Sandbox)
 	record.Artifacts = r.redactArtifactReferences(record.Artifacts)

@@ -140,7 +140,6 @@ func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 	})
 
 	got := redactor.RedactRunRecord(RunRecord{
-		BranchName: "branch-env",
 		Secrets: []RunSecretMetadata{{
 			Name:     "env",
 			Source:   RunSecretSourceEnv,
@@ -149,9 +148,6 @@ func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 		}},
 	})
 
-	if got.BranchName != "branch-env" {
-		t.Fatalf("BranchName = %q, want control field preserved", got.BranchName)
-	}
 	wantSecret := RunSecretMetadata{
 		Name:     "env",
 		Source:   RunSecretSourceEnv,
@@ -255,20 +251,20 @@ func TestRunSecretRedactorPreservesRunRecordControlFields(t *testing.T) {
 	if got.ExecutorMode != ExecutorModeSandbox {
 		t.Fatalf("ExecutorMode = %q, want control field preserved", got.ExecutorMode)
 	}
-	if got.Engine != "codex" {
-		t.Fatalf("Engine = %q, want control field preserved", got.Engine)
+	if got.Engine != RunSecretRedactionPlaceholder {
+		t.Fatalf("Engine = %q, want redacted config field", got.Engine)
 	}
 	if got.Source.Kind != "prd" {
 		t.Fatalf("Source.Kind = %q, want control field preserved", got.Source.Kind)
 	}
-	if got.BranchName != "hal/factory-secret" {
-		t.Fatalf("BranchName = %q, want control field preserved", got.BranchName)
+	if got.BranchName != RunSecretRedactionPlaceholder {
+		t.Fatalf("BranchName = %q, want redacted branch name", got.BranchName)
 	}
-	if got.BaseBranch != "hal/factory-secret" {
-		t.Fatalf("BaseBranch = %q, want control field preserved", got.BaseBranch)
+	if got.BaseBranch != RunSecretRedactionPlaceholder {
+		t.Fatalf("BaseBranch = %q, want redacted base branch", got.BaseBranch)
 	}
-	if got.SandboxName != "sandbox" {
-		t.Fatalf("SandboxName = %q, want control field preserved", got.SandboxName)
+	if got.SandboxName != RunSecretRedactionPlaceholder {
+		t.Fatalf("SandboxName = %q, want redacted sandbox name", got.SandboxName)
 	}
 	if got.CurrentStep != RunStatusRunning {
 		t.Fatalf("CurrentStep = %q, want control field preserved", got.CurrentStep)

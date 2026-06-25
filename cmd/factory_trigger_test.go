@@ -116,6 +116,60 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	}
 }
 
+func TestRunFactoryTriggerWithDepsRedactsTriggerScopedSecrets(t *testing.T) {
+	secretValue := "trigger-secret-value"
+	repoDir := filepath.Join(t.TempDir(), "repo-"+secretValue)
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 1, 0, 0, time.UTC)
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-secret", "queue-trigger-secret")
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name != "TRIGGER_SECRET" {
+			t.Fatalf("lookupEnv(%q), want TRIGGER_SECRET", name)
+		}
+		return secretValue, true
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "base-" + secretValue,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "TRIGGER_SECRET",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+		JSON: true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+
+	if strings.Contains(out.String(), secretValue) {
+		t.Fatalf("output contains secret value: %s", out.String())
+	}
+	record, err := store.LoadRun("run-trigger-secret")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if strings.Contains(record.RepoPath, secretValue) {
+		t.Fatalf("RepoPath = %q, want secret redacted", record.RepoPath)
+	}
+	if strings.Contains(record.BaseBranch, secretValue) {
+		t.Fatalf("BaseBranch = %q, want secret redacted", record.BaseBranch)
+	}
+	if !strings.Contains(record.RepoPath, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("RepoPath = %q, want redaction placeholder", record.RepoPath)
+	}
+}
+
 func TestRunFactoryTriggerWithDepsRejectsSandboxRequiredBeforeEnqueue(t *testing.T) {
 	repoDir := t.TempDir()
 	halDir := filepath.Join(repoDir, ".hal")

@@ -38,6 +38,7 @@ type factoryTriggerDeps struct {
 	loadPolicy           func(string) (*factory.FactoryPolicy, error)
 	loadEngine           func(string) (string, error)
 	discoverLatestReport func(string, string) (string, bool, error)
+	lookupEnv            func(string) (string, bool)
 }
 
 type factoryTriggerRequest struct {
@@ -72,6 +73,7 @@ var defaultFactoryTriggerDeps = factoryTriggerDeps{
 	loadPolicy:           factory.LoadPolicyConfig,
 	loadEngine:           compound.LoadDefaultEngine,
 	discoverLatestReport: discoverLatestReportCandidate,
+	lookupEnv:            os.LookupEnv,
 }
 
 var factoryTriggerCmd = &cobra.Command{
@@ -257,7 +259,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		return err
 	}
 	record.ExecutorMode = executorMode
-	triggerRedactor := factory.RunSecretRedactor{}
+	triggerRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
 	safeRecord := redactFactoryRunRecordForStorage(record, triggerRedactor)
 
 	if err := createFactoryRunRecord(store, safeRecord); err != nil {
@@ -380,6 +382,9 @@ func normalizeFactoryTriggerDeps(deps factoryTriggerDeps) factoryTriggerDeps {
 	}
 	if deps.discoverLatestReport == nil {
 		deps.discoverLatestReport = defaultFactoryTriggerDeps.discoverLatestReport
+	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = defaultFactoryTriggerDeps.lookupEnv
 	}
 	return deps
 }
