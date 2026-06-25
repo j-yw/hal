@@ -130,6 +130,14 @@ func NormalizeFailureCategoryForContractV1(category string) string {
 	}
 }
 
+// Next action type values.
+const (
+	NextActionTypeInspect   = "inspect"
+	NextActionTypeTakeover  = "takeover"
+	NextActionTypeContinue  = "continue"
+	NextActionTypeCompleted = "completed"
+)
+
 // Timeline event type values.
 const (
 	EventTypeRunCreated            = "run_created"
@@ -311,6 +319,33 @@ type FailureSummary struct {
 	Recoverable      bool   `json:"recoverable"`
 	SuggestedCommand string `json:"suggestedCommand,omitempty"`
 	ExitCode         int    `json:"exitCode,omitempty"`
+}
+
+// NextAction is the shared factory handoff guidance model. It intentionally
+// carries only durable run context and safe local commands; sandbox connection
+// addresses and other network endpoints do not belong here.
+type NextAction struct {
+	ID                string               `json:"id"`
+	Type              string               `json:"type"`
+	Command           string               `json:"command"`
+	Description       string               `json:"description"`
+	RunID             string               `json:"runId,omitempty"`
+	SandboxName       string               `json:"sandboxName,omitempty"`
+	RepoPath          string               `json:"repoPath,omitempty"`
+	BranchName        string               `json:"branchName,omitempty"`
+	PullRequestURL    string               `json:"pullRequestUrl,omitempty"`
+	CurrentStep       string               `json:"currentStep,omitempty"`
+	FailureReason     string               `json:"failureReason,omitempty"`
+	ArtifactLocations []NextActionLocation `json:"artifactLocations,omitempty"`
+	LogLocations      []NextActionLocation `json:"logLocations,omitempty"`
+}
+
+// NextActionLocation identifies a safe local or store-backed location relevant
+// to next-action handoff output.
+type NextActionLocation struct {
+	Name       string `json:"name,omitempty"`
+	Path       string `json:"path,omitempty"`
+	StoredPath string `json:"storedPath,omitempty"`
 }
 
 // QueueEntry captures one durable factory queue item.

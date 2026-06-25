@@ -46,6 +46,8 @@ var factoryRunReportFlag string
 var factoryRunBaseFlag string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
+var factoryOpenExecFlag bool
+var factoryOpenJSONFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -62,6 +64,7 @@ pending local factory work in the same global store.`,
   hal factory list --json
   hal factory status <run-id> --json
   hal factory logs <run-id>
+  hal factory open <run-id>
   hal factory artifacts <run-id>
   hal factory trigger --repo . --prd .hal/prd-feature.md --json
   hal factory queue list --json`,
@@ -155,12 +158,15 @@ func init() {
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
 	factoryArtifactsCmd.Flags().BoolVar(&factoryArtifactsJSONFlag, "json", false, "Output machine-readable JSON (factory-artifacts-v1 contract)")
 	factoryLogsCmd.Flags().BoolVar(&factoryLogsJSONFlag, "json", false, "Output machine-readable JSON (factory-logs-v1 contract)")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenExecFlag, "exec", false, "Execute the suggested inspection or resume command")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenJSONFlag, "json", false, "Output machine-readable JSON (factory-open-v1 contract)")
 	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
 	factoryCmd.AddCommand(factoryLogsCmd)
+	factoryCmd.AddCommand(factoryOpenCmd)
 	factoryCmd.AddCommand(factoryArtifactsCmd)
 	factoryCmd.AddCommand(factoryTriggerCmd)
 	factoryCmd.AddCommand(factoryQueueCmd)
@@ -355,6 +361,7 @@ type FactoryStatusRun struct {
 	Verification *factory.VerificationRecord `json:"verification,omitempty"`
 	Telemetry    *factory.RunTelemetry       `json:"telemetry,omitempty"`
 	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
+	Handoff      *factory.HandoffSummary     `json:"handoff,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -2567,12 +2574,20 @@ func runFactoryStatusWithDeps(out io.Writer, runID string, jsonMode bool, deps f
 		events = []factory.EventRecord{}
 	}
 
+	handoff := factory.NewHandoffSummary(store, *record)
 	if jsonMode {
-		return renderFactoryStatusJSON(out, *record, events)
+		return renderFactoryStatusJSON(out, *record, events, factoryStatusJSONHandoff(handoff))
 	}
 
-	renderFactoryStatusTable(out, *record, events)
+	renderFactoryStatusTable(out, *record, events, &handoff)
 	return nil
+}
+
+func factoryStatusJSONHandoff(handoff factory.HandoffSummary) *factory.HandoffSummary {
+	if !handoff.HasActionableData() {
+		return nil
+	}
+	return &handoff
 }
 
 func runFactoryArtifacts(cmd *cobra.Command, args []string) error {
@@ -2686,10 +2701,10 @@ func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 	return nil
 }
 
-func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord) error {
+func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) error {
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
-		Run:             newFactoryStatusRun(record, events),
+		Run:             newFactoryStatusRun(record, events, handoff),
 		Timeline:        normalizeFactoryTimelineEventsForContractV1(events),
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
@@ -2717,7 +2732,7 @@ func renderFactoryLogsJSON(out io.Writer, runID string, chunks []factory.LogChun
 	return nil
 }
 
-func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord) FactoryStatusRun {
+func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) FactoryStatusRun {
 	return FactoryStatusRun{
 		RunID:        record.RunID,
 		Status:       record.Status,
@@ -2737,6 +2752,7 @@ func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord)
 		Verification: record.Verification,
 		Telemetry:    factory.DeriveRunTelemetry(record, events),
 		Failure:      normalizedFactoryFailureSummary(record.Failure),
+		Handoff:      handoff,
 	}
 }
 
@@ -2815,6 +2831,9 @@ func sanitizeFactoryArtifactPath(path string) string {
 	if path == "" {
 		return ""
 	}
+	if factoryArtifactPathLooksLikeURL(path) {
+		return "[redacted]"
+	}
 	cleanPath := filepath.Clean(path)
 	if factoryArtifactLooksLikeWindowsAbsolutePath(path) || factoryArtifactLooksLikeWindowsAbsolutePath(cleanPath) {
 		return "[redacted]"
@@ -2830,6 +2849,14 @@ func sanitizeFactoryArtifactPath(path string) string {
 		return "[redacted]"
 	}
 	return filepath.ToSlash(cleanPath)
+}
+
+func factoryArtifactPathLooksLikeURL(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return true
+	}
+	return parsed.Scheme != "" || parsed.Host != ""
 }
 
 func factoryArtifactPathIsParentRelative(path string) bool {
@@ -2933,7 +2960,7 @@ func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
 	_ = w.Flush()
 }
 
-func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord) {
+func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) {
 	telemetry := factory.DeriveRunTelemetry(record, events)
 	fmt.Fprintf(out, "Run ID: %s\n", record.RunID)
 	fmt.Fprintf(out, "Status: %s\n", record.Status)
@@ -2941,6 +2968,8 @@ func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []
 	fmt.Fprintf(out, "Step: %s\n", record.CurrentStep)
 	fmt.Fprintf(out, "Updated: %s\n", formatFactoryListTime(record.UpdatedAt))
 	renderFactoryStatusTelemetry(out, record, telemetry)
+	renderFactoryHandoffDetails(out, handoff)
+	fmt.Fprintf(out, "Timeline events: %d\n", len(events))
 	if len(events) == 0 {
 		return
 	}

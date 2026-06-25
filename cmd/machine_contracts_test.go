@@ -600,6 +600,59 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		requireExactKeys(t, chunk, []string{"sequence", "runId", "stream", "source", "text", "createdAt"})
 	})
 
+	t.Run("factory open success top-level keys", func(t *testing.T) {
+		handoff := &factory.HandoffSummary{
+			RunID:           record.RunID,
+			Status:          factory.RunStatusFailed,
+			ExecutorMode:    factory.ExecutorModeSandbox,
+			HandoffRequired: true,
+			NextAction: &factory.NextAction{
+				ID:          "takeover_sandbox",
+				Type:        factory.NextActionTypeTakeover,
+				Command:     "hal sandbox ssh factory-contract",
+				Description: "Open an interactive shell in the sandbox for manual takeover.",
+				RunID:       record.RunID,
+				SandboxName: "factory-contract",
+			},
+			InspectCommand: "hal factory status run-contract --json",
+			SSHCommand:     "hal sandbox ssh factory-contract",
+			SandboxName:    "factory-contract",
+		}
+
+		var buf bytes.Buffer
+		if err := renderFactoryOpenJSON(&buf, record.RunID, handoff, nil); err != nil {
+			t.Fatalf("renderFactoryOpenJSON error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "handoff", "summary"})
+		if raw["contractVersion"] != FactoryOpenContractVersion {
+			t.Fatalf("factory open contractVersion = %v, want %q", raw["contractVersion"], FactoryOpenContractVersion)
+		}
+
+		handoffRaw, ok := raw["handoff"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("handoff should be object, got %T", raw["handoff"])
+		}
+		requireExactKeys(t, handoffRaw, []string{
+			"runId", "status", "executorMode", "handoffRequired",
+			"nextAction", "inspectCommand", "sshCommand", "sandboxName",
+		})
+	})
+
+	t.Run("factory open error top-level keys", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := renderFactoryOpenJSON(&buf, "missing-run", nil, fmt.Errorf("factory run %q not found", "missing-run")); err != nil {
+			t.Fatalf("renderFactoryOpenJSON error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "error", "summary"})
+		if raw["contractVersion"] != FactoryOpenContractVersion {
+			t.Fatalf("factory open contractVersion = %v, want %q", raw["contractVersion"], FactoryOpenContractVersion)
+		}
+	})
+
 	t.Run("factory run result keys", func(t *testing.T) {
 		totalDurationMs := int64(600000)
 		artifactCount := 1
@@ -647,6 +700,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		if !ok {
 			t.Fatalf("nextAction should be object, got %T", raw["nextAction"])
 		}
+		requireExactKeys(t, nextAction, []string{"id", "command", "description"})
 		for _, field := range []string{"id", "command", "description"} {
 			if _, ok := nextAction[field].(string); !ok {
 				t.Fatalf("nextAction.%s should be a string", field)
