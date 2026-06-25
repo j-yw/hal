@@ -158,3 +158,67 @@ func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 		t.Fatalf("Secrets[0] = %#v, want %#v", got.Secrets[0], wantSecret)
 	}
 }
+
+func TestRunSecretRedactorRedactsRunRecordEnginePolicyAndTelemetry(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "ENGINE_MODEL", Source: RunSecretSourceEnv, Required: true, Value: "secret-model"},
+	})
+
+	got := redactor.RedactRunRecord(RunRecord{
+		Engine: "codex-secret-model",
+		Policy: &FactoryPolicy{
+			AllowedEngines:  []string{"codex-secret-model"},
+			CleanupBehavior: "preserve-secret-model",
+		},
+		Telemetry: &RunTelemetry{
+			StepDurations: []RunStepDuration{{
+				Step: "engine-secret-model",
+			}},
+			Engine: &EngineTelemetry{
+				Name:  "codex-secret-model",
+				Model: "gpt-secret-model",
+			},
+			Sandbox: &RunSandboxTelemetry{
+				Provider: "provider-secret-model",
+				Size:     "size-secret-model",
+			},
+			CIOutcome:           "ci-secret-model",
+			VerificationOutcome: "verification-secret-model",
+			FailureCategory:     "failure-secret-model",
+		},
+	})
+
+	if got.Engine != "codex-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Engine = %q, want redacted secret value", got.Engine)
+	}
+	if got.Policy.AllowedEngines[0] != "codex-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Policy.AllowedEngines[0] = %q, want redacted secret value", got.Policy.AllowedEngines[0])
+	}
+	if got.Policy.CleanupBehavior != "preserve-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Policy.CleanupBehavior = %q, want redacted secret value", got.Policy.CleanupBehavior)
+	}
+	if got.Telemetry.StepDurations[0].Step != "engine-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.StepDurations[0].Step = %q, want redacted secret value", got.Telemetry.StepDurations[0].Step)
+	}
+	if got.Telemetry.Engine.Name != "codex-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.Engine.Name = %q, want redacted secret value", got.Telemetry.Engine.Name)
+	}
+	if got.Telemetry.Engine.Model != "gpt-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.Engine.Model = %q, want redacted secret value", got.Telemetry.Engine.Model)
+	}
+	if got.Telemetry.Sandbox.Provider != "provider-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.Sandbox.Provider = %q, want redacted secret value", got.Telemetry.Sandbox.Provider)
+	}
+	if got.Telemetry.Sandbox.Size != "size-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.Sandbox.Size = %q, want redacted secret value", got.Telemetry.Sandbox.Size)
+	}
+	if got.Telemetry.CIOutcome != "ci-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.CIOutcome = %q, want redacted secret value", got.Telemetry.CIOutcome)
+	}
+	if got.Telemetry.VerificationOutcome != "verification-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.VerificationOutcome = %q, want redacted secret value", got.Telemetry.VerificationOutcome)
+	}
+	if got.Telemetry.FailureCategory != "failure-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.FailureCategory = %q, want redacted secret value", got.Telemetry.FailureCategory)
+	}
+}

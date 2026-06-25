@@ -71,16 +71,19 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 	}
 	record.Status = r.RedactString(record.Status)
 	record.ExecutorMode = r.RedactString(record.ExecutorMode)
+	record.Engine = r.RedactString(record.Engine)
 	record.Source = r.redactSourceMetadata(record.Source)
 	record.RepoPath = r.RedactString(record.RepoPath)
 	record.RepoRemote = r.RedactString(record.RepoRemote)
 	record.BranchName = r.RedactString(record.BranchName)
 	record.BaseBranch = r.RedactString(record.BaseBranch)
+	record.Policy = r.redactFactoryPolicy(record.Policy)
 	record.SandboxName = r.RedactString(record.SandboxName)
 	record.Sandbox = r.redactSandboxMetadata(record.Sandbox)
 	record.CurrentStep = r.RedactString(record.CurrentStep)
 	record.Artifacts = r.redactArtifactReferences(record.Artifacts)
 	record.Verification = r.redactVerificationRecord(record.Verification)
+	record.Telemetry = r.redactRunTelemetry(record.Telemetry)
 	record.Failure = r.redactFailureSummary(record.Failure)
 	record.Secrets = r.redactSecretMetadata(record.Secrets)
 	return record
@@ -92,6 +95,21 @@ func (r RunSecretRedactor) redactSourceMetadata(source SourceMetadata) SourceMet
 	source.ReportPath = r.RedactString(source.ReportPath)
 	source.Title = r.RedactString(source.Title)
 	return source
+}
+
+func (r RunSecretRedactor) redactFactoryPolicy(policy *FactoryPolicy) *FactoryPolicy {
+	if policy == nil {
+		return nil
+	}
+	safe := *policy
+	if policy.AllowedEngines != nil {
+		safe.AllowedEngines = make([]string, len(policy.AllowedEngines))
+		for i, engine := range policy.AllowedEngines {
+			safe.AllowedEngines[i] = r.RedactString(engine)
+		}
+	}
+	safe.CleanupBehavior = r.RedactString(safe.CleanupBehavior)
+	return &safe
 }
 
 func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *SandboxMetadata {
@@ -147,6 +165,36 @@ func (r RunSecretRedactor) redactVerificationRecord(verification *VerificationRe
 			}
 		}
 	}
+	return &safe
+}
+
+func (r RunSecretRedactor) redactRunTelemetry(telemetry *RunTelemetry) *RunTelemetry {
+	if telemetry == nil {
+		return nil
+	}
+	safe := *telemetry
+	if len(telemetry.StepDurations) > 0 {
+		safe.StepDurations = make([]RunStepDuration, len(telemetry.StepDurations))
+		for i, duration := range telemetry.StepDurations {
+			safe.StepDurations[i] = duration
+			safe.StepDurations[i].Step = r.RedactString(duration.Step)
+		}
+	}
+	if telemetry.Engine != nil {
+		engine := *telemetry.Engine
+		engine.Name = r.RedactString(engine.Name)
+		engine.Model = r.RedactString(engine.Model)
+		safe.Engine = &engine
+	}
+	if telemetry.Sandbox != nil {
+		sandbox := *telemetry.Sandbox
+		sandbox.Provider = r.RedactString(sandbox.Provider)
+		sandbox.Size = r.RedactString(sandbox.Size)
+		safe.Sandbox = &sandbox
+	}
+	safe.CIOutcome = r.RedactString(safe.CIOutcome)
+	safe.VerificationOutcome = r.RedactString(safe.VerificationOutcome)
+	safe.FailureCategory = r.RedactString(safe.FailureCategory)
 	return &safe
 }
 
