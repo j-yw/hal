@@ -774,6 +774,16 @@ func TestSanitizeCredentialedRemoteRedactsCredentialQueryAndFragmentValues(t *te
 			remote: "https://github.com/org/repo.git?ref=main#readme",
 			want:   "https://github.com/org/repo.git?ref=main#readme",
 		},
+		{
+			name:   "scp style credential user",
+			remote: "token@github.com:org/repo.git",
+			want:   placeholder + "@github.com:org/repo.git",
+		},
+		{
+			name:   "scp style git ssh user",
+			remote: "git@github.com:org/repo.git",
+			want:   "git@github.com:org/repo.git",
+		},
 	}
 
 	for _, tt := range tests {
@@ -782,6 +792,38 @@ func TestSanitizeCredentialedRemoteRedactsCredentialQueryAndFragmentValues(t *te
 				t.Fatalf("sanitizeCredentialedRemote() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMarkFactoryRunInProgressRedactsSCPStyleCredentialedRemoteForStorage(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	now := time.Date(2026, 6, 21, 11, 15, 0, 0, time.UTC)
+	credential := "token"
+	record := factory.RunRecord{
+		RunID:      "run-scp-credentialed-remote",
+		RepoRemote: credential + "@github.com:org/repo.git",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	if _, err := markFactoryRunInProgressWithRedactor(store, record, now, factory.RunSecretRedactor{}); err != nil {
+		t.Fatalf("markFactoryRunInProgressWithRedactor() error: %v", err)
+	}
+
+	loaded, err := store.LoadRun("run-scp-credentialed-remote")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	wantRemote := factory.RunSecretRedactionPlaceholder + "@github.com:org/repo.git"
+	if loaded.RepoRemote != wantRemote {
+		t.Fatalf("stored repo remote = %q, want %q", loaded.RepoRemote, wantRemote)
+	}
+	data, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatalf("json.Marshal(run record) error: %v", err)
+	}
+	if strings.Contains(string(data), credential+"@github.com") {
+		t.Fatalf("run record JSON leaked credentialed remote secret: %s", string(data))
 	}
 }
 
@@ -812,6 +854,42 @@ func TestRedactFactoryRunErrorRedactsCredentialedRemoteWithoutDeclaredSecrets(t 
 	}
 	if !errors.Is(safeErr, err) {
 		t.Fatalf("redactFactoryRunError() did not preserve original cause")
+	}
+}
+
+func TestRedactFactoryRunErrorAndTimelineRedactSCPStyleCredentialedRemote(t *testing.T) {
+	credential := "token"
+	remote := credential + "@github.com:org/repo.git"
+	wantRemote := factory.RunSecretRedactionPlaceholder + "@github.com:org/repo.git"
+	err := errors.New("clone failed: " + remote)
+
+	safeErr := redactFactoryRunError(err, factory.RunSecretRedactor{})
+	if safeErr == nil {
+		t.Fatal("redactFactoryRunError() = nil, want redacted error")
+	}
+	if strings.Contains(safeErr.Error(), credential+"@github.com") {
+		t.Fatalf("redactFactoryRunError() leaked credential: %s", safeErr.Error())
+	}
+	if !strings.Contains(safeErr.Error(), wantRemote) {
+		t.Fatalf("redactFactoryRunError() = %q, want %q", safeErr.Error(), wantRemote)
+	}
+
+	event := redactFactoryTimelineEvent(factoryTimelineEvent{
+		Message: "clone failed: " + remote,
+		Summary: "remote " + remote,
+		Metadata: map[string]any{
+			"remote": remote,
+		},
+	}, factory.RunSecretRedactor{})
+	data, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal(event) error: %v", marshalErr)
+	}
+	if strings.Contains(string(data), credential+"@github.com") {
+		t.Fatalf("timeline event leaked credentialed remote: %s", string(data))
+	}
+	if !strings.Contains(string(data), wantRemote) {
+		t.Fatalf("timeline event = %s, want redacted remote %q", string(data), wantRemote)
 	}
 }
 

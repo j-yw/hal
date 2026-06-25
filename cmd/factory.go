@@ -4985,6 +4985,9 @@ func sanitizeCredentialedRemote(remote string) string {
 	if remote == "" {
 		return remote
 	}
+	if sanitized, ok := sanitizeCredentialedRemoteSCPStyle(remote); ok {
+		remote = sanitized
+	}
 	parsed, err := url.Parse(remote)
 	if err != nil {
 		if sanitized, ok := sanitizeCredentialedRemoteAuthority(remote); ok {
@@ -5025,10 +5028,10 @@ func sanitizeCredentialedRemote(remote string) string {
 }
 
 func sanitizeCredentialedRemoteReferences(value string) string {
-	if strings.Contains(value, `:\/\/`) {
+	if strings.Contains(value, `\/`) {
 		value = strings.ReplaceAll(value, `\/`, `/`)
 	}
-	if !strings.Contains(value, "://") {
+	if !strings.Contains(value, "://") && !strings.Contains(value, "@") {
 		return value
 	}
 	var out strings.Builder
@@ -5043,7 +5046,7 @@ func sanitizeCredentialedRemoteReferences(value string) string {
 			end++
 		}
 		segment := value[i:end]
-		if strings.Contains(segment, "://") {
+		if strings.Contains(segment, "://") || strings.Contains(segment, "@") {
 			out.WriteString(sanitizeCredentialedRemote(segment))
 		} else {
 			out.WriteString(segment)
@@ -5056,6 +5059,99 @@ func sanitizeCredentialedRemoteReferences(value string) string {
 func factoryCredentialedRemoteReferenceSeparator(ch byte) bool {
 	switch ch {
 	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeCredentialedRemoteSCPStyle(value string) (string, bool) {
+	if strings.Contains(value, "://") || !strings.Contains(value, "@") {
+		return value, false
+	}
+	var out strings.Builder
+	changed := false
+	last := 0
+	for i := 0; i < len(value); {
+		atOffset := strings.Index(value[i:], "@")
+		if atOffset < 0 {
+			break
+		}
+		at := i + atOffset
+		start := at
+		for start > 0 && factorySCPStyleUserinfoChar(value[start-1]) {
+			start--
+		}
+		userinfo := value[start:at]
+		hostStart := at + 1
+		hostEnd := hostStart
+		for hostEnd < len(value) && factorySCPStyleHostChar(value[hostEnd]) {
+			hostEnd++
+		}
+		if userinfo == "" || hostEnd == hostStart || hostEnd >= len(value) || value[hostEnd] != ':' {
+			i = at + 1
+			continue
+		}
+		pathStart := hostEnd + 1
+		if pathStart >= len(value) || factorySCPStylePathTerminator(value[pathStart]) {
+			i = at + 1
+			continue
+		}
+		if !factorySCPStyleUserinfoLooksCredentialed(userinfo, value[hostStart:hostEnd]) {
+			i = at + 1
+			continue
+		}
+		out.WriteString(value[last:start])
+		out.WriteString(factory.RunSecretRedactionPlaceholder)
+		last = at
+		changed = true
+		i = at + 1
+	}
+	if !changed {
+		return value, false
+	}
+	out.WriteString(value[last:])
+	return out.String(), true
+}
+
+func factorySCPStyleUserinfoChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '_' || ch == '-' || ch == '+' || ch == ':' || ch == '%'
+}
+
+func factorySCPStyleHostChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '-' || ch == '_' || ch == '[' || ch == ']'
+}
+
+func factorySCPStylePathTerminator(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '`':
+		return true
+	default:
+		return false
+	}
+}
+
+func factorySCPStyleUserinfoLooksCredentialed(userinfo, host string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userinfo))
+	if normalized == "" || normalized == "git" {
+		return false
+	}
+	if strings.Contains(normalized, ":") || isCredentialedRemoteParameterKey(normalized) {
+		return true
+	}
+	for _, marker := range []string{"ghp_", "github_pat_", "glpat", "oauth", "x-access-token", "x-token-auth"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	switch strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]") {
+	case "github.com", "ssh.github.com", "gitlab.com", "bitbucket.org":
 		return true
 	default:
 		return false
